@@ -1261,13 +1261,12 @@ class MemoryManager:
         # Write sentinel to prevent re-migration
         atomic_write(sentinel, "done\n")
 
-        # Populate SQLite FTS5 index from JSONL (idempotent — skips if DB populated)
-        try:
-            from app.memory_db import migrate_jsonl_to_sqlite
-            sqlite_count = migrate_jsonl_to_sqlite(str(self.instance_dir))
-            stats["sqlite_indexed"] = sqlite_count
-        except Exception as e:
-            logger.warning("SQLite migration failed (non-fatal): %s", e)
+        # NOTE: SQLite FTS5 indexing is NOT done here. This method is gated by
+        # the .migration_done sentinel and short-circuits for any instance that
+        # already migrated markdown→JSONL — so wiring the SQLite bulk import here
+        # would never run on existing instances. Indexing is a separate, always-run
+        # startup step (startup_manager.index_memory_sqlite), self-gated on an
+        # empty/missing memory.db so it is cheap and idempotent.
 
         return stats
 

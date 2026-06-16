@@ -383,6 +383,71 @@ class TestMigrationViaStartup:
         conn.close()
 
 
+class TestStartupIndexing:
+    """Regression: SQLite indexing must run for already-migrated instances.
+
+    The bulk index step lived inside ``migrate_markdown_to_jsonl``, which
+    short-circuits when the ``.migration_done`` sentinel exists. Existing
+    instances therefore never indexed their JSONL into FTS5. Indexing now
+    runs as a standalone, always-run startup step.
+    """
+
+    def _seed_migrated_instance(self, instance_dir):
+        """A JSONL log plus the sentinel, mimicking a pre-existing instance."""
+        mem_dir = Path(instance_dir) / "memory"
+        entries = [
+            {"ts": "2026-01-01T00:00:00Z", "type": "session", "project": "koan", "content": "auth bug fixed"},
+            {"ts": "2026-01-02T00:00:00Z", "type": "learning", "project": "koan", "content": "pooling at 25"},
+        ]
+        (mem_dir / "log.jsonl").write_text(
+            "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8",
+        )
+        (mem_dir / ".migration_done").write_text("done\n", encoding="utf-8")
+
+    def test_startup_step_indexes_existing_instance(self, instance_dir):
+        from app.startup_manager import index_memory_sqlite
+        from app.memory_db import ensure_db, entry_count
+
+        self._seed_migrated_instance(instance_dir)
+
+        index_memory_sqlite(instance_dir)
+
+        conn = ensure_db(instance_dir)
+        assert entry_count(conn) == 2
+        conn.close()
+
+    def test_markdown_migration_skips_does_not_block_indexing(self, instance_dir):
+        """The gated markdown migration no longer owns SQLite indexing."""
+        from app.memory_manager import MemoryManager
+        from app.startup_manager import index_memory_sqlite
+        from app.memory_db import ensure_db, entry_count
+
+        self._seed_migrated_instance(instance_dir)
+
+        # Gated migration is a no-op for already-migrated instances...
+        result = MemoryManager(instance_dir).migrate_markdown_to_jsonl()
+        assert result.get("skipped") is True
+
+        # ...yet the standalone step still populates the FTS5 index.
+        index_memory_sqlite(instance_dir)
+        conn = ensure_db(instance_dir)
+        assert entry_count(conn) == 2
+        conn.close()
+
+    def test_startup_step_is_idempotent(self, instance_dir):
+        from app.startup_manager import index_memory_sqlite
+        from app.memory_db import ensure_db, entry_count
+
+        self._seed_migrated_instance(instance_dir)
+
+        index_memory_sqlite(instance_dir)
+        index_memory_sqlite(instance_dir)  # second run must not duplicate
+
+        conn = ensure_db(instance_dir)
+        assert entry_count(conn) == 2
+        conn.close()
+
+
 class TestTwoPhaseRetrieval:
     """Verify read_memory_window uses FTS5 + recency fill."""
 

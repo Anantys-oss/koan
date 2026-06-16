@@ -24,8 +24,12 @@ for concurrent safety.
 A read-optimized projection of the JSONL log. Provides BM25-ranked full-text
 search so mission-relevant entries surface in agent prompts instead of pure
 recency. Dual-written alongside JSONL (best-effort — JSONL succeeds regardless
-of SQLite errors). Created automatically on first startup via one-time migration
-from existing JSONL entries.
+of SQLite errors). Populated by a dedicated, always-run startup step
+(`startup_manager.index_memory_sqlite`) that bulk-indexes existing JSONL entries.
+This step is self-gated: `migrate_jsonl_to_sqlite()` only runs when `memory.db`
+is missing or empty, so it is cheap and idempotent on every startup. It is kept
+separate from the markdown→JSONL migration (which short-circuits on the
+`.migration_done` sentinel) so that already-migrated instances still get indexed.
 
 WAL mode is enabled for concurrent read access from both `run.py` and `awake.py`.
 If `memory.db` is deleted or corrupted, all operations gracefully fall back to
