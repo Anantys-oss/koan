@@ -9,6 +9,7 @@ import pytest
 from app.commit_conventions import (
     get_project_commit_guidance,
     parse_commit_subject,
+    parse_debug_hypothesis,
     strip_commit_subject_line,
     _extract_commit_sections_from_claude_md,
     _infer_commit_style_from_history,
@@ -304,3 +305,36 @@ class TestStripCommitSubjectLine:
         text = "COMMIT_SUBJECT: first\nstuff\nCOMMIT_SUBJECT: second\n"
         result = strip_commit_subject_line(text)
         assert "COMMIT_SUBJECT" not in result
+
+
+# ---------------------------------------------------------------------------
+# parse_debug_hypothesis
+# ---------------------------------------------------------------------------
+
+class TestParseDebugHypothesis:
+
+    def test_extracts_hypothesis(self):
+        text = "Some output\nDEBUG_HYPOTHESIS: Race condition in cache invalidation\nMore output"
+        assert parse_debug_hypothesis(text) == "Race condition in cache invalidation"
+
+    def test_last_match_wins(self):
+        text = (
+            "DEBUG_HYPOTHESIS: Wrong initial guess\n"
+            "After more investigation...\n"
+            "DEBUG_HYPOTHESIS: Off-by-one in pagination offset\n"
+        )
+        assert parse_debug_hypothesis(text) == "Off-by-one in pagination offset"
+
+    def test_returns_none_when_absent(self):
+        assert parse_debug_hypothesis("No hypothesis here") is None
+
+    def test_returns_none_for_empty_hypothesis(self):
+        assert parse_debug_hypothesis("DEBUG_HYPOTHESIS:   \n") is None
+
+    def test_returns_none_for_oversized_hypothesis(self):
+        text = f"DEBUG_HYPOTHESIS: {'x' * 301}\n"
+        assert parse_debug_hypothesis(text) is None
+
+    def test_strips_whitespace(self):
+        text = "DEBUG_HYPOTHESIS:   Trailing spaces   \n"
+        assert parse_debug_hypothesis(text) == "Trailing spaces"

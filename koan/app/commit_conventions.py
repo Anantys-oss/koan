@@ -20,6 +20,9 @@ _COMMIT_HEADING_KEYWORDS = re.compile(
 # Matches the COMMIT_SUBJECT marker in Claude output.
 _COMMIT_SUBJECT_RE = re.compile(r"^COMMIT_SUBJECT:\s*(.+)$", re.MULTILINE)
 
+# Matches the DEBUG_HYPOTHESIS marker in Claude output.
+_DEBUG_HYPOTHESIS_RE = re.compile(r"^DEBUG_HYPOTHESIS:\s*(.+)$", re.MULTILINE)
+
 # Conventional commit pattern (reused from pr_quality.py).
 _CONVENTIONAL_RE = re.compile(
     r"^[a-f0-9]+\s+(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
@@ -41,6 +44,7 @@ _FILE_REF_RE = re.compile(
 _MAX_GUIDANCE_CHARS = 4000
 _MAX_REFERENCED_FILE_CHARS = 3000
 _MAX_SUBJECT_CHARS = 150
+_MAX_HYPOTHESIS_CHARS = 300
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +112,26 @@ def strip_commit_subject_line(text: str) -> str:
     so the marker line doesn't appear in the final commit message.
     """
     return _COMMIT_SUBJECT_RE.sub("", text).strip()
+
+
+def parse_debug_hypothesis(claude_output: str) -> Optional[str]:
+    """Extract a DEBUG_HYPOTHESIS line from Claude's output.
+
+    Looks for a line matching ``DEBUG_HYPOTHESIS: <root cause>``.
+    If multiple matches exist, the last one wins (Claude may revise).
+
+    Returns the hypothesis text, or None if not found or invalid.
+    """
+    matches = _DEBUG_HYPOTHESIS_RE.findall(claude_output)
+    if not matches:
+        return None
+
+    hypothesis = matches[-1].strip()
+
+    if not hypothesis or "\n" in hypothesis or len(hypothesis) > _MAX_HYPOTHESIS_CHARS:
+        return None
+
+    return hypothesis
 
 
 # ---------------------------------------------------------------------------
