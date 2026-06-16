@@ -791,6 +791,16 @@ auto_update:
 # review_reflect:
 #   threshold: 5            # Min score to keep a finding (0-10, default: 5)
 
+# Review verdict body — controls the text attached to the formal
+# APPROVE / REQUEST_CHANGES verdict in GitHub's Reviewers panel.
+# The verdict itself (green check / red X) is always submitted;
+# this only controls the accompanying body message.
+# review_verdict:
+#   body_enabled: true          # Include a body with the verdict (default: true)
+#                               # Set to false for a silent verdict (just the check/X)
+#   include_blockers: true      # When REQUEST_CHANGES, list blocking finding titles
+#                               # in the verdict body (default: true)
+
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention
 # notifications (reason: mention or review_requested). Requires github_url
@@ -891,6 +901,19 @@ auto_update:
 #     enabled: true
 #     include: [my_custom_skill]   # canonical names; aliases auto-resolved
 #   review_compressor:
+#     enabled: true
+
+#
+# Ponytail ("six-gate code minimalism ladder") applies by default to the
+# agent loop. It instructs Claude to walk a decision ladder — is it
+# necessary? stdlib? native feature? existing dep? one-liner? — before
+# writing new code. Strictly complementary to caveman:
+#   - caveman trims what Claude WRITES (prose verbosity).
+#   - ponytail trims what Claude GENERATES (code quantity).
+#
+# Set ``enabled: false`` to suppress ponytail:
+# optimizations:
+#   ponytail:
 #     enabled: true
 
 # RTK (Rust Token Killer — https://github.com/rtk-ai/rtk)

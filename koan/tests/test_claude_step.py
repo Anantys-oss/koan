@@ -584,6 +584,78 @@ class TestRunClaude:
         run_claude(["claude", "-p", "test"], "/project")
         cleanup.assert_called_once()
 
+    @patch("app.claude_step.popen_cli")
+    def test_heartbeat_emits_while_cli_silent(self, mock_popen, capsys):
+        """Heartbeat prints markers even when CLI produces no stdout.
+
+        This prevents the parent process's LivenessWatchdog from killing
+        skill subprocesses that run print-mode Claude sessions (no output
+        during tool use). Reproduces the bug where /recreate of large PRs
+        was killed after first_output_timeout (600s) because the inner CLI
+        was silent while doing tool work.
+        """
+        import threading
+        import time
+
+        # Simulate a CLI that produces no output for a while then finishes.
+        output_event = threading.Event()
+
+        class _BlockingStream:
+            """stdout that blocks until signalled, then yields nothing."""
+            def __init__(self, event):
+                self._event = event
+            def __iter__(self):
+                self._event.wait(timeout=5)
+                return iter([])
+            def close(self):
+                pass
+
+        class SlowProc:
+            pid = 99999
+            returncode = 0
+            stderr = _FakeStream(read_text="")
+
+            def __init__(self):
+                self._finished = False
+                self.stdout = _BlockingStream(output_event)
+
+            def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
+                return 0 if self._finished else None
+
+        proc = SlowProc()
+        mock_popen.return_value = (proc, lambda: None)
+
+        # Use a very short heartbeat so the test runs fast
+        def run_with_heartbeat():
+            return run_claude(
+                ["claude", "-p", "test"], "/project",
+                heartbeat_interval=1,
+            )
+
+        # Let the heartbeat emit a few markers then unblock
+        runner = threading.Thread(target=run_with_heartbeat)
+        runner.start()
+        time.sleep(2.5)  # Allow ~2 heartbeat emissions
+        output_event.set()
+        runner.join(timeout=5)
+
+        captured = capsys.readouterr()
+        assert "[still working...]" in captured.out
+
+    @patch("app.claude_step.popen_cli")
+    def test_heartbeat_cancelled_after_completion(self, mock_popen):
+        """Heartbeat timer is cancelled when CLI finishes."""
+        proc = _fake_proc(["ok\n"], returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["claude", "-p", "test"], "/project",
+            heartbeat_interval=1,
+        )
+        assert result["success"] is True
+
 
 # ---------- commit_if_changes ----------
 

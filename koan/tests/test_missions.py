@@ -7,9 +7,11 @@ from app.missions import (
     cancel_pending_mission,
     classify_section,
     complete_mission,
+    complete_mission_checked,
     delete_idea,
     extract_timestamps,
     fail_mission,
+    fail_mission_checked,
     format_duration,
     insert_idea,
     insert_mission,
@@ -39,6 +41,7 @@ from app.missions import (
     stamp_queued,
     stamp_started,
     start_mission,
+    canonical_mission_key,
     strip_all_lifecycle_markers,
     strip_timestamps,
     prune_completed_sections,
@@ -1593,6 +1596,70 @@ class TestFailMission:
 
 
 # ---------------------------------------------------------------------------
+# complete_mission_checked / fail_mission_checked — found-status reporting
+# ---------------------------------------------------------------------------
+
+class TestMissionCheckedVariants:
+    """The *_checked variants report whether the mission was found.
+
+    Callers use the boolean to distinguish a genuine no-op (mission absent)
+    from a successful move, so they can warn instead of looping silently.
+    """
+
+    CONTENT = (
+        "# Missions\n\n"
+        "## Pending\n\n"
+        "- /plan Add dark mode\n\n"
+        "## In Progress\n\n"
+        "- Fix the login bug ▶(2026-01-01T00:00)\n\n"
+        "## Done\n"
+    )
+
+    def test_complete_found_in_pending_reports_true(self):
+        content, found = complete_mission_checked(self.CONTENT, "/plan Add dark mode")
+        assert found is True
+        assert "/plan Add dark mode" in "\n".join(parse_sections(content)["done"])
+
+    def test_complete_found_in_progress_reports_true(self):
+        content, found = complete_mission_checked(self.CONTENT, "Fix the login bug")
+        assert found is True
+        assert "Fix the login bug" in "\n".join(parse_sections(content)["done"])
+
+    def test_complete_absent_reports_false_and_leaves_content(self):
+        content, found = complete_mission_checked(self.CONTENT, "/nonexistent thing")
+        assert found is False
+        assert content == normalize_content(self.CONTENT)
+
+    def test_fail_found_reports_true(self):
+        content, found = fail_mission_checked(self.CONTENT, "/plan Add dark mode")
+        assert found is True
+        assert "/plan Add dark mode" in "\n".join(parse_sections(content)["failed"])
+
+    def test_fail_absent_reports_false_and_leaves_content(self):
+        content, found = fail_mission_checked(self.CONTENT, "/nonexistent thing")
+        assert found is False
+        assert content == normalize_content(self.CONTENT)
+
+    def test_fail_checked_preserves_cause_tag(self):
+        content, found = fail_mission_checked(
+            self.CONTENT, "/plan Add dark mode", cause_tag="stagnation",
+        )
+        assert found is True
+        assert "[stagnation]" in "\n".join(parse_sections(content)["failed"])
+
+    def test_unchecked_wrappers_return_same_content(self):
+        """The str-returning wrappers must equal the checked variant's content."""
+        assert (
+            complete_mission(self.CONTENT, "/plan Add dark mode")
+            == complete_mission_checked(self.CONTENT, "/plan Add dark mode")[0]
+        )
+        assert (
+            fail_mission(self.CONTENT, "/plan Add dark mode")
+            == fail_mission_checked(self.CONTENT, "/plan Add dark mode")[0]
+        )
+
+
+# ---------------------------------------------------------------------------
 # requeue_mission — move from In Progress back to Pending
 # ---------------------------------------------------------------------------
 
@@ -2630,6 +2697,43 @@ class TestMissionTimingDisplay:
         text = "Bug ▶(2026-02-18T11:00) ✅ (2026-02-18 10:00)"
         result = mission_timing_display(text)
         assert result == ""
+
+
+# --- canonical_mission_key ---
+
+class TestCanonicalMissionKey:
+    """S2: single source of truth for stable mission identity."""
+
+    def test_strips_leading_dash(self):
+        assert canonical_mission_key("- fix bug") == "fix bug"
+
+    def test_strips_lifecycle_timestamps(self):
+        base = canonical_mission_key("fix bug [project:foo]")
+        full = canonical_mission_key(
+            "fix bug [project:foo] ⏳(2026-01-01T00:00) ▶(2026-01-01T00:05)"
+        )
+        assert base == full == "fix bug [project:foo]"
+
+    def test_strips_recovery_and_complexity_tags(self):
+        assert (
+            canonical_mission_key("fix bug [r:3] [complexity:large]") == "fix bug"
+        )
+
+    def test_keeps_project_tag(self):
+        """Project tag is identity-bearing and must be preserved."""
+        assert "[project:foo]" in canonical_mission_key("fix bug [project:foo]")
+        assert (
+            canonical_mission_key("fix bug [project:foo]")
+            != canonical_mission_key("fix bug [project:bar]")
+        )
+
+    def test_stable_across_full_lifecycle_line(self):
+        clean = canonical_mission_key("fix bug [project:foo]")
+        lifecycle = canonical_mission_key(
+            "- fix bug [project:foo] [r:2] [complexity:medium] "
+            "⏳(2026-01-01T00:00) ▶(2026-01-01T00:05)"
+        )
+        assert clean == lifecycle
 
 
 # --- strip_timestamps ---

@@ -3329,11 +3329,9 @@ class TestRunIterationFirstIterationNotifications:
     @pytest.fixture(autouse=True)
     def _reset_startup_flag(self):
         import app.run as run_mod
-        run_mod._startup_notified = False
-        run_mod._boot_notified = False
+        run_mod._startup_phase = "boot"
         yield
-        run_mod._startup_notified = False
-        run_mod._boot_notified = False
+        run_mod._startup_phase = "boot"
 
     @patch("app.jira_config.get_jira_enabled", return_value=True)
     @patch("app.github_config.get_github_commands_enabled", return_value=True)
@@ -3468,7 +3466,7 @@ class TestRunIterationFirstIterationNotifications:
     def test_resume_without_missions_suppresses_empty_state_pings(
         self, mock_gh, mock_jira, mock_notify, mock_notify_raw, mock_plan, mock_gh_enabled, mock_jira_enabled, koan_root,
     ):
-        """After resume (simulated by resetting _startup_notified only), the
+        """After resume (simulated by setting _startup_phase = "resume"), the
         empty-state "scanned, no new missions" and "Notifications clear" pings
         MUST be silenced. The "🔍 Scanning GitHub" progress ping still fires
         so the human knows the cold-start scan is happening.
@@ -3485,8 +3483,8 @@ class TestRunIterationFirstIterationNotifications:
                 projects=[("test", str(koan_root))],
                 count=0, max_runs=5, interval=10, git_sync_interval=5,
             )
-            # Simulate /resume: only _startup_notified is reset, not _boot_notified
-            run_mod._startup_notified = False
+            # Simulate /resume after a completed boot iteration: phase → "resume"
+            run_mod._startup_phase = "resume"
             mock_notify_raw.reset_mock()
             _run_iteration(
                 koan_root=str(koan_root), instance=instance,
@@ -3521,8 +3519,7 @@ class TestRunIterationFirstIterationNotifications:
         instance = str(koan_root / "instance")
 
         # Start in "already booted" state to simulate resume
-        run_mod._boot_notified = True
-        run_mod._startup_notified = False
+        run_mod._startup_phase = "resume"
 
         with patch("app.utils.get_known_projects", return_value=[("test", str(koan_root))]):
             _run_iteration(
@@ -3603,6 +3600,30 @@ class TestRunIterationFirstIterationNotifications:
         assert "GitHub" not in joined
         # Jira-only intermediate message fires instead
         assert "Scanning Jira notifications" in joined
+
+
+class TestStartupPhase:
+    """Single _startup_phase state replaces the two boolean flags."""
+
+    def test_running_downgrades_to_resume(self):
+        import app.run as run_mod
+        run_mod._startup_phase = "running"
+        run_mod._mark_startup_resume()
+        assert run_mod._startup_phase == "resume"
+
+    def test_boot_is_preserved_when_resumed_before_first_iteration(self):
+        """Start-paused, then resumed before any iteration: must stay 'boot' so
+        boot-only banners still fire once."""
+        import app.run as run_mod
+        run_mod._startup_phase = "boot"
+        run_mod._mark_startup_resume()
+        assert run_mod._startup_phase == "boot"
+
+    def test_resume_stays_resume(self):
+        import app.run as run_mod
+        run_mod._startup_phase = "resume"
+        run_mod._mark_startup_resume()
+        assert run_mod._startup_phase == "resume"
 
 
 class TestNotifyRaw:
@@ -6251,6 +6272,128 @@ class TestUpdateMissionInFile:
         assert mission not in content.split("## Pending")[1].split("##")[0]
         assert "issues/15" in content.split("## Done")[1]
 
+    def test_not_found_returns_false_even_when_pruning_changes_content(self, tmp_path):
+        """Regression (B11): a missing mission must report False even if the
+        unconditional history prune mutates the file.
+
+        Previously the function inferred success by comparing content before
+        and after the locked write. Because ``prune_completed_sections`` runs
+        regardless of whether the mission was found, an oversized Failed
+        section made the content differ on a genuine no-op — so an absent
+        mission was wrongly reported as moved, masking a stuck mission.
+        """
+        from app.run import _update_mission_in_file
+
+        # 35 Failed entries — above the default failed_keep=30 prune threshold,
+        # so the locked write WILL change the file even though the target
+        # mission is absent from Pending and In Progress.
+        failed_entries = "\n".join(
+            f"- old failure {i} ❌ (2026-01-01 00:00)" for i in range(35)
+        )
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n- /plan unrelated work\n\n"
+            "## In Progress\n\n"
+            f"## Failed\n\n{failed_entries}\n"
+        )
+
+        before = missions.read_text()
+        result = _update_mission_in_file(
+            str(missions.parent), "/plan absent mission",
+        )
+        after = missions.read_text()
+
+        # The mission was never present → must report not-found...
+        assert result is False
+        # ...even though pruning genuinely changed the file content.
+        assert after != before
+
+
+class TestStartMissionSanityFlushLog:
+    """A sanity flush during start_mission() is surfaced to operators."""
+
+    def test_stale_in_progress_is_flushed_and_logged(self, tmp_path):
+        from app.run import _start_mission_in_file
+        from app.missions import parse_sections
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        # A stale In Progress mission recover.py "missed", plus the one we start.
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n- /plan new work\n\n"
+            "## In Progress\n\n- /plan leftover stale ▶(2026-01-01T00:00)\n\n"
+            "## Done\n"
+        )
+
+        with patch("app.run.log") as mock_log:
+            assert _start_mission_in_file(str(missions.parent), "/plan new work") is True
+
+        # The stale mission was flushed to Failed with a [flushed] tag...
+        sections = parse_sections(missions.read_text())
+        failed_text = "\n".join(sections["failed"])
+        assert "leftover stale" in failed_text
+        assert "[flushed]" in failed_text
+        # ...and the new mission is now In Progress.
+        assert "/plan new work" in "\n".join(sections["in_progress"])
+        # ...and a warning naming the flush was emitted.
+        warnings = [
+            c.args[1] for c in mock_log.call_args_list
+            if c.args and c.args[0] == "warning"
+        ]
+        assert any("Sanity flush" in w and "leftover stale" in w for w in warnings)
+
+    def test_no_log_when_in_progress_empty(self, tmp_path):
+        from app.run import _start_mission_in_file
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n- /plan only work\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        with patch("app.run.log") as mock_log:
+            assert _start_mission_in_file(str(missions.parent), "/plan only work") is True
+
+        warnings = [
+            c.args[1] for c in mock_log.call_args_list
+            if c.args and c.args[0] == "warning"
+        ]
+        assert not any("Sanity flush" in w for w in warnings)
+
+    def test_no_sanity_flush_log_when_mission_not_in_pending(self, tmp_path):
+        """False-positive guard: stale In Progress entries exist but the
+        mission isn't in Pending (e.g. a race removed it between pick and
+        start). start_mission() early-returns without flushing, so neither
+        the sanity-flush warning nor a successful transition should occur.
+        """
+        from app.run import _start_mission_in_file
+        from app.missions import parse_sections
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        # Stale In Progress entry present, but the mission we try to start
+        # is absent from Pending.
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            "## In Progress\n\n- /plan leftover stale ▶(2026-01-01T00:00)\n\n"
+            "## Done\n"
+        )
+
+        with patch("app.run.log") as mock_log:
+            assert _start_mission_in_file(str(missions.parent), "/plan absent work") is False
+
+        warnings = [
+            c.args[1] for c in mock_log.call_args_list
+            if c.args and c.args[0] == "warning"
+        ]
+        # No false "Sanity flush" warning — nothing was flushed.
+        assert not any("Sanity flush" in w for w in warnings)
+        # The stale entry is untouched: still In Progress, not moved to Failed.
+        sections = parse_sections(missions.read_text())
+        assert "leftover stale" in "\n".join(sections["in_progress"])
+        assert "leftover stale" not in "\n".join(sections.get("failed", []))
+
 
 # ---------------------------------------------------------------------------
 # Test: _run_iteration returns productive/idle boolean
@@ -7035,6 +7178,22 @@ class TestHandleWaitPauseCommit:
         error_msg = error_calls[0][0][1]
         assert "retro failed" in error_msg
         assert "Traceback" in error_msg
+
+    @patch("app.config.is_unlimited_quota", return_value=True)
+    @patch("app.run.log")
+    def test_unlimited_quota_skips_pause(self, mock_log, mock_unlimited):
+        """unlimited_quota: true suppresses the wait pause entirely."""
+        from app.run import _handle_wait_pause
+
+        plan = {
+            "project_name": "test-proj",
+            "decision_reason": "Budget exhausted",
+            "display_lines": [],
+        }
+        _handle_wait_pause(plan, 42, "/tmp/koan", "/tmp/koan/instance")
+
+        log_calls = [c[0] for c in mock_log.call_args_list]
+        assert any("suppressed" in msg for _, msg in log_calls)
 
 
 # ---------------------------------------------------------------------------

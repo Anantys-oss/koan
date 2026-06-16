@@ -4,19 +4,26 @@ Provides file-based restart signaling between bridge and run loop.
 
 Two consumers (bridge and runner) each get their own marker so a fast
 wrapper-restart of the runner can no longer wipe the signal before the
-bridge's polling tick sees it.  The legacy single-file marker is also
-written so a pre-upgrade incarnation polling ``.koan-restart`` can still
-detect the request and re-exec into the new code.
+bridge's polling tick sees it.
 
 The restart flow:
-1. ``request_restart`` writes ``.koan-restart-bridge``,
-   ``.koan-restart-run`` and (for backward compat) ``.koan-restart``.
+1. ``request_restart`` writes ``.koan-restart-bridge`` and ``.koan-restart-run``.
 2. Bridge's main loop notices ``.koan-restart-bridge`` and re-execs via
    ``os.execv`` (same PID, fresh interpreter).
 3. Runner's main loop notices ``.koan-restart-run`` and exits with
    ``RESTART_EXIT_CODE``; its wrapper relaunches it.
 4. Each process clears only its own marker on startup, so neither can
    silence the signal for the other.
+
+Legacy ``.koan-restart`` (DEPRECATED): the single combined marker is no
+longer *written* by Kōan. It is read by nothing in-tree (both consumers poll
+their own per-process marker), so writing it was a no-op that lingered on disk.
+``check_restart``/``clear_restart`` still accept ``target=None`` → ``.koan-restart``
+purely so any out-of-tree script polling the old path keeps working; remove that
+mapping once you are certain no external consumer depends on it. All in-tree
+restart triggers (run loop, bridge, auto-update, REST API, dashboard) now go
+through ``request_restart`` so both consumer markers are written and the restart
+actually fires.
 
 Exit code 42 is the restart sentinel — any other exit is a real stop.
 """
@@ -32,16 +39,20 @@ from app.signals import RESTART_FILE
 RESTART_EXIT_CODE = 42
 
 # Per-consumer marker files. The legacy ``RESTART_FILE`` (``.koan-restart``)
-# is kept for backward compatibility: a pre-upgrade bridge that is still
-# polling the old single-file marker can pick up the first post-upgrade
-# request and re-exec into the new code.
+# is DEPRECATED: no longer written by ``request_restart``. The ``None``
+# entry below is retained only so ``check_restart``/``clear_restart`` keep
+# honouring ``target=None`` for any out-of-tree caller still polling the old
+# path; nothing in-tree reads or writes it.
 RESTART_BRIDGE_FILE = ".koan-restart-bridge"
 RESTART_RUN_FILE = ".koan-restart-run"
+
+# Files written by request_restart() — the two live per-consumer markers only.
+_WRITE_TARGETS = (RESTART_BRIDGE_FILE, RESTART_RUN_FILE)
 
 _TARGET_FILES = {
     "bridge": RESTART_BRIDGE_FILE,
     "run": RESTART_RUN_FILE,
-    None: RESTART_FILE,
+    None: RESTART_FILE,  # deprecated, read-only compat (see module docstring)
 }
 
 
@@ -57,16 +68,17 @@ def _marker_path(koan_root: str, target: Optional[str]) -> str:
 
 
 def request_restart(koan_root: str) -> None:
-    """Create restart signal files for both consumers (and the legacy file).
+    """Create restart signal files for both consumers.
 
-    Writes three markers so each consumer can clear its own without
-    silencing the other, and so a pre-upgrade incarnation still polling
-    the legacy ``.koan-restart`` will also wake up and re-exec.
+    Writes the two per-consumer markers (``.koan-restart-bridge`` and
+    ``.koan-restart-run``) so each consumer can clear its own without
+    silencing the other. The deprecated legacy ``.koan-restart`` is no
+    longer written — nothing reads it.
     """
     from app.utils import atomic_write
 
     body = f"restart requested at {time.strftime('%H:%M:%S')}\n"
-    for fname in _TARGET_FILES.values():
+    for fname in _WRITE_TARGETS:
         atomic_write(Path(koan_root) / fname, body)
 
 

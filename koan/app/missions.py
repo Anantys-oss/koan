@@ -187,6 +187,40 @@ def strip_all_lifecycle_markers(text: str) -> str:
     return text.rstrip()
 
 
+# Markers that vary across a mission's lifecycle but do not change its identity:
+# lifecycle timestamps (⏳ ▶ ✅/❌), the [r:N] crash-recovery counter, and the
+# [complexity:X] classifier tag. Stripping them yields a key that is stable
+# across requeue and crash-recovery cycles.
+_CANONICAL_KEY_STRIP_RE = re.compile(
+    r"\s*⏳\([^)]*\)"               # ⏳(queued-timestamp)
+    r"|\s*▶\([^)]*\)"               # ▶(started-timestamp)
+    r"|\s*[✅❌]\s*\([^)]*\)"       # ✅/❌ (completed-timestamp)
+    r"|\s*\[r:\d+\]"                # [r:N] crash-recovery counter
+    r"|\s*\[complexity:[^\]]*\]"    # [complexity:X] classifier tag
+)
+
+
+def canonical_mission_key(text: str) -> str:
+    """Return a stable identity string for a mission, independent of lifecycle.
+
+    Strips lifecycle timestamps (⏳ ▶ ✅ ❌), the ``[r:N]`` crash-recovery
+    counter, the ``[complexity:X]`` classifier tag, and a leading ``"- "`` so the
+    same logical mission maps to the same key across requeue and crash-recovery
+    cycles. This is the single source of truth for stable mission identity (S2);
+    ``stagnation_monitor._mission_key`` hashes its output.
+
+    Note: ``[project:X]`` tags are intentionally *kept* — two missions with the
+    same text but different projects are distinct. (Distinct from
+    ``mission_history._normalize_key``, which strips the project tag, and
+    ``recover._strip_recovery_counter``, which strips only ``[r:N]`` for display.
+    Those serve narrower purposes and are deliberately not folded in here.)
+    """
+    clean = _CANONICAL_KEY_STRIP_RE.sub("", text).strip()
+    if clean.startswith("- "):
+        clean = clean[2:].strip()
+    return clean
+
+
 def _normalize_now_flag(text: str) -> str:
     """Normalize Unicode dash variants of --now to ASCII --now.
 
@@ -1039,23 +1073,35 @@ def _remove_item_by_text(
 def _move_pending_to_section(
     content: str, mission_text: str, section_key: str, marker: str, header: str,
     cause_tag: str = "",
-) -> str:
+) -> tuple[str, bool]:
     """Move a mission from Pending (or In Progress) to a target section.
 
     Shared implementation for complete_mission() and fail_mission().
     Searches Pending first, then falls back to In Progress.
-    Returns content unchanged if the mission is not found in either section.
 
     When *cause_tag* is a non-empty string, it is appended in square
     brackets after the timestamp — e.g. ``❌ (2026-04-19 03:45) [stagnation]``.
     Used to surface why a mission failed without parsing logs.
+
+    Returns:
+        A ``(content, found)`` tuple. ``found`` is ``True`` when the mission
+        was located and moved, ``False`` when it was not present in either
+        Pending or In Progress (in which case *content* is returned
+        unchanged). Reporting *found* explicitly lets callers distinguish a
+        genuine no-op from a move whose net content happens to match — a
+        distinction the previous before/after string comparison could not
+        make reliably once unrelated side effects (e.g. history pruning) ran.
     """
     needle = mission_text.strip()
     result = _remove_pending_by_text(content, needle)
     if result is None:
         result = _remove_item_by_text(content, needle, "in_progress")
     if result is None:
-        return content
+        # Normalize even on the not-found path so callers receive content of
+        # the same shape (collapsed blank-line runs, no trailing whitespace)
+        # as the found paths below. Without this, found=False could return
+        # raw content that differs from a found=True return for the same input.
+        return normalize_content(content), False
 
     updated = result[0]
 
@@ -1083,9 +1129,9 @@ def _move_pending_to_section(
         while insert_at < end and lines[insert_at].strip() == "":
             insert_at += 1
         lines.insert(insert_at, entry)
-        return normalize_content("\n".join(lines))
+        return normalize_content("\n".join(lines)), True
 
-    return normalize_content(updated + f"\n## {header}\n\n{entry}\n")
+    return normalize_content(updated + f"\n## {header}\n\n{entry}\n"), True
 
 
 def _flush_in_progress_to_failed(content: str) -> str:
@@ -1099,6 +1145,13 @@ def _flush_in_progress_to_failed(content: str) -> str:
     Under normal operation this path never fires because recover.py moves
     stale In Progress entries back to Pending at startup. This is a second
     line of defence for edge cases recover.py misses (e.g. complex ### missions).
+
+    Relationship to crash recovery (two safety nets for the same scenario):
+    - ``recover.py`` runs once at startup, before the loop, and moves stale
+      In Progress missions back to *Pending* (with crash-recovery counting).
+    - This function runs per-mission, inside ``start_mission()``, and moves
+      whatever ``recover.py`` missed to *Failed*. When it fires, the caller
+      (``run._start_mission_in_file``) emits a WARNING so the flush is visible.
     """
     sections = parse_sections(content)
     stale = sections.get("in_progress", [])
@@ -1190,6 +1243,20 @@ def start_mission(content: str, mission_text: str) -> str:
     return normalize_content(updated + f"\n## In Progress\n\n{entry}\n")
 
 
+def complete_mission_checked(content: str, mission_text: str) -> tuple[str, bool]:
+    """Move a mission to Done, reporting whether it was found.
+
+    Same behaviour as :func:`complete_mission` but returns a
+    ``(content, found)`` tuple so callers can distinguish a genuine no-op
+    (mission absent) from a successful move. Prefer this over
+    :func:`complete_mission` when the caller needs to surface a missing
+    mission (e.g. to log a warning or abort).
+    """
+    from app.security_audit import MISSION_COMPLETE, log_event
+    log_event(MISSION_COMPLETE, details={"mission": mission_text})
+    return _move_pending_to_section(content, mission_text, "done", "\u2705", "Done")
+
+
 def complete_mission(content: str, mission_text: str) -> str:
     """Move a mission from Pending (or In Progress) to Done with a timestamp.
 
@@ -1197,11 +1264,28 @@ def complete_mission(content: str, mission_text: str) -> str:
 
     Returns:
         Updated content string. Returns original content unchanged if
-        the mission is not found in either section.
+        the mission is not found in either section. Use
+        :func:`complete_mission_checked` when you need to know which case
+        occurred.
     """
-    from app.security_audit import MISSION_COMPLETE, log_event
-    log_event(MISSION_COMPLETE, details={"mission": mission_text})
-    return _move_pending_to_section(content, mission_text, "done", "\u2705", "Done")
+    return complete_mission_checked(content, mission_text)[0]
+
+
+def fail_mission_checked(
+    content: str, mission_text: str, cause_tag: str = "",
+) -> tuple[str, bool]:
+    """Move a mission to Failed, reporting whether it was found.
+
+    Same behaviour as :func:`fail_mission` but returns a ``(content, found)``
+    tuple so callers can distinguish a genuine no-op (mission absent) from a
+    successful move.
+    """
+    from app.security_audit import MISSION_FAIL, log_event
+    log_event(MISSION_FAIL, details={"mission": mission_text, "cause_tag": cause_tag})
+    return _move_pending_to_section(
+        content, mission_text, "failed", "\u274c", "Failed",
+        cause_tag=cause_tag,
+    )
 
 
 def fail_mission(content: str, mission_text: str, cause_tag: str = "") -> str:
@@ -1215,13 +1299,9 @@ def fail_mission(content: str, mission_text: str, cause_tag: str = "") -> str:
     a stuck-in-a-loop abort from a regular failure at a glance.
 
     Returns content unchanged if the mission is not found in either section.
+    Use :func:`fail_mission_checked` when you need to know which case occurred.
     """
-    from app.security_audit import MISSION_FAIL, log_event
-    log_event(MISSION_FAIL, details={"mission": mission_text, "cause_tag": cause_tag})
-    return _move_pending_to_section(
-        content, mission_text, "failed", "\u274c", "Failed",
-        cause_tag=cause_tag,
-    )
+    return fail_mission_checked(content, mission_text, cause_tag=cause_tag)[0]
 
 
 def requeue_mission(content: str, mission_text: str) -> str:
@@ -1234,6 +1314,14 @@ def requeue_mission(content: str, mission_text: str) -> str:
     Searches In Progress first, then falls back to Failed — this handles
     the case where quota is detected after _finalize_mission already moved
     the mission to Failed.
+
+    Queue position — TOP, not bottom (intentional): the requeued mission is
+    inserted as the *first* item in Pending, unlike :func:`insert_mission`
+    which appends at the bottom (FIFO). This is deliberate — a mission that
+    was interrupted mid-flight (auth/quota pause, recoverable error) should
+    resume *before* unstarted work rather than going to the back of the
+    queue. Operators who see a requeued item jump ahead of other Pending
+    missions after a quota pause are observing this by design.
 
     Returns content unchanged if the mission is not found in either section.
     """

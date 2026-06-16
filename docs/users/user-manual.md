@@ -1240,6 +1240,8 @@ optimizations:
   caveman:
     enabled: true
     include: []                # canonical skill names, aliases auto-resolved
+  ponytail:
+    enabled: true              # six-gate code minimalism ladder (default: true)
 
 # Review ignore — exclude files from /review PR diffs
 # Reduces token spend on generated/vendored code
@@ -1355,6 +1357,18 @@ optimizations:
 ```
 
 **Custom skill authors:** add `caveman: true` to your SKILL.md frontmatter when your skill produces terse output that benefits from the directive — see `koan/skills/README.md`.
+
+#### Ponytail Code Minimalism
+
+Ponytail is a complementary optimization that reduces the amount of **code** Claude generates (caveman reduces **prose** verbosity). When enabled, the agent prompt includes a six-gate decision ladder: Is it necessary? Does stdlib handle it? Is it a native feature? Does an existing dep cover it? Can it be a one-liner? Only then write new code.
+
+Ponytail is **enabled by default**. To disable it:
+
+```yaml
+optimizations:
+  ponytail:
+    enabled: false
+```
 
 ### Per-Project Overrides
 

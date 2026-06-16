@@ -510,6 +510,27 @@ class TestMissionKey:
         assert len(key) == 64  # SHA-256 hex
         assert all(c in "0123456789abcdef" for c in key)
 
+    def test_golden_hash_unchanged(self):
+        """Regression guard (S2): the key is sha256 of the canonical-clean title.
+
+        If this value drifts, every existing stagnation/crash tracker entry is
+        orphaned (a live mission silently resets its retry counter). The
+        canonical key for "fix the bug" is just the text itself.
+        """
+        assert _mission_key("fix the bug") == (
+            "280fd7e3571b7c850d6fe771aee96db0ccdeef47910414e3a4a93bb06ea9f7c2"
+        )
+
+    def test_delegates_to_canonical_mission_key(self):
+        """_mission_key must hash exactly missions.canonical_mission_key output."""
+        import hashlib
+        from app.missions import canonical_mission_key
+        title = "- do thing [project:foo] [r:3] ⏳(2026-01-01T00:00) [complexity:large]"
+        expected = hashlib.sha256(
+            canonical_mission_key(title).encode("utf-8", errors="replace")
+        ).hexdigest()
+        assert _mission_key(title) == expected
+
     def test_strips_queued_timestamp(self):
         base = _mission_key("fix the bug [project:foo]")
         with_ts = _mission_key("fix the bug [project:foo] ⏳(2026-01-01T12:00)")

@@ -24,7 +24,7 @@ from app.format_outbox import (
 )
 from app.notify import NotificationPriority, NOTIFICATION_SUPPRESSED, send_telegram
 from app.outbox_scanner import scan_and_log
-from app.utils import atomic_write
+from app.utils import append_to_outbox, atomic_write
 
 
 # Pre-compiled regex for outbox priority header parsing
@@ -217,13 +217,7 @@ class OutboxManager:
         If re-appending fails, writes to outbox-failed.md as a last resort.
         """
         try:
-            with open(self._outbox_file, "a", encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                try:
-                    f.write(content + "\n")
-                    f.flush()
-                finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
+            append_to_outbox(self._outbox_file, content + "\n")
         except Exception as e:
             log("error", f"Failed to re-queue outbox message: {e}")
             self._write_failed(content, e)

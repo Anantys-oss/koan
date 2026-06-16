@@ -1438,6 +1438,16 @@ def plan_iteration(
     cost_today = decision.get("cost_today", 0.0)
     _log_iteration("koan", f"Usage decision: mode={autonomous_mode}, available={available_pct}%")
 
+    # Guard: unlimited_quota must never produce WAIT mode.
+    # The budget tracker should already return "deep" when disabled, but
+    # this guard catches any edge case where the mode leaks through
+    # (e.g. stale usage.md, tracker error fallback, config load race).
+    if autonomous_mode == "wait" and _budget_mode == "disabled":
+        _log_iteration("koan",
+            "unlimited_quota override: WAIT → DEEP (budget gating disabled)")
+        autonomous_mode = "deep"
+        decision_reason = "unlimited_quota active — budget gating disabled"
+
     # Step 2a: Cap mode at implement when focus mode is active.
     # DEEP mode encourages autonomous GitHub issue pickup, which focus
     # mode explicitly forbids — missions only, no autonomous work.

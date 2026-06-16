@@ -22,6 +22,15 @@ of resetting to 0 every cycle.
 
 All recovery events are logged to instance/recovery.jsonl for forensics.
 
+Complex mission format (### project:X sub-headers in In Progress):
+The ### block format is used for multi-step missions that group related sub-tasks
+under a project sub-header.  Recovery handles these as atomic blocks — the entire
+block is either requeued to Pending or escalated to Failed together.  The block
+boundary ends at the next blank line or the next ### header, whichever comes first.
+This is the primary handler for stale complex missions. The
+_flush_in_progress_to_failed() call inside start_mission() acts as a secondary
+safety net, catching any stale entries recover.py missed.
+
 Usage from shell:
     python3 recover.py /path/to/instance [--dry-run]
 
@@ -36,6 +45,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from app.notify import format_and_send
 
@@ -175,7 +185,11 @@ def check_pending_journal(instance_dir: str) -> bool:
 # Main recovery logic
 # ---------------------------------------------------------------------------
 
-def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
+def recover_missions(
+    instance_dir: str,
+    dry_run: bool = False,
+    has_pending_journal: Optional[bool] = None,
+) -> tuple:
     """Move stale in-progress missions back to pending or escalate to failed.
 
     Enhanced recovery with state classification:
@@ -187,9 +201,23 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
     Uses modify_missions_file() for atomic read-modify-write under exclusive lock,
     preventing race conditions with concurrent mission additions.
 
+    This is the *primary* crash-recovery safety net — it runs once at startup,
+    before the agent loop, and recovers to Pending. A second, narrower net lives
+    in ``missions._flush_in_progress_to_failed`` (invoked per-mission by
+    ``start_mission()``): it sweeps anything this function misses (e.g. complex
+    ``###`` blocks) into Failed. If you are debugging a stale In Progress
+    mission, check both paths.
+
     Args:
         instance_dir: Path to instance directory.
         dry_run: If True, classify and log but do not modify missions.md.
+        has_pending_journal: Optional pre-computed pending.md presence. When
+            a caller has already read pending.md (e.g. the CLI entry point via
+            ``check_pending_journal()``), it passes the result here so this
+            function does not read the same file a second time — removing the
+            redundant double-read and closing the TOCTOU window between the two
+            reads. When ``None`` (default, daemon path), it is computed here as
+            before.
 
     Returns:
         Tuple of (count of missions moved to Pending, list of escalated mission lines).
@@ -203,13 +231,15 @@ def recover_missions(instance_dir: str, dry_run: bool = False) -> tuple:
     from app.missions import find_section_boundaries, normalize_content
     from app.utils import atomic_write, modify_missions_file
 
-    # Check pending.md once for the partial state detection
-    # Use try/except to avoid TOCTOU race (file deleted between check and read)
-    pending_path = Path(instance_dir) / "journal" / "pending.md"
-    try:
-        has_pending_journal = pending_path.read_text().strip() != ""
-    except FileNotFoundError:
-        has_pending_journal = False
+    # Determine pending.md presence for partial-state detection. Reuse a
+    # caller-supplied value when available (single read); otherwise read once
+    # here. try/except avoids a TOCTOU race (file deleted between check and read).
+    if has_pending_journal is None:
+        pending_path = Path(instance_dir) / "journal" / "pending.md"
+        try:
+            has_pending_journal = pending_path.read_text().strip() != ""
+        except FileNotFoundError:
+            has_pending_journal = False
 
     # Import checkpoint manager for per-mission checkpoint lookup
     try:
@@ -580,8 +610,12 @@ if __name__ == "__main__":
         sys.exit(1)
 
     instance_dir = args[0]
+    # Single read of pending.md: check_pending_journal() reads + logs once,
+    # then hands the result to recover_missions() so it does not re-read the file.
     has_pending = check_pending_journal(instance_dir)
-    count, escalated_lines = recover_missions(instance_dir, dry_run=dry_run)
+    count, escalated_lines = recover_missions(
+        instance_dir, dry_run=dry_run, has_pending_journal=has_pending,
+    )
 
     # Build escalated message list from current run only (not historical log)
     escalated_msgs = [

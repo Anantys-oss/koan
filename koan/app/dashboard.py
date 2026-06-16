@@ -40,7 +40,6 @@ from app.conversation_history import (
     load_recent_history,
     format_conversation_history,
 )
-from app.signals import RESTART_FILE
 from app.missions import (
     cancel_pending_mission,
     edit_pending_mission,
@@ -1330,8 +1329,12 @@ def api_agent_resume():
 @app.route("/api/agent/restart", methods=["POST"])
 def api_agent_restart():
     """Signal the agent loop to restart."""
+    # Route through request_restart() so both per-consumer markers are written
+    # and the restart actually fires. Touching legacy .koan-restart was a
+    # no-op — matches the working /api/config/restart endpoint below.
+    from app.restart_manager import request_restart
     try:
-        (KOAN_ROOT / RESTART_FILE).touch()
+        request_restart(str(KOAN_ROOT))
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
     return jsonify({"ok": True, "status": "restart_signaled"})

@@ -163,6 +163,23 @@ def _get_caveman_section() -> str:
         return ""
 
 
+def _get_ponytail_section() -> str:
+    """Return the ponytail code minimalism section if enabled.
+
+    Delegates to :func:`app.ponytail.get_ponytail_section` so all
+    injection sites share a single resolution path.
+
+    Failures are non-fatal — ponytail is an optimization, not a
+    correctness feature.
+    """
+    try:
+        from app.ponytail import get_ponytail_section
+        return get_ponytail_section()
+    except ImportError as e:
+        logger.warning("ponytail section unavailable: %s", e)
+        return ""
+
+
 def _get_language_section() -> str:
     """Return the language enforcement section if a preference is set."""
     try:
@@ -420,7 +437,9 @@ def _get_learnings_section(
 
 
 def _get_memory_log_section(
-    instance: str, project_name: str, max_entries_override: int = 0,
+    instance: str, project_name: str,
+    max_entries_override: int = 0,
+    mission_title: str = "",
 ) -> str:
     """Return recent session/learning history from JSONL truth log.
 
@@ -428,12 +447,16 @@ def _get_memory_log_section(
     the agent prompt.  Falls back to ``scoped_summary()`` when the log is
     empty (fresh install before migration runs).
 
+    When ``mission_title`` is non-empty, uses FTS5 ranked retrieval so
+    mission-relevant entries appear alongside recent ones.
+
     The window size defaults to 20; configurable via
     ``config.yaml`` ``memory.context_window_entries``.
 
     Args:
         max_entries_override: When > 0, overrides config value.
             Used by budget-aware context trimming (issue #1309).
+        mission_title: Current mission text for FTS5 relevance ranking.
     """
     cfg = _load_config_safe()
     mem = cfg.get("memory", {}) or {}
@@ -448,7 +471,10 @@ def _get_memory_log_section(
 
     try:
         from app.memory_manager import read_memory_window, scoped_summary
-        entries = read_memory_window(instance, project_name, max_entries=max_entries)
+        entries = read_memory_window(
+            instance, project_name, max_entries=max_entries,
+            query_text=mission_title,
+        )
         # Filter out learning entries — _get_learnings_section() already
         # injects task-aware filtered learnings; including them here would
         # duplicate content and waste prompt tokens.
@@ -780,6 +806,7 @@ def build_agent_prompt(
     prompt += _get_memory_log_section(
         instance, project_name,
         max_entries_override=budget["memory_entries"],
+        mission_title=mission_title,
     )
 
     # Append merge policy
@@ -825,6 +852,9 @@ def build_agent_prompt(
 
     # Append caveman output optimization (token reduction in Claude's output)
     prompt += _get_caveman_section()
+
+    # Append ponytail code minimalism (token reduction in Claude's generated code)
+    prompt += _get_ponytail_section()
 
     # Append RTK awareness (token reduction in Claude's tool input)
     prompt += _get_rtk_section(project_name)
@@ -890,6 +920,7 @@ def build_agent_prompt_parts(
     user_prompt += _get_memory_log_section(
         instance, project_name,
         max_entries_override=budget["memory_entries"],
+        mission_title=mission_title,
     )
 
     # Append staleness warning (all autonomous modes — cheap local read)
@@ -925,6 +956,10 @@ def build_agent_prompt_parts(
     caveman = _get_caveman_section()
     if caveman:
         sys_parts.append(caveman)
+
+    ponytail = _get_ponytail_section()
+    if ponytail:
+        sys_parts.append(ponytail)
 
     rtk = _get_rtk_section(project_name)
     if rtk:

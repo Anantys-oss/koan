@@ -13,6 +13,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
@@ -247,6 +248,44 @@ def strip_cli_noise(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+class _HeartbeatTimer:
+    """Periodic heartbeat emitter for keeping outer watchdogs alive.
+
+    Prints a marker to sys.stdout at a fixed interval while the inner
+    CLI process runs in print mode (silent during tool use). The marker
+    goes to the skill subprocess's stdout, which the parent run.py reads
+    to reset its LivenessWatchdog. It does NOT appear in the inner CLI's
+    captured output (separate pipe).
+    """
+
+    def __init__(self, proc: subprocess.Popen, interval: int):
+        self._proc = proc
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> "_HeartbeatTimer":
+        self._thread.start()
+        return self
+
+    def cancel(self):
+        self._stop.set()
+
+    def _run(self):
+        while not self._stop.wait(self._interval):
+            if self._proc.poll() is not None:
+                break
+            try:
+                print("[still working...]", flush=True)
+            except (OSError, ValueError):
+                break
+
+
+def _start_heartbeat(proc: subprocess.Popen, interval: int) -> _HeartbeatTimer:
+    """Start a heartbeat timer for the given subprocess."""
+    return _HeartbeatTimer(proc, interval).start()
+
+
 def run_claude(
     cmd: list,
     cwd: str,
@@ -254,6 +293,7 @@ def run_claude(
     *,
     idle_timeout: Optional[int] = None,
     max_duration: Optional[int] = None,
+    heartbeat_interval: Optional[int] = None,
 ) -> dict:
     """Run a Claude Code CLI command, streaming stdout in real time.
 
@@ -272,6 +312,12 @@ def run_claude(
     group can be killed — preventing grandchildren (e.g. tool-call
     subprocesses) from holding the stdout pipe open and turning a
     ``TimeoutExpired`` into an indefinite hang during pipe drain.
+
+    Args:
+        heartbeat_interval: When set, a daemon thread prints a periodic
+            marker to sys.stdout while the CLI is running. This keeps
+            the parent process's LivenessWatchdog alive even when the
+            CLI runs in print mode (no output during tool use).
 
     Returns:
         Dict with keys: success (bool), output (str), error (str).
@@ -299,6 +345,10 @@ def run_claude(
             "error": f"Failed to spawn CLI: {e}",
         }
 
+    heartbeat_thread = None
+    if heartbeat_interval and heartbeat_interval > 0:
+        heartbeat_thread = _start_heartbeat(proc, heartbeat_interval)
+
     try:
         stream_result = stream_with_timeout(
             proc,
@@ -308,6 +358,8 @@ def run_claude(
             max_duration=max_duration,
         )
     finally:
+        if heartbeat_thread is not None:
+            heartbeat_thread.cancel()
         cleanup()
 
     stdout_text = stream_result.stdout
@@ -555,6 +607,15 @@ def run_claude_step(
     )
 
     from app.commit_conventions import parse_commit_subject
+    from app.config import get_first_output_timeout
+
+    # Emit periodic heartbeat to keep the parent process's LivenessWatchdog
+    # alive. Print-mode CLI sessions produce no stdout during tool use,
+    # which would trigger the outer first_output_timeout (default 600s).
+    # Heartbeat at half the timeout interval ensures the watchdog is reset
+    # well before it fires.
+    _fot = get_first_output_timeout()
+    _heartbeat = max(60, _fot // 2) if _fot > 0 else 120
 
     result = run_claude(
         cmd,
@@ -562,6 +623,7 @@ def run_claude_step(
         timeout=timeout,
         idle_timeout=idle_timeout,
         max_duration=max_duration,
+        heartbeat_interval=_heartbeat,
     )
     cleaned_output = strip_cli_noise(result.get("output", ""))
     if result["success"]:

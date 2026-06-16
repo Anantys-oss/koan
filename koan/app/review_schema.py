@@ -127,6 +127,8 @@ REVIEW_SUMMARY_SCHEMA = {
 # Schema: comment_replies (optional)
 # ---------------------------------------------------------------------------
 
+_VALID_REPLY_ACTIONS = {"fixed", "wont_fix", "needs_clarification", "acknowledged"}
+
 COMMENT_REPLY_SCHEMA = {
     "type": "object",
     "required": ["comment_id", "reply"],
@@ -143,6 +145,16 @@ COMMENT_REPLY_SCHEMA = {
             "description": (
                 "The reply text. Concise and actionable, "
                 "2-4 sentences max. Constructive tone."
+            ),
+        },
+        "action": {
+            "type": "string",
+            "enum": ["fixed", "wont_fix", "needs_clarification", "acknowledged"],
+            "description": (
+                "Resolution disposition: 'fixed' if code was changed to address "
+                "the comment, 'wont_fix' if dismissing with a reason, "
+                "'needs_clarification' if more info is needed, "
+                "'acknowledged' otherwise. Defaults to 'acknowledged' if omitted."
             ),
         },
     },
@@ -407,6 +419,10 @@ def _validate_comment_reply(item: object, index: int) -> list:
             if expected_type is int and isinstance(item[field], float) and item[field] == int(item[field]):
                 continue
             errors.append(f"{prefix}.{field}: expected {expected_type.__name__}, got {type(item[field]).__name__}")
+
+    action = item.get("action")
+    if action is not None and not isinstance(action, str):
+        errors.append(f"{prefix}.action: expected str, got {type(action).__name__}")
 
     return errors
 

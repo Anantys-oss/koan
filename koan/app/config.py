@@ -1659,6 +1659,36 @@ def get_review_triage_config() -> dict:
     }
 
 
+def get_review_verdict_config() -> dict:
+    """Get review verdict body configuration from config.yaml.
+
+    Controls the body text attached to the formal APPROVE / REQUEST_CHANGES
+    verdict submitted via the GitHub Pull Request Reviews API.
+
+    Config key: review_verdict::
+
+        review_verdict:
+          body_enabled: true
+          include_blockers: true
+
+    Returns:
+        Dict with keys: body_enabled (bool), include_blockers (bool).
+    """
+    config = _load_config()
+    section = config.get("review_verdict", {})
+    if not isinstance(section, dict):
+        section = {}
+
+    def _bool(key: str, default: bool) -> bool:
+        val = section.get(key, default)
+        return bool(val) if isinstance(val, bool) else default
+
+    return {
+        "body_enabled": _bool("body_enabled", True),
+        "include_blockers": _bool("include_blockers", True),
+    }
+
+
 def is_caveman_mode() -> bool:
     """Check if caveman output optimization is enabled.
 
@@ -1720,6 +1750,41 @@ def get_caveman_include_list() -> set:
             continue
         result.add(_resolve_canonical(name))
     return result
+
+
+def _get_ponytail_dict() -> dict:
+    """Return the ``optimizations.ponytail`` mapping (or an empty dict).
+
+    Normalises away every malformed shape — missing parent, non-dict
+    optimizations block, scalar ponytail value — so callers can treat the
+    result as a plain dict.  Misshapen config falls back to defaults.
+    """
+    config = _load_config()
+    optimizations = config.get("optimizations", {})
+    if not isinstance(optimizations, dict):
+        return {}
+    ponytail = optimizations.get("ponytail", {})
+    if isinstance(ponytail, bool):
+        return {"enabled": ponytail}
+    return ponytail if isinstance(ponytail, dict) else {}
+
+
+def is_ponytail_mode() -> bool:
+    """Check if ponytail code minimalism optimization is enabled.
+
+    When enabled, the agent prompt includes a six-gate decision ladder
+    instructing Claude to minimise generated code quantity.
+
+    Reads ``optimizations.ponytail.enabled`` from ``config.yaml``::
+
+        optimizations:
+          ponytail:
+            enabled: true
+
+    Default: True.
+    """
+    enabled = _get_ponytail_dict().get("enabled", True)
+    return bool(enabled)
 
 
 def _get_review_compressor_dict() -> dict:

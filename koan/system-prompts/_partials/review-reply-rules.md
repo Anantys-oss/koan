@@ -20,6 +20,13 @@ When you do reply, apply the following output style to your reply text:
 
 Reference specific code or lines when relevant.
 
+For each reply, set the `action` field to classify your disposition:
+
+- `"fixed"` — you changed code in this review to address the comment
+- `"wont_fix"` — you are dismissing the comment with a stated reason
+- `"needs_clarification"` — you need more information from the reviewer before acting
+- `"acknowledged"` — none of the above; use this as the default
+
 ### Closing the PR
 
 Sometimes the right outcome is to close the PR rather than iterate on it. Set the

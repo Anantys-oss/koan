@@ -11,6 +11,7 @@ from app.github_notification_tracker import (
     _TTL_SECONDS,
     _threads_path,
     _tracker_path,
+    clear_review_cooldown,
     is_comment_tracked,
     is_review_on_cooldown,
     is_thread_tracked,
@@ -176,3 +177,15 @@ class TestReviewCooldown:
         recent_ts = time.time() - 60  # 1 min ago
         _threads_path(instance_dir).write_text(json.dumps({key: recent_ts}))
         assert is_review_on_cooldown(instance_dir, "owner", "repo", "42")
+
+    def test_clear_cooldown(self, instance_dir):
+        """Clearing a cooldown makes the PR reviewable again immediately."""
+        set_review_cooldown(instance_dir, "owner", "repo", "42")
+        assert is_review_on_cooldown(instance_dir, "owner", "repo", "42")
+        clear_review_cooldown(instance_dir, "owner", "repo", "42")
+        assert not is_review_on_cooldown(instance_dir, "owner", "repo", "42")
+
+    def test_clear_cooldown_noop_when_absent(self, instance_dir):
+        """Clearing a non-existent cooldown does not raise."""
+        clear_review_cooldown(instance_dir, "owner", "repo", "999")
+        assert not is_review_on_cooldown(instance_dir, "owner", "repo", "999")

@@ -254,6 +254,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         # :func:`_validate_rtk_nested` below.
         "rtk": "dict",
         "review_compressor": "dict",
+        "ponytail": "dict",
     },
 }
 
@@ -382,6 +383,9 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
         rtk = optimizations.get("rtk")
         if isinstance(rtk, dict):
             warnings.extend(_validate_rtk_nested(rtk))
+        ponytail = optimizations.get("ponytail")
+        if isinstance(ponytail, dict):
+            warnings.extend(_validate_ponytail_nested(ponytail))
         review_compressor = optimizations.get("review_compressor")
         if isinstance(review_compressor, dict):
             warnings.extend(_validate_review_compressor_nested(review_compressor))
@@ -507,6 +511,36 @@ def _validate_caveman_nested(caveman: dict) -> List[Tuple[str, str]]:
                         f"{path}[{idx}]",
                         f"'{path}[{idx}]' should be str, got {type(entry).__name__}",
                     ))
+    return warnings
+
+
+_PONYTAIL_NESTED_SCHEMA: Dict[str, Any] = {
+    "enabled": "bool",
+}
+
+
+def _validate_ponytail_nested(ponytail: dict) -> List[Tuple[str, str]]:
+    """Validate the nested ``optimizations.ponytail`` dict."""
+    warnings: List[Tuple[str, str]] = []
+    known = list(_PONYTAIL_NESTED_SCHEMA.keys())
+    for key, value in ponytail.items():
+        path = f"optimizations.ponytail.{key}"
+        if key not in _PONYTAIL_NESTED_SCHEMA:
+            suggestion = _suggest_typo(key, known)
+            msg = f"unrecognized key '{path}'"
+            if suggestion:
+                msg += f" (did you mean 'optimizations.ponytail.{suggestion}'?)"
+            warnings.append((path, msg))
+            continue
+        if value is None:
+            continue
+        expected = _PONYTAIL_NESTED_SCHEMA[key]
+        if not _check_type(value, expected):
+            exp_label = expected if isinstance(expected, str) else "/".join(expected)
+            warnings.append((
+                path,
+                f"'{path}' should be {exp_label}, got {type(value).__name__}",
+            ))
     return warnings
 
 

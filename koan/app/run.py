@@ -38,7 +38,12 @@ from app.constants import IDLE_LOOP_BREATH_SECONDS
 from app.iteration_manager import plan_iteration
 from app.loop_manager import check_pending_missions, interruptible_sleep
 from app.pid_manager import acquire_pidfile, release_pidfile
-from app.restart_manager import check_restart, clear_restart, RESTART_EXIT_CODE
+from app.restart_manager import (
+    check_restart,
+    clear_restart,
+    RESTART_EXIT_CODE,
+    RESTART_RUN_FILE,
+)
 from app.run_log import (  # noqa: F401 — re-exported for backward compat
     _ANSI_RESET,
     _CATEGORY_COLORS,
@@ -57,7 +62,6 @@ from app.signals import (
     PAUSE_FILE,
     PROJECT_FILE,
     RESET_COUNTER_FILE,
-    RESTART_FILE,
     SHUTDOWN_FILE,
     ABORT_FILE,
     STATUS_FILE,
@@ -591,7 +595,7 @@ def _startup_delay(koan_root: str) -> None:
     - ``startup_delay`` is set to ``0``.
 
     The delay is interrupted early if any lifecycle signal appears
-    (.koan-pause, .koan-stop, .koan-shutdown, .koan-restart).
+    (.koan-pause, .koan-stop, .koan-shutdown, .koan-restart-run).
     """
     from app.utils import load_config
 
@@ -616,8 +620,10 @@ def _startup_delay(koan_root: str) -> None:
         time.sleep(min(tick, delay - elapsed))
         elapsed += tick
 
-        # Any lifecycle signal → break out
-        for sig in (PAUSE_FILE, STOP_FILE, SHUTDOWN_FILE, RESTART_FILE):
+        # Any lifecycle signal → break out. Use the runner's own restart marker
+        # (RESTART_RUN_FILE) — the legacy combined .koan-restart is deprecated
+        # and no longer written.
+        for sig in (PAUSE_FILE, STOP_FILE, SHUTDOWN_FILE, RESTART_RUN_FILE):
             if Path(koan_root, sig).exists():
                 log("koan", f"Signal detected during startup delay ({sig}), proceeding.")
                 return
@@ -934,8 +940,7 @@ def main_loop():
                     idle_notified = False
                     from app.feature_tips import mark_active
                     mark_active()
-                    global _startup_notified
-                    _startup_notified = False
+                    _mark_startup_resume()
                 continue
 
             # --- Reset counter check ---
@@ -950,7 +955,7 @@ def main_loop():
                 idle_notified = False
                 from app.feature_tips import mark_active
                 mark_active()
-                _startup_notified = False
+                _mark_startup_resume()
                 log("koan", f"Run counter reset (was {old_count}/{max_runs}, now 0/{max_runs}).")
                 _notify(instance, f"🔄 Run counter reset: {old_count} → 0 (max {max_runs}).")
 
@@ -1238,6 +1243,11 @@ def _handle_wait_pause(
     instance: str,
 ):
     """Enter pause mode when budget is exhausted (WAIT action)."""
+    from app.config import is_unlimited_quota
+    if is_unlimited_quota():
+        log("quota", "WAIT pause suppressed — unlimited_quota is active")
+        return
+
     project_name = plan["project_name"]
     log("quota", "Decision: WAIT mode (budget exhausted)")
     print(f"  Reason: {plan['decision_reason']}")
@@ -1316,11 +1326,29 @@ _last_mission_stagnated = threading.Event()
 _stagnation_pattern_type = ""
 _stagnation_pattern_excerpt = ""
 
-# Tracks whether the cold-start Telegram burst has already fired.
-_startup_notified = False
+# Startup phase for first-iteration Telegram visibility. Replaces the old
+# _startup_notified / _boot_notified boolean pair: their only valid combinations
+# were (first+boot), (first only), and (neither), which map 1:1 to these states.
+#   "boot"    — the very first iteration since process start: emit boot banners
+#               (empty-state "Notifications clear", update hint) plus cold-start ping.
+#   "resume"  — first iteration after /resume or a counter reset (but not boot):
+#               cold-start ping only; boot-only banners stay silent.
+#   "running" — steady state: quiet (no first-iteration pings).
+_startup_phase = "boot"
 
-# Tracks whether the initial boot burst has already fired in this process.
-_boot_notified = False
+
+def _mark_startup_resume() -> None:
+    """Downgrade to the 'resume' phase after /resume or a counter reset.
+
+    Leaves the phase at 'boot' when the first boot iteration has not run yet
+    (start-paused, then resumed before any iteration) so boot-only banners
+    still fire exactly once. Only a completed boot iteration ('running')
+    downgrades to 'resume'.
+    """
+    global _startup_phase
+    if _startup_phase == "running":
+        _startup_phase = "resume"
+
 
 _warned_missing_projects: set = set()
 
@@ -1847,7 +1875,19 @@ def _start_mission_in_file(instance: str, mission_title: str, project_name: str 
         missions_path = Path(instance, "missions.md")
         if not missions_path.exists():
             return False
-        after = modify_missions_file(missions_path, lambda c: start_mission(c, mission_title))
+
+        # start_mission() runs a sanity flush: any stale In Progress missions
+        # are moved to Failed (with a [flushed] tag) before the new one starts.
+        # Under normal operation this never fires because recover.py clears
+        # stale entries at startup — so when it DOES fire, surface it.
+        # Capture the pre-flush In Progress inside the lock to stay race-safe.
+        stale_flushed: list = []
+
+        def _transform(content: str) -> str:
+            stale_flushed[:] = parse_sections(content).get("in_progress", [])
+            return start_mission(content, mission_title)
+
+        after = modify_missions_file(missions_path, _transform)
         in_progress = parse_sections(after).get("in_progress", [])
         # Normalise for comparison: strip leading "- ", collapse whitespace
         import re
@@ -1877,6 +1917,22 @@ def _start_mission_in_file(instance: str, mission_title: str, project_name: str 
                         f"Retry counter clear errored for '{clean_title[:60]}' ({e}); "
                         "mission may re-escalate to Failed on next finalize.\n"
                         f"{traceback.format_exc()}")
+
+                # Only surface the sanity flush once the transition is
+                # confirmed: start_mission() early-returns (skipping the
+                # flush) when the mission isn't in Pending, so stale_flushed
+                # being non-empty does NOT by itself mean a flush happened.
+                if stale_flushed:
+                    titles = ", ".join(
+                        s.split("\n")[0].strip().removeprefix("- ")[:50]
+                        for s in stale_flushed
+                    )
+                    log("warning", (
+                        f"Sanity flush: {len(stale_flushed)} stale In Progress "
+                        f"mission(s) moved to Failed by start_mission() — "
+                        f"recover.py missed them "
+                        f"(see _flush_in_progress_to_failed): {titles}"
+                    ))
                 return True
         log("warning", f"Mission transition unconfirmed — '{clean_title[:60]}' "
             "not found in In Progress after start_mission(). "
@@ -1906,29 +1962,42 @@ def _update_mission_in_file(
     callers should surface this rather than let it loop silently.
     """
     try:
-        from app.missions import complete_mission, fail_mission, prune_completed_sections
+        from app.missions import (
+            complete_mission_checked,
+            fail_mission_checked,
+            prune_completed_sections,
+        )
         from app.utils import modify_missions_file
         missions_path = Path(instance, "missions.md")
         if not missions_path.exists():
             return False
 
+        # The move functions report found-status directly. We capture it via a
+        # closure flag rather than comparing before/after content: pruning runs
+        # unconditionally and can change the content even when the mission was
+        # never found, which would otherwise mask a silent no-op as success.
+        found = [False]
+
         if failed:
             def transform(content):
-                return fail_mission(content, mission_title, cause_tag=cause_tag)
+                new_content, ok = fail_mission_checked(
+                    content, mission_title, cause_tag=cause_tag,
+                )
+                found[0] = ok
+                return new_content
         else:
             def transform(content):
-                return complete_mission(content, mission_title)
-
-        before = [None]
+                new_content, ok = complete_mission_checked(content, mission_title)
+                found[0] = ok
+                return new_content
 
         def tracked(content):
-            before[0] = content
             result = transform(content)
             result, _ = prune_completed_sections(result)
             return result
 
-        after = modify_missions_file(missions_path, tracked)
-        if before[0] is not None and after == before[0]:
+        modify_missions_file(missions_path, tracked)
+        if not found[0]:
             log("warning", f"Mission not found (no change): {mission_title[:80]}")
             return False
         return True

@@ -1545,3 +1545,34 @@ class TestCiCheckConfig:
         with _mock_config({"ci_check": "yes"}):
             is_ci_check_enabled()
         assert "unexpected type" in capsys.readouterr().err
+
+
+# --- get_review_verdict_config ---
+
+
+class TestGetReviewVerdictConfig:
+    def test_defaults_when_missing(self):
+        from app.config import get_review_verdict_config
+        with _mock_config({}):
+            cfg = get_review_verdict_config()
+        assert cfg == {"body_enabled": True, "include_blockers": True}
+
+    def test_body_disabled(self):
+        from app.config import get_review_verdict_config
+        with _mock_config({"review_verdict": {"body_enabled": False}}):
+            cfg = get_review_verdict_config()
+        assert cfg["body_enabled"] is False
+        assert cfg["include_blockers"] is True
+
+    def test_blockers_disabled(self):
+        from app.config import get_review_verdict_config
+        with _mock_config({"review_verdict": {"include_blockers": False}}):
+            cfg = get_review_verdict_config()
+        assert cfg["body_enabled"] is True
+        assert cfg["include_blockers"] is False
+
+    def test_non_dict_falls_back_to_defaults(self):
+        from app.config import get_review_verdict_config
+        with _mock_config({"review_verdict": "garbage"}):
+            cfg = get_review_verdict_config()
+        assert cfg == {"body_enabled": True, "include_blockers": True}

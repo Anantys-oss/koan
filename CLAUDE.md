@@ -34,6 +34,7 @@ make clean          # Remove venv
 ```
 
 Run a single test file:
+
 ```bash
 KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_missions.py -v
 ```
@@ -52,13 +53,14 @@ KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_missions.py -v
 Two parallel processes run independently:
 
 - **`awake.py`** (Telegram bridge): Polls Telegram every 3s. Classifies messages as "chat" (instant Claude reply) or "mission" (queued to `missions.md`). Flushes `outbox.md` messages back to Telegram. Command handling is split into `command_handlers.py`, shared state in `bridge_state.py`, colored log output in `bridge_log.py`.
-- **`run.py`** (agent loop): Pure-Python main loop with restart wrapper. Picks pending missions, transitions them through Pending→In Progress→Done/Failed lifecycle, executes via Claude Code CLI or direct skill dispatch. Signal handling uses double-tap CTRL-C protection (`protected_phase` context manager). Writes real-time status to `.koan-status`. Uses `mission_runner.py` (execution pipeline), `loop_manager.py` (sleep/focus/validation), `quota_handler.py` (quota detection), `contemplative_runner.py` (reflection sessions).
+- **`run.py`** (agent loop): Pure-Python main loop with restart wrapper. Core execution host: `run_claude_task()` (CLI subprocess invocation and monitoring), `_finalize_mission()` (lifecycle state machine: Done/Failed/requeue), `_classify_and_handle_cli_error()` (error → action mapping), and `_probe_exit0_quota()` (false-success detection). Signal handling uses double-tap CTRL-C protection (`protected_phase` context manager). Writes real-time status to `.koan-status`. Per-iteration dispatch delegated to `mission_executor.py`; stateless pipeline helpers delegated to `mission_runner.py`.
 
 Communication between processes happens through shared files in `instance/` with atomic writes (`utils.atomic_write()` using temp file + rename + `fcntl.flock()`). Exclusive process instances enforced via `pid_manager.py` (PID file + `fcntl.flock()`).
 
 ### Key modules (`koan/app/`)
 
 **Core data & config:**
+
 - **`missions.py`** — Single source of truth for `missions.md` parsing (sections: Pending / In Progress / Done; French equivalents also accepted). Missions can be tagged `[project:name]`. Provides explicit lifecycle transitions: `start_mission()` (Pending→In Progress with stale-flush sanity enforcement), `complete_mission()`, `fail_mission()`.
 - **`projects_config.py`** — Project configuration loader for `projects.yaml`. `load_projects_config()`, `get_projects_from_config()`, `get_project_config()` (merged defaults + overrides), `get_project_auto_merge()`, `get_project_cli_provider()`, `get_project_models()`, `get_project_tools()`. Per-project overrides for CLI provider, model selection, and tool restrictions. `ensure_github_urls()` auto-populates `github_url` fields from git remotes at startup.
 - **`projects_migration.py`** — One-shot migration from env vars (`KOAN_PROJECTS`/`KOAN_PROJECT_PATH`) to `projects.yaml`. Runs at startup if `projects.yaml` doesn't exist.
@@ -69,8 +71,10 @@ Communication between processes happens through shared files in `instance/` with
 - **`commit_conventions.py`** — Project commit convention detection and parsing. `get_project_commit_guidance()` reads CLAUDE.md commit-related sections or infers conventions from recent commit history. `parse_commit_subject()` extracts `COMMIT_SUBJECT:` markers from Claude output. Used by `rebase_pr.py` and `ci_queue_runner.py` to produce convention-aware commit messages.
 
 **Agent loop pipeline** (called from `run.py`):
+
 - **`iteration_manager.py`** — Per-iteration decision-making: usage refresh, mode selection, recurring injection, mission picking, project resolution.
-- **`mission_runner.py`** — Full mission lifecycle: build CLI command, execute, parse JSON output, usage tracking, archival, reflection, auto-merge
+- **`mission_executor.py`** — Per-iteration dispatch layer extracted from `run.py`. Contains `_run_iteration()` (full iteration orchestration: pick mission → dispatch → execute → finalize), `_handle_skill_dispatch()` (slash-command routing), and `_maybe_retry_mission()` (single transient-error retry). Calls back into `run.py` for `run_claude_task()` and `_finalize_mission()`.
+- **`mission_runner.py`** — Execution pipeline helpers: `build_mission_command()` (CLI prompt + flags), `parse_claude_output()` (JSON → text extraction), and post-mission processing (usage tracking, pending.md archival, reflection, auto-merge). Called by `mission_executor.py` and `run.py`.
 - **`loop_manager.py`** — Focus area resolution, pending.md creation, interruptible sleep with wake-on-mission, project validation
 - **`contemplative_runner.py`** — Contemplative session runner (probability roll, prompt building, CLI invocation)
 - **`quota_handler.py`** — Quota exhaustion detection from CLI output; parses reset times, creates pause state, writes journal entries
@@ -79,12 +83,13 @@ Communication between processes happens through shared files in `instance/` with
 - **`suggestion_engine.py`** — Automation suggestion engine: surfaces recurring/schedule system recommendations with copy-pasteable commands
 - **`pr_review_learning.py`** — Extracts actionable lessons from human PR reviews using Claude CLI (lightweight model). Fetches review data from GitHub, sends raw comments to Claude for natural-language analysis, and persists new lessons to `memory/projects/{name}/learnings.md` (write-once, read-many). Uses content-hash caching to skip re-analysis when reviews haven't changed.
 - **`review_comment_dispatch.py`** — Automatic mission dispatch when human reviewers leave comments on Koan's open PRs. `fetch_unresolved_review_comments()` gathers unresolved inline + review-body comments (bot-filtered), `compute_comment_fingerprint()` produces a SHA-256 dedup key, and `check_and_dispatch_review_comments()` inserts a mission only when the fingerprint changes (tracked in `.review-dispatch-tracker.json`). Wired into `process_github_notifications()` in `loop_manager.py`. Opt-in via `review_dispatch: { enabled: true }` in `config.yaml`.
-- **`skill_dispatch.py`** — Direct skill execution from agent loop. Detects `/command` missions, parses project prefix and command, dispatches to skill-specific runners (plan, rebase, recreate, check, claudemd) bypassing the Claude agent
+- **`skill_dispatch.py`** — Direct skill execution from agent loop. Detects `/command` missions, parses project prefix and command, dispatches to skill-specific runners (plan, rebase, recreate, check, claudemd) bypassing the Claude agent. Note: skill runners emit structured agent transcripts to stdout (DATA), not raw CLI output. `mission_executor.py` already passes `trust_stdout=False` to `_classify_and_handle_cli_error()` for these dispatches so the transcript text isn't mistaken for a quota/auth error message — keep that default when adding new dispatch pathways; individual runners do not call the classifier themselves.
 - **`stagnation_monitor.py`** — Daemon thread that hashes the last N lines of Claude CLI stdout at configurable intervals. After K consecutive identical hashes, kills the subprocess group so a stuck-in-a-loop session does not burn quota for the full `mission_timeout`. Wired into `run_claude_task()`; stagnated missions are re-queued to Pending up to `max_retry_on_stagnation` times (per-mission counter persisted in `instance/.stagnation-retries.json`) before being tagged `[stagnation]` in `missions.md` and triggering the regular `_notify_stagnation()` Telegram warning. Each requeue sends a separate `_notify_stagnation_retry()` message.
 - **`hooks.py`** — Hook system for extensible lifecycle events. Discovers `.py` modules from `instance/hooks/`, registers handlers by event name, fires them sequentially with per-handler error isolation. Events: `session_start`, `session_end`, `pre_mission`, `post_mission`.
 - **`devcontainer.py`** — Devcontainer execution support. Detects spec-defined config locations (`is_devcontainer_present()`), resolves the container workspace path (`_get_container_workspace_path()` via `devcontainer read-configuration` with manual JSON fallback), brings the container up with feature injection and bind-mounts (`ensure_container_up()`), runs post-start git credential setup (`_run_container_setup()`), and wraps CLI commands with `devcontainer exec` prefix while translating host tmp paths to container paths (`wrap_command()`). Enabled per-project via `devcontainer: true` in `projects.yaml`. Provider-aware: the three `ghcr.io` features and the `gh auth login` credential step are claude-only.
 
 **Bridge (Telegram):**
+
 - **`awake.py`** — Main bridge loop, Telegram polling, outbox flushing
 - **`command_handlers.py`** — Telegram command handlers extracted from awake.py; core commands (help, stop, pause, resume, skill) + skill dispatch
 - **`bridge_state.py`** — Shared module-level state for bridge (config, paths, registries); avoids circular imports
@@ -92,6 +97,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`notify.py`** — Telegram notification helper with flood protection
 
 **Process management:**
+
 - **`pid_manager.py`** — Exclusive PID file enforcement for run, awake, and ollama processes. Provides `start_all()` (unified stack launcher with provider auto-detection), `start_runner()`, `start_awake()`, `start_ollama()`, and `stop_processes()` (graceful SIGTERM with force-kill fallback)
 - **`pause_manager.py`** — Pause state management (`.koan-pause` / `.koan-pause-reason` files). Supports time-bounded pauses with auto-resume (e.g., `/pause 2h`)
 - **`restart_manager.py`** — File-based restart signaling between bridge and run loop (`.koan-restart`)
@@ -99,6 +105,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`passive_manager.py`** — Passive mode management (`.koan-passive` JSON); read-only mode that blocks all execution while keeping loop alive
 
 **CLI provider abstraction** (`koan/app/provider/`):
+
 - **`provider/base.py`** — `CLIProvider` base class + tool name constants + per-provider usage tracking hooks (`supports_usage_tracking()`, `record_usage()`)
 - **`provider/claude.py`** — `ClaudeProvider` (Claude Code CLI)
 - **`provider/cline.py`** — `ClineProvider` (Cline CLI)
@@ -107,6 +114,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`cli_provider.py`** — Re-export facade (legacy); prefer importing from `provider` directly
 
 **Git & GitHub:**
+
 - **`git_sync.py`** / **`git_auto_merge.py`** — Branch tracking, sync awareness, configurable auto-merge. Branch cleanup is time-throttled (default 24h per project, persisted in `.branch-cleanup-tracker.json`). Orphan branch detection (unmerged, no open PR) notifies via outbox.
 - **`github.py`** — Centralized `gh` CLI wrapper (`run_gh()`, `pr_create()`, `issue_create()`)
 - **`github_url_parser.py`** — Centralized GitHub URL parsing for PRs and issues
@@ -122,6 +130,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`head_tracker.py`** — Detects remote HEAD branch changes (e.g. master → main) and updates local workspace. State persisted in `instance/.head-tracker.json`, throttled to once per 12h. Integrated into startup, manual trigger via `/rescan`.
 
 **Issue tracking** (`koan/app/issue_tracker/`):
+
 - **`issue_tracker/base.py`** — `IssueTracker` ABC: provider-neutral contract for fetch/comment/create operations
 - **`issue_tracker/config.py`** — Per-project tracker routing (`get_tracker_for_project()`), Jira key → project mapping, code repository resolution. Configured via `tracker:` section in `projects.yaml` per-project overrides.
 - **`issue_tracker/github.py`** — `GitHubIssueTracker` — GitHub Issues/PRs backend via `gh` CLI
@@ -132,7 +141,9 @@ Communication between processes happens through shared files in `instance/` with
 - **`notification_config.py`** — Shared notification polling configuration helpers (interval resolution across GitHub/Jira providers)
 
 **Other:**
-- **`memory_manager.py`** — Per-project memory isolation, compaction, and cleanup. Includes semantic learnings compaction (Claude-powered dedup/merge), global memory file rotation, and configurable thresholds via `config.yaml` `memory:` section
+
+- **`memory_manager.py`** — Per-project memory isolation, compaction, and cleanup. Includes semantic learnings compaction (Claude-powered dedup/merge), global memory file rotation, and configurable thresholds via `config.yaml` `memory:` section. Dual-writes to SQLite FTS5 index alongside JSONL truth log. `read_memory_window()` supports FTS5-ranked two-phase retrieval (relevance + recency fill).
+- **`memory_db.py`** — SQLite FTS5 secondary index over the JSONL memory truth log. Provides `ensure_db()`, `insert_entry()`, `search_entries()` (BM25-ranked), `search_learnings()` (transient in-memory FTS5), `recent_entries()`, `delete_before()`, and `migrate_jsonl_to_sqlite()`. All functions catch `DatabaseError` and return empty results. Graceful degradation when FTS5 unavailable.
 - **`usage_tracker.py`** — Per-provider budget tracking; decides autonomous mode (REVIEW/IMPLEMENT/DEEP/WAIT) based on each provider's independent quota percentage. Pure parser + threshold class — burn-rate-driven downgrades live in `iteration_manager._downgrade_if_burning_fast` next to the existing affordability downgrade.
 - **`burn_rate.py`** — Rolling burn-rate estimator (% session quota per minute). Maintains a 20-sample circular buffer in `instance/.burn-rate.json` with `fcntl.flock(LOCK_SH)` on reads, exposes `record_run()`, `burn_rate_pct_per_minute()` (total cost / span across all samples), `time_to_exhaustion(session_pct, mode=None)`, and the canonical `MODE_MULTIPLIERS` table shared with `usage_tracker.can_afford_run`. Also tracks the last-warning timestamp so the iteration manager fires at most one Telegram alert per quota cycle.
 - **`recover.py`** — Crash recovery for stale in-progress missions
@@ -146,6 +157,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`rename_project.py`** — CLI tool to rename a project across `projects.yaml` and all `instance/` files (missions, memory dir, journal files, JSON references). Dry-run by default, `--apply` to execute. Invoked via `make rename-project old=X new=Y [apply=1]`.
 
 **REST API** (`koan/app/api/`):
+
 - **`api/__init__.py`** — `create_app()` Flask factory; registers blueprints, health endpoint, JSON error handlers, per-request audit logging.
 - **`api/auth.py`** — `require_token` decorator (Bearer parse + `hmac.compare_digest`); token resolution (env → config).
 - **`api/mission_index.py`** — Sidecar reader/writer for `instance/.api-missions.json` (atomic via `utils.atomic_write_json`). `record_mission()`, `get_mission()`, `list_missions()`, `reconcile()` (maps stored text → current `missions.md` section), `cancel_mission()`.
@@ -174,14 +186,17 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 ### Instance directory
 
 `instance/` (gitignored, copy from `instance.example/`) holds all runtime state:
+
 - `missions.md` — Task queue
-- `outbox.md` — Bot → Telegram message queue
+- `outbox.md` — Bot → Telegram message queue (written atomically by `append_to_outbox()`)
+- `outbox-sending.md` — Crash-safety staging file for outbox flush; `OutboxManager.recover_staged()` re-sends on restart
 - `config.yaml` — Per-instance configuration (tools, auto-merge rules)
 - `soul.md` — Agent personality definition
-- `memory/` — Global summary + per-project learnings/context
+- `memory/` — Global summary + per-project learnings/context + `memory.db` (SQLite FTS5 index)
 - `journal/` — Daily logs organized as `YYYY-MM-DD/project.md`
 - `events/` — One-shot scheduled missions (JSON files consumed by `event_scheduler.py`)
 - `hooks/` — User-defined Python hook modules for lifecycle events (see `instance.example/hooks/README.md`)
+- `recovery.jsonl` — Append-only audit log written by `recover.py` each time a stale In Progress mission is processed at startup
 
 ## Python compatibility
 
@@ -203,31 +218,31 @@ All Python code must pass **ruff** (`make lint`) before committing. The ruff con
 - Project config via `projects.yaml` at KOAN_ROOT (primary), with `KOAN_PROJECTS` env var as fallback. Supports per-project overrides for `cli_provider`, `models`, `tools`, and `git_auto_merge`.
 - Environment config via `.env` file and `KOAN_*` variables for secrets and system settings. **CLI provider** is configured via `KOAN_CLI_PROVIDER` env var (primary), with fallback to `CLI_PROVIDER` for backward compatibility. The centralized `get_cli_provider_env()` helper in `utils.py` handles this resolution.
 - Multi-project support: up to 50 projects, each with isolated memory under `memory/projects/{name}/`
-- **Temp files & provider locks** live under a per-uid directory from `utils.koan_tmp_dir()` (`$XDG_RUNTIME_DIR/koan`, else `/tmp/koan-<uid>/`, mode `0700`), overridable via `KOAN_TMP_DIR`. This keeps multiple users running Kōan on the same host from colliding on shared `/tmp` paths (notably the provider invocation lock). The dir is per-*uid*, not per-instance, because provider auth state is per-user. New code that needs a scratch file in `/tmp` MUST pass `dir=koan_tmp_dir()` to `tempfile.*`; agent prompts that write to `/tmp` MUST use a `mktemp` pattern (never a fixed name).
+- **Temp files & provider locks** live under a per-uid directory from `utils.koan_tmp_dir()` (`$XDG_RUNTIME_DIR/koan`, else `/tmp/koan-<uid>/`, mode `0700`), overridable via `KOAN_TMP_DIR`. This keeps multiple users running Kōan on the same host from colliding on shared `/tmp` paths (notably the provider invocation lock). The dir is per-_uid_, not per-instance, because provider auth state is per-user. New code that needs a scratch file in `/tmp` MUST pass `dir=koan_tmp_dir()` to `tempfile.*`; agent prompts that write to `/tmp` MUST use a `mktemp` pattern (never a fixed name).
 - Tests use temp directories and isolated env vars — no real Telegram calls
 - `system-prompt.md` defines the Claude agent's identity, priorities, and autonomous mode rules
 - **No inline prompts in Python code** — LLM prompts MUST be extracted to `.md` files. Skill-bound prompts go in `skills/<scope>/<name>/prompts/` and are loaded via `load_skill_prompt()`. Infrastructure prompts used by `koan/app/` modules stay in `koan/system-prompts/` and are loaded via `load_prompt()`. Reusable prompt fragments live in `koan/system-prompts/_partials/` and are included via `{@include partial-name}` directive (resolved at load time by `prompts.py`).
 - **System prompts must be generic** — Never reference specific instance details like owner names in system prompts. Use generic terms like "your human" instead of personal names. Prompts are in English; instance-specific personality and language preferences come from `soul.md`.
 - **Never leak private skill/agent/project names** — The public repo must contain zero references to private identifiers from any operator's `instance/` tree. This applies to **source code, comments, docstrings, test fixtures, public docs, example configs, AND commit messages** (which `git log` exposes forever).
-    - **Forbidden in public artifacts**: private slash-command names (the operator's internal `/<team>-prefix>_<verb>` form), private agent or third-party tool names invoked by handlers, private bot display names (the operator's Telegram/Jira/GitHub bot handle), private JIRA project key prefixes (the all-caps fragment in keys like `<PREFIX>-12345`), private project name strings that identify the operator's customer, and concrete case numbers.
-    - **Generic placeholders** to use in tests, examples, and docs: skill `my_fix` / alias `myfix` / scope `my_team`, agent `my-custom-workflow`, bot `@koan-bot` or `@testbot`, JIRA keys `PROJ-NNN` / `FOO-NNN`, project `my-toolkit`.
-    - **Mechanism, not enumeration** — When core code needs to recognise a specific custom skill (e.g. for result forwarding), drive the behaviour off SKILL.md frontmatter flags in the `instance/skills/<scope>/<name>/` tree, not off a hardcoded list of names in `koan/app/`. See `koan/app/skills.py::collect_forward_result_markers` for the pattern: opt-in via `forward_result: true` + optional `title_markers:`, resolved dynamically from the registry at runtime.
-    - **Pre-commit check** — maintain a private file (gitignored or outside the repo) at `instance/.leak-patterns` listing your operator's private identifiers, one regex alternation per line, then run before staging:
-      ```bash
-      patterns="$(paste -sd '|' instance/.leak-patterns)"
-      git diff main.. | grep '^+' | egrep -i "$patterns"
-      ```
-      Must return empty. The `^+` filter restricts to lines being added on the current branch, so pre-existing leaks on `main` don't false-positive. Keeping the pattern list outside the public repo prevents this convention bullet from itself becoming a leak.
-    - **If you find a pre-existing leak on `main`** while working in adjacent code, scrub it in the same branch — don't leave it as someone else's problem.
+  - **Forbidden in public artifacts**: private slash-command names (the operator's internal `/<team>-prefix>_<verb>` form), private agent or third-party tool names invoked by handlers, private bot display names (the operator's Telegram/Jira/GitHub bot handle), private JIRA project key prefixes (the all-caps fragment in keys like `<PREFIX>-12345`), private project name strings that identify the operator's customer, and concrete case numbers.
+  - **Generic placeholders** to use in tests, examples, and docs: skill `my_fix` / alias `myfix` / scope `my_team`, agent `my-custom-workflow`, bot `@koan-bot` or `@testbot`, JIRA keys `PROJ-NNN` / `FOO-NNN`, project `my-toolkit`.
+  - **Mechanism, not enumeration** — When core code needs to recognise a specific custom skill (e.g. for result forwarding), drive the behaviour off SKILL.md frontmatter flags in the `instance/skills/<scope>/<name>/` tree, not off a hardcoded list of names in `koan/app/`. See `koan/app/skills.py::collect_forward_result_markers` for the pattern: opt-in via `forward_result: true` + optional `title_markers:`, resolved dynamically from the registry at runtime.
+  - **Pre-commit check** — maintain a private file (gitignored or outside the repo) at `instance/.leak-patterns` listing your operator's private identifiers, one regex alternation per line, then run before staging:
+    ```bash
+    patterns="$(paste -sd '|' instance/.leak-patterns)"
+    git diff main.. | grep '^+' | egrep -i "$patterns"
+    ```
+    Must return empty. The `^+` filter restricts to lines being added on the current branch, so pre-existing leaks on `main` don't false-positive. Keeping the pattern list outside the public repo prevents this convention bullet from itself becoming a leak.
+  - **If you find a pre-existing leak on `main`** while working in adjacent code, scrub it in the same branch — don't leave it as someone else's problem.
 - **User manual maintenance** — When adding, removing, or modifying a core skill, update `docs/users/user-manual.md` and `docs/users/skills.md` accordingly: add the skill to the appropriate tier section and the quick-reference appendix. The manual and skills reference must stay in sync with `koan/skills/core/`.
 - **Help group enforcement** — Every core skill MUST have a `group:` field in its SKILL.md frontmatter (one of: missions, code, pr, status, config, ideas, system). This ensures commands are discoverable via `/help`. If adding a new hardcoded core command (not skill-based), add it to `_CORE_COMMAND_HELP` in `command_handlers.py`. The test suite enforces this — `TestCoreSkillGroupEnforcement` will fail if a core skill is missing its group. The `integrations` group is reserved for custom skills under `instance/skills/<scope>/` (team-specific integrations) — not for core skills.
 - **Custom skills on GitHub/Jira** — Skills under `instance/skills/<scope>/` can be exposed to GitHub and Jira @mentions with a single `github_enabled: true` flag (Jira reuses it; there is no separate `jira_enabled`). Custom skills with a `handler.py` are dispatched **in-process** by `koan/app/external_skill_dispatch.py` — the helper synthesizes a `SkillContext`, auto-feeds the originating Jira key when the author omits one, and calls `execute_skill()` directly. This avoids queueing a `/cmd …` slash mission that has no registered runner. Set `group: integrations` so they render in the dedicated help section.
 - **No hyphens in skill names or aliases** — Skill command names, aliases, and directory names MUST use underscores (`_`), never hyphens (`-`). Hyphens break Telegram command parsing because Telegram treats the hyphen as a word boundary, cutting the command short. Example: use `dead_code` not `dead-code`, `scaffold_skill` not `scaffold-skill`.
 - **Adding a new core skill** — Every core skill requires ALL of the following. Missing any step leaves the skill broken or undiscoverable:
   1. **Skill directory**: Create `koan/skills/core/<skill_name>/SKILL.md` with frontmatter including `name`, `description`, `group` (one of: missions, code, pr, status, config, ideas, system), `commands`, and `audience`. Add `handler.py` if the skill needs Python logic (omit for prompt-only skills).
-  2. **Runner registration** (if the skill runs via the agent loop): Add an entry in `_SKILL_RUNNERS` dict in `skill_dispatch.py` mapping the command name to its runner module. Also add any needed command builder in `_COMMAND_BUILDERS` and validation in `validate_skill_args()`.
+  2. **Runner registration** (if the skill runs via the agent loop): Add an entry in `_SKILL_RUNNERS` dict in `skill_dispatch.py` mapping the command name to its runner module. Also add any needed command builder in `_COMMAND_BUILDERS` and validation in `validate_skill_args()`. (Quota-detection handling for skill stdout is already centralized in `mission_executor.py` — see the `skill_dispatch.py` note above; nothing per-runner is required.)
   3. **CLAUDE.md skill list**: Update the "Core skills" line in the Skills system section to include the new skill name (keep alphabetical order).
   4. **User manual and skills reference**: Update `docs/users/user-manual.md` and `docs/users/skills.md` — add the skill to the appropriate tier section and the quick-reference appendix.
   5. **Tests**: The `TestCoreSkillGroupEnforcement` test will fail if the SKILL.md is missing or lacks a `group:` field — run the test suite to verify.
-  See `koan/skills/README.md` for the full SKILL.md format and handler conventions.
+     See `koan/skills/README.md` for the full SKILL.md format and handler conventions.
 - **Documentation maintenance** — When adding or modifying a feature, update the corresponding section in `README.md` and/or the relevant docs file. Use the nested docs layout in `docs/README.md`: user behavior in `docs/users/`, daemon design in `docs/architecture/`, providers in `docs/providers/`, messaging and tracker integrations in `docs/messaging/`, operations in `docs/operations/`, durable decisions in `docs/design/`, threat models and audit docs in `docs/security/`, and deployment guides in `docs/setup/`. If no documentation file exists for the feature, create one in the matching directory. Public-facing documentation and implementation references must stay in sync with the codebase — undocumented features are invisible to users.

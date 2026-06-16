@@ -14,6 +14,7 @@ from app.restart_manager import (
     clear_restart,
     reexec_bridge,
     RESTART_FILE,
+    RESTART_RUN_FILE,
     RESTART_EXIT_CODE,
 )
 
@@ -26,15 +27,17 @@ from app.restart_manager import (
 class TestRequestRestart:
     def test_creates_restart_file(self, tmp_path):
         request_restart(str(tmp_path))
-        assert (tmp_path / RESTART_FILE).exists()
+        # per-consumer marker is written, not the legacy combined file.
+        assert (tmp_path / RESTART_RUN_FILE).exists()
+        assert not (tmp_path / RESTART_FILE).exists()
 
     def test_restart_file_contains_timestamp(self, tmp_path):
         request_restart(str(tmp_path))
-        content = (tmp_path / RESTART_FILE).read_text()
+        content = (tmp_path / RESTART_RUN_FILE).read_text()
         assert "restart requested at" in content
 
     def test_overwrites_existing_file(self, tmp_path):
-        restart_file = tmp_path / RESTART_FILE
+        restart_file = tmp_path / RESTART_RUN_FILE
         restart_file.write_text("old content")
         request_restart(str(tmp_path))
         content = restart_file.read_text()
@@ -183,10 +186,10 @@ class TestRestartLoopPrevention:
         assert check_restart(str(tmp_path), since=startup_time) is False
 
     def test_fresh_file_triggers_restart(self, tmp_path):
-        """A new .koan-restart file (after startup) triggers restart."""
+        """A fresh per-consumer marker (after startup) triggers restart."""
         startup_time = time.time() - 10
         request_restart(str(tmp_path))
-        assert check_restart(str(tmp_path), since=startup_time) is True
+        assert check_restart(str(tmp_path), since=startup_time, target="run") is True
 
 
 class TestRestartIsStandaloneSkill:

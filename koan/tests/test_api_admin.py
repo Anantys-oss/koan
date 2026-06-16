@@ -114,7 +114,11 @@ class TestRestart:
     def test_restart_creates_signal_file(self, api_client, tmp_path):
         resp = api_client.post("/v1/restart", headers=_AUTH)
         assert resp.status_code == 200
-        assert (tmp_path / ".koan-restart").exists()
+        # writes both per-consumer markers so the restart actually fires,
+        # not the deprecated (no-op) legacy .koan-restart.
+        assert (tmp_path / ".koan-restart-run").exists()
+        assert (tmp_path / ".koan-restart-bridge").exists()
+        assert not (tmp_path / ".koan-restart").exists()
         data = resp.get_json()
         assert data["status"] == "restart_signaled"
 
@@ -137,8 +141,9 @@ class TestUpdate:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["status"] == "updated"
-        # Restart should also be signaled
-        assert (tmp_path / ".koan-restart").exists()
+        # Restart should also be signaled — via the per-consumer markers.
+        assert (tmp_path / ".koan-restart-run").exists()
+        assert (tmp_path / ".koan-restart-bridge").exists()
 
     def test_update_returns_500_on_error(self, api_client):
         with patch("app.update_manager.pull_upstream", side_effect=RuntimeError("git error")):

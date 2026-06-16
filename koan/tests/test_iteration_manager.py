@@ -1048,6 +1048,35 @@ class TestPlanIteration:
         # The key assertion: _filter_exploration_projects must NOT be called
         mock_filter.assert_not_called()
 
+    @patch("app.config.is_unlimited_quota", return_value=True)
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    @patch("app.iteration_manager._check_focus", return_value=None)
+    def test_unlimited_quota_overrides_wait_to_deep(
+        self, mock_focus, mock_refresh, mock_pick, mock_unlimited,
+        instance_dir, koan_root, usage_state,
+    ):
+        """unlimited_quota: true must prevent wait_pause even when
+        usage.md shows exhausted budget."""
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 97% (reset in 1h)\n"
+            "Weekly (7 day) : 50% (Resets in 3d)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=5,
+            count=42,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] != "wait_pause"
+        assert result["autonomous_mode"] != "wait"
+
     @patch("app.pick_mission.pick_mission", return_value="unknown_project:Fix thing")
     @patch("app.usage_estimator.cmd_refresh")
     def test_unknown_project_error(self, mock_refresh, mock_pick,

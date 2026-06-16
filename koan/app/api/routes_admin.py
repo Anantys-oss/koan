@@ -100,10 +100,12 @@ def get_config():
 @bp.route("/v1/restart", methods=["POST"])
 @require_token
 def restart():
-    from app.signals import RESTART_FILE
-    restart_file = _koan_root() / RESTART_FILE
+    # Route through request_restart() so both per-consumer markers are written
+    # and the restart actually fires. Touching legacy .koan-restart was a
+    # no-op — no consumer polls it.
+    from app.restart_manager import request_restart
     try:
-        restart_file.touch()
+        request_restart(str(_koan_root()))
     except OSError as e:
         return jsonify({"error": {"code": "signal_error", "message": str(e)}}), 500
     return jsonify({"status": "restart_signaled"})
@@ -130,9 +132,9 @@ def update():
         if safety_msg:
             return jsonify({"error": {"code": "update_refused", "message": safety_msg}}), 409
         result = pull_upstream(_koan_root())
-        # Signal restart after update
-        from app.signals import RESTART_FILE
-        (_koan_root() / RESTART_FILE).touch()
+        # Signal restart after update (write both per-consumer markers).
+        from app.restart_manager import request_restart
+        request_restart(str(_koan_root()))
         return jsonify({"status": "updated", "result": str(result)})
     except Exception as e:
         return jsonify({"error": {"code": "update_error", "message": str(e)}}), 500

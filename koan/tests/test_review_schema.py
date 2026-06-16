@@ -305,6 +305,69 @@ class TestValidateCommentReplies:
         valid, errors = validate_review(data)
         assert valid is True
 
+    def test_valid_reply_with_action(self):
+        """Reply with a valid action field passes validation."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [
+                {"comment_id": 123, "reply": "Fixed in latest commit.", "action": "fixed"},
+            ],
+        }
+        valid, errors = validate_review(data)
+        assert valid is True
+        assert errors == []
+
+    def test_reply_without_action_still_valid(self):
+        """Omitting action is valid (backward compat)."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [
+                {"comment_id": 123, "reply": "Noted."},
+            ],
+        }
+        valid, errors = validate_review(data)
+        assert valid is True
+
+    def test_reply_action_wrong_type(self):
+        """Non-string action triggers validation error."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [
+                {"comment_id": 123, "reply": "text", "action": 42},
+            ],
+        }
+        valid, errors = validate_review(data)
+        assert valid is False
+        assert any("action" in e for e in errors)
+
+    def test_reply_unrecognized_action_passes_validation(self):
+        """Unrecognized action string passes validation (clamped in normalization)."""
+        data = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+            "comment_replies": [
+                {"comment_id": 123, "reply": "text", "action": "some_unknown"},
+            ],
+        }
+        valid, errors = validate_review(data)
+        assert valid is True
+
+    def test_all_valid_actions(self):
+        """Each defined action value passes validation."""
+        for action in ("fixed", "wont_fix", "needs_clarification", "acknowledged"):
+            data = {
+                "file_comments": [],
+                "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+                "comment_replies": [
+                    {"comment_id": 1, "reply": "text", "action": action},
+                ],
+            }
+            valid, errors = validate_review(data)
+            assert valid is True, f"action={action!r} should be valid, got errors: {errors}"
+
 
 # ---------------------------------------------------------------------------
 # REFLECT_SCHEMA

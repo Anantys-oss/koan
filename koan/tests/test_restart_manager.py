@@ -38,19 +38,24 @@ class TestConstants:
 
 
 class TestRequestRestart:
-    def test_creates_file(self, tmp_path):
+    def test_creates_both_consumer_markers(self, tmp_path):
         request_restart(str(tmp_path))
-        restart_file = tmp_path / RESTART_FILE
-        assert restart_file.exists()
+        assert (tmp_path / RESTART_BRIDGE_FILE).exists()
+        assert (tmp_path / RESTART_RUN_FILE).exists()
+
+    def test_does_not_write_legacy_marker(self, tmp_path):
+        """The deprecated .koan-restart is no longer written."""
+        request_restart(str(tmp_path))
+        assert not (tmp_path / RESTART_FILE).exists()
 
     def test_file_contains_timestamp(self, tmp_path):
         request_restart(str(tmp_path))
-        content = (tmp_path / RESTART_FILE).read_text()
+        content = (tmp_path / RESTART_RUN_FILE).read_text()
         assert "restart requested at" in content
         assert ":" in content  # Time format HH:MM:SS
 
     def test_overwrites_existing_file(self, tmp_path):
-        restart_file = tmp_path / RESTART_FILE
+        restart_file = tmp_path / RESTART_RUN_FILE
         restart_file.write_text("old content")
         request_restart(str(tmp_path))
         content = restart_file.read_text()
@@ -59,13 +64,15 @@ class TestRequestRestart:
 
     def test_uses_atomic_write(self, tmp_path):
         """request_restart should use atomic_write for thread safety,
-        once per consumer marker plus the legacy single-file marker."""
+        once per consumer marker — and NOT for the deprecated legacy marker."""
         with patch("app.utils.atomic_write") as mock_aw:
             request_restart(str(tmp_path))
             written = [str(call.args[0]) for call in mock_aw.call_args_list]
             assert any(p.endswith(RESTART_BRIDGE_FILE) for p in written)
             assert any(p.endswith(RESTART_RUN_FILE) for p in written)
-            assert any(p.endswith(RESTART_FILE) for p in written)
+            # .koan-restart is not a suffix of the -run / -bridge markers, so the
+            # bare endswith() (matching the positive checks above) is unambiguous.
+            assert not any(p.endswith(RESTART_FILE) for p in written)
 
 
 # ---------------------------------------------------------------------------
@@ -195,25 +202,25 @@ class TestReexecBridge:
 
 class TestRestartWorkflow:
     def test_full_restart_cycle(self, tmp_path):
-        """Test the complete request → check → clear cycle."""
+        """Test the complete request → check → clear cycle (per-consumer marker)."""
         root = str(tmp_path)
         # Initially no restart pending
-        assert check_restart(root) is False
+        assert check_restart(root, target="run") is False
 
         # Request restart
         request_restart(root)
-        assert check_restart(root) is True
+        assert check_restart(root, target="run") is True
 
         # Clear it
-        clear_restart(root)
-        assert check_restart(root) is False
+        clear_restart(root, target="run")
+        assert check_restart(root, target="run") is False
 
     def test_stale_signal_ignored(self, tmp_path):
         """Stale restart signals from previous incarnation should be ignored."""
         root = str(tmp_path)
         # Create a restart signal
         request_restart(root)
-        restart_file = tmp_path / RESTART_FILE
+        restart_file = tmp_path / RESTART_RUN_FILE
 
         # Backdate the file to simulate stale signal
         old_mtime = time.time() - 300  # 5 minutes ago
@@ -223,7 +230,7 @@ class TestRestartWorkflow:
         startup_time = time.time()
 
         # Stale signal should be ignored
-        assert check_restart(root, since=startup_time) is False
+        assert check_restart(root, since=startup_time, target="run") is False
 
         # But a fresh request should work
         request_restart(root)
@@ -232,15 +239,15 @@ class TestRestartWorkflow:
         # so explicitly forward-date the file by 1 second.
         future_mtime = startup_time + 1
         os.utime(restart_file, (future_mtime, future_mtime))
-        assert check_restart(root, since=startup_time) is True
+        assert check_restart(root, since=startup_time, target="run") is True
 
     def test_accepts_str_not_path(self, tmp_path):
         """All functions should accept str, not Path objects."""
         root = str(tmp_path)
         request_restart(root)
-        assert check_restart(root) is True
-        clear_restart(root)
-        assert check_restart(root) is False
+        assert check_restart(root, target="run") is True
+        clear_restart(root, target="run")
+        assert check_restart(root, target="run") is False
 
 
 # ---------------------------------------------------------------------------
@@ -259,14 +266,12 @@ class TestPerProcessRestartMarkers:
     leaving the bridge with a stale ``sys.modules`` and ``/list`` broken.
     """
 
-    def test_request_restart_writes_all_three_markers(self, tmp_path):
+    def test_request_restart_writes_both_consumer_markers(self, tmp_path):
         request_restart(str(tmp_path))
         assert (tmp_path / RESTART_BRIDGE_FILE).exists()
         assert (tmp_path / RESTART_RUN_FILE).exists()
-        assert (tmp_path / RESTART_FILE).exists(), (
-            "legacy marker must still be written so a pre-upgrade bridge "
-            "polling .koan-restart can re-exec into the new code"
-        )
+        # the deprecated legacy marker is no longer written.
+        assert not (tmp_path / RESTART_FILE).exists()
 
     def test_check_restart_target_isolation(self, tmp_path):
         """Writing only one consumer's marker must not satisfy the other."""
@@ -282,8 +287,8 @@ class TestPerProcessRestartMarkers:
         clear_restart(str(tmp_path), target="run")
         assert not (tmp_path / RESTART_RUN_FILE).exists()
         assert (tmp_path / RESTART_BRIDGE_FILE).exists()
-        # Legacy file is also untouched — only its own consumer clears it.
-        assert (tmp_path / RESTART_FILE).exists()
+        # legacy marker is never written, so it never exists here.
+        assert not (tmp_path / RESTART_FILE).exists()
 
     def test_runner_wrapper_restart_does_not_silence_bridge(self, tmp_path):
         """Simulate the /update race directly: a request_restart followed

@@ -32,6 +32,22 @@ def migrate_memory_to_jsonl(instance: str):
         log("init", f"[memory] Migrated to JSONL: {sessions} sessions, {learnings} learnings")
 
 
+def index_memory_sqlite(instance: str):
+    """Bulk-index the JSONL memory log into the SQLite FTS5 secondary index.
+
+    Idempotent and always-run: ``migrate_jsonl_to_sqlite`` self-gates on a
+    missing or empty ``memory.db`` and returns 0 once the index is populated,
+    so re-running on every startup is cheap. This must NOT be folded into
+    ``migrate_markdown_to_jsonl`` — that method is gated by the
+    ``.migration_done`` sentinel and skips entirely for already-migrated
+    instances, which would leave their FTS5 index permanently empty.
+    """
+    from app.memory_db import migrate_jsonl_to_sqlite
+    count = migrate_jsonl_to_sqlite(instance)
+    if count:
+        log("init", f"[memory] Indexed {count} JSONL entries into SQLite FTS5")
+
+
 def recover_crashed_missions(instance: str):
     """Check for and recover missions left in-progress by a crash."""
     log("health", "Checking for interrupted missions...")
@@ -550,6 +566,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
             for msg in msgs:
                 log("init", f"[projects] {msg}")
         _safe_run("Memory JSONL migration", migrate_memory_to_jsonl, instance)
+        _safe_run("Memory SQLite indexing", index_memory_sqlite, instance)
         _safe_run("GitHub URL population", populate_github_urls, koan_root)
 
         result = _safe_run("Workspace discovery", discover_workspace, koan_root, projects)

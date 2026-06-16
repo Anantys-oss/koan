@@ -464,10 +464,11 @@ def _run_iteration(
     # together take ~30-90s before any mission notification fires. Surface
     # progress to Telegram so the human knows what's happening. count>=1
     # iterations stay quiet to avoid steady-state spam.
-    is_first_iteration = not _run._startup_notified
-    is_boot_iteration = not _run._boot_notified
-    _run._startup_notified = True
-    _run._boot_notified = True
+    # Derive the two visibility flags from the single startup phase.
+    # boot → first+boot; resume → first only; running → neither.
+    is_boot_iteration = _run._startup_phase == "boot"
+    is_first_iteration = _run._startup_phase in ("boot", "resume")
+    _run._startup_phase = "running"
 
     # Load config once for both GitHub and Jira gating below
     from app.utils import load_config

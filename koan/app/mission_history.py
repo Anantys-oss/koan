@@ -25,6 +25,10 @@ def _normalize_key(mission_text: str) -> str:
     Strips leading ``- ``, ``[project:X]`` / ``[projet:X]`` tags, and
     whitespace so the same mission recorded with or without a project tag
     shares one dedup counter.
+
+    Note: this is intentionally *not* ``missions.canonical_mission_key`` — that
+    keeps the project tag (mission identity for the stagnation tracker), whereas
+    history dedup wants to collapse across projects. Different concern (S2).
     """
     line = mission_text.strip().split("\n")[0]
     line = line.removeprefix("- ").strip()

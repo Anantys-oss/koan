@@ -142,6 +142,27 @@ class TestRequeue:
         mgr.requeue("hello")
         assert "hello" in outbox_file.read_text()
 
+    def test_requeue_preserves_trailing_newline(self, outbox_env):
+        """Delegating to append_to_outbox must keep the trailing newline so
+        the requeued message stays on its own line."""
+        mgr, outbox_file, _ = outbox_env
+        outbox_file.write_text("")
+        mgr.requeue("solo message")
+        assert outbox_file.read_text() == "solo message\n"
+
+    @patch("app.outbox_manager.log")
+    def test_requeue_falls_back_to_failed_on_error(self, mock_log, outbox_env):
+        """If the shared append path raises, content is preserved via _write_failed."""
+        mgr, outbox_file, _ = outbox_env
+        with patch(
+            "app.outbox_manager.append_to_outbox",
+            side_effect=OSError("disk full"),
+        ):
+            mgr.requeue("save me")
+        failed_file = outbox_file.parent / "outbox-failed.md"
+        assert failed_file.exists()
+        assert "save me" in failed_file.read_text()
+
 
 class TestWriteFailed:
     """Last-resort persistence for lost messages."""

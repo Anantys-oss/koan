@@ -404,16 +404,8 @@ class StagnationMonitor:
 # cycles.  Without stripping, a requeued mission acquires new ⏳/▶
 # timestamps and would hash to a different key, silently resetting the
 # stagnation retry counter on every cycle and making max_retry_on_stagnation
-# ineffective.
-
-# Compiled once: strips everything that changes between queue cycles.
-_STRIP_FOR_KEY_RE = re.compile(
-    r"\s*⏳\([^)]*\)"              # ⏳(queued-timestamp)
-    r"|\s*▶\([^)]*\)"              # ▶(started-timestamp)
-    r"|\s*[✅❌]\s*\([^)]*\)"      # ✅/❌ (completed-timestamp)
-    r"|\s*\[r:\d+\]"               # [r:N] crash-recovery counter
-    r"|\s*\[complexity:[^\]]*\]"    # [complexity:X] classifier tag
-)
+# ineffective. The stripping is delegated to the canonical identity function
+# in missions.py (S2) so there is one definition of "stable mission identity".
 
 
 def _migrate_tracker_filename(instance_dir: str) -> None:
@@ -438,14 +430,12 @@ def _retry_tracker_path(instance_dir: str) -> Path:
 def _mission_key(mission_title: str) -> str:
     """Stable key for a mission title, independent of lifecycle state.
 
-    Strips timestamps, recovery counters, and complexity tags before
-    hashing so the same logical mission always maps to the same key
-    regardless of which requeue cycle it is currently in.
+    Hashes :func:`missions.canonical_mission_key`, which strips timestamps,
+    recovery counters, and complexity tags so the same logical mission always
+    maps to the same key regardless of which requeue cycle it is currently in.
     """
-    clean = _STRIP_FOR_KEY_RE.sub("", mission_title)
-    clean = clean.strip()
-    if clean.startswith("- "):
-        clean = clean[2:].strip()
+    from app.missions import canonical_mission_key
+    clean = canonical_mission_key(mission_title)
     return hashlib.sha256(clean.encode("utf-8", errors="replace")).hexdigest()
 
 

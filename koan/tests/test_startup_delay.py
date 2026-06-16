@@ -11,7 +11,8 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.signals import PAUSE_FILE, STOP_FILE, SHUTDOWN_FILE, RESTART_FILE
+from app.signals import PAUSE_FILE, STOP_FILE, SHUTDOWN_FILE
+from app.restart_manager import RESTART_RUN_FILE
 
 
 @pytest.fixture
@@ -131,7 +132,7 @@ class TestStartupDelay:
         assert call_count == 1
 
     def test_restart_signal_interrupts(self, koan_root):
-        """If .koan-restart appears during the delay, it stops early."""
+        """If the runner restart marker appears during the delay, it stops early."""
         fn = self._import_fn()
         call_count = 0
 
@@ -139,7 +140,7 @@ class TestStartupDelay:
             nonlocal call_count
             call_count += 1
             if call_count == 2:
-                Path(koan_root, RESTART_FILE).touch()
+                Path(koan_root, RESTART_RUN_FILE).touch()
 
         with patch("app.utils.load_config", return_value={"startup_delay": 30}), \
              patch("time.sleep", side_effect=sleep_then_restart):

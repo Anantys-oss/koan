@@ -8,5 +8,8 @@ pytest-timeout>=2.1
 pytest-cov>=6.0
 pytest-xdist>=3.5
 
+# stdlib: sqlite3 (used by memory_db.py — FTS5 extension required for ranked
+# search; graceful fallback to JSONL when FTS5 unavailable)
+
 # Optional: Slack provider (install with: pip install slack-sdk)
 # slack-sdk>=3.27

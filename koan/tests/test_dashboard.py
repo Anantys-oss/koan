@@ -2099,7 +2099,10 @@ class TestAgentControls:
         data = resp.get_json()
         assert resp.status_code == 200
         assert data["ok"] is True
-        assert (tmp_path / ".koan-restart").exists()
+        # writes both per-consumer markers so the restart actually fires.
+        assert (tmp_path / ".koan-restart-run").exists()
+        assert (tmp_path / ".koan-restart-bridge").exists()
+        assert not (tmp_path / ".koan-restart").exists()
 
     def test_pause_button_hidden_when_paused(self, app_client, tmp_path):
         (tmp_path / ".koan-pause").write_text("manual\n")

@@ -948,6 +948,28 @@ _ASSIGNMENT_REASON_TO_COMMAND = {
 }
 
 
+def _is_bot_still_requested(owner: str, repo: str, pr_number: str, bot_username: str) -> bool:
+    """Check if the bot is still in the PR's requested reviewers list.
+
+    Returns False on API errors (fail-closed: keep cooldown active).
+    """
+    if not bot_username:
+        return False
+    try:
+        from app.github import api as gh_api
+
+        raw = gh_api(
+            f"repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers",
+            jq="[.users[].login, .teams[].slug] | .[]",
+            timeout=10,
+        )
+        reviewers = [r.strip().lower() for r in raw.strip().splitlines() if r.strip()]
+        return bot_username.lower() in reviewers
+    except Exception as exc:
+        log.debug("requested_reviewers check failed for %s/%s#%s: %s", owner, repo, pr_number, exc)
+        return False
+
+
 def _try_assignment_notification(
     notification: dict,
     registry: SkillRegistry,
@@ -1063,13 +1085,29 @@ def _try_assignment_notification(
     if reason == "review_requested" and instance_dir:
         pr_number = extract_issue_number_from_notification(notification)
         if pr_number and is_review_on_cooldown(instance_dir, owner, repo, pr_number):
-            log.debug(
-                "GitHub assign: review for %s/%s#%s is on cooldown, skipping",
-                owner, repo, pr_number,
-            )
-            mark_notification_read(notif_id)
-            notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
-            return True
+            # Cooldown active — check if a human explicitly re-requested.
+            # GitHub removes the bot from requested_reviewers after it
+            # submits its review; presence means a human clicked Refresh.
+            from app.github_config import get_github_nickname
+
+            bot_username = get_github_nickname(config)
+            if bot_username and _is_bot_still_requested(owner, repo, pr_number, bot_username):
+                log.info(
+                    "GitHub assign: review cooldown bypassed for %s/%s#%s "
+                    "(bot still in requested_reviewers — human re-request)",
+                    owner, repo, pr_number,
+                )
+                from app.github_notification_tracker import clear_review_cooldown
+
+                clear_review_cooldown(instance_dir, owner, repo, pr_number)
+            else:
+                log.debug(
+                    "GitHub assign: review for %s/%s#%s is on cooldown, skipping",
+                    owner, repo, pr_number,
+                )
+                mark_notification_read(notif_id)
+                notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+                return True
 
     # Skip closed/merged subjects (reuse the already-fetched subject_info)
     subject_state = _closed_reason_from_subject_info(subject_info)
