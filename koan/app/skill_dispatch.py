@@ -91,6 +91,7 @@ _CANONICAL_RUNNERS = {
     "explain": "skills.core.explain.explain_runner",
     "deep": "skills.core.deep.deep_runner",
     "brief": "skills.core.brief.brief_runner",
+    "debug": "skills.core.debug.debug_runner",
 }
 
 # Alias -> canonical command name. Declared once, expanded into
@@ -111,6 +112,7 @@ _COMMAND_ALIASES = {
     "sa": "spec_audit",
     "drift": "spec_audit",
     "xp": "explain",
+    "dbg": "debug",
     "urv": "ultrareview",
     "ultra_review": "ultrareview",
     "digest": "brief",
@@ -465,6 +467,9 @@ def build_skill_command(
             base_cmd, project_name, project_path, instance_dir,
         ),
         "deep": lambda: _build_ai_cmd(base_cmd, args, project_name, project_path, instance_dir),
+        "debug": lambda: _build_url_context_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
         "explain": lambda: _build_explain_cmd(base_cmd, args, project_path, project_name),
     }
     def _audit_builder():
@@ -1069,7 +1074,7 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
                 f"/{command} requires a PR URL "
                 f"(e.g. https://github.com/owner/repo/pull/123)"
             )
-    elif canonical in ("implement", "fix"):
+    elif canonical in ("implement", "fix", "debug"):
         if not (_ISSUE_URL_RE.search(args) or _PR_URL_RE.search(args)
                 or _JIRA_URL_RE.search(args)):
             return (
