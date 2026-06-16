@@ -99,6 +99,14 @@ fast_reply: false
 # Use `tail -f .koan-debug.log` to watch dispatch decisions, commands, and errors
 # debug: false
 
+# Debug escalation — automatically queue /debug when /fix missions fail.
+# When enabled, a failed /fix skill dispatch inserts a /debug mission at
+# the head of the pending queue with the same issue URL and context.
+# The /debug prompt enforces a structured 4-step loop: reproduce,
+# hypothesize, minimal fix, verify.
+# debug_escalation:
+#   on_fix_failure: false
+
 # CLI output journal — stream CLI output to the daily journal file in real-time
 # When enabled, mission and contemplative CLI output is appended to the project's
 # journal file as it runs. Use `tail -f instance/journal/YYYY-MM-DD/project.md`

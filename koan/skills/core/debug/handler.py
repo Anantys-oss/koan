@@ -17,11 +17,12 @@ def handle(ctx) -> Optional[str]:
     if ctx.project_name:
         project_tag = f"[project:{ctx.project_name}] "
 
-    from app.missions import read_missions_content, insert_mission
+    from pathlib import Path
+    from app.missions import insert_mission
     from app.utils import atomic_write
 
     missions_path = ctx.missions_path
-    content = read_missions_content(missions_path)
+    content = Path(missions_path).read_text() if Path(missions_path).exists() else ""
     entry = f"- {project_tag}/debug {args}"
     content = insert_mission(content, entry, urgent=True)
     atomic_write(missions_path, content)

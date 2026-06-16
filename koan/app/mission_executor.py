@@ -211,6 +211,14 @@ def _handle_skill_dispatch(
                 exit_code, mission_title,
             )
         _run._finalize_mission(instance, mission_title, project_name, exit_code)
+
+        if exit_code != 0:
+            _maybe_escalate_to_debug(
+                mission_title=mission_title,
+                exit_code=exit_code,
+                instance=instance,
+            )
+
         _run._commit_instance(instance)
 
         _run._sleep_between_runs(koan_root, instance, interval)
@@ -388,6 +396,63 @@ def _maybe_retry_mission(
     )
     log("koan", f"Mission retry exit_code={retry_exit}")
     return retry_exit, stdout_file, stderr_file
+
+
+# ---------------------------------------------------------------------------
+# Debug escalation
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_FIX_MISSION_RE = _re.compile(r"^/fix\s+(.+)", _re.IGNORECASE)
+_DEBUG_MISSION_PREFIX = "/debug"
+_PROJECT_TAG_STRIP_RE = _re.compile(r"^\[project:[^\]]+\]\s*")
+
+
+def _maybe_escalate_to_debug(
+    mission_title: str,
+    exit_code: int,
+    instance: str,
+) -> bool:
+    """Insert a /debug mission when a /fix mission fails and escalation is enabled.
+
+    Returns True if a /debug mission was inserted, False otherwise.
+    """
+    if exit_code == 0:
+        return False
+
+    cleaned = mission_title.lstrip("- ").strip()
+    cleaned_no_tag = _PROJECT_TAG_STRIP_RE.sub("", cleaned).strip()
+
+    if cleaned_no_tag.lower().startswith(_DEBUG_MISSION_PREFIX):
+        return False
+
+    from app.config import is_debug_on_fix_failure
+    if not is_debug_on_fix_failure():
+        return False
+
+    match = _FIX_MISSION_RE.match(cleaned_no_tag)
+    if not match:
+        return False
+
+    fix_args = match.group(1).strip()
+
+    # Preserve project tag if present
+    tag_match = _PROJECT_TAG_STRIP_RE.match(cleaned)
+    tag_prefix = tag_match.group(0) if tag_match else ""
+
+    from app.missions import insert_mission
+    from app.utils import atomic_write
+
+    missions_path = Path(os.path.join(instance, "missions.md"))
+    content = missions_path.read_text() if missions_path.exists() else ""
+    entry = f"- {tag_prefix}/debug {fix_args}"
+    content = insert_mission(content, entry, urgent=True)
+    atomic_write(missions_path, content)
+
+    import app.run as _run
+    _run.log("koan", f"Auto-escalated failed /fix to /debug: {fix_args[:80]}")
+    return True
 
 
 # ---------------------------------------------------------------------------

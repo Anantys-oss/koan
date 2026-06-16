@@ -571,6 +571,18 @@ def is_api_enabled() -> bool:
     return False
 
 
+def is_debug_on_fix_failure() -> bool:
+    """Check if auto-debug escalation is enabled for failed /fix missions.
+
+    Config key: debug_escalation.on_fix_failure (default: False)
+    """
+    config = _load_config()
+    cfg = config.get("debug_escalation", {})
+    if isinstance(cfg, dict):
+        return bool(cfg.get("on_fix_failure", False))
+    return False
+
+
 def get_api_host() -> str:
     """Return the API bind host (default: 127.0.0.1).
 
