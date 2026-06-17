@@ -630,6 +630,12 @@ class TestGetBudgetMode:
                 assert _get_budget_mode() == "disabled"
                 mock_get_provider.assert_not_called()
 
+    def test_non_dict_usage_returns_session_only(self):
+        """Non-dict usage value (e.g. string) returns session_only safely."""
+        with patch("app.utils.load_config", return_value={"usage": "malformed"}):
+            with patch("app.config.is_unlimited_quota", return_value=False):
+                assert _get_budget_mode() == "session_only"
+
     def test_unlimited_quota_false_uses_normal_path(self):
         """unlimited_quota: false behaves like the flag is absent."""
         with patch("app.utils.load_config", return_value={

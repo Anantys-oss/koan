@@ -286,7 +286,10 @@ def _get_budget_mode() -> str:
         if is_unlimited_quota():
             return "disabled"
 
-        mode = config.get("usage", {}).get("budget_mode", "session_only")
+        usage = config.get("usage", {})
+        if not isinstance(usage, dict):
+            return "session_only"
+        mode = usage.get("budget_mode", "session_only")
         if mode in ("full", "session_only", "disabled"):
             # Override to disabled for no-quota providers
             if mode != "disabled":

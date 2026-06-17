@@ -4027,10 +4027,11 @@ class TestBudgetModeFallbackUnlimitedQuota:
 
     @patch("app.config.is_unlimited_quota", return_value=True)
     @patch("app.usage_tracker._get_budget_mode", side_effect=ValueError("corrupt"))
+    @patch("app.iteration_manager._maybe_warn_burn_rate")
     @patch("app.pick_mission.pick_mission", return_value="koan:Fix bug")
     @patch("app.usage_estimator.cmd_refresh")
     def test_budget_mode_falls_back_to_disabled_when_unlimited(
-        self, mock_refresh, mock_pick, _mock_budget, _unlimited,
+        self, mock_refresh, mock_pick, mock_warn_burn, _mock_budget, _unlimited,
         instance_dir, koan_root, usage_state,
     ):
         usage_md = instance_dir / "usage.md"
@@ -4045,3 +4046,4 @@ class TestBudgetModeFallbackUnlimitedQuota:
             usage_state_path=str(usage_state),
         )
         assert result["action"] == "mission"
+        mock_warn_burn.assert_not_called()
