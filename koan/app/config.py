@@ -1679,18 +1679,26 @@ def get_review_verdict_config() -> dict:
     """
     config = _load_config()
     section = config.get("review_verdict", {})
-    if not isinstance(section, dict):
+    malformed = not isinstance(section, dict)
+    if malformed:
         section = {}
 
     def _bool(key: str, default: bool) -> bool:
         val = section.get(key, default)
-        return bool(val) if isinstance(val, bool) else default
+        if isinstance(val, bool):
+            return val
+        nonlocal malformed
+        malformed = True
+        return default
 
-    return {
+    result = {
         "approved": _bool("approved", True),
         "body_enabled": _bool("body_enabled", True),
         "include_blockers": _bool("include_blockers", True),
     }
+    if malformed:
+        result["approved"] = False
+    return result
 
 
 def is_caveman_mode() -> bool:

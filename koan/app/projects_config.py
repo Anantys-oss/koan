@@ -618,18 +618,28 @@ def get_project_security_review(config: dict, project_name: str) -> dict:
 def get_project_review_verdict(config: dict, project_name: str) -> dict:
     """Get review verdict overrides for a project from projects.yaml.
 
-    Per-project review_verdict settings override global config.yaml values.
-    Only returns keys that are explicitly set — caller should merge with
-    global defaults from get_review_verdict_config().
+    Per-project review_verdict settings (merged from defaults + project
+    overrides via get_project_config) override global config.yaml values.
+    Caller should merge the result with get_review_verdict_config().
+
+    Fails closed: if review_verdict is present but malformed (non-dict or
+    contains non-boolean values for known keys), returns approved=False
+    so a misconfigured project never submits an unintended verdict.
     """
     project_cfg = get_project_config(config, project_name)
     rv = project_cfg.get("review_verdict", {}) or {}
     if not isinstance(rv, dict):
-        return {}
+        return {"approved": False}
     result = {}
+    has_invalid = False
     for key in ("approved", "body_enabled", "include_blockers"):
-        if key in rv and isinstance(rv[key], bool):
-            result[key] = rv[key]
+        if key in rv:
+            if isinstance(rv[key], bool):
+                result[key] = rv[key]
+            else:
+                has_invalid = True
+    if has_invalid:
+        result["approved"] = False
     return result
 
 

@@ -1500,7 +1500,7 @@ projects:
       approved: false          # Comments only, no formal GitHub verdict
 ```
 
-When `approved: false`, the bot still posts review comments and PR feedback but skips the formal GitHub review status (green check / red X in the Reviewers panel). If loading project overrides fails, the verdict is also skipped (fail-closed) to preserve operator intent.
+When `approved: false`, the bot still posts review comments and PR feedback but skips the formal GitHub review status (green check / red X in the Reviewers panel). Configuration errors are fail-closed: if loading project overrides fails, or if the `review_verdict` section is malformed (non-dict value or non-boolean entries for known keys), the verdict is skipped to preserve operator intent.
 
 ### Custom Skills
 

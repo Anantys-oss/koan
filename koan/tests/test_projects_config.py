@@ -1509,7 +1509,7 @@ class TestGetProjectReviewVerdict:
         result = get_project_review_verdict(config, "app")
         assert result == {"approved": False, "body_enabled": False, "include_blockers": False}
 
-    def test_ignores_non_bool_values(self):
+    def test_fails_closed_on_non_bool_values(self):
         config = {
             "projects": {
                 "app": {
@@ -1519,15 +1519,17 @@ class TestGetProjectReviewVerdict:
             }
         }
         result = get_project_review_verdict(config, "app")
-        assert result == {"body_enabled": True}
+        assert result["approved"] is False
+        assert result["body_enabled"] is True
 
-    def test_non_dict_returns_empty(self):
+    def test_fails_closed_on_non_dict(self):
         config = {
             "projects": {
                 "app": {"path": "/app", "review_verdict": "garbage"},
             }
         }
-        assert get_project_review_verdict(config, "app") == {}
+        result = get_project_review_verdict(config, "app")
+        assert result == {"approved": False}
 
     def test_inherits_from_defaults(self):
         config = {
