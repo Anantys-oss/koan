@@ -117,6 +117,12 @@ def _downgrade_if_burning_fast(instance_dir: Path, session_pct: float,
     if is_unlimited_quota():
         return mode, None
     try:
+        from app.config import is_unlimited_quota
+        if is_unlimited_quota():
+            return mode, None
+    except (ImportError, OSError):
+        pass
+    try:
         from app.burn_rate import BurnRateSnapshot
         snapshot = BurnRateSnapshot(instance_dir)
         tte = snapshot.time_to_exhaustion(session_pct, mode=mode)
@@ -259,6 +265,13 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
     from app.config import is_unlimited_quota
     if is_unlimited_quota():
         return
+
+    try:
+        from app.config import is_unlimited_quota
+        if is_unlimited_quota():
+            return
+    except (ImportError, OSError):
+        pass
 
     try:
         from app.burn_rate import (
@@ -1427,7 +1440,12 @@ def plan_iteration(
         _budget_mode = _get_budget_mode()
     except (ImportError, OSError, ValueError) as exc:
         _log_iteration("warn", f"budget_mode resolution failed, defaulting: {exc}")
-        _budget_mode = "session_only"
+        try:
+            from app.config import is_unlimited_quota
+            _budget_mode = "disabled" if is_unlimited_quota() else "session_only"
+        except Exception as inner_exc:
+            _log_iteration("warn", f"unlimited_quota fallback failed: {inner_exc}")
+            _budget_mode = "session_only"
 
     # Step 1b: Warn the human when the rolling burn rate predicts a near-future
     # quota wipeout. Fires at most once per quota cycle.
