@@ -1976,6 +1976,20 @@ projects:
 - `/psecu webapp focus on token handling limit=3` — Focused review, kept off GitHub
 </details>
 
+### Full Audit Suite
+
+**`/audit_all`** — Run `/security_audit`, `/dead_code`, and `/profile` in parallel. All three missions are batch-inserted atomically into the Pending queue, so they run as soon as slots are available without waiting for each other.
+
+- **Usage:** `/audit_all [project-name]`
+- **Alias:** `/aa`
+
+<details>
+<summary>Use cases</summary>
+
+- `/audit_all koan` — Queue all three audit skills for the koan project
+- `/aa` — Quick shortcut for the default project
+</details>
+
 ### Incident Triage
 
 **`/incident`** — Triage a production error from a stack trace or log snippet. Kōan will parse the error, identify the root cause, propose a fix with tests, and submit a draft PR.
@@ -2144,6 +2158,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/tech_debt [project]` | `/td`, `/debt` | P | Scan project for tech debt |
 | `/dead_code [project]` | `/dc` | P | Scan for unused code |
 | `/spec_audit [project]` | `/sa`, `/drift` | P | Audit docs/code alignment, queue fix missions |
+| `/audit_all [project]` | `/aa` | P | Run security_audit, dead_code, and profile in parallel |
 | `/incident <error>` | — | P | Triage a production error |
 | `/scaffold_skill <scope> <name> <desc>` | `/scaffold`, `/new_skill` | P | Generate SKILL.md + handler.py for a new custom skill |
 | `/rtk [setup\|uninstall\|gain\|on\|off]` | — | P | Manage optional [rtk](https://github.com/rtk-ai/rtk) integration for compressed tool output (60-90 % token savings on Bash commands). See [docs/operations/rtk.md](../operations/rtk.md). |

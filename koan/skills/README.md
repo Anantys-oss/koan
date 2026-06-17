@@ -65,6 +65,7 @@ handler: handler.py
 | `title_markers` | no | Optional list of additional mission-title substrings to match against this skill (case-insensitive). Used when a handler emits a plain-text mission title without the slash command. Defaults to `[]`. |
 | `requirements` | no | Python packages to auto-install before first execution (e.g. `[requests, boto3]`) |
 | `sub_commands` | no | List of skill commands to expand into when triggered. Defines a combo skill — see [Combo skills](#combo-skills). Defaults to `[]`. |
+| `parallel` | no | Set to `true` to batch-insert all `sub_commands` atomically in a single write. Only meaningful with `sub_commands`. See [Parallel combo skills](#parallel-combo-skills). Defaults to `false`. |
 
 ### Audience
 
@@ -222,6 +223,30 @@ When a combo skill is triggered (via Telegram, GitHub @mention, or agent loop), 
 - All command names and aliases of the combo skill map to the same expansion
 - No `handler.py` is needed — the expansion is handled by the skill dispatch infrastructure
 - Adding a new combo skill requires only a SKILL.md with `sub_commands` — zero changes to Python code
+
+#### Parallel combo skills
+
+Add `parallel: true` to batch-insert all sub-commands atomically in a single
+write to `missions.md`. Without this flag, sub-commands are inserted one at a
+time in order (sequential).
+
+```yaml
+---
+name: audit_all
+scope: core
+parallel: true
+sub_commands: [security_audit, dead_code, profile]
+commands:
+  - name: audit_all
+    description: "Queue all audits in parallel"
+    aliases: [aa]
+---
+```
+
+**Important**: Parallel sub-commands must be branch-independent — they should
+not write to the same branch, or git merge conflicts will occur. Parallel
+missions are appended at the bottom of the Pending section (after existing
+pending missions), preserving FIFO ordering.
 
 ### Prompt-only skills (no handler)
 

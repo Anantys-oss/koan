@@ -91,6 +91,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/dead_code [project]` | `/dc` | Scan for unused imports, functions, classes, dead branches | — |
 | `/spec_audit [project]` | `/sa`, `/drift` | Audit docs/code alignment, queue fix missions | — |
 | `/gha_audit [project]` | `/gha` | Scan GitHub Actions workflows for security vulnerabilities | — |
+| `/audit_all [project]` | `/aa` | Run security_audit, dead_code, and profile in parallel | — |
 | `/changelog [project]` | `/changes` | Generate changelog from recent commits and journal entries | — |
 | `/stats [project]` | — | Show session outcome statistics per project | — |
 
