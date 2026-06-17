@@ -414,7 +414,8 @@ class TestStepProvider:
         import app.onboarding as onb
 
         root = Path(onboarding_root)
-        (root / ".env").write_text("KOAN_CLI_PROVIDER=codex\n")
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text('cli_provider: "codex"\n')
 
         with patch.object(onb, "KOAN_ROOT", root):
             state = onb.OnboardingState()
@@ -423,10 +424,13 @@ class TestStepProvider:
         assert result.data["cli_provider"] == "codex"
 
     def test_noninteractive_selects_available_default(self, onboarding_root):
+        import yaml
+
         import app.onboarding as onb
 
         root = Path(onboarding_root)
-        (root / ".env").write_text("# empty\n")
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
 
         with patch.object(onb, "KOAN_ROOT", root), patch(
             "app.onboarding._is_interactive", False
@@ -435,7 +439,8 @@ class TestStepProvider:
             result = onb.step_provider(state)
 
         assert result.data["cli_provider"] == "local"
-        assert "KOAN_CLI_PROVIDER=local" in (root / ".env").read_text()
+        config = yaml.safe_load((root / "instance" / "config.yaml").read_text())
+        assert config["cli_provider"] == "local"
 
 
 class TestStepVenv:
@@ -931,9 +936,9 @@ class TestRunOnboarding:
 
         root = Path(onboarding_root)
         (root / "instance").mkdir(exist_ok=True)
-        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
+        (root / "instance" / "config.yaml").write_text('cli_provider: "local"\nmax_runs_per_day: 20\n')
         (root / ".env").write_text(
-            "KOAN_CLI_PROVIDER=local\nKOAN_TELEGRAM_TOKEN=123:ABC\nKOAN_TELEGRAM_CHAT_ID=456\n"
+            "KOAN_TELEGRAM_TOKEN=123:ABC\nKOAN_TELEGRAM_CHAT_ID=456\n"
         )
         (root / "workspace" / "koan").mkdir(parents=True)
 
@@ -950,14 +955,17 @@ class TestRunOnboarding:
         ask_yes_no.assert_not_called()
 
     def test_reset_clears_checkpoint_and_restarts(self, onboarding_root, capsys):
+        import yaml
+
         import app.onboarding as onb
 
         root = Path(onboarding_root)
         checkpoint = root / ".koan-onboarding.json"
         checkpoint.write_text('{"completed_steps": [], "data": {"draft": true}}')
 
-        # Seed a provider choice in .env — must be wiped on reset
-        (root / ".env").write_text("KOAN_CLI_PROVIDER=codex\n")
+        # Seed a provider choice in config.yaml — must be wiped on reset
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text('cli_provider: "codex"\n')
 
         calls = {"count": 0}
 
@@ -980,7 +988,8 @@ class TestRunOnboarding:
         assert "Install reset" in captured.out
         assert not checkpoint.exists()
         assert calls["count"] == 2
-        assert "KOAN_CLI_PROVIDER" not in (root / ".env").read_text()
+        config = yaml.safe_load((root / "instance" / "config.yaml").read_text()) or {}
+        assert not config.get("cli_provider")
 
 
 class TestIntroScreen:
@@ -1219,10 +1228,13 @@ class TestOllamaLaunchInOnboarding:
         assert "not installed" in msg
 
     def test_step_provider_ollama_launch_noninteractive(self, onboarding_root):
+        import yaml
+
         import app.onboarding as onb
 
         root = Path(onboarding_root)
-        (root / ".env").write_text("# empty\n")
+        (root / "instance").mkdir(exist_ok=True)
+        (root / "instance" / "config.yaml").write_text("max_runs_per_day: 20\n")
 
         with patch.object(onb, "KOAN_ROOT", root), patch(
             "app.onboarding._is_interactive", False
@@ -1231,4 +1243,5 @@ class TestOllamaLaunchInOnboarding:
             result = onb.step_provider(state)
 
         assert result.data["cli_provider"] == "ollama-launch"
-        assert "KOAN_CLI_PROVIDER=ollama-launch" in (root / ".env").read_text()
+        config = yaml.safe_load((root / "instance" / "config.yaml").read_text())
+        assert config["cli_provider"] == "ollama-launch"

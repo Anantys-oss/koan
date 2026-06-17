@@ -618,10 +618,25 @@ def _detect_installed_providers() -> list[str]:
     return [p for p, t in provider_tools.items() if t is None or _check_tool(t)]
 
 
-def step_provider(state: OnboardingState) -> OnboardingState:
-    from app.onboarding_helpers import update_env_var
+def _get_config_cli_provider() -> str:
+    """Read cli_provider from instance/config.yaml, return empty string if unset."""
+    import yaml
 
-    existing = _get_env_for_root("KOAN_CLI_PROVIDER") or _get_env_for_root("CLI_PROVIDER")
+    config_file = _instance_dir() / "config.yaml"
+    if not config_file.exists():
+        return ""
+    try:
+        config = yaml.safe_load(config_file.read_text()) or {}
+        if not isinstance(config, dict):
+            return ""
+        return str(config.get("cli_provider", "")).strip().lower()
+    except yaml.YAMLError:
+        print(f"  {yellow('⚠')} config.yaml is malformed — treating cli_provider as unset")
+        return ""
+
+
+def step_provider(state: OnboardingState) -> OnboardingState:
+    existing = _get_config_cli_provider()
     if existing:
         state.data["cli_provider"] = existing
         print(f"  {green('✓')} CLI provider already configured: {existing}")
@@ -640,13 +655,17 @@ def step_provider(state: OnboardingState) -> OnboardingState:
     idx = ask_choice("Which CLI provider should Kōan use?", labels, default=default)
     provider = PROVIDERS[idx][0]
     state.data["cli_provider"] = provider
-    update_env_var("KOAN_CLI_PROVIDER", provider, KOAN_ROOT / ".env")
+    config_file = _instance_dir() / "config.yaml"
+    if not config_file.exists():
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text("")
+    _update_config_yaml_preserving_comments(config_file, ["cli_provider"], provider)
     print(f"  {green('✓')} CLI provider: {provider}")
     return state
 
 
 def check_provider(state: OnboardingState) -> bool:
-    return bool(_get_env_for_root("KOAN_CLI_PROVIDER") or _get_env_for_root("CLI_PROVIDER"))
+    return bool(_get_config_cli_provider())
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +765,7 @@ def _update_config_yaml_models(provider: str, models: dict[str, str]) -> None:
 def step_models(state: OnboardingState) -> OnboardingState:
     import yaml
 
-    provider = state.data.get("cli_provider") or _get_env_for_root("KOAN_CLI_PROVIDER") or "claude"
+    provider = state.data.get("cli_provider") or _get_config_cli_provider() or "claude"
     config_file = _instance_dir() / "config.yaml"
 
     # Skip if provider-specific models already configured in config.yaml
@@ -795,7 +814,7 @@ def step_models(state: OnboardingState) -> OnboardingState:
 def check_models(state: OnboardingState) -> bool:
     import yaml
 
-    provider = state.data.get("cli_provider") or _get_env_for_root("KOAN_CLI_PROVIDER") or "claude"
+    provider = state.data.get("cli_provider") or _get_config_cli_provider() or "claude"
     config_file = _instance_dir() / "config.yaml"
     if not config_file.exists():
         return False
@@ -1476,7 +1495,7 @@ def step_final(state: OnboardingState) -> OnboardingState:
     has_claude = state.data.get("has_claude", bool(_check_tool("claude")))
     print(f"  Claude CLI:          {green('✓') if has_claude else yellow('○ not found')}")
 
-    provider = state.data.get("cli_provider") or _get_env_for_root("KOAN_CLI_PROVIDER") or "claude"
+    provider = state.data.get("cli_provider") or _get_config_cli_provider() or "claude"
     provider_ok, provider_msg = _provider_ready(provider)
     print(f"  CLI provider:        {green('✓') if provider_ok else red('✗')} {provider}")
 
@@ -1676,11 +1695,10 @@ def run_onboarding(force: bool = False) -> None:
         except OnboardingReset:
             if CHECKPOINT_FILE.exists():
                 CHECKPOINT_FILE.unlink()
-            # Wipe provider choice from .env so the wizard re-prompts on restart
-            from app.onboarding_helpers import remove_env_var
-
-            remove_env_var("KOAN_CLI_PROVIDER", KOAN_ROOT / ".env")
-            remove_env_var("CLI_PROVIDER", KOAN_ROOT / ".env")
+            # Wipe provider choice from config.yaml so the wizard re-prompts on restart
+            config_file = _instance_dir() / "config.yaml"
+            if config_file.exists():
+                _update_config_yaml_preserving_comments(config_file, ["cli_provider"], "")
             print(f"\n  {yellow('Install reset.')} {dim('Onboarding progress cleared; restarting.')}")
             print()
             continue
