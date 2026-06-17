@@ -4021,3 +4021,27 @@ class TestDowngradeIfBurningFastUnlimitedQuota:
         assert mode == "deep"
         assert prev is None
         mock_snap_cls.assert_not_called()
+
+
+class TestBudgetModeFallbackUnlimitedQuota:
+
+    @patch("app.config.is_unlimited_quota", return_value=True)
+    @patch("app.usage_tracker._get_budget_mode", side_effect=ValueError("corrupt"))
+    @patch("app.pick_mission.pick_mission", return_value="koan:Fix bug")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_budget_mode_falls_back_to_disabled_when_unlimited(
+        self, mock_refresh, mock_pick, _mock_budget, _unlimited,
+        instance_dir, koan_root, usage_state,
+    ):
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text("Session (5hr) : 30% (reset in 3h)\n")
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+        assert result["action"] == "mission"
