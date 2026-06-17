@@ -617,6 +617,7 @@ def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillE
 
     Handler-based skills: imports handler.py and calls handle(ctx).
     Prompt-based skills: returns the prompt body (caller sends to Claude).
+    Combo skills (sub_commands, no handler): expands into pending missions.
 
     Returns:
         Response text, SkillError on handler crash, or None if no handler.
@@ -625,7 +626,40 @@ def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillE
         return _execute_handler(skill, ctx)
     if skill.prompt_body:
         return _execute_prompt(skill, ctx)
+    if skill.sub_commands:
+        return _execute_combo_skill(skill, ctx)
     return None
+
+
+def _execute_combo_skill(skill: Skill, ctx: SkillContext) -> str:
+    """Expand a combo skill into pending missions via expand_combo_skill()."""
+    from app.skill_dispatch import expand_combo_skill
+    from app.utils import detect_project_from_text, get_known_projects, resolve_project_alias
+
+    args = ctx.args.strip()
+    project = None
+    mission_args = args
+
+    words = args.split(None, 1)
+    if words:
+        known_map = {name.lower(): name for name, _ in get_known_projects()}
+        matched = known_map.get(words[0].lower())
+        if not matched:
+            matched = resolve_project_alias(words[0])
+        if matched:
+            project = matched
+            mission_args = words[1] if len(words) > 1 else ""
+
+    tag = f"[project:{project}] " if project else ""
+    mission_text = f"{tag}/{ctx.command_name} {mission_args}".rstrip()
+
+    expand_combo_skill(mission_text, str(ctx.instance_dir))
+
+    sub_list = ", ".join(f"/{c}" for c in skill.sub_commands)
+    ack = f"Combo /{ctx.command_name} expanded into: {sub_list}"
+    if project:
+        ack += f" (project: {project})"
+    return ack
 
 
 # Captured at import time so first-time observations in

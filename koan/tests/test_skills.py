@@ -1973,10 +1973,13 @@ class TestCoreSkillsComplete:
         assert expected.issubset(actual), f"Missing: {expected - actual}"
 
     def test_all_core_skills_have_handlers(self):
-        """Every core skill should have a handler.py."""
+        """Every core skill should have a handler.py or sub_commands."""
         registry = build_registry()
         for skill in registry.list_by_scope("core"):
-            assert skill.has_handler(), f"Skill {skill.name} missing handler.py"
+            has_execution_path = skill.has_handler() or skill.sub_commands
+            assert has_execution_path, (
+                f"Skill {skill.name} missing handler.py and has no sub_commands"
+            )
 
     def test_chat_skill_is_worker(self):
         """Chat skill should be worker=true (handle_chat blocks on Claude call)."""
