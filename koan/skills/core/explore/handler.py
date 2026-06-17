@@ -43,7 +43,7 @@ def _load_config(koan_root):
 
 
 def _resolve_project_name(projects, name):
-    """Case-insensitive project name lookup.
+    """Case-insensitive project name lookup with alias support.
 
     Returns the canonical name from projects dict, or None.
     """
@@ -51,6 +51,14 @@ def _resolve_project_name(projects, name):
     for key in projects:
         if key.lower() == lower:
             return key
+
+    from app.utils import resolve_project_alias
+    canonical = resolve_project_alias(name)
+    if canonical:
+        for key in projects:
+            if key.lower() == canonical.lower():
+                return key
+
     return None
 
 

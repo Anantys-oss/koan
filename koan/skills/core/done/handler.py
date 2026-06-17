@@ -21,11 +21,18 @@ def handle(ctx):
     if not projects:
         return "No projects configured."
 
-    # Filter to specific project if requested
+    # Filter to specific project if requested (with alias support)
     if project_filter:
         matched = [
             (n, p) for n, p in projects if n.lower() == project_filter.lower()
         ]
+        if not matched:
+            from app.utils import resolve_project_alias
+            canonical = resolve_project_alias(project_filter)
+            if canonical:
+                matched = [
+                    (n, p) for n, p in projects if n.lower() == canonical.lower()
+                ]
         if not matched:
             return f"Project '{project_filter}' not found."
         projects = matched

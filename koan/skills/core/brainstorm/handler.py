@@ -84,6 +84,11 @@ def _parse_project_arg(args):
         if name.lower() == candidate:
             return name, parts[1]
 
+    from app.utils import resolve_project_alias
+    canonical = resolve_project_alias(candidate)
+    if canonical:
+        return canonical, parts[1]
+
     return None, args
 
 
@@ -108,9 +113,9 @@ def _queue_brainstorm(ctx, project_name, mission_text, topic):
 
 
 def _resolve_project_path(project_name, fallback=False, owner=None):
-    """Resolve project name to its local path."""
+    """Resolve project name or alias to its local path."""
     from pathlib import Path
-    from app.utils import get_known_projects, resolve_project_path
+    from app.utils import get_known_projects, resolve_project_alias, resolve_project_path
 
     if project_name:
         if owner:
@@ -123,6 +128,11 @@ def _resolve_project_path(project_name, fallback=False, owner=None):
         for name, path in get_known_projects():
             if Path(path).name.lower() == project_name.lower():
                 return path
+        canonical = resolve_project_alias(project_name)
+        if canonical:
+            for name, path in get_known_projects():
+                if name.lower() == canonical.lower():
+                    return path
         if not fallback:
             return None
 

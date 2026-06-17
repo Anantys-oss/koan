@@ -32,6 +32,15 @@ def handle(ctx):
             break
 
     if not matched_name:
+        from app.utils import resolve_project_alias
+        canonical = resolve_project_alias(project_name)
+        if canonical:
+            for name, path in known:
+                if name.lower() == canonical.lower():
+                    matched_name = name
+                    break
+
+    if not matched_name:
         names = ", ".join(n for n, _ in known) or "none"
         return f"Project '{project_name}' not found. Known projects: {names}"
 

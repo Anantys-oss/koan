@@ -4,6 +4,7 @@ import random
 from typing import List, Optional, Tuple
 
 from app.project_explorer import get_projects
+from app.utils import resolve_project_alias
 
 
 def handle(ctx):
@@ -51,5 +52,11 @@ def _resolve_project(
     for name, path in projects:
         if name.lower() == target:
             return name, path
+
+    canonical = resolve_project_alias(target)
+    if canonical:
+        for name, path in projects:
+            if name.lower() == canonical.lower():
+                return name, path
 
     return None, None

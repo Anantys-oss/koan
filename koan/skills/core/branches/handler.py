@@ -61,6 +61,13 @@ def _resolve_project(args: str, ctx) -> Tuple[str, Optional[str]]:
         for name, path in proj_dict.items():
             if name.lower() == args.lower():
                 return name, path
+        # Alias fallback
+        from app.utils import resolve_project_alias
+        canonical = resolve_project_alias(args)
+        if canonical:
+            for name, path in proj_dict.items():
+                if name.lower() == canonical.lower():
+                    return name, path
         return args, None
 
     # No args: auto-select only when there's a single project
