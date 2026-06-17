@@ -684,9 +684,15 @@ def is_unlimited_quota() -> bool:
     actually hits a limit, Koan pauses and requeues as usual.
 
     Config key: usage.unlimited_quota (default: False).
+
+    Safe to call unconditionally — returns False on any internal error.
     """
-    config = _load_config()
-    return bool(config.get("usage", {}).get("unlimited_quota", False))
+    try:
+        config = _load_config()
+        return bool(config.get("usage", {}).get("unlimited_quota", False))
+    except Exception as e:
+        print(f"[config] is_unlimited_quota error: {e}", file=sys.stderr)
+        return False
 
 
 def get_max_runs() -> int:

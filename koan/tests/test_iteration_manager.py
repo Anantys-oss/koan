@@ -3997,3 +3997,27 @@ class TestMaybeWarnBurnRate:
         inst.mkdir()
         _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
         mock_mark.assert_not_called()
+
+    @patch("app.config.is_unlimited_quota", return_value=True)
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 300.0, {}))
+    def test_no_warning_when_unlimited_quota(self, _pct, mock_snap_cls,
+                                             mock_outbox, _unlimited,
+                                             tmp_path):
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+        mock_outbox.assert_not_called()
+        mock_snap_cls.assert_not_called()
+
+
+class TestDowngradeIfBurningFastUnlimitedQuota:
+
+    @patch("app.config.is_unlimited_quota", return_value=True)
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_no_downgrade_when_unlimited_quota(self, mock_snap_cls, _unlimited):
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 50.0, "deep")
+        assert mode == "deep"
+        assert prev is None
+        mock_snap_cls.assert_not_called()

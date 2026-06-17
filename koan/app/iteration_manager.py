@@ -113,6 +113,9 @@ def _downgrade_if_burning_fast(instance_dir: Path, session_pct: float,
     """
     if mode == "wait" or mode not in _MODE_DOWNGRADE:
         return mode, None
+    from app.config import is_unlimited_quota
+    if is_unlimited_quota():
+        return mode, None
     try:
         from app.burn_rate import BurnRateSnapshot
         snapshot = BurnRateSnapshot(instance_dir)
@@ -246,12 +249,17 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
     """Fire a Telegram warning when projected exhaustion is imminent.
 
     Conditions (all must hold):
+      - unlimited_quota is NOT enabled
       - rolling burn rate has enough history to estimate
       - time-to-exhaustion < 60 minutes
       - session reset is still > 2 hours away (otherwise quota will reset
         before the user could meaningfully react)
       - no warning has been fired since the start of the current session
     """
+    from app.config import is_unlimited_quota
+    if is_unlimited_quota():
+        return
+
     try:
         from app.burn_rate import (
             BurnRateSnapshot,
