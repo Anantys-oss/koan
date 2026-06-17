@@ -974,6 +974,51 @@ class TestProcessNotificationCustomHandler:
         assert sample_notification["_koan_command"] == "myfix"
         assert sample_notification["_koan_author"] == "alice"
 
+    @patch("app.github_reply.post_threaded_reply", return_value=True)
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler.is_self_mention", return_value=False)
+    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    def test_custom_handler_posts_inline_reply_to_github(
+        self, mock_resolve, mock_get_comment,
+        mock_stale, mock_self, mock_processed, mock_perm,
+        mock_react, mock_read, mock_post, sample_notification, tmp_path,
+    ):
+        """When the custom handler returns an inline_reply, it should be
+        posted to GitHub via post_threaded_reply."""
+        handler_dir = tmp_path / "skills" / "my_team" / "fix"
+        handler_dir.mkdir(parents=True)
+        handler = handler_dir / "handler.py"
+        handler.write_text(
+            "def handle(ctx):\n"
+            "    return 'Fix queued for PROJ-123'\n"
+        )
+
+        registry = self._registry_with_custom_skill(handler)
+        mock_resolve.return_value = ("my_team", "alice", "koan")
+        mock_get_comment.return_value = {
+            "id": 99999,
+            "body": "@testbot myfix",
+            "user": {"login": "alice"},
+            "url": "https://api.github.com/repos/o/r/issues/comments/99999",
+        }
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"], "ack_enabled": True}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}), \
+             patch("app.utils.insert_pending_mission"):
+            success, error = process_single_notification(
+                sample_notification, registry, config, None, "testbot",
+            )
+
+        assert success is True
+        mock_post.assert_called_once()
+        body_arg = mock_post.call_args[0][3]
+        assert "Fix queued for PROJ-123" in body_arg
+
 
 class TestTryReply:
     """Tests for the _try_reply helper that generates AI replies."""

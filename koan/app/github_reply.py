@@ -293,8 +293,8 @@ def post_threaded_reply(
                 ],
             )
             return True
-        except RuntimeError:
-            log.debug("Threaded PR review reply failed, falling back to issue comment")
+        except RuntimeError as e:
+            log.debug("Threaded PR review reply failed, falling back: %s", e)
 
     # Issue/PR comments: prefix with a blockquote for visual context
     if comment_author and comment_body:

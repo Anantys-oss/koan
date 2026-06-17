@@ -210,6 +210,8 @@ class TestAskHandlerFlow:
         assert "sukria/koan" in result
         mock_run_command.assert_called_once()
         mock_post.assert_called_once()
+        args = mock_post.call_args[0]
+        assert args[:4] == ("sukria", "koan", "42", "Here is my answer.")
 
     @patch("app.utils.resolve_project_path", return_value="/path/to/project")
     @patch("app.utils.project_name_for_path", return_value="myproject")
@@ -439,6 +441,8 @@ class TestRunAskFlow:
         assert "Reply posted" in summary
         assert "sukria/koan#42" in summary
         mock_post.assert_called_once()
+        args = mock_post.call_args[0]
+        assert args[:4] == ("sukria", "koan", "42", "Here is my answer.")
 
     def test_invalid_url(self, tmp_path):
         from skills.core.ask.ask_runner import run_ask

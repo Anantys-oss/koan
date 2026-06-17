@@ -1417,7 +1417,7 @@ def process_single_notification(
             inline_issue_number = extract_issue_number_from_notification(notification)
             if inline_issue_number:
                 from app.github_reply import post_threaded_reply
-                post_threaded_reply(
+                posted = post_threaded_reply(
                     owner, repo, inline_issue_number,
                     f"🤖 {inline_reply}",
                     comment_api_url=comment_api_url,
@@ -1425,6 +1425,8 @@ def process_single_notification(
                     comment_author=comment_author,
                     comment_body=comment.get("body", ""),
                 )
+                if not posted:
+                    log.info("GitHub: failed to post inline handler ack for %s", skill.qualified_name)
         notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_QUEUED
         return True, None
 
@@ -1560,7 +1562,7 @@ def _post_command_acknowledgment(
         comment_body=comment_body,
     )
     if not posted:
-        log.debug("GitHub: failed to post command ack for /%s", command_name)
+        log.info("GitHub: failed to post command ack for /%s", command_name)
 
 
 def post_error_reply(
