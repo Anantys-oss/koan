@@ -195,6 +195,21 @@ def _extract_diff_lines(diff_text: str) -> set:
     return result
 
 
+_GREP_EXCLUDES = [
+    "--exclude-dir=.git",
+    "--exclude-dir=node_modules",
+    "--exclude-dir=.venv",
+    "--exclude-dir=venv",
+    "--exclude-dir=__pycache__",
+    "--exclude-dir=dist",
+    "--exclude-dir=build",
+    "--exclude-dir=vendor",
+    "--exclude-dir=.tox",
+    "--exclude=*.min.js",
+    "--exclude=*.map",
+]
+
+
 def _check_variants_grep(
     patterns: list,
     project_path: str,
@@ -207,12 +222,19 @@ def _check_variants_grep(
         includes = _grep_includes_for_finding(description)
         try:
             result = subprocess.run(
-                ["grep", "-rn", "-E", *includes, pattern, "."],
+                ["grep", "-rn", "-E", *_GREP_EXCLUDES, *includes, pattern, "."],
                 capture_output=True, text=True,
                 cwd=project_path, timeout=30,
                 stdin=subprocess.DEVNULL,
             )
+            if result.returncode == 1:
+                continue
             if result.returncode != 0:
+                print(
+                    f"[security_review] grep error (rc={result.returncode}) "
+                    f"for pattern '{description}': {(result.stderr or '')[:200]}",
+                    file=sys.stderr,
+                )
                 continue
             for line in result.stdout.splitlines():
                 if not line.strip():
@@ -228,7 +250,17 @@ def _check_variants_grep(
                 snippet = parts[2].strip()
                 if (filepath, lineno) not in exclude_lines:
                     hits.append((filepath, lineno, snippet))
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired:
+            print(
+                f"[security_review] grep timed out for pattern '{description}'",
+                file=sys.stderr,
+            )
+            continue
+        except (FileNotFoundError, OSError) as exc:
+            print(
+                f"[security_review] grep error for pattern '{description}': {exc}",
+                file=sys.stderr,
+            )
             continue
     return hits
 
@@ -237,12 +269,12 @@ def _build_semgrep_yaml(patterns: list) -> str:
     """Build a semgrep YAML rules file from (pattern, description) pairs."""
     rules = []
     for i, (pattern, description) in enumerate(patterns):
-        escaped = pattern.replace("\\", "\\\\").replace("'", "''")
+        safe = pattern.replace("'", "''")
         langs = _semgrep_languages_for_finding(description)
         lang_str = ", ".join(langs)
         rules.append(
             f"  - id: variant-{i}\n"
-            f"    pattern-regex: '{escaped}'\n"
+            f"    pattern-regex: '{safe}'\n"
             f"    message: Variant of security finding\n"
             f"    languages: [{lang_str}]\n"
             f"    severity: WARNING"
@@ -318,8 +350,7 @@ def _check_variants(
 ) -> List[Tuple[str, int, str]]:
     """Scan project for variant occurrences of security patterns.
 
-    Prefers semgrep (AST-level precision) when available; falls back to grep
-    on semgrep failure or absence.
+    Prefers semgrep when available; falls back to grep on failure or absence.
     """
     if not patterns:
         return []
@@ -349,6 +380,15 @@ def _load_variant_tracker(instance_dir: str) -> dict:
             f"[security_review] Corrupt variant tracker {path}: {exc}",
             file=sys.stderr,
         )
+        backup = path.with_suffix(".json.corrupt")
+        try:
+            path.rename(backup)
+            print(
+                f"[security_review] Preserved corrupt tracker as {backup}",
+                file=sys.stderr,
+            )
+        except OSError:
+            pass
         return {}
 
 
@@ -385,9 +425,15 @@ def _dispatch_variant_missions(
         if fingerprint in tracker:
             continue
 
+        safe_snippet = re.sub(
+            r"""(?:api[_-]?key|secret[_-]?key|password|token)\s*=\s*['"][^'"]*['"]""",
+            "<redacted>",
+            snippet[:80],
+            flags=re.IGNORECASE,
+        )
         mission_text = (
             f"- [security-variant] Investigate security pattern variant "
-            f"in `{filepath}` line {lineno}: `{snippet[:80]}` "
+            f"in `{filepath}` line {lineno}: `{safe_snippet}` "
             f"[project:{project_name}]"
         )
         from app.utils import insert_pending_mission

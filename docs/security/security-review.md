@@ -59,7 +59,7 @@ projects:
 
 ### Variant analysis
 
-When variant analysis is enabled, security findings from the diff are used to scan the **entire project** for similar occurrences. This turns a single-diff review into a codebase-wide vulnerability sweep. Semgrep is preferred when available (AST-level precision); grep is the fallback.
+When variant analysis is enabled, security findings from the diff are used to scan the **entire project** for similar occurrences. This turns a single-diff review into a codebase-wide vulnerability sweep. Semgrep is preferred when available (structured JSON output, language-aware file selection); grep is the fallback.
 
 ```yaml
 defaults:
@@ -164,6 +164,6 @@ When variant analysis is enabled and the diff contains security-sensitive patter
 3. **Excludes diff lines** to avoid reporting the already-reviewed code
 4. **Logs to journal** with a `[VARIANT]` section listing all hits
 5. **Dispatches investigation missions** (capped by `max_variant_missions`) tagged `[security-variant]`
-6. **Deduplicates** via a fingerprint tracker (SHA-256 of `filepath:lineno`) to avoid re-dispatching
+6. **Deduplicates** via a fingerprint tracker (SHA-256 of `project:filepath:lineno`) to avoid re-dispatching
 
-Semgrep provides AST-level precision (ignores comments and strings); grep is the always-available fallback. Install semgrep for better results, but it is not required.
+Semgrep is preferred for structured JSON output and language-aware file selection; grep is the always-available fallback. Both use regex matching — semgrep's `pattern-regex` rules do not provide AST-level filtering. Install semgrep for better results, but it is not required.
