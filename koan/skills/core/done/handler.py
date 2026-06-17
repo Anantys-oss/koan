@@ -21,14 +21,13 @@ def handle(ctx):
     if not projects:
         return "No projects configured."
 
-    # Filter to specific project if requested
+    # Filter to specific project if requested (with alias support)
     if project_filter:
-        matched = [
-            (n, p) for n, p in projects if n.lower() == project_filter.lower()
-        ]
-        if not matched:
+        from app.utils import resolve_project_from_list
+        name, path = resolve_project_from_list(projects, project_filter)
+        if not name:
             return f"Project '{project_filter}' not found."
-        projects = matched
+        projects = [(name, path)]
 
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     # {project_name: {"merged": [...], "open": [...]}}

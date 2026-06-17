@@ -29,8 +29,9 @@ def handle(ctx):
         return "No session data yet. Stats will appear after the first completed run."
 
     if project_filter:
-        # case-insensitive project lookup
-        filtered = [o for o in outcomes if o.get("project", "").lower() == project_filter.lower()]
+        from app.utils import resolve_project_alias
+        canonical = resolve_project_alias(project_filter) or project_filter
+        filtered = [o for o in outcomes if o.get("project", "").lower() == canonical.lower()]
         if not filtered:
             known = sorted(set(o.get("project", "") for o in all_outcomes))
             return (

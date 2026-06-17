@@ -7,7 +7,7 @@ def handle(ctx):
     Queues a mission that updates or creates CLAUDE.md for the specified
     project, focusing on architecturally significant changes.
     """
-    from app.utils import get_known_projects, insert_pending_mission
+    from app.utils import get_known_projects, insert_pending_mission, resolve_project_from_list
 
     args = ctx.args.strip()
 
@@ -21,15 +21,11 @@ def handle(ctx):
         )
 
     # Extract project name (first word)
-    project_name = args.split()[0].lower()
+    project_name = args.split()[0]
 
     # Resolve project path
     known = get_known_projects()
-    matched_name = None
-    for name, path in known:
-        if name.lower() == project_name:
-            matched_name = name
-            break
+    matched_name, _ = resolve_project_from_list(known, project_name)
 
     if not matched_name:
         names = ", ".join(n for n, _ in known) or "none"

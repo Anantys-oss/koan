@@ -1051,6 +1051,44 @@ def resolve_project_name_and_path(
     return canonical, resolve_project_path(canonical)
 
 
+def resolve_project_from_list(
+    projects: List[Tuple[str, str]], target: str
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve project by exact name then alias from a (name, path) list.
+
+    Returns (canonical_name, path) or (None, None).
+    """
+    lower = target.lower()
+    for name, path in projects:
+        if name.lower() == lower:
+            return name, path
+    canonical = resolve_project_alias(target)
+    if canonical:
+        canon_lower = canonical.lower()
+        for name, path in projects:
+            if name.lower() == canon_lower:
+                return name, path
+    return None, None
+
+
+def resolve_project_from_dict(projects: dict, target: str) -> Optional[str]:
+    """Resolve project by exact name then alias from a project dict.
+
+    Returns the canonical key from the dict, or None.
+    """
+    lower = target.lower()
+    for key in projects:
+        if key.lower() == lower:
+            return key
+    canonical = resolve_project_alias(target)
+    if canonical:
+        canon_lower = canonical.lower()
+        for key in projects:
+            if key.lower() == canon_lower:
+                return key
+    return None
+
+
 def append_to_outbox(outbox_path: Path, content: str, priority=None):
     """Append content to outbox.md with file locking.
 

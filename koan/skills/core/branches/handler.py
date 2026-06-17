@@ -57,10 +57,10 @@ def _resolve_project(args: str, ctx) -> Tuple[str, Optional[str]]:
     proj_dict = dict(projects)
 
     if args:
-        # Match by name
-        for name, path in proj_dict.items():
-            if name.lower() == args.lower():
-                return name, path
+        from app.utils import resolve_project_from_list
+        name, path = resolve_project_from_list(list(proj_dict.items()), args)
+        if name:
+            return name, path
         return args, None
 
     # No args: auto-select only when there's a single project

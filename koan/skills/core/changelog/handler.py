@@ -122,19 +122,16 @@ def _parse_args(args: str) -> Tuple[str, datetime, str]:
 
 
 def _resolve_project(ctx, project_name: str) -> Optional[str]:
-    """Resolve project to a filesystem path."""
-    from app.utils import get_known_projects
+    """Resolve project name or alias to a filesystem path."""
+    from app.utils import get_known_projects, resolve_project_from_list
 
     projects = get_known_projects()
     if not projects:
         return None
 
     if project_name:
-        # Find matching project (case-insensitive)
-        for name, path in projects:
-            if name.lower() == project_name.lower():
-                return path
-        return None
+        _, path = resolve_project_from_list(projects, project_name)
+        return path
 
     # No project specified — use first project if only one
     if len(projects) == 1:

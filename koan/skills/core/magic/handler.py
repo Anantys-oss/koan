@@ -13,6 +13,7 @@ from app.project_explorer import (
     get_projects,
 )
 from app.text_utils import clean_cli_response
+from app.utils import resolve_project_from_list
 
 
 def handle(ctx):
@@ -88,8 +89,5 @@ def handle(ctx):
 def _resolve_project(
     projects: List[Tuple[str, str]], target: str
 ) -> Tuple[str, str]:
-    """Resolve a project by name. Returns (name, path) or (None, None)."""
-    for name, path in projects:
-        if name.lower() == target:
-            return name, path
-    return None, None
+    """Resolve a project by name or alias. Returns (name, path) or (None, None)."""
+    return resolve_project_from_list(projects, target)

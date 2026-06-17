@@ -289,10 +289,11 @@ def _check_missing_permissions(content, name, findings):
 # ---------------------------------------------------------------------------
 
 def _resolve_project_path(project_name):
-    """Resolve a project name to its filesystem path."""
-    from app.utils import resolve_project_path
+    """Resolve a project name or alias to its filesystem path."""
+    from app.utils import resolve_project_name_and_path
 
-    return resolve_project_path(project_name)
+    _, path = resolve_project_name_and_path(project_name)
+    return path
 
 
 # ---------------------------------------------------------------------------

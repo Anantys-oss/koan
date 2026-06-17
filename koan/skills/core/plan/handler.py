@@ -69,33 +69,30 @@ def _parse_project_arg(args):
     if len(parts) < 2:
         return None, args
 
-    candidate = parts[0].lower()
-    known = get_known_projects()
-    for name, _ in known:
-        if name.lower() == candidate:
-            return name, parts[1]
+    candidate = parts[0]
+    from app.utils import resolve_project_from_list
+    name, _ = resolve_project_from_list(get_known_projects(), candidate)
+    if name:
+        return name, parts[1]
 
     return None, args
 
 
 def _resolve_project_path(project_name, fallback=False, owner=None):
-    """Resolve project name to its local path.
-
-    Delegates to utils.resolve_project_path() for name/owner matching,
-    but manages its own fallback logic (return first project if nothing matches).
-    """
+    """Resolve project name or alias to its local path."""
     from pathlib import Path
-    from app.utils import get_known_projects, resolve_project_path
+    from app.utils import get_known_projects, resolve_project_from_list, resolve_project_path
 
     if project_name:
         if owner:
             path = resolve_project_path(project_name, owner=owner)
             if path:
                 return path
-        for name, path in get_known_projects():
-            if name.lower() == project_name.lower():
-                return path
-        for name, path in get_known_projects():
+        known = get_known_projects()
+        _, path = resolve_project_from_list(known, project_name)
+        if path:
+            return path
+        for name, path in known:
             if Path(path).name.lower() == project_name.lower():
                 return path
         if not fallback:

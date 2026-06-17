@@ -397,3 +397,197 @@ class TestAliasInSkillArgs:
             project, text = detect_project_from_text("tt explore auth")
         assert project == "Template2"
         assert text == "explore auth"
+
+
+# ---------------------------------------------------------------------------
+# Alias resolution in skill handler _resolve_project functions
+# ---------------------------------------------------------------------------
+
+class TestAliasInSkillHandlers:
+    """Tests that skill handlers resolve aliases in their project resolution."""
+
+    @patch("app.project_explorer.get_projects",
+           return_value=[("Template2", "/path/t2"), ("koan", "/path/k")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_ai_resolve_project_alias(self, _aliases, _projects):
+        from skills.core.ai.handler import _resolve_project
+        name, path = _resolve_project(
+            [("Template2", "/path/t2"), ("koan", "/path/k")], "tt"
+        )
+        assert name == "Template2"
+        assert path == "/path/t2"
+
+    @patch("app.project_explorer.get_projects",
+           return_value=[("Template2", "/path/t2")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_ai_prefers_exact_name_over_alias(self, _aliases, _projects):
+        from skills.core.ai.handler import _resolve_project
+        projects = [("tt", "/path/tt"), ("Template2", "/path/t2")]
+        name, path = _resolve_project(projects, "tt")
+        assert name == "tt"
+        assert path == "/path/tt"
+
+    @patch("app.utils.load_project_aliases", return_value={})
+    def test_ai_unknown_project_returns_none(self, _aliases):
+        from skills.core.ai.handler import _resolve_project
+        name, path = _resolve_project([("koan", "/path/k")], "nope")
+        assert name is None
+        assert path is None
+
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_deep_resolve_project_alias(self, _aliases):
+        from skills.core.deep.handler import _resolve_project
+        name, path = _resolve_project(
+            [("Template2", "/path/t2"), ("koan", "/path/k")], "tt"
+        )
+        assert name == "Template2"
+        assert path == "/path/t2"
+
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_magic_resolve_project_alias(self, _aliases):
+        from skills.core.magic.handler import _resolve_project
+        name, path = _resolve_project(
+            [("Template2", "/path/t2"), ("koan", "/path/k")], "tt"
+        )
+        assert name == "Template2"
+        assert path == "/path/t2"
+
+    @patch("app.utils.get_known_projects",
+           return_value=[("Template2", "/path/t2"), ("koan", "/path/k")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_branches_resolve_project_alias(self, _aliases, _projects):
+        from skills.core.branches.handler import _resolve_project
+        ctx = MagicMock()
+        name, path = _resolve_project("tt", ctx)
+        assert name == "Template2"
+        assert path == "/path/t2"
+
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_explore_resolve_project_alias(self, _aliases):
+        from skills.core.explore.handler import _resolve_project_name
+        projects = {"Template2": {"exploration": True}, "koan": {}}
+        result = _resolve_project_name(projects, "tt")
+        assert result == "Template2"
+
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_autoreview_resolve_project_alias(self, _aliases):
+        from skills.core.autoreview.handler import _resolve_project_name
+        projects = {"Template2": {"autoreview": True}, "koan": {}}
+        result = _resolve_project_name(projects, "tt")
+        assert result == "Template2"
+
+    @patch("app.utils.get_known_projects",
+           return_value=[("Template2", "/path/t2")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_claudemd_resolve_alias(self, _aliases, _projects, koan_root):
+        from skills.core.claudemd.handler import handle
+        ctx = MagicMock()
+        ctx.args = "tt"
+        ctx.instance_dir = koan_root / "instance"
+        with patch("app.utils.insert_pending_mission"):
+            result = handle(ctx)
+        assert "Template2" in result
+        assert "queued" in result.lower()
+
+    @patch("app.utils.get_known_projects",
+           return_value=[("Template2", "/path/t2")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_changelog_resolve_alias(self, _aliases, _projects):
+        from skills.core.changelog.handler import _resolve_project
+        result = _resolve_project(None, "tt")
+        assert result == "/path/t2"
+
+    @patch("app.utils.get_known_projects",
+           return_value=[("Template2", "/path/t2")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_done_resolve_alias(self, _aliases, _projects):
+        from skills.core.done.handler import handle
+        ctx = MagicMock()
+        ctx.args = "tt"
+        with patch("app.github.get_gh_username", return_value="bot"), \
+             patch("skills.core.done.handler._get_repo_slug", return_value=None):
+            result = handle(ctx)
+        assert "No activity" in result
+
+    @patch("app.utils.get_known_projects",
+           return_value=[("Template2", "/path/t2")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_plan_parse_project_alias(self, _aliases, _projects):
+        from skills.core.plan.handler import _parse_project_arg
+        project, remainder = _parse_project_arg("tt add dark mode")
+        assert project == "Template2"
+        assert remainder == "add dark mode"
+
+    @patch("app.utils.get_known_projects",
+           return_value=[("Template2", "/path/t2")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_brainstorm_parse_project_alias(self, _aliases, _projects):
+        from skills.core.brainstorm.handler import _parse_project_arg
+        project, remainder = _parse_project_arg("tt improve search")
+        assert project == "Template2"
+        assert remainder == "improve search"
+
+    @patch("app.utils.get_known_projects",
+           return_value=[("Template2", "/path/t2")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_incident_parse_project_alias(self, _aliases, _projects):
+        from skills.core.incident.handler import _parse_project_arg
+        project, remainder = _parse_project_arg("tt TypeError: bad value")
+        assert project == "Template2"
+        assert remainder == "TypeError: bad value"
+
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_stats_resolve_alias(self, _aliases, koan_root):
+        """Stats handler filters by alias — call handle() directly."""
+        import json
+        from datetime import datetime
+
+        instance_dir = koan_root / "instance"
+        outcomes_path = instance_dir / "session_outcomes.json"
+        ts = datetime.now().isoformat()
+        outcomes_path.write_text(json.dumps([
+            {"project": "Template2", "mode": "implement",
+             "timestamp": ts, "duration_minutes": 5, "outcome": "productive"},
+        ]))
+
+        from skills.core.stats.handler import handle
+        ctx = MagicMock()
+        ctx.args = "tt"
+        ctx.instance_dir = instance_dir
+        result = handle(ctx)
+        assert "Template2" in result
+
+    @patch("app.utils.get_known_projects",
+           return_value=[("Template2", "/path/t2")])
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_deepplan_parse_project_alias(self, _aliases, _projects):
+        from skills.core.deepplan.handler import _parse_project_arg
+        project, remainder = _parse_project_arg("tt refactor auth module")
+        assert project == "Template2"
+        assert remainder == "refactor auth module"
+
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_diagnose_resolve_alias(self, _aliases, koan_root):
+        """Diagnose handler resolves alias for project filter."""
+        instance_dir = koan_root / "instance"
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
+            "## Failed\n\n"
+            "- [project:Template2] fix bug "
+            "❌ (2026-06-15 10:00)\n"
+        )
+        from skills.core.diagnose.handler import handle
+        ctx = MagicMock()
+        ctx.args = "tt"
+        ctx.instance_dir = instance_dir
+        result = handle(ctx)
+        assert "queued" in result.lower() or "fix bug" in result.lower() or "Diagnosis" in result
+
+    def test_gha_audit_resolve_alias(self):
+        """gha_audit _resolve_project_path resolves via alias."""
+        from skills.core.gha_audit.handler import _resolve_project_path
+        with patch("app.utils.resolve_project_name_and_path",
+                   return_value=("Template2", "/path/t2")):
+            result = _resolve_project_path("tt")
+        assert result == "/path/t2"
