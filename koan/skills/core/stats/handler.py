@@ -18,6 +18,10 @@ def handle(ctx):
 
     all_outcomes = _load_outcomes(instance_dir / "session_outcomes.json")
 
+    if project_filter:
+        from app.utils import resolve_project_alias
+        project_filter = resolve_project_alias(project_filter) or project_filter
+
     if show_perf:
         if not all_outcomes:
             return "No session data yet. Stats will appear after the first completed run."
@@ -29,9 +33,7 @@ def handle(ctx):
         return "No session data yet. Stats will appear after the first completed run."
 
     if project_filter:
-        from app.utils import resolve_project_alias
-        canonical = resolve_project_alias(project_filter) or project_filter
-        filtered = [o for o in outcomes if o.get("project", "").lower() == canonical.lower()]
+        filtered = [o for o in outcomes if o.get("project", "").lower() == project_filter.lower()]
         if not filtered:
             known = sorted(set(o.get("project", "") for o in all_outcomes))
             return (

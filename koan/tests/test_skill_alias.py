@@ -557,6 +557,28 @@ class TestAliasInSkillHandlers:
         result = handle(ctx)
         assert "Template2" in result
 
+    @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
+    def test_stats_perf_resolve_alias(self, _aliases, koan_root):
+        """Stats --perf mode resolves alias before filtering outcomes."""
+        import json
+        from datetime import datetime
+
+        instance_dir = koan_root / "instance"
+        outcomes_path = instance_dir / "session_outcomes.json"
+        ts = datetime.now().isoformat()
+        outcomes_path.write_text(json.dumps([
+            {"project": "Template2", "mode": "implement", "provider": "claude",
+             "timestamp": ts, "duration_minutes": 5, "outcome": "productive"},
+        ]))
+
+        from skills.core.stats.handler import handle
+        ctx = MagicMock()
+        ctx.args = "tt --perf"
+        ctx.instance_dir = instance_dir
+        result = handle(ctx)
+        assert "Template2" in result
+        assert "No session data" not in result
+
     @patch("app.utils.get_known_projects",
            return_value=[("Template2", "/path/t2")])
     @patch("app.utils.load_project_aliases", return_value={"tt": "Template2"})
