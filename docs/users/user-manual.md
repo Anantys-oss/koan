@@ -2059,6 +2059,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/inbox` | — | B | Force GitHub notification check + show queued mail count (works while paused) |
 | `/quota [N]` | `/q` | B | Check LLM quota (live), or override remaining % |
 | `/chat <msg>` | — | B | Force chat mode (bypass mission detection) |
+| `/time` | `/date` | B | Show current server date and time |
 | `/version` | `/ver`, `/v` | B | Show Kōan version |
 | `/verbose` | — | B | Enable real-time progress updates |
 | `/silent` | — | B | Disable real-time progress updates |
