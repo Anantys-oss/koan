@@ -651,6 +651,13 @@ class TestIsUnlimitedQuota:
         with _mock_config({"usage": {"unlimited_quota": "yes"}}):
             assert is_unlimited_quota() is True
 
+    @pytest.mark.parametrize("bad_usage", [None, True, 42, "yes", [1, 2]])
+    def test_non_dict_usage_returns_false(self, bad_usage):
+        from app.config import is_unlimited_quota
+
+        with _mock_config({"usage": bad_usage}):
+            assert is_unlimited_quota() is False
+
 
 class TestGetMaxRuns:
     def test_default(self):
