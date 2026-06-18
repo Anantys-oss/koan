@@ -88,6 +88,9 @@ _VIEW_SECTIONS: list = [
     ("failed", "Failed"),
 ]
 
+# Valid status values for MissionRecord.status — used by __post_init__ to reject typos.
+_VALID_STATUSES: frozenset[str] = frozenset({"pending", "in_progress", "done", "failed"})
+
 # Caps applied in the generated view (not in the JSON store)
 _DONE_CAP = 50
 _FAILED_CAP = 30
@@ -119,6 +122,12 @@ class MissionRecord:
     tags: list[str]                # e.g. ["flushed", "stagnation"]
     complexity: str | None         # None | "trivial" | "simple" | "medium" | "complex"
     crash_count: int               # crash-recovery requeue count (replaces [r:N])
+
+    def __post_init__(self) -> None:
+        if self.status not in _VALID_STATUSES:
+            raise ValueError(
+                f"Invalid status {self.status!r}; must be one of {sorted(_VALID_STATUSES)}"
+            )
 
     def display_title(self, max_length: int = 120) -> str:
         """Return a display-formatted title: '[project] text', truncated.
