@@ -58,7 +58,8 @@ def _table_has_expected_columns(conn: sqlite3.Connection) -> bool:
             return False
         existing = {col[0] for col in row}
         return _EXPECTED_COLUMNS.issubset(existing)
-    except sqlite3.DatabaseError:
+    except sqlite3.DatabaseError as e:
+        logger.warning("[memory_db] _table_has_expected_columns failed: %s", e)
         return False
 
 
@@ -83,12 +84,18 @@ def ensure_db(instance: str) -> Optional[sqlite3.Connection]:
         # Check if existing table needs schema upgrade
         try:
             conn.execute("SELECT * FROM entries LIMIT 0")
-            if not _table_has_expected_columns(conn):
-                conn.execute("DROP TABLE entries")
-                conn.commit()
-                logger.info("[memory_db] Dropped old entries table for schema upgrade")
         except sqlite3.OperationalError:
             pass  # table doesn't exist yet
+        else:
+            if not _table_has_expected_columns(conn):
+                try:
+                    conn.execute("DROP TABLE entries")
+                    conn.commit()
+                    logger.info("[memory_db] Dropped old entries table for schema upgrade")
+                except sqlite3.DatabaseError as e:
+                    logger.warning("[memory_db] Failed to drop old entries table: %s", e)
+                    conn.close()
+                    return None
 
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS entries "

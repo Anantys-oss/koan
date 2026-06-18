@@ -1491,7 +1491,7 @@ class MemoryManager:
                                 removed += 1
                                 continue
                         except ValueError:
-                            pass
+                            logger.warning("[memory] Malformed expires_at=%r in entry ts=%s", expires_str, obj.get("ts", "?"))
                     kept.append(line)
                 except json.JSONDecodeError:
                     kept.append(line)  # preserve malformed lines rather than lose them
