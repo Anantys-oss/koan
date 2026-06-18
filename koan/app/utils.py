@@ -576,18 +576,19 @@ def insert_pending_mission(
         True if the mission was inserted, False if it was a duplicate
         (same command + URL already pending or in progress).
     """
-    from app.missions import is_duplicate_mission
     from app.mission_store import locked_store
 
     project = project or ""
     instance_dir = str(KOAN_ROOT / "instance")
-    inserted = True
 
     with locked_store(instance_dir) as store:
-        if is_duplicate_mission(store.to_markdown(), text):
-            inserted = False
-        else:
-            store.add(text, project, urgent=urgent)
+        active_before = (
+            len(store.get_by_status("pending")) + len(store.get_by_status("in_progress"))
+        )
+        store.add(text, project, urgent=urgent)
+        inserted = (
+            len(store.get_by_status("pending")) + len(store.get_by_status("in_progress"))
+        ) > active_before
 
     return inserted
 

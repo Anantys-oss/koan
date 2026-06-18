@@ -3714,9 +3714,10 @@ class TestMaybeInjectDiagnosticMission:
     })
     def test_empty_heavy_injects_dead_code(
         self, _mock_metrics, _mock_trend, _mock_stale, _mock_rates,
-        _mock_cfg, instance_dir,
+        _mock_cfg, instance_dir, monkeypatch,
     ):
         self._make_missions_file(instance_dir)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
         result = _maybe_inject_diagnostic_mission(
             "koan", str(instance_dir), "deep",
         )
@@ -3735,9 +3736,10 @@ class TestMaybeInjectDiagnosticMission:
     @patch("app.session_tracker.get_staleness_score", return_value=5)
     @patch("app.mission_metrics.compute_project_trend", return_value="declining")
     def test_cooldown_prevents_second_injection(
-        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir, monkeypatch,
     ):
         self._make_missions_file(instance_dir)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
 
         # First injection should succeed
         result1 = _maybe_inject_diagnostic_mission(
@@ -3763,10 +3765,11 @@ class TestMaybeInjectDiagnosticMission:
     @patch("app.session_tracker.get_staleness_score", return_value=5)
     @patch("app.mission_metrics.compute_project_trend", return_value="declining")
     def test_different_project_not_blocked_by_cooldown(
-        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir, monkeypatch,
     ):
         """Cooldown for project A should not block project B."""
         self._make_missions_file(instance_dir)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
         _save_diagnostic_cooldown(str(instance_dir), "backend")
 
         result = _maybe_inject_diagnostic_mission(

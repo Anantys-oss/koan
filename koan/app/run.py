@@ -2179,17 +2179,17 @@ def _start_mission_in_file(instance: str, mission_title: str, project_name: str 
         from app.mission_store import locked_store
         with locked_store(instance) as store:
             stale = store.get_by_status("in_progress")[:]
-            if stale:
-                titles = ", ".join(r.text[:50] for r in stale)
-                log("warning", (
-                    f"Sanity flush: {len(stale)} stale In Progress mission(s) "
-                    f"moved to Failed by MissionStore.start() — recover.py missed them: {titles}"
-                ))
             moved = store.start(mission_title)
         if not moved:
             log("warning", f"Mission transition unconfirmed — '{mission_title[:60]}' "
                 "not found in Pending. Possible text normalisation mismatch or race condition.")
             return False
+        if stale:
+            titles = ", ".join(r.text[:50] for r in stale)
+            log("warning", (
+                f"Sanity flush: {len(stale)} stale In Progress mission(s) "
+                f"moved to Failed by MissionStore.start() — recover.py missed them: {titles}"
+            ))
         # Clear the retry counter only if a cap was previously hit (deliberate
         # human retry) — stagnation-retry requeues must keep their count intact
         # so the stagnation cap check in _finalize_mission still fires. The

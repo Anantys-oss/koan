@@ -47,11 +47,18 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional
+
+from app.utils import atomic_write
+from collections.abc import Generator
+from typing import Any
 
 # Module-level in-process lock. Held alongside the per-instance file lock so
 # threads within the same process do not race on the JSON store.
 _STORE_LOCK = threading.Lock()
+
+# Sidecar lock filename — single source of truth used by both locked_store()
+# and MissionStore._lock_path().
+_STORE_LOCK_FILENAME = ".missions-store.lock"
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -69,7 +76,7 @@ _COMPLETED_PATTERN = re.compile(
 _CRASH_COUNT_RE = re.compile(r"\s*\[r:(\d+)\]")
 # [complexity:X]
 _COMPLEXITY_RE = re.compile(r"\s*\[complexity:([a-zA-Z]+)\]")
-# [flushed], [stagnation], and generic single-word tags in brackets
+# [flushed], [stagnation] — add new tag names here to survive Markdown round-trips
 _KNOWN_TAG_RE = re.compile(r"\[(flushed|stagnation)\]", re.IGNORECASE)
 
 # Section render order and display names for to_markdown().
@@ -105,12 +112,12 @@ class MissionRecord:
     id: str                        # UUID — stable across entire lifecycle
     text: str                      # Clean text; NO lifecycle markers
     status: str                    # "pending" | "in_progress" | "done" | "failed"
-    project: str                   # "" if unset
-    queued_at: Optional[str]       # ISO8601 "YYYY-MM-DDTHH:MM" or None
-    started_at: Optional[str]
-    completed_at: Optional[str]
-    tags: List[str]                # e.g. ["flushed", "stagnation"]
-    complexity: Optional[str]      # None | "trivial" | "simple" | "medium" | "complex"
+    project: str                   # "" if unset (always str, never None)
+    queued_at: str | None          # ISO8601 "YYYY-MM-DDTHH:MM" or None
+    started_at: str | None
+    completed_at: str | None
+    tags: list[str]                # e.g. ["flushed", "stagnation"]
+    complexity: str | None         # None | "trivial" | "simple" | "medium" | "complex"
     crash_count: int               # crash-recovery requeue count (replaces [r:N])
 
     def display_title(self, max_length: int = 120) -> str:
@@ -142,7 +149,7 @@ class MissionRecord:
                 return marker
         return ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict for JSON persistence."""
         return {
             "id": self.id,
@@ -158,7 +165,7 @@ class MissionRecord:
         }
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "MissionRecord":
+    def from_dict(cls, d: dict[str, Any]) -> "MissionRecord":
         """Deserialize from a dict loaded from JSON."""
         return cls(
             id=d.get("id", str(uuid.uuid4())),
@@ -210,15 +217,15 @@ class MissionStore:
         self._instance_dir = Path(instance_dir)
         # Ordered list of all records (across all statuses).
         # Within each status the list order defines queue position.
-        self._records: List[MissionRecord] = []
+        self._records: list[MissionRecord] = []
         # Ideas backlog (the ``## Ideas`` section). Each item is the idea
         # content with the leading ``- `` stripped. Ideas are never picked up
         # by the agent loop; the store owns them only so to_markdown() does
         # not destroy the section when it regenerates missions.md.
-        self._ideas: List[str] = []
+        self._ideas: list[str] = []
         # sha256 of the last missions.md content we wrote, used to detect
         # human edits between save() calls.
-        self._last_view_hash: Optional[str] = None
+        self._last_view_hash: str | None = None
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -234,7 +241,7 @@ class MissionStore:
 
     def _lock_path(self) -> Path:
         """Sidecar lock file path for the JSON store."""
-        return self._instance_dir / ".missions-store.lock"
+        return self._instance_dir / _STORE_LOCK_FILENAME
 
     # ------------------------------------------------------------------
     # Hashing
@@ -304,13 +311,11 @@ class MissionStore:
         The generated ``missions.md`` is compatible with all existing parsers
         (``parse_sections()``, ``extract_project_tag()``, etc.).
         """
-        from app.utils import atomic_write
-
         view_content = self.to_markdown()
         view_hash = _view_hash(view_content)
         self._last_view_hash = view_hash
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "records": [r.to_dict() for r in self._records],
             "ideas": self._ideas,
             "view_hash": view_hash,
@@ -329,7 +334,7 @@ class MissionStore:
     # Query
     # ------------------------------------------------------------------
 
-    def find(self, text: str) -> Optional[MissionRecord]:
+    def find(self, text: str) -> MissionRecord | None:
         """Find a record by canonical key match.
 
         Uses :func:`app.missions.canonical_mission_key` to strip lifecycle
@@ -350,7 +355,7 @@ class MissionStore:
                 return record
         return None
 
-    def get_by_status(self, status: str) -> List[MissionRecord]:
+    def get_by_status(self, status: str) -> list[MissionRecord]:
         """Return all records with the given *status* in queue order.
 
         Args:
@@ -383,7 +388,7 @@ class MissionStore:
         self,
         text: str,
         project: str | None = None,
-        complexity: Optional[str] = None,
+        complexity: str | None = None,
         *,
         urgent: bool = False,
     ) -> MissionRecord:
@@ -494,7 +499,7 @@ class MissionStore:
         record.completed_at = self._now_display()
         return True
 
-    def fail(self, text: str, extra_tags: Optional[List[str]] = None) -> bool:
+    def fail(self, text: str, extra_tags: list[str] | None = None) -> bool:
         """Move the matching mission to ``failed``.
 
         Searches ``in_progress`` and ``pending`` sections, mirroring
@@ -547,12 +552,21 @@ class MissionStore:
         record.completed_at = None
         record.crash_count += 1
 
-        # Prepend: insert before the first pending record, or at index 0
-        insert_at = 0
-        for i, r in enumerate(self._records):
-            if r.status == "pending":
-                insert_at = i
-                break
+        # Prepend to the pending section: find the first pending record.
+        # When none exist, insert after the last in-progress record (or at 0).
+        first_pending = next(
+            (i for i, r in enumerate(self._records) if r.status == "pending"),
+            None,
+        )
+        if first_pending is not None:
+            insert_at = first_pending
+        else:
+            last_ip = next(
+                (i for i in reversed(range(len(self._records)))
+                 if self._records[i].status == "in_progress"),
+                -1,
+            )
+            insert_at = last_ip + 1
         self._records.insert(insert_at, record)
         return True
 
@@ -571,7 +585,7 @@ class MissionStore:
         self._records.remove(record)
         return True
 
-    def flush_stale_in_progress(self) -> List[MissionRecord]:
+    def flush_stale_in_progress(self) -> list[MissionRecord]:
         """Move all ``in_progress`` records to ``failed`` with ``[flushed]`` tag.
 
         Used at startup (mirrors ``recover.py``).  Under normal operation the
@@ -626,9 +640,9 @@ class MissionStore:
         # Track which record IDs we've matched so we can preserve unmatched ones
         matched_ids: set = set()
         # New ordering to replace self._records (preserves unmatched records at end)
-        new_records: List[MissionRecord] = []
+        new_records: list[MissionRecord] = []
 
-        for status in ("pending", "in_progress", "done", "failed"):
+        for status, _ in _VIEW_SECTIONS:
             for raw_item in sections.get(status, []):
                 # Use first line for key derivation (multi-line missions)
                 first_line = raw_item.split("\n")[0].strip()
@@ -769,7 +783,7 @@ class MissionStore:
     # Queue-manipulation helpers
     # ------------------------------------------------------------------
 
-    def get_pending_at(self, index: int) -> Optional["MissionRecord"]:
+    def get_pending_at(self, index: int) -> "MissionRecord | None":
         """Return the *index*-th pending record (0-based), or None."""
         pending = self.get_by_status("pending")
         if 0 <= index < len(pending):
@@ -893,7 +907,7 @@ class MissionStore:
     # Ideas backlog (## Ideas section)
     # ------------------------------------------------------------------
 
-    def get_ideas(self) -> List[str]:
+    def get_ideas(self) -> list[str]:
         """Return the ideas backlog as ``"- ..."`` lines (parse_ideas format)."""
         return [f"- {t}" for t in self._ideas]
 
@@ -905,7 +919,7 @@ class MissionStore:
         """
         self._ideas.append(_strip_list_marker(entry))
 
-    def delete_idea(self, index: int) -> Optional[str]:
+    def delete_idea(self, index: int) -> str | None:
         """Delete the idea at *index* (1-based).
 
         Returns:
@@ -917,7 +931,7 @@ class MissionStore:
         removed = self._ideas.pop(index - 1)
         return f"- {removed}"
 
-    def promote_idea(self, index: int) -> Optional[str]:
+    def promote_idea(self, index: int) -> str | None:
         """Promote the idea at *index* (1-based) to the top of the pending queue.
 
         Returns:
@@ -930,7 +944,7 @@ class MissionStore:
         self._add_pending_top(idea_text)
         return f"- {idea_text}"
 
-    def promote_all_ideas(self) -> List[str]:
+    def promote_all_ideas(self) -> list[str]:
         """Promote all ideas to the pending queue (preserving order).
 
         Returns:
@@ -992,7 +1006,9 @@ class MissionStore:
             content = ""
 
         if not content.strip():
-            # Nothing to migrate — return an empty store
+            # Nothing to migrate — save to create missions.json so subsequent
+            # loads skip migration entirely rather than re-entering this path.
+            store.save()
             return store
 
         # Preserve the Ideas backlog across migration
@@ -1022,8 +1038,10 @@ def locked_store(instance_dir: str) -> Generator[MissionStore, None, None]:
 
     Acquires both the in-process thread lock and the per-instance file lock,
     then yields a freshly loaded :class:`MissionStore`.  On clean exit the
-    store is saved; on exception the save is skipped so the on-disk state is
-    left unchanged.
+    store is saved.  On exception from the caller's block, the save is
+    skipped so on-disk state is left unchanged.  Note: if :meth:`save`
+    itself raises, the exception propagates and the lock is still released
+    via ``finally``, but on-disk state may be partially updated.
 
     Usage::
 
@@ -1034,7 +1052,7 @@ def locked_store(instance_dir: str) -> Generator[MissionStore, None, None]:
     ``missions.md`` is regenerated from the store on save and is never
     written directly.
     """
-    lock_path = Path(instance_dir) / ".missions-store.lock"
+    lock_path = Path(instance_dir) / _STORE_LOCK_FILENAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with _STORE_LOCK:
         with open(lock_path, "w") as lf:
@@ -1120,9 +1138,9 @@ def _parse_record_from_markdown_line(raw_item: str, status: str) -> MissionRecor
     first_line = raw_item.split("\n")[0].strip()
 
     # --- timestamps ---
-    queued_at: Optional[str] = None
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    queued_at: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
 
     m = _QUEUED_PATTERN.search(first_line)
     if m:
@@ -1143,7 +1161,7 @@ def _parse_record_from_markdown_line(raw_item: str, status: str) -> MissionRecor
     project = "" if project_raw == "default" else project_raw
 
     # --- complexity ---
-    complexity: Optional[str] = None
+    complexity: str | None = None
     cm = _COMPLEXITY_RE.search(first_line)
     if cm:
         complexity = cm.group(1).lower()
@@ -1155,7 +1173,7 @@ def _parse_record_from_markdown_line(raw_item: str, status: str) -> MissionRecor
         crash_count = int(rm.group(1))
 
     # --- fate tags (flushed, stagnation) ---
-    tags: List[str] = []
+    tags: list[str] = []
     for tag_m in _KNOWN_TAG_RE.finditer(first_line):
         tag = tag_m.group(1).lower()
         if tag not in tags:

@@ -445,7 +445,6 @@ def _maybe_escalate_to_debug(
     fix_args = match.group(1).strip()
 
     from app.mission_store import locked_store
-    from app.missions import is_duplicate_mission
     from app.utils import parse_project
 
     # Preserve the project tag (if present) as a separate store field.
@@ -453,11 +452,13 @@ def _maybe_escalate_to_debug(
 
     entry = f"/debug {fix_args}"
     with locked_store(instance) as store:
-        if is_duplicate_mission(store.to_markdown(), entry):
-            inserted = False
-        else:
-            store.add(entry, project, urgent=True)
-            inserted = True
+        active_before = (
+            len(store.get_by_status("pending")) + len(store.get_by_status("in_progress"))
+        )
+        store.add(entry, project, urgent=True)
+        inserted = (
+            len(store.get_by_status("pending")) + len(store.get_by_status("in_progress"))
+        ) > active_before
 
     if not inserted:
         import app.run as _run

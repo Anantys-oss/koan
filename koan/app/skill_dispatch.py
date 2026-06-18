@@ -1155,14 +1155,13 @@ def expand_combo_skill(
 
     if combo.parallel:
         # Parallel combo: batch all sub-missions under a single store lock.
-        from app.missions import is_duplicate_mission
+        # store.add() already deduplicates internally — no outer check needed.
         from app.mission_store import locked_store
 
         with locked_store(instance_dir) as store:
             for sub_cmd in combo.commands:
                 entry = f"/{sub_cmd} {args}".rstrip()
-                if not is_duplicate_mission(store.to_markdown(), entry):
-                    store.add(entry, project_id)
+                store.add(entry, project_id)
     else:
         from app.utils import insert_pending_mission
 
