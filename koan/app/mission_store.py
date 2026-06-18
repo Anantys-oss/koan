@@ -74,6 +74,8 @@ _COMPLETED_PATTERN = re.compile(
 )
 # [r:N] crash-recovery counter
 _CRASH_COUNT_RE = re.compile(r"\s*\[r:(\d+)\]")
+# [s:N] stagnation-retry counter
+_STAGNATION_COUNT_RE = re.compile(r"\s*\[s:(\d+)\]")
 # [complexity:X]
 _COMPLEXITY_RE = re.compile(r"\s*\[complexity:([a-zA-Z]+)\]")
 # [flushed], [stagnation] — add new tag names here to survive Markdown round-trips
@@ -125,7 +127,8 @@ class MissionRecord:
     completed_at: str | None
     tags: tuple[str, ...]          # e.g. ("flushed", "stagnation")
     complexity: str | None         # None | "trivial" | "simple" | "medium" | "complex"
-    crash_count: int               # crash-recovery requeue count (replaces [r:N])
+    crash_count: int               # crash-recovery requeue count ([r:N] in Markdown)
+    stagnation_count: int          # stagnation-retry requeue count ([s:N] in Markdown)
 
     def __post_init__(self) -> None:
         if self.status not in _VALID_STATUSES:
@@ -175,6 +178,7 @@ class MissionRecord:
             "tags": list(self.tags),
             "complexity": self.complexity,
             "crash_count": self.crash_count,
+            "stagnation_count": self.stagnation_count,
         }
 
     @classmethod
@@ -191,6 +195,7 @@ class MissionRecord:
             tags=tuple(d.get("tags", [])),
             complexity=d.get("complexity"),
             crash_count=int(d.get("crash_count", 0)),
+            stagnation_count=int(d.get("stagnation_count", 0)),
         )
 
 
@@ -451,6 +456,7 @@ class MissionStore:
             tags=(),
             complexity=complexity,
             crash_count=0,
+            stagnation_count=0,
         )
 
         if urgent:
@@ -541,17 +547,19 @@ class MissionStore:
             object.__setattr__(record, "tags", new_tags)
         return True
 
-    def requeue(self, text: str) -> bool:
+    def requeue(self, text: str, reason: str = "crash") -> bool:
         """Move any mission back to ``pending`` at the top of the queue.
 
-        Increments :attr:`MissionRecord.crash_count` and clears the
-        ``started_at`` / ``completed_at`` timestamps.  The requeued record is
-        prepended to the beginning of the ``_records`` list so it appears first
-        in the pending section (queue-top semantics, matching
-        ``requeue_mission()`` in ``missions.py``).
+        Increments either :attr:`MissionRecord.crash_count` (``reason="crash"``,
+        the default) or :attr:`MissionRecord.stagnation_count`
+        (``reason="stagnation"``), and clears the ``started_at`` /
+        ``completed_at`` timestamps.  The requeued record is prepended to the
+        beginning of the ``_records`` list so it appears first in the pending
+        section (queue-top semantics).
 
         Args:
-            text: Mission text used to locate the record.
+            text:   Mission text used to locate the record.
+            reason: ``"crash"`` (default) or ``"stagnation"``.
 
         Returns:
             ``True`` if the mission was found and requeued, ``False`` otherwise.
@@ -567,7 +575,10 @@ class MissionStore:
         object.__setattr__(record, "queued_at", self._now_iso())
         object.__setattr__(record, "started_at", None)
         object.__setattr__(record, "completed_at", None)
-        object.__setattr__(record, "crash_count", record.crash_count + 1)
+        if reason == "stagnation":
+            object.__setattr__(record, "stagnation_count", record.stagnation_count + 1)
+        else:
+            object.__setattr__(record, "crash_count", record.crash_count + 1)
 
         # Prepend to the pending section: find the first pending record.
         # When none exist, insert after the last in-progress record (or at 0).
@@ -774,6 +785,9 @@ class MissionStore:
 
         if r.crash_count > 0:
             parts.append(f"[r:{r.crash_count}]")
+
+        if r.stagnation_count > 0:
+            parts.append(f"[s:{r.stagnation_count}]")
 
         if r.status == "pending":
             ts = r.queued_at or time.strftime(_TS_FORMAT)
@@ -1129,6 +1143,7 @@ def _strip_all_markers(text: str) -> str:
     text = _STARTED_PATTERN.sub("", text)
     text = _COMPLETED_PATTERN.sub("", text)
     text = _CRASH_COUNT_RE.sub("", text)
+    text = _STAGNATION_COUNT_RE.sub("", text)
     text = _COMPLEXITY_RE.sub("", text)
     text = _KNOWN_TAG_RE.sub("", text)
 
@@ -1190,6 +1205,12 @@ def _parse_record_from_markdown_line(raw_item: str, status: str) -> MissionRecor
     if rm:
         crash_count = int(rm.group(1))
 
+    # --- stagnation count ---
+    stagnation_count = 0
+    sm = _STAGNATION_COUNT_RE.search(first_line)
+    if sm:
+        stagnation_count = int(sm.group(1))
+
     # --- fate tags (flushed, stagnation) ---
     tags: list[str] = []
     for tag_m in _KNOWN_TAG_RE.finditer(first_line):
@@ -1221,4 +1242,5 @@ def _parse_record_from_markdown_line(raw_item: str, status: str) -> MissionRecor
         tags=tuple(tags),
         complexity=complexity,
         crash_count=crash_count,
+        stagnation_count=stagnation_count,
     )

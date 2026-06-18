@@ -70,6 +70,7 @@ class TestMissionRecord:
             tags=[],
             complexity="simple",
             crash_count=0,
+            stagnation_count=0,
         )
         d = r.to_dict()
         r2 = MissionRecord.from_dict(d)
@@ -141,6 +142,7 @@ class TestMissionStoreLoad:
             tags=[],
             complexity=None,
             crash_count=0,
+            stagnation_count=0,
         )
         payload = {"records": [record.to_dict()], "view_hash": "abc"}
         Path(tmp_instance, "missions.json").write_text(

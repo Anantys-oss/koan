@@ -2261,12 +2261,12 @@ def _update_mission_in_file(
         return False
 
 
-def _requeue_mission_in_file(instance: str, mission_title: str):
+def _requeue_mission_in_file(instance: str, mission_title: str, *, reason: str = "crash"):
     """Move mission from In Progress back to Pending via the mission store."""
     try:
         from app.mission_store import locked_store
         with locked_store(instance) as store:
-            store.requeue(mission_title)
+            store.requeue(mission_title, reason=reason)
     except Exception as e:
         log("error", f"Could not requeue mission: {e}")
 
@@ -2329,7 +2329,7 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
                 f"Stagnation retry {new_count}/{max_retry} ({pattern}) — "
                 f"requeueing mission: {mission_title[:60]}"
             ))
-            _requeue_mission_in_file(instance, mission_title)
+            _requeue_mission_in_file(instance, mission_title, reason="stagnation")
             _notify_stagnation_retry(
                 mission_title, project_name, new_count, max_retry,
                 pattern_type=pattern, pattern_excerpt=excerpt,
