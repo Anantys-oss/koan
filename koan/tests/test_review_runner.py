@@ -30,6 +30,8 @@ from app.review_runner import (
     _fetch_pr_commit_shas,
     _safe_code_fence,
     _fix_nested_fences,
+    _github_blob_url,
+    _parse_line_hint,
 )
 
 
@@ -683,8 +685,10 @@ class TestFormatReviewAsMarkdown:
         assert "## PR Review — Fix auth" in md
         assert "### 🔴 Blocking" in md
         assert "Missing validation" in md
-        assert "`auth.py`" in md
-        assert "L42" in md
+        # Without owner/repo/head_sha the location renders as plain code on its
+        # own line inside the summary (no clickable link).
+        assert "auth.py:42" in md
+        assert "<code>auth.py:42</code>" in md
         assert "<details>" in md
         assert "<summary>" in md
         assert "</details>" in md
@@ -749,7 +753,7 @@ class TestFormatReviewAsMarkdown:
         assert "### 🔴 Blocking" in md
         assert "### 🟡 Important" in md
         assert "### 🟢 Suggestions" in md
-        assert "L10-15" in md  # multi-line range
+        assert "b.py:10-15" in md  # multi-line range
 
     def test_checklist_rendering(self):
         data = {
@@ -809,6 +813,115 @@ class TestFormatReviewAsMarkdown:
         md = _format_review_as_markdown(data)
         assert "x = eval(input())" in md
         assert "```" in md
+
+
+# ---------------------------------------------------------------------------
+# _github_blob_url / _parse_line_hint
+# ---------------------------------------------------------------------------
+
+class TestGithubBlobUrl:
+    def test_single_line_anchor(self):
+        url = _github_blob_url("octo", "repo", "abc123", "src/auth.py", 42)
+        assert url == "https://github.com/octo/repo/blob/abc123/src/auth.py#L42"
+
+    def test_range_anchor_uses_double_l(self):
+        url = _github_blob_url("octo", "repo", "abc123", "src/auth.py", 42, 87)
+        # GitHub range anchors prefix BOTH ends with L.
+        assert url == "https://github.com/octo/repo/blob/abc123/src/auth.py#L42-L87"
+
+    def test_equal_start_end_collapses_to_single(self):
+        url = _github_blob_url("octo", "repo", "abc123", "a.py", 5, 5)
+        assert url.endswith("#L5")
+
+    def test_path_with_space_is_percent_encoded(self):
+        url = _github_blob_url("octo", "repo", "abc123", "my dir/a b.py", 1)
+        assert "my%20dir/a%20b.py" in url
+        # Path separators are preserved (not encoded).
+        assert "/blob/abc123/my%20dir/" in url
+
+    def test_missing_components_return_empty(self):
+        assert _github_blob_url("", "repo", "sha", "a.py", 1) == ""
+        assert _github_blob_url("o", "repo", "", "a.py", 1) == ""
+        assert _github_blob_url("o", "repo", "sha", "a.py", 0) == ""
+        assert _github_blob_url("o", "repo", "sha", "", 1) == ""
+
+
+class TestParseLineHint:
+    def test_single_number(self):
+        assert _parse_line_hint("42") == (42, 42)
+
+    def test_range(self):
+        assert _parse_line_hint("38-45") == (38, 45)
+
+    def test_range_with_spaces(self):
+        assert _parse_line_hint("38 - 45") == (38, 45)
+
+    def test_non_numeric_returns_zero(self):
+        assert _parse_line_hint("near the top") == (0, 0)
+        assert _parse_line_hint("") == (0, 0)
+
+
+# ---------------------------------------------------------------------------
+# _format_review_as_markdown — clickable location links
+# ---------------------------------------------------------------------------
+
+class TestReviewLocationLinks:
+    def _data(self, line_start=42, line_end=42):
+        return {
+            "file_comments": [{
+                "file": "src/auth.py", "line_start": line_start,
+                "line_end": line_end, "severity": "critical",
+                "title": "Missing validation", "comment": "Fix it",
+                "code_snippet": "",
+            }],
+            "review_summary": {"lgtm": False, "summary": "Needs work.",
+                               "checklist": []},
+        }
+
+    def test_link_built_with_sha(self):
+        md = _format_review_as_markdown(
+            self._data(), owner="octo", repo="repo", head_sha="abc123",
+        )
+        assert (
+            '<a href="https://github.com/octo/repo/blob/abc123/src/auth.py#L42">'
+            "src/auth.py:42</a>"
+        ) in md
+        # Location is on its own line, after a <br> following the title.
+        assert "</b><br>" in md
+
+    def test_range_link(self):
+        md = _format_review_as_markdown(
+            self._data(line_start=42, line_end=87),
+            owner="octo", repo="repo", head_sha="abc123",
+        )
+        assert "#L42-L87" in md
+        assert "src/auth.py:42-87</a>" in md
+
+    def test_plain_code_fallback_without_sha(self):
+        md = _format_review_as_markdown(self._data())
+        assert "<code>src/auth.py:42</code>" in md
+        assert "<a href=" not in md
+
+    def test_whole_file_comment_has_no_location_line(self):
+        md = _format_review_as_markdown(
+            self._data(line_start=0, line_end=0),
+            owner="octo", repo="repo", head_sha="abc123",
+        )
+        # No line means no location link and no <br> location line.
+        assert "src/auth.py:" not in md
+        assert "<a href=" not in md
+
+    def test_link_text_html_escaped(self):
+        # A file path carrying HTML-significant characters must be escaped in
+        # the rendered link text so it cannot corrupt the surrounding markup.
+        data = self._data()
+        data["file_comments"][0]["file"] = "src/<x>&y.py"
+        md = _format_review_as_markdown(
+            data, owner="octo", repo="repo", head_sha="abc123",
+        )
+        assert "src/&lt;x&gt;&amp;y.py:42" in md
+        # Raw angle brackets from the path never reach the rendered text.
+        assert "<x>" not in md
 
 
 # ---------------------------------------------------------------------------
@@ -4392,6 +4505,63 @@ class TestFormatErrorHunterFindings:
         result = _format_error_hunter_findings(findings)
         assert "<details>" in result
         assert "bare except" in result
+
+    def test_numeric_line_hint_becomes_link_with_sha(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [{
+            "severity": "HIGH", "pattern": "swallowed exception",
+            "file": "src/auth.py", "line_hint": "42",
+        }]
+        result = _format_error_hunter_findings(
+            findings, owner="octo", repo="repo", head_sha="abc123",
+        )
+        assert (
+            '<a href="https://github.com/octo/repo/blob/abc123/src/auth.py#L42">'
+            "src/auth.py:42</a>"
+        ) in result
+        # Plain-text suffix is dropped once a link is built.
+        assert "(`src/auth.py:42`)" not in result
+
+    def test_range_line_hint_becomes_link(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [{
+            "severity": "HIGH", "pattern": "swallowed exception",
+            "file": "src/auth.py", "line_hint": "38-45",
+        }]
+        result = _format_error_hunter_findings(
+            findings, owner="octo", repo="repo", head_sha="abc123",
+        )
+        assert "#L38-L45" in result
+
+    def test_non_numeric_line_hint_stays_plain_text(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [{
+            "severity": "HIGH", "pattern": "swallowed exception",
+            "file": "src/auth.py", "line_hint": "near the top",
+        }]
+        result = _format_error_hunter_findings(
+            findings, owner="octo", repo="repo", head_sha="abc123",
+        )
+        assert "<a href=" not in result
+        assert "`src/auth.py:near the top`" in result
+
+    def test_link_text_synced_with_parsed_lines(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        # Free-form text around the number: the displayed location must be
+        # rebuilt from the parsed line number, not echo the raw line_hint.
+        findings = [{
+            "severity": "HIGH", "pattern": "swallowed exception",
+            "file": "src/auth.py", "line_hint": "line 42 (in the loop)",
+        }]
+        result = _format_error_hunter_findings(
+            findings, owner="octo", repo="repo", head_sha="abc123",
+        )
+        assert ">src/auth.py:42</a>" in result
+        assert "in the loop" not in result
 
 
 # ---------------------------------------------------------------------------

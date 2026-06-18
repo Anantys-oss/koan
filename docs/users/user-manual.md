@@ -544,6 +544,7 @@ The debug loop enforces four steps:
   - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
   - `--comments` — Comment quality review (factual accuracy, completeness, stale TODOs, misleading language)
+- **Output:** Findings are grouped into severity buckets (🔴 Blocking / 🟡 Important / 🟢 Suggestions), each folded into a collapsible section. Every finding's location is shown on its own line inside the summary as a **clickable link** that jumps straight to the exact file and lines on GitHub, pinned to the reviewed commit (so the link stays accurate even after the PR gets new commits).
 
 <details>
 <summary>Use cases</summary>

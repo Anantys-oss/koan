@@ -16,6 +16,7 @@ CLI:
     python3 -m app.review_runner <github-pr-url> --project-path <path>
 """
 
+import html
 import json
 import re
 import sys
@@ -23,6 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
+from urllib.parse import quote
 
 from app.claude_step import resolve_pr_location
 from app.config import get_review_reply_config, get_review_verdict_config, is_review_compressor_enabled
@@ -674,6 +676,7 @@ def _should_run_error_hunter(diff: str) -> bool:
 
 def _run_error_hunter(
     diff: str, project_path: str, skill_dir: Optional[Path],
+    owner: str = "", repo: str = "", head_sha: str = "",
 ) -> str:
     """Run the silent-failure-hunter pass and return formatted markdown section.
 
@@ -697,7 +700,9 @@ def _run_error_hunter(
     if not findings:
         return ""
 
-    return _format_error_hunter_findings(findings)
+    return _format_error_hunter_findings(
+        findings, owner=owner, repo=repo, head_sha=head_sha,
+    )
 
 
 def _parse_error_hunter_output(raw_output: str) -> list:
@@ -736,7 +741,9 @@ def _parse_error_hunter_output(raw_output: str) -> list:
 _ERROR_HUNTER_SEVERITY_EMOJI = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡"}
 
 
-def _format_error_hunter_findings(findings: list) -> str:
+def _format_error_hunter_findings(
+    findings: list, owner: str = "", repo: str = "", head_sha: str = "",
+) -> str:
     """Format error-hunter findings as a markdown section with collapsible details."""
     severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2}
     findings = sorted(findings, key=lambda f: severity_order.get(f.get("severity", "MEDIUM"), 2))
@@ -754,11 +761,31 @@ def _format_error_hunter_findings(findings: list) -> str:
         suggestion = f.get("suggestion", "")
 
         title = f"{emoji} **{severity}** — {pattern}"
+        # Link the location on its own line when line_hint is numeric and a
+        # head-SHA permalink can be built; else keep the plain-text suffix.
+        loc_line = ""
         if location:
-            title += f" (`{location}`)"
+            line_start, line_end = _parse_line_hint(line_hint)
+            url = _github_blob_url(owner, repo, head_sha, file_path, line_start, line_end)
+            if url:
+                # Build the display text from the parsed line numbers so it
+                # stays in sync with the link target (line_hint may carry
+                # extra free-form text). Escape since file_path is model output.
+                loc_text = f"{file_path}:{line_start}"
+                if line_end and line_end != line_start:
+                    loc_text += f"-{line_end}"
+                loc_line = f'<a href="{url}">{html.escape(loc_text)}</a>'
+            else:
+                title += f" (`{location}`)"
 
         lines.append("<details>")
-        lines.append(f"<summary>{title}</summary>")
+        if loc_line:
+            lines.append("<summary>")
+            lines.append(f"{title}<br>")
+            lines.append(loc_line)
+            lines.append("</summary>")
+        else:
+            lines.append(f"<summary>{title}</summary>")
         lines.append("")
         if explanation:
             lines.append(f"**Risk**: {explanation}")
@@ -1076,7 +1103,49 @@ _UNPARSEABLE_REVIEW_NOTICE = (
 )
 
 
-def _format_review_as_markdown(review_data: dict, title: str = "", bot_username: str = "") -> str:
+def _github_blob_url(
+    owner: str, repo: str, sha: str, path: str,
+    line_start: int, line_end: Optional[int] = None,
+) -> str:
+    """Build a GitHub blob permalink with a line anchor.
+
+    Returns ``""`` when any component required to build a precise, durable
+    link is missing (owner/repo/sha/path/positive line). Pinning to the head
+    SHA keeps the anchor accurate even after the PR gets new commits. The
+    range anchor uses GitHub's ``#L<start>-L<end>`` form (end is also
+    ``L``-prefixed), distinct from the plain-text ``L514-537`` display style.
+    """
+    if not (owner and repo and sha and path and line_start and line_start > 0):
+        return ""
+    anchor = f"#L{line_start}"
+    if line_end and line_end != line_start:
+        anchor += f"-L{line_end}"
+    # path may contain spaces / unicode — percent-encode but keep separators.
+    safe_path = quote(path, safe="/")
+    return f"https://github.com/{owner}/{repo}/blob/{sha}/{safe_path}{anchor}"
+
+
+def _parse_line_hint(line_hint: str) -> Tuple[int, int]:
+    """Parse an error-hunter ``line_hint`` string into (start, end).
+
+    ``line_hint`` is free-form model output (e.g. ``"42"`` or ``"38-45"``).
+    Returns ``(0, 0)`` when no leading integer can be extracted, so callers
+    fall back to plain-text rendering.
+    """
+    if not line_hint:
+        return 0, 0
+    m = re.search(r"(\d+)(?:\s*-\s*(\d+))?", str(line_hint))
+    if not m:
+        return 0, 0
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else start
+    return start, end
+
+
+def _format_review_as_markdown(
+    review_data: dict, title: str = "", bot_username: str = "",
+    owner: str = "", repo: str = "", head_sha: str = "",
+) -> str:
     """Convert validated review JSON into the markdown format for GitHub.
 
     Produces the standard ## PR Review format: the summary as the lead
@@ -1140,17 +1209,27 @@ def _format_review_as_markdown(review_data: dict, title: str = "", bot_username:
         lines.append(f"### {emoji} {heading}")
         lines.append("")
         for i, item in enumerate(items, 1):
-            has_loc = item.get("line_start") and item["line_start"] > 0
-            if has_loc:
-                loc = f"`{item['file']}`, L{item['line_start']}"
-                if item.get("line_end") and item["line_end"] != item["line_start"]:
-                    loc += f"-{item['line_end']}"
-                summary_line = f"<b>{i}. {item['title']}</b> ({loc})"
-            else:
-                summary_line = f"<b>{i}. {item['title']}</b>"
+            title_line = f"<b>{i}. {item['title']}</b>"
+            line_start = item.get("line_start") or 0
+            line_end = item.get("line_end") or 0
             lines.append("<details>")
             lines.append("<summary>")
-            lines.append(summary_line)
+            if line_start > 0:
+                # Location on its own line inside the summary, as a clickable
+                # head-SHA permalink when one can be built, else plain code.
+                loc_text = f"{item['file']}:{line_start}"
+                if line_end and line_end != line_start:
+                    loc_text += f"-{line_end}"
+                url = _github_blob_url(
+                    owner, repo, head_sha, item["file"], line_start, line_end,
+                )
+                # Escape: loc_text is built from model-provided file paths.
+                safe_loc = html.escape(loc_text)
+                loc_line = f'<a href="{url}">{safe_loc}</a>' if url else f"<code>{safe_loc}</code>"
+                lines.append(f"{title_line}<br>")
+                lines.append(loc_line)
+            else:
+                lines.append(title_line)
             lines.append("</summary>")
             lines.append("")
             lines.append(_fix_nested_fences(item["comment"]))
@@ -1868,6 +1947,8 @@ def run_review(
         review_body = _format_review_as_markdown(
             review_data, title=context.get("title", ""),
             bot_username=bot_username,
+            owner=owner, repo=repo,
+            head_sha=(current_shas[-1] if current_shas else ""),
         )
     else:
         # Fallback: use regex extraction for non-JSON responses
@@ -1910,7 +1991,11 @@ def run_review(
     run_error_hunter = errors or _should_run_error_hunter(diff)
     if run_error_hunter:
         notify_fn(f"Running silent-failure-hunter on PR #{pr_number}...")
-        error_section = _run_error_hunter(diff, project_path, skill_dir)
+        error_section = _run_error_hunter(
+            diff, project_path, skill_dir,
+            owner=owner, repo=repo,
+            head_sha=(current_shas[-1] if current_shas else ""),
+        )
         if error_section:
             review_body = review_body + "\n\n---\n\n" + error_section
         else:

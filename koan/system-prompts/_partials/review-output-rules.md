@@ -1,6 +1,6 @@
 - **file_comments**: Array of per-file inline comments. Empty array `[]` if no issues found.
 - **file**: File path as shown in the diff (e.g. `src/auth.py`).
-- **line_start** / **line_end**: Line numbers from the diff. Same value for single-line issues. Use `0` for whole-file comments.
+- **line_start** / **line_end**: Line numbers in the **new (post-change) file as it appears at the PR head** — i.e. the line numbers on the added/`+` side of the diff, not diff-relative offsets. These are used to build a direct link into the file, so they must point at the real lines in the updated file. Same value for single-line issues. Use `0` for whole-file comments.
 - **severity**: Must be exactly one of: `"critical"` (blocking, must fix), `"warning"` (important, should fix), `"suggestion"` (nice to have).
 - **title**: Short title for the issue.
 - **comment**: Detailed explanation with suggested fix. Structure as: what's wrong → why it matters (real-world impact) → how to fix. Use markdown for readability: separate distinct thoughts into short paragraphs (blank line between them) and use `-` bullet points when listing more than one item. Avoid one dense block of text.
