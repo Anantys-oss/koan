@@ -15,7 +15,7 @@ Config schema in config.yaml:
       reply_enabled: false
       reply_authorized_users: ["*"]   # separate from command permissions
       reply_rate_limit: 5             # max replies per user per hour
-      ack_enabled: true               # post acknowledgment when a command is queued
+      ack_enabled: false              # post acknowledgment when a command is queued (opt-in)
       check_interval_seconds: 60       # optional provider override
 
 Per-project override in projects.yaml:
@@ -231,10 +231,10 @@ def get_github_ack_enabled(config: dict) -> bool:
 
     When enabled, the bot posts a brief reply to the triggering comment
     when a command is queued, so the user knows the bot received it.
-    Default: True.
+    Default: False (opt-in; the emoji reaction already signals receipt).
     """
     github = config.get("github") or {}
-    return bool(github.get("ack_enabled", True))
+    return bool(github.get("ack_enabled", False))
 
 
 def get_github_subscribe_enabled(config: dict) -> bool:

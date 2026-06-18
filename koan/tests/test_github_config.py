@@ -167,8 +167,8 @@ class TestGetGithubReplyEnabled:
 
 
 class TestGetGithubAckEnabled:
-    def test_default_enabled(self):
-        assert get_github_ack_enabled({}) is True
+    def test_default_disabled(self):
+        assert get_github_ack_enabled({}) is False
 
     def test_explicitly_enabled(self):
         assert get_github_ack_enabled({"github": {"ack_enabled": True}}) is True
@@ -177,7 +177,7 @@ class TestGetGithubAckEnabled:
         assert get_github_ack_enabled({"github": {"ack_enabled": False}}) is False
 
     def test_none_section(self):
-        assert get_github_ack_enabled({"github": None}) is True
+        assert get_github_ack_enabled({"github": None}) is False
 
 
 class TestGetGithubMaxAgeHours:
