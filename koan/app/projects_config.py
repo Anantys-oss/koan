@@ -609,6 +609,13 @@ def get_project_security_review(config: dict, project_name: str) -> dict:
     sr = project_cfg.get("security_review", {}) or {}
 
     va = sr.get("variant_analysis", {}) or {}
+    if not isinstance(va, dict):
+        va = {}
+    try:
+        max_missions = int(va.get("max_variant_missions", 3))
+    except (ValueError, TypeError):
+        max_missions = 3
+    max_missions = min(max(max_missions, 0), 10)
 
     return {
         "enabled": bool(sr.get("enabled", False)),
@@ -616,7 +623,7 @@ def get_project_security_review(config: dict, project_name: str) -> dict:
         "severity_threshold": str(sr.get("severity_threshold", "high")).strip().lower(),
         "variant_analysis": {
             "enabled": bool(va.get("enabled", False)),
-            "max_variant_missions": int(va.get("max_variant_missions", 3)),
+            "max_variant_missions": max_missions,
         },
     }
 

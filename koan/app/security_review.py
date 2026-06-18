@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tempfile
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -106,16 +107,37 @@ _VARIANT_PATTERN_MAP = {
     "React XSS risk": r"dangerouslySetInnerHTML",
 }
 
+_SECRET_REDACT_RE = re.compile(
+    r"""(?:api[_-]?key|secret[_-]?key|password|token)\s*=\s*['"][^'"]*['"]""",
+    re.IGNORECASE,
+)
+
+
+def _redact_snippet(snippet: str, max_len: int = 80) -> str:
+    return _SECRET_REDACT_RE.sub("<redacted>", snippet[:max_len])
+
+
 _JS_PATTERNS = {"potential XSS via innerHTML", "React XSS risk", "wildcard CORS"}
+_PY_AND_JS_PATTERNS = {"eval() usage", "exec() usage"}
 _UNIVERSAL_PATTERNS = {
     "hardcoded secret", "SSL/TLS verification disabled",
     "overly permissive file permissions", "verification bypass",
+    "potential SQL injection",
 }
 
 _GREP_INCLUDES_BY_FINDING = {
     "py": ["--include=*.py"],
     "js": ["--include=*.js", "--include=*.jsx", "--include=*.ts", "--include=*.tsx"],
-    "all": [],
+    "py_js": [
+        "--include=*.py", "--include=*.js", "--include=*.jsx",
+        "--include=*.ts", "--include=*.tsx",
+    ],
+    "all": [
+        "--include=*.py", "--include=*.js", "--include=*.jsx",
+        "--include=*.ts", "--include=*.tsx", "--include=*.rb",
+        "--include=*.java", "--include=*.go", "--include=*.sh",
+        "--include=*.yaml", "--include=*.yml",
+    ],
 }
 
 
@@ -123,6 +145,8 @@ def _grep_includes_for_finding(description: str) -> list:
     """Return grep --include flags appropriate for finding type."""
     if description in _JS_PATTERNS:
         return list(_GREP_INCLUDES_BY_FINDING["js"])
+    if description in _PY_AND_JS_PATTERNS:
+        return list(_GREP_INCLUDES_BY_FINDING["py_js"])
     if description in _UNIVERSAL_PATTERNS:
         return list(_GREP_INCLUDES_BY_FINDING["all"])
     return list(_GREP_INCLUDES_BY_FINDING["py"])
@@ -131,6 +155,7 @@ def _grep_includes_for_finding(description: str) -> list:
 _SEMGREP_LANGUAGES_BY_FINDING = {
     "py": ["python"],
     "js": ["javascript", "typescript"],
+    "py_js": ["python", "javascript", "typescript"],
     "all": ["python", "javascript", "typescript"],
 }
 
@@ -139,6 +164,8 @@ def _semgrep_languages_for_finding(description: str) -> list:
     """Return semgrep language list appropriate for finding type."""
     if description in _JS_PATTERNS:
         return list(_SEMGREP_LANGUAGES_BY_FINDING["js"])
+    if description in _PY_AND_JS_PATTERNS:
+        return list(_SEMGREP_LANGUAGES_BY_FINDING["py_js"])
     if description in _UNIVERSAL_PATTERNS:
         return list(_SEMGREP_LANGUAGES_BY_FINDING["all"])
     return list(_SEMGREP_LANGUAGES_BY_FINDING["py"])
@@ -215,10 +242,17 @@ def _check_variants_grep(
     project_path: str,
     *,
     exclude_lines: set,
+    deadline: float = 0,
 ) -> List[Tuple[str, int, str]]:
     """Scan project for variant occurrences using grep."""
     hits = []
     for pattern, description in patterns:
+        if deadline and time.monotonic() > deadline:
+            print(
+                "[security_review] variant scan deadline reached, returning partial results",
+                file=sys.stderr,
+            )
+            break
         includes = _grep_includes_for_finding(description)
         try:
             result = subprocess.run(
@@ -269,12 +303,12 @@ def _build_semgrep_yaml(patterns: list) -> str:
     """Build a semgrep YAML rules file from (pattern, description) pairs."""
     rules = []
     for i, (pattern, description) in enumerate(patterns):
-        safe = pattern.replace("'", "''")
         langs = _semgrep_languages_for_finding(description)
         lang_str = ", ".join(langs)
         rules.append(
             f"  - id: variant-{i}\n"
-            f"    pattern-regex: '{safe}'\n"
+            f"    pattern-regex: |-\n"
+            f"      {pattern}\n"
             f"    message: Variant of security finding\n"
             f"    languages: [{lang_str}]\n"
             f"    severity: WARNING"
@@ -327,7 +361,14 @@ def _check_variants_semgrep(
                     file=sys.stderr,
                 )
                 return None
-            for item in data.get("results", []):
+            results = data.get("results")
+            if results is None:
+                print(
+                    "[security_review] semgrep JSON missing 'results' key, falling back to grep",
+                    file=sys.stderr,
+                )
+                return None
+            for item in results:
                 filepath = item.get("path", "")
                 lineno = item.get("start", {}).get("line", 0)
                 snippet = item.get("extra", {}).get("lines", "").strip()
@@ -342,6 +383,9 @@ def _check_variants_semgrep(
     return hits
 
 
+_VARIANT_SCAN_TIMEOUT = 90
+
+
 def _check_variants(
     patterns: list,
     project_path: str,
@@ -351,9 +395,12 @@ def _check_variants(
     """Scan project for variant occurrences of security patterns.
 
     Prefers semgrep when available; falls back to grep on failure or absence.
+    Global deadline caps total scan time to _VARIANT_SCAN_TIMEOUT seconds.
     """
     if not patterns:
         return []
+
+    deadline = time.monotonic() + _VARIANT_SCAN_TIMEOUT
 
     result = _check_variants_semgrep(
         patterns, project_path, exclude_lines=exclude_lines,
@@ -362,6 +409,7 @@ def _check_variants(
         return result
     return _check_variants_grep(
         patterns, project_path, exclude_lines=exclude_lines,
+        deadline=deadline,
     )
 
 
@@ -422,15 +470,11 @@ def _dispatch_variant_missions(
         fingerprint = hashlib.sha256(
             f"{project_name}:{filepath}:{lineno}".encode()
         ).hexdigest()[:12]
-        if fingerprint in tracker:
+        tracker_key = f"{project_name}:{fingerprint}"
+        if tracker_key in tracker:
             continue
 
-        safe_snippet = re.sub(
-            r"""(?:api[_-]?key|secret[_-]?key|password|token)\s*=\s*['"][^'"]*['"]""",
-            "<redacted>",
-            snippet[:80],
-            flags=re.IGNORECASE,
-        )
+        safe_snippet = _redact_snippet(snippet)
         mission_text = (
             f"- [security-variant] Investigate security pattern variant "
             f"in `{filepath}` line {lineno}: `{safe_snippet}` "
@@ -439,7 +483,7 @@ def _dispatch_variant_missions(
         from app.utils import insert_pending_mission
         inserted = insert_pending_mission(missions_path, mission_text)
         if inserted:
-            tracker[fingerprint] = True
+            tracker[tracker_key] = True
             dispatched += 1
         else:
             print(
@@ -467,7 +511,7 @@ def _write_variant_journal_section(
 
         lines = [f"## [VARIANT] Security variant scan — {len(hits)} hit(s)"]
         for filepath, lineno, snippet in hits[:10]:
-            lines.append(f"- `{filepath}:{lineno}`: `{snippet[:80]}`")
+            lines.append(f"- `{filepath}:{lineno}`: `{_redact_snippet(snippet)}`")
         if len(hits) > 10:
             lines.append(f"- ... and {len(hits) - 10} more")
 
@@ -741,6 +785,8 @@ def check_security_review(
     # Variant analysis (when enabled and there are patterns)
     variant_hits = []
     va_config = sr_config.get("variant_analysis", {})
+    if not isinstance(va_config, dict):
+        va_config = {}
     if va_config.get("enabled") and variant_patterns and diff_text:
         exclude_lines = _extract_diff_lines(diff_text)
         variant_hits = _check_variants(
@@ -748,11 +794,18 @@ def check_security_review(
         )
 
         if variant_hits:
+            max_missions = va_config.get("max_variant_missions", 3)
             _write_variant_journal_section(instance_dir, project_name, variant_hits)
-            _dispatch_variant_missions(
+            dispatched = _dispatch_variant_missions(
                 instance_dir, project_name, variant_hits,
-                max_missions=va_config.get("max_variant_missions", 3),
+                max_missions=max_missions,
             )
+            if dispatched != len(variant_hits):
+                print(
+                    f"[security_review] {dispatched}/{len(variant_hits)} "
+                    f"variant missions dispatched (cap/dedup filtered remainder)",
+                    file=sys.stderr,
+                )
 
     if should_block:
         print(
