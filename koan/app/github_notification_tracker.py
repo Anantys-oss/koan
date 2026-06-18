@@ -249,7 +249,10 @@ def _load_replies(instance_dir: str) -> dict:
     except (json.JSONDecodeError, OSError):
         return {}
     now = time.time()
-    return {k: v for k, v in data.items() if now - v < _REPLY_WINDOW_SECONDS}
+    return {
+        k: v for k, v in data.items()
+        if isinstance(v, (int, float)) and now - v < _REPLY_WINDOW_SECONDS
+    }
 
 
 def thread_reply_count(instance_dir: str, owner: str, repo: str, number: str) -> int:
@@ -284,7 +287,8 @@ def record_thread_reply(instance_dir: str, owner: str, repo: str, number: str) -
             _cap_entries(data)
 
         locked_json_modify(_replies_path(instance_dir), _update)
-    except OSError:
+    except Exception as e:  # noqa: BLE001 — best-effort; must not break notification processing
+        log.debug("record_thread_reply: tracker access failed: %s", e)
         holder["n"] = thread_reply_count(instance_dir, owner, repo, number) + 1
     return holder["n"]
 
@@ -321,6 +325,6 @@ def try_consume_reply_budget(
 
         locked_json_modify(_replies_path(instance_dir), _update)
     except Exception as e:  # noqa: BLE001 — best-effort; fail open so replies aren't lost
-        log.debug("try_consume_reply_budget: tracker access failed, allowing: %s", e)
+        log.warning("try_consume_reply_budget: tracker access failed, allowing: %s", e)
         holder["allowed"] = True
     return holder["allowed"]

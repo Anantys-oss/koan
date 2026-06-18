@@ -1627,15 +1627,18 @@ def process_single_notification(
             # which the single-error return path does not cover.
             issue_number = extract_issue_number_from_notification(notification)
             comment_id = str(comment.get("id", ""))
-            if (
-                len(comments) > 1
-                and issue_number and comment_id
-                and _enforce_reply_budget(owner, repo, issue_number)
-            ):
-                post_error_reply(
-                    owner, repo, issue_number, comment_id, error,
-                    comment_api_url=comment.get("url", ""),
-                )
+            if len(comments) > 1 and issue_number and comment_id:
+                if _enforce_reply_budget(owner, repo, issue_number):
+                    post_error_reply(
+                        owner, repo, issue_number, comment_id, error,
+                        comment_api_url=comment.get("url", ""),
+                    )
+                else:
+                    log.info(
+                        "GitHub: error reply suppressed by circuit breaker for "
+                        "%s/%s#%s comment %s: %s",
+                        owner, repo, issue_number, comment_id, error,
+                    )
 
         # Persistently mark every handled comment processed — regardless of
         # outcome (queued, error, help, permission-denied, no-op). The

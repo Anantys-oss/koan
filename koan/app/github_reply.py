@@ -73,7 +73,7 @@ def _enforce_reply_budget(owner: str, repo: str, issue_number: str) -> bool:
 
         cap = get_github_max_replies_per_thread(load_config())
     except Exception as e:  # noqa: BLE001 — config failure must not block replies
-        log.debug("Reply budget: config load failed, allowing reply: %s", e)
+        log.warning("Reply budget: config load failed, allowing reply: %s", e)
         return True
     if cap <= 0:
         return True  # breaker disabled
@@ -96,7 +96,7 @@ def _enforce_reply_budget(owner: str, repo: str, issue_number: str) -> bool:
             _warn_reply_budget_once(owner, repo, str(issue_number), cap)
             return False
     except Exception as e:  # noqa: BLE001 — tracker failure must not block replies
-        log.debug("Reply budget: tracker access failed, allowing reply: %s", e)
+        log.warning("Reply budget: tracker access failed, allowing reply: %s", e)
         return True
     return True
 
