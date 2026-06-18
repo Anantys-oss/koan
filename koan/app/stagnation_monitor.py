@@ -510,11 +510,7 @@ def increment_crash_count(instance_dir: str, mission_title: str) -> int:
             }
         return new_crash
 
-    try:
-        return locked_json_modify(path, _mutate, default_factory=dict, validator=_validate_tracker)
-    except OSError as e:
-        print(f"[stagnation_monitor] crash_count save error: {e}", file=sys.stderr)
-        return 1
+    return locked_json_modify(path, _mutate, default_factory=dict, validator=_validate_tracker)
 
 
 def seed_crash_count(instance_dir: str, mission_title: str, seed_value: int) -> None:

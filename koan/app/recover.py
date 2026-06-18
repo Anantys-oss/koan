@@ -262,14 +262,23 @@ def recover_missions(
     #     still progresses.
     try:
         from app.config import get_stagnation_config as _get_stag_cfg
-        _stagnation_cfg = _get_stag_cfg()
-        _max_total_retries = int(_stagnation_cfg.get("max_total_retries", 0))
-        _max_crash_retries = int(_stagnation_cfg.get("max_crash_retries", 3))
-    except Exception as e:
-        print(f"[recover] Warning: could not load stagnation config; using defaults: {e}",
+    except ImportError as e:
+        print(f"[recover] Warning: could not import stagnation config; "
+              f"using defaults (max_crash_retries=3, max_total_retries=0): {e}",
               file=sys.stderr)
-        _max_total_retries = 0
-        _max_crash_retries = 3
+        _get_stag_cfg = None
+    _max_total_retries = 0
+    _max_crash_retries = 3
+    if _get_stag_cfg is not None:
+        try:
+            _stagnation_cfg = _get_stag_cfg()
+            _max_total_retries = int(_stagnation_cfg.get("max_total_retries", 0))
+            _max_crash_retries = int(_stagnation_cfg.get("max_crash_retries", 3))
+        except Exception as e:
+            print(f"[recover] Warning: could not load stagnation config; "
+                  f"using defaults (max_crash_retries={_max_crash_retries}, "
+                  f"max_total_retries={_max_total_retries}): {e}",
+                  file=sys.stderr)
 
     try:
         from app.stagnation_monitor import (
@@ -278,7 +287,7 @@ def recover_missions(
             increment_crash_count as _inc_crash,
             seed_crash_count as _seed_crash,
         )
-    except Exception as e:
+    except (ImportError, AttributeError) as e:
         print(f"[recover] Warning: retry tracker unavailable; falling back to inline "
               f"[r:N] counter so escalation still works: {e}", file=sys.stderr)
         _get_total = None
@@ -314,6 +323,49 @@ def recover_missions(
         complex_block_header: str = ""   # raw header line for current ### block
         complex_block_lines: list = []   # all lines in the current ### block
 
+        def _safe_get_crash(title: str) -> int:
+            if _get_crash is None:
+                return 0
+            try:
+                return _get_crash(instance_dir, title)
+            except Exception as e:
+                print(f"[recover] Warning: tracker get_crash failed for "
+                      f"{title!r}, using 0: {e}", file=sys.stderr)
+                return 0
+
+        def _safe_get_total(title: str) -> int:
+            if _get_total is None:
+                return 0
+            try:
+                return _get_total(instance_dir, title)
+            except Exception as e:
+                print(f"[recover] Warning: tracker get_total failed for "
+                      f"{title!r}, using 0: {e}", file=sys.stderr)
+                return 0
+
+        def _safe_seed_crash(title: str, value: int) -> None:
+            if _seed_crash is None:
+                return
+            try:
+                _seed_crash(instance_dir, title, value)
+            except Exception as e:
+                print(f"[recover] Warning: tracker seed_crash failed for "
+                      f"{title!r}, legacy [r:{value}] may be lost: {e}",
+                      file=sys.stderr)
+
+        def _safe_inc_crash(title: str) -> bool:
+            """Try to increment via tracker. Returns True on success."""
+            if _inc_crash is None:
+                return False
+            try:
+                _inc_crash(instance_dir, title)
+                return True
+            except Exception as e:
+                print(f"[recover] Warning: tracker inc_crash failed for "
+                      f"{title!r}, falling back to inline [r:N]: {e}",
+                      file=sys.stderr)
+                return False
+
         def _get_old_r_count(line: str) -> int:
             m = _RECOVERY_COUNTER_RE.search(line)
             if not m:
@@ -346,16 +398,11 @@ def recover_missions(
                 has_checkpoint = cp is not None
 
             old_r = _get_old_r_count(header)
-            crash_count = _get_crash(instance_dir, clean_title) if _get_crash else 0
-            # Backward compat: if a legacy [r:N] tag carries a higher count than
-            # the tracker, seed it into the tracker so the migrated count survives
-            # this recovery cycle (without seeding, the next cycle would read only
-            # the freshly-incremented tracker value, granting one extra retry).
+            crash_count = _safe_get_crash(clean_title)
             if old_r > crash_count:
                 crash_count = old_r
-                if _seed_crash is not None:
-                    _seed_crash(instance_dir, clean_title, old_r)
-            total = _get_total(instance_dir, clean_title) if _get_total else 0
+                _safe_seed_crash(clean_title, old_r)
+            total = _safe_get_total(clean_title)
 
             state = classify_mission_state(
                 crash_count=crash_count,
@@ -385,12 +432,7 @@ def recover_missions(
                 # project sub-headers in Pending, which would fragment the block on
                 # the next mission pick. Use - format so it's picked up as a unit.
                 dash_line = f"- {clean_title}"
-                if _inc_crash is not None:
-                    _inc_crash(instance_dir, clean_title)
-                else:
-                    # Degraded mode (no tracker): persist the incremented count
-                    # inline so the next crash sees a higher [r:N] and escalation
-                    # still progresses instead of resetting to 0 each cycle.
+                if not _safe_inc_crash(clean_title):
                     dash_line = _set_recovery_counter(dash_line, crash_count + 1)
                 recovered.append(dash_line)
                 recovered_mission_texts.append(clean_title)
@@ -426,18 +468,11 @@ def recover_missions(
                 clean_line = _strip_recovery_counter(line).rstrip()
                 clean_text = clean_line.removeprefix("- ").strip()
 
-                # Get crash_count from tracker
-                crash_count = _get_crash(instance_dir, clean_text) if _get_crash else 0
-                # Backward compat: if a legacy [r:N] tag carries a higher count
-                # than the tracker, seed it into the tracker so the migrated count
-                # survives this recovery cycle (without seeding, the next cycle
-                # would read only the freshly-incremented tracker value, granting
-                # one extra retry).
+                crash_count = _safe_get_crash(clean_text)
                 if old_r > crash_count:
                     crash_count = old_r
-                    if _seed_crash is not None:
-                        _seed_crash(instance_dir, clean_text, old_r)
-                total = _get_total(instance_dir, clean_text) if _get_total else 0
+                    _safe_seed_crash(clean_text, old_r)
+                total = _safe_get_total(clean_text)
 
                 # Check for a structured checkpoint for this mission
                 has_checkpoint = False
@@ -472,14 +507,9 @@ def recover_missions(
                     _log_recovery_event(instance_dir, line, state, "escalated", crash_count,
                                         has_checkpoint=has_checkpoint)
                 else:
-                    if _inc_crash is not None:
-                        # Tracker holds the count — move to Pending clean (no [r:N]).
-                        _inc_crash(instance_dir, clean_text)
+                    if _safe_inc_crash(clean_text):
                         recovered.append(clean_line)
                     else:
-                        # Degraded mode (no tracker): persist the incremented count
-                        # inline so the next crash sees a higher [r:N] and escalation
-                        # still progresses instead of resetting to 0 each cycle.
                         recovered.append(_set_recovery_counter(clean_line, crash_count + 1))
                     recovered_mission_texts.append(clean_text)
                     _log_recovery_event(instance_dir, line, state, "recovered", crash_count + 1,
