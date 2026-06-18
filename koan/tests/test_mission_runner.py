@@ -447,6 +447,19 @@ class TestCheckAutoMerge:
         assert result is None
         mock_merge.assert_called_once()
 
+    @patch("app.git_auto_merge.auto_merge_branch", return_value=0)
+    @patch("app.git_sync.run_git", return_value="koan/my-feature")
+    @patch("app.config.get_branch_prefix", return_value="koan/")
+    def test_returns_none_when_enabled_but_no_matching_rule(self, mock_prefix, mock_git, mock_merge, tmp_path):
+        from app.mission_runner import check_auto_merge
+
+        config = {"projects": {"project": {"git_auto_merge": {
+            "enabled": True, "rules": [{"pattern": "koan/release-*", "auto_merge": True}],
+        }}}}
+        result = check_auto_merge(str(tmp_path), "project", str(tmp_path), projects_config=config)
+        assert result is None
+        mock_merge.assert_called_once()
+
     @patch("app.git_sync.run_git", return_value="main")
     def test_skips_non_koan_branch(self, mock_git, tmp_path):
         from app.mission_runner import check_auto_merge
