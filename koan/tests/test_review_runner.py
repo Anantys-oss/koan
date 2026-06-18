@@ -1314,6 +1314,129 @@ class TestRunReview:
 
 
 # ---------------------------------------------------------------------------
+# Closed/merged PR guard
+# ---------------------------------------------------------------------------
+
+class TestRunReviewClosedPrGuard:
+    """run_review skips closed/merged PRs unless force=True."""
+
+    @patch("app.review_runner._fetch_pr_state", return_value="MERGED")
+    def test_skips_merged_pr(self, _mock_state):
+        mock_notify = MagicMock()
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+        )
+        assert success is True
+        assert "merged" in summary.lower()
+        assert "skipping review" in summary.lower()
+        assert data is None
+
+    @patch("app.review_runner._fetch_pr_state", return_value="CLOSED")
+    def test_skips_closed_pr(self, _mock_state):
+        mock_notify = MagicMock()
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=mock_notify,
+        )
+        assert success is True
+        assert "closed" in summary.lower()
+        assert "--force" in summary
+        assert data is None
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._fetch_pr_state", return_value="MERGED")
+    def test_force_reviews_merged_pr(
+        self, _mock_state, mock_fetch, mock_claude, mock_gh,
+        mock_repliable, _mock_shas, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            force=True,
+        )
+        assert success is True
+        assert data is not None
+        mock_fetch.assert_called_once()
+
+    @patch("app.review_runner._fetch_pr_state", return_value="OPEN")
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_open_pr_proceeds_normally(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        _mock_shas, _mock_state, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+        assert success is True
+        assert data is not None
+
+    @patch("app.review_runner._fetch_pr_state", return_value="")
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_state_check_error_proceeds(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        _mock_shas, _mock_state, pr_context, review_skill_dir,
+    ):
+        """When state check fails (returns empty), review proceeds anyway."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+        assert success is True
+        assert data is not None
+
+
+class TestMainCliForceFlag:
+    @patch("app.review_runner.run_review")
+    def test_force_flag_passed_to_run_review(self, mock_run):
+        from app.review_runner import main
+        mock_run.return_value = (True, "Review posted.", None)
+        main([
+            "https://github.com/owner/repo/pull/42",
+            "--project-path", "/tmp/project",
+            "--force",
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs["force"] is True
+
+    @patch("app.review_runner.run_review")
+    def test_no_force_flag_defaults_false(self, mock_run):
+        from app.review_runner import main
+        mock_run.return_value = (True, "Review posted.", None)
+        main([
+            "https://github.com/owner/repo/pull/42",
+            "--project-path", "/tmp/project",
+        ])
+        _, kwargs = mock_run.call_args
+        assert kwargs["force"] is False
+
+
+# ---------------------------------------------------------------------------
 # _run_claude_review
 # ---------------------------------------------------------------------------
 
@@ -1415,6 +1538,7 @@ class TestMainCli:
             errors=False,
             comments=False,
             ultra=False,
+            force=False,
         )
 
     @patch("app.review_runner.run_review")
@@ -2551,6 +2675,42 @@ class TestSkillDispatchPlanUrl:
 
         assert cmd is not None
         assert "--plan-url" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# skill_dispatch --force passthrough
+# ---------------------------------------------------------------------------
+
+class TestSkillDispatchForceFlag:
+    def test_passes_force_to_review_cmd(self):
+        from app.skill_dispatch import dispatch_skill_mission
+
+        with patch("app.skill_dispatch.is_known_project", return_value=False):
+            cmd = dispatch_skill_mission(
+                "/review https://github.com/owner/repo/pull/5 --force",
+                project_name="myproject",
+                project_path="/tmp/proj",
+                koan_root="/tmp/koan",
+                instance_dir="/tmp/instance",
+            )
+
+        assert cmd is not None
+        assert "--force" in cmd
+
+    def test_no_force_when_absent(self):
+        from app.skill_dispatch import dispatch_skill_mission
+
+        with patch("app.skill_dispatch.is_known_project", return_value=False):
+            cmd = dispatch_skill_mission(
+                "/review https://github.com/owner/repo/pull/5",
+                project_name="myproject",
+                project_path="/tmp/proj",
+                koan_root="/tmp/koan",
+                instance_dir="/tmp/instance",
+            )
+
+        assert cmd is not None
+        assert "--force" not in cmd
 
 
 # ---------------------------------------------------------------------------

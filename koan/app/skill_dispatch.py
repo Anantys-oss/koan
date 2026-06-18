@@ -768,6 +768,8 @@ def _build_review_cmd(
         cmd.append("--errors")
     if "--comments" in args:
         cmd.append("--comments")
+    if "--force" in args:
+        cmd.append("--force")
     plan_url, _ = _extract_flag(args, _PLAN_URL_RE)
     if plan_url:
         cmd.extend(["--plan-url", plan_url])

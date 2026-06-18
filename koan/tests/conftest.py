@@ -91,6 +91,22 @@ def _mock_resolve_pr_location():
 
 
 @pytest.fixture(autouse=True)
+def _mock_fetch_pr_state():
+    """Default PR state to OPEN so review tests don't need gh CLI.
+
+    ``run_review()`` checks PR state at Step 0a and skips closed/merged PRs.
+    Most review tests don't care about this gate — they exercise the review
+    pipeline itself.  Mock returns ``"OPEN"`` universally; tests that
+    specifically verify the closed-PR guard patch this target themselves.
+    """
+    try:
+        with patch("app.review_runner._fetch_pr_state", return_value="OPEN"):
+            yield
+    except (AttributeError, ModuleNotFoundError):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
     """Ensure tests don't touch real instance/ or send real Telegram messages."""
     monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "fake-token")

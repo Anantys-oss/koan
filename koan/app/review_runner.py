@@ -1586,6 +1586,20 @@ def _fetch_pr_commit_shas(owner: str, repo: str, pr_number: str) -> List[str]:
         return []
 
 
+def _fetch_pr_state(owner: str, repo: str, pr_number: str) -> str:
+    """Return the PR state (OPEN, MERGED, CLOSED) or empty string on error."""
+    try:
+        return run_gh(
+            "pr", "view", pr_number,
+            "--repo", f"{owner}/{repo}",
+            "--json", "state",
+            "--jq", ".state",
+        ).strip().upper()
+    except RuntimeError as e:
+        log("review", f"Could not check PR state for #{pr_number}: {e}")
+        return ""
+
+
 def _is_review_requested(owner: str, repo: str, pr_number: str, bot_username: str) -> bool:
     """Check if the bot has a pending review request on this PR.
 
@@ -1719,6 +1733,7 @@ def run_review(
     errors: bool = False,
     comments: bool = False,
     ultra: bool = False,
+    force: bool = False,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -1743,6 +1758,7 @@ def run_review(
             (errors) pass. Equivalent to passing architecture=True and
             errors=True; provided as a single semantic switch for the
             /ultrareview skill.
+        force: If True, review even if the PR is closed/merged.
 
     Returns:
         (success, summary, review_data) tuple. review_data is the validated
@@ -1761,6 +1777,17 @@ def run_review(
         owner, repo = resolve_pr_location(owner, repo, pr_number, project_path)
     except RuntimeError as e:
         return False, str(e), None
+
+    # ── Step 0a: Check PR state — skip closed/merged unless --force ────
+    if not force:
+        pr_state = _fetch_pr_state(owner, repo, pr_number)
+        if pr_state in ("MERGED", "CLOSED"):
+            msg = (
+                f"PR #{pr_number} is {pr_state.lower()} — skipping review. "
+                "Use --force to review anyway."
+            )
+            log("review", msg)
+            return True, msg, None
 
     from app.config import get_review_concurrency_config
     concurrency_cfg = get_review_concurrency_config()
@@ -2180,6 +2207,10 @@ def main(argv=None):
         help="Ultra review: combine the architecture-focused pass with the "
              "silent-failure-hunter pass for the most thorough review.",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Review even if the PR is closed or merged.",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -2199,6 +2230,7 @@ def main(argv=None):
         errors=cli_args.errors,
         comments=cli_args.comments,
         ultra=cli_args.ultra,
+        force=cli_args.force,
     )
     print(summary)
     return 0 if success else 1
