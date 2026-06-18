@@ -87,6 +87,9 @@ class TelegramProvider(MessagingProvider):
         # Consecutive poll failure tracking for exponential backoff
         self._consecutive_poll_failures: int = 0
 
+        # Bot identity — populated from getMe during configure()
+        self._bot_username: str = ""
+
     # -- MessagingProvider interface ------------------------------------------
 
     def configure(self) -> bool:
@@ -104,6 +107,14 @@ class TelegramProvider(MessagingProvider):
             return False
 
         self._api_base = f"https://api.telegram.org/bot{self._bot_token}"
+
+        try:
+            me = requests.get(f"{self._api_base}/getMe", timeout=5).json()
+            if me.get("ok"):
+                self._bot_username = me.get("result", {}).get("username", "")
+        except Exception:
+            pass
+
         return True
 
     def get_provider_name(self) -> str:
@@ -114,6 +125,9 @@ class TelegramProvider(MessagingProvider):
 
     def get_channel_id(self) -> str:
         return self._chat_id
+
+    def get_bot_username(self) -> str:
+        return self._bot_username
 
     def send_message(self, text: str, reply_to_message_id: int = 0) -> bool:
         """Send a message with flood protection and chunking.

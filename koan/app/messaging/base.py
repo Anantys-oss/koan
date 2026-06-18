@@ -97,6 +97,13 @@ class MessagingProvider(ABC):
         """
         return []
 
+    def get_bot_username(self) -> str:
+        """Return the bot's username (without leading ``@``).
+
+        Empty string means unknown — callers must handle gracefully.
+        """
+        return ""
+
     def send_typing(self) -> bool:
         """Send a typing indicator to the channel.
 

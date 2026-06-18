@@ -199,6 +199,31 @@ def parse_project(text: str) -> Tuple[Optional[str], str]:
     return _parse_project(text)
 
 
+def _is_addressed_to_other_user(text: str, msg: dict, bot_username: str) -> bool:
+    """Return True if the message opens with an @mention of someone other than the bot.
+
+    In group chats, ``@other-user do X`` should be ignored — it's addressed
+    to a different participant. Only messages starting with ``@our-bot`` (or
+    no leading mention at all) should be processed.
+    """
+    if not bot_username:
+        return False
+
+    entities = msg.get("entities", [])
+    for entity in entities:
+        if entity.get("type") == "mention" and entity.get("offset", -1) == 0:
+            length = entity.get("length", 0)
+            mentioned = text[:length].lstrip("@")
+            return mentioned.lower() != bot_username.lower()
+
+    if text.startswith("@"):
+        match = re.match(r"@(\w+)", text)
+        if match:
+            return match.group(1).lower() != bot_username.lower()
+
+    return False
+
+
 def _strip_bot_mention_from_text(text: str, msg: dict) -> str:
     """Strip @bot_username mentions from non-command messages.
 
@@ -890,6 +915,10 @@ def _bridge_loop():
         log("error", "Failed to initialize messaging provider")
         sys.exit(1)
 
+    bot_username = provider.get_bot_username()
+    if bot_username:
+        log("init", f"Bot username: @{bot_username}")
+
     # Detect group chat and warn about privacy mode
     _check_group_chat_mode(provider)
 
@@ -967,6 +996,9 @@ def _bridge_loop():
                 # `"" in (channel_id, "")` and slip past the channel filter.
                 valid_chat_ids = {str(channel_id), str(CHAT_ID)} - {""}
                 if text and chat_id and chat_id in valid_chat_ids:
+                    if _is_addressed_to_other_user(text, msg, bot_username):
+                        log("chat", f"Ignoring message addressed to another user: {text[:60]}")
+                        continue
                     message_id = msg.get("message_id", 0)
                     text = _strip_bot_mention_from_text(text, msg)
                     log("chat", f"Received: {text[:60]}")

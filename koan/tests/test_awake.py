@@ -26,6 +26,7 @@ from app.awake import (
     _run_in_worker,
     _flush_outbox_async,
     _strip_bot_mention_from_text,
+    _is_addressed_to_other_user,
     _check_group_chat_mode,
     get_updates,
     check_config,
@@ -3456,6 +3457,54 @@ class TestStripBotMentionFromText:
     def test_mention_only(self):
         msg = {"entities": [{"type": "mention", "offset": 0, "length": 8}]}
         assert _strip_bot_mention_from_text("@BotName", msg) == ""
+
+
+# ---------------------------------------------------------------------------
+# _is_addressed_to_other_user — skip messages addressed to other participants
+# ---------------------------------------------------------------------------
+
+
+class TestIsAddressedToOtherUser:
+    """Messages starting with @other-user should be ignored in group chats."""
+
+    def test_addressed_to_other_user_via_entity(self):
+        msg = {"entities": [{"type": "mention", "offset": 0, "length": 10}]}
+        assert _is_addressed_to_other_user("@OtherUser hello", msg, "MyBot") is True
+
+    def test_addressed_to_bot_via_entity(self):
+        msg = {"entities": [{"type": "mention", "offset": 0, "length": 6}]}
+        assert _is_addressed_to_other_user("@MyBot hello", msg, "MyBot") is False
+
+    def test_case_insensitive(self):
+        msg = {"entities": [{"type": "mention", "offset": 0, "length": 6}]}
+        assert _is_addressed_to_other_user("@mybot hello", msg, "MyBot") is False
+
+    def test_no_mention_at_start(self):
+        msg = {"entities": [{"type": "mention", "offset": 6, "length": 10}]}
+        assert _is_addressed_to_other_user("hello @OtherUser", msg, "MyBot") is False
+
+    def test_no_entities(self):
+        assert _is_addressed_to_other_user("hello world", {}, "MyBot") is False
+
+    def test_no_bot_username(self):
+        msg = {"entities": [{"type": "mention", "offset": 0, "length": 10}]}
+        assert _is_addressed_to_other_user("@OtherUser hello", msg, "") is False
+
+    def test_text_fallback_other_user(self):
+        assert _is_addressed_to_other_user("@OtherUser hello", {}, "MyBot") is True
+
+    def test_text_fallback_bot(self):
+        assert _is_addressed_to_other_user("@MyBot hello", {}, "MyBot") is False
+
+    def test_plain_text_no_mention(self):
+        assert _is_addressed_to_other_user("just a message", {}, "MyBot") is False
+
+    def test_command_not_matched(self):
+        assert _is_addressed_to_other_user("/start", {}, "MyBot") is False
+
+    def test_non_mention_entity_at_start(self):
+        msg = {"entities": [{"type": "bold", "offset": 0, "length": 5}]}
+        assert _is_addressed_to_other_user("hello world", msg, "MyBot") is False
 
 
 # ---------------------------------------------------------------------------
