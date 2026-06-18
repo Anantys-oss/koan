@@ -77,3 +77,29 @@ commands can report progress without directly controlling the runner.
 
 New daemon behavior should prefer these existing state files and managers over
 adding direct process coupling.
+
+## Parallel Sessions
+
+When `max_parallel_sessions` is set to 2 or higher in `config.yaml`, the agent
+loop can run multiple missions concurrently. Each session gets its own git
+worktree so there are no branch conflicts.
+
+The parallel path has two phases wired into `_run_iteration` in `run.py`:
+
+1. **Reap** (`_parallel_reap_sessions`) — polls active sessions for completion,
+   runs the post-mission pipeline, transitions `missions.md` state, and sends
+   notifications. Quota exhaustion in any session halts new dispatches.
+2. **Dispatch** (`_parallel_dispatch_sessions`) — spawns the primary mission
+   plus fills remaining free slots from the pending queue. A same-project guard
+   prevents two sessions from running on the same project simultaneously.
+
+Session state is tracked in-memory via `_live_sessions` and persisted via
+`SessionRegistry` (`instance/sessions.json`). `session_manager.py` owns
+`spawn_session`, `poll_sessions`, and `kill_session`. `worktree_manager.py`
+handles git worktree create/teardown.
+
+Skill-dispatched missions (`/rebase`, `/plan`, etc.) always use the sequential
+path because they depend on git prep and specialised post-mission handling.
+
+Single-slot installations (`max_parallel_sessions: 1`, the default) skip all
+parallel logic with zero overhead.
