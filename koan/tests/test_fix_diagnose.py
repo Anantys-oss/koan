@@ -8,7 +8,6 @@ from skills.core.fix.fix_diagnose import (
     _parse_diagnostic,
     format_diagnostic_context,
 )
-from app.issue_tracker.types import IssueContent, IssueRef
 
 _DIAG_MODULE = "skills.core.fix.fix_diagnose"
 

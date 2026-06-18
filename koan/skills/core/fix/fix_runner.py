@@ -180,8 +180,14 @@ def run_fix(
         )
         diagnostic_context = format_diagnostic_context(diagnostic)
         confidence = diagnostic.get("confidence", "LOW")
+        diag_error = diagnostic.get("error")
         print(f"[fix] Diagnostic confidence: {confidence}", flush=True)
-        if confidence == "LOW" and notify_fn:
+        if diag_error and notify_fn:
+            notify_fn(
+                f"⚠️ Diagnostic step failed for {label}: {diag_error} — "
+                f"fix will proceed without diagnostic context"
+            )
+        elif confidence == "LOW" and notify_fn:
             notify_fn(
                 f"⚠️ Low-confidence diagnostic for {label} — "
                 f"fix will proceed but may need human review"

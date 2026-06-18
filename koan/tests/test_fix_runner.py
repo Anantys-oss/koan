@@ -37,13 +37,6 @@ _MOCK_DIAGNOSTIC = {
 }
 
 
-def _patch_diagnostic():
-    """Return stacked patches that stub out the diagnostic step."""
-    return (
-        patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC),
-        patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value=""),
-    )
-
 
 def _github_issue(
     title="Bug title", body="Bug body", comments=None,
@@ -719,7 +712,7 @@ class TestRunFixDiagnostic:
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
     @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_low_confidence_emits_warning(
-        self, mock_fetch, mock_diag, mock_execute, mock_branch, mock_pr, mock_format,
+        self, mock_fetch, mock_execute, mock_branch, mock_pr, mock_diag, mock_format,
     ):
         mock_fetch.return_value = _github_issue()
         notify = MagicMock()
