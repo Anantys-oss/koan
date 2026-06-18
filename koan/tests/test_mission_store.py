@@ -286,32 +286,35 @@ class TestMissionStoreSave:
 
 class TestMissionStoreAdd:
     def test_add_creates_pending_record(self, store):
-        r = store.add("Fix bug")
+        r, was_new = store.add("Fix bug")
+        assert was_new is True
         assert r.status == "pending"
         assert r.text == "Fix bug"
         assert r.id != ""
         assert r.crash_count == 0
 
     def test_add_with_project(self, store):
-        r = store.add("Fix bug", project="myapp")
+        r, _ = store.add("Fix bug", project="myapp")
         assert r.project == "myapp"
 
     def test_add_with_complexity(self, store):
-        r = store.add("Fix bug", complexity="medium")
+        r, _ = store.add("Fix bug", complexity="medium")
         assert r.complexity == "medium"
 
     def test_add_duplicate_returns_existing(self, store):
-        r1 = store.add("Fix bug")
-        r2 = store.add("Fix bug")
+        r1, new1 = store.add("Fix bug")
+        r2, new2 = store.add("Fix bug")
+        assert new1 is True
+        assert new2 is False
         assert r1.id == r2.id
         assert len(store._records) == 1
 
     def test_add_strips_lifecycle_markers(self, store):
-        r = store.add("Fix bug ⏳(2026-06-14T10:00)")
+        r, _ = store.add("Fix bug ⏳(2026-06-14T10:00)")
         assert r.text == "Fix bug"
 
     def test_add_sets_queued_at(self, store):
-        r = store.add("Fix bug")
+        r, _ = store.add("Fix bug")
         assert r.queued_at is not None
 
     def test_add_multiple_missions(self, store):
@@ -343,7 +346,7 @@ class TestMissionStoreFind:
 
     def test_find_with_canonical_key_match(self, store):
         # Mission stored with project tag in the project field, not text
-        r = store.add("Deploy app", project="webapp")
+        r, _ = store.add("Deploy app", project="webapp")
         # Should find even if project tag is included in lookup text
         assert store.find("Deploy app") is r
 
@@ -731,7 +734,7 @@ class TestGenerateView:
 
     def test_to_markdown_caps_done_at_50(self, store):
         for i in range(60):
-            r = store.add(f"Mission {i}")
+            r, _ = store.add(f"Mission {i}")
             object.__setattr__(r, "status", "done")
             object.__setattr__(r, "completed_at", "2026-06-14 10:00")
         view = store.to_markdown()
@@ -741,7 +744,7 @@ class TestGenerateView:
 
     def test_to_markdown_caps_failed_at_30(self, store):
         for i in range(40):
-            r = store.add(f"Mission {i}")
+            r, _ = store.add(f"Mission {i}")
             object.__setattr__(r, "status", "failed")
             object.__setattr__(r, "completed_at", "2026-06-14 10:00")
         view = store.to_markdown()
@@ -764,7 +767,7 @@ class TestGenerateView:
         assert view.endswith("\n")
 
     def test_to_markdown_complexity_before_crash_count_before_timestamp(self, store):
-        r = store.add("Fix bug", complexity="simple")
+        r, _ = store.add("Fix bug", complexity="simple")
         object.__setattr__(r, "crash_count", 2)
         view = store.to_markdown()
         line = [l for l in view.splitlines() if "Fix bug" in l][0]

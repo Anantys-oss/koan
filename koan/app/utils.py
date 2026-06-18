@@ -582,15 +582,9 @@ def insert_pending_mission(
     instance_dir = str(KOAN_ROOT / "instance")
 
     with locked_store(instance_dir) as store:
-        active_before = (
-            len(store.get_by_status("pending")) + len(store.get_by_status("in_progress"))
-        )
-        store.add(text, project, urgent=urgent)
-        inserted = (
-            len(store.get_by_status("pending")) + len(store.get_by_status("in_progress"))
-        ) > active_before
+        _, was_new = store.add(text, project, urgent=urgent)
 
-    return inserted
+    return was_new
 
 
 def _get_known_projects_for_root(koan_root: Path) -> list:

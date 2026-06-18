@@ -452,13 +452,7 @@ def _maybe_escalate_to_debug(
 
     entry = f"/debug {fix_args}"
     with locked_store(instance) as store:
-        active_before = (
-            len(store.get_by_status("pending")) + len(store.get_by_status("in_progress"))
-        )
-        store.add(entry, project, urgent=True)
-        inserted = (
-            len(store.get_by_status("pending")) + len(store.get_by_status("in_progress"))
-        ) > active_before
+        _, inserted = store.add(entry, project, urgent=True)
 
     if not inserted:
         import app.run as _run

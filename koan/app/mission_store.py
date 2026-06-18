@@ -404,7 +404,7 @@ class MissionStore:
         complexity: str | None = None,
         *,
         urgent: bool = False,
-    ) -> MissionRecord:
+    ) -> tuple[MissionRecord, bool]:
         """Create a new pending mission record.
 
         Checks for duplicates using :func:`app.missions.canonical_mission_key`.
@@ -421,7 +421,9 @@ class MissionStore:
                 (next to be picked up) instead of the bottom (FIFO).
 
         Returns:
-            The new (or existing active) :class:`MissionRecord`.
+            A ``(record, was_new)`` tuple.  *record* is the new or existing
+            active :class:`MissionRecord`; *was_new* is ``True`` when a new
+            record was inserted and ``False`` when a duplicate was found.
         """
         from app.missions import canonical_mission_key  # lazy import
 
@@ -436,7 +438,7 @@ class MissionStore:
             None,
         )
         if existing is not None:
-            return existing
+            return existing, False
 
         record = MissionRecord(
             id=str(uuid.uuid4()),
@@ -460,7 +462,7 @@ class MissionStore:
         else:
             self._records.append(record)
 
-        return record
+        return record, True
 
     def start(self, text: str) -> bool:
         """Move the matching pending mission to ``in_progress``.
