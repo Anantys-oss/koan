@@ -1248,7 +1248,13 @@ def _find_all_thread_mentions(
             # Extract owner/repo for already-processed check
             repo_data = notification.get("repository", {})
             full_name = repo_data.get("full_name", "")
-            if "/" in full_name:
+            if "/" not in full_name:
+                log.warning(
+                    "GitHub: malformed repository.full_name %r in "
+                    "notification %s — skipping fallback comment check",
+                    full_name, thread_id,
+                )
+            else:
                 c_owner, c_repo = full_name.split("/", 1)
                 if not check_already_processed(
                     comment_id, bot_username, c_owner, c_repo,
@@ -1403,6 +1409,9 @@ def _process_mention_comment(
             instance_dir = str(_Path(koan_root) / "instance")
             track_comment(instance_dir, comment_id)
 
+        notification.setdefault("_koan_commands", []).append(
+            {"command": command_name, "author": comment_author},
+        )
         notification["_koan_command"] = command_name
         notification["_koan_author"] = comment_author
 
@@ -1482,6 +1491,9 @@ def _process_mention_comment(
         if pr_number:
             set_review_cooldown(instance_dir, owner, repo, pr_number)
 
+    notification.setdefault("_koan_commands", []).append(
+        {"command": command_name, "author": comment_author},
+    )
     notification["_koan_command"] = command_name
     notification["_koan_author"] = comment_author
 
@@ -1575,9 +1587,12 @@ def process_single_notification(
         mark_notification_read(str(notification.get("id", "")))
         return False, None
 
-    # Process each comment in chronological order
+    # Process each comment in chronological order.
+    # Errors are posted inline to the specific comment — never returned to
+    # the caller.  This avoids double-posting: the caller's error handler
+    # would fetch the latest comment (which may differ from the one that
+    # triggered the error) and post a second error reply.
     any_queued = False
-    last_error = None
     for comment in comments:
         queued, error = _process_mention_comment(
             notification, comment, registry, config, projects_config,
@@ -1586,8 +1601,6 @@ def process_single_notification(
         if queued:
             any_queued = True
         if error:
-            last_error = error
-            # Post error reply to the specific comment that caused it
             issue_number = extract_issue_number_from_notification(notification)
             comment_id = str(comment.get("id", ""))
             if issue_number and comment_id:
@@ -1601,16 +1614,7 @@ def process_single_notification(
     if any_queued:
         notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_QUEUED
 
-    # Return success=True if any comment was queued, or if no errors occurred
-    # (e.g. all comments were help requests or already processed).
-    # Only return an error when there was exactly one comment with an error
-    # and no queued missions — this preserves backward-compatible error
-    # posting for the single-comment case via the caller in loop_manager.
-    if any_queued:
-        return True, None
-    if last_error and len(comments) == 1:
-        return False, last_error
-    return False, None
+    return any_queued, None
 
 
 def _post_command_acknowledgment(

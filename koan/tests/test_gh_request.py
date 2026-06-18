@@ -264,6 +264,7 @@ class TestGhRequestRouting:
         assert "can you take a look at this PR?" in mission
 
     @patch("app.github_command_handler._is_subject_closed", return_value=None)
+    @patch("app.github_command_handler.post_error_reply")
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler._find_all_thread_mentions")
@@ -271,7 +272,7 @@ class TestGhRequestRouting:
     @patch("app.github_command_handler._try_nlp_classification", return_value=None)
     def test_nlp_disabled_uses_legacy_path(
         self, mock_nlp, mock_resolve, mock_mentions,
-        mock_processed, mock_read, mock_closed,
+        mock_processed, mock_read, mock_error_reply, mock_closed,
         registry_with_gh_request,
     ):
         """Without natural_language=true, uses legacy NLP classification."""
@@ -288,7 +289,7 @@ class TestGhRequestRouting:
         }
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
-            "id": 99999,
+            "id": "99999",
             "body": "@testbot blahblah",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
@@ -300,8 +301,10 @@ class TestGhRequestRouting:
         )
 
         assert success is False
+        assert error is None
         mock_nlp.assert_called_once()
-        assert "`blahblah`" in error
+        mock_error_reply.assert_called_once()
+        assert "`blahblah`" in mock_error_reply.call_args[0][4]
 
     @patch("app.github_command_handler._is_subject_closed", return_value=None)
     @patch("app.github_command_handler.mark_notification_read")

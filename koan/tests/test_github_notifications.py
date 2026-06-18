@@ -1202,6 +1202,42 @@ class TestFindAllMentionsInThread:
         result = find_all_mentions_in_thread(notification, "bot")
         assert result == []
 
+    @patch("app.github_notifications.api")
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
+    def test_warns_on_truncated_comment_list(self, mock_processed, mock_api, caplog):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/issues/10",
+            },
+        }
+        comments = [
+            {"id": i, "url": f"u/{i}", "body": "@bot review",
+             "user": {"login": "alice"}, "created_at": f"2026-06-18T10:{i:02d}:00Z"}
+            for i in range(100)
+        ]
+        mock_api.return_value = json.dumps(comments)
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            find_all_mentions_in_thread(notification, "bot")
+
+        assert any("Truncated comment list" in r.message for r in caplog.records)
+
+    @patch("app.github_notifications.api", side_effect=RuntimeError("timeout"))
+    def test_warns_when_all_endpoints_fail(self, mock_api, caplog):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/5",
+            },
+        }
+
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = find_all_mentions_in_thread(notification, "bot")
+
+        assert result == []
+        assert any("all endpoints failed" in r.message for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # SSO failure tracking
