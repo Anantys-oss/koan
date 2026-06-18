@@ -50,6 +50,7 @@ def _get_agent_state() -> dict:
         "focus": full["focus"] is not None,
         "status_text": full["label"],
         "pause": pause_info,
+        "elapsed_seconds": full["elapsed"],
     }
 
 
@@ -71,14 +72,37 @@ def _mission_counts() -> dict:
         return {"pending": 0, "in_progress": 0, "done": 0, "failed": 0}
 
 
+def _signal_flags() -> dict:
+    """Boolean flags for stop/quota/pause signal files."""
+    from app.agent_state import get_signal_status
+
+    sigs = get_signal_status(_koan_root())
+    return {
+        "stop_requested": sigs["stop_requested"],
+        "quota_paused": sigs["quota_paused"],
+        "paused": sigs["paused"],
+    }
+
+
+def _attention_count() -> int:
+    """Count unresolved attention items, fallback to 0 on error."""
+    from app.attention import get_attention_count
+
+    try:
+        return get_attention_count(str(_koan_root()))
+    except Exception as e:
+        log.warning("attention count unavailable: %s", e)
+        return 0
+
+
 @bp.route("/v1/status")
 @require_token
 def status():
-    state = _get_agent_state()
-    counts = _mission_counts()
     return jsonify(
         {
-            "agent": state,
-            "missions": counts,
+            "agent": _get_agent_state(),
+            "missions": _mission_counts(),
+            "signals": _signal_flags(),
+            "attention_count": _attention_count(),
         }
     )

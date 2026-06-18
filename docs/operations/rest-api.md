@@ -80,7 +80,7 @@ All responses are JSON. Errors use a uniform envelope:
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/v1/status` | yes | Agent state, mode, mission counts, pause info |
+| `GET` | `/v1/status` | yes | Agent state, mode, mission counts, signal flags, attention count |
 
 Response:
 ```json
@@ -92,14 +92,21 @@ Response:
     "project": "my-project",
     "focus": false,
     "status_text": "Run 12/20 — executing",
-    "pause": {}
+    "pause": {},
+    "elapsed_seconds": 42
   },
   "missions": {
     "pending": 3,
     "in_progress": 1,
     "done": 42,
     "failed": 0
-  }
+  },
+  "signals": {
+    "stop_requested": false,
+    "quota_paused": false,
+    "paused": false
+  },
+  "attention_count": 2
 }
 ```
 
