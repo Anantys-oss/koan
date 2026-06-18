@@ -1257,17 +1257,33 @@ def _notify_mission_from_mention(notif: dict) -> None:
         subject_api_url = notif.get("subject", {}).get("url", "")
         thread_url = api_url_to_web_url(subject_api_url) if subject_api_url else ""
 
-        # Use annotated command/author from process_single_notification
-        command_name = notif.get("_koan_command", "")
-        author = notif.get("_koan_author", "")
-
-        # Build descriptive title: "📬 GitHub @user → /rebase mission queued"
-        author_part = f"@{author}" if author else "@mention"
-        command_part = f" /{command_name}" if command_name else ""
-        msg = (
-            f"📬 GitHub {author_part} →{command_part} mission queued\n"
-            f"{repo_name} ({subject_type}): {subject_title}"
-        )
+        # Use accumulated command list when available (multi-mention),
+        # fall back to single annotations for backward compatibility.
+        commands_list = notif.get("_koan_commands", [])
+        if commands_list:
+            parts = []
+            for entry in commands_list:
+                cmd = entry.get("command", "")
+                auth = entry.get("author", "")
+                author_part = f"@{auth}" if auth else "@mention"
+                command_part = f" /{cmd}" if cmd else ""
+                parts.append(f"{author_part} →{command_part}")
+            summary = ", ".join(parts)
+            count = len(commands_list)
+            label = "missions" if count > 1 else "mission"
+            msg = (
+                f"📬 GitHub {summary} {label} queued\n"
+                f"{repo_name} ({subject_type}): {subject_title}"
+            )
+        else:
+            command_name = notif.get("_koan_command", "")
+            author = notif.get("_koan_author", "")
+            author_part = f"@{author}" if author else "@mention"
+            command_part = f" /{command_name}" if command_name else ""
+            msg = (
+                f"📬 GitHub {author_part} →{command_part} mission queued\n"
+                f"{repo_name} ({subject_type}): {subject_title}"
+            )
         if thread_url:
             msg += f"\n{thread_url}"
         from app.notify import NotificationPriority

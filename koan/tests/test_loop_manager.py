@@ -2242,6 +2242,44 @@ class TestNotifyMissionFromMention:
         assert "mission queued" in msg
 
 
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_reports_all_commands_from_multi_mention(self, mock_send):
+        from app.loop_manager import _notify_mission_from_mention
+
+        notif = {
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {"title": "Fix auth bug", "type": "PullRequest"},
+            "_koan_commands": [
+                {"command": "review", "author": "alice"},
+                {"command": "rebase", "author": "alice"},
+            ],
+        }
+        _notify_mission_from_mention(notif)
+        msg = mock_send.call_args[0][0]
+        assert "@alice" in msg
+        assert "/review" in msg
+        assert "/rebase" in msg
+        assert "missions queued" in msg
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_single_command_in_list_uses_singular(self, mock_send):
+        from app.loop_manager import _notify_mission_from_mention
+
+        notif = {
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {"title": "Fix auth bug", "type": "PullRequest"},
+            "_koan_commands": [
+                {"command": "review", "author": "alice"},
+            ],
+        }
+        _notify_mission_from_mention(notif)
+        msg = mock_send.call_args[0][0]
+        assert "@alice" in msg
+        assert "/review" in msg
+        assert "mission queued" in msg
+        assert "missions queued" not in msg
+
+
 class TestWarnUnregisteredMentionRepos:
     """Tests for _warn_unregistered_mention_repos Telegram warning."""
 

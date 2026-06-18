@@ -638,6 +638,7 @@ class NotificationTracker:
 
         all_mentions: List[dict] = []
         seen_ids: set = set()
+        any_succeeded = False
 
         for endpoint, sso_label in endpoints:
             try:
@@ -657,6 +658,15 @@ class NotificationTracker:
             if not isinstance(comments, list):
                 continue
 
+            any_succeeded = True
+
+            if len(comments) >= 100:
+                log.warning(
+                    "Truncated comment list for %s/%s#%s (%d items) — "
+                    "some @mentions may be missed",
+                    owner, repo, number, len(comments),
+                )
+
             mentions = self.search_all_comments_for_mentions(
                 comments, bot_username, owner, repo,
             )
@@ -665,6 +675,13 @@ class NotificationTracker:
                 if mid and mid not in seen_ids:
                     seen_ids.add(mid)
                     all_mentions.append(m)
+
+        if not any_succeeded:
+            log.warning(
+                "GitHub API: all endpoints failed for %s/%s#%s — "
+                "@mentions may be missed",
+                owner, repo, number,
+            )
 
         all_mentions.sort(key=lambda c: c.get("created_at", ""))
         return all_mentions

@@ -600,17 +600,20 @@ class TestProcessSingleNotification:
         assert error is None
         mock_read.assert_not_called()
 
+    @patch("app.github_command_handler.post_error_reply")
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
-    def test_invalid_command_returns_help(
+    def test_invalid_command_posts_help_inline(
         self, mock_resolve, mock_mentions,
-        mock_processed, mock_read, registry, sample_notification,
+        mock_processed, mock_read, mock_error_reply,
+        registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
-            "id": 99999, "body": "@testbot badcmd",
+            "id": "99999", "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            "body": "@testbot badcmd",
             "user": {"login": "alice"},
         }]
         config = {"github": {"nickname": "testbot"}}
@@ -619,10 +622,10 @@ class TestProcessSingleNotification:
             sample_notification, registry, config, None, "testbot",
         )
         assert success is False
-        assert "`badcmd`" in error
-        assert "`@testbot rebase`" in error
-        assert "`@testbot implement`" in error
-        assert "Usage:" in error
+        assert error is None
+        mock_error_reply.assert_called_once()
+        error_msg = mock_error_reply.call_args[0][4]
+        assert "`badcmd`" in error_msg
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
@@ -645,18 +648,21 @@ class TestProcessSingleNotification:
         # Notification should be marked as read for invalid commands
         mock_read.assert_called_with("12345")
 
+    @patch("app.github_command_handler.post_error_reply")
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_user_permission", return_value=False)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
-    def test_permission_denied_returns_error(
+    def test_permission_denied_posts_error_inline(
         self, mock_resolve, mock_mentions,
-        mock_processed, mock_perm, mock_read, registry, sample_notification,
+        mock_processed, mock_perm, mock_read, mock_error_reply,
+        registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
-            "id": 99999, "body": "@testbot rebase",
+            "id": "99999", "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            "body": "@testbot rebase",
             "user": {"login": "eve"},
         }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["alice"]}}
@@ -665,7 +671,10 @@ class TestProcessSingleNotification:
             sample_notification, registry, config, None, "testbot",
         )
         assert success is False
-        assert "Permission denied" in error
+        assert error is None
+        mock_error_reply.assert_called_once()
+        error_msg = mock_error_reply.call_args[0][4]
+        assert "Permission denied" in error_msg
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_user_permission", return_value=False)
@@ -707,7 +716,8 @@ class TestProcessSingleNotification:
         as read to prevent infinite re-processing."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
-            "id": 99999,
+            "id": "99999",
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
             "body": "@testbot rebase",
             "user": {"login": "alice"},
         }]
@@ -719,7 +729,9 @@ class TestProcessSingleNotification:
             )
 
         assert success is False
-        assert "Failed to queue mission" in error
+        assert error is None
+        mock_error_reply.assert_called_once()
+        assert "Failed to queue mission" in mock_error_reply.call_args[0][4]
         mock_read.assert_called_with("12345")
         # Reaction should NOT have been added (mission wasn't persisted)
         mock_react.assert_not_called()
@@ -740,7 +752,8 @@ class TestProcessSingleNotification:
         """PermissionError (subclass of OSError) is also caught gracefully."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
-            "id": 99999,
+            "id": "99999",
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
             "body": "@testbot rebase",
             "user": {"login": "alice"},
         }]
@@ -752,9 +765,12 @@ class TestProcessSingleNotification:
             )
 
         assert success is False
-        assert "read-only" in error
+        assert error is None
+        mock_error_reply.assert_called_once()
+        assert "read-only" in mock_error_reply.call_args[0][4]
         mock_read.assert_called_with("12345")
 
+    @patch("app.github_command_handler.post_error_reply")
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
@@ -765,12 +781,14 @@ class TestProcessSingleNotification:
     def test_empty_koan_root_rejects_mission(
         self, mock_insert, mock_resolve, mock_mentions,
         mock_processed, mock_perm,
-        mock_react, mock_read, registry, sample_notification,
+        mock_react, mock_read, mock_error_reply,
+        registry, sample_notification,
     ):
         """Empty KOAN_ROOT should fail early, not write to relative path."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
-            "id": 99999,
+            "id": "99999",
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
             "body": "@testbot rebase",
             "user": {"login": "alice"},
         }]
@@ -782,10 +800,13 @@ class TestProcessSingleNotification:
             )
 
         assert success is False
-        assert "KOAN_ROOT" in error
+        assert error is None
+        mock_error_reply.assert_called_once()
+        assert "KOAN_ROOT" in mock_error_reply.call_args[0][4]
         mock_insert.assert_not_called()
         mock_read.assert_called_with("12345")
 
+    @patch("app.github_command_handler.post_error_reply")
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
@@ -796,12 +817,14 @@ class TestProcessSingleNotification:
     def test_missing_koan_root_rejects_mission(
         self, mock_insert, mock_resolve, mock_mentions,
         mock_processed, mock_perm,
-        mock_react, mock_read, registry, sample_notification, monkeypatch,
+        mock_react, mock_read, mock_error_reply,
+        registry, sample_notification, monkeypatch,
     ):
         """Unset KOAN_ROOT should fail early, not write to relative path."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
-            "id": 99999,
+            "id": "99999",
+            "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
             "body": "@testbot rebase",
             "user": {"login": "alice"},
         }]
@@ -813,7 +836,9 @@ class TestProcessSingleNotification:
         )
 
         assert success is False
-        assert "KOAN_ROOT" in error
+        assert error is None
+        mock_error_reply.assert_called_once()
+        assert "KOAN_ROOT" in mock_error_reply.call_args[0][4]
         mock_insert.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
@@ -1208,17 +1233,20 @@ class TestProcessNotificationWithReply:
         mock_gen.assert_called_once()
         mock_post.assert_called_once()
 
+    @patch("app.github_command_handler.post_error_reply")
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_unknown_command_falls_back_to_help_when_reply_disabled(
         self, mock_resolve, mock_mentions,
-        mock_processed, mock_read, registry, sample_notification,
+        mock_processed, mock_read, mock_error_reply,
+        registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
-            "id": 99999, "body": "@testbot what do you think?",
+            "id": "99999", "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
+            "body": "@testbot what do you think?",
             "user": {"login": "alice"},
         }]
         config = {
@@ -1232,10 +1260,10 @@ class TestProcessNotificationWithReply:
             sample_notification, registry, config, None, "testbot",
         )
 
-        # Falls back to help message
         assert success is False
-        assert error is not None
-        assert "`what`" in error
+        assert error is None
+        mock_error_reply.assert_called_once()
+        assert "`what`" in mock_error_reply.call_args[0][4]
 
 
 class TestTryReplyAuthorizedUsers:
@@ -3094,6 +3122,7 @@ class TestProcessNotificationWithNLP:
         mission = mock_insert.call_args[0][1]
         assert "/implement" in mission
 
+    @patch("app.github_command_handler.post_error_reply")
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler._find_all_thread_mentions")
@@ -3101,13 +3130,13 @@ class TestProcessNotificationWithNLP:
     @patch("app.github_command_handler._try_nlp_classification", return_value=None)
     def test_nlp_fails_falls_through_to_error(
         self, mock_nlp, mock_resolve, mock_mentions,
-        mock_processed, mock_read,
+        mock_processed, mock_read, mock_error_reply,
         registry, sample_notification,
     ):
-        """NLP returns None → existing error path with help message."""
+        """NLP returns None → error posted inline with help message."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
-            "id": 99999,
+            "id": "99999",
             "body": "@testbot blahblah",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
@@ -3119,7 +3148,9 @@ class TestProcessNotificationWithNLP:
         )
 
         assert success is False
-        assert "`blahblah`" in error  # "Unknown command `blahblah`"
+        assert error is None
+        mock_error_reply.assert_called_once()
+        assert "`blahblah`" in mock_error_reply.call_args[0][4]
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
@@ -4623,6 +4654,35 @@ class TestMultiMentionPerThread:
         assert result[1]["id"] == "3"
         assert result[2]["id"] == "1"
 
+    def test_fallback_warns_on_malformed_full_name(self, caplog):
+        """Fallback path warns when repository.full_name is malformed."""
+        notification = {
+            "id": "77",
+            "updated_at": "2026-06-18T10:05:00Z",
+            "repository": {"full_name": "no-slash"},
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/5",
+                "latest_comment_url": "https://api.github.com/repos/owner/repo/issues/comments/1",
+            },
+        }
+
+        comment = {
+            "id": "1", "body": "@bot review",
+            "user": {"login": "alice"},
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/1",
+        }
+
+        import logging
+        with patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.find_all_mentions_in_thread", return_value=[]), \
+             patch("app.github_command_handler.get_comment_from_notification", return_value=comment), \
+             patch("app.github_command_handler.is_self_mention", return_value=False), \
+             caplog.at_level(logging.WARNING):
+            result = _find_all_thread_mentions(notification, "bot")
+
+        assert result == []
+        assert any("malformed repository.full_name" in r.message for r in caplog.records)
+
     def test_closed_subject_reacts_to_all_comments(
         self, notification, registry, monkeypatch,
     ):
@@ -4651,3 +4711,79 @@ class TestMultiMentionPerThread:
 
         assert success is False
         assert mock_react.call_count == 2
+
+    def test_multiple_mentions_accumulates_koan_commands(
+        self, notification, registry, tmp_path, monkeypatch,
+    ):
+        """Multiple @mentions accumulate _koan_commands list for Telegram reporting."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(parents=True)
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        comment_review = {
+            "id": "201",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/201",
+            "body": "@bot review",
+            "user": {"login": "alice"},
+            "created_at": "2026-06-18T10:00:00Z",
+        }
+        comment_rebase = {
+            "id": "202",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/202",
+            "body": "@bot rebase",
+            "user": {"login": "bob"},
+            "created_at": "2026-06-18T10:01:00Z",
+        }
+
+        with patch("app.github_command_handler._find_all_thread_mentions",
+                    return_value=[comment_review, comment_rebase]), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed", return_value=None), \
+             patch("app.github_command_handler.check_already_processed", return_value=False), \
+             patch("app.github_command_handler.check_user_permission", return_value=True), \
+             patch("app.github_command_handler.add_reaction"), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_command_handler.api_url_to_web_url",
+                   return_value="https://github.com/owner/repo/pull/42"), \
+             patch("app.github_command_handler.get_github_nickname", return_value="bot"), \
+             patch("app.github_command_handler.get_github_ack_enabled", return_value=False):
+            process_single_notification(
+                notification, registry, {}, None, "bot",
+            )
+
+        cmds = notification.get("_koan_commands", [])
+        assert len(cmds) == 2
+        assert cmds[0] == {"command": "review", "author": "alice"}
+        assert cmds[1] == {"command": "rebase", "author": "bob"}
+
+    def test_error_posted_inline_not_returned(
+        self, notification, registry, monkeypatch,
+    ):
+        """Errors are posted inline, never returned to caller (no double posting)."""
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        comment = {
+            "id": "301",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/301",
+            "body": "@bot badcmd",
+            "user": {"login": "alice"},
+        }
+
+        with patch("app.github_command_handler._find_all_thread_mentions",
+                    return_value=[comment]), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed", return_value=None), \
+             patch("app.github_command_handler.check_already_processed", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_command_handler.get_github_nickname", return_value="bot"), \
+             patch("app.github_command_handler.post_error_reply") as mock_err:
+            success, error = process_single_notification(
+                notification, registry, {}, None, "bot",
+            )
+
+        assert error is None
+        mock_err.assert_called_once()
