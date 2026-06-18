@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
@@ -1090,6 +1090,78 @@ def api_metrics():
             str(INSTANCE_DIR), proj, days=days
         )
     return jsonify(metrics)
+
+
+@app.route("/api/efficiency")
+def api_efficiency():
+    """Per-project token efficiency: cost per productive outcome."""
+    from app.cost_tracker import summarize_range
+    from app.session_tracker import load_outcomes
+
+    days = request.args.get("days", "30", type=str)
+    selected_project = request.args.get("project", "")
+    try:
+        days = int(days)
+        days = max(1, min(days, 365))
+    except (ValueError, TypeError):
+        days = 30
+
+    # --- Outcome counts by project ---
+    outcomes_path = INSTANCE_DIR / "session_outcomes.json"
+    all_outcomes = load_outcomes(outcomes_path)
+    cutoff = datetime.now() - timedelta(days=days)
+
+    outcome_counts: dict[str, dict[str, int]] = {}
+    for o in all_outcomes:
+        ts = o.get("timestamp", "")
+        try:
+            if datetime.fromisoformat(ts) < cutoff:
+                continue
+        except (ValueError, TypeError):
+            pass
+        proj = o.get("project", "")
+        if not proj or (selected_project and proj != selected_project):
+            continue
+        if proj not in outcome_counts:
+            outcome_counts[proj] = {"productive": 0, "empty": 0, "blocked": 0}
+        outcome = o.get("outcome", "")
+        if outcome in outcome_counts[proj]:
+            outcome_counts[proj][outcome] += 1
+
+    # --- Token totals by project ---
+    today = date.today()
+    start = today - timedelta(days=days - 1)
+    summary = summarize_range(INSTANCE_DIR, start, today)
+    cost_by_project = summary.get("by_project", {})
+    if selected_project:
+        cost_by_project = {k: v for k, v in cost_by_project.items() if k == selected_project}
+
+    # --- Join ---
+    all_projects = set(outcome_counts.keys()) | set(cost_by_project.keys())
+    by_project: dict[str, dict] = {}
+    for proj in sorted(all_projects):
+        oc = outcome_counts.get(proj, {"productive": 0, "empty": 0, "blocked": 0})
+        cost = cost_by_project.get(proj, {})
+        total_tokens = cost.get("input_tokens", 0) + cost.get("output_tokens", 0)
+        productive = oc["productive"]
+        empty = oc["empty"]
+        blocked = oc["blocked"]
+        total_sessions = productive + empty + blocked
+
+        tppo = total_tokens / productive if productive > 0 else None
+        waste = (empty + blocked) / total_sessions if total_sessions > 0 else (1.0 if total_tokens > 0 else 0.0)
+
+        by_project[proj] = {
+            "productive_count": productive,
+            "empty_count": empty,
+            "blocked_count": blocked,
+            "total_sessions": total_sessions,
+            "total_tokens": total_tokens,
+            "tokens_per_productive_outcome": tppo,
+            "waste_pct": round(waste, 4),
+        }
+
+    return jsonify({"by_project": by_project, "days": days})
 
 
 @app.route("/api/skill-metrics")
