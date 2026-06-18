@@ -846,7 +846,7 @@ def _run_iteration(
     # needle recorded in missions.md "In Progress" section.
     original_mission_title = mission_title
     if mission_title:
-        if not _run._start_mission_in_file(instance, mission_title):
+        if not _run._start_mission_in_file(instance, mission_title, project_name):
             log("warning", f"start_mission transition failed for '{mission_title[:60]}' — "
                 "mission may still be in Pending; aborting this run to avoid duplicate execution.")
             return False

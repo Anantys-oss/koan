@@ -15,8 +15,11 @@ from app.stagnation_monitor import (
     _tail_hash,
     classify_stagnation,
     clear_retry_count,
+    get_crash_count,
     get_retry_count,
     get_retry_info,
+    get_total_attempts,
+    increment_crash_count,
     increment_retry_count,
 )
 
@@ -600,7 +603,7 @@ class TestRetryTracker:
 
     def test_handles_corrupt_json_file(self, tmp_path):
         """Corrupt tracker file should be treated as empty."""
-        tracker = tmp_path / ".stagnation-retries.json"
+        tracker = tmp_path / ".mission-retries.json"
         tracker.write_text("not valid json {{{")
         assert get_retry_count(str(tmp_path), "mission X") == 0
         # Increment should overwrite the corrupt file.
@@ -608,21 +611,21 @@ class TestRetryTracker:
 
     def test_handles_non_dict_json(self, tmp_path):
         """JSON that is a list (not a dict) should be treated as empty."""
-        tracker = tmp_path / ".stagnation-retries.json"
+        tracker = tmp_path / ".mission-retries.json"
         tracker.write_text("[1, 2, 3]")
         assert get_retry_count(str(tmp_path), "any") == 0
 
     def test_handles_non_integer_value(self, tmp_path):
         """A stored value that isn't an int should default to 0."""
         key = _mission_key("broken")
-        tracker = tmp_path / ".stagnation-retries.json"
+        tracker = tmp_path / ".mission-retries.json"
         tracker.write_text(json.dumps({key: "not-a-number"}))
         assert get_retry_count(str(tmp_path), "broken") == 0
 
     def test_increment_handles_non_integer_stored_value(self, tmp_path):
         """increment on a corrupt stored value should treat it as 0 and return 1."""
         key = _mission_key("corrupt-entry")
-        tracker = tmp_path / ".stagnation-retries.json"
+        tracker = tmp_path / ".mission-retries.json"
         tracker.write_text(json.dumps({key: [1, 2]}))
         assert increment_retry_count(str(tmp_path), "corrupt-entry") == 1
 
@@ -632,6 +635,149 @@ class TestRetryTracker:
         with patch("app.utils.atomic_write", side_effect=OSError("disk full")):
             # Should not raise — the OSError is caught and printed to stderr.
             increment_retry_count(d, "test mission")
+
+    def test_clear_with_clear_total_false_preserves_total_attempts(self, tmp_path):
+        """clear_retry_count(clear_total=False) resets stagnation count but keeps total_attempts and crash_count."""
+        d = str(tmp_path)
+        increment_retry_count(d, "mission X")
+        increment_retry_count(d, "mission X")
+        increment_crash_count(d, "mission X")
+        clear_retry_count(d, "mission X", clear_total=False)
+        assert get_retry_count(d, "mission X") == 0
+        assert get_total_attempts(d, "mission X") == 3  # 2 stagnation + 1 crash
+        assert get_crash_count(d, "mission X") == 1
+
+    def test_clear_with_clear_total_true_resets_everything(self, tmp_path):
+        """clear_retry_count() (default) removes the entry entirely including total_attempts."""
+        d = str(tmp_path)
+        increment_retry_count(d, "mission Y")
+        increment_crash_count(d, "mission Y")
+        clear_retry_count(d, "mission Y")
+        assert get_retry_count(d, "mission Y") == 0
+        assert get_total_attempts(d, "mission Y") == 0
+        assert get_crash_count(d, "mission Y") == 0
+
+    def test_increment_retry_does_not_change_crash_count(self, tmp_path):
+        """increment_retry_count (stagnation) must not affect crash_count."""
+        d = str(tmp_path)
+        increment_retry_count(d, "stagnation mission")
+        increment_retry_count(d, "stagnation mission")
+        assert get_crash_count(d, "stagnation mission") == 0
+        assert get_retry_count(d, "stagnation mission") == 2
+
+
+class TestTotalAttempts:
+    """Tests for the cross-system total_attempts counter."""
+
+    def test_get_total_returns_zero_for_unknown_mission(self, tmp_path):
+        assert get_total_attempts(str(tmp_path), "unseen") == 0
+
+    def test_increment_retry_also_increments_total(self, tmp_path):
+        d = str(tmp_path)
+        increment_retry_count(d, "mission A")
+        increment_retry_count(d, "mission A")
+        assert get_total_attempts(d, "mission A") == 2
+
+    def test_increment_total_without_stagnation(self, tmp_path):
+        """increment_crash_count increments total_attempts without touching stagnation count."""
+        d = str(tmp_path)
+        increment_crash_count(d, "crash mission")
+        increment_crash_count(d, "crash mission")
+        assert get_total_attempts(d, "crash mission") == 2
+        assert get_retry_count(d, "crash mission") == 0
+
+    def test_combined_total_across_stagnation_and_crash(self, tmp_path):
+        """total_attempts accumulates across both stagnation and crash-recovery increments."""
+        d = str(tmp_path)
+        increment_retry_count(d, "flaky mission")   # stagnation
+        increment_crash_count(d, "flaky mission")   # crash-recovery
+        increment_retry_count(d, "flaky mission")   # stagnation again
+        assert get_retry_count(d, "flaky mission") == 2
+        assert get_total_attempts(d, "flaky mission") == 3
+
+    def test_total_survives_stagnation_counter_clear(self, tmp_path):
+        """Clearing the stagnation counter with clear_total=False leaves total_attempts intact."""
+        d = str(tmp_path)
+        increment_retry_count(d, "sticky mission")  # stagnation (total = 1)
+        increment_crash_count(d, "sticky mission")  # crash (total = 2)
+        clear_retry_count(d, "sticky mission", clear_total=False)
+        assert get_retry_count(d, "sticky mission") == 0
+        assert get_total_attempts(d, "sticky mission") == 2
+
+    def test_total_reset_on_success_clear(self, tmp_path):
+        """Full clear (default) wipes total_attempts — used after genuine success."""
+        d = str(tmp_path)
+        increment_retry_count(d, "mission Z")
+        increment_crash_count(d, "mission Z")
+        clear_retry_count(d, "mission Z")  # clear_total=True by default
+        assert get_total_attempts(d, "mission Z") == 0
+
+    def test_get_retry_info_includes_total_attempts(self, tmp_path):
+        """get_retry_info() includes total_attempts in its return dict."""
+        d = str(tmp_path)
+        increment_retry_count(d, "info mission")
+        increment_crash_count(d, "info mission")
+        info = get_retry_info(d, "info mission")
+        assert info["count"] == 1
+        assert info["total_attempts"] == 2
+
+    def test_increment_total_handles_fresh_entry(self, tmp_path):
+        """increment_crash_count creates a new entry when mission has no prior tracker data."""
+        d = str(tmp_path)
+        result = increment_crash_count(d, "brand new mission")
+        assert result == 1
+        assert get_total_attempts(d, "brand new mission") == 1
+        assert get_retry_count(d, "brand new mission") == 0
+        assert get_crash_count(d, "brand new mission") == 1
+
+    def test_key_stable_across_lifecycle_markers_for_total(self, tmp_path):
+        """total_attempts key is stable regardless of [r:N] tags or timestamps."""
+        d = str(tmp_path)
+        increment_crash_count(d, "- Fix the tests [r:1]")
+        assert get_total_attempts(d, "- Fix the tests") == 1
+        assert get_total_attempts(d, "- Fix the tests [r:2]") == 1
+
+
+class TestCrashCount:
+    """Tests for crash_count tracking — separate from stagnation requeue count."""
+
+    def test_get_crash_count_returns_zero_for_unknown(self, tmp_path):
+        assert get_crash_count(str(tmp_path), "unseen mission") == 0
+
+    def test_increment_crash_count_increments_both_crash_and_total(self, tmp_path):
+        d = str(tmp_path)
+        result = increment_crash_count(d, "crash mission")
+        assert result == 1
+        assert get_crash_count(d, "crash mission") == 1
+        assert get_total_attempts(d, "crash mission") == 1
+
+    def test_increment_crash_count_does_not_change_stagnation_count(self, tmp_path):
+        d = str(tmp_path)
+        increment_crash_count(d, "crash mission")
+        increment_crash_count(d, "crash mission")
+        assert get_retry_count(d, "crash mission") == 0
+        assert get_crash_count(d, "crash mission") == 2
+
+    def test_crash_count_key_stable_across_lifecycle_markers(self, tmp_path):
+        d = str(tmp_path)
+        increment_crash_count(d, "- Fix the bug [r:1]")
+        assert get_crash_count(d, "- Fix the bug") == 1
+        assert get_crash_count(d, "- Fix the bug [r:2]") == 1
+
+    def test_clear_full_also_removes_crash_count(self, tmp_path):
+        d = str(tmp_path)
+        increment_crash_count(d, "mission A")
+        clear_retry_count(d, "mission A")
+        assert get_crash_count(d, "mission A") == 0
+
+    def test_clear_preserve_total_also_preserves_crash_count(self, tmp_path):
+        d = str(tmp_path)
+        increment_crash_count(d, "mission B")
+        increment_crash_count(d, "mission B")
+        clear_retry_count(d, "mission B", clear_total=False)
+        # crash_count should be preserved
+        assert get_crash_count(d, "mission B") == 2
+        assert get_total_attempts(d, "mission B") == 2
 
 
 class TestClassifyStagnationEdgeCases:

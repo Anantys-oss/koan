@@ -7,14 +7,16 @@ from unittest.mock import patch
 import pytest
 
 from app.recover import (
-    MAX_RECOVERY_ATTEMPTS,
-    _get_recovery_attempts,
-    _set_recovery_attempts,
     _strip_recovery_counter,
     check_pending_journal,
     classify_mission_state,
     recover_missions,
 )
+
+
+# Default max_crash_retries used in classify_mission_state.
+# Mirrors the default in recover.py / config.get_stagnation_config().
+_DEFAULT_MAX_CRASH_RETRIES = 3
 
 
 def _missions(pending="", in_progress="", done=""):
@@ -25,6 +27,28 @@ def _missions(pending="", in_progress="", done=""):
         f"## In Progress\n\n{in_progress}\n\n"
         f"## Done\n\n{done}\n"
     )
+
+
+def _write_crash_count(instance_dir, mission_title: str, crash_count: int) -> None:
+    """Write crash_count into .mission-retries.json so classify_mission_state sees it."""
+    from app.stagnation_monitor import _mission_key
+    key = _mission_key(mission_title)
+    tracker = Path(instance_dir) / ".mission-retries.json"
+    data = {}
+    if tracker.exists():
+        try:
+            data = json.loads(tracker.read_text())
+        except (json.JSONDecodeError, OSError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    entry = data.get(key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["crash_count"] = crash_count
+    entry["total_attempts"] = entry.get("total_attempts", 0) or crash_count
+    data[key] = entry
+    tracker.write_text(json.dumps(data))
 
 
 class TestRecoverMissions:
@@ -47,11 +71,9 @@ class TestRecoverMissions:
 
         assert count == 1
         content = missions.read_text()
-        # Should be in pending now
         lines = content.splitlines()
         pending_idx = next(i for i, l in enumerate(lines) if "pending" in l.lower())
         in_prog_idx = next(i for i, l in enumerate(lines) if "in progress" in l.lower())
-        # The mission should appear between pending header and in-progress header
         between = "\n".join(lines[pending_idx + 1 : in_prog_idx])
         assert "Fix the bug" in between
 
@@ -178,21 +200,14 @@ class TestRecoverMissions:
 
         content = missions.read_text()
         lines = content.splitlines()
-        # Use a regex-style check to find the ## Pending header line
         pending_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## pending"))
         in_prog_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## in progress"))
         pending_section = "\n".join(lines[pending_idx + 1 : in_prog_idx])
-        # Complex mission title recovered as - item (not ### block) so
-        # extract_next_pending() picks it up as a single mission, not fragments
         assert "- Complex Project" in pending_section
         assert "### Complex Project" not in pending_section
 
     def test_blank_line_ends_complex_block(self, instance_dir):
-        """A blank line after complex mission sub-items ends the complex block.
-
-        The complex block and the standalone mission after the blank line are
-        both recovered.
-        """
+        """A blank line after complex mission sub-items ends the complex block."""
         missions = instance_dir / "missions.md"
         missions.write_text(
             _missions(
@@ -214,12 +229,11 @@ class TestRecoverMissions:
         pending_idx = next(i for i, l in enumerate(lines) if "pending" in l.lower())
         in_prog_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## in progress"))
         pending_section = "\n".join(lines[pending_idx + 1 : in_prog_idx])
-        # Both the complex project and Step 3 should be in Pending
         assert "Complex Project" in pending_section
         assert "Step 3" in pending_section
 
     def test_two_complex_missions(self, instance_dir):
-        """Two consecutive complex missions both stay in-progress."""
+        """Two consecutive complex missions are both recovered."""
         missions = instance_dir / "missions.md"
         missions.write_text(
             _missions(
@@ -238,7 +252,6 @@ class TestRecoverMissions:
         assert count == 2
 
         content = missions.read_text()
-        # Both blocks should be in Pending now
         lines = content.splitlines()
         pending_idx = next(i for i, l in enumerate(lines) if "pending" in l.lower())
         in_prog_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## in progress"))
@@ -247,11 +260,7 @@ class TestRecoverMissions:
         assert "Another Complex" in pending_section
 
     def test_simple_mission_after_complex_recovered(self, instance_dir):
-        """A simple '- ' mission after a complex block (separated by blank line) IS recovered.
-
-        Blank lines end the complex mission block, so the complex block and
-        subsequent '- ' items are both recovered.
-        """
+        """A simple '- ' mission after a complex block (separated by blank line) IS recovered."""
         missions = instance_dir / "missions.md"
         missions.write_text(
             _missions(
@@ -273,7 +282,6 @@ class TestRecoverMissions:
         pending_idx = next(i for i, l in enumerate(lines) if "pending" in l.lower())
         in_prog_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## in progress"))
         pending_section = "\n".join(lines[pending_idx + 1 : in_prog_idx])
-        # Both the complex block and the simple orphan task are in Pending
         assert "Simple orphan task" in pending_section
         assert "Complex Project" in pending_section
 
@@ -352,9 +360,7 @@ class TestRecoverMissions:
         recover_missions(str(instance_dir))
         content = missions.read_text()
 
-        # "Existing task" must appear exactly once
         assert content.count("Existing task") == 1
-        # "Stale task" must appear exactly once (moved to pending)
         assert content.count("Stale task") == 1
 
     def test_no_section_headers_duplicated(self, instance_dir):
@@ -379,7 +385,6 @@ class TestRecoverAtomicity:
         missions.write_text(_missions(in_progress="- Stale task"))
 
         with patch("app.utils.modify_missions_file") as mock_modify:
-            # Make modify_missions_file actually call the transform so we get the count
             def _call_transform(path, transform):
                 content = path.read_text()
                 new_content = transform(content)
@@ -418,7 +423,6 @@ class TestRecoverCLI:
         import sys
 
         with patch.object(sys, "argv", ["app.recover.py", str(instance_dir)]):
-            # Can't easily test sys.exit, so just call the main block logic
             count, _ = recover_missions(str(instance_dir))
             if count > 0:
                 recover.format_and_send(
@@ -449,11 +453,8 @@ class TestCheckPendingJournal:
 
     def test_handles_file_deleted_between_check_and_read(self, tmp_path):
         """Regression: FileNotFoundError should be caught, not propagated."""
-        # The file doesn't exist at all — the new code uses try/except
-        # instead of exists() + read_text(), so this should just return False
         journal_dir = tmp_path / "journal"
         journal_dir.mkdir()
-        # No pending.md file — simulates the race where it was deleted
 
         result = check_pending_journal(str(tmp_path))
         assert result is False
@@ -503,25 +504,11 @@ class TestCheckPendingJournal:
 
 
 # ---------------------------------------------------------------------------
-# Recovery counter helpers
+# Recovery counter helpers (backward-compat strip only)
 # ---------------------------------------------------------------------------
 
 class TestRecoveryCounterHelpers:
-    """Unit tests for [r:N] counter parsing and manipulation."""
-
-    def test_get_attempts_absent(self):
-        assert _get_recovery_attempts("- Fix the bug") == 0
-
-    def test_get_attempts_present(self):
-        assert _get_recovery_attempts("- Fix the bug [r:2]") == 2
-
-    def test_set_attempts_on_fresh_line(self):
-        result = _set_recovery_attempts("- Fix the bug", 1)
-        assert result == "- Fix the bug [r:1]"
-
-    def test_set_attempts_replaces_existing(self):
-        result = _set_recovery_attempts("- Fix the bug [r:1]", 2)
-        assert result == "- Fix the bug [r:2]"
+    """Unit tests for [r:N] counter stripping (backward-compat cleanup)."""
 
     def test_strip_counter(self):
         result = _strip_recovery_counter("- Fix the bug [r:2]")
@@ -531,27 +518,10 @@ class TestRecoveryCounterHelpers:
         result = _strip_recovery_counter("- Fix the bug")
         assert result == "- Fix the bug"
 
-    def test_get_attempts_malformed_non_integer(self):
-        """Malformed [r:abc] defaults to 0 instead of raising ValueError."""
-        assert _get_recovery_attempts("- Fix the bug [r:abc]") == 0
-
-    def test_get_attempts_malformed_float(self):
-        """Malformed [r:3.5] defaults to 0."""
-        assert _get_recovery_attempts("- Fix the bug [r:3.5]") == 0
-
-    def test_get_attempts_malformed_empty(self):
-        """Malformed [r:] defaults to 0."""
-        assert _get_recovery_attempts("- Fix the bug [r:]") == 0
-
     def test_strip_malformed_counter(self):
         """Malformed [r:abc] is still stripped from the line."""
         result = _strip_recovery_counter("- Fix the bug [r:abc]")
         assert result == "- Fix the bug"
-
-    def test_set_replaces_malformed_counter(self):
-        """Malformed [r:abc] is replaced with a valid counter."""
-        result = _set_recovery_attempts("- Fix the bug [r:abc]", 1)
-        assert result == "- Fix the bug [r:1]"
 
 
 # ---------------------------------------------------------------------------
@@ -559,70 +529,123 @@ class TestRecoveryCounterHelpers:
 # ---------------------------------------------------------------------------
 
 class TestClassifyMissionState:
-    """Tests for classify_mission_state()."""
+    """Tests for classify_mission_state() — new signature: crash_count int."""
 
-    def test_dead_state_no_counter(self):
-        assert classify_mission_state("- Fix the bug") == "dead"
+    def test_dead_state_zero_crash_count(self):
+        """crash_count=0 with no journal -> dead."""
+        assert classify_mission_state(crash_count=0) == "dead"
 
-    def test_dead_state_low_counter(self):
-        assert classify_mission_state("- Fix the bug [r:1]") == "dead"
+    def test_dead_state_low_crash_count(self):
+        """crash_count below max_crash_retries -> dead."""
+        assert classify_mission_state(crash_count=1, max_crash_retries=3) == "dead"
 
     def test_partial_state_with_pending_journal(self):
-        assert classify_mission_state("- Fix the bug", has_pending_journal=True) == "partial"
+        """has_pending_journal=True -> partial when not exhausted."""
+        assert classify_mission_state(crash_count=0, has_pending_journal=True) == "partial"
 
     def test_unrecoverable_at_max_attempts(self):
-        line = f"- Fix the bug [r:{MAX_RECOVERY_ATTEMPTS}]"
-        assert classify_mission_state(line) == "unrecoverable"
+        """crash_count == max_crash_retries -> unrecoverable."""
+        assert classify_mission_state(
+            crash_count=_DEFAULT_MAX_CRASH_RETRIES,
+            max_crash_retries=_DEFAULT_MAX_CRASH_RETRIES,
+        ) == "unrecoverable"
 
     def test_unrecoverable_above_max_attempts(self):
-        line = f"- Fix the bug [r:{MAX_RECOVERY_ATTEMPTS + 5}]"
-        assert classify_mission_state(line) == "unrecoverable"
+        """crash_count > max_crash_retries -> unrecoverable."""
+        assert classify_mission_state(
+            crash_count=_DEFAULT_MAX_CRASH_RETRIES + 5,
+            max_crash_retries=_DEFAULT_MAX_CRASH_RETRIES,
+        ) == "unrecoverable"
 
     def test_unrecoverable_overrides_pending_journal(self):
-        """Even with pending.md, too many attempts → unrecoverable."""
-        line = f"- Fix the bug [r:{MAX_RECOVERY_ATTEMPTS}]"
-        assert classify_mission_state(line, has_pending_journal=True) == "unrecoverable"
+        """Even with pending.md, too many attempts -> unrecoverable."""
+        assert classify_mission_state(
+            crash_count=_DEFAULT_MAX_CRASH_RETRIES,
+            max_crash_retries=_DEFAULT_MAX_CRASH_RETRIES,
+            has_pending_journal=True,
+        ) == "unrecoverable"
 
     def test_just_below_max_is_dead(self):
-        line = f"- Fix the bug [r:{MAX_RECOVERY_ATTEMPTS - 1}]"
-        assert classify_mission_state(line) == "dead"
+        """crash_count == max_crash_retries - 1 -> dead (not unrecoverable yet)."""
+        assert classify_mission_state(
+            crash_count=_DEFAULT_MAX_CRASH_RETRIES - 1,
+            max_crash_retries=_DEFAULT_MAX_CRASH_RETRIES,
+        ) == "dead"
 
     def test_partial_state_with_checkpoint(self):
         """Mission with a checkpoint is classified as partial."""
-        assert classify_mission_state("- Fix the bug", has_checkpoint=True) == "partial"
+        assert classify_mission_state(crash_count=0, has_checkpoint=True) == "partial"
 
     def test_partial_state_checkpoint_and_pending(self):
-        """Both checkpoint and pending → still partial (not double-counted)."""
+        """Both checkpoint and pending -> still partial (not double-counted)."""
         assert classify_mission_state(
-            "- Fix the bug", has_pending_journal=True, has_checkpoint=True
+            crash_count=0, has_pending_journal=True, has_checkpoint=True
         ) == "partial"
 
     def test_unrecoverable_overrides_checkpoint(self):
-        """Even with a checkpoint, too many attempts → unrecoverable."""
-        line = f"- Fix the bug [r:{MAX_RECOVERY_ATTEMPTS}]"
-        assert classify_mission_state(line, has_checkpoint=True) == "unrecoverable"
+        """Even with a checkpoint, too many attempts -> unrecoverable."""
+        assert classify_mission_state(
+            crash_count=_DEFAULT_MAX_CRASH_RETRIES,
+            max_crash_retries=_DEFAULT_MAX_CRASH_RETRIES,
+            has_checkpoint=True,
+        ) == "unrecoverable"
+
+    def test_total_attempts_cap_triggers_unrecoverable(self):
+        """total_attempts >= max_total_retries -> unrecoverable (when max_total_retries > 0)."""
+        assert classify_mission_state(
+            crash_count=0,
+            total_attempts=5,
+            max_total_retries=5,
+        ) == "unrecoverable"
+
+    def test_max_total_retries_zero_disables_cap(self):
+        """max_total_retries=0 disables the combined cap."""
+        assert classify_mission_state(
+            crash_count=0,
+            total_attempts=100,
+            max_total_retries=0,
+        ) == "dead"
 
 
 # ---------------------------------------------------------------------------
-# Recovery counter integration
+# Recovery counter integration -- tracker-based (no [r:N] tags in missions.md)
 # ---------------------------------------------------------------------------
 
 class TestRecoveryCounterIntegration:
-    """Integration tests: counter is incremented and tracked across recoveries."""
+    """Integration tests: crash counter is tracked in .mission-retries.json."""
 
-    def test_first_recovery_adds_counter(self, instance_dir):
-        """First recovery adds [r:1] to the mission line."""
+    def test_first_recovery_increments_tracker(self, instance_dir):
+        """First recovery increments crash_count in tracker (not written to missions.md)."""
         missions = instance_dir / "missions.md"
         missions.write_text(_missions(in_progress="- Fix the bug"))
 
         count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
+        # No [r:N] tag in the missions file
         content = missions.read_text()
-        assert "[r:1]" in content
+        assert "[r:" not in content
 
-    def test_second_recovery_increments_counter(self, instance_dir):
-        """Second recovery changes [r:1] to [r:2]."""
+        # crash_count is tracked in the JSON file
+        from app.stagnation_monitor import get_crash_count
+        assert get_crash_count(str(instance_dir), "Fix the bug") == 1
+
+    def test_second_recovery_increments_tracker_again(self, instance_dir):
+        """Second recovery increments crash_count to 2."""
+        missions = instance_dir / "missions.md"
+
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+        recover_missions(str(instance_dir))
+
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 1
+
+        from app.stagnation_monitor import get_crash_count
+        assert get_crash_count(str(instance_dir), "Fix the bug") == 2
+
+    def test_legacy_r_tag_stripped_from_missions(self, instance_dir):
+        """A mission with a legacy [r:N] tag has it stripped on recovery."""
         missions = instance_dir / "missions.md"
         missions.write_text(_missions(in_progress="- Fix the bug [r:1]"))
 
@@ -630,23 +653,11 @@ class TestRecoveryCounterIntegration:
         assert count == 1
 
         content = missions.read_text()
-        assert "[r:2]" in content
-        assert "[r:1]" not in content
+        assert "[r:" not in content
+        assert "Fix the bug" in content
 
-    def test_malformed_counter_recovered_as_first_attempt(self, instance_dir):
-        """A mission with a malformed [r:abc] counter is treated as 0 attempts."""
-        missions = instance_dir / "missions.md"
-        missions.write_text(_missions(in_progress="- Fix the bug [r:abc]"))
-
-        count, _ = recover_missions(str(instance_dir))
-        assert count == 1
-
-        content = missions.read_text()
-        assert "[r:1]" in content
-        assert "[r:abc]" not in content
-
-    def test_counter_preserved_in_pending(self, instance_dir):
-        """The [r:N] tag is present in Pending after recovery."""
+    def test_recovered_mission_clean_in_pending(self, instance_dir):
+        """The recovered mission text in Pending has no [r:N] tag."""
         missions = instance_dir / "missions.md"
         missions.write_text(_missions(in_progress="- Fix the bug"))
 
@@ -658,7 +669,63 @@ class TestRecoveryCounterIntegration:
         in_prog_idx = next(i for i, l in enumerate(lines) if "in progress" in l.lower())
         between = "\n".join(lines[pending_idx + 1 : in_prog_idx])
         assert "Fix the bug" in between
-        assert "[r:" in between
+        assert "[r:" not in between
+
+
+class TestDegradedTrackerFallback:
+    """When the stagnation tracker import fails, recovery must still escalate.
+
+    The tracker is the crash-count safety net. If it silently degrades to
+    crash_count=0 every cycle, a repeatedly crashing mission loops
+    Pending→crash→Pending forever. The fallback persists the count inline as
+    [r:N] so escalation still progresses.
+    """
+
+    @staticmethod
+    def _break_tracker_import(monkeypatch):
+        """Make `from app.stagnation_monitor import increment_crash_count` fail."""
+        import app.stagnation_monitor as sm
+        monkeypatch.delattr(sm, "increment_crash_count")
+
+    def test_degraded_recovery_persists_inline_counter(self, instance_dir, monkeypatch):
+        """Without the tracker, a recovered mission carries an inline [r:1]."""
+        self._break_tracker_import(monkeypatch)
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 1
+
+        content = missions.read_text()
+        # Count is persisted inline because the tracker is unavailable.
+        assert "[r:1]" in content
+
+    def test_degraded_recovery_increments_inline_counter(self, instance_dir, monkeypatch):
+        """A mission already at [r:1] is bumped to [r:2] on the next degraded cycle."""
+        self._break_tracker_import(monkeypatch)
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Fix the bug [r:1]"))
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 1
+
+        content = missions.read_text()
+        assert "[r:2]" in content
+        assert "[r:1]" not in content
+
+    def test_degraded_recovery_escalates_at_cap(self, instance_dir, monkeypatch):
+        """At the inline cap, a degraded mission escalates to Failed instead of looping."""
+        self._break_tracker_import(monkeypatch)
+        missions = instance_dir / "missions.md"
+        missions.write_text(
+            _missions_with_failed(in_progress=f"- Fix the bug [r:{_DEFAULT_MAX_CRASH_RETRIES}]")
+        )
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 0  # not recovered to Pending
+
+        content = missions.read_text()
+        assert "needs_input" in content
 
 
 # ---------------------------------------------------------------------------
@@ -679,16 +746,14 @@ def _missions_with_failed(pending="", in_progress="", done="", failed=""):
 class TestUnrecoverableEscalation:
     """Missions that have exhausted recovery attempts are escalated to Failed."""
 
-    def _stale_at_limit(self):
-        return f"- Fix the bug [r:{MAX_RECOVERY_ATTEMPTS}]"
-
     def test_unrecoverable_not_in_pending(self, instance_dir):
         """Unrecoverable missions are NOT moved to Pending."""
         missions = instance_dir / "missions.md"
-        missions.write_text(_missions(in_progress=self._stale_at_limit()))
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+        _write_crash_count(instance_dir, "Fix the bug", _DEFAULT_MAX_CRASH_RETRIES)
 
         count, _ = recover_missions(str(instance_dir))
-        assert count == 0  # Not recovered to Pending
+        assert count == 0
 
         content = missions.read_text()
         lines = content.splitlines()
@@ -700,7 +765,8 @@ class TestUnrecoverableEscalation:
     def test_unrecoverable_moved_to_failed(self, instance_dir):
         """Unrecoverable missions appear in Failed section with needs_input tag."""
         missions = instance_dir / "missions.md"
-        missions.write_text(_missions_with_failed(in_progress=self._stale_at_limit()))
+        missions.write_text(_missions_with_failed(in_progress="- Fix the bug"))
+        _write_crash_count(instance_dir, "Fix the bug", _DEFAULT_MAX_CRASH_RETRIES)
 
         recover_missions(str(instance_dir))
 
@@ -711,8 +777,8 @@ class TestUnrecoverableEscalation:
     def test_unrecoverable_creates_failed_section_if_absent(self, instance_dir):
         """If no Failed section exists, one is created for escalated missions."""
         missions = instance_dir / "missions.md"
-        # Use _missions() which has no Failed section
-        missions.write_text(_missions(in_progress=self._stale_at_limit()))
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+        _write_crash_count(instance_dir, "Fix the bug", _DEFAULT_MAX_CRASH_RETRIES)
 
         recover_missions(str(instance_dir))
 
@@ -724,20 +790,18 @@ class TestUnrecoverableEscalation:
     def test_mixed_recoverable_and_unrecoverable(self, instance_dir):
         """Recoverable missions go to Pending, unrecoverable go to Failed."""
         missions = instance_dir / "missions.md"
-        in_prog = f"- Normal task\n{self._stale_at_limit()}"
-        missions.write_text(_missions_with_failed(in_progress=in_prog))
+        missions.write_text(_missions_with_failed(in_progress="- Normal task\n- Fix the bug"))
+        _write_crash_count(instance_dir, "Fix the bug", _DEFAULT_MAX_CRASH_RETRIES)
 
         count, _ = recover_missions(str(instance_dir))
-        assert count == 1  # Only 1 recovered
+        assert count == 1
 
         content = missions.read_text()
-        # Normal task in Pending with counter
         lines = content.splitlines()
         pending_idx = next(i for i, l in enumerate(lines) if "pending" in l.lower())
         in_prog_idx = next(i for i, l in enumerate(lines) if "in progress" in l.lower())
         between = "\n".join(lines[pending_idx + 1 : in_prog_idx])
         assert "Normal task" in between
-        # Escalated in Failed
         assert "needs_input" in content
         assert "Fix the bug" in content
 
@@ -745,32 +809,48 @@ class TestUnrecoverableEscalation:
         """Unrecoverable complex ### block: header appears in Failed, sub-items preserved."""
         missions = instance_dir / "missions.md"
         in_prog = (
-            f"### Fix auth [r:{MAX_RECOVERY_ATTEMPTS}]\n"
+            "### Fix auth\n"
             "- ~~Step 1~~ done\n"
             "- Step 2 active\n"
         )
         missions.write_text(_missions(in_progress=in_prog))
+        _write_crash_count(instance_dir, "Fix auth", _DEFAULT_MAX_CRASH_RETRIES)
 
         count, escalated = recover_missions(str(instance_dir))
-        assert count == 0  # Not moved to Pending
+        assert count == 0
         assert len(escalated) == 1
 
         content = missions.read_text()
         assert "## Failed" in content
         assert "needs_input" in content
-        # Header appears without ### prefix
         assert "### Fix auth" not in content
         assert "Fix auth" in content
-        # Sub-items preserved in Failed
         assert "Step 1" in content
         assert "Step 2" in content
 
-        # In Progress should be empty now
         lines = content.splitlines()
         in_prog_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## in progress"))
         failed_idx = next(i for i, l in enumerate(lines) if l.strip().lower().startswith("## failed"))
         in_prog_section = "\n".join(lines[in_prog_idx + 1 : failed_idx])
         assert "Fix auth" not in in_prog_section
+
+    def test_legacy_r_tag_at_limit_triggers_unrecoverable(self, instance_dir):
+        """A mission with legacy [r:N] tag at or above limit is also escalated.
+
+        Backward-compat: if [r:N] value exceeds tracker crash_count,
+        the tag value is used for the cap check.
+        """
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(
+            in_progress=f"- Fix the bug [r:{_DEFAULT_MAX_CRASH_RETRIES}]"
+        ))
+
+        count, _ = recover_missions(str(instance_dir))
+        assert count == 0
+
+        content = missions.read_text()
+        assert "## Failed" in content
+        assert "Fix the bug" in content
 
 
 # ---------------------------------------------------------------------------
@@ -843,7 +923,8 @@ class TestRecoveryJSONLLog:
     def test_log_escalated_action(self, instance_dir):
         """Unrecoverable missions are logged with action=escalated."""
         missions = instance_dir / "missions.md"
-        missions.write_text(_missions(in_progress=f"- Fix the bug [r:{MAX_RECOVERY_ATTEMPTS}]"))
+        missions.write_text(_missions(in_progress="- Fix the bug"))
+        _write_crash_count(instance_dir, "Fix the bug", _DEFAULT_MAX_CRASH_RETRIES)
 
         recover_missions(str(instance_dir))
 
@@ -869,12 +950,10 @@ class TestRecoveryJSONLLog:
         """Multiple recovery runs append to the same log."""
         missions = instance_dir / "missions.md"
 
-        # First run
         missions.write_text(_missions(in_progress="- Task A"))
         recover_missions(str(instance_dir))
 
-        # Second run
-        missions.write_text(_missions(in_progress="- Task B [r:1]"))
+        missions.write_text(_missions(in_progress="- Task B"))
         recover_missions(str(instance_dir))
 
         log_path = instance_dir / "recovery.jsonl"
@@ -891,11 +970,7 @@ class TestRecoverPendingJournalTOCTOU:
 
     def test_pending_deleted_after_exists_check(self, instance_dir):
         """If pending.md is deleted between exists() and read_text(), recovery
-        should not raise FileNotFoundError — it should treat it as absent.
-
-        This is a benign race: the agent process deletes pending.md after
-        completing a mission, while recover.py is concurrently checking it.
-        """
+        should not raise FileNotFoundError."""
         missions = instance_dir / "missions.md"
         missions.write_text(_missions(in_progress="- Stale task"))
 
@@ -908,16 +983,13 @@ class TestRecoverPendingJournalTOCTOU:
         def _disappearing_read_text(self, *args, **kwargs):
             """Simulate the file vanishing between exists() and read_text()."""
             if self.name == "pending.md" and "journal" in str(self):
-                # Delete the file to simulate the race, then let read_text fail
                 self.unlink(missing_ok=True)
                 return original_read_text(self, *args, **kwargs)
             return original_read_text(self, *args, **kwargs)
 
         with patch.object(Path, "read_text", _disappearing_read_text):
-            # This must NOT raise FileNotFoundError
             count, _ = recover_missions(str(instance_dir))
 
-        # Mission should still be recovered (as "dead", not "partial")
         assert count == 1
 
 
@@ -936,15 +1008,12 @@ class TestPendingJournalSingleUse:
         log_path = instance_dir / "recovery.jsonl"
         count, _ = recover_missions(str(instance_dir))
 
-        # Both missions should be recovered
         assert count == 2
 
-        # Read audit log to check states
         import json
         events = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
         by_mission = {e["mission"]: e["state"] for e in events}
 
-        # First mission claims the journal → partial; second is dead
         assert by_mission.get("- Task A") == "partial"
         assert by_mission.get("- Task B") == "dead"
 
@@ -961,7 +1030,6 @@ class TestDryRun:
         count, _ = recover_missions(str(instance_dir), dry_run=True)
 
         assert count == 0
-        # File should not have been modified (no missions moved to Pending)
         content = missions.read_text()
         lines = content.splitlines()
         in_prog_idx = next(i for i, l in enumerate(lines) if "in progress" in l.lower())
@@ -1024,7 +1092,6 @@ class TestCheckpointAwareRecovery:
         assert count == 1
 
         pending_path = instance_dir / "journal" / "pending.md"
-        # pending.md should not exist or should not contain checkpoint context
         if pending_path.exists():
             assert "Recovery Context" not in pending_path.read_text()
 
