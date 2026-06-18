@@ -213,15 +213,13 @@ class TestGhRequestRouting:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     @patch("app.github_reply.extract_mention_text")
     def test_nlp_enabled_routes_to_gh_request(
-        self, mock_extract, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_extract, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, mock_closed, registry_with_gh_request, tmp_path,
     ):
         """When natural_language=true, unrecognized commands route to /gh_request."""
@@ -237,12 +235,12 @@ class TestGhRequestRouting:
             "repository": {"full_name": "sukria/koan"},
         }
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot can you take a look at this PR?",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
-        }
+        }]
         mock_extract.return_value = "can you take a look at this PR?"
 
         config = {
@@ -268,14 +266,12 @@ class TestGhRequestRouting:
     @patch("app.github_command_handler._is_subject_closed", return_value=None)
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.github_command_handler._try_nlp_classification", return_value=None)
     def test_nlp_disabled_uses_legacy_path(
-        self, mock_nlp, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_read, mock_closed,
+        self, mock_nlp, mock_resolve, mock_mentions,
+        mock_processed, mock_read, mock_closed,
         registry_with_gh_request,
     ):
         """Without natural_language=true, uses legacy NLP classification."""
@@ -291,12 +287,12 @@ class TestGhRequestRouting:
             "repository": {"full_name": "sukria/koan"},
         }
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot blahblah",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
-        }
+        }]
         config = {"github": {"nickname": "testbot"}}
 
         success, error = process_single_notification(
@@ -312,14 +308,12 @@ class TestGhRequestRouting:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_recognized_command_still_works_with_nlp_enabled(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, mock_closed, registry_with_gh_request, tmp_path,
     ):
         """Recognized commands bypass NLP even when natural_language=true."""
@@ -335,12 +329,12 @@ class TestGhRequestRouting:
             "repository": {"full_name": "sukria/koan"},
         }
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
-        }
+        }]
 
         config = {
             "github": {

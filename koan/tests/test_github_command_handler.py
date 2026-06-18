@@ -18,6 +18,7 @@ from app.github_command_handler import (
     _extract_url_from_context,
     _fetch_and_filter_comment,
     _fetch_subject_info,
+    _find_all_thread_mentions,
     _handle_help_command,
     _is_bot_still_requested,
     _is_subject_closed,
@@ -492,22 +493,20 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_happy_path(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
 
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
@@ -525,8 +524,8 @@ class TestProcessSingleNotification:
         assert sample_notification["_koan_author"] == "alice"
 
     @patch("app.github_command_handler.mark_notification_read")
-    @patch("app.github_command_handler.is_notification_stale", return_value=True)
-    def test_stale_notification_skipped(self, mock_stale, mock_read, registry, sample_notification):
+    @patch("app.github_command_handler._find_all_thread_mentions", return_value=[])
+    def test_stale_notification_skipped(self, mock_mentions, mock_read, registry, sample_notification):
         success, error = process_single_notification(
             sample_notification, registry, {}, None, "bot",
         )
@@ -534,23 +533,19 @@ class TestProcessSingleNotification:
         assert error is None
 
     @patch("app.github_command_handler.mark_notification_read")
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification", return_value=None)
-    def test_no_comment_skipped(self, mock_comment, mock_stale, mock_read, registry, sample_notification):
+    @patch("app.github_command_handler._find_all_thread_mentions", return_value=[])
+    def test_no_comment_skipped(self, mock_mentions, mock_read, registry, sample_notification):
         success, error = process_single_notification(
             sample_notification, registry, {}, None, "bot",
         )
         assert success is False
 
     @patch("app.github_command_handler.mark_notification_read")
-    @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification", return_value=None)
     def test_unknown_repo_silently_skipped(
-        self, mock_resolve, mock_comment, mock_stale, mock_self,
-        mock_processed, mock_read, registry, sample_notification,
+        self, mock_resolve, mock_mentions,
+        mock_read, registry, sample_notification,
     ):
         """When repo is not in projects.yaml, leave it untouched.
 
@@ -560,9 +555,9 @@ class TestProcessSingleNotification:
         instance — leaving the notification unread lets the owning
         instance process it on its next poll.
         """
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999, "body": "@bot rebase", "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "bot", "authorized_users": ["alice"]}}
 
         success, error = process_single_notification(
@@ -573,14 +568,11 @@ class TestProcessSingleNotification:
         mock_read.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
-    @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification", return_value=None)
     def test_unknown_repo_bad_fullname_skips(
-        self, mock_resolve, mock_comment, mock_stale, mock_self,
-        mock_processed, mock_read, registry,
+        self, mock_resolve, mock_mentions,
+        mock_read, registry,
     ):
         """Notification with no valid full_name is silently skipped.
 
@@ -596,9 +588,9 @@ class TestProcessSingleNotification:
                 "latest_comment_url": "https://api.github.com/repos/x/y/issues/comments/1",
             },
         }
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999, "body": "@bot rebase", "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "bot"}}
 
         success, error = process_single_notification(
@@ -610,19 +602,17 @@ class TestProcessSingleNotification:
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_invalid_command_returns_help(
-        self, mock_resolve, mock_comment, mock_stale, mock_self,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_read, registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999, "body": "@testbot badcmd",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot"}}
 
         success, error = process_single_notification(
@@ -636,19 +626,17 @@ class TestProcessSingleNotification:
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_invalid_command_marks_notification_read(
-        self, mock_resolve, mock_comment, mock_stale, mock_self,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_read, registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999, "body": "@testbot badcmd",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot"}}
 
         process_single_notification(
@@ -660,19 +648,17 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_user_permission", return_value=False)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_permission_denied_returns_error(
-        self, mock_resolve, mock_comment, mock_stale, mock_self,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_perm, mock_read, registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999, "body": "@testbot rebase",
             "user": {"login": "eve"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["alice"]}}
 
         success, error = process_single_notification(
@@ -684,19 +670,17 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_user_permission", return_value=False)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_permission_denied_marks_notification_read(
-        self, mock_resolve, mock_comment, mock_stale, mock_self,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_perm, mock_read, registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999, "body": "@testbot rebase",
             "user": {"login": "eve"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["alice"]}}
 
         process_single_notification(
@@ -710,24 +694,23 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission", side_effect=OSError("disk full"))
+    @patch("app.github_command_handler.post_error_reply")
     def test_insert_mission_failure_marks_read(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_error_reply, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """When insert_pending_mission fails, notification must still be marked
         as read to prevent infinite re-processing."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
@@ -745,23 +728,22 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission", side_effect=PermissionError("read-only"))
+    @patch("app.github_command_handler.post_error_reply")
     def test_insert_mission_permission_error_handled(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_error_reply, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """PermissionError (subclass of OSError) is also caught gracefully."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
@@ -777,23 +759,21 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_empty_koan_root_rejects_mission(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification,
     ):
         """Empty KOAN_ROOT should fail early, not write to relative path."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": ""}):
@@ -810,23 +790,21 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_missing_koan_root_rejects_mission(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, monkeypatch,
     ):
         """Unset KOAN_ROOT should fail early, not write to relative path."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         monkeypatch.delenv("KOAN_ROOT", raising=False)
@@ -842,14 +820,12 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_review_mention_sets_cooldown(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, sample_notification, tmp_path,
     ):
         """A /review mission queued from an @mention records review cooldown."""
@@ -864,11 +840,11 @@ class TestProcessSingleNotification:
         ))
 
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot review",
             "user": {"login": "alice"},
-        }
+        }]
         mock_insert.return_value = True
 
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
@@ -909,13 +885,11 @@ class TestProcessNotificationCustomHandler:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_custom_handler_runs_inline_and_no_slash_mission(
-        self, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, sample_notification, tmp_path,
     ):
         """The custom handler runs and missions.md is NOT touched via
@@ -938,12 +912,12 @@ class TestProcessNotificationCustomHandler:
 
         registry = self._registry_with_custom_skill(handler)
         mock_resolve.return_value = ("my_team", "alice", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot myfix",
             "user": {"login": "alice"},
             "url": "https://api.github.com/x",
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}), \
@@ -979,13 +953,11 @@ class TestProcessNotificationCustomHandler:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_custom_handler_posts_inline_reply_to_github(
-        self, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, mock_post, sample_notification, tmp_path,
     ):
         """When the custom handler returns an inline_reply, it should be
@@ -1000,12 +972,12 @@ class TestProcessNotificationCustomHandler:
 
         registry = self._registry_with_custom_skill(handler)
         mock_resolve.return_value = ("my_team", "alice", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot myfix",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/o/r/issues/comments/99999",
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"], "ack_enabled": True}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}), \
@@ -1199,9 +1171,7 @@ class TestProcessNotificationWithReply:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.github_reply.post_threaded_reply", return_value=True)
     @patch("app.github_reply.generate_reply", return_value="AI reply here")
@@ -1211,15 +1181,15 @@ class TestProcessNotificationWithReply:
     @patch("app.utils.resolve_project_path", return_value="/tmp/koan")
     def test_unknown_command_triggers_reply_when_enabled(
         self, mock_resolve_path, mock_ctx, mock_gen, mock_post,
-        mock_resolve, mock_comment, mock_stale, mock_self,
+        mock_resolve, mock_mentions,
         mock_processed, mock_perm, mock_react, mock_read,
         registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999, "body": "@testbot what do you think about this PR?",
             "user": {"login": "alice"},
-        }
+        }]
         config = {
             "github": {
                 "nickname": "testbot",
@@ -1240,19 +1210,17 @@ class TestProcessNotificationWithReply:
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_unknown_command_falls_back_to_help_when_reply_disabled(
-        self, mock_resolve, mock_comment, mock_stale, mock_self,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_read, registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999, "body": "@testbot what do you think?",
             "user": {"login": "alice"},
-        }
+        }]
         config = {
             "github": {
                 "nickname": "testbot",
@@ -1654,25 +1622,23 @@ class TestCommentApiUrlThreading:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_pr_review_comment_url_threaded(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """PR review comment URL is passed to add_reaction for correct endpoint."""
         pr_comment_url = "https://api.github.com/repos/sukria/koan/pulls/comments/42"
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 42,
             "url": pr_comment_url,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
 
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
@@ -1692,25 +1658,23 @@ class TestCommentApiUrlThreading:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_comment_url_passed_to_check_already_processed(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """comment_api_url is passed to check_already_processed."""
         issue_comment_url = "https://api.github.com/repos/sukria/koan/issues/comments/99"
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99,
             "url": issue_comment_url,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
 
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
@@ -1958,41 +1922,32 @@ class TestProcessNotificationEdgeCases:
     """Edge cases for process_single_notification not covered by existing tests."""
 
     @patch("app.github_command_handler.mark_notification_read")
-    @patch("app.github_command_handler.find_mention_in_thread", return_value=None)
-    @patch("app.github_command_handler.is_self_mention", return_value=True)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions", return_value=[])
     def test_self_mention_skipped_when_no_thread_mention(
-        self, mock_comment, mock_stale, mock_self, mock_find, mock_read,
+        self, mock_mentions, mock_read,
         registry, sample_notification,
     ):
         """Self-mentions with no unprocessed @mention in thread should be silently skipped."""
-        mock_comment.return_value = {
-            "id": 99, "body": "my fix", "user": {"login": "bot"},
-        }
         success, error = process_single_notification(
             sample_notification, registry, {}, None, "bot",
         )
         assert success is False
         assert error is None
-        mock_read.assert_called()
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=True)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_already_processed_skipped(
-        self, mock_resolve, mock_comment, mock_stale, mock_self,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_read, registry, sample_notification,
     ):
         """Already-processed comments should be silently skipped."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99, "url": "", "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot"}}
         success, error = process_single_notification(
             sample_notification, registry, config, None, "testbot",
@@ -2004,22 +1959,20 @@ class TestProcessNotificationEdgeCases:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_context_aware_command_includes_context_in_mission(
-        self, mock_insert, mock_resolve, mock_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """Context-aware commands should include context in mission text."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99, "body": "@testbot implement focus on API layer",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
@@ -2036,22 +1989,20 @@ class TestProcessNotificationEdgeCases:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_non_context_aware_command_excludes_context(
-        self, mock_insert, mock_resolve, mock_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """Non-context-aware commands should NOT include extra context."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99, "body": "@testbot rebase this needs fixing",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
@@ -2068,23 +2019,21 @@ class TestProcessNotificationEdgeCases:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_url_in_context_overrides_notification_url(
-        self, mock_insert, mock_resolve, mock_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """URL in user context should override notification's subject URL."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99,
             "body": "@testbot rebase https://github.com/other/repo/pull/7",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
@@ -2102,22 +2051,20 @@ class TestProcessNotificationEdgeCases:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_reaction_called_after_successful_insert(
-        self, mock_insert, mock_resolve, mock_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """Reaction should only happen AFTER mission is successfully persisted."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99, "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         call_order = []
@@ -2819,22 +2766,20 @@ class TestProcessNotificationHelpCommand:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler._post_help_reply", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_help_command_posts_reply(
-        self, mock_resolve, mock_get_comment, mock_stale, mock_self,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_post, mock_react, mock_read,
         registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot help",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
-        }
+        }]
         config = {"github": {"nickname": "testbot"}}
 
         success, error = process_single_notification(
@@ -2850,22 +2795,20 @@ class TestProcessNotificationHelpCommand:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler._post_help_reply", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_help_command_does_not_queue_mission(
-        self, mock_resolve, mock_get_comment, mock_stale, mock_self,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_post, mock_react, mock_read,
         registry, sample_notification,
     ):
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot help",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
-        }
+        }]
         config = {"github": {"nickname": "testbot"}}
 
         with patch("app.utils.insert_pending_mission") as mock_insert:
@@ -2877,23 +2820,21 @@ class TestProcessNotificationHelpCommand:
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler._post_help_reply", return_value=False)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     def test_help_post_failure_still_no_error(
-        self, mock_resolve, mock_get_comment, mock_stale, mock_self,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_post, mock_read,
         registry, sample_notification,
     ):
         """Even if help reply fails to post, no error is returned to avoid error reply."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot help",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
-        }
+        }]
         config = {"github": {"nickname": "testbot"}}
 
         success, error = process_single_notification(
@@ -2930,14 +2871,12 @@ class TestProcessNotificationPlanCommand:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_plan_queues_mission_with_url(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, plan_registry, tmp_path,
     ):
         notif = {
@@ -2948,11 +2887,11 @@ class TestProcessNotificationPlanCommand:
             "repository": {"full_name": "sukria/koan"},
         }
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 88888,
             "body": "@testbot plan",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
@@ -2971,14 +2910,12 @@ class TestProcessNotificationPlanCommand:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_plan_includes_context(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, plan_registry, tmp_path,
     ):
         notif = {
@@ -2989,11 +2926,11 @@ class TestProcessNotificationPlanCommand:
             "repository": {"full_name": "sukria/koan"},
         }
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 88888,
             "body": "@testbot plan focus on auth module",
             "user": {"login": "alice"},
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
@@ -3121,25 +3058,23 @@ class TestProcessNotificationWithNLP:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     @patch("app.github_command_handler._try_nlp_classification")
     def test_nlp_fallback_creates_mission(
-        self, mock_nlp, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_nlp, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """NLP classification succeeds → mission is created."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot this is a bug for you, fix it",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
-        }
+        }]
 
         # Rigid parse will produce command_name="this" which is invalid
         # NLP fallback should kick in
@@ -3161,24 +3096,22 @@ class TestProcessNotificationWithNLP:
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.github_command_handler._try_nlp_classification", return_value=None)
     def test_nlp_fails_falls_through_to_error(
-        self, mock_nlp, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_read,
+        self, mock_nlp, mock_resolve, mock_mentions,
+        mock_processed, mock_read,
         registry, sample_notification,
     ):
         """NLP returns None → existing error path with help message."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot blahblah",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
-        }
+        }]
         config = {"github": {"nickname": "testbot"}}
 
         success, error = process_single_notification(
@@ -3192,25 +3125,23 @@ class TestProcessNotificationWithNLP:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     @patch("app.github_command_handler._try_nlp_classification")
     def test_rigid_parse_takes_priority(
-        self, mock_nlp, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_nlp, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """Rigid parse succeeds → NLP is NOT called."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
-        }
+        }]
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
@@ -3327,14 +3258,12 @@ class TestComboSkillGithubIntegration:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_rr_mention_inserts_two_sub_missions(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, tmp_path,
     ):
         """@bot rr on a PR should insert /review and /rebase, not /rr."""
@@ -3343,12 +3272,12 @@ class TestComboSkillGithubIntegration:
         registry = build_registry()
 
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
             "body": "@testbot rr",
             "user": {"login": "alice"},
-        }
+        }]
 
         notification = {
             "id": "12345",
@@ -3384,14 +3313,12 @@ class TestComboSkillGithubIntegration:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_regular_command_still_inserts_one_mission(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, tmp_path,
     ):
         """Non-combo commands like @bot rebase should still insert exactly one mission."""
@@ -3399,12 +3326,12 @@ class TestComboSkillGithubIntegration:
         registry = build_registry()
 
         mock_resolve.return_value = ("koan", "sukria", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
             "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
 
         notification = {
             "id": "12345",
@@ -3803,7 +3730,7 @@ class TestTryAssignmentNotification:
         missions_path.parent.mkdir(parents=True)
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
-        with patch("app.github_command_handler._fetch_and_filter_comment", return_value=None), \
+        with patch("app.github_command_handler._find_all_thread_mentions", return_value=[]), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
@@ -3826,7 +3753,7 @@ class TestTryAssignmentNotification:
         missions_path.parent.mkdir(parents=True)
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
-        with patch("app.github_command_handler._fetch_and_filter_comment", return_value=None), \
+        with patch("app.github_command_handler._find_all_thread_mentions", return_value=[]), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
@@ -4177,8 +4104,8 @@ class TestProcessSingleNotificationClosedSubject:
             "user": {"login": "someone"},
         }
 
-        with patch("app.github_command_handler._fetch_and_filter_comment",
-                    return_value=comment), \
+        with patch("app.github_command_handler._find_all_thread_mentions",
+                    return_value=[comment]), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("myproject", "owner", "repo")), \
              patch("app.github_command_handler._is_subject_closed",
@@ -4216,8 +4143,8 @@ class TestProcessSingleNotificationClosedSubject:
             "user": {"login": "someone"},
         }
 
-        with patch("app.github_command_handler._fetch_and_filter_comment",
-                    return_value=comment), \
+        with patch("app.github_command_handler._find_all_thread_mentions",
+                    return_value=[comment]), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("myproject", "owner", "repo")), \
              patch("app.github_command_handler._is_subject_closed",
@@ -4324,22 +4251,20 @@ class TestNowPriorityFlag:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_now_flag_passes_urgent_true(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         mock_resolve.return_value = ("koan", "owner", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot implement --now https://github.com/owner/repo/issues/42",
             "user": {"login": "alice"},
-        }
+        }]
 
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
@@ -4358,22 +4283,20 @@ class TestNowPriorityFlag:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_without_now_flag_urgent_is_false(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         mock_resolve.return_value = ("koan", "owner", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot rebase",
             "user": {"login": "alice"},
-        }
+        }]
 
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
@@ -4391,23 +4314,21 @@ class TestNowPriorityFlag:
     @patch("app.github_command_handler.add_reaction", return_value=True)
     @patch("app.github_command_handler.check_user_permission", return_value=True)
     @patch("app.github_command_handler.check_already_processed", return_value=False)
-    @patch("app.github_command_handler.is_self_mention", return_value=False)
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    @patch("app.github_command_handler.get_comment_from_notification")
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     def test_now_flag_stripped_from_mission_entry(
-        self, mock_insert, mock_resolve, mock_get_comment,
-        mock_stale, mock_self, mock_processed, mock_perm,
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
         """--now should not appear in the queued mission text."""
         mock_resolve.return_value = ("koan", "owner", "koan")
-        mock_get_comment.return_value = {
+        mock_mentions.return_value = [{
             "id": 99999,
             "body": "@testbot implement --now https://github.com/owner/repo/issues/42",
             "user": {"login": "alice"},
-        }
+        }]
 
         config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
 
@@ -4520,3 +4441,213 @@ class TestWarnReplyWildcard:
         with caplog.at_level(logging.WARNING, logger="app.github_config"):
             warn_reply_wildcard(config)
         assert "authorized to ALL" in caplog.text
+
+
+class TestMultiMentionPerThread:
+    """Tests for processing multiple @mentions from a single notification."""
+
+    @pytest.fixture
+    def registry(self):
+        registry = SkillRegistry()
+        review_skill = Skill(
+            name="review", scope="core", description="Review",
+            commands=[SkillCommand(name="review")],
+            github_enabled=True, group="pr",
+        )
+        rebase_skill = Skill(
+            name="rebase", scope="core", description="Rebase",
+            commands=[SkillCommand(name="rebase")],
+            github_enabled=True, group="pr",
+        )
+        registry._register(review_skill)
+        registry._register(rebase_skill)
+        return registry
+
+    @pytest.fixture
+    def notification(self):
+        return {
+            "id": "99",
+            "reason": "mention",
+            "updated_at": "2026-06-18T10:05:00Z",
+            "repository": {"full_name": "owner/repo"},
+            "subject": {
+                "type": "PullRequest",
+                "title": "My PR",
+                "url": "https://api.github.com/repos/owner/repo/pulls/42",
+                "latest_comment_url": "https://api.github.com/repos/owner/repo/issues/comments/202",
+            },
+        }
+
+    def test_multiple_mentions_all_queued_in_order(
+        self, notification, registry, tmp_path, monkeypatch,
+    ):
+        """Multiple @mentions on the same thread are all queued in chronological order."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(parents=True)
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        comment_review = {
+            "id": "201",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/201",
+            "body": "@bot review",
+            "user": {"login": "alice"},
+            "created_at": "2026-06-18T10:00:00Z",
+        }
+        comment_rebase = {
+            "id": "202",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/202",
+            "body": "@bot rebase",
+            "user": {"login": "alice"},
+            "created_at": "2026-06-18T10:01:00Z",
+        }
+
+        with patch("app.github_command_handler._find_all_thread_mentions",
+                    return_value=[comment_review, comment_rebase]), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed", return_value=None), \
+             patch("app.github_command_handler.check_already_processed", return_value=False), \
+             patch("app.github_command_handler.check_user_permission", return_value=True), \
+             patch("app.github_command_handler.add_reaction"), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_command_handler.api_url_to_web_url",
+                   return_value="https://github.com/owner/repo/pull/42"), \
+             patch("app.github_command_handler.get_github_nickname", return_value="bot"), \
+             patch("app.github_command_handler.get_github_ack_enabled", return_value=False):
+            success, error = process_single_notification(
+                notification, registry, {}, None, "bot",
+            )
+
+        assert success is True
+        assert error is None
+        content = missions_path.read_text()
+        assert "/review" in content
+        assert "/rebase" in content
+        # Verify chronological order: /review appears before /rebase in Pending
+        review_pos = content.index("/review")
+        rebase_pos = content.index("/rebase")
+        assert review_pos < rebase_pos, "review should be queued before rebase (chronological)"
+        assert notification.get(NOTIFICATION_OUTCOME_KEY) == NOTIFICATION_OUTCOME_QUEUED
+
+    def test_single_mention_still_works(
+        self, notification, registry, tmp_path, monkeypatch,
+    ):
+        """A single @mention still works correctly (no regression)."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(parents=True)
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        comment = {
+            "id": "201",
+            "url": "https://api.github.com/repos/owner/repo/issues/comments/201",
+            "body": "@bot review",
+            "user": {"login": "alice"},
+            "created_at": "2026-06-18T10:00:00Z",
+        }
+
+        with patch("app.github_command_handler._find_all_thread_mentions",
+                    return_value=[comment]), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed", return_value=None), \
+             patch("app.github_command_handler.check_already_processed", return_value=False), \
+             patch("app.github_command_handler.check_user_permission", return_value=True), \
+             patch("app.github_command_handler.add_reaction"), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_command_handler.api_url_to_web_url",
+                   return_value="https://github.com/owner/repo/pull/42"), \
+             patch("app.github_command_handler.get_github_nickname", return_value="bot"), \
+             patch("app.github_command_handler.get_github_ack_enabled", return_value=False):
+            success, error = process_single_notification(
+                notification, registry, {}, None, "bot",
+            )
+
+        assert success is True
+        assert error is None
+        content = missions_path.read_text()
+        assert "/review" in content
+
+    def test_empty_mentions_falls_through_to_assignment(
+        self, notification, registry, tmp_path, monkeypatch,
+    ):
+        """No @mentions falls through to assignment/subscription paths."""
+        notification["reason"] = "review_requested"
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(parents=True)
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.github_command_handler._find_all_thread_mentions", return_value=[]), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            success, error = process_single_notification(
+                notification, registry, {}, None, "bot",
+            )
+
+        assert success is True
+        content = missions_path.read_text()
+        assert "/review" in content
+
+    def test_find_all_thread_mentions_returns_sorted(self):
+        """_find_all_thread_mentions returns comments sorted by created_at."""
+        comment_a = {"id": "1", "body": "@bot review", "user": {"login": "x"},
+                     "created_at": "2026-06-18T10:02:00Z"}
+        comment_b = {"id": "2", "body": "@bot rebase", "user": {"login": "x"},
+                     "created_at": "2026-06-18T10:00:00Z"}
+        comment_c = {"id": "3", "body": "@bot fix", "user": {"login": "x"},
+                     "created_at": "2026-06-18T10:01:00Z"}
+
+        notification = {
+            "id": "77",
+            "updated_at": "2026-06-18T10:05:00Z",
+            "repository": {"full_name": "owner/repo"},
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/5",
+            },
+        }
+
+        with patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.find_all_mentions_in_thread",
+                   return_value=[comment_b, comment_c, comment_a]):
+            result = _find_all_thread_mentions(notification, "bot")
+
+        assert len(result) == 3
+        assert result[0]["id"] == "2"
+        assert result[1]["id"] == "3"
+        assert result[2]["id"] == "1"
+
+    def test_closed_subject_reacts_to_all_comments(
+        self, notification, registry, monkeypatch,
+    ):
+        """All comments get an eyes reaction when subject is closed."""
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        comments = [
+            {"id": "201", "url": "https://api.github.com/repos/o/r/issues/comments/201",
+             "body": "@bot review", "user": {"login": "alice"}},
+            {"id": "202", "url": "https://api.github.com/repos/o/r/issues/comments/202",
+             "body": "@bot rebase", "user": {"login": "alice"}},
+        ]
+
+        with patch("app.github_command_handler._find_all_thread_mentions",
+                    return_value=comments), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed",
+                   return_value="merged"), \
+             patch("app.github_command_handler._notify_closed_subject_skipped"), \
+             patch("app.github_command_handler.add_reaction") as mock_react, \
+             patch("app.github_command_handler.mark_notification_read"):
+            success, error = process_single_notification(
+                notification, registry, {}, None, "bot",
+            )
+
+        assert success is False
+        assert mock_react.call_count == 2

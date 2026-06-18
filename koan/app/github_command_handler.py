@@ -44,6 +44,7 @@ from app.github_notifications import (
     api_url_to_web_url,
     check_already_processed,
     check_user_permission,
+    find_all_mentions_in_thread,
     find_mention_in_thread,
     get_comment_from_notification,
     is_notification_stale,
@@ -1197,80 +1198,94 @@ def _try_assignment_notification(
     return True
 
 
-def process_single_notification(
+def _find_all_thread_mentions(
     notification: dict,
+    bot_username: str,
+    max_age_hours: int = 24,
+) -> List[dict]:
+    """Find all unprocessed @mention comments for a notification's thread.
+
+    Searches the full thread (issue comments + PR review comments) for
+    every unprocessed @mention of the bot, sorted by created_at ascending
+    (oldest first).  This ensures that when a user posts multiple commands
+    (e.g. ``@bot review`` then ``@bot rebase``), all of them are queued in
+    the order they were posted.
+
+    Falls back to the direct ``latest_comment_url`` when the full thread
+    search returns nothing (e.g. unparseable subject URL).
+
+    Returns an empty list when the notification is stale or no unprocessed
+    mentions are found.
+    """
+    thread_id = notification.get("id", "?")
+    repo_name = notification.get("repository", {}).get("full_name", "?")
+
+    if is_notification_stale(notification, max_age_hours):
+        log.debug(
+            "GitHub: skipping notification %s from %s — stale (>%dh)",
+            thread_id, repo_name, max_age_hours,
+        )
+        mark_notification_read(str(notification.get("id", "")))
+        return []
+
+    mentions = find_all_mentions_in_thread(notification, bot_username)
+    if mentions:
+        if len(mentions) > 1:
+            log.info(
+                "GitHub: found %d unprocessed @mentions in thread %s from %s",
+                len(mentions), thread_id, repo_name,
+            )
+        return mentions
+
+    # Fallback: try direct comment URL for edge cases where the subject
+    # URL doesn't parse as a standard issues/pulls URL.
+    comment = get_comment_from_notification(notification)
+    if comment and not is_self_mention(comment, bot_username):
+        body = (comment.get("body") or "").lower()
+        if f"@{bot_username}".lower() in body:
+            comment_id = str(comment.get("id", ""))
+            comment_api_url = comment.get("url", "")
+            # Extract owner/repo for already-processed check
+            repo_data = notification.get("repository", {})
+            full_name = repo_data.get("full_name", "")
+            if "/" in full_name:
+                c_owner, c_repo = full_name.split("/", 1)
+                if not check_already_processed(
+                    comment_id, bot_username, c_owner, c_repo,
+                    comment_api_url=comment_api_url,
+                ):
+                    return [comment]
+
+    log.debug(
+        "GitHub: no unprocessed @mentions in thread — "
+        "skipping notification %s from %s",
+        thread_id, repo_name,
+    )
+    return []
+
+
+def _process_mention_comment(
+    notification: dict,
+    comment: dict,
     registry: SkillRegistry,
     config: dict,
     projects_config: Optional[dict],
     bot_username: str,
-    max_age_hours: int = 24,
+    project_name: str,
+    owner: str,
+    repo: str,
 ) -> Tuple[bool, Optional[str]]:
-    """Process a single GitHub notification.
+    """Process a single @mention comment from a notification thread.
 
-    Full workflow: parse → validate → check permissions → react → create mission.
-
-    Args:
-        notification: A notification dict from GitHub API.
-        registry: Skills registry.
-        config: Global config (from config.yaml).
-        projects_config: Projects config (from projects.yaml), or None.
-        bot_username: The bot's GitHub username.
-        max_age_hours: Max notification age in hours.
+    Per-comment logic extracted from process_single_notification.
+    Handles command validation, NLP classification, permission checks,
+    mission building, insertion, reactions, and acknowledgments.
 
     Returns:
-        Tuple of (success, error_message). error_message is None on success.
+        Tuple of (queued, error_message).  queued is True when a mission
+        was successfully inserted into missions.md.
     """
-    # Default to "handled without queue" unless a queueing path overrides it.
-    notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
-
-    # Early exit checks + fetch comment (single API call)
-    comment = _fetch_and_filter_comment(notification, bot_username, max_age_hours)
-    if not comment:
-        # No @mention found — try assignment path (review_requested, assign)
-        if _try_assignment_notification(
-            notification, registry, config,
-        ):
-            return True, None
-        # Try subscription path for subscribed/author notifications
-        if _try_subscription_notification(
-            notification, config, projects_config, bot_username,
-        ):
-            mark_notification_read(str(notification.get("id", "")))
-            return True, None
-        return False, None
-
     comment_author = comment.get("user", {}).get("login", "")
-
-    # Foreign-repo skip: never write to shared GitHub state for a repo this
-    # instance doesn't own (would clear the notification from a sibling
-    # Kōan instance's inbox). The outer ownership gate already filters most
-    # of these out — this is defense in depth.
-    project_info = _skip_if_foreign_repo(notification, "GitHub")
-    if not project_info:
-        return False, None
-    project_name, owner, repo = project_info
-    log.debug("GitHub: resolved project=%s from %s/%s", project_name, owner, repo)
-
-    # Skip notifications on closed/merged PRs and issues — commands like
-    # /rebase or /review are meaningless on closed subjects. Notify the
-    # user via Telegram so they know why the notification was ignored.
-    subject_state = _is_subject_closed(notification)
-    if subject_state:
-        subject_title = notification.get("subject", {}).get("title", "?")
-        log.info(
-            "GitHub: skipping notification on %s subject: %s/%s — %s",
-            subject_state, owner, repo, subject_title,
-        )
-        _notify_closed_subject_skipped(
-            owner, repo, subject_title, subject_state, notification,
-        )
-        # React to acknowledge we saw it, then mark as read
-        comment_id = str(comment.get("id", ""))
-        comment_api_url = comment.get("url", "")
-        add_reaction(owner, repo, comment_id, emoji="eyes",
-                     comment_api_url=comment_api_url)
-        mark_notification_read(str(notification.get("id", "")))
-        return False, None
 
     # Validate and parse command
     skill, command_name, context = _validate_and_parse_command(
@@ -1295,9 +1310,6 @@ def process_single_notification(
         )
 
         if nlp_enabled:
-            # Route to /gh_request — let it classify and dispatch properly.
-            # This replaces direct NLP→command mapping which broke when the
-            # classified command's args didn't match (e.g. /fix without issue URL).
             gh_request_skill = validate_command("gh_request", registry)
             if gh_request_skill:
                 nickname = get_github_nickname(config)
@@ -1312,7 +1324,6 @@ def process_single_notification(
                         owner, repo, full_text[:80],
                     )
         else:
-            # Try NLP intent classification (legacy path for non-NLP projects)
             nlp_result = _try_nlp_classification(
                 comment, config, projects_config, registry,
                 bot_username, project_name, owner, repo,
@@ -1325,14 +1336,12 @@ def process_single_notification(
 
     # If still no skill after NLP, fall through to reply/error
     if skill is None and command_name is not None and command_name != "help":
-        # Try AI reply before falling back to error message
         full_question = f"{command_name} {context}".strip()
         if _try_reply(
             notification, comment, config, projects_config,
             bot_username, owner, repo, project_name, full_question,
         ):
-            return False, None  # Reply posted instead of error
-        mark_notification_read(str(notification.get("id", "")))
+            return False, None
         help_msg = format_help_message(command_name, registry, bot_username)
         return False, help_msg
 
@@ -1344,10 +1353,9 @@ def process_single_notification(
             comment_author, owner, repo,
             ", ".join(allowed_users) if allowed_users else "none",
         )
-        mark_notification_read(str(notification.get("id", "")))
         return False, "Permission denied. Only users with write access can trigger bot commands."
 
-    # Scan context text for prompt injection (free-form text is the attack vector)
+    # Scan context text for prompt injection
     if context and context.strip():
         from app.prompt_guard import scan_mission_text
         from app.config import get_prompt_guard_config
@@ -1364,14 +1372,9 @@ def process_single_notification(
                     context, guard_result.reason, comment_author,
                 )
                 if guard_config["block_mode"]:
-                    mark_notification_read(str(notification.get("id", "")))
                     return False, f"Mission blocked by prompt guard: {guard_result.reason}"
 
-    # Custom in-process dispatch: skills under instance/skills/<scope>/ with a
-    # handler.py are invoked inline (mirroring the Telegram path) instead of
-    # being queued as /command slash missions that have no runner registered
-    # in skill_dispatch._SKILL_RUNNERS. The helper returns None when the skill
-    # should fall through to the normal slash-mission path.
+    # Custom in-process dispatch
     from app.external_skill_dispatch import try_dispatch_custom_handler
 
     subject = notification.get("subject", {}) or {}
@@ -1387,9 +1390,6 @@ def process_single_notification(
     )
 
     if inline_reply is not None:
-        # Handler ran inline — mark as processed the same way we would after
-        # queueing a slash mission so the notification isn't reprocessed.
-        # The handler itself is expected to queue whatever mission it needs.
         comment_id = str(comment.get("id", ""))
         comment_api_url = comment.get("url", "")
         add_reaction(owner, repo, comment_id, comment_api_url=comment_api_url)
@@ -1403,8 +1403,6 @@ def process_single_notification(
             instance_dir = str(_Path(koan_root) / "instance")
             track_comment(instance_dir, comment_id)
 
-        mark_notification_read(str(notification.get("id", "")))
-
         notification["_koan_command"] = command_name
         notification["_koan_author"] = comment_author
 
@@ -1412,7 +1410,6 @@ def process_single_notification(
             "GitHub: dispatched custom handler %s from @%s (reply=%r)",
             skill.qualified_name, comment_author, (inline_reply or "")[:80],
         )
-        # Post the handler's status message to GitHub so the user gets feedback
         if inline_reply and get_github_ack_enabled(config):
             inline_issue_number = extract_issue_number_from_notification(notification)
             if inline_issue_number:
@@ -1427,16 +1424,12 @@ def process_single_notification(
                 )
                 if not posted:
                     log.info("GitHub: failed to post inline handler ack for %s", skill.qualified_name)
-        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_QUEUED
         return True, None
 
-    # Build and insert mission BEFORE reacting (so crash doesn't lose command)
-    # For /ask: pass the comment's web URL so the mission stores only the URL,
-    # not the raw question text (which may contain chars that corrupt missions.md).
+    # Build and insert mission
     ask_comment_url = None
     if command_name == "ask":
         ask_comment_url = comment.get("html_url") or None
-    # Extract --now flag from context before building mission entry
     from app.missions import extract_now_flag
     urgent = False
     if context:
@@ -1458,13 +1451,9 @@ def process_single_notification(
     koan_root = os.environ.get("KOAN_ROOT", "")
     if not koan_root:
         log.error("GitHub: KOAN_ROOT not set — cannot insert mission")
-        mark_notification_read(str(notification.get("id", "")))
         return False, "KOAN_ROOT not configured"
     missions_path = Path(koan_root) / "instance" / "missions.md"
 
-    # Combo skills (e.g. /rr) are bridge-side handlers that queue
-    # multiple sub-commands. Expand them here instead of relying on
-    # the agent loop's fallback expansion, which is fragile.
     mission_entries = _expand_combo_mission(
         command_name, mission_entry, project_name,
     )
@@ -1477,8 +1466,6 @@ def process_single_notification(
             ) or inserted_any
     except OSError as e:
         log.warning("GitHub: failed to insert mission: %s", e)
-        # Mark notification as read to prevent infinite re-processing
-        mark_notification_read(str(notification.get("id", "")))
         return False, f"Failed to queue mission: {e}"
 
     # React AFTER mission is persisted (marks as processed)
@@ -1486,34 +1473,18 @@ def process_single_notification(
     comment_api_url = comment.get("url", "")
     add_reaction(owner, repo, comment_id, comment_api_url=comment_api_url)
 
-    # Persist locally so restarts don't re-queue if reaction API failed
     from app.github_notification_tracker import set_review_cooldown, track_comment
     instance_dir = str(Path(koan_root) / "instance")
     track_comment(instance_dir, comment_id)
 
-    # Review cooldown: record that a review was queued so assignment
-    # notifications for the same PR don't re-trigger within the window.
     if command_name == "review" and inserted_any and instance_dir:
         pr_number = extract_issue_number_from_notification(notification)
         if pr_number:
             set_review_cooldown(instance_dir, owner, repo, pr_number)
 
-    # Mark notification as read
-    mark_notification_read(str(notification.get("id", "")))
-
-    # Annotate notification with parsed command/author for downstream consumers
-    # (e.g. _notify_mission_from_mention in loop_manager).
     notification["_koan_command"] = command_name
     notification["_koan_author"] = comment_author
 
-    notification[NOTIFICATION_OUTCOME_KEY] = (
-        NOTIFICATION_OUTCOME_QUEUED
-        if inserted_any
-        else NOTIFICATION_OUTCOME_HANDLED_NOOP
-    )
-
-    # Post a brief acknowledgment so the user knows what action was queued.
-    # Skip for /ask (gets a full reply later) and when mission was a duplicate.
     if inserted_any and command_name != "ask" and get_github_ack_enabled(config):
         ack_issue_number = extract_issue_number_from_notification(notification)
         if ack_issue_number:
@@ -1526,7 +1497,120 @@ def process_single_notification(
         log.info("GitHub: created mission from @%s: %s", comment_author, command_name)
     else:
         log.debug("GitHub: mission already pending for @%s: %s", comment_author, command_name)
-    return True, None
+    return inserted_any, None
+
+
+def process_single_notification(
+    notification: dict,
+    registry: SkillRegistry,
+    config: dict,
+    projects_config: Optional[dict],
+    bot_username: str,
+    max_age_hours: int = 24,
+) -> Tuple[bool, Optional[str]]:
+    """Process a single GitHub notification.
+
+    Finds ALL unprocessed @mention comments in the notification's thread
+    and processes them in chronological order (oldest first).  This ensures
+    that when a user posts multiple commands (e.g. ``@bot review`` then
+    ``@bot rebase``), every command is queued — not just the last one.
+
+    Falls back to assignment (review_requested, assign) and subscription
+    paths when no @mention comments are found.
+
+    Args:
+        notification: A notification dict from GitHub API.
+        registry: Skills registry.
+        config: Global config (from config.yaml).
+        projects_config: Projects config (from projects.yaml), or None.
+        bot_username: The bot's GitHub username.
+        max_age_hours: Max notification age in hours.
+
+    Returns:
+        Tuple of (success, error_message). error_message is None on success.
+    """
+    notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+
+    # Find ALL unprocessed @mentions in the thread (sorted oldest first).
+    # Staleness check is handled inside _find_all_thread_mentions.
+    comments = _find_all_thread_mentions(notification, bot_username, max_age_hours)
+
+    if not comments:
+        # No @mention found — try assignment path (review_requested, assign)
+        if _try_assignment_notification(
+            notification, registry, config,
+        ):
+            return True, None
+        # Try subscription path for subscribed/author notifications
+        if _try_subscription_notification(
+            notification, config, projects_config, bot_username,
+        ):
+            mark_notification_read(str(notification.get("id", "")))
+            return True, None
+        return False, None
+
+    # Shared per-notification checks
+    project_info = _skip_if_foreign_repo(notification, "GitHub")
+    if not project_info:
+        return False, None
+    project_name, owner, repo = project_info
+    log.debug("GitHub: resolved project=%s from %s/%s", project_name, owner, repo)
+
+    # Skip closed/merged subjects
+    subject_state = _is_subject_closed(notification)
+    if subject_state:
+        subject_title = notification.get("subject", {}).get("title", "?")
+        log.info(
+            "GitHub: skipping notification on %s subject: %s/%s — %s",
+            subject_state, owner, repo, subject_title,
+        )
+        _notify_closed_subject_skipped(
+            owner, repo, subject_title, subject_state, notification,
+        )
+        for c in comments:
+            add_reaction(
+                owner, repo, str(c.get("id", "")), emoji="eyes",
+                comment_api_url=c.get("url", ""),
+            )
+        mark_notification_read(str(notification.get("id", "")))
+        return False, None
+
+    # Process each comment in chronological order
+    any_queued = False
+    last_error = None
+    for comment in comments:
+        queued, error = _process_mention_comment(
+            notification, comment, registry, config, projects_config,
+            bot_username, project_name, owner, repo,
+        )
+        if queued:
+            any_queued = True
+        if error:
+            last_error = error
+            # Post error reply to the specific comment that caused it
+            issue_number = extract_issue_number_from_notification(notification)
+            comment_id = str(comment.get("id", ""))
+            if issue_number and comment_id:
+                post_error_reply(
+                    owner, repo, issue_number, comment_id, error,
+                    comment_api_url=comment.get("url", ""),
+                )
+
+    mark_notification_read(str(notification.get("id", "")))
+
+    if any_queued:
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_QUEUED
+
+    # Return success=True if any comment was queued, or if no errors occurred
+    # (e.g. all comments were help requests or already processed).
+    # Only return an error when there was exactly one comment with an error
+    # and no queued missions — this preserves backward-compatible error
+    # posting for the single-comment case via the caller in loop_manager.
+    if any_queued:
+        return True, None
+    if last_error and len(comments) == 1:
+        return False, last_error
+    return False, None
 
 
 def _post_command_acknowledgment(

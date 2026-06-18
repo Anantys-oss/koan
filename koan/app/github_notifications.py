@@ -432,19 +432,38 @@ class NotificationTracker:
         Returns:
             The first unprocessed comment containing an @mention, or None.
         """
+        results = self.search_all_comments_for_mentions(
+            comments, bot_username, owner, repo,
+        )
+        return results[0] if results else None
+
+    def search_all_comments_for_mentions(
+        self,
+        comments: list,
+        bot_username: str,
+        owner: str,
+        repo: str,
+    ) -> List[dict]:
+        """Search a list of comments for ALL unprocessed @mentions of the bot.
+
+        Like search_comments_for_mention but returns every match instead of
+        only the first one.  Used by find_all_mentions_in_thread to collect
+        all pending commands from a single notification thread.
+
+        Returns:
+            List of unprocessed comment dicts (may be empty).
+        """
         bot_lower = f"@{bot_username}".lower()
+        results = []
 
         for comment in comments:
-            # Skip bot's own comments
             if comment.get("user", {}).get("login") == bot_username:
                 continue
 
-            # Check if this comment mentions the bot
             body = comment.get("body", "")
             if bot_lower not in body.lower():
                 continue
 
-            # Check if already processed (has bot reaction)
             comment_id = str(comment.get("id", ""))
             comment_api_url = comment.get("url", "")
             if self.check_already_processed(
@@ -458,9 +477,9 @@ class NotificationTracker:
                 comment_id,
                 comment.get("user", {}).get("login", "?"),
             )
-            return comment
+            results.append(comment)
 
-        return None
+        return results
 
     def get_comment_from_notification(
         self, notification: dict,
@@ -576,6 +595,79 @@ class NotificationTracker:
                 return result
 
         return None
+
+    def find_all_mentions_in_thread(
+        self,
+        notification: dict,
+        bot_username: str,
+    ) -> List[dict]:
+        """Search a PR/issue thread for ALL unprocessed @mention comments.
+
+        Like find_mention_in_thread but collects every unprocessed mention
+        instead of returning only the first one.  Results are sorted by
+        created_at ascending (oldest first) so missions are queued in the
+        order the user posted them.
+
+        Searches both issue comments and PR review comments.
+        """
+        subject_url = notification.get("subject", {}).get("url", "")
+        if not subject_url:
+            return []
+
+        match = re.match(
+            r'https://api\.github\.com/repos/([^/]+)/([^/]+)/'
+            r'(pulls|issues)/(\d+)',
+            subject_url,
+        )
+        if not match:
+            return []
+
+        owner, repo, subject_type, number = match.groups()
+
+        endpoints = [
+            (f"repos/{owner}/{repo}/issues/{number}/comments"
+             "?per_page=100&sort=created&direction=desc",
+             f"find_all_mentions issue_comments {owner}/{repo}#{number}"),
+        ]
+        if subject_type == "pulls":
+            endpoints.append(
+                (f"repos/{owner}/{repo}/pulls/{number}/comments"
+                 "?per_page=100&sort=created&direction=desc",
+                 f"find_all_mentions review_comments {owner}/{repo}#{number}"),
+            )
+
+        all_mentions: List[dict] = []
+        seen_ids: set = set()
+
+        for endpoint, sso_label in endpoints:
+            try:
+                raw = api(endpoint, timeout=30)
+                comments = json.loads(raw) if raw else []
+            except SSOAuthRequired:
+                self.record_sso_failure(sso_label)
+                continue
+            except (
+                RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired,
+            ) as e:
+                log.warning(
+                    "GitHub API: failed to fetch %s: %s", endpoint[:80], e,
+                )
+                continue
+
+            if not isinstance(comments, list):
+                continue
+
+            mentions = self.search_all_comments_for_mentions(
+                comments, bot_username, owner, repo,
+            )
+            for m in mentions:
+                mid = str(m.get("id", ""))
+                if mid and mid not in seen_ids:
+                    seen_ids.add(mid)
+                    all_mentions.append(m)
+
+        all_mentions.sort(key=lambda c: c.get("created_at", ""))
+        return all_mentions
 
     def check_user_permission(
         self,
@@ -919,6 +1011,16 @@ def _search_comments_for_mention(
         comments, bot_username, owner, repo,
     )
 
+def search_all_comments_for_mentions(
+    comments: list,
+    bot_username: str,
+    owner: str,
+    repo: str,
+) -> List[dict]:
+    return _default_tracker.search_all_comments_for_mentions(
+        comments, bot_username, owner, repo,
+    )
+
 def get_comment_from_notification(notification: dict) -> Optional[dict]:
     return _default_tracker.get_comment_from_notification(notification)
 
@@ -927,6 +1029,12 @@ def find_mention_in_thread(
     bot_username: str,
 ) -> Optional[dict]:
     return _default_tracker.find_mention_in_thread(notification, bot_username)
+
+def find_all_mentions_in_thread(
+    notification: dict,
+    bot_username: str,
+) -> List[dict]:
+    return _default_tracker.find_all_mentions_in_thread(notification, bot_username)
 
 def check_user_permission(
     owner: str,

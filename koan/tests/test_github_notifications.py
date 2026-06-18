@@ -27,8 +27,10 @@ from app.github_notifications import (
     reset_consecutive_sso_state,
     extract_comment_metadata,
     fetch_unread_notifications,
+    find_all_mentions_in_thread,
     find_mention_in_thread,
     get_comment_from_notification,
+    search_all_comments_for_mentions,
     get_consecutive_sso_failures,
     get_fetch_failure_count,
     get_sso_failure_count,
@@ -1122,6 +1124,83 @@ class TestSearchCommentsForMention:
         ]
         result = _search_comments_for_mention(comments, "bot", "owner", "repo")
         assert result is not None
+
+
+class TestSearchAllCommentsForMentions:
+    """Tests for search_all_comments_for_mentions — returns ALL matches, not just first."""
+
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
+    def test_returns_all_mentions(self, mock_processed):
+        comments = [
+            {"id": 1, "url": "u/1", "body": "@bot review", "user": {"login": "alice"}},
+            {"id": 2, "url": "u/2", "body": "no mention here", "user": {"login": "bob"}},
+            {"id": 3, "url": "u/3", "body": "@bot rebase", "user": {"login": "alice"}},
+        ]
+        result = search_all_comments_for_mentions(comments, "bot", "owner", "repo")
+        assert len(result) == 2
+        assert result[0]["id"] == 1
+        assert result[1]["id"] == 3
+
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
+    def test_skips_bot_own_comments(self, mock_processed):
+        comments = [
+            {"id": 1, "url": "u/1", "body": "@bot review", "user": {"login": "bot"}},
+            {"id": 2, "url": "u/2", "body": "@bot rebase", "user": {"login": "alice"}},
+        ]
+        result = search_all_comments_for_mentions(comments, "bot", "owner", "repo")
+        assert len(result) == 1
+        assert result[0]["id"] == 2
+
+    def test_empty_list(self):
+        result = search_all_comments_for_mentions([], "bot", "owner", "repo")
+        assert result == []
+
+
+class TestFindAllMentionsInThread:
+    """Tests for find_all_mentions_in_thread — full thread search returning all mentions."""
+
+    @patch("app.github_notifications.api")
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
+    def test_finds_all_mentions_sorted_by_time(self, mock_processed, mock_api):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/42",
+            },
+        }
+        issue_comments = json.dumps([
+            {"id": 2, "url": "u/2", "body": "@bot rebase",
+             "user": {"login": "alice"}, "created_at": "2026-06-18T10:01:00Z"},
+            {"id": 1, "url": "u/1", "body": "@bot review",
+             "user": {"login": "alice"}, "created_at": "2026-06-18T10:00:00Z"},
+        ])
+        pr_comments = json.dumps([])
+        mock_api.side_effect = [issue_comments, pr_comments]
+
+        result = find_all_mentions_in_thread(notification, "bot")
+
+        assert len(result) == 2
+        assert result[0]["id"] == 1
+        assert result[1]["id"] == 2
+
+    @patch("app.github_notifications.api")
+    @patch.object(NotificationTracker, "check_already_processed", return_value=False)
+    def test_deduplicates_across_endpoints(self, mock_processed, mock_api):
+        notification = {
+            "subject": {
+                "url": "https://api.github.com/repos/owner/repo/pulls/42",
+            },
+        }
+        comment = {"id": 1, "url": "u/1", "body": "@bot review",
+                   "user": {"login": "alice"}, "created_at": "2026-06-18T10:00:00Z"}
+        mock_api.side_effect = [json.dumps([comment]), json.dumps([comment])]
+
+        result = find_all_mentions_in_thread(notification, "bot")
+        assert len(result) == 1
+
+    def test_returns_empty_for_no_subject_url(self):
+        notification = {"subject": {}}
+        result = find_all_mentions_in_thread(notification, "bot")
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
