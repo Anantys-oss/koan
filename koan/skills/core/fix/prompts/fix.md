@@ -13,6 +13,7 @@ You are fixing an issue from the configured issue tracker. Your job is to unders
 
 {CONTEXT}
 {DIAGNOSTIC}
+
 {PROJECT_MEMORY}
 ## Instructions
 

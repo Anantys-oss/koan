@@ -46,9 +46,8 @@ def run_diagnostic(
         ISSUE_BODY=issue_body,
         CONTEXT=context or "No additional context.",
     )
-    prompt = load_prompt_or_skill(skill_dir, "fix-diagnose", **template_vars)
-
     try:
+        prompt = load_prompt_or_skill(skill_dir, "fix-diagnose", **template_vars)
         output = run_command_streaming(
             prompt,
             project_path,
@@ -57,8 +56,18 @@ def run_diagnostic(
             max_turns=5,
             timeout=120,
         )
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
         logger.warning("Diagnostic step failed: %s", e)
+        return {
+            "confidence": "LOW",
+            "hypothesis": "",
+            "code_paths": "",
+            "analysis": "",
+            "raw": "",
+            "error": str(e),
+        }
+    except Exception as e:
+        logger.error("Diagnostic step failed unexpectedly: %s", e, exc_info=True)
         return {
             "confidence": "LOW",
             "hypothesis": "",
@@ -79,6 +88,7 @@ def _parse_diagnostic(raw: str) -> Dict[str, str]:
         "code_paths": "",
         "analysis": "",
         "raw": raw,
+        "error": "",
     }
 
     if not raw.strip():
