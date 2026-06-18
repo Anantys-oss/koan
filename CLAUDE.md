@@ -12,6 +12,7 @@ Kōan is an autonomous background agent that uses idle Claude API quota to work 
 - Treat docs as context to verify against code, not as unquestioned truth. If code and docs disagree, preserve current code behavior unless the task says otherwise, and update the docs to match the resulting behavior.
 - After changing user behavior, configuration, daemon flow, provider behavior, shared state, safety boundaries, or an important implementation decision, update the relevant docs in the same branch.
 - For core skill changes, update both `docs/users/user-manual.md` and `docs/users/skills.md`.
+- Before touching mission-store mutation logic (`mission_store.py`, `locked_store()`), retry counters, signal files, or shared-file state, read `docs/architecture/state-consistency.md` — it captures 9 recurring anti-patterns from the 2026-06 audit with concrete code examples.
 
 ## Commands
 
