@@ -80,7 +80,7 @@ def run_ask(
     )
 
     # Fetch the question text
-    question_text, comment_author = _fetch_question_and_author(
+    question_text, comment_author, comment_api_url = _fetch_question_and_author(
         comment_id, owner, repo, url,
     )
     if not question_text:
@@ -98,9 +98,15 @@ def run_ask(
     if not reply_text:
         return False, "Failed to generate reply."
 
-    # Post reply to GitHub
+    # Post reply threaded to the original comment
     print(f"→ Posting reply to {owner}/{repo}#{issue_number}")
-    if not github_reply.post_reply(owner, repo, issue_number, reply_text):
+    if not github_reply.post_threaded_reply(
+        owner, repo, issue_number, reply_text,
+        comment_api_url=comment_api_url or "",
+        comment_id=comment_id,
+        comment_author=comment_author or "",
+        comment_body=question_text,
+    ):
         return False, "Failed to post reply to GitHub."
 
     issue_url = f"https://github.com/{owner}/{repo}/issues/{issue_number}"

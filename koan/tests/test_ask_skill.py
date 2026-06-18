@@ -171,7 +171,7 @@ class TestAskHandlerFlow:
 
     @patch("app.utils.resolve_project_path", return_value="/path/to/project")
     @patch("app.utils.project_name_for_path", return_value="myproject")
-    @patch("app.github_reply.post_reply", return_value=True)
+    @patch("app.github_reply.post_threaded_reply", return_value=True)
     @patch("app.github_reply.clean_reply", return_value="Here is my answer.")
     @patch("app.cli_provider.run_command", return_value="Here is my answer.")
     @patch("app.github_reply.fetch_thread_context")
@@ -209,7 +209,9 @@ class TestAskHandlerFlow:
         assert "✅" in result
         assert "sukria/koan" in result
         mock_run_command.assert_called_once()
-        mock_post.assert_called_once_with("sukria", "koan", "42", "Here is my answer.")
+        mock_post.assert_called_once()
+        args = mock_post.call_args[0]
+        assert args[:4] == ("sukria", "koan", "42", "Here is my answer.")
 
     @patch("app.utils.resolve_project_path", return_value="/path/to/project")
     @patch("app.utils.project_name_for_path", return_value="myproject")
@@ -248,7 +250,7 @@ class TestAskHandlerFlow:
 
     @patch("app.utils.resolve_project_path", return_value="/path/to/project")
     @patch("app.utils.project_name_for_path", return_value="myproject")
-    @patch("app.github_reply.post_reply", return_value=False)
+    @patch("app.github_reply.post_threaded_reply", return_value=False)
     @patch("app.github_reply.clean_reply", return_value="An answer.")
     @patch("app.cli_provider.run_command", return_value="An answer.")
     @patch("app.github_reply.fetch_thread_context", return_value={
@@ -410,7 +412,7 @@ class TestAskRunnerCli:
 class TestRunAskFlow:
     """Test run_ask function with mocked GitHub dependencies."""
 
-    @patch("app.github_reply.post_reply", return_value=True)
+    @patch("app.github_reply.post_threaded_reply", return_value=True)
     @patch("app.github_reply.clean_reply", return_value="Here is my answer.")
     @patch("app.cli_provider.run_command", return_value="Here is my answer.")
     @patch("app.github_reply.fetch_thread_context", return_value={
@@ -438,7 +440,9 @@ class TestRunAskFlow:
         assert success is True
         assert "Reply posted" in summary
         assert "sukria/koan#42" in summary
-        mock_post.assert_called_once_with("sukria", "koan", "42", "Here is my answer.")
+        mock_post.assert_called_once()
+        args = mock_post.call_args[0]
+        assert args[:4] == ("sukria", "koan", "42", "Here is my answer.")
 
     def test_invalid_url(self, tmp_path):
         from skills.core.ask.ask_runner import run_ask

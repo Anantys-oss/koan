@@ -12,6 +12,7 @@ from app.github_reply import (
     fetch_thread_context,
     generate_reply,
     post_reply,
+    post_threaded_reply,
 )
 
 
@@ -262,6 +263,92 @@ class TestPostReply:
     @patch("app.github_reply.api", side_effect=RuntimeError("API error"))
     def test_failure_returns_false(self, mock_api):
         assert post_reply("owner", "repo", "42", "reply") is False
+
+
+class TestPostThreadedReply:
+    """Tests for post_threaded_reply — threaded reply posting."""
+
+    @patch("app.github_reply.api")
+    def test_review_comment_uses_in_reply_to(self, mock_api):
+        """PR review comments should use native threading via in_reply_to."""
+        result = post_threaded_reply(
+            "owner", "repo", "42", "my reply",
+            comment_api_url="https://api.github.com/repos/owner/repo/pulls/comments/999",
+            comment_id="999",
+        )
+        assert result is True
+        mock_api.assert_called_once()
+        call_args = mock_api.call_args
+        assert call_args[0][0] == "repos/owner/repo/pulls/42/comments"
+        extra = call_args[1]["extra_args"]
+        assert "-F" in extra
+        assert "in_reply_to=999" in extra
+
+    @patch("app.github_reply.api")
+    def test_issue_comment_with_context_adds_blockquote(self, mock_api):
+        """Issue comments should include a blockquote of the original."""
+        result = post_threaded_reply(
+            "owner", "repo", "42", "my reply",
+            comment_api_url="https://api.github.com/repos/owner/repo/issues/comments/888",
+            comment_id="888",
+            comment_author="alice",
+            comment_body="What about this change?",
+        )
+        assert result is True
+        mock_api.assert_called_once()
+        call_args = mock_api.call_args
+        assert call_args[0][0] == "repos/owner/repo/issues/42/comments"
+        body_arg = [a for a in call_args[1]["extra_args"] if a.startswith("body=")][0]
+        assert "> @alice:" in body_arg
+        assert "What about this change?" in body_arg
+
+    @patch("app.github_reply.api")
+    def test_no_context_posts_plain_reply(self, mock_api):
+        """Without comment context, falls back to plain reply."""
+        result = post_threaded_reply(
+            "owner", "repo", "42", "my reply",
+        )
+        assert result is True
+        mock_api.assert_called_once()
+        call_args = mock_api.call_args
+        assert call_args[0][0] == "repos/owner/repo/issues/42/comments"
+
+    @patch("app.github_reply.api")
+    def test_review_comment_fallback_on_failure(self, mock_api):
+        """If threaded PR reply fails, falls back to issue comment."""
+        mock_api.side_effect = [RuntimeError("thread failed"), None]
+        result = post_threaded_reply(
+            "owner", "repo", "42", "my reply",
+            comment_api_url="https://api.github.com/repos/owner/repo/pulls/comments/999",
+            comment_id="999",
+            comment_author="bob",
+            comment_body="question here",
+        )
+        assert result is True
+        assert mock_api.call_count == 2
+        fallback_call = mock_api.call_args_list[1]
+        assert fallback_call[0][0] == "repos/owner/repo/issues/42/comments"
+
+    @patch("app.github_reply.api", side_effect=RuntimeError("API error"))
+    def test_total_failure_returns_false(self, mock_api):
+        """Returns False when all posting attempts fail."""
+        result = post_threaded_reply(
+            "owner", "repo", "42", "my reply",
+        )
+        assert result is False
+
+    @patch("app.github_reply.api")
+    def test_long_comment_body_truncated_in_blockquote(self, mock_api):
+        """Long comment bodies should be truncated in the blockquote."""
+        long_body = "x" * 200
+        result = post_threaded_reply(
+            "owner", "repo", "42", "my reply",
+            comment_author="alice",
+            comment_body=long_body,
+        )
+        assert result is True
+        body_arg = [a for a in mock_api.call_args[1]["extra_args"] if a.startswith("body=")][0]
+        assert "..." in body_arg
 
 
 # ---------------------------------------------------------------------------

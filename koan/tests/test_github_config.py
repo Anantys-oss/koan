@@ -3,6 +3,7 @@
 import pytest
 
 from app.github_config import (
+    get_github_ack_enabled,
     get_github_authorized_users,
     get_github_check_interval,
     get_github_commands_enabled,
@@ -163,6 +164,20 @@ class TestGetGithubReplyEnabled:
 
     def test_missing_key(self):
         assert get_github_reply_enabled({"github": {}}) is False
+
+
+class TestGetGithubAckEnabled:
+    def test_default_enabled(self):
+        assert get_github_ack_enabled({}) is True
+
+    def test_explicitly_enabled(self):
+        assert get_github_ack_enabled({"github": {"ack_enabled": True}}) is True
+
+    def test_disabled(self):
+        assert get_github_ack_enabled({"github": {"ack_enabled": False}}) is False
+
+    def test_none_section(self):
+        assert get_github_ack_enabled({"github": None}) is True
 
 
 class TestGetGithubMaxAgeHours:

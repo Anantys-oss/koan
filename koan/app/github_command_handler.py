@@ -29,6 +29,7 @@ from typing import Dict, List, Optional, Tuple
 
 from app.bounded_set import BoundedSet
 from app.github_config import (
+    get_github_ack_enabled,
     get_github_authorized_users,
     get_github_natural_language,
     get_github_nickname,
@@ -895,7 +896,7 @@ def _try_reply(
     from app.github_reply import (
         fetch_thread_context,
         generate_reply,
-        post_reply,
+        post_threaded_reply,
     )
 
     # Fetch context and generate reply (exclude bot's own comments to avoid self-reply)
@@ -914,13 +915,20 @@ def _try_reply(
         log.warning("GitHub reply: failed to generate reply for comment %s", comment_id)
         return False
 
-    # Post reply
-    if not post_reply(owner, repo, issue_number, reply_text):
+    # Post reply threaded to the original comment
+    comment_api_url = comment.get("url", "")
+    comment_body = comment.get("body", "")
+    if not post_threaded_reply(
+        owner, repo, issue_number, reply_text,
+        comment_api_url=comment_api_url,
+        comment_id=comment_id,
+        comment_author=comment_author,
+        comment_body=comment_body,
+    ):
         log.warning("GitHub reply: failed to post reply for comment %s", comment_id)
         return False
 
-    # Mark as processed
-    comment_api_url = comment.get("url", "")
+    # Mark as processed (comment_api_url already set above)
     add_reaction(owner, repo, comment_id, emoji="eyes",
                  comment_api_url=comment_api_url)
     mark_notification_read(str(notification.get("id", "")))
@@ -1404,10 +1412,21 @@ def process_single_notification(
             "GitHub: dispatched custom handler %s from @%s (reply=%r)",
             skill.qualified_name, comment_author, (inline_reply or "")[:80],
         )
-        # Success: caller's happy path handles logging/notification. The
-        # handler's reply text is logged but not posted back to GitHub — the
-        # cp handlers return a short status like "Fix queued for X" that is
-        # already surfaced via Telegram's mission-queued notification.
+        # Post the handler's status message to GitHub so the user gets feedback
+        if inline_reply and get_github_ack_enabled(config):
+            inline_issue_number = extract_issue_number_from_notification(notification)
+            if inline_issue_number:
+                from app.github_reply import post_threaded_reply
+                posted = post_threaded_reply(
+                    owner, repo, inline_issue_number,
+                    f"🤖 {inline_reply}",
+                    comment_api_url=comment_api_url,
+                    comment_id=comment_id,
+                    comment_author=comment_author,
+                    comment_body=comment.get("body", ""),
+                )
+                if not posted:
+                    log.info("GitHub: failed to post inline handler ack for %s", skill.qualified_name)
         notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_QUEUED
         return True, None
 
@@ -1492,11 +1511,58 @@ def process_single_notification(
         if inserted_any
         else NOTIFICATION_OUTCOME_HANDLED_NOOP
     )
+
+    # Post a brief acknowledgment so the user knows what action was queued.
+    # Skip for /ask (gets a full reply later) and when mission was a duplicate.
+    if inserted_any and command_name != "ask" and get_github_ack_enabled(config):
+        ack_issue_number = extract_issue_number_from_notification(notification)
+        if ack_issue_number:
+            _post_command_acknowledgment(
+                owner, repo, ack_issue_number,
+                command_name, comment, bot_username,
+            )
+
     if inserted_any:
         log.info("GitHub: created mission from @%s: %s", comment_author, command_name)
     else:
         log.debug("GitHub: mission already pending for @%s: %s", comment_author, command_name)
     return True, None
+
+
+def _post_command_acknowledgment(
+    owner: str,
+    repo: str,
+    issue_number: str,
+    command_name: str,
+    comment: dict,
+    bot_username: str,
+) -> None:
+    """Post a brief acknowledgment reply when a command is queued.
+
+    Threads the reply to the original comment when possible (PR review
+    comments get native threading, issue comments get a blockquote).
+    """
+    from app.github_reply import post_threaded_reply
+
+    if command_name == "gh_request":
+        ack_body = "🤖 Got it — I'll look into this shortly."
+    else:
+        ack_body = f"🤖 `/{command_name}` queued — I'll get to it shortly."
+
+    comment_id = str(comment.get("id", ""))
+    comment_api_url = comment.get("url", "")
+    comment_author = comment.get("user", {}).get("login", "")
+    comment_body = comment.get("body", "")
+
+    posted = post_threaded_reply(
+        owner, repo, issue_number, ack_body,
+        comment_api_url=comment_api_url,
+        comment_id=comment_id,
+        comment_author=comment_author,
+        comment_body=comment_body,
+    )
+    if not posted:
+        log.info("GitHub: failed to post command ack for /%s", command_name)
 
 
 def post_error_reply(

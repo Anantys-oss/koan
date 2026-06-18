@@ -259,6 +259,63 @@ def post_reply(
         return False
 
 
+def post_threaded_reply(
+    owner: str,
+    repo: str,
+    issue_number: str,
+    body: str,
+    comment_api_url: str = "",
+    comment_id: str = "",
+    comment_author: str = "",
+    comment_body: str = "",
+) -> bool:
+    """Post a reply threaded to the original comment when possible.
+
+    For PR review comments (pulls/comments/NNN): uses ``in_reply_to``
+    to create a native GitHub review-comment thread.
+    For issue/PR comments: posts a new comment with a blockquote of
+    the original to provide visual threading.
+
+    Falls back to a plain ``post_reply`` when threading metadata is
+    unavailable.
+    """
+    safe_body = sanitize_github_comment(body)
+
+    # PR review comments support native threading via in_reply_to
+    if comment_api_url and "/pulls/comments/" in comment_api_url and comment_id:
+        try:
+            api(
+                f"repos/{owner}/{repo}/pulls/{issue_number}/comments",
+                method="POST",
+                extra_args=[
+                    "-f", f"body={safe_body}",
+                    "-F", f"in_reply_to={comment_id}",
+                ],
+            )
+            return True
+        except RuntimeError as e:
+            log.debug("Threaded PR review reply failed, falling back: %s", e)
+
+    # Issue/PR comments: prefix with a blockquote for visual context
+    if comment_author and comment_body:
+        quote_line = comment_body.split("\n")[0]
+        if len(quote_line) > 120:
+            quote_line = quote_line[:120] + "..."
+        threaded_body = f"> @{comment_author}: {quote_line}\n\n{body}"
+        safe_body = sanitize_github_comment(threaded_body)
+
+    try:
+        api(
+            f"repos/{owner}/{repo}/issues/{issue_number}/comments",
+            method="POST",
+            extra_args=["-f", f"body={safe_body}"],
+        )
+        return True
+    except RuntimeError as e:
+        log.warning("Failed to post threaded reply: %s", e)
+        return False
+
+
 def clean_reply(text: str) -> str:
     """Clean Claude CLI output artifacts from the reply."""
     lines = text.strip().splitlines()

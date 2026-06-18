@@ -126,6 +126,24 @@ github:
 - **`reply_authorized_users`**: Separate from command `authorized_users` — allows a broader audience for read-only replies without granting command execution. `["*"]` means anyone can trigger replies (no permission check at all, unlike command wildcard which still checks GitHub write access). Omit to fall back to `authorized_users`. Set `[]` to disable replies entirely.
 - **`reply_rate_limit`**: Prevents API quota abuse when replies are open broadly. Tracks per-user reply counts over a rolling 1-hour window. Default: 5, minimum: 1.
 
+#### Command acknowledgment
+
+When a command is dispatched from a GitHub @mention, Kōan posts a brief acknowledgment reply (e.g. "🤖 `/review` queued — I'll get to it shortly.") so the user knows their request was received. Replies are threaded: PR review comments get native GitHub threading, issue comments include a blockquote of the original message.
+
+```yaml
+github:
+  ack_enabled: true   # Post acknowledgment replies (default: true)
+```
+
+Set `ack_enabled: false` to disable acknowledgment replies (reactions are still placed).
+
+#### Reply threading
+
+All AI-generated replies (from `reply_enabled`, `/ask`, and command acknowledgments) are threaded to the original comment:
+
+- **PR review comments** (`#discussion_r` URLs): replies use GitHub's native `in_reply_to` threading.
+- **Issue/PR comments** (`#issuecomment-` URLs): replies include a `> @user: ...` blockquote for visual context.
+
 #### Multiple instances
 
 When several Kōan instances share the same GitHub account (each watching a different set of repos), @mentions on repos not in this instance's `projects.yaml` trigger warnings by default. Suppress them with:
