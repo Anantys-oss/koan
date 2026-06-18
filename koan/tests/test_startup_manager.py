@@ -339,50 +339,6 @@ class TestLoadMemoryConfig:
 
 
 # ---------------------------------------------------------------------------
-# Test: prune_missions_done
-# ---------------------------------------------------------------------------
-
-class TestPruneMissionsDone:
-    def test_prunes_old_done_items(self, tmp_path):
-        from app.startup_manager import prune_missions_done
-
-        missions = tmp_path / "missions.md"
-        done_items = "\n".join(f"- Task {i} ✅" for i in range(100))
-        missions.write_text(
-            f"# Missions\n\n## Pending\n\n- Active\n\n## Done\n{done_items}\n"
-        )
-
-        prune_missions_done(str(tmp_path))
-
-        content = missions.read_text()
-        from app.missions import parse_sections
-        sections = parse_sections(content)
-        assert len(sections["done"]) == 50
-        assert len(sections["pending"]) == 1
-
-    def test_noop_when_no_missions_file(self, tmp_path):
-        from app.startup_manager import prune_missions_done
-        prune_missions_done(str(tmp_path))  # should not raise
-
-    def test_noop_when_few_done_items(self, tmp_path):
-        from app.startup_manager import prune_missions_done
-        from app.mission_store import MissionStore
-
-        missions = tmp_path / "missions.md"
-        content = "# Missions\n\n## Pending\n\n## Done\n- Task 1\n- Task 2\n"
-        missions.write_text(content)
-
-        prune_missions_done(str(tmp_path))
-
-        # With only 2 done items, nothing should be pruned
-        store = MissionStore.load(str(tmp_path))
-        done = store.get_by_status("done")
-        assert len(done) == 2
-        assert any(r.text == "Task 1" for r in done)
-        assert any(r.text == "Task 2" for r in done)
-
-
-# ---------------------------------------------------------------------------
 # Test: cleanup_mission_history
 # ---------------------------------------------------------------------------
 

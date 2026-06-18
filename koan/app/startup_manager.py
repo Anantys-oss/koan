@@ -288,21 +288,6 @@ def cleanup_memory(instance: str):
             log("health", f"Global memory capped: {name} ({value} lines removed)")
 
 
-def prune_missions_done(instance: str):
-    """Prune old Done and Failed items from the mission store to bound size.
-
-    The store grows unbounded as completed missions accumulate. At 190KB+,
-    the generated missions.md view wastes the agent's context tokens. Keep
-    only the most recent Done and Failed items (caps defined by MissionStore).
-    """
-    from app.mission_store import locked_store
-
-    with locked_store(instance) as store:
-        pruned = store.prune()
-    if pruned > 0:
-        log("health", f"Pruned {pruned} old Done/Failed items from mission store")
-
-
 def cleanup_mission_history(instance: str):
     """Prune old entries from mission history."""
     from app.mission_history import cleanup_old_entries
@@ -571,7 +556,6 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
         _safe_run("Sanity checks", run_sanity_checks, instance)
         _safe_run("Memory cleanup", cleanup_memory, instance)
-        _safe_run("Missions pruning", prune_missions_done, instance)
         _safe_run("Mission history cleanup", cleanup_mission_history, instance)
         _safe_run("Health check", check_health, koan_root)
 

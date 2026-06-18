@@ -2237,10 +2237,9 @@ def _update_mission_in_file(
     return means the mission is still in the queue and will be re-picked —
     callers should surface this rather than let it loop silently.
 
-    History trimming is intentionally NOT done here. Pruning old
-    Done/Failed entries is a separate maintenance concern run as its own
-    locked step (:func:`_prune_missions_history`) after the move commits, so
-    a pruning bug can never corrupt or roll back the finalization itself.
+    History trimming happens automatically inside locked_store() via
+    store.prune() before save, keeping Done/Failed records bounded without
+    a separate locked step.
     """
     try:
         from app.mission_store import locked_store
@@ -2255,33 +2254,11 @@ def _update_mission_in_file(
         if not moved:
             log("warning", f"Mission not found (no change): {mission_title[:80]}")
             return False
-        _prune_missions_history(instance)
         return True
     except Exception as e:
         label = "fail" if failed else "complete"
         log("error", f"Could not {label} mission: {e}")
         return False
-
-
-def _prune_missions_history(instance: str) -> None:
-    """Trim old Done/Failed records from the store (decoupled from finalization).
-
-    Decoupled from mission finalization: runs as its own locked
-    read-modify-write so a pruning error cannot corrupt or roll back the
-    Done/Failed move that just committed. Uses the missions lock (unlike the
-    startup-time :func:`app.startup_manager.prune_missions_done`, which is
-    safe to run unlocked only because nothing else writes during startup) so
-    it cannot race the bridge inserting new missions. Best-effort: any error
-    is logged and swallowed.
-    """
-    try:
-        from app.mission_store import locked_store
-        with locked_store(instance) as store:
-            removed = store.prune()
-        if removed > 0:
-            log("health", f"Pruned {removed} old Done/Failed items from missions store")
-    except Exception as e:
-        log("error", f"Missions history pruning failed: {e}")
 
 
 def _requeue_mission_in_file(instance: str, mission_title: str):

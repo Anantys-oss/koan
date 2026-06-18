@@ -1077,6 +1077,7 @@ def locked_store(instance_dir: str) -> Generator[MissionStore, None, None]:
             try:
                 store = MissionStore.load(instance_dir)
                 yield store
+                store.prune()   # keep JSON bounded; runs only on clean exit
                 store.save()
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
