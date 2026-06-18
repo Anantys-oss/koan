@@ -21,9 +21,9 @@ Architecture
 
 Locking
 -------
-A sidecar lock file (``.<stem>.lock``) is held exclusively across the full
-load→mutate→save cycle, matching the convention used by
-:func:`app.locked_file.locked_json_modify`.  The store carries its own
+A sidecar lock file (``_STORE_LOCK_FILENAME`` = ``".missions-store.lock"``) is
+held exclusively across the full load→mutate→save cycle, matching the
+convention used by :func:`app.locked_file.locked_json_modify`.  The store carries its own
 module-level in-process thread lock (``_STORE_LOCK``) paired with this file
 lock, so concurrent mutations from multiple threads and processes are both
 serialized.

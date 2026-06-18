@@ -259,26 +259,28 @@ fires, and cross-link both directions.
 
 ### Why it matters
 
-`recover.py` and `_flush_in_progress_to_failed()` are two safety nets for the
-same scenario (stale In Progress missions) that fire at different times (startup
-vs per-mission-start). Without documentation, developers don't know both exist,
-can't reason about which one handles which edge case, and can't debug why a
-mission ended up Failed with `[flushed]` instead of being recovered to Pending.
+`recover.py` and `MissionStore.flush_stale_in_progress()` are two safety nets
+for the same scenario (stale In Progress missions) that fire at different times
+(startup vs per-mission-start). Without documentation, developers don't know
+both exist, can't reason about which one handles which edge case, and can't
+debug why a mission ended up Failed with `[flushed]` instead of being recovered
+to Pending.
 
 ### What to do
 
 In `recover.py` docstring:
 ```
 Primary safety net for stale In Progress missions. Runs once at startup,
-before the first iteration. Missed cases (complex ### blocks, import errors)
-fall through to _flush_in_progress_to_failed() inside start_mission().
+before the first iteration. Any stale IP not caught here falls through to
+MissionStore.flush_stale_in_progress(), called inside MissionStore.start().
 ```
 
-In `_flush_in_progress_to_failed()` docstring:
+In `MissionStore.start()` / `flush_stale_in_progress()` docstring:
 ```
-Second line of defence after recover.py. Runs per-mission-start inside
-start_mission(). When it fires, _start_mission_in_file() emits a WARNING
-so the operator knows recover.py missed something.
+Second line of defence after recover.py. flush_stale_in_progress() is called
+inside start() before the new mission transitions to In Progress. When it fires,
+_start_mission_in_file() emits a WARNING so the operator knows recover.py
+missed something.
 ```
 
 Log when safety nets fire — a silent flush creates invisible history:
