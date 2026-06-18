@@ -128,14 +128,16 @@ github:
 
 #### Command acknowledgment
 
-When a command is dispatched from a GitHub @mention, Kōan posts a brief acknowledgment reply (e.g. "🤖 `/review` queued — I'll get to it shortly.") so the user knows their request was received. Replies are threaded: PR review comments get native GitHub threading, issue comments include a blockquote of the original message.
+When a command is dispatched from a GitHub @mention, Kōan can post a brief acknowledgment reply (e.g. "🤖 `/review` queued — I'll get to it shortly.") so the user knows their request was received. Replies are threaded: PR review comments get native GitHub threading, issue comments include a blockquote of the original message.
+
+Acknowledgment replies are **off by default** — the emoji reaction Kōan places on the comment already signals receipt, and the extra reply can be noisy. Opt in by setting `ack_enabled: true`:
 
 ```yaml
 github:
-  ack_enabled: true   # Post acknowledgment replies (default: true)
+  ack_enabled: true   # Post acknowledgment replies (default: false)
 ```
 
-Set `ack_enabled: false` to disable acknowledgment replies (reactions are still placed).
+When disabled (the default), reactions are still placed.
 
 #### Reply threading
 
