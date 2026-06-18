@@ -307,6 +307,38 @@ class TestHandleStatus:
         result = _handle_status(ctx)
         assert "Paused — 2 in queue" in result
 
+    def test_active_shows_workers_when_parallel(self, tmp_path):
+        """Active status shows worker count when max_parallel_sessions > 1."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_parallel_workers", return_value=3):
+            result = _handle_status(ctx)
+        assert "3 workers" in result
+
+    def test_active_hides_workers_when_single(self, tmp_path):
+        """Active status hides worker count when max_parallel_sessions == 1."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_parallel_workers", return_value=1):
+            result = _handle_status(ctx)
+        assert "1 workers" not in result
+        assert "│ 1 worker" not in result
+
+    def test_paused_shows_workers_when_parallel(self, tmp_path):
+        """Paused status also shows worker count when parallel enabled."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        (tmp_path / ".koan-pause").touch()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_parallel_workers", return_value=2):
+            result = _handle_status(ctx)
+        assert "2 workers" in result
+
     def test_multi_project_missions(self, tmp_path):
         """Missions from different projects are grouped separately."""
         instance = tmp_path / "instance"

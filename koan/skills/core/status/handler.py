@@ -87,6 +87,15 @@ def _get_in_progress_missions(missions_file) -> str:
         return ""
 
 
+def _get_parallel_workers() -> int:
+    """Return max_parallel_sessions from config (default 1)."""
+    try:
+        from app.session_manager import get_max_parallel_sessions
+        return get_max_parallel_sessions()
+    except Exception:
+        return 1
+
+
 def _format_mission_display(mission: str) -> str:
     """Format a mission for display: strip tags, add timing, truncate.
 
@@ -153,6 +162,9 @@ def _handle_status(ctx) -> str:
 
     pending_count = _count_pending_missions(missions_file)
     queue_suffix = f" — {pending_count} in queue" if pending_count else " — queue empty"
+    workers = _get_parallel_workers()
+    if workers > 1:
+        queue_suffix += f" │ {workers} workers"
 
     if stop_file.exists():
         parts.append("  ⛔ Stopping")
