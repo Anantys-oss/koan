@@ -310,6 +310,7 @@ class TestProcessJiraMention:
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         alias_mention = dict(mention, body_text="@koan-bot plan repo:myalias")
 
@@ -341,6 +342,7 @@ class TestProcessJiraMention:
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         direct_mention = dict(mention, body_text="@koan-bot plan repo:real-project")
 

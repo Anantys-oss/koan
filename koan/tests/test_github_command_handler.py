@@ -3889,6 +3889,7 @@ class TestTryAssignmentNotification:
     ):
         """A review re-request bypasses cooldown when bot is in requested_reviewers."""
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions_path = tmp_path / "instance" / "missions.md"
         missions_path.parent.mkdir(parents=True)
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")

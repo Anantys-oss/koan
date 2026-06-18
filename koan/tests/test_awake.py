@@ -311,20 +311,13 @@ class TestParseProject:
 
 class TestHandleMission:
     @patch("app.command_handlers.send_telegram")
-    @patch("app.command_handlers.MISSIONS_FILE")
-    @patch("app.command_handlers.INSTANCE_DIR")
-    def test_mission_appended_to_pending(self, mock_inst, mock_file, mock_send, tmp_path):
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text(
-            "# Missions\n\n## Pending\n\n(none)\n\n## In Progress\n\n## Done\n"
-        )
-        mock_file.__class__ = type(missions_file)
-        # Directly test the file manipulation logic
-        with patch("app.command_handlers.MISSIONS_FILE", missions_file):
-            handle_mission("mission: audit security")
+    def test_mission_appended_to_pending(self, mock_send, tmp_path, monkeypatch):
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        handle_mission("mission: audit security")
 
-        content = missions_file.read_text()
-        assert "- audit security" in content
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        assert "audit security" in content
         mock_send.assert_called_once()
 
     @patch("app.command_handlers.send_telegram")
