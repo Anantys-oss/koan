@@ -746,19 +746,14 @@ class TestStripMissionLines:
 class TestQueueMissions:
     @patch("app.utils.insert_pending_mission")
     def test_inserts_each_mission(self, mock_insert):
-        missions_path = Path("/tmp/missions.md")
         missions = [
             "- [project:myapp] Fix bug A",
             "- [project:myapp] Fix bug B",
         ]
-        _queue_missions(missions_path, missions)
+        _queue_missions(None, missions)
         assert mock_insert.call_count == 2
-        mock_insert.assert_any_call(
-            missions_path, "- [project:myapp] Fix bug A", urgent=False,
-        )
-        mock_insert.assert_any_call(
-            missions_path, "- [project:myapp] Fix bug B", urgent=False,
-        )
+        mock_insert.assert_any_call("Fix bug A", "myapp", urgent=False)
+        mock_insert.assert_any_call("Fix bug B", "myapp", urgent=False)
 
     @patch("app.utils.insert_pending_mission")
     def test_no_missions_no_calls(self, mock_insert):
@@ -784,12 +779,9 @@ class TestQueueMissions:
     @patch("app.utils.insert_pending_mission")
     def test_no_findings_all_non_urgent(self, mock_insert):
         """Legacy path without findings — all non-urgent."""
-        missions_path = Path("/tmp/missions.md")
         missions = ["- [project:myapp] Fix something"]
-        _queue_missions(missions_path, missions, findings=None)
-        mock_insert.assert_called_once_with(
-            missions_path, "- [project:myapp] Fix something", urgent=False,
-        )
+        _queue_missions(None, missions, findings=None)
+        mock_insert.assert_called_once_with("Fix something", "myapp", urgent=False)
 
 
 # ---------------------------------------------------------------------------
@@ -920,10 +912,10 @@ class TestRunExplorationStructured:
         calls = mock_insert.call_args_list
         # High impact finding queued first (sorted), urgent=True
         assert calls[0][1]["urgent"] is True
-        assert "Fix retry logic" in calls[0][0][1]
+        assert "Fix retry logic" in calls[0][0][0]
         # Low impact finding queued second, urgent=False
         assert calls[1][1]["urgent"] is False
-        assert "Add input validation" in calls[1][0][1]
+        assert "Add input validation" in calls[1][0][0]
 
     @patch("app.utils.insert_pending_mission")
     @patch("app.cli_provider.run_command_streaming",
@@ -941,7 +933,7 @@ class TestRunExplorationStructured:
             str(tmp_path), "myapp", str(tmp_path),
             notify_fn=notify,
         )
-        first_mission = mock_insert.call_args_list[0][0][1]
+        first_mission = mock_insert.call_args_list[0][0][0]
         assert "(src/client.py:42)" in first_mission
 
     @patch("app.utils.insert_pending_mission")

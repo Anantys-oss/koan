@@ -67,7 +67,7 @@ class TestQueueIncident:
         assert "\U0001f6a8" in result  # siren emoji
         assert "Incident queued" in result
         mock_insert.assert_called_once()
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "/incident" in mission_entry
         assert "TypeError" in mission_entry
 
@@ -79,8 +79,8 @@ class TestQueueIncident:
 
         assert "Incident queued" in result
         assert "koan" in result
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in mission_entry
+        mission_entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "koan"
         assert "AttributeError" in mission_entry
 
     @patch("app.utils.get_known_projects", return_value=[("myproject", "/path/myproject")])
@@ -90,7 +90,7 @@ class TestQueueIncident:
         ctx.args = error
         handler.handle(ctx)
 
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "Traceback" in mission_entry
         assert "ValueError" in mission_entry
 
@@ -100,7 +100,7 @@ class TestQueueIncident:
         ctx.args = "E" * 5000
         handler.handle(ctx)
 
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "[... truncated]" in mission_entry
         # Mission should not exceed max length + overhead
         assert len(mission_entry) < 4200

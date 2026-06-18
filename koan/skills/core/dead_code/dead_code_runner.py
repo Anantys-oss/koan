@@ -389,12 +389,10 @@ def _queue_missions(
     """
     from app.utils import insert_pending_mission
 
-    missions_path = instance_dir / "missions.md"
     queued = 0
 
     for title in missions[:max_missions]:
-        entry = f"- [project:{project_name}] {title}"
-        insert_pending_mission(missions_path, entry)
+        insert_pending_mission(title, project_name)
         queued += 1
 
     return queued

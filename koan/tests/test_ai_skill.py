@@ -228,8 +228,7 @@ class TestHandle:
         assert "queued" in result.lower()
         assert "koan" in result
         mock_insert.assert_called_once()
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in mission_entry
+        assert mock_insert.call_args[0][1] == "koan"
 
     @patch("app.utils.get_known_projects")
     def test_unknown_project_returns_error(self, mock_get, handler, ctx, tmp_path):
@@ -246,8 +245,7 @@ class TestHandle:
     ):
         mock_get.return_value = [("myproject", str(tmp_path))]
         handler.handle(ctx)
-        entry = mock_insert.call_args[0][1]
-        assert "[project:myproject]" in entry
+        assert mock_insert.call_args[0][1] == "myproject"
 
     @patch("app.utils.get_known_projects")
     @patch("app.utils.insert_pending_mission")
@@ -257,20 +255,19 @@ class TestHandle:
         """Mission entry uses clean /ai format (no run: command)."""
         mock_get.return_value = [("test", str(tmp_path))]
         handler.handle(ctx)
-        entry = mock_insert.call_args[0][1]
-        assert "/ai test" in entry
-        assert "run:" not in entry
-        assert "python3 -m" not in entry
+        mission_text = mock_insert.call_args[0][0]
+        assert "/ai test" in mission_text
+        assert "run:" not in mission_text
+        assert "python3 -m" not in mission_text
 
     @patch("app.utils.get_known_projects")
     @patch("app.utils.insert_pending_mission")
-    def test_missions_path_uses_instance_dir(
+    def test_mission_queued_with_correct_project(
         self, mock_insert, mock_get, handler, ctx, tmp_path
     ):
         mock_get.return_value = [("test", str(tmp_path))]
         handler.handle(ctx)
-        missions_path = mock_insert.call_args[0][0]
-        assert missions_path == ctx.instance_dir / "missions.md"
+        assert mock_insert.call_args[0][1] == "test"
 
     @patch("app.utils.get_known_projects")
     @patch("app.utils.insert_pending_mission")
@@ -302,7 +299,7 @@ class TestHandle:
         """Mission entry should NOT contain the full prompt text inline."""
         mock_get.return_value = [("test", str(tmp_path))]
         handler.handle(ctx)
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         # Should not contain the long prompt template markers
         assert "Dive deep into the codebase" not in entry
         assert "3-5 concrete" not in entry
@@ -316,9 +313,8 @@ class TestHandle:
         mock_get.return_value = [("koan", str(tmp_path))]
         ctx.args = "koan explore the notification pipeline"
         result = handler.handle(ctx)
-        entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in entry
-        assert "/ai koan explore the notification pipeline" in entry
+        assert mock_insert.call_args[0][1] == "koan"
+        assert "/ai koan explore the notification pipeline" in mock_insert.call_args[0][0]
         assert "focus: explore the notification pipeline" in result
 
     @patch("app.utils.get_known_projects")
@@ -330,8 +326,8 @@ class TestHandle:
         mock_get.return_value = [("koan", str(tmp_path))]
         ctx.args = "koan"
         result = handler.handle(ctx)
-        entry = mock_insert.call_args[0][1]
-        assert entry == "- [project:koan] /ai koan"
+        assert mock_insert.call_args[0][0] == "/ai koan"
+        assert mock_insert.call_args[0][1] == "koan"
         assert "focus:" not in result
 
     @patch("app.utils.get_known_projects")
@@ -343,8 +339,7 @@ class TestHandle:
         mock_get.return_value = [("koan", str(tmp_path))]
         ctx.args = "koan Look at ConnectionError handling"
         handler.handle(ctx)
-        entry = mock_insert.call_args[0][1]
-        assert "Look at ConnectionError handling" in entry
+        assert "Look at ConnectionError handling" in mock_insert.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------

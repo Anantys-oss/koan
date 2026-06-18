@@ -70,74 +70,38 @@ def _read_journal(target_date: date) -> str:
     return read_all_journals(INSTANCE_DIR, target_date)
 
 
-def _extract_mission_title(line: str) -> Optional[str]:
-    """Extract a clean title from a mission line.
-
-    Handles both current format ``- [project:name] text ⏳(...) ▶(...) ✅(...)``
-    and legacy bold format ``- **title** (extra)``.
-    Returns None if the line doesn't look like a mission.
-    """
-    line = line.strip()
-    if not line.startswith("- "):
-        return None
-    text = line[2:].strip()
-    if not text:
-        return None
-
-    # Strip lifecycle timestamps: ⏳(...) ▶(...) ✅(...) ❌(...)
-    text = re.sub(r"\s*[⏳▶✅❌]\s*\([^)]*\)", "", text).strip()
-
-    # Strip project tag: [project:name]
-    text = re.sub(r"^\[project:[^\]]+\]\s*", "", text).strip()
-
-    # Legacy bold format: **title** — strip markdown bold
-    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text).strip()
-
-    # Strip trailing metadata: (session N), — session N, — PR #NNN
-    text = re.split(r"\s*[\(\—–—]", text)[0].strip()
-
-    return text if text else None
-
-
 def _parse_completed_missions(target_date: Optional[date] = None) -> List[str]:
-    """Extract completed missions from missions.md.
+    """Extract completed missions from the mission store.
 
     Args:
         target_date: If provided, only return missions completed on this date.
                      If None, return all completed missions (legacy behavior).
     """
-    if not MISSIONS_FILE.exists():
+    try:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(MISSIONS_FILE.parent))
+        done_records = store.get_by_status("done")
+    except (OSError, ValueError):
         return []
 
-    from app.missions import parse_sections
-
-    content = MISSIONS_FILE.read_text()
-    sections = parse_sections(content)
     completed = []
-    for item in sections["done"]:
-        first_line = item.split("\n")[0]
-
-        if target_date is not None:
-            # Filter by ✅ completion date
-            match = re.search(r"✅\s*\((\d{4}-\d{2}-\d{2})", first_line)
-            if not match or match.group(1) != target_date.strftime("%Y-%m-%d"):
+    target_str = target_date.strftime("%Y-%m-%d") if target_date is not None else None
+    for record in done_records:
+        if target_str is not None:
+            if not record.completed_at:
                 continue
-
-        title = _extract_mission_title(first_line)
-        if title:
-            completed.append(title)
-
+            if not record.completed_at.startswith(target_str):
+                continue
+        if record.text:
+            completed.append(record.text)
     return completed
 
 
 def _count_pending_missions() -> int:
     """Count pending missions."""
-    if not MISSIONS_FILE.exists():
-        return 0
+    from app.mission_store import MissionStore
 
-    from app.missions import count_pending
-
-    return count_pending(MISSIONS_FILE.read_text())
+    return len(MissionStore.load(str(MISSIONS_FILE.parent)).get_by_status("pending"))
 
 
 def generate_report(report_type: str = "morning") -> str:
@@ -191,27 +155,16 @@ def generate_report(report_type: str = "morning") -> str:
         lines.append("")
 
     # In-progress items
-    if MISSIONS_FILE.exists():
-        from app.missions import parse_sections
-
-        content = MISSIONS_FILE.read_text()
-        sections = parse_sections(content)
-        in_progress = []
-        for item in sections["in_progress"]:
-            first_line = item.split("\n")[0]
-            # Handle ### multi-line blocks (legacy)
-            stripped = first_line.strip()
-            if stripped.startswith("### "):
-                in_progress.append(stripped[4:].strip())
-            else:
-                title = _extract_mission_title(first_line)
-                if title:
-                    in_progress.append(title)
-
-        if in_progress:
+    try:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(MISSIONS_FILE.parent))
+        in_progress_records = store.get_by_status("in_progress")
+        if in_progress_records:
             lines.append("In Progress:")
-            lines.extend(f"  . {ip}" for ip in in_progress)
+            lines.extend(f"  . {r.display_title()}" for r in in_progress_records)
             lines.append("")
+    except (OSError, ValueError):
+        pass
 
     lines.append("-- Kōan")
     return "\n".join(lines)

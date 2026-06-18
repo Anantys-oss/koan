@@ -88,15 +88,17 @@ class TestComboQueuing:
 
             assert mock_insert.call_count == 2
 
-            # First call: /review
-            first_entry = mock_insert.call_args_list[0][0][1]
-            assert "/review https://github.com/sukria/koan/pull/42" in first_entry
-            assert "[project:koan]" in first_entry
+            # First call: /review — text is first arg, project is second
+            first_text = mock_insert.call_args_list[0][0][0]
+            first_project = mock_insert.call_args_list[0][0][1]
+            assert "/review https://github.com/sukria/koan/pull/42" in first_text
+            assert first_project == "koan"
 
-            # Second call: /rebase
-            second_entry = mock_insert.call_args_list[1][0][1]
-            assert "/rebase https://github.com/sukria/koan/pull/42" in second_entry
-            assert "[project:koan]" in second_entry
+            # Second call: /rebase — text is first arg, project is second
+            second_text = mock_insert.call_args_list[1][0][0]
+            second_project = mock_insert.call_args_list[1][0][1]
+            assert "/rebase https://github.com/sukria/koan/pull/42" in second_text
+            assert second_project == "koan"
 
     def test_returns_combo_ack(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/42"
@@ -116,8 +118,8 @@ class TestComboQueuing:
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
 
-            review_entry = mock_insert.call_args_list[0][0][1]
-            rebase_entry = mock_insert.call_args_list[1][0][1]
+            review_entry = mock_insert.call_args_list[0][0][0]
+            rebase_entry = mock_insert.call_args_list[1][0][0]
             assert "focus on security" in review_entry
             assert "focus on security" not in rebase_entry
 
@@ -136,8 +138,9 @@ class TestComboQueuing:
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
+            # Both calls should use the resolved project name as the second arg
             for c in mock_insert.call_args_list:
-                assert c[0][0] == ctx.instance_dir / "missions.md"
+                assert c[0][1] == "koan"
 
 
 # ---------------------------------------------------------------------------

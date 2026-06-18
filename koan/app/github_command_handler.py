@@ -1144,21 +1144,21 @@ def _try_assignment_notification(
         log.error("GitHub assign: KOAN_ROOT not set")
         return False
 
-    from app.missions import list_pending, parse_sections
     from app.utils import insert_pending_mission
 
-    missions_path = Path(koan_root) / "instance" / "missions.md"
+    assign_instance_dir = Path(koan_root) / "instance"
 
     # Deduplicate: skip if a mission for the same URL is already pending
     # or in progress.  The in-progress check prevents re-queuing while a
     # review is still running (e.g., a rebase pushes new commits mid-review).
     try:
-        content = missions_path.read_text() if missions_path.exists() else ""
-        sections = parse_sections(content)
-        active = list_pending(content) + sections.get("in_progress", [])
+        from app.mission_store import MissionStore
+
+        store = MissionStore.load(str(assign_instance_dir))
+        active = store.get_by_status("pending") + store.get_by_status("in_progress")
         url_lower = web_url.lower()
-        for line in active:
-            if url_lower in line.lower():
+        for record in active:
+            if url_lower in record.text.lower():
                 log.debug(
                     "GitHub assign: mission for %s already active, skipping",
                     web_url,
@@ -1172,14 +1172,14 @@ def _try_assignment_notification(
         pass  # If we can't read, proceed with insertion (worst case: a dup)
 
     # Build and insert mission
-    mission_entry = f"- [project:{project_name}] /{command_name} {web_url} 📬"
+    mission_text = f"/{command_name} {web_url} 📬"
     log.info(
         "GitHub assign: queuing /%s from %s notification on %s/%s",
         command_name, reason, owner, repo,
     )
 
     try:
-        inserted = insert_pending_mission(missions_path, mission_entry)
+        inserted = insert_pending_mission(mission_text, project_name)
     except OSError as e:
         log.warning("GitHub assign: failed to insert mission: %s", e)
         mark_notification_read(notif_id)
@@ -1461,7 +1461,7 @@ def _process_mention_comment(
     if not koan_root:
         log.error("GitHub: KOAN_ROOT not set — cannot insert mission")
         return False, "KOAN_ROOT not configured"
-    missions_path = Path(koan_root) / "instance" / "missions.md"
+    notif_instance_dir = Path(koan_root) / "instance"
 
     mission_entries = _expand_combo_mission(
         command_name, mission_entry, project_name,
@@ -1469,9 +1469,12 @@ def _process_mention_comment(
 
     inserted_any = False
     try:
+        from app.utils import parse_project
         for entry in mission_entries:
+            proj, text = parse_project(entry)
+            text = text.removeprefix("- ")
             inserted_any = insert_pending_mission(
-                missions_path, entry, urgent=urgent,
+                text, proj or project_name or "", urgent=urgent,
             ) or inserted_any
     except OSError as e:
         log.warning("GitHub: failed to insert mission: %s", e)
@@ -1868,14 +1871,14 @@ def _try_subscription_notification(
         web_url = f"https://github.com/{owner}/{repo}/issues/{issue_number}"
 
     # Queue /reply mission
-    mission_entry = f"- [project:{project_name}] /reply {web_url}"
+    mission_text = f"/reply {web_url}"
     log.info("GitHub subscribe: queuing reply mission for %s", thread_key)
 
     from app.utils import insert_pending_mission
 
-    missions_path = Path(koan_root) / "instance" / "missions.md"
+    subscribe_instance_dir = Path(koan_root) / "instance"
     try:
-        inserted = insert_pending_mission(missions_path, mission_entry)
+        inserted = insert_pending_mission(mission_text, project_name)
     except OSError as e:
         log.warning("GitHub subscribe: failed to insert mission: %s", e)
         return False

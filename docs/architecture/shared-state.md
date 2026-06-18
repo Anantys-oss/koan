@@ -7,7 +7,11 @@ simple and makes state inspectable by humans and agents.
 
 `instance/` is gitignored runtime state. Important files and directories include:
 
-- `missions.md` - mission queue and lifecycle sections.
+- `missions.json` - canonical structured mission store (source of truth).
+- `missions.md` - human-readable view of the queue, **generated** from
+  `missions.json`. Never write it directly; mutate via
+  `mission_store.locked_store()` (or `MissionStore.save()`), which regenerates
+  the view atomically.
 - `outbox.md` - pending outbound messages for the bridge.
 - `config.yaml` - instance behavior and integration configuration.
 - `memory/` - global and per-project memory files.
@@ -25,6 +29,16 @@ Shared files must be written with existing helpers such as `atomic_write()` and
 file-locking utilities from `utils.py` or dedicated state modules. Avoid direct
 read-modify-write cycles on `instance/` files unless the code already owns the
 appropriate lock.
+
+The mission queue is the canonical example: all mutations go through
+`mission_store.locked_store()`, which holds a thread + file lock across the full
+load → mutate → save cycle and regenerates `missions.md` from `missions.json`.
+`missions.md` is a read-only view — no code writes it directly. New code that
+needs to queue or change a mission must use the store (or the
+`utils.insert_pending_mission(text, project=None, *, urgent=False)` helper, which
+wraps it), never a hand-rolled text edit of `missions.md`. The `project` parameter
+accepts `str | None`; `None` and `""` both mean "no project" and are normalized
+internally.
 
 The bridge and runner are separate processes, so bugs that are harmless in a
 single process can corrupt state when both daemons are active.

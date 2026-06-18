@@ -164,57 +164,57 @@ def _strip_origin_markers(text: str) -> str:
     return " ".join(parts)
 
 
+def _record_ts_label(record, now: datetime) -> str:
+    """Return a friendly timestamp suffix for a record from its typed fields.
+
+    In-progress missions show their started_at time (▶); pending missions
+    show their queued_at time (⏳).  Returns an empty string when the
+    relevant timestamp field is absent.
+    """
+    if record.status == "in_progress" and record.started_at:
+        return f" ▶{_format_friendly_timestamp(record.started_at, now)}"
+    if record.status == "pending" and record.queued_at:
+        return f" ⏳{_format_friendly_timestamp(record.queued_at, now)}"
+    return ""
+
+
 def handle(ctx):
     """Handle /list command -- display numbered mission list."""
     # Reset emoji cache on each /list invocation to pick up new skills.
     global _emoji_cache
     _emoji_cache = None
 
-    missions_file = ctx.instance_dir / "missions.md"
+    from app.mission_store import MissionStore
 
-    if not missions_file.exists():
-        return "ℹ️ No missions file found."
-
-    from app.missions import parse_sections, clean_mission_display
-
-    content = missions_file.read_text()
-    sections = parse_sections(content)
-
-    in_progress = sections.get("in_progress", [])
-    pending = sections.get("pending", [])
+    store = MissionStore.load(str(ctx.instance_dir))
+    in_progress = store.get_by_status("in_progress")
+    pending = store.get_by_status("pending")
 
     if not in_progress and not pending:
         return "ℹ️ No missions pending or in progress."
 
-    parts = []
-
     now = datetime.now()
+    parts = []
 
     if in_progress:
         parts.append("🔄 In Progress")
         parts.append("```")
-        for m in in_progress:
-            prefix = mission_prefix(m)
-            display = _humanize_timestamps(clean_mission_display(m), now)
-            origin = _detect_origin_marker(m)
-            display = _strip_origin_markers(display)
-            if prefix:
-                parts.append(f"{origin}{prefix} {display}")
-            else:
-                parts.append(f"{origin}{display}")
+        for r in in_progress:
+            origin = r.origin_marker()
+            prefix = mission_prefix(r.text)
+            title = r.display_title()
+            ts = _record_ts_label(r, now)
+            parts.append(f"{origin}{prefix} {title}{ts}")
         parts.append("```")
         parts.append("")
 
     if pending:
         parts.append("⏳ Pending")
-        for i, m in enumerate(pending, 1):
-            prefix = mission_prefix(m)
-            display = _humanize_timestamps(clean_mission_display(m), now)
-            origin = _detect_origin_marker(m)
-            display = _strip_origin_markers(display)
-            if prefix:
-                parts.append(f"  {i}. {origin}{prefix} {display}")
-            else:
-                parts.append(f"  {i}. {origin}{display}")
+        for i, r in enumerate(pending, 1):
+            origin = r.origin_marker()
+            prefix = mission_prefix(r.text)
+            title = r.display_title()
+            ts = _record_ts_label(r, now)
+            parts.append(f"  {i}. {origin}{prefix} {title}{ts}")
 
     return "\n".join(parts)

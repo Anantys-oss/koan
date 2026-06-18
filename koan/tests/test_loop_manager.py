@@ -1062,7 +1062,8 @@ class TestGitHubNotificationBackoff:
              patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([fake_notif], [])), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("proj", "o", "r")), \
-             patch("app.github_command_handler.process_single_notification", return_value=(True, None)):
+             patch("app.github_command_handler.process_single_notification", return_value=(True, None)), \
+             patch("app.github_notifications.mark_notification_read"):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert result == 1
@@ -1860,7 +1861,8 @@ class TestProcessNotificationsConsoleOutput:
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.process_single_notification", return_value=(True, None)), \
-             patch("app.loop_manager._notify_mission_from_mention"):
+             patch("app.loop_manager._notify_mission_from_mention"), \
+             patch("app.github_notifications.mark_notification_read"):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert result == 1
@@ -1896,7 +1898,8 @@ class TestProcessNotificationsConsoleOutput:
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.process_single_notification", return_value=(False, "Permission denied")), \
-             patch("app.loop_manager._post_error_for_notification"):
+             patch("app.loop_manager._post_error_for_notification"), \
+             patch("app.github_notifications.mark_notification_read"):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert result == 0
@@ -3263,7 +3266,8 @@ class TestErrorReplyRetryQueue:
              patch("app.github_command_handler.process_single_notification",
                    side_effect=mock_process), \
              patch("app.loop_manager._post_error_for_notification",
-                   side_effect=mock_post_error):
+                   side_effect=mock_post_error), \
+             patch("app.github_notifications.mark_notification_read"):
             process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert call_order == [("post_error", True)], \

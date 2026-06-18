@@ -332,8 +332,8 @@ class TestAliasInSkillArgs:
         )
 
         _queue_cli_skill_mission(skill, "tt explore auth")
-        entry = mock_insert.call_args[0][1]
-        assert "[project:Template2]" in entry
+        entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "Template2"
         assert "explore auth" in entry
 
     @patch("app.command_handlers.insert_pending_mission")
@@ -356,8 +356,7 @@ class TestAliasInSkillArgs:
         )
 
         _queue_cli_skill_mission(skill, "koan check deps")
-        entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in entry
+        assert mock_insert.call_args[0][1] == "koan"
 
     def test_strip_project_prefix_resolves_alias(self):
         """_strip_project_prefix should recognize aliases as project prefixes."""

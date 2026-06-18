@@ -289,24 +289,18 @@ def cleanup_memory(instance: str):
 
 
 def prune_missions_done(instance: str):
-    """Prune old Done and Failed items from missions.md to keep file size bounded.
+    """Prune old Done and Failed items from the mission store to bound size.
 
-    missions.md grows unbounded as completed missions accumulate. At 190KB+,
-    the agent wastes context tokens reading it. Keep only the last 50 Done
-    and 30 Failed items.
+    The store grows unbounded as completed missions accumulate. At 190KB+,
+    the generated missions.md view wastes the agent's context tokens. Keep
+    only the most recent Done and Failed items (caps defined by MissionStore).
     """
-    missions_path = Path(instance) / "missions.md"
-    if not missions_path.exists():
-        return
+    from app.mission_store import locked_store
 
-    from app.missions import prune_completed_sections
-    from app.utils import atomic_write
-
-    content = missions_path.read_text()
-    new_content, pruned = prune_completed_sections(content)
+    with locked_store(instance) as store:
+        pruned = store.prune()
     if pruned > 0:
-        atomic_write(missions_path, new_content)
-        log("health", f"Pruned {pruned} old Done/Failed items from missions.md")
+        log("health", f"Pruned {pruned} old Done/Failed items from mission store")
 
 
 def cleanup_mission_history(instance: str):

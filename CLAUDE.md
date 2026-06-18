@@ -57,11 +57,43 @@ Two parallel processes run independently:
 
 Communication between processes happens through shared files in `instance/` with atomic writes (`utils.atomic_write()` using temp file + rename + `fcntl.flock()`). Exclusive process instances enforced via `pid_manager.py` (PID file + `fcntl.flock()`).
 
+### Mission lifecycle
+
+```
+                    ┌──────────────────────────────────────────────┐
+   Telegram / API   │           missions.json (store)               │
+   adds mission ──► │  Pending ──► In Progress ──► Done ✅          │
+                    │     ▲            │                            │
+                    │     │            ▼                            │
+                    │     │         Failed ❌                       │
+                    │     │         (with [flushed] if sanity       │
+                    │     │          flush fired in store.start())  │
+                    └─────┼────────────────────────────────────────┘
+                          │ store.requeue()  (TOP of Pending)
+                          │   ← stagnation retry (up to max_retry_on_stagnation)
+                          │   ← crash recovery  (up to MAX_RECOVERY_ATTEMPTS)
+                          │   ← transient error retry (once, via _maybe_retry_mission)
+
+Key transitions (all via MissionStore in mission_store.py):
+  store.start()       Pending → In Progress  (+ [flushed] safety-flush of stale IP)
+  store.complete()    In Progress → Done
+  store.fail()        In Progress → Failed
+  store.requeue()     any status → Pending (prepends to queue top, increments crash_count)
+
+All mutations go through locked_store(instance_dir), which holds a thread+file
+lock across the full load→mutate→save cycle and regenerates missions.md from JSON.
+
+Safety nets for stale In Progress at startup:
+  recover.py                      runs once per startup, moves stale IP back to Pending
+  store.flush_stale_in_progress()  runs per-mission-start inside store.start(),
+                                   catches anything recover.py missed; marks Failed [flushed]
+```
+
 ### Key modules (`koan/app/`)
 
 **Core data & config:**
-
-- **`missions.py`** — Single source of truth for `missions.md` parsing (sections: Pending / In Progress / Done; French equivalents also accepted). Missions can be tagged `[project:name]`. Provides explicit lifecycle transitions: `start_mission()` (Pending→In Progress with stale-flush sanity enforcement), `complete_mission()`, `fail_mission()`.
+- **`mission_store.py`** — Structured mission store (data/view split). `missions.json` is the canonical store; `missions.md` is a generated view regenerated on every save. `MissionRecord` dataclass holds all lifecycle state as typed fields (`id`, `text`, `status`, `project`, `queued_at`, `started_at`, `completed_at`, `tags`, `complexity`, `crash_count`). `MissionStore` public API: `load()` (auto-migrates from `missions.md` if JSON absent; reconciles human edits on hash mismatch), `save()` (atomic JSON write then regenerate MD), `add(text, project=None, complexity=None, *, urgent=False)` (deduplicates against pending+in_progress; `project` accepts `str | None`), `find()`, `start()`, `complete()`, `fail()`, `requeue()`, `remove()`, `get_by_status()`, `flush_stale_in_progress()`, `get_pending_at()`, `reorder_pending()`, `edit()`, `cancel_pending()`, `set_complexity()`, `prune()`, plus ideas-backlog helpers (`add_idea()`, `delete_idea()`, `promote_idea()`, `promote_all_ideas()`). The canonical entry point for all mutations is `locked_store(instance_dir)` (context manager; holds thread+file lock, loads, yields store, saves). Section ordering and header names are driven by the single `_VIEW_SECTIONS` list of `(status, header)` tuples. This eliminates the text-as-database-record anti-pattern.
+- **`missions.py`** — Markdown parser/formatter for `missions.md` (sections: Pending / In Progress / Done / Failed; French equivalents also accepted). Missions can be tagged `[project:name]`. Also provides `canonical_mission_key()` (the single source of truth for stable mission identity — always use this when hashing or comparing mission text). Legacy string-transform functions `start_mission()`, `complete_mission()`, `fail_mission()` remain for any callers not yet migrated to the store; prefer `locked_store()` + store mutators for new code.
 - **`projects_config.py`** — Project configuration loader for `projects.yaml`. `load_projects_config()`, `get_projects_from_config()`, `get_project_config()` (merged defaults + overrides), `get_project_auto_merge()`, `get_project_cli_provider()`, `get_project_models()`, `get_project_tools()`. Per-project overrides for CLI provider, model selection, and tool restrictions. `ensure_github_urls()` auto-populates `github_url` fields from git remotes at startup.
 - **`projects_migration.py`** — One-shot migration from env vars (`KOAN_PROJECTS`/`KOAN_PROJECT_PATH`) to `projects.yaml`. Runs at startup if `projects.yaml` doesn't exist.
 - **`utils.py`** — File locking (thread + file locks), config loading, atomic writes, `get_branch_prefix()`, `get_known_projects()` (projects.yaml > KOAN_PROJECTS), `koan_tmp_dir()` (per-uid scratch/lock dir)
@@ -186,8 +218,8 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 ### Instance directory
 
 `instance/` (gitignored, copy from `instance.example/`) holds all runtime state:
-
-- `missions.md` — Task queue
+- `missions.json` — Canonical structured mission store (source of truth when present; auto-migrated from `missions.md` on first load)
+- `missions.md` — Generated Markdown view of the mission queue; do not write directly — use `MissionStore.save()` or the existing `modify_missions_file()` path
 - `outbox.md` — Bot → Telegram message queue (written atomically by `append_to_outbox()`)
 - `outbox-sending.md` — Crash-safety staging file for outbox flush; `OutboxManager.recover_staged()` re-sends on restart
 - `config.yaml` — Per-instance configuration (tools, auto-merge rules)

@@ -2170,84 +2170,52 @@ def _clear_if_cap_hit(instance: str, mission_title: str, project_name: str = "")
 
 
 def _start_mission_in_file(instance: str, mission_title: str, project_name: str = "") -> bool:
-    """Move mission from Pending to In Progress via locked write.
+    """Move mission from Pending to In Progress via the mission store.
 
-    Returns True if the transition was confirmed (mission visible in In Progress
-    after the write), False if the mission was not found or the transition could
-    not be verified. A False return is logged as a WARNING — the caller should
-    treat the mission as if it never started.
+    Returns True if the transition succeeded, False if the mission was not
+    found in Pending (logged as WARNING — caller should treat as never started).
     """
     try:
-        from app.missions import parse_sections, start_mission
-        from app.utils import modify_missions_file
-        missions_path = Path(instance, "missions.md")
-        if not missions_path.exists():
+        from app.mission_store import locked_store
+        with locked_store(instance) as store:
+            stale = store.get_by_status("in_progress")[:]
+            if stale:
+                titles = ", ".join(r.text[:50] for r in stale)
+                log("warning", (
+                    f"Sanity flush: {len(stale)} stale In Progress mission(s) "
+                    f"moved to Failed by MissionStore.start() — recover.py missed them: {titles}"
+                ))
+            moved = store.start(mission_title)
+        if not moved:
+            log("warning", f"Mission transition unconfirmed — '{mission_title[:60]}' "
+                "not found in Pending. Possible text normalisation mismatch or race condition.")
             return False
-
-        # start_mission() runs a sanity flush: any stale In Progress missions
-        # are moved to Failed (with a [flushed] tag) before the new one starts.
-        # Under normal operation this never fires because recover.py clears
-        # stale entries at startup — so when it DOES fire, surface it.
-        # Capture the pre-flush In Progress inside the lock to stay race-safe.
-        stale_flushed: list = []
-
-        def _transform(content: str) -> str:
-            stale_flushed[:] = parse_sections(content).get("in_progress", [])
-            return start_mission(content, mission_title)
-
-        after = modify_missions_file(missions_path, _transform)
-        in_progress = parse_sections(after).get("in_progress", [])
-        # Normalise for comparison: strip leading "- ", collapse whitespace
-        import re
-        clean_title = re.sub(r"\s+", " ", mission_title.strip())
-        for entry in in_progress:
-            entry_text = re.sub(r"\s+", " ", entry.strip().removeprefix("- "))
-            if clean_title in entry_text:
-                # Clear counter only if a cap was previously hit (human deliberate
-                # retry) — stagnation-retry requeus must keep their count intact
-                # so the stagnation cap check in _finalize_mission still fires.
-                # The transition above already succeeded, so a failure to clear
-                # the counter must NOT abort the start; surface it as a prominent
-                # warning instead, since the mission will otherwise re-escalate to
-                # Failed on the next finalize.
-                try:
-                    if not _clear_if_cap_hit(instance, mission_title, project_name):
-                        log("warning",
-                            f"Retry counter NOT cleared for '{clean_title[:60]}' — "
-                            "clear failed; mission may re-escalate to Failed on next finalize.")
-                except Exception as e:
-                    # _clear_if_cap_hit only catches ImportError internally and lets
-                    # schema mismatches (e.g. a missing get_retry_info key) propagate —
-                    # those are real bugs, so log at error level with a traceback
-                    # rather than burying them in a warning.
-                    import traceback
-                    log("error",
-                        f"Retry counter clear errored for '{clean_title[:60]}' ({e}); "
-                        "mission may re-escalate to Failed on next finalize.\n"
-                        f"{traceback.format_exc()}")
-
-                # Only surface the sanity flush once the transition is
-                # confirmed: start_mission() early-returns (skipping the
-                # flush) when the mission isn't in Pending, so stale_flushed
-                # being non-empty does NOT by itself mean a flush happened.
-                if stale_flushed:
-                    titles = ", ".join(
-                        s.split("\n")[0].strip().removeprefix("- ")[:50]
-                        for s in stale_flushed
-                    )
-                    log("warning", (
-                        f"Sanity flush: {len(stale_flushed)} stale In Progress "
-                        f"mission(s) moved to Failed by start_mission() — "
-                        f"recover.py missed them "
-                        f"(see _flush_in_progress_to_failed): {titles}"
-                    ))
-                return True
-        log("warning", f"Mission transition unconfirmed — '{clean_title[:60]}' "
-            "not found in In Progress after start_mission(). "
-            "Possible text normalisation mismatch or race condition.")
-        return False
+        # Clear the retry counter only if a cap was previously hit (deliberate
+        # human retry) — stagnation-retry requeues must keep their count intact
+        # so the stagnation cap check in _finalize_mission still fires. The
+        # transition above already succeeded, so a failure to clear the counter
+        # must NOT abort the start; surface it as a prominent warning instead,
+        # since the mission will otherwise re-escalate to Failed on the next
+        # finalize. project_name must match the value _finalize_mission uses so
+        # cap detection reads the same per-project overrides.
+        try:
+            if not _clear_if_cap_hit(instance, mission_title, project_name):
+                log("warning",
+                    f"Retry counter NOT cleared for '{mission_title[:60]}' — "
+                    "clear failed; mission may re-escalate to Failed on next finalize.")
+        except Exception as e:
+            # _clear_if_cap_hit only catches ImportError internally and lets
+            # schema mismatches (e.g. a missing get_retry_info key) propagate —
+            # those are real bugs, so log at error level with a traceback rather
+            # than burying them in a warning.
+            import traceback
+            log("error",
+                f"Retry counter clear errored for '{mission_title[:60]}' ({e}); "
+                "mission may re-escalate to Failed on next finalize.\n"
+                f"{traceback.format_exc()}")
+        return True
     except Exception as e:
-        log("error", f"Could not start mission in missions.md: {e}")
+        log("error", f"Could not start mission: {e}")
         return False
 
 
@@ -2275,46 +2243,28 @@ def _update_mission_in_file(
     a pruning bug can never corrupt or roll back the finalization itself.
     """
     try:
-        from app.missions import complete_mission_checked, fail_mission_checked
-        from app.utils import modify_missions_file
-        missions_path = Path(instance, "missions.md")
-        if not missions_path.exists():
-            return False
-
-        # The move functions report found-status directly, captured via a
-        # closure flag. This is more robust than comparing before/after
-        # content, and history pruning is decoupled to its own step
-        # (_prune_missions_history below) so it cannot interfere here.
-        found = [False]
-
-        if failed:
-            def transform(content):
-                new_content, ok = fail_mission_checked(
-                    content, mission_title, cause_tag=cause_tag,
+        from app.mission_store import locked_store
+        with locked_store(instance) as store:
+            if failed:
+                moved = store.fail(
+                    mission_title,
+                    extra_tags=[cause_tag] if cause_tag else None,
                 )
-                found[0] = ok
-                return new_content
-        else:
-            def transform(content):
-                new_content, ok = complete_mission_checked(content, mission_title)
-                found[0] = ok
-                return new_content
-
-        modify_missions_file(missions_path, transform)
-        if not found[0]:
+            else:
+                moved = store.complete(mission_title)
+        if not moved:
             log("warning", f"Mission not found (no change): {mission_title[:80]}")
             return False
-        # Move committed — trim history as a decoupled, best-effort step.
         _prune_missions_history(instance)
         return True
     except Exception as e:
         label = "fail" if failed else "complete"
-        log("error", f"Could not {label} mission in missions.md: {e}")
+        log("error", f"Could not {label} mission: {e}")
         return False
 
 
 def _prune_missions_history(instance: str) -> None:
-    """Trim old Done/Failed entries from missions.md as a standalone step.
+    """Trim old Done/Failed records from the store (decoupled from finalization).
 
     Decoupled from mission finalization: runs as its own locked
     read-modify-write so a pruning error cannot corrupt or roll back the
@@ -2325,37 +2275,23 @@ def _prune_missions_history(instance: str) -> None:
     is logged and swallowed.
     """
     try:
-        from app.missions import prune_completed_sections
-        from app.utils import modify_missions_file
-        missions_path = Path(instance, "missions.md")
-        if not missions_path.exists():
-            return
-
-        pruned = [0]
-
-        def _transform(content):
-            new_content, count = prune_completed_sections(content)
-            pruned[0] = count
-            return new_content
-
-        modify_missions_file(missions_path, _transform)
-        if pruned[0] > 0:
-            log("health", f"Pruned {pruned[0]} old Done/Failed items from missions.md")
+        from app.mission_store import locked_store
+        with locked_store(instance) as store:
+            removed = store.prune()
+        if removed > 0:
+            log("health", f"Pruned {removed} old Done/Failed items from missions store")
     except Exception as e:
         log("error", f"Missions history pruning failed: {e}")
 
 
 def _requeue_mission_in_file(instance: str, mission_title: str):
-    """Move mission from In Progress back to Pending via locked write."""
+    """Move mission from In Progress back to Pending via the mission store."""
     try:
-        from app.missions import requeue_mission
-        from app.utils import modify_missions_file
-        missions_path = Path(instance, "missions.md")
-        if not missions_path.exists():
-            return
-        modify_missions_file(missions_path, lambda c: requeue_mission(c, mission_title))
+        from app.mission_store import locked_store
+        with locked_store(instance) as store:
+            store.requeue(mission_title)
     except Exception as e:
-        log("error", f"Could not requeue mission in missions.md: {e}")
+        log("error", f"Could not requeue mission: {e}")
 
 
 def _finalize_mission(instance: str, mission_title: str, project_name: str, exit_code: int):

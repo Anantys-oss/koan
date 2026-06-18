@@ -7,7 +7,6 @@ from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
 from app.api.mission_index import (
-    _normalize_for_match,
     cancel_mission,
     get_mission,
     list_missions,
@@ -63,27 +62,24 @@ def _build_entry(text: str, project: str | None) -> str:
     return f"- {text}"
 
 
-def _find_pending_position(content: str, stored_text: str):
-    """Find 1-indexed position of a mission in the pending section.
+def _store_lookup_key(stored_text: str) -> str:
+    """Derive the MissionStore lookup key from a sidecar-stored entry.
 
-    Accepts raw missions.md content so callers can use it inside
-    modify_missions_file() transforms (avoids TOCTOU races).
-    Returns position when exactly one match exists; raises ValueError
-    on duplicate matches to avoid mutating the wrong item.
+    The sidecar index stores the full entry text (which may carry a
+    ``[project:X]`` tag), but :class:`MissionStore` keeps the project in a
+    separate field and the record's ``text`` holds no project tag.  This
+    strips the project tag (and any lifecycle markers via
+    ``canonical_mission_key``) so ``store.find()`` matches reliably.
     """
-    from app.missions import parse_sections
-    sections = parse_sections(content)
-    needle = _normalize_for_match(stored_text)
-    matches = [
-        i
-        for i, item in enumerate(sections.get("pending", []), 1)
-        if _normalize_for_match(item) == needle
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        raise ValueError("Ambiguous match: multiple pending missions with identical text")
-    return None
+    from app.missions import canonical_mission_key, extract_project_tag
+
+    full_key = canonical_mission_key(stored_text)
+    proj = extract_project_tag(full_key)
+    if proj and proj != "default":
+        full_key = re.sub(
+            rf'\[projec?t:{re.escape(proj)}\]\s*', '', full_key, flags=re.IGNORECASE,
+        ).strip()
+    return full_key
 
 
 @bp.route("/v1/missions", methods=["GET"])
@@ -110,11 +106,10 @@ def create_mission():
     except ValueError as e:
         return jsonify({"error": {"code": "invalid_request", "message": str(e)}}), 422
 
-    entry = _build_entry(text, project)
-
     from app.utils import insert_pending_mission
-    insert_pending_mission(_missions_file(), entry, urgent=urgent)
+    insert_pending_mission(text, project, urgent=urgent)
 
+    entry = _build_entry(text, project)
     mission_id = record_mission(_instance_dir(), entry, project)
     return jsonify({"id": mission_id, "status": "pending"}), 202
 
@@ -152,20 +147,34 @@ def reorder_mission_route():
             {"error": {"code": "conflict", "message": f"Cannot reorder mission in status '{status}'"}}
         ), 409
 
-    from app.missions import reorder_mission
-    from app.utils import modify_missions_file
+    from app.mission_store import locked_store
 
     stored_text = rec.get("text", "")
-
-    def transform(content):
-        position = _find_pending_position(content, stored_text)
-        if position is None:
-            raise ValueError("Mission not found in pending queue")
-        new_content, _ = reorder_mission(content, position, target_position)
-        return new_content
+    clean_text = _store_lookup_key(stored_text)
 
     try:
-        modify_missions_file(_missions_file(), transform)
+        with locked_store(str(_instance_dir())) as store:
+            from app.missions import canonical_mission_key
+            needle = canonical_mission_key(clean_text)
+            pending_matches = [
+                r for r in store._records
+                if r.status == "pending" and canonical_mission_key(r.text) == needle
+            ]
+            if len(pending_matches) > 1:
+                raise ValueError(
+                    "Ambiguous match: multiple pending missions have the same text"
+                )
+            record_obj = store.find(clean_text)
+            if record_obj is None or record_obj.status != "pending":
+                raise ValueError("Mission not found in pending queue")
+            pending = store.get_by_status("pending")
+            from_idx = next(
+                (i for i, r in enumerate(pending) if r.id == record_obj.id), None
+            )
+            if from_idx is None:
+                raise ValueError("Mission not found in pending queue")
+            if not store.reorder_pending(from_idx, target_position - 1):
+                raise ValueError(f"Invalid target position: {target_position}")
     except ValueError as e:
         msg = str(e)
         if "not found in pending" in msg or "Ambiguous match" in msg:
@@ -201,21 +210,14 @@ def delete_mission(mission_id: str):
             {"error": {"code": "conflict", "message": f"Cannot cancel mission in status '{status}'"}}
         ), 409
 
-    # Remove from missions.md
+    # Remove from the mission store (regenerates missions.md view)
+    from app.mission_store import locked_store
+
     stored_text = rec.get("text", "")
-    needle = _normalize_for_match(stored_text)
+    clean_text = _store_lookup_key(stored_text)
 
-    def _remove(content: str) -> str:
-        lines = content.splitlines(keepends=True)
-        result = []
-        for line in lines:
-            if _normalize_for_match(line) == needle:
-                continue
-            result.append(line)
-        return "".join(result)
-
-    from app.utils import modify_missions_file
-    modify_missions_file(_missions_file(), _remove)
+    with locked_store(str(_instance_dir())) as store:
+        store.cancel_pending(clean_text)
 
     cancel_mission(_instance_dir(), mission_id)
     return jsonify({"id": mission_id, "status": "removed"}), 200
@@ -255,22 +257,17 @@ def edit_mission(mission_id: str):
             {"error": {"code": "invalid_request", "message": "Mission text cannot be empty after sanitization"}}
         ), 422
 
-    from app.missions import edit_pending_mission
-    from app.utils import modify_missions_file
+    from app.mission_store import locked_store
+
+    stored_text = rec.get("text", "")
+    clean_text = _store_lookup_key(stored_text)
 
     project = rec.get("project")
-    edit_text = f"[project:{project}] {new_text}" if project else new_text
-    stored_text = rec.get("text", "")
-
-    def transform(content):
-        position = _find_pending_position(content, stored_text)
-        if position is None:
-            raise ValueError("Mission not found in pending queue")
-        new_content, _ = edit_pending_mission(content, position, edit_text)
-        return new_content
 
     try:
-        modify_missions_file(_missions_file(), transform)
+        with locked_store(str(_instance_dir())) as store:
+            if not store.edit(clean_text, new_text):
+                raise ValueError("Mission not found in pending queue")
     except ValueError as e:
         msg = str(e)
         if "not found in pending" in msg or "Ambiguous match" in msg:

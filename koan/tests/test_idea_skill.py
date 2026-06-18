@@ -588,7 +588,7 @@ class TestIdeaHandler:
 
         ctx = self._make_ctx(tmp_path, command="idea")
         result = handle(ctx)
-        assert "No missions file" in result
+        assert "No ideas" in result or "No missions file" in result
 
     def test_list_empty(self, tmp_path):
         from skills.core.idea.handler import handle

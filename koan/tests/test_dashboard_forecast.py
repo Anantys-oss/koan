@@ -205,7 +205,7 @@ class TestSSEStreamForecast:
         inst = _make_test_instance(tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
+             patch.object(dashboard, "MISSIONS_JSON_FILE", inst / "missions.md"), \
              patch("app.dashboard._build_forecast", return_value={
                  "status": "warming_up",
                  "burn_rate_pct_per_minute": None,
@@ -246,7 +246,7 @@ class TestSSEStreamForecast:
 
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
+             patch.object(dashboard, "MISSIONS_JSON_FILE", inst / "missions.md"), \
              patch("app.dashboard._build_forecast", return_value=forecast_normal), \
              patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")

@@ -1483,13 +1483,9 @@ def _maybe_queue_autoreview(
 
     # Queue review then rebase
     from app.utils import insert_pending_mission
-    missions_path = Path(instance_dir) / "missions.md"
     try:
-        project_tag = f"[project:{project_name}] " if project_name else ""
-        review_entry = f"- {project_tag}/review {pr_url}"
-        rebase_entry = f"- {project_tag}/rebase {pr_url}"
-        inserted_review = insert_pending_mission(missions_path, review_entry)
-        inserted_rebase = insert_pending_mission(missions_path, rebase_entry)
+        inserted_review = insert_pending_mission(f"/review {pr_url}", project_name)
+        inserted_rebase = insert_pending_mission(f"/rebase {pr_url}", project_name)
         if inserted_review or inserted_rebase:
             _log_runner("info", f"Autoreview: queued review+rebase for {pr_url} ({project_name})")
         else:

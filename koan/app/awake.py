@@ -315,21 +315,22 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     missions_context = ""
     if pending_context:
         missions_context = pending_context
-    elif MISSIONS_FILE.exists():
-        from app.missions import parse_sections
+    else:
         try:
-            sections = parse_sections(MISSIONS_FILE.read_text())
-        except OSError:
-            sections = {}
-        in_progress = sections.get("in_progress", [])
-        pending = sections.get("pending", [])
-        if in_progress or pending:
-            parts = []
-            if in_progress:
-                parts.append("In progress: " + "; ".join(in_progress[:3]))
-            if pending:
-                parts.append(f"Pending: {len(pending)} mission(s)")
-            missions_context = "\n".join(parts)
+            from app.mission_store import MissionStore
+            store = MissionStore.load(str(INSTANCE_DIR))
+            in_progress_recs = store.get_by_status("in_progress")
+            pending_recs = store.get_by_status("pending")
+            if in_progress_recs or pending_recs:
+                parts = []
+                if in_progress_recs:
+                    titles = "; ".join(r.display_title()[:60] for r in in_progress_recs[:3])
+                    parts.append(f"In progress: {titles}")
+                if pending_recs:
+                    parts.append(f"Pending: {len(pending_recs)} mission(s)")
+                missions_context = "\n".join(parts)
+        except Exception as e:
+            print(f"[awake] error loading mission store: {e}", file=sys.stderr)
 
     # Run loop status (CRITICAL for pause awareness)
     run_loop_status = ""

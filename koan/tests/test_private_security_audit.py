@@ -81,8 +81,8 @@ class TestHandleQueueMission:
         assert "queued" in result.lower()
         assert "journal" in result.lower()
         mock_insert.assert_called_once()
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in mission_entry
+        mission_entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "koan"
         assert "/private_security_audit" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -90,7 +90,7 @@ class TestHandleQueueMission:
     def test_with_extra_context_and_limit(self, mock_insert, mock_resolve, handler, ctx):
         ctx.args = "koan focus on tokens limit=3"
         handler.handle(ctx)
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "/private_security_audit focus on tokens" in mission_entry
         assert "limit=3" in mission_entry
 
@@ -101,7 +101,7 @@ class TestHandleQueueMission:
     ):
         ctx.args = "koan"
         handler.handle(ctx)
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "limit=" not in mission_entry
 
     @patch("app.utils.resolve_project_name_and_path", return_value=("backend", "/path/backend"))
@@ -112,8 +112,7 @@ class TestHandleQueueMission:
 
         assert "queued" in result.lower()
         assert "backend" in result
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:backend]" in mission_entry
+        assert mock_insert.call_args[0][1] == "backend"
 
     @patch("app.utils.resolve_project_path", return_value=None)
     @patch("app.utils.get_known_projects", return_value=[("web", "/path/web")])

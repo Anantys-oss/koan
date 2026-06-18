@@ -302,11 +302,11 @@ class HookRegistry:
         atomic_write(outbox_path, existing + f"- {message}\n")
 
     def _action_create_mission(self, instance_dir: str, params: dict, ctx: dict) -> None:
-        """Append a mission to the Pending section of instance/missions.md."""
-        text = params.get("text", "Automation rule: create mission")
-        missions_path = Path(instance_dir) / "missions.md"
-        from app.utils import insert_pending_mission
-        insert_pending_mission(missions_path, text)
+        """Append a mission to the pending queue."""
+        raw = params.get("text", "Automation rule: create mission")
+        from app.utils import insert_pending_mission, parse_project
+        proj, clean = parse_project(raw)
+        insert_pending_mission(clean.removeprefix("- "), proj)
 
     def _action_pause(self, instance_dir: str) -> None:
         """Write .koan-pause to pause the agent."""

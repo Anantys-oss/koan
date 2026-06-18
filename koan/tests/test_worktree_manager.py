@@ -41,7 +41,7 @@ def git_repo(tmp_path):
     (repo / "README.md").write_text("# Test Project\n")
     subprocess.run(["git", "add", "."], cwd=str(repo), capture_output=True, check=True)
     subprocess.run(
-        ["git", "commit", "-m", "Initial commit"],
+        ["git", "-c", "commit.gpgsign=false", "commit", "-m", "Initial commit"],
         cwd=str(repo), capture_output=True, check=True,
     )
     # Ensure we're on 'main' branch
@@ -120,7 +120,7 @@ class TestCreateWorktree:
         (Path(git_repo) / "CLAUDE.md").write_text("# Project CLAUDE.md\n")
         subprocess.run(["git", "add", "CLAUDE.md"], cwd=git_repo, capture_output=True)
         subprocess.run(
-            ["git", "commit", "-m", "Add CLAUDE.md"],
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "Add CLAUDE.md"],
             cwd=git_repo, capture_output=True,
         )
         wt = create_worktree(git_repo)

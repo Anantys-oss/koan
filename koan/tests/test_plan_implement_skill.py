@@ -70,13 +70,17 @@ class TestComboQueuing:
 
             assert mock_insert.call_count == 2
 
-            first_entry = mock_insert.call_args_list[0][0][1]
+            first_entry = mock_insert.call_args_list[0][0][0]
             assert "/plan https://github.com/sukria/koan/issues/42" in first_entry
-            assert "[project:koan]" in first_entry
 
-            second_entry = mock_insert.call_args_list[1][0][1]
+            first_project = mock_insert.call_args_list[0][0][1]
+            assert first_project == "koan"
+
+            second_entry = mock_insert.call_args_list[1][0][0]
             assert "/implement https://github.com/sukria/koan/issues/42" in second_entry
-            assert "[project:koan]" in second_entry
+
+            second_project = mock_insert.call_args_list[1][0][1]
+            assert second_project == "koan"
 
     def test_returns_combo_ack(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/issues/42"
@@ -95,8 +99,8 @@ class TestComboQueuing:
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
 
-            plan_entry = mock_insert.call_args_list[0][0][1]
-            impl_entry = mock_insert.call_args_list[1][0][1]
+            plan_entry = mock_insert.call_args_list[0][0][0]
+            impl_entry = mock_insert.call_args_list[1][0][0]
             assert "phase 1 only" in plan_entry
             assert "phase 1 only" in impl_entry
 
@@ -124,8 +128,10 @@ class TestComboQueuing:
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
+            # insert_pending_mission(text, project) — verify both missions reference the URL
+            assert mock_insert.call_count == 2
             for c in mock_insert.call_args_list:
-                assert c[0][0] == ctx.instance_dir / "missions.md"
+                assert "https://github.com/sukria/koan/issues/42" in c[0][0]
 
     def test_duplicate_both_returns_warning(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/issues/42"

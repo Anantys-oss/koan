@@ -1,14 +1,30 @@
 # Mission Lifecycle
 
-`koan/app/missions.py` is the source of truth for parsing and mutating
-`instance/missions.md`.
+## Data/view split
+
+`instance/missions.json` is the canonical mission store. `instance/missions.md`
+is a **generated view** — it is regenerated from JSON on every save and must
+never be written directly by code.
+
+All queue mutations go through `mission_store.locked_store(instance_dir)`, which
+holds a thread+file lock across the full load→mutate→save cycle, then calls
+`MissionStore.save()` to atomically write the JSON and regenerate the Markdown
+view. Human edits to `missions.md` are detected by a sha256 hash stored in the
+JSON sidecar; when the hash diverges the store reconciles the edits back into
+the structured records before the next save.
+
+`koan/app/missions.py` provides the Markdown parser (`parse_sections()`,
+`extract_project_tag()`) and `canonical_mission_key()` — the single source of
+truth for stable mission identity. Legacy string-transform functions
+(`start_mission()`, `complete_mission()`, `fail_mission()`) remain for any
+callers not yet migrated; prefer the store mutators for new code.
 
 ## Queue Format
 
-Missions are stored in Markdown sections. The canonical lifecycle is:
+Missions are stored in four lifecycle sections. The canonical order is:
 
-- Pending
 - In Progress
+- Pending
 - Done
 - Failed
 
@@ -38,13 +54,14 @@ into `workspace/`).
 ## Normal Execution
 
 1. The bridge, a command handler, a scheduler, or a GitHub/Jira notification
-   appends a pending mission.
+   appends a pending mission via `utils.insert_pending_mission()` (which calls
+   `locked_store()` internally) or directly via `locked_store()` + `store.add()`.
 2. The agent loop picks a mission during an iteration.
-3. `start_mission()` moves it from Pending to In Progress and applies sanity
-   checks for stale in-progress work.
+3. `store.start()` (inside `locked_store()`) moves it from Pending to In Progress
+   and flushes any stale in-progress records to Failed with `[flushed]`.
 4. `mission_runner.py` resolves direct skill dispatch or provider execution.
-5. The mission is completed, failed, archived, retried, or requeued based on the
-   result and configured guards.
+5. The mission is completed (`store.complete()`), failed (`store.fail()`),
+   requeued (`store.requeue()`), or retried based on the result and configured guards.
 6. Post-mission reflection, journal writing, PR creation, security review,
    auto-merge checks, and autoreview queuing run only when their conditions apply.
 

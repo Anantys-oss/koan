@@ -152,3 +152,162 @@ def list_entries(instance_dir) -> List[dict]:
 def size(instance_dir) -> int:
     """Return the number of non-expired entries in the queue."""
     return len(list_entries(instance_dir))
+
+
+# ---------------------------------------------------------------------------
+# CI monitoring queue (replaces ## CI section in missions.md)
+#
+# Each entry tracks one open PR being actively monitored with attempt counters:
+#   {
+#     "pr_url":       "https://github.com/org/repo/pull/42",
+#     "branch":       "koan/fix-bug",
+#     "full_repo":    "org/repo",
+#     "pr_number":    "42",
+#     "project_name": "myapp",
+#     "queued":       "2026-06-14T10:00",
+#     "attempt":      0,
+#     "max_attempts": 5
+#   }
+# ---------------------------------------------------------------------------
+
+import fcntl  # noqa: E402 — after existing imports
+
+
+def _monitor_path(instance_dir) -> Path:
+    return Path(instance_dir) / ".ci-monitor.json"
+
+
+def _monitor_lock_path(instance_dir) -> Path:
+    return Path(instance_dir) / ".ci-monitor.lock"
+
+
+def _monitor_load(instance_dir) -> list:
+    p = _monitor_path(instance_dir)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _monitor_save(instance_dir, items: list) -> None:
+    from app.utils import atomic_write
+    p = _monitor_path(instance_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(p, json.dumps(items, indent=2) + "\n")
+
+
+def monitor_get_items(instance_dir) -> list:
+    """Return all CI monitoring entries in insertion order."""
+    return _monitor_load(instance_dir)
+
+
+def monitor_add_item(
+    instance_dir,
+    project_name: str,
+    pr_url: str,
+    pr_number: str,
+    branch: str,
+    full_repo: str,
+    max_attempts: int,
+) -> None:
+    """Add or reset a CI monitoring entry (deduped by *pr_url*)."""
+    lp = _monitor_lock_path(instance_dir)
+    Path(lp).parent.mkdir(parents=True, exist_ok=True)
+    with open(lp, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            items = _monitor_load(instance_dir)
+            items = [i for i in items if i.get("pr_url") != pr_url]
+            items.append({
+                "pr_url": pr_url,
+                "branch": branch,
+                "full_repo": full_repo,
+                "pr_number": str(pr_number),
+                "project_name": project_name,
+                "queued": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M"),
+                "attempt": 0,
+                "max_attempts": max_attempts,
+            })
+            _monitor_save(instance_dir, items)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def monitor_remove_item(instance_dir, pr_url: str) -> None:
+    """Remove the CI monitoring entry for *pr_url* (no-op if not found)."""
+    lp = _monitor_lock_path(instance_dir)
+    Path(lp).parent.mkdir(parents=True, exist_ok=True)
+    with open(lp, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            items = [i for i in _monitor_load(instance_dir) if i.get("pr_url") != pr_url]
+            _monitor_save(instance_dir, items)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def monitor_update_attempt(instance_dir, pr_url: str) -> None:
+    """Increment the attempt counter for the entry matching *pr_url*."""
+    lp = _monitor_lock_path(instance_dir)
+    Path(lp).parent.mkdir(parents=True, exist_ok=True)
+    with open(lp, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            items = _monitor_load(instance_dir)
+            for item in items:
+                if item.get("pr_url") == pr_url:
+                    item["attempt"] = item.get("attempt", 0) + 1
+                    break
+            _monitor_save(instance_dir, items)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def monitor_migrate_from_missions_md(instance_dir) -> int:
+    """One-time migration from ``## CI`` section in missions.md → .ci-monitor.json.
+
+    Called at startup when the JSON file is absent but missions.md has a
+    ``## CI`` section.  Returns the count of items migrated.
+    """
+    if _monitor_path(instance_dir).exists():
+        return 0
+
+    md_path = Path(instance_dir) / "missions.md"
+    if not md_path.exists():
+        return 0
+
+    try:
+        content = md_path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+
+    if "## CI" not in content:
+        return 0
+
+    from app.missions import get_ci_items
+    items_from_md = get_ci_items(content)
+    if not items_from_md:
+        return 0
+
+    json_items = [
+        {
+            "pr_url": item.get("pr_url", ""),
+            "branch": item.get("branch", ""),
+            "full_repo": item.get("full_repo", ""),
+            "pr_number": str(item.get("pr_number", "")),
+            "project_name": item.get("project", ""),
+            "queued": item.get("queued", ""),
+            "attempt": item.get("attempt", 0),
+            "max_attempts": item.get("max_attempts", 5),
+        }
+        for item in items_from_md
+        if item.get("pr_url")
+    ]
+
+    if json_items:
+        _monitor_save(instance_dir, json_items)
+
+    return len(json_items)

@@ -52,22 +52,21 @@ def drain_one(instance_dir: str) -> Optional[str]:
     - pending: leave in ## CI (try again next iteration)
     - none: remove from ## CI (no CI configured)
 
-    Also migrates legacy .ci-queue.json entries to ## CI on first call.
+    Also migrates legacy .ci-queue.json entries and any ## CI section in
+    missions.md to .ci-monitor.json on first call.
     """
-    from app.missions import get_ci_items, remove_ci_item, update_ci_item_attempt
-    from app.utils import modify_missions_file
+    from app.ci_queue import (
+        monitor_get_items,
+        monitor_migrate_from_missions_md,
+        monitor_remove_item,
+        monitor_update_attempt,
+    )
 
-    missions_path = Path(instance_dir) / "missions.md"
+    # One-time migrations: legacy JSON queue and the old ## CI section.
+    _maybe_migrate_json_queue(instance_dir)
+    monitor_migrate_from_missions_md(instance_dir)
 
-    # One-time migration from legacy JSON queue
-    _maybe_migrate_json_queue(instance_dir, missions_path)
-
-    # NOTE: We read missions.md outside the modify_missions_file lock. Between
-    # this read and the later locked write, another process could modify the file.
-    # This is an accepted race — check_ci_status() is the slow external call,
-    # and the lambdas passed to modify_missions_file re-read content under lock.
-    content = missions_path.read_text() if missions_path.exists() else ""
-    items = get_ci_items(content)
+    items = monitor_get_items(instance_dir)
     if not items:
         return None
 
@@ -77,32 +76,26 @@ def drain_one(instance_dir: str) -> Optional[str]:
     branch = entry["branch"]
     full_repo = entry["full_repo"]
     pr_number = entry.get("pr_number", "?")
-    attempt = entry["attempt"]
-    max_attempts = entry["max_attempts"]
+    attempt = entry.get("attempt", 0)
+    max_attempts = entry.get("max_attempts", 5)
 
     # Short-circuit closed/merged PRs — CI fixes can't help a PR that no
     # longer accepts commits. Without this, a closed-but-not-merged PR with
     # past failed CI runs would keep re-queueing /ci_check forever.
     pr_state = _check_pr_state_safe(pr_number, full_repo)
     if pr_state in ("CLOSED", "MERGED"):
-        modify_missions_file(
-            missions_path,
-            lambda c: remove_ci_item(c, pr_url),
-        )
+        monitor_remove_item(instance_dir, pr_url)
         if pr_state == "CLOSED":
             _write_outbox(
                 instance_dir,
                 f"🚫 PR #{pr_number} was closed — removed from CI queue: {pr_url}",
             )
-        return f"PR #{pr_number} {pr_state.lower()} — removed from ## CI"
+        return f"PR #{pr_number} {pr_state.lower()} — removed from CI monitor"
 
     status, _run_id, _logs = check_ci_status(branch, full_repo)
 
     if status == "success":
-        modify_missions_file(
-            missions_path,
-            lambda c: remove_ci_item(c, pr_url),
-        )
+        monitor_remove_item(instance_dir, pr_url)
         _write_outbox(
             instance_dir,
             f"✅ CI passed for PR #{pr_number} — ready for review: {pr_url}",
@@ -116,18 +109,12 @@ def drain_one(instance_dir: str) -> Optional[str]:
             # progress, skip — avoids rapid-fire duplicate missions and
             # premature attempt exhaustion.
             if _inject_ci_fix_mission(instance_dir, pr_url, entry):
-                modify_missions_file(
-                    missions_path,
-                    lambda c: update_ci_item_attempt(c, pr_url),
-                )
+                monitor_update_attempt(instance_dir, pr_url)
                 return f"CI failed for PR #{pr_number} — /ci_check mission queued (attempt {attempt + 1}/{max_attempts})"
             return None
         else:
             # Max attempts exhausted
-            modify_missions_file(
-                missions_path,
-                lambda c: remove_ci_item(c, pr_url),
-            )
+            monitor_remove_item(instance_dir, pr_url)
             _write_outbox(
                 instance_dir,
                 f"🚦 CI still failing after {max_attempts} attempts for PR #{pr_number}: {pr_url}",
@@ -135,21 +122,15 @@ def drain_one(instance_dir: str) -> Optional[str]:
             return f"CI failed {max_attempts} times for PR #{pr_number} — giving up"
 
     if status == "none":
-        modify_missions_file(
-            missions_path,
-            lambda c: remove_ci_item(c, pr_url),
-        )
-        return f"No CI runs found for PR #{pr_number} — removed from ## CI"
+        monitor_remove_item(instance_dir, pr_url)
+        return f"No CI runs found for PR #{pr_number} — removed from CI monitor"
 
     if status == CI_STATUS_BLOCKED_APPROVAL:
         # GitHub gates workflow runs on first-time-contributor or
         # environment approval; nothing Kōan does will unstick them.
-        # Drop the PR from ## CI so retries stop and notify the human
+        # Drop the PR from the monitor so retries stop and notify the human
         # so they can approve in the UI (or politely ping the maintainer).
-        modify_missions_file(
-            missions_path,
-            lambda c: remove_ci_item(c, pr_url),
-        )
+        monitor_remove_item(instance_dir, pr_url)
         _write_outbox(
             instance_dir,
             f"⏸ CI workflows on PR #{pr_number} are waiting for maintainer "
@@ -157,10 +138,10 @@ def drain_one(instance_dir: str) -> Optional[str]:
         )
         return (
             f"CI blocked on maintainer approval for PR #{pr_number} — "
-            f"removed from ## CI"
+            f"removed from CI monitor"
         )
 
-    # status == "pending" — leave in ## CI
+    # status == "pending" — leave in the monitor
     return None
 
 
@@ -188,15 +169,13 @@ def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict) -> bool:
     """
     from app.utils import insert_pending_mission
 
-    missions_path = Path(instance_dir) / "missions.md"
-    project_name = entry.get("project") or _project_name_from_path(
+    project_name = entry.get("project_name") or entry.get("project") or _project_name_from_path(
         entry.get("project_path", "")
     )
-    tag = f"[project:{project_name}] " if project_name else ""
 
-    mission_text = f"- {tag}/ci_check {pr_url}"
+    mission_text = f"/ci_check {pr_url}"
 
-    return insert_pending_mission(missions_path, mission_text, urgent=True)
+    return insert_pending_mission(mission_text, project_name, urgent=True)
 
 
 def _project_name_from_path(project_path: str) -> str:
@@ -223,11 +202,11 @@ def _write_outbox(instance_dir: str, message: str):
         print(f"[ci_queue] Failed to write outbox: {e}", file=sys.stderr)
 
 
-def _maybe_migrate_json_queue(instance_dir: str, missions_path: Path):
-    """One-time migration from .ci-queue.json to ## CI section in missions.md.
+def _maybe_migrate_json_queue(instance_dir: str):
+    """One-time migration from legacy .ci-queue.json to .ci-monitor.json.
 
-    Reads any entries from the legacy JSON queue and adds them to ## CI,
-    then removes the JSON file. Migrated entries start at attempt 0.
+    Reads any entries from the legacy JSON queue and adds them to the CI
+    monitor, then removes the JSON file. Migrated entries start at attempt 0.
     """
     import os
 
@@ -248,8 +227,8 @@ def _maybe_migrate_json_queue(instance_dir: str, missions_path: Path):
             os.remove(json_path)
         return
 
-    from app.missions import add_ci_item
-    from app.utils import load_config, modify_missions_file
+    from app.ci_queue import monitor_add_item
+    from app.utils import load_config
 
     config = load_config()
     max_attempts = config.get("ci_fix_max_attempts", 5)
@@ -265,13 +244,10 @@ def _maybe_migrate_json_queue(instance_dir: str, missions_path: Path):
         if not pr_url or not branch or not full_repo:
             continue
 
-        modify_missions_file(
-            missions_path,
-            lambda c, _pn=project_name, _url=pr_url, _num=pr_number, _b=branch, _r=full_repo, _m=max_attempts: add_ci_item(
-                c, _pn, _url, _num, _b, _r, _m
-            ),
+        monitor_add_item(
+            instance_dir, project_name, pr_url, pr_number, branch, full_repo, max_attempts,
         )
-        print(f"[ci_queue] Migrated {pr_url} from JSON queue to ## CI", file=sys.stderr)
+        print(f"[ci_queue] Migrated {pr_url} from JSON queue to CI monitor", file=sys.stderr)
 
     try:
         os.remove(json_path)
@@ -286,7 +262,7 @@ def _reenqueue_for_monitoring(
     pr_url: str, branch: str, full_repo: str,
     pr_number: str, project_path: str,
 ):
-    """Re-enqueue a PR for CI monitoring in the ## CI section after pushing a fix.
+    """Re-enqueue a PR for CI monitoring (.ci-monitor.json) after pushing a fix.
 
     This ensures drain_one() picks up the new CI run result during
     interruptible_sleep, rather than leaving it unmonitored.
@@ -304,21 +280,19 @@ def _reenqueue_for_monitoring(
         return
 
     instance_dir = os.path.join(koan_root, "instance")
-    missions_path = Path(instance_dir) / "missions.md"
     project_name = _project_name_from_path(project_path)
 
-    from app.missions import add_ci_item
-    from app.utils import load_config, modify_missions_file
+    from app.ci_queue import monitor_add_item
+    from app.utils import load_config
 
     config = load_config()
     max_attempts = config.get("ci_fix_max_attempts", 5)
 
     try:
-        modify_missions_file(
-            missions_path,
-            lambda c: add_ci_item(c, project_name, pr_url, pr_number, branch, full_repo, max_attempts),
+        monitor_add_item(
+            instance_dir, project_name, pr_url, pr_number, branch, full_repo, max_attempts,
         )
-        print(f"[ci_check] Re-enqueued {pr_url} for CI monitoring in ## CI", file=sys.stderr)
+        print(f"[ci_check] Re-enqueued {pr_url} for CI monitoring", file=sys.stderr)
     except Exception as e:
         print(f"[ci_check] Failed to re-enqueue: {e}", file=sys.stderr)
 
@@ -353,18 +327,16 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     owner, repo, pr_number = parse_pr_url(pr_url)
     full_repo = f"{owner}/{repo}"
 
-    # Determine max attempts from ## CI entry (respects per-enqueue config)
-    max_fix_attempts = 2  # fallback if not in ## CI
+    # Determine max attempts from the CI monitor entry (respects per-enqueue config)
+    max_fix_attempts = 2  # fallback if not monitored
     koan_root = os.environ.get("KOAN_ROOT", "")
     if koan_root:
-        missions_path = Path(koan_root) / "instance" / "missions.md"
-        if missions_path.exists():
-            from app.missions import get_ci_items
-            items = get_ci_items(missions_path.read_text())
-            for item in items:
-                if item["pr_url"] == pr_url:
-                    max_fix_attempts = item["max_attempts"]
-                    break
+        from app.ci_queue import monitor_get_items
+        instance_dir = os.path.join(koan_root, "instance")
+        for item in monitor_get_items(instance_dir):
+            if item.get("pr_url") == pr_url:
+                max_fix_attempts = item.get("max_attempts", max_fix_attempts)
+                break
 
     # Fetch minimal PR context needed for CI fix
     from app.rebase_pr import fetch_pr_context

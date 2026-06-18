@@ -31,11 +31,12 @@ def handler():
 
 
 @pytest.fixture
-def ctx(tmp_path):
+def ctx(tmp_path, monkeypatch):
     instance_dir = tmp_path / "instance"
     instance_dir.mkdir()
     missions_path = instance_dir / "missions.md"
     missions_path.write_text(MISSIONS_SKELETON)
+    monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
     return SkillContext(
         koan_root=tmp_path,
         instance_dir=instance_dir,

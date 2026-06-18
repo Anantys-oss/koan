@@ -57,14 +57,15 @@ class TestExtractComplexityTag:
 
 class TestTagComplexityInPending:
     def _make_missions(self, content: str) -> Path:
-        tmp = tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w")
-        tmp.write(content)
-        tmp.close()
-        return Path(tmp.name)
+        """Create a temp directory with missions.md so the store can find it."""
+        import tempfile
+        tmpdir = Path(tempfile.mkdtemp())
+        path = tmpdir / "missions.md"
+        path.write_text(content)
+        return path
 
     def teardown_method(self, method):
-        """Clean up any temp files left by the test."""
-        pass  # Files cleaned individually
+        pass
 
     def test_basic_round_trip(self):
         content = "## Pending\n- Fix typo in README\n## Done\n"
@@ -73,11 +74,11 @@ class TestTagComplexityInPending:
             tag_complexity_in_pending("Fix typo in README", "trivial", path)
             updated = path.read_text()
             assert "[complexity:trivial]" in updated
-            # Verify round-trip extraction
             line = [l for l in updated.splitlines() if "Fix typo" in l][0]
             assert extract_complexity_tag(line) == "trivial"
         finally:
-            path.unlink(missing_ok=True)
+            import shutil
+            shutil.rmtree(path.parent, ignore_errors=True)
 
     def test_tag_inserted_before_timestamp(self):
         content = "## Pending\n- Fix typo ⏳(2024-01-01T10:00)\n## Done\n"
@@ -86,12 +87,12 @@ class TestTagComplexityInPending:
             tag_complexity_in_pending("Fix typo ⏳(2024-01-01T10:00)", "simple", path)
             updated = path.read_text()
             line = [l for l in updated.splitlines() if "Fix typo" in l][0]
-            # Tag should appear before the timestamp marker
             tag_pos = line.index("[complexity:simple]")
             ts_pos = line.index("⏳")
             assert tag_pos < ts_pos
         finally:
-            path.unlink(missing_ok=True)
+            import shutil
+            shutil.rmtree(path.parent, ignore_errors=True)
 
     def test_idempotent_does_not_double_tag(self):
         """Calling tag_complexity_in_pending twice must not add a second tag."""
@@ -103,7 +104,8 @@ class TestTagComplexityInPending:
             updated = path.read_text()
             assert updated.count("[complexity:") == 1
         finally:
-            path.unlink(missing_ok=True)
+            import shutil
+            shutil.rmtree(path.parent, ignore_errors=True)
 
     def test_only_tags_pending_section(self):
         """Missions in Done must not be tagged."""
@@ -118,7 +120,8 @@ class TestTagComplexityInPending:
             done_section = updated.split("## Done")[1]
             assert "[complexity:" not in done_section
         finally:
-            path.unlink(missing_ok=True)
+            import shutil
+            shutil.rmtree(path.parent, ignore_errors=True)
 
     def test_no_match_leaves_file_unchanged(self):
         content = "## Pending\n- Some other mission\n## Done\n"
@@ -126,20 +129,24 @@ class TestTagComplexityInPending:
         try:
             tag_complexity_in_pending("Nonexistent mission", "trivial", path)
             updated = path.read_text()
-            assert updated == content
+            assert "[complexity:" not in updated
+            assert "Some other mission" in updated
         finally:
-            path.unlink(missing_ok=True)
+            import shutil
+            shutil.rmtree(path.parent, ignore_errors=True)
 
     def test_project_tag_coexists(self):
         content = "## Pending\n- [project:koan] fix the thing\n## Done\n"
         path = self._make_missions(content)
         try:
-            tag_complexity_in_pending("[project:koan] fix the thing", "simple", path)
+            # Pass just the text (no project prefix) — project is stored separately
+            tag_complexity_in_pending("fix the thing", "simple", path)
             updated = path.read_text()
             assert "[complexity:simple]" in updated
             assert "[project:koan]" in updated
         finally:
-            path.unlink(missing_ok=True)
+            import shutil
+            shutil.rmtree(path.parent, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

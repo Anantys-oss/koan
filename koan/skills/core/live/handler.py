@@ -56,28 +56,17 @@ def _get_in_progress_missions(instance_dir):
 
     Returns a list of (project, mission_text) tuples, or empty list.
     """
-    missions_file = instance_dir / "missions.md"
-    if not missions_file.exists():
-        return []
-
     try:
-        from app.missions import parse_sections, extract_project_tag, strip_timestamps
-        from app.utils import parse_project
+        from app.mission_store import MissionStore
 
-        content = missions_file.read_text()
-        sections = parse_sections(content)
-        in_progress = sections.get("in_progress", [])
-        if not in_progress:
-            return []
-
-        result = []
-        for mission in in_progress:
-            first_line = mission.split("\n")[0].removeprefix("- ").strip()
-            project = extract_project_tag(first_line)
-            _, display = parse_project(first_line)
-            display = strip_timestamps(display).strip()
-            result.append((project, display))
-        return result
+        store = MissionStore.load(str(instance_dir))
+        # record.text is already clean (no project tag, no timestamps);
+        # untagged missions map to the "default" project (matching
+        # extract_project_tag's fallback).
+        return [
+            (r.project or "default", r.text)
+            for r in store.get_by_status("in_progress")
+        ]
     except Exception:
         return []
 

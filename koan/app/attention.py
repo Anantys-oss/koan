@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Optional
 
 from app.signals import PAUSE_FILE, QUOTA_RESET_FILE
-from app.utils import PROJECT_TAG_STRIP_RE
 
 # Stale PR threshold in seconds (7 days)
 _STALE_PR_SECONDS = 7 * 24 * 3600
@@ -118,27 +117,19 @@ def _collect_failed_missions(koan_root: str) -> list:
     """Return attention items for failed missions."""
     items = []
     try:
-        from app.missions import parse_sections
-        from app.utils import KOAN_ROOT as _
+        from app.mission_store import MissionStore
 
-        missions_file = Path(koan_root) / "instance" / "missions.md"
-        if not missions_file.exists():
-            return []
-        content = missions_file.read_text()
-        sections = parse_sections(content)
-        failed = sections.get("failed", [])
-        for mission_text in failed:
-            text_hash = hashlib.md5(mission_text.encode()).hexdigest()[:8]
-            item_id = _make_id("failed-mission", text_hash)
-            # Strip leading "- " and project tags for display
-            display = mission_text.strip().removeprefix("- ")
-            display = PROJECT_TAG_STRIP_RE.sub("", display).strip()
+        instance_dir = Path(koan_root) / "instance"
+        store = MissionStore.load(str(instance_dir))
+        for record in store.get_by_status("failed"):
+            item_id = _make_id("failed-mission", record.id)
+            detail = record.display_title()
             items.append({
                 "id": item_id,
                 "severity": "critical",
                 "source": "mission",
                 "title": "Failed mission",
-                "detail": display[:120] + ("…" if len(display) > 120 else ""),
+                "detail": detail[:120] + ("…" if len(detail) > 120 else ""),
                 "url": "/missions",
                 "age_seconds": 0,
                 "created_at": "",

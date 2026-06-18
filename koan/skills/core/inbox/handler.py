@@ -1,6 +1,7 @@
 """Inbox skill — force GitHub notification check and show pending mail count."""
 
 import os
+import sys
 import time
 
 from app.signals import CHECK_NOTIFICATIONS_FILE
@@ -8,16 +9,16 @@ from app.signals import CHECK_NOTIFICATIONS_FILE
 
 def _count_github_missions(instance_dir):
     """Count pending missions originating from GitHub (@mention 📬 marker)."""
-    missions_path = os.path.join(str(instance_dir), "missions.md")
     try:
-        with open(missions_path) as f:
-            content = f.read()
-    except OSError:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(instance_dir))
+    except Exception as e:
+        print(f"[inbox] error loading mission store: {e}", file=sys.stderr)
         return 0
 
-    from app.missions import list_pending
-    pending = list_pending(content)
-    return sum(1 for m in pending if "📬" in m)
+    return sum(
+        1 for r in store.get_by_status("pending") if r.origin_marker() == "📬"
+    )
 
 
 def handle(ctx):

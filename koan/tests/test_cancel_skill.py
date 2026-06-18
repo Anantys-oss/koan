@@ -244,7 +244,7 @@ class TestCancelHandler:
 
         ctx = self._make_ctx(tmp_path, self.MISSIONS, args="99")
         result = handle(ctx)
-        assert "not found" in result.lower() or "#99" in result
+        assert "invalid position" in result.lower() or "not found" in result.lower() or "#99" in result
 
     def test_cancel_strips_project_tag_in_display(self, tmp_path):
         from skills.core.cancel.handler import handle

@@ -78,7 +78,9 @@ class TestCheckStaleMissions:
         assert len(result) == 1
         assert "Fix the bug" in result[0]
 
-    def test_complex_mission_skipped(self, tmp_path):
+    def test_legacy_complex_mission_migrated_and_checked(self, tmp_path):
+        # In the store era the ### block format is migrated to a plain record;
+        # stale detection applies to all in_progress records uniformly.
         _create_missions_file(tmp_path, (
             "## Pending\n\n"
             "## In Progress\n\n"
@@ -88,7 +90,9 @@ class TestCheckStaleMissions:
             "## Done\n"
         ))
         _create_journal_file(tmp_path, "myapp", age_seconds=10 * 3600)
-        assert check_stale_missions(str(tmp_path), max_age_hours=2) == []
+        result = check_stale_missions(str(tmp_path), max_age_hours=2)
+        assert len(result) == 1
+        assert "Big refactoring" in result[0]
 
     def test_alerts_only_once(self, tmp_path):
         _create_missions_file(tmp_path, (

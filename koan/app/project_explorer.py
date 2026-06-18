@@ -80,18 +80,18 @@ def gather_project_structure(project_path: str) -> str:
 
 def get_missions_context(instance_dir: Path) -> str:
     """Get current missions context for exploration prompts."""
-    missions_file = instance_dir / "missions.md"
-    if not missions_file.exists():
+    try:
+        from app.mission_store import MissionStore
+
+        store = MissionStore.load(str(instance_dir))
+        in_progress = store.get_by_status("in_progress")
+        pending = store.get_by_status("pending")
+    except (OSError, ValueError):
         return "No active missions."
 
-    from app.missions import parse_sections
-
-    sections = parse_sections(missions_file.read_text())
-    in_progress = sections.get("in_progress", [])
-    pending = sections.get("pending", [])
     parts = []
     if in_progress:
-        parts.append("In progress:\n" + "\n".join(in_progress[:5]))
+        parts.append("In progress:\n" + "\n".join(r.display_title() for r in in_progress[:5]))
     if pending:
-        parts.append("Pending:\n" + "\n".join(pending[:5]))
+        parts.append("Pending:\n" + "\n".join(r.display_title() for r in pending[:5]))
     return "\n".join(parts) if parts else "No active missions."

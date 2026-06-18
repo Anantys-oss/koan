@@ -47,14 +47,11 @@ def _truncate(text: str, max_len: int = 60) -> str:
 def _count_pending_missions(missions_file) -> int:
     """Return the total number of pending missions across all projects."""
     from pathlib import Path
-    from app.missions import parse_sections
+    from app.mission_store import MissionStore
 
-    path = Path(missions_file)
-    if not path.exists():
-        return 0
     try:
-        sections = parse_sections(path.read_text())
-        return len(sections.get("pending", []))
+        store = MissionStore.load(str(Path(missions_file).parent))
+        return len(store.get_by_status("pending"))
     except Exception:
         return 0
 
@@ -62,24 +59,18 @@ def _count_pending_missions(missions_file) -> int:
 def _get_in_progress_missions(missions_file) -> str:
     """Return a short display of in-progress missions, or empty string."""
     from pathlib import Path
-    from app.missions import parse_sections
-    from app.utils import parse_project
+    from app.mission_store import MissionStore
 
-    path = Path(missions_file)
-    if not path.exists():
-        return ""
     try:
-        content = path.read_text()
-        sections = parse_sections(content)
-        in_progress = sections.get("in_progress", [])
+        store = MissionStore.load(str(Path(missions_file).parent))
+        in_progress = store.get_by_status("in_progress")
         if not in_progress:
             return ""
         summaries = []
-        for m in in_progress[:2]:
-            project, text = parse_project(m)
-            text = _truncate(text.strip().lstrip("- "), 40)
-            if project:
-                summaries.append(f"{text} [{project}]")
+        for r in in_progress[:2]:
+            text = _truncate(r.text.strip(), 40)
+            if r.project:
+                summaries.append(f"{text} [{r.project}]")
             else:
                 summaries.append(text)
         return ", ".join(summaries)
@@ -125,6 +116,31 @@ def _format_mission_display(mission: str) -> str:
     return display
 
 
+def _group_missions_by_project(instance_dir) -> dict:
+    """Group pending/in-progress missions by project, as rendered view lines.
+
+    Returns ``{project: {"pending": [line, ...], "in_progress": [line, ...]}}``.
+    Each line is a rendered Markdown mission line so it can be passed straight
+    to :func:`_format_mission_display`.  Returns ``{}`` on any load error.
+    """
+    from app.mission_store import MissionStore
+
+    try:
+        store = MissionStore.load(str(instance_dir))
+    except Exception:
+        return {}
+
+    grouped: dict = {}
+    for status_key in ("in_progress", "pending"):
+        for r in store.get_by_status(status_key):
+            project = r.project or "default"
+            bucket = grouped.setdefault(
+                project, {"pending": [], "in_progress": []}
+            )
+            bucket[status_key].append(store._render_record(r))
+    return grouped
+
+
 def handle(ctx):
     """Dispatch to the appropriate subcommand."""
     cmd = ctx.command_name
@@ -140,8 +156,6 @@ def handle(ctx):
 
 def _handle_status(ctx) -> str:
     """Build status message with structured unicode layout."""
-    from app.missions import group_by_project
-
     koan_root = ctx.koan_root
     instance_dir = ctx.instance_dir
     missions_file = instance_dir / "missions.md"
@@ -268,37 +282,34 @@ def _handle_status(ctx) -> str:
         pass
 
     # Missions section
-    if missions_file.exists():
-        content = missions_file.read_text()
-        missions_by_project = group_by_project(content)
+    missions_by_project = _group_missions_by_project(instance_dir)
+    if missions_by_project:
+        has_missions = any(
+            m["pending"] or m["in_progress"]
+            for m in missions_by_project.values()
+        )
+        if has_missions:
+            parts.append("")
+            parts.append("◎ Missions")
+            for project in sorted(missions_by_project.keys()):
+                missions = missions_by_project[project]
+                pending = missions["pending"]
+                in_progress = missions["in_progress"]
 
-        if missions_by_project:
-            has_missions = any(
-                m["pending"] or m["in_progress"]
-                for m in missions_by_project.values()
-            )
-            if has_missions:
-                parts.append("")
-                parts.append("◎ Missions")
-                for project in sorted(missions_by_project.keys()):
-                    missions = missions_by_project[project]
-                    pending = missions["pending"]
-                    in_progress = missions["in_progress"]
-
-                    if pending or in_progress:
-                        parts.append(f"  {project}")
-                        if in_progress:
-                            parts.append(f"    ▶ In progress: {len(in_progress)}")
-                            parts.extend(
-                                f"      {_format_mission_display(m)}"
-                                for m in in_progress[:2]
-                            )
-                        if pending:
-                            parts.append(f"    ⏳ Pending: {len(pending)}")
-                            parts.extend(
-                                f"      {_format_mission_display(m)}"
-                                for m in pending[:3]
-                            )
+                if pending or in_progress:
+                    parts.append(f"  {project}")
+                    if in_progress:
+                        parts.append(f"    ▶ In progress: {len(in_progress)}")
+                        parts.extend(
+                            f"      {_format_mission_display(m)}"
+                            for m in in_progress[:2]
+                        )
+                    if pending:
+                        parts.append(f"    ⏳ Pending: {len(pending)}")
+                        parts.extend(
+                            f"      {_format_mission_display(m)}"
+                            for m in pending[:3]
+                        )
 
     # Skill metrics
     skill_metrics_lines = _build_skill_metrics_section(instance_dir)
@@ -531,7 +542,6 @@ def _handle_ping(ctx) -> str:
 def _handle_usage(ctx) -> str:
     """Build usage status. Returns raw data for the caller to format."""
     instance_dir = ctx.instance_dir
-    missions_file = instance_dir / "missions.md"
 
     usage_text = "No quota data available."
     usage_path = instance_dir / "usage.md"
@@ -539,21 +549,29 @@ def _handle_usage(ctx) -> str:
         usage_text = usage_path.read_text().strip() or usage_text
 
     missions_text = "No missions."
-    if missions_file.exists():
-        from app.missions import parse_sections
-        sections = parse_sections(missions_file.read_text())
+    try:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(instance_dir))
+        in_progress = store.get_by_status("in_progress")
+        pending = store.get_by_status("pending")
+        done = store.get_by_status("done")
         parts = []
-        in_progress = sections.get("in_progress", [])
-        pending = sections.get("pending", [])
-        done = sections.get("done", [])
         if in_progress:
-            parts.append("In progress:\n" + "\n".join(in_progress[:5]))
+            parts.append(
+                "In progress:\n" + "\n".join(r.display_title() for r in in_progress[:5])
+            )
         if pending:
-            parts.append(f"Pending ({len(pending)}):\n" + "\n".join(pending[:5]))
+            parts.append(
+                f"Pending ({len(pending)}):\n"
+                + "\n".join(r.display_title() for r in pending[:5])
+            )
         if done:
             parts.append(f"Done: {len(done)}")
         if parts:
             missions_text = "\n\n".join(parts)
+    except Exception as e:
+        import sys
+        print(f"[status] error loading mission store: {e}", file=sys.stderr)
 
     pending_text = "No run in progress."
     pending_path = instance_dir / "journal" / "pending.md"

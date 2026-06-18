@@ -91,11 +91,12 @@ class TestMissionQueuing:
         with patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert entry.startswith("- [project:koan]")
-            assert "/claudemd koan" in entry
-            assert "run:" not in entry
-            assert "python3 -m" not in entry
+            text = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert project == "koan"
+            assert "/claudemd koan" in text
+            assert "run:" not in text
+            assert "python3 -m" not in text
 
     def test_case_insensitive_project_match(self, handler, ctx):
         ctx.args = "KOAN"
@@ -103,8 +104,8 @@ class TestMissionQueuing:
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
             assert "queued" in result.lower()
-            entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in entry
+            project = mock_insert.call_args[0][1]
+            assert project == "koan"
 
     def test_extra_args_after_project_name_ignored(self, handler, ctx):
         ctx.args = "koan some extra text"
@@ -119,15 +120,15 @@ class TestMissionQueuing:
         with patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
-            missions_path = mock_insert.call_args[0][0]
-            assert missions_path == ctx.instance_dir / "missions.md"
+            # insert_pending_mission is called with (text, project) — verify project is correct
+            assert mock_insert.call_args[0][1] == "koan"
 
     def test_clean_format_no_koan_root(self, handler, ctx):
         ctx.args = "koan"
         with patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             # Clean format doesn't embed koan_root — dispatch resolves it
             assert "/claudemd koan" in entry
 
@@ -138,9 +139,10 @@ class TestMissionQueuing:
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
             assert "queued" in result.lower()
-            entry = mock_insert.call_args[0][1]
-            assert "[project:web]" in entry
-            assert "/claudemd web" in entry
+            text = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert project == "web"
+            assert "/claudemd web" in text
 
 
 # ---------------------------------------------------------------------------

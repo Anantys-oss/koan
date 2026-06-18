@@ -106,10 +106,11 @@ class TestFetchAndFilterCommentLogging:
         assert "stale" in caplog.text
         assert "42" in caplog.text
 
+    @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.find_mention_in_thread", return_value=None)
     @patch("app.github_command_handler.get_comment_from_notification", return_value=None)
     @patch("app.github_command_handler.is_notification_stale", return_value=False)
-    def test_logs_no_comment(self, mock_stale, mock_comment, mock_find, caplog):
+    def test_logs_no_comment(self, mock_stale, mock_comment, mock_find, mock_read, caplog):
         from app.github_command_handler import _fetch_and_filter_comment
 
         notif = {"id": "99", "repository": {"full_name": "o/r"}}
@@ -426,6 +427,7 @@ class TestProcessNotificationsIntegration:
         }
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=self._make_fetch_result([fake_notif])), \
+             patch("app.github_notifications.mark_notification_read"), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification", return_value=(True, None)):
@@ -487,6 +489,7 @@ class TestProcessNotificationsIntegration:
         side_effects = [(True, None), (True, None), (False, None)]
         with patch("app.projects_config.load_projects_config", return_value={}), \
              patch("app.github_notifications.fetch_unread_notifications", return_value=self._make_fetch_result(notifs)), \
+             patch("app.github_notifications.mark_notification_read"), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("proj", "o", "r")), \
              patch("app.github_command_handler.process_single_notification", side_effect=side_effects):

@@ -346,8 +346,7 @@ def _inject_recurring(instance_dir: Path):
 
     try:
         from app.recurring import check_and_inject
-        missions_path = instance_dir / "missions.md"
-        return check_and_inject(recurring_path, missions_path)
+        return check_and_inject(recurring_path, instance_dir)
     except (ImportError, OSError, ValueError) as e:
         _log_iteration("error", f"Recurring injection error: {e}")
         return []
@@ -382,31 +381,30 @@ def _fallback_mission_extract(instance_dir: Path, projects_str: str,
                               context_msg: str):
     """Attempt direct mission extraction when the picker fails or returns empty.
 
-    Safety net that bypasses the Claude-based picker and reads missions.md
-    directly.  Shared by both the "picker returned nothing" and "picker
+    Safety net that bypasses the Claude-based picker and reads the mission
+    store directly.  Shared by both the "picker returned nothing" and "picker
     crashed" branches inside ``_pick_mission()``.
 
     Returns:
         (project_name, mission_title) or (None, None)
     """
     try:
-        from app.missions import count_pending
-        from app.pick_mission import fallback_extract
+        from app.mission_store import MissionStore
 
-        missions_path = instance_dir / "missions.md"
-        try:
-            content = missions_path.read_text()
-        except FileNotFoundError:
-            return None, None
-
-        pending_count = count_pending(content)
-        if pending_count <= 0:
+        store = MissionStore.load(str(instance_dir))
+        pending = store.get_by_status("pending")
+        if not pending:
             return None, None
 
         _log_iteration("error",
-            f"{context_msg} — {pending_count} pending mission(s) exist "
+            f"{context_msg} — {len(pending)} pending mission(s) exist "
             f"— attempting direct extraction")
-        project, title = fallback_extract(content, projects_str)
+        record = pending[0]
+        project = record.project
+        if not project:
+            parts = [p for p in projects_str.split(";") if p]
+            project = parts[0].split(":")[0] if parts else "default"
+        title = record.text
         if project and title:
             _log_iteration("mission",
                 f"Direct fallback picked: [{project}] {title[:60]}")
@@ -1030,14 +1028,11 @@ def _maybe_inject_diagnostic_mission(
 
     # All gates passed — select diagnostic type and inject
     diag_type = _select_diagnostic_type(instance_dir, project_name)
-    mission_entry = (
-        f"- [autonomous:health] [project:{project_name}] /{diag_type}"
-    )
+    mission_text = f"[autonomous:health] /{diag_type}"
 
     try:
         from app.utils import insert_pending_mission
-        missions_path = Path(instance_dir) / "missions.md"
-        inserted = insert_pending_mission(missions_path, mission_entry)
+        inserted = insert_pending_mission(mission_text, project_name)
     except (ImportError, OSError) as e:
         _log_iteration("error", f"Failed to inject diagnostic mission: {e}")
         return None
@@ -1053,7 +1048,7 @@ def _maybe_inject_diagnostic_mission(
         f"(success_rate={rate:.0%}, staleness={staleness}, "
         f"cooldown={health_cfg['cooldown_days']}d)")
 
-    return mission_entry
+    return f"[project:{project_name}] {mission_text}" if project_name else mission_text
 
 
 FilterResult = namedtuple("FilterResult", ["projects", "pr_limited", "branch_saturated", "focus_gated"],

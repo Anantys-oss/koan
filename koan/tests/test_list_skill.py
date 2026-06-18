@@ -159,7 +159,7 @@ class TestListHandler:
 
         ctx = self._make_ctx(tmp_path)
         result = handle(ctx)
-        assert "No missions file" in result
+        assert "No missions pending or in progress" in result
 
     def test_empty_missions(self, tmp_path):
         from skills.core.list.handler import handle

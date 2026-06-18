@@ -27,8 +27,8 @@ class TestGetProjects:
         assert result == [("myapp", str(project_dir))]
 
     @patch("app.utils.get_known_projects")
-    def test_filters_nonexistent_paths(self, mock_known):
-        mock_known.return_value = [("ghost", "/nonexistent/path")]
+    def test_filters_nonexistent_paths(self, mock_known, tmp_path):
+        mock_known.return_value = [("ghost", str(tmp_path / "does_not_exist"))]
         result = get_projects()
         assert result == []
 
@@ -141,8 +141,8 @@ class TestGatherProjectStructure:
         assert "README.md" in result
         assert ".hidden" not in result
 
-    def test_handles_nonexistent_path(self):
-        result = gather_project_structure("/nonexistent/path")
+    def test_handles_nonexistent_path(self, tmp_path):
+        result = gather_project_structure(str(tmp_path / "no_such_dir"))
         assert "unavailable" in result.lower()
 
     def test_skips_hidden_dirs(self, tmp_path):

@@ -2015,7 +2015,7 @@ class TestProcessNotificationEdgeCases:
             )
 
         assert success is True
-        mission_arg = mock_insert.call_args[0][1]
+        mission_arg = mock_insert.call_args[0][0]
         assert "focus on API layer" in mission_arg
         assert "/implement" in mission_arg
 
@@ -2045,7 +2045,7 @@ class TestProcessNotificationEdgeCases:
             )
 
         assert success is True
-        mission_arg = mock_insert.call_args[0][1]
+        mission_arg = mock_insert.call_args[0][0]
         assert "this needs fixing" not in mission_arg
         assert "/rebase" in mission_arg
 
@@ -2076,7 +2076,7 @@ class TestProcessNotificationEdgeCases:
             )
 
         assert success is True
-        mission_arg = mock_insert.call_args[0][1]
+        mission_arg = mock_insert.call_args[0][0]
         assert "https://github.com/other/repo/pull/7" in mission_arg
         # Original notification URL should not appear
         assert "sukria/koan/pull/42" not in mission_arg
@@ -2936,7 +2936,7 @@ class TestProcessNotificationPlanCommand:
         assert success is True
         assert error is None
         mock_insert.assert_called_once()
-        mission = mock_insert.call_args[0][1]
+        mission = mock_insert.call_args[0][0]
         assert "/plan" in mission
         assert "https://github.com/sukria/koan/issues/100" in mission
 
@@ -2973,7 +2973,7 @@ class TestProcessNotificationPlanCommand:
             )
 
         assert success is True
-        mission = mock_insert.call_args[0][1]
+        mission = mock_insert.call_args[0][0]
         assert "focus on auth module" in mission
 
 
@@ -3125,7 +3125,7 @@ class TestProcessNotificationWithNLP:
         assert success is True
         assert error is None
         mock_insert.assert_called_once()
-        mission = mock_insert.call_args[0][1]
+        mission = mock_insert.call_args[0][0]
         assert "/implement" in mission
 
     @patch("app.github_command_handler.post_error_reply")
@@ -3340,7 +3340,7 @@ class TestComboSkillGithubIntegration:
         assert error is None
         # Should have inserted TWO missions, not one
         assert mock_insert.call_count == 2
-        calls = [c[0][1] for c in mock_insert.call_args_list]
+        calls = [c[0][0] for c in mock_insert.call_args_list]
         assert any("/review" in c for c in calls), f"Expected /review in {calls}"
         assert any("/rebase" in c for c in calls), f"Expected /rebase in {calls}"
         # Neither should contain /rr
@@ -3462,7 +3462,8 @@ class TestTryAssignmentNotification:
         with patch("app.github_command_handler.resolve_project_from_notification",
                     return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
-             patch("app.github_command_handler.mark_notification_read"):
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.utils.KOAN_ROOT", tmp_path):
             result = _try_assignment_notification(
                 review_notification, review_registry, {},
             )
@@ -3485,7 +3486,8 @@ class TestTryAssignmentNotification:
         with patch("app.github_command_handler.resolve_project_from_notification",
                     return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
-             patch("app.github_command_handler.mark_notification_read"):
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.utils.KOAN_ROOT", tmp_path):
             result = _try_assignment_notification(
                 assign_notification, review_registry, {},
             )
@@ -3702,14 +3704,19 @@ class TestTryAssignmentNotification:
              patch("app.github_command_handler.mark_notification_read"), \
              patch("app.github_command_handler._fetch_subject_info",
                    return_value={"state": "open", "merged": False, "head_sha": "sha-aaaa"}), \
-             patch("app.github_notification_tracker.is_review_on_cooldown", return_value=False):
+             patch("app.github_notification_tracker.is_review_on_cooldown", return_value=False), \
+             patch("app.utils.KOAN_ROOT", tmp_path):
             _try_assignment_notification(review_notification, review_registry, {})
-            # Move first mission out of Pending so only the tracker decides.
+            # The prior review has completed (moved to Done), so the dedup
+            # (which only scans Pending + In Progress) no longer blocks a fresh
+            # review — only the head-SHA tracker decides whether to re-queue.
+            # Drive the queue state directly: rewrite the view and drop the
+            # JSON store so the next load re-derives state from this view.
             missions_path.write_text(
-                "# Pending\n\n# In Progress\n\n"
-                "- [project:koan] /review https://github.com/sukria/koan/pull/99 \U0001f4ec\n"
-                "\n# Done\n"
+                "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
+                "- [project:koan] /review https://github.com/sukria/koan/pull/99 \U0001f4ec ✅ (2026-06-15 10:00)\n"
             )
+            (missions_path.parent / "missions.json").unlink(missing_ok=True)
 
         # New commits pushed → new head SHA → fresh dedup key → re-review.
         with patch("app.github_command_handler.resolve_project_from_notification",
@@ -3718,7 +3725,8 @@ class TestTryAssignmentNotification:
              patch("app.github_command_handler.mark_notification_read"), \
              patch("app.github_command_handler._fetch_subject_info",
                    return_value={"state": "open", "merged": False, "head_sha": "sha-bbbb"}), \
-             patch("app.github_notification_tracker.is_review_on_cooldown", return_value=False):
+             patch("app.github_notification_tracker.is_review_on_cooldown", return_value=False), \
+             patch("app.utils.KOAN_ROOT", tmp_path):
             result = _try_assignment_notification(
                 review_notification, review_registry, {},
             )
@@ -3746,7 +3754,8 @@ class TestTryAssignmentNotification:
                     return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
              patch("app.github_command_handler.mark_notification_read"), \
-             patch("app.github_notification_tracker.track_thread") as mock_track:
+             patch("app.github_notification_tracker.track_thread") as mock_track, \
+             patch("app.utils.KOAN_ROOT", tmp_path):
             result = _try_assignment_notification(notif, review_registry, {})
 
         assert result is True
@@ -3772,7 +3781,8 @@ class TestTryAssignmentNotification:
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
-             patch("app.github_command_handler.mark_notification_read"):
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.utils.KOAN_ROOT", tmp_path):
             success, error = process_single_notification(
                 review_notification, review_registry, {}, None, "koan-bot",
             )
@@ -3795,7 +3805,8 @@ class TestTryAssignmentNotification:
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.is_notification_stale", return_value=False), \
-             patch("app.github_command_handler.mark_notification_read"):
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.utils.KOAN_ROOT", tmp_path):
             success, error = process_single_notification(
                 assign_notification, review_registry, {}, None, "koan-bot",
             )

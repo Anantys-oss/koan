@@ -72,8 +72,8 @@ class TestHandleQueueMission:
         assert "Documentation extraction queued" in result
         assert "koan" in result
         mock_insert.assert_called_once()
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in mission_entry
+        mission_entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "koan"
         assert "/doc" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -84,7 +84,7 @@ class TestHandleQueueMission:
 
         assert "Documentation extraction queued" in result
         assert "architecture,test-style" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "architecture,test-style" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -95,7 +95,7 @@ class TestHandleQueueMission:
 
         assert "Documentation extraction queued" in result
         assert "mode: update" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "--mode=update" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -104,7 +104,7 @@ class TestHandleQueueMission:
         ctx.args = "koan architecture --mode=replace"
         result = handler.handle(ctx)
 
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "--mode=replace" in mission_entry
         assert "architecture" in mission_entry
 
@@ -116,8 +116,7 @@ class TestHandleQueueMission:
 
         assert "Documentation extraction queued" in result
         assert "backend" in result
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:backend]" in mission_entry
+        assert mock_insert.call_args[0][1] == "backend"
 
     @patch("app.utils.resolve_project_path", return_value=None)
     @patch("app.utils.get_known_projects", return_value=[("web", "/path/web")])

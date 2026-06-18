@@ -632,7 +632,7 @@ class TestHandleMission:
         from app.command_handlers import handle_mission
         handle_mission("fix the login bug")
         mock_insert.assert_called_once()
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         assert "fix the login bug" in entry
         mock_send.assert_called_once()
         assert "Mission received" in mock_send.call_args[0][0]
@@ -641,15 +641,15 @@ class TestHandleMission:
     def test_mission_with_project_tag(self, mock_insert, patch_bridge_state, mock_send):
         from app.command_handlers import handle_mission
         handle_mission("[project:koan] fix the login bug")
-        entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in entry
+        entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "koan"
         assert "fix the login bug" in entry
 
     @patch("app.command_handlers.insert_pending_mission")
     def test_mission_strips_mission_prefix(self, mock_insert, patch_bridge_state, mock_send):
         from app.command_handlers import handle_mission
         handle_mission("mission: do something cool")
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         assert "do something cool" in entry
         assert "mission:" not in entry.lower()
 
@@ -657,7 +657,7 @@ class TestHandleMission:
     def test_mission_with_mission_colon_space(self, mock_insert, patch_bridge_state, mock_send):
         from app.command_handlers import handle_mission
         handle_mission("mission : do something")
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         assert "do something" in entry
 
     @patch("app.command_handlers.insert_pending_mission")
@@ -767,7 +767,7 @@ class TestCliSkillDispatch:
         mock_exec.assert_not_called()
         # Must queue a mission
         mock_insert.assert_called_once()
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         assert "/group.myskill do something" in entry
         # Should ack to user
         mock_send.assert_called_once()
@@ -795,8 +795,8 @@ class TestCliSkillDispatch:
              _patch("app.utils.get_known_projects", return_value=[("myproject", "/path")]):
             _dispatch_skill(skill, "deploy", "myproject staging")
 
-        entry = mock_insert.call_args[0][1]
-        assert "[project:myproject]" in entry
+        entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "myproject"
         assert "/ops.deploy staging" in entry
         assert "project: myproject" in mock_send.call_args[0][0]
 
@@ -821,9 +821,9 @@ class TestCliSkillDispatch:
         with _patch("app.utils.get_known_projects", return_value=[("koan", "/path/koan")]):
             _queue_cli_skill_mission(skill, "KOAN fix the login bug")
 
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         # Must use the canonical name "koan", not "KOAN"
-        assert "[project:koan]" in entry
+        assert mock_insert.call_args[0][1] == "koan"
         assert "/core.plan fix the login bug" in entry
 
     @patch("app.command_handlers.insert_pending_mission")
@@ -1449,8 +1449,8 @@ class TestHandleMissionAutoDetect:
         """'koan fix the login bug' auto-detects project 'koan'."""
         from app.command_handlers import handle_mission
         handle_mission("koan fix the login bug")
-        entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in entry
+        entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "koan"
         assert "fix the login bug" in entry
         assert "project: koan" in mock_send.call_args[0][0]
 
@@ -1464,8 +1464,9 @@ class TestHandleMissionAutoDetect:
         """When first word isn't a known project, no project tag added."""
         from app.command_handlers import handle_mission
         handle_mission("fix something random")
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         assert "[project:" not in entry
+        assert mock_insert.call_args[0][1] in (None, "")
 
     @patch("app.command_handlers.insert_pending_mission")
     @patch("app.command_handlers.detect_project_from_text")
@@ -1478,8 +1479,7 @@ class TestHandleMissionAutoDetect:
         from app.command_handlers import handle_mission
         handle_mission("[project:backend] fix it")
         mock_detect.assert_not_called()
-        entry = mock_insert.call_args[0][1]
-        assert "[project:backend]" in entry
+        assert mock_insert.call_args[0][1] == "backend"
 
 
 # ---------------------------------------------------------------------------
@@ -1910,9 +1910,9 @@ class TestQueueCliSkillMissionEdgeCases:
         )
 
         _queue_cli_skill_mission(skill, "")
-        entry = mock_insert.call_args[0][1]
-        assert entry == "- /ops.deploy"
-        assert "[project:" not in entry
+        entry = mock_insert.call_args[0][0]
+        assert entry == "/ops.deploy"
+        assert mock_insert.call_args[0][1] in (None, "")
 
     @patch("app.command_handlers.insert_pending_mission")
     @patch("app.utils.get_known_projects", return_value=[])
@@ -1933,9 +1933,9 @@ class TestQueueCliSkillMissionEdgeCases:
         )
 
         _queue_cli_skill_mission(skill, "myarg something")
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         assert "/ops.check myarg something" in entry
-        assert "[project:" not in entry
+        assert mock_insert.call_args[0][1] in (None, "")
 
     @patch("app.command_handlers.insert_pending_mission")
     def test_queue_truncates_long_args_in_ack(

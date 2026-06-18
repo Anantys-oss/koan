@@ -178,7 +178,7 @@ class TestPrRebase:
             assert success
             assert "Rebase queued" in msg
             mock_insert.assert_called_once()
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "Rebase PR #42" in entry
             assert "app.rebase_pr" in entry
 
@@ -197,7 +197,7 @@ class TestPrRebase:
                 "https://github.com/sukria/koan/pull/42",
                 str(instance_dir), koan_root, notify_fn=notify,
             )
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "--project-path /home/koan" in entry
 
     def test_rebase_without_project_path(self, instance_dir, koan_root):
@@ -215,7 +215,7 @@ class TestPrRebase:
                 "https://github.com/unknown/repo/pull/10",
                 str(instance_dir), koan_root, notify_fn=notify,
             )
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "--project-path" not in entry
 
 
@@ -241,7 +241,7 @@ class TestPrReview:
             assert success
             assert "review queued" in msg.lower()
             mock_insert.assert_called_once()
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "/pr" in entry
             assert "Review PR #42" in entry
 
@@ -294,7 +294,7 @@ class TestPrReview:
             )
             # Only rebase should be queued, not review
             assert mock_insert.call_count == 1
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "Rebase" in entry
 
 
@@ -446,7 +446,7 @@ class TestIssuePlan:
             assert success
             assert "/plan queued" in msg.lower()
             mock_insert.assert_called_once()
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "github.com/sukria/koan/issues/42" in entry
 
     def test_plan_mission_has_project_tag(self, instance_dir, koan_root):
@@ -464,8 +464,8 @@ class TestIssuePlan:
                 "https://github.com/sukria/koan/issues/42",
                 str(instance_dir), koan_root, notify_fn=notify,
             )
-            entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in entry
+            project = mock_insert.call_args[0][1]
+            assert project == "koan"
 
     def test_plan_mission_has_run_command_when_project_found(self, instance_dir, koan_root):
         from app.check_runner import run_check
@@ -482,7 +482,7 @@ class TestIssuePlan:
                 "https://github.com/sukria/koan/issues/42",
                 str(instance_dir), koan_root, notify_fn=notify,
             )
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "run: `" in entry
             assert "app.plan_runner" in entry
 
@@ -501,7 +501,7 @@ class TestIssuePlan:
                 "https://github.com/sukria/koan/issues/42",
                 str(instance_dir), koan_root, notify_fn=notify,
             )
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "/plan" in entry
 
 
@@ -810,27 +810,26 @@ class TestQueueRebase:
     def test_rebase_entry_format(self, instance_dir, koan_root):
         from app.check_runner import _queue_rebase
 
-        missions_path = instance_dir / "missions.md"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.resolve_project_path", return_value="/home/proj"), \
              patch("app.utils.project_name_for_path", return_value="proj"):
-            _queue_rebase("owner", "repo", "42", missions_path,
-                          koan_root, instance_dir)
+            _queue_rebase("owner", "repo", "42", instance_dir,
+                          koan_root)
             mock_insert.assert_called_once()
-            entry = mock_insert.call_args[0][1]
-            assert "[project:proj]" in entry
-            assert "Rebase PR #42" in entry
-            assert "owner/repo" in entry
+            text = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert project == "proj"
+            assert "Rebase PR #42" in text
+            assert "owner/repo" in text
 
     def test_rebase_without_project_path(self, instance_dir, koan_root):
         from app.check_runner import _queue_rebase
 
-        missions_path = instance_dir / "missions.md"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.resolve_project_path", return_value=None):
-            _queue_rebase("owner", "repo", "10", missions_path,
-                          koan_root, instance_dir)
-            entry = mock_insert.call_args[0][1]
+            _queue_rebase("owner", "repo", "10", instance_dir,
+                          koan_root)
+            entry = mock_insert.call_args[0][0]
             assert "--project-path" not in entry
 
 
@@ -842,26 +841,25 @@ class TestQueuePrReview:
     def test_review_entry_format(self, instance_dir):
         from app.check_runner import _queue_pr_review
 
-        missions_path = instance_dir / "missions.md"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.resolve_project_path", return_value="/home/proj"), \
              patch("app.utils.project_name_for_path", return_value="proj"):
-            _queue_pr_review("owner", "repo", "99", missions_path)
+            _queue_pr_review("owner", "repo", "99", instance_dir)
             mock_insert.assert_called_once()
-            entry = mock_insert.call_args[0][1]
-            assert "[project:proj]" in entry
-            assert "Review PR #99" in entry
-            assert "/pr https://github.com/owner/repo/pull/99" in entry
+            text = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert project == "proj"
+            assert "Review PR #99" in text
+            assert "/pr https://github.com/owner/repo/pull/99" in text
 
     def test_review_unknown_project_uses_repo_name(self, instance_dir):
         from app.check_runner import _queue_pr_review
 
-        missions_path = instance_dir / "missions.md"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.resolve_project_path", return_value=None):
-            _queue_pr_review("owner", "unknown-repo", "5", missions_path)
-            entry = mock_insert.call_args[0][1]
-            assert "[project:unknown-repo]" in entry
+            _queue_pr_review("owner", "unknown-repo", "5", instance_dir)
+            project = mock_insert.call_args[0][1]
+            assert project == "unknown-repo"
 
 
 # ---------------------------------------------------------------------------
@@ -878,11 +876,12 @@ class TestQueuePlan:
                     return_value="/home/proj"):
             _queue_plan("owner", "repo", "42", "Fix the thing",
                         instance_dir, koan_root)
-            entry = mock_insert.call_args[0][1]
-            assert "[project:proj]" in entry
-            assert "app.plan_runner" in entry
-            assert "--issue-url" in entry
-            assert "issues/42" in entry
+            text = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert project == "proj"
+            assert "app.plan_runner" in text
+            assert "--issue-url" in text
+            assert "issues/42" in text
 
     def test_plan_without_project_path(self, instance_dir, koan_root):
         from app.check_runner import _queue_plan
@@ -893,7 +892,7 @@ class TestQueuePlan:
                     return_value=None):
             _queue_plan("owner", "repo", "42", "Fix it",
                         instance_dir, koan_root)
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "/plan" in entry
             assert "app.plan_runner" not in entry
 
@@ -908,7 +907,7 @@ class TestQueuePlan:
                     return_value="/home/proj"):
             _queue_plan("owner", "repo", "42", long_title,
                         instance_dir, koan_root)
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             # Title should be truncated to 80 chars
             assert "A" * 80 in entry
             assert "A" * 81 not in entry
@@ -923,7 +922,7 @@ class TestQueuePlan:
                     return_value="/home/proj"):
             _queue_plan("owner", "repo", "42", "",
                         instance_dir, koan_root)
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "issue #42" in entry
 
 

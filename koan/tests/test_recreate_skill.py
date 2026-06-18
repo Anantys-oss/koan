@@ -95,8 +95,9 @@ class TestMissionQueuing:
             assert "queued" in result.lower()
             assert "#42" in result
             mock_insert.assert_called_once()
-            mission_entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in mission_entry
+            mission_entry = mock_insert.call_args[0][0]
+            mission_project = mock_insert.call_args[0][1]
+            assert mission_project == "koan"
             assert "/recreate https://github.com/sukria/koan/pull/42" in mission_entry
 
     def test_url_with_fragment_accepted(self, handler, ctx):
@@ -127,14 +128,15 @@ class TestMissionQueuing:
             assert result == "Recreate queued for PR #42 (sukria/koan)"
 
     def test_mission_entry_format(self, handler, ctx):
-        """Verify mission text contains project tag and clean /recreate format."""
+        """Verify mission text contains /recreate format and project is koan."""
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert entry.startswith("- [project:koan]")
+            entry = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert project == "koan"
             assert "/recreate https://github.com/sukria/koan/pull/42" in entry
             assert "run:" not in entry
             assert "python3 -m" not in entry
@@ -146,7 +148,7 @@ class TestMissionQueuing:
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "/recreate " in entry
             assert "/rebase " not in entry
 
@@ -159,19 +161,21 @@ class TestMissionQueuing:
              patch("app.utils.insert_pending_mission") as mock_insert:
             result = handler.handle(ctx)
             assert "queued" in result.lower()
-            entry = mock_insert.call_args[0][1]
+            project = mock_insert.call_args[0][1]
             # Falls back to directory basename when path doesn't match known projects
-            assert "[project:myrepo]" in entry
+            assert project == "myrepo"
 
     def test_missions_path_uses_instance_dir(self, handler, ctx):
-        """Verify insert_pending_mission is called with the correct missions path."""
+        """Verify insert_pending_mission is called with the mission text and project."""
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
-            missions_path = mock_insert.call_args[0][0]
-            assert missions_path == ctx.instance_dir / "missions.md"
+            mission_text = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert "/recreate https://github.com/sukria/koan/pull/42" in mission_text
+            assert project == "koan"
 
     def test_recreate_ack_includes_repo_info(self, handler, ctx):
         """Ack message should include PR number and repo."""

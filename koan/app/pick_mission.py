@@ -14,7 +14,6 @@ Output (stdout):
 """
 
 import sys
-from pathlib import Path
 
 from app.utils import PROJECT_TAG_RE, PROJECT_TAG_STRIP_RE
 
@@ -54,28 +53,24 @@ def pick_mission(
 ) -> str:
     """Pick the next mission in strict FIFO order.
 
-    Always picks the first pending mission from missions.md.
+    Always picks the first pending mission from the store.
     Queue position is the sole priority signal — no LLM-based reordering.
     Returns 'project:title' or empty string.
     """
-    instance = Path(instance_dir)
-    missions_path = instance / "missions.md"
-
     try:
-        missions_content = missions_path.read_text()
-    except FileNotFoundError:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(instance_dir)
+        pending = store.get_by_status("pending")
+    except (OSError, ValueError):
         return ""
-
-    # Quick check: any pending missions at all?
-    from app.missions import count_pending
-    pending_count = count_pending(missions_content)
-    if pending_count == 0:
+    if not pending:
         return ""
-
-    project, title = fallback_extract(missions_content, projects_str)
-    if project and title:
-        return f"{project}:{title}"
-    return ""
+    record = pending[0]
+    project = record.project
+    if not project:
+        parts = [p for p in projects_str.split(";") if p]
+        project = parts[0].split(":")[0] if parts else "default"
+    return f"{project}:{record.text}"
 
 
 if __name__ == "__main__":

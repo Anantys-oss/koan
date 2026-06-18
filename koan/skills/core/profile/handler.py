@@ -53,8 +53,6 @@ def _queue_project_profile(ctx, project_name):
             f"Known projects: {known}"
         )
 
-    mission_entry = f"- [project:{project_name}] /profile"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission("/profile", project_name)
 
     return f"Profile queued for {project_name}"

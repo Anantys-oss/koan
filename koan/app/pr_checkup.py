@@ -96,16 +96,14 @@ def _has_conflicts(pr: dict) -> bool:
 
 
 def _get_pending_missions_text(instance_dir: Path) -> str:
-    """Read the pending section of missions.md."""
-    missions_path = instance_dir / "missions.md"
-    if not missions_path.exists():
-        return ""
+    """Return pending mission texts joined by newline."""
     try:
-        from app.missions import parse_sections
-        content = missions_path.read_text()
-        sections = parse_sections(content)
-        return "\n".join(sections.get("pending", []))
-    except (OSError, ValueError):
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(instance_dir))
+        return "\n".join(r.text for r in store.get_by_status("pending"))
+    except Exception as e:
+        import sys
+        print(f"[pr_checkup] error loading mission store: {e}", file=sys.stderr)
         return ""
 
 
@@ -149,7 +147,6 @@ def run_checkup(
         notify_fn = send_telegram
 
     instance_path = Path(instance_dir)
-    missions_path = instance_path / "missions.md"
 
     # Get the bot's GitHub username
     author = get_gh_username()
@@ -203,7 +200,7 @@ def run_checkup(
             if _has_conflicts(pr):
                 if not _is_mission_already_queued(pending_text, pr_url, "rebase"):
                     _queue_mission(
-                        missions_path, project_name,
+                        instance_path, project_name,
                         f"/rebase {pr_url}",
                     )
                     issues_found.append("conflicts → /rebase queued")
@@ -214,7 +211,7 @@ def run_checkup(
             if _has_ci_failure(pr):
                 if not _is_mission_already_queued(pending_text, pr_url, "check"):
                     _queue_mission(
-                        missions_path, project_name,
+                        instance_path, project_name,
                         f"/check {pr_url}",
                     )
                     issues_found.append("CI failure → /check queued")
@@ -247,12 +244,11 @@ def run_checkup(
     return True, msg
 
 
-def _queue_mission(missions_path: Path, project_name: str, mission_text: str):
+def _queue_mission(instance_dir, project_name: str, mission_text: str):
     """Queue a mission to missions.md with dedup."""
     from app.utils import insert_pending_mission
 
-    entry = f"- [project:{project_name}] {mission_text}"
-    insert_pending_mission(missions_path, entry)
+    insert_pending_mission(mission_text, project_name)
 
 
 # ---------------------------------------------------------------------------

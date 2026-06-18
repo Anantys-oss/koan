@@ -366,15 +366,14 @@ def check_and_dispatch_review_comments(
                 continue
 
             summary = _format_comment_summary(all_comments)
-            mission = (
-                f"[project:{project_name}] Address review comments on "
+            mission_text = (
+                f"Address review comments on "
                 f"#{pr_number} ({summary})"
             )
 
             try:
                 from app.utils import insert_pending_mission
-                missions_path = Path(instance_dir) / "missions.md"
-                inserted = insert_pending_mission(missions_path, f"- {mission}")
+                inserted = insert_pending_mission(mission_text, project_name)
             except (ImportError, OSError) as e:
                 log.warning("Failed to insert review dispatch mission: %s", e)
                 continue

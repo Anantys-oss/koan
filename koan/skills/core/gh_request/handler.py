@@ -73,10 +73,8 @@ def handle(ctx) -> Optional[str]:
         # Classification failed or returned no match — queue as generic mission.
         # Use plain text (no /gh_request prefix) so Claude handles it naturally.
         mission_text = f"{url} {request_text}".strip() if url else request_text
-        mission_entry = f"- [project:{project_name}] {mission_text}"
         from app.utils import insert_pending_mission
-        missions_path = ctx.instance_dir / "missions.md"
-        insert_pending_mission(missions_path, mission_entry)
+        insert_pending_mission(mission_text, project_name)
         return f"Request queued for {project_name}: {request_text[:80]}"
 
     # Build the mission with the classified command

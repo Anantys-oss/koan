@@ -157,19 +157,17 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
 
     # Build status report
     actions = []
-    missions_path = instance_dir / "missions.md"
     needs_reb = _needs_rebase(pr_data)
 
     # 1. Check if rebase is needed
     if needs_reb:
-        _queue_rebase(owner, repo, pr_number, missions_path,
-                      koan_root, instance_dir)
+        _queue_rebase(owner, repo, pr_number, instance_dir, koan_root)
         actions.append("\u267b\ufe0f Rebase queued \u2014 PR has merge conflicts")
 
     # 2. Check if review is needed
     is_draft = pr_data.get("isDraft", False)
     if _has_no_reviews(pr_data) and not is_draft and not needs_reb:
-        _queue_pr_review(owner, repo, pr_number, missions_path)
+        _queue_pr_review(owner, repo, pr_number, instance_dir)
         actions.append("\U0001f4dd PR review queued \u2014 no reviews yet")
 
     # Record the check
@@ -194,8 +192,8 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
     return True, msg
 
 
-def _queue_rebase(owner, repo, pr_number, missions_path,
-                  koan_root, instance_dir):
+def _queue_rebase(owner, repo, pr_number, instance_dir,
+                  koan_root):
     """Queue a rebase mission for the PR."""
     from app.utils import insert_pending_mission, resolve_project_path
 
@@ -210,25 +208,25 @@ def _queue_rebase(owner, repo, pr_number, missions_path,
     if project_path:
         cmd += f" --project-path {project_path}"
 
-    entry = (
-        f"- [project:{project_name}] Rebase PR #{pr_number} "
+    mission_text = (
+        f"Rebase PR #{pr_number} "
         f"({owner}/{repo}) \u2014 run: `{cmd}`"
     )
-    insert_pending_mission(missions_path, entry)
+    insert_pending_mission(mission_text, project_name)
 
 
-def _queue_pr_review(owner, repo, pr_number, missions_path):
+def _queue_pr_review(owner, repo, pr_number, instance_dir):
     """Queue a PR review mission."""
     from app.utils import insert_pending_mission
 
     project_name = _resolve_project_name(repo, owner=owner)
     pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
 
-    entry = (
-        f"- [project:{project_name}] Review PR #{pr_number} "
+    mission_text = (
+        f"Review PR #{pr_number} "
         f"({owner}/{repo}) \u2014 /pr {pr_url}"
     )
-    insert_pending_mission(missions_path, entry)
+    insert_pending_mission(mission_text, project_name)
 
 
 # ---------------------------------------------------------------------------
@@ -290,9 +288,9 @@ def _queue_plan(owner, repo, issue_number, title, instance_dir, koan_root):
 
     project_name = _resolve_project_name(repo, owner=owner)
     issue_url = f"https://github.com/{owner}/{repo}/issues/{issue_number}"
-    missions_path = instance_dir / "missions.md"
 
     project_path = _resolve_project_path(repo, owner=owner)
+    short_title = title[:80] if title else f"issue #{issue_number}"
     if project_path:
         cmd = (
             f"cd {koan_root}/koan && "
@@ -300,19 +298,17 @@ def _queue_plan(owner, repo, issue_number, title, instance_dir, koan_root):
             f"--project-path {shlex.quote(project_path)} "
             f"--issue-url {issue_url}"
         )
-        short_title = title[:80] if title else f"issue #{issue_number}"
-        entry = (
-            f"- [project:{project_name}] Plan iteration on {short_title} "
+        mission_text = (
+            f"Plan iteration on {short_title} "
             f"\u2014 run: `{cmd}`"
         )
     else:
-        short_title = title[:80] if title else f"issue #{issue_number}"
-        entry = (
-            f"- [project:{project_name}] Plan iteration on {short_title} "
+        mission_text = (
+            f"Plan iteration on {short_title} "
             f"\u2014 /plan {issue_url}"
         )
 
-    insert_pending_mission(missions_path, entry)
+    insert_pending_mission(mission_text, project_name)
 
 
 def _resolve_project_name(repo, owner=None):

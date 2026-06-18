@@ -41,7 +41,6 @@ from app.missions import (
     stamp_queued,
     stamp_started,
     start_mission,
-    canonical_mission_key,
     strip_all_lifecycle_markers,
     strip_timestamps,
     prune_completed_sections,
@@ -2244,39 +2243,6 @@ class TestProjectTagPreservation:
 
 
 # ---------------------------------------------------------------------------
-# modify_missions_file return value
-# ---------------------------------------------------------------------------
-
-class TestModifyMissionsFileReturn:
-    """modify_missions_file must return transformed content for diagnostics."""
-
-    def test_returns_transformed_content(self, tmp_path):
-        missions_path = tmp_path / "missions.md"
-        missions_path.write_text(
-            "# Missions\n\n## Pending\n- test mission\n\n## Done\n"
-        )
-        from app.utils import modify_missions_file
-
-        result = modify_missions_file(
-            missions_path,
-            lambda c: complete_mission(c, "test mission"),
-        )
-        assert result is not None
-        assert "## Done" in result
-        assert "test mission" in result
-        assert "\u2705" in result
-
-    def test_returns_unchanged_on_noop(self, tmp_path):
-        missions_path = tmp_path / "missions.md"
-        original = "# Missions\n\n## Pending\n\n## Done\n"
-        missions_path.write_text(original)
-        from app.utils import modify_missions_file
-
-        result = modify_missions_file(missions_path, lambda c: c)
-        assert result == original
-
-
-# ---------------------------------------------------------------------------
 # _flush_in_progress_to_failed — sanity enforcement
 # ---------------------------------------------------------------------------
 
@@ -2697,43 +2663,6 @@ class TestMissionTimingDisplay:
         text = "Bug ▶(2026-02-18T11:00) ✅ (2026-02-18 10:00)"
         result = mission_timing_display(text)
         assert result == ""
-
-
-# --- canonical_mission_key ---
-
-class TestCanonicalMissionKey:
-    """S2: single source of truth for stable mission identity."""
-
-    def test_strips_leading_dash(self):
-        assert canonical_mission_key("- fix bug") == "fix bug"
-
-    def test_strips_lifecycle_timestamps(self):
-        base = canonical_mission_key("fix bug [project:foo]")
-        full = canonical_mission_key(
-            "fix bug [project:foo] ⏳(2026-01-01T00:00) ▶(2026-01-01T00:05)"
-        )
-        assert base == full == "fix bug [project:foo]"
-
-    def test_strips_recovery_and_complexity_tags(self):
-        assert (
-            canonical_mission_key("fix bug [r:3] [complexity:large]") == "fix bug"
-        )
-
-    def test_keeps_project_tag(self):
-        """Project tag is identity-bearing and must be preserved."""
-        assert "[project:foo]" in canonical_mission_key("fix bug [project:foo]")
-        assert (
-            canonical_mission_key("fix bug [project:foo]")
-            != canonical_mission_key("fix bug [project:bar]")
-        )
-
-    def test_stable_across_full_lifecycle_line(self):
-        clean = canonical_mission_key("fix bug [project:foo]")
-        lifecycle = canonical_mission_key(
-            "- fix bug [project:foo] [r:2] [complexity:medium] "
-            "⏳(2026-01-01T00:00) ▶(2026-01-01T00:05)"
-        )
-        assert clean == lifecycle
 
 
 # --- strip_timestamps ---

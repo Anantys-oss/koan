@@ -224,6 +224,9 @@ class TestLogEvent:
         assert len(data["details"]["mission"]) == 2000
 
     def test_graceful_on_readonly_dir(self, tmp_path, monkeypatch, capsys):
+        import os
+        if os.getuid() == 0:
+            pytest.skip("root can create directories anywhere; permission check inapplicable")
         monkeypatch.setenv("KOAN_ROOT", "/nonexistent/readonly/path")
         monkeypatch.setattr("app.security_audit._get_audit_config",
                             lambda: {"enabled": True, "max_size_mb": 10, "redact_patterns": []})

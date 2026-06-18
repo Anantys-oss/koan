@@ -202,7 +202,6 @@ def _handle_run(ctx, identifier=None):
     from app.recurring import list_recurring, format_recurring_list, force_run
 
     recurring_path = ctx.instance_dir / "recurring.json"
-    missions_path = ctx.instance_dir / "missions.md"
 
     if not identifier:
         # No identifier — show list and ask for confirmation
@@ -215,7 +214,7 @@ def _handle_run(ctx, identifier=None):
 
     # Attempt to force run
     try:
-        injected = force_run(recurring_path, missions_path, identifier=identifier)
+        injected = force_run(recurring_path, ctx.instance_dir, identifier=identifier)
         if injected:
             return f"Forced run of {len(injected)} mission(s):\n" + "\n".join(f"  • {text}" for text in injected)
         return "No missions matched the identifier."

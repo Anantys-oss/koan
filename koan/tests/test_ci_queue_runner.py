@@ -176,39 +176,49 @@ class TestMainErrorHandling:
 class TestDrainOneErrorHandling:
     """Verify drain_one handles CI status results correctly."""
 
-    def _missions_with_ci_entry(self, attempt=0, max_attempts=5):
-        """Return missions.md content with one CI entry."""
-        return (
-            "# Missions\n\n## CI\n\n"
-            f"- [project:proj] {PR_URL} branch:fix-branch repo:owner/repo"
-            f" queued:2026-04-01T10:00 (attempt {attempt}/{max_attempts})\n\n"
-            "## Pending\n\n## Done\n"
-        )
+    def _make_entry(self, attempt=0, max_attempts=5):
+        """Return a CI monitor entry dict."""
+        return {
+            "pr_url": PR_URL,
+            "branch": "fix-branch",
+            "full_repo": "owner/repo",
+            "pr_number": "42",
+            "project_name": "proj",
+            "queued": "2026-04-01T10:00",
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+        }
+
+    def _common_patches(self, items=None):
+        """Common patches for drain_one: migrate no-ops, get_items returns items."""
+        return [
+            patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=items or []),
+        ]
 
     def test_drain_one_no_entries(self):
-        """When ## CI section is empty, drain_one returns None."""
+        """When no entries in monitor, drain_one returns None."""
         from app.ci_queue_runner import drain_one
 
-        empty_missions = "# Missions\n\n## CI\n\n## Pending\n\n## Done\n"
         with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", return_value=empty_missions),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=[]),
         ):
             result = drain_one("/tmp/instance")
 
         assert result is None
 
     def test_drain_one_success_removes_entry(self):
-        """On CI success, entry is removed from ## CI section."""
+        """On CI success, entry is removed from CI monitor."""
         from app.ci_queue_runner import drain_one
 
-        missions_content = self._missions_with_ci_entry()
         with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
-            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=[self._make_entry()]),
+            patch("app.ci_queue.monitor_remove_item") as mock_remove,
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("success", 123, "")),
             patch("app.ci_queue_runner._write_outbox"),
@@ -217,18 +227,17 @@ class TestDrainOneErrorHandling:
 
         assert result is not None
         assert "passed" in result.lower()
-        mock_modify.assert_called()
+        mock_remove.assert_called_once_with("/tmp/instance", PR_URL)
 
     def test_drain_one_failure_injects_mission(self):
         """On CI failure under max attempts, a /ci_check mission is injected."""
         from app.ci_queue_runner import drain_one
 
-        missions_content = self._missions_with_ci_entry(attempt=0, max_attempts=5)
         with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
-            patch("app.utils.modify_missions_file"),
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=[self._make_entry(attempt=0)]),
+            patch("app.ci_queue.monitor_update_attempt") as mock_update,
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456, "")),
             patch("app.ci_queue_runner._inject_ci_fix_mission", return_value=True) as mock_inject,
@@ -238,6 +247,7 @@ class TestDrainOneErrorHandling:
         assert result is not None
         assert "failed" in result.lower()
         mock_inject.assert_called_once()
+        mock_update.assert_called_once()
 
     def test_drain_one_failure_duplicate_skips_attempt_increment(self):
         """When a /ci_check is already queued, drain_one skips the attempt increment.
@@ -248,12 +258,11 @@ class TestDrainOneErrorHandling:
         """
         from app.ci_queue_runner import drain_one
 
-        missions_content = self._missions_with_ci_entry(attempt=0, max_attempts=5)
         with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
-            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=[self._make_entry(attempt=0)]),
+            patch("app.ci_queue.monitor_update_attempt") as mock_update,
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456, "")),
             patch("app.ci_queue_runner._inject_ci_fix_mission", return_value=False),
@@ -261,18 +270,17 @@ class TestDrainOneErrorHandling:
             result = drain_one("/tmp/instance")
 
         assert result is None
-        mock_modify.assert_not_called()
+        mock_update.assert_not_called()
 
     def test_drain_one_failure_at_max_gives_up(self):
         """On CI failure at max attempts, entry is removed and failure notified."""
         from app.ci_queue_runner import drain_one
 
-        missions_content = self._missions_with_ci_entry(attempt=5, max_attempts=5)
         with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
-            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=[self._make_entry(attempt=5, max_attempts=5)]),
+            patch("app.ci_queue.monitor_remove_item") as mock_remove,
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("failure", 456, "")),
             patch("app.ci_queue_runner._write_outbox") as mock_outbox,
@@ -281,13 +289,13 @@ class TestDrainOneErrorHandling:
 
         assert result is not None
         assert "giving up" in result.lower()
-        mock_modify.assert_called()
+        mock_remove.assert_called_once()
         mock_outbox.assert_called_once()
         # Failure notification should mention the PR URL
         assert PR_URL in mock_outbox.call_args[0][1]
 
     def test_drain_one_closed_pr_removed_and_notifies(self):
-        """A PR closed without merging is removed from ## CI and the human is notified.
+        """A PR closed without merging is removed from CI monitor and the human is notified.
 
         Regression: a closed PR with past failed CI runs would keep
         re-queueing /ci_check forever because drain_one only inspected
@@ -295,12 +303,11 @@ class TestDrainOneErrorHandling:
         """
         from app.ci_queue_runner import drain_one
 
-        missions_content = self._missions_with_ci_entry()
         with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
-            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=[self._make_entry()]),
+            patch("app.ci_queue.monitor_remove_item") as mock_remove,
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="CLOSED"),
             patch("app.ci_queue_runner.check_ci_status") as mock_status,
             patch("app.ci_queue_runner._write_outbox") as mock_outbox,
@@ -310,7 +317,7 @@ class TestDrainOneErrorHandling:
 
         assert result is not None
         assert "closed" in result.lower()
-        mock_modify.assert_called()
+        mock_remove.assert_called_once()
         mock_outbox.assert_called_once()
         assert PR_URL in mock_outbox.call_args[0][1]
         # CI status must not be checked and no fix mission must be injected
@@ -318,18 +325,17 @@ class TestDrainOneErrorHandling:
         mock_inject.assert_not_called()
 
     def test_drain_one_merged_pr_removed_silently(self):
-        """A merged PR is removed from ## CI without an outbox notification.
+        """A merged PR is removed from CI monitor without an outbox notification.
 
         Auto-merge already notifies on merge — duplicate noise is unwanted.
         """
         from app.ci_queue_runner import drain_one
 
-        missions_content = self._missions_with_ci_entry()
         with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
-            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=[self._make_entry()]),
+            patch("app.ci_queue.monitor_remove_item") as mock_remove,
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="MERGED"),
             patch("app.ci_queue_runner.check_ci_status") as mock_status,
             patch("app.ci_queue_runner._write_outbox") as mock_outbox,
@@ -338,7 +344,7 @@ class TestDrainOneErrorHandling:
 
         assert result is not None
         assert "merged" in result.lower()
-        mock_modify.assert_called()
+        mock_remove.assert_called_once()
         mock_outbox.assert_not_called()
         mock_status.assert_not_called()
 
@@ -346,12 +352,10 @@ class TestDrainOneErrorHandling:
         """If PR state cannot be determined, fall through to existing CI status flow."""
         from app.ci_queue_runner import drain_one
 
-        missions_content = self._missions_with_ci_entry()
         with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", return_value=missions_content),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
-            patch("app.utils.modify_missions_file"),
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=[self._make_entry()]),
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="UNKNOWN"),
             patch("app.ci_queue_runner.check_ci_status", return_value=("pending", None, "")) as mock_status,
         ):
@@ -377,8 +381,8 @@ class TestInjectCiFixMission:
         assert result is True
         mock_insert.assert_called_once()
         call_args = mock_insert.call_args
-        assert "/ci_check" in call_args[0][1]
-        assert PR_URL in call_args[0][1]
+        assert "/ci_check" in call_args[0][0]
+        assert PR_URL in call_args[0][0]
         assert call_args[1]["urgent"] is True
 
     def test_returns_false_when_duplicate(self):
@@ -399,8 +403,8 @@ class TestInjectCiFixMission:
         with patch("app.utils.insert_pending_mission", return_value=True) as mock_insert:
             _inject_ci_fix_mission("/tmp/instance", PR_URL, entry)
 
-        mission_text = mock_insert.call_args[0][1]
-        assert "[project:my-toolkit]" in mission_text
+        project = mock_insert.call_args[0][1]
+        assert project == "my-toolkit"
 
 
 class TestCheckPrStateSafe:
@@ -426,38 +430,30 @@ class TestCheckPrStateSafe:
 
 
 class TestLegacyJsonQueueMigration:
-    """Legacy .ci-queue.json migration into missions.md."""
-
-    def _write_missions(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## CI\n\n## Pending\n\n## Done\n")
-        return missions
+    """Legacy .ci-queue.json migration into .ci-monitor.json."""
 
     def test_no_legacy_file_is_noop(self, tmp_path):
         from app.ci_queue_runner import _maybe_migrate_json_queue
 
-        missions = self._write_missions(tmp_path)
-        _maybe_migrate_json_queue(str(tmp_path), missions)
+        _maybe_migrate_json_queue(str(tmp_path))
 
-        assert missions.read_text() == "# Missions\n\n## CI\n\n## Pending\n\n## Done\n"
+        monitor = tmp_path / ".ci-monitor.json"
+        assert not monitor.exists()
 
-    def test_invalid_json_is_removed_without_touching_missions(self, tmp_path):
+    def test_invalid_json_is_removed_without_touching_monitor(self, tmp_path):
         from app.ci_queue_runner import _maybe_migrate_json_queue
 
-        missions = self._write_missions(tmp_path)
         legacy = tmp_path / ".ci-queue.json"
         legacy.write_text("not-json")
 
-        _maybe_migrate_json_queue(str(tmp_path), missions)
+        _maybe_migrate_json_queue(str(tmp_path))
 
         assert not legacy.exists()
-        assert "## CI" in missions.read_text()
-        assert PR_URL not in missions.read_text()
 
     def test_valid_entries_are_migrated_and_lock_removed(self, tmp_path):
         from app.ci_queue_runner import _maybe_migrate_json_queue
+        from app.ci_queue import monitor_get_items
 
-        missions = self._write_missions(tmp_path)
         legacy = tmp_path / ".ci-queue.json"
         lock = tmp_path / ".ci-queue.lock"
         lock.write_text("")
@@ -473,28 +469,31 @@ class TestLegacyJsonQueueMigration:
         ]))
 
         with patch("app.utils.load_config", return_value={"ci_fix_max_attempts": 7}):
-            _maybe_migrate_json_queue(str(tmp_path), missions)
+            _maybe_migrate_json_queue(str(tmp_path))
 
-        content = missions.read_text()
-        assert PR_URL in content
-        assert "fix-branch" in content
-        assert "owner/repo" in content
-        assert "attempt 0/7" in content
-        assert "pull/99" not in content
+        items = monitor_get_items(str(tmp_path))
+        pr_urls = [i["pr_url"] for i in items]
+        assert PR_URL in pr_urls
+        assert "https://github.com/owner/repo/pull/99" not in pr_urls
+        migrated = next(i for i in items if i["pr_url"] == PR_URL)
+        assert migrated["branch"] == "fix-branch"
+        assert migrated["full_repo"] == "owner/repo"
+        assert migrated["max_attempts"] == 7
+        assert migrated["attempt"] == 0
         assert not legacy.exists()
         assert not lock.exists()
 
     def test_non_list_json_is_removed(self, tmp_path):
         from app.ci_queue_runner import _maybe_migrate_json_queue
+        from app.ci_queue import monitor_get_items
 
-        missions = self._write_missions(tmp_path)
         legacy = tmp_path / ".ci-queue.json"
         legacy.write_text(json.dumps({"pr_url": PR_URL}))
 
-        _maybe_migrate_json_queue(str(tmp_path), missions)
+        _maybe_migrate_json_queue(str(tmp_path))
 
         assert not legacy.exists()
-        assert PR_URL not in missions.read_text()
+        assert monitor_get_items(str(tmp_path)) == []
 
 
 class TestReenqueueForMonitoring:
@@ -503,14 +502,14 @@ class TestReenqueueForMonitoring:
 
         with (
             patch.dict("os.environ", {}, clear=True),
-            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue.monitor_add_item") as mock_add,
         ):
             _reenqueue_for_monitoring(
                 PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
             )
 
         assert "KOAN_ROOT not set" in capsys.readouterr().err
-        mock_modify.assert_not_called()
+        mock_add.assert_not_called()
 
     def test_modify_failure_is_logged_not_raised(self, tmp_path, capsys):
         from app.ci_queue_runner import _reenqueue_for_monitoring
@@ -521,7 +520,7 @@ class TestReenqueueForMonitoring:
         with (
             patch.dict("os.environ", {"KOAN_ROOT": str(root)}),
             patch("app.utils.load_config", return_value={"ci_fix_max_attempts": 5}),
-            patch("app.utils.modify_missions_file", side_effect=OSError("locked")),
+            patch("app.ci_queue.monitor_add_item", side_effect=OSError("locked")),
         ):
             _reenqueue_for_monitoring(
                 PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
@@ -544,10 +543,10 @@ class TestCiCheckConfigGateRunner:
         from app.ci_queue_runner import _reenqueue_for_monitoring
         with (
             patch("app.config.is_ci_check_enabled", return_value=False),
-            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue.monitor_add_item") as mock_add,
         ):
             _reenqueue_for_monitoring(PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH)
-        mock_modify.assert_not_called()
+        mock_add.assert_not_called()
         assert "disabled" in capsys.readouterr().err
 
 
@@ -768,20 +767,19 @@ class TestAttemptCiFixes:
         assert call_kwargs["timeout"] == 999
 
     def test_reenqueue_called_on_pending_ci(self):
-        """After pushing a fix, if CI is pending, the PR is re-enqueued in ## CI section."""
+        """After pushing a fix, if CI is pending, the PR is re-enqueued for CI monitoring."""
         from app.ci_queue_runner import _reenqueue_for_monitoring
 
         with (
             patch.dict("os.environ", {"KOAN_ROOT": "/tmp/test-koan"}),
-            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue.monitor_add_item") as mock_add,
             patch("app.utils.load_config", return_value={"ci_fix_max_attempts": 5}),
-            patch("pathlib.Path.exists", return_value=True),
         ):
             _reenqueue_for_monitoring(
                 PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
             )
 
-        mock_modify.assert_called_once()
+        mock_add.assert_called_once()
 
 
 class TestAggregateCiRuns:
@@ -1083,28 +1081,32 @@ class TestAggregateCiRuns:
 
 
 class TestDrainOneBlockedApproval:
-    """drain_one must remove a PR from ## CI when its workflows are
+    """drain_one must remove a PR from CI monitor when its workflows are
     blocked on maintainer approval, instead of polling forever.
     """
 
     PR_URL = "https://github.com/owner/repo/pull/42"
 
-    def _missions_with_ci_entry(self):
-        return (
-            "# Missions\n\n## CI\n\n"
-            f"- [project:proj] {self.PR_URL} branch:fix-branch repo:owner/repo"
-            f" queued:2026-04-01T10:00 (attempt 0/5)\n\n"
-            "## Pending\n\n## Done\n"
-        )
+    def _make_entry(self):
+        return {
+            "pr_url": self.PR_URL,
+            "branch": "fix-branch",
+            "full_repo": "owner/repo",
+            "pr_number": "42",
+            "project_name": "proj",
+            "queued": "2026-04-01T10:00",
+            "attempt": 0,
+            "max_attempts": 5,
+        }
 
     def test_blocked_approval_removes_entry_and_notifies(self):
         from app.ci_queue_runner import drain_one
 
         with (
-            patch("pathlib.Path.exists", return_value=True),
-            patch("pathlib.Path.read_text", return_value=self._missions_with_ci_entry()),
             patch("app.ci_queue_runner._maybe_migrate_json_queue"),
-            patch("app.utils.modify_missions_file") as mock_modify,
+            patch("app.ci_queue.monitor_migrate_from_missions_md"),
+            patch("app.ci_queue.monitor_get_items", return_value=[self._make_entry()]),
+            patch("app.ci_queue.monitor_remove_item") as mock_remove,
             patch("app.ci_queue_runner._check_pr_state_safe", return_value="OPEN"),
             patch(
                 "app.ci_queue_runner.check_ci_status",
@@ -1117,7 +1119,7 @@ class TestDrainOneBlockedApproval:
 
         assert result is not None
         assert "approval" in result.lower()
-        mock_modify.assert_called()
+        mock_remove.assert_called_once_with("/tmp/instance", self.PR_URL)
         mock_outbox.assert_called_once()
         # Outbox message should reference the PR so the human can act
         assert self.PR_URL in mock_outbox.call_args[0][1]

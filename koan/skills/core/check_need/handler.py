@@ -60,9 +60,7 @@ def handle(ctx) -> Optional[str]:
     # Queue the mission
     from app.utils import insert_pending_mission
 
-    mission_entry = f"- [project:{project_name}] /check_need {url}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission(f"/check_need {url}", project_name)
 
     return f"🔎 Relevance check queued for {label}"
 

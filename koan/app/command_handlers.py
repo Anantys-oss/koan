@@ -57,11 +57,11 @@ CORE_COMMANDS = frozenset({
 
 def _has_in_progress_mission() -> bool:
     """Check if any mission is currently in progress."""
-    from app.missions import count_in_progress
     try:
-        content = MISSIONS_FILE.read_text(encoding="utf-8")
-        return count_in_progress(content) > 0
-    except FileNotFoundError:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(INSTANCE_DIR))
+        return len(store.get_by_status("in_progress")) > 0
+    except (OSError, ValueError):
         return False
 
 
@@ -337,13 +337,7 @@ def _queue_cli_skill_mission(skill: Skill, args: str):
     if mission_args:
         koan_cmd += f" {mission_args}"
 
-    # Format mission entry with optional project tag
-    if project:
-        entry = f"- [project:{project}] {koan_cmd}"
-    else:
-        entry = f"- {koan_cmd}"
-
-    insert_pending_mission(MISSIONS_FILE, entry)
+    insert_pending_mission(koan_cmd, project)
 
     ack = "✅ Mission queued"
     if project:
@@ -1012,14 +1006,8 @@ def handle_mission(text: str):
                 log("guard", f"WARNING mission: {guard_result.reason} | {mission_text[:100]}")
                 quarantine_mission(mission_text, guard_result.reason, source="telegram")
 
-    # Format mission entry with project tag if specified
-    if project:
-        mission_entry = f"- [project:{project}] {mission_text}"
-    else:
-        mission_entry = f"- {mission_text}"
-
     # Append to missions.md under pending section (with file locking)
-    insert_pending_mission(MISSIONS_FILE, mission_entry, urgent=urgent)
+    insert_pending_mission(mission_text, project, urgent=urgent)
 
     # Acknowledge with project info
     ack_msg = "✅ Mission received"

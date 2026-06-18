@@ -31,11 +31,9 @@ def instance_dir(tmp_path):
         "- [project:koan] Build dashboard\n"
         "- Fix something\n\n"
         "## In Progress\n\n"
-        "### Admin Dashboard\n"
-        "- ~~Phase 1~~ done\n"
-        "- Phase 2 pending\n\n"
+        "- Working on admin panel\n\n"
         "## Done\n\n"
-        "- ~~Exploration~~ (session 3)\n"
+        "- Completed exploration\n"
     )
     (inst / "journal" / "2026-02-01" / "koan.md").write_text(
         "## Session 34\nBuilt the dashboard.\n"
@@ -50,7 +48,6 @@ def app_client(instance_dir, tmp_path):
     tpl_dest = tmp_path / "koan" / "templates"
     shutil.copytree(REAL_TEMPLATES, tpl_dest)
     with patch.object(dashboard, "INSTANCE_DIR", instance_dir), \
-         patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"), \
          patch.object(dashboard, "OUTBOX_FILE", instance_dir / "outbox.md"), \
          patch.object(dashboard, "SOUL_FILE", instance_dir / "soul.md"), \
          patch.object(dashboard, "SUMMARY_FILE", instance_dir / "memory" / "summary.md"), \
@@ -65,14 +62,14 @@ def app_client(instance_dir, tmp_path):
 
 class TestParsingMissions:
     def test_parse_sections(self, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             result = dashboard.parse_missions()
             assert len(result["pending"]) == 2
-            assert len(result["in_progress"]) == 1  # complex block
+            assert len(result["in_progress"]) == 1
             assert len(result["done"]) == 1
 
     def test_parse_empty(self, tmp_path):
-        with patch.object(dashboard, "MISSIONS_FILE", tmp_path / "nope.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", tmp_path / "nope"):
             result = dashboard.parse_missions()
             assert result == {"pending": [], "in_progress": [], "done": []}
 
@@ -103,17 +100,19 @@ class TestRoutes:
         assert b"Build dashboard" in resp.data
 
     def test_add_mission(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/missions/add", data={
                 "mission": "New test mission",
                 "project": "koan",
             }, follow_redirects=True)
             assert resp.status_code == 200
             content = (instance_dir / "missions.md").read_text()
-            assert "[project:koan] New test mission" in content
+            # Project tag is rendered after the mission text by the store.
+            assert "New test mission" in content
+            assert "[project:koan]" in content
 
     def test_add_mission_no_project(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/missions/add", data={
                 "mission": "Simple mission",
                 "project": "",
@@ -147,7 +146,7 @@ class TestRoutes:
         assert data["missions"]["in_progress"] == 1
 
     def test_chat_send_mission(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/chat/send", data={
                 "message": "Do something cool",
                 "mode": "mission",
@@ -783,7 +782,7 @@ class TestChatSend:
         assert "model overloaded" in captured.out
 
     def test_chat_send_with_project_tag(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/chat/send", data={
                 "message": "[project:koan] add feature",
                 "mode": "mission",
@@ -792,7 +791,9 @@ class TestChatSend:
         assert data["ok"] is True
         assert data["type"] == "mission"
         content = (instance_dir / "missions.md").read_text()
-        assert "[project:koan] add feature" in content
+        # Project tag is rendered after the mission text by the store.
+        assert "add feature" in content
+        assert "[project:koan]" in content
 
 
 class TestBuildDashboardPrompt:
@@ -1348,7 +1349,7 @@ class TestApiMissionsReorder:
     """Test POST /api/missions/reorder."""
 
     def test_valid_reorder(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/api/missions/reorder",
                 json={"position": 2, "target": 1})
         assert resp.status_code == 200
@@ -1357,7 +1358,7 @@ class TestApiMissionsReorder:
         assert "pending" in data
 
     def test_invalid_position(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/api/missions/reorder",
                 json={"position": 99, "target": 1})
         assert resp.status_code == 400
@@ -1369,7 +1370,7 @@ class TestApiMissionsReorder:
         assert resp.status_code == 400
 
     def test_same_position(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/api/missions/reorder",
                 json={"position": 1, "target": 1})
         assert resp.status_code == 400
@@ -1379,7 +1380,7 @@ class TestApiMissionsCancel:
     """Test POST /api/missions/cancel."""
 
     def test_valid_cancel(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/api/missions/cancel",
                 json={"position": 1})
         assert resp.status_code == 200
@@ -1389,7 +1390,7 @@ class TestApiMissionsCancel:
         assert "pending" in data
 
     def test_invalid_position(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/api/missions/cancel",
                 json={"position": 99})
         assert resp.status_code == 400
@@ -1403,7 +1404,7 @@ class TestApiMissionsEdit:
     """Test POST /api/missions/edit."""
 
     def test_valid_edit(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/api/missions/edit",
                 json={"position": 1, "text": "Updated mission"})
         assert resp.status_code == 200
@@ -1413,13 +1414,13 @@ class TestApiMissionsEdit:
         assert "Updated mission" in content
 
     def test_empty_text(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/api/missions/edit",
                 json={"position": 1, "text": ""})
         assert resp.status_code == 400
 
     def test_invalid_position(self, app_client, instance_dir):
-        with patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             resp = app_client.post("/api/missions/edit",
                 json={"position": 99, "text": "New text"})
         assert resp.status_code == 400
@@ -1628,7 +1629,7 @@ class TestPlansPage:
         })
         with patch("app.dashboard._get_project_repo", return_value="owner/repo"), \
              patch("app.github.run_gh", return_value=gh_response), \
-             patch.object(dashboard, "MISSIONS_FILE", Path("/nonexistent/missions.md")):
+             patch.object(dashboard, "INSTANCE_DIR", Path("/nonexistent/instance")):
             resp = app_client.get("/api/plans/myproject/42")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -1647,7 +1648,7 @@ class TestPlansPage:
             "- /plan https://github.com/owner/repo/issues/42\n"
             "- Some unrelated mission\n"
         )
-        with patch.object(dashboard, "MISSIONS_FILE", missions_file):
+        with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             linked = dashboard._find_linked_missions(
                 "https://github.com/owner/repo/issues/42", 42
             )

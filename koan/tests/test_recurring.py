@@ -4,6 +4,7 @@ import json
 import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from app.recurring import (
     load_recurring,
@@ -270,7 +271,9 @@ class TestIsDue:
 
 class TestCheckAndInject:
     def _setup_missions(self, tmp_path):
-        missions_path = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+        missions_path = instance_dir / "missions.md"
         missions_path.write_text(
             "# Missions\n\n"
             "## Pending\n\n"
@@ -282,7 +285,7 @@ class TestCheckAndInject:
     def test_no_recurring_file(self, tmp_path):
         missions_path = self._setup_missions(tmp_path)
         recurring_path = tmp_path / "recurring.json"
-        result = check_and_inject(recurring_path, missions_path)
+        result = check_and_inject(recurring_path, tmp_path)
         assert result == []
 
     def test_injects_due_mission(self, tmp_path):
@@ -291,7 +294,8 @@ class TestCheckAndInject:
         add_recurring(recurring_path, "daily", "check emails")
 
         now = datetime(2026, 2, 3, 8, 0)
-        result = check_and_inject(recurring_path, missions_path, now)
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = check_and_inject(recurring_path, tmp_path, now)
 
         assert len(result) == 1
         assert "check emails" in result[0]
@@ -321,7 +325,7 @@ class TestCheckAndInject:
         }]
         save_recurring(recurring_path, missions_data)
 
-        result = check_and_inject(recurring_path, missions_path, now)
+        result = check_and_inject(recurring_path, tmp_path, now)
         assert result == []
 
     def test_injects_with_project_tag(self, tmp_path):
@@ -330,7 +334,8 @@ class TestCheckAndInject:
         add_recurring(recurring_path, "weekly", "audit security", project="koan")
 
         now = datetime(2026, 2, 3, 8, 0)
-        check_and_inject(recurring_path, missions_path, now)
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            check_and_inject(recurring_path, tmp_path, now)
 
         content = missions_path.read_text()
         assert "[project:koan]" in content
@@ -343,7 +348,7 @@ class TestCheckAndInject:
         add_recurring(recurring_path, "hourly", "task 2")
 
         now = datetime(2026, 2, 3, 8, 0)
-        result = check_and_inject(recurring_path, missions_path, now)
+        result = check_and_inject(recurring_path, tmp_path, now)
 
         assert len(result) == 2
 
@@ -365,7 +370,7 @@ class TestCheckAndInject:
         ]
         save_recurring(recurring_path, missions_data)
 
-        result = check_and_inject(recurring_path, missions_path, now)
+        result = check_and_inject(recurring_path, tmp_path, now)
         assert len(result) == 1
         assert "due task" in result[0]
 
@@ -501,7 +506,9 @@ class TestFormatWithEvery:
 
 class TestCheckAndInjectEvery:
     def _setup_missions(self, tmp_path):
-        missions_path = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+        missions_path = instance_dir / "missions.md"
         missions_path.write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
         )
@@ -513,7 +520,8 @@ class TestCheckAndInjectEvery:
         add_recurring_interval(recurring_path, 300, "5m", "check design", project="nocrm")
 
         now = datetime(2026, 2, 3, 8, 0)
-        result = check_and_inject(recurring_path, missions_path, now)
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = check_and_inject(recurring_path, tmp_path, now)
         assert len(result) == 1
         content = missions_path.read_text()
         assert "[every 5m]" in content
@@ -533,7 +541,7 @@ class TestCheckAndInjectEvery:
         }]
         save_recurring(recurring_path, missions_data)
 
-        result = check_and_inject(recurring_path, missions_path, now)
+        result = check_and_inject(recurring_path, tmp_path, now)
         assert result == []
 
 
@@ -703,7 +711,7 @@ class TestCheckAndInjectWithAt:
         add_recurring(recurring_path, "daily", "nightly audit", at="20:00")
 
         now = datetime(2026, 2, 3, 18, 0)  # 6pm, before 8pm
-        result = check_and_inject(recurring_path, missions_path, now)
+        result = check_and_inject(recurring_path, tmp_path, now)
         assert result == []
 
     def test_injects_at_past_time(self, tmp_path):
@@ -712,7 +720,7 @@ class TestCheckAndInjectWithAt:
         add_recurring(recurring_path, "daily", "nightly audit", at="20:00")
 
         now = datetime(2026, 2, 3, 21, 0)  # 9pm, past 8pm
-        result = check_and_inject(recurring_path, missions_path, now)
+        result = check_and_inject(recurring_path, tmp_path, now)
         assert len(result) == 1
         assert "nightly audit" in result[0]
 
@@ -895,7 +903,9 @@ class TestIsDueWithDays:
 
 class TestForceRun:
     def _setup_missions(self, tmp_path):
-        missions_path = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+        missions_path = instance_dir / "missions.md"
         missions_path.write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n"
         )
@@ -908,7 +918,8 @@ class TestForceRun:
         add_recurring(recurring_path, "daily", "task 2")
 
         now = datetime(2026, 2, 3, 10, 0)
-        result = force_run(recurring_path, missions_path, identifier="1", now=now)
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = force_run(recurring_path, tmp_path, identifier="1", now=now)
 
         assert len(result) == 1
         assert "task 1" in result[0]
@@ -922,7 +933,7 @@ class TestForceRun:
         add_recurring(recurring_path, "daily", "check emails")
 
         now = datetime(2026, 2, 3, 10, 0)
-        result = force_run(recurring_path, missions_path, identifier="check", now=now)
+        result = force_run(recurring_path, tmp_path, identifier="check", now=now)
 
         assert len(result) == 1
         assert "check emails" in result[0]
@@ -934,7 +945,8 @@ class TestForceRun:
         add_recurring(recurring_path, "daily", "task 2")
 
         now = datetime(2026, 2, 3, 10, 0)
-        result = force_run(recurring_path, missions_path, identifier=None, now=now)
+        with patch("app.utils.KOAN_ROOT", tmp_path):
+            result = force_run(recurring_path, tmp_path, identifier=None, now=now)
 
         assert len(result) == 2
         missions_content = missions_path.read_text()
@@ -949,7 +961,7 @@ class TestForceRun:
         toggle_recurring(recurring_path, "1", enabled=False)
 
         now = datetime(2026, 2, 3, 10, 0)
-        result = force_run(recurring_path, missions_path, identifier=None, now=now)
+        result = force_run(recurring_path, tmp_path, identifier=None, now=now)
 
         # Only task 2 should be injected (task 1 is disabled)
         assert len(result) == 1
@@ -962,7 +974,7 @@ class TestForceRun:
         toggle_recurring(recurring_path, "1", enabled=False)
 
         now = datetime(2026, 2, 3, 10, 0)
-        result = force_run(recurring_path, missions_path, identifier="1", now=now)
+        result = force_run(recurring_path, tmp_path, identifier="1", now=now)
 
         # Task 1 should be injected even though it's disabled
         assert len(result) == 1
@@ -974,7 +986,7 @@ class TestForceRun:
         add_recurring(recurring_path, "daily", "task 1")
 
         now = datetime(2026, 2, 3, 10, 0)
-        force_run(recurring_path, missions_path, identifier="1", now=now)
+        force_run(recurring_path, tmp_path, identifier="1", now=now)
 
         missions = load_recurring(recurring_path)
         assert missions[0]["last_run"] == "2026-02-03T10:00:00"
@@ -984,7 +996,7 @@ class TestForceRun:
         recurring_path = tmp_path / "recurring.json"
 
         with pytest.raises(ValueError, match="No recurring missions"):
-            force_run(recurring_path, missions_path, identifier="1")
+            force_run(recurring_path, tmp_path, identifier="1")
 
     def test_force_run_invalid_identifier(self, tmp_path):
         missions_path = self._setup_missions(tmp_path)
@@ -992,4 +1004,4 @@ class TestForceRun:
         add_recurring(recurring_path, "daily", "task 1")
 
         with pytest.raises(ValueError):
-            force_run(recurring_path, missions_path, identifier="nonexistent")
+            force_run(recurring_path, tmp_path, identifier="nonexistent")

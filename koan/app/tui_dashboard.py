@@ -781,8 +781,7 @@ class KoanDashboard(App):
             try:
                 from app.utils import insert_pending_mission
 
-                md = self.koan_root / "instance" / "missions.md"
-                ok = insert_pending_mission(md, text_value)
+                ok = insert_pending_mission(text_value)
                 self.notify("mission queued" if ok else "duplicate — already queued")
             except (OSError, PermissionError, ImportError, ModuleNotFoundError, AttributeError, ValueError, TypeError) as exc:
                 self.notify(f"queue failed: {exc}", severity="error")
@@ -873,18 +872,14 @@ class KoanDashboard(App):
     def _in_progress_missions(self) -> list:
         """Return short titles of in-progress missions (best effort)."""
         try:
-            from app.missions import parse_sections, strip_all_lifecycle_markers
+            from app.mission_store import MissionStore
 
-            md = self.koan_root / "instance" / "missions.md"
-            if not md.exists():
-                return []
-            items = parse_sections(md.read_text()).get("in_progress", [])
+            instance_dir = self.koan_root / "instance"
+            store = MissionStore.load(str(instance_dir))
             titles = []
-            for raw in items:
-                line = strip_all_lifecycle_markers(raw).strip().lstrip("-").strip()
-                line = line.splitlines()[0] if line else ""
-                if line:
-                    titles.append(line[:60] + ("…" if len(line) > 60 else ""))
+            for r in store.get_by_status("in_progress"):
+                title = r.display_title()
+                titles.append(title[:60] + ("…" if len(title) > 60 else ""))
             return titles
         except (OSError, PermissionError) as exc:
             self.log(f"mission list failed: {exc}")
@@ -966,11 +961,13 @@ class KoanDashboard(App):
         paused = is_paused(str(self.koan_root))
         titles = self._in_progress_missions()
         try:
-            from app.missions import count_pending
+            from app.mission_store import MissionStore
 
-            md = self.koan_root / "instance" / "missions.md"
-            pending_count = count_pending(md.read_text()) if md.exists() else 0
-        except (OSError, PermissionError) as exc:
+            instance_dir = self.koan_root / "instance"
+            pending_count = len(
+                MissionStore.load(str(instance_dir)).get_by_status("pending")
+            )
+        except (OSError, PermissionError, ValueError) as exc:
             self.log(f"pending count failed: {exc}")
             pending_count = 0
         web_on = self._web_running()

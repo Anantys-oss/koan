@@ -392,11 +392,12 @@ def process_jira_mention(
         log.error("Jira: KOAN_ROOT not set — cannot insert mission")
         return False, "KOAN_ROOT not configured"
 
-    from app.utils import insert_pending_mission
+    from app.utils import insert_pending_mission, parse_project
 
-    missions_path = Path(koan_root) / "instance" / "missions.md"
+    jira_instance_dir = Path(koan_root) / "instance"
+    proj, clean = parse_project(mission_entry)
     try:
-        insert_pending_mission(missions_path, mission_entry)
+        insert_pending_mission(clean.removeprefix("- "), proj)
     except OSError as e:
         log.warning("Jira: failed to insert mission: %s", e)
         return False, f"Failed to queue mission: {e}"

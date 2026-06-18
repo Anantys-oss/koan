@@ -1153,28 +1153,24 @@ def expand_combo_skill(
     if not combo:
         return False
 
-    missions_path = Path(instance_dir) / "missions.md"
-    tag = f"[project:{project_id}] " if project_id else ""
-
     if combo.parallel:
-        from app.missions import insert_mission, is_duplicate_mission
-        from app.utils import modify_missions_file
+        # Parallel combo: batch all sub-missions under a single store lock.
+        from app.missions import is_duplicate_mission
+        from app.mission_store import locked_store
 
-        entries = [f"- {tag}/{sub_cmd} {args}".rstrip() for sub_cmd in combo.commands]
-
-        def _batch_insert(content: str) -> str:
-            for entry in entries:
-                if not is_duplicate_mission(content, entry):
-                    content = insert_mission(content, entry)
-            return content
-
-        modify_missions_file(missions_path, _batch_insert)
+        with locked_store(instance_dir) as store:
+            for sub_cmd in combo.commands:
+                entry = f"/{sub_cmd} {args}".rstrip()
+                if not is_duplicate_mission(store.to_markdown(), entry):
+                    store.add(entry, project_id)
     else:
         from app.utils import insert_pending_mission
 
+        # Insert sub-missions in order (insert_pending_mission appends to bottom
+        # of Pending by default, so FIFO ordering is preserved).
         for sub_cmd in combo.commands:
-            entry = f"- {tag}/{sub_cmd} {args}".rstrip()
-            insert_pending_mission(missions_path, entry)
+            mission_text = f"/{sub_cmd} {args}".rstrip()
+            insert_pending_mission(mission_text, project_id)
 
     print(
         f"  Combo skill /{command} expanded into: "

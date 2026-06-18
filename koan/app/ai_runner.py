@@ -259,8 +259,7 @@ def run_exploration(
         missions = _extract_missions_legacy(result, project_name)
 
     if missions:
-        missions_path = Path(instance_dir) / "missions.md"
-        _queue_missions(missions_path, missions, findings if findings else None)
+        _queue_missions(instance_dir, missions, findings if findings else None)
 
     # Send result to Telegram (truncated, without structured blocks)
     cleaned = _clean_response(result)
@@ -311,22 +310,24 @@ _extract_missions = _extract_missions_legacy
 
 
 def _queue_missions(
-    missions_path: Path,
+    instance_dir,
     missions: list,
     findings: Optional[List[AIFinding]] = None,
 ):
-    """Insert extracted missions into the Pending section of missions.md.
+    """Insert extracted missions into the pending queue.
 
     When *findings* are provided, high-impact findings get ``urgent=True``
     so they appear near the top of the pending queue.
     """
-    from app.utils import insert_pending_mission
+    from app.utils import insert_pending_mission, parse_project
 
     for i, entry in enumerate(missions):
         urgent = False
         if findings and i < len(findings):
             urgent = findings[i].impact == "high"
-        insert_pending_mission(missions_path, entry, urgent=urgent)
+        project, text = parse_project(entry)
+        text = text.removeprefix("- ")
+        insert_pending_mission(text, project, urgent=urgent)
 
 
 def _strip_structured_output(text: str) -> str:

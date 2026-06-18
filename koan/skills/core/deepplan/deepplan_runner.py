@@ -338,13 +338,12 @@ def _queue_plan_mission(project_path, issue_url):
         if not koan_root:
             return
 
-        missions_path = Path(koan_root) / "instance" / "missions.md"
-        if not missions_path.exists():
+        deepplan_instance_dir = Path(koan_root) / "instance"
+        if not (deepplan_instance_dir / "missions.md").exists():
             return
 
         project_label = project_name_for_path(project_path)
-        mission_entry = f"- [project:{project_label}] /plan {issue_url}"
-        insert_pending_mission(missions_path, mission_entry)
+        insert_pending_mission(f"/plan {issue_url}", project_label)
     except Exception as e:
         print(f"[deepplan_runner] Failed to queue /plan mission: {e}", file=sys.stderr)
 

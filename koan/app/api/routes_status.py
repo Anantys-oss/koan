@@ -55,17 +55,15 @@ def _get_agent_state() -> dict:
 
 
 def _mission_counts() -> dict:
-    """Count missions by section."""
-    missions_file = _instance_dir() / "missions.md"
+    """Count missions by status from the mission store."""
     try:
-        from app.missions import parse_sections
-        content = missions_file.read_text() if missions_file.exists() else ""
-        sections = parse_sections(content)
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(_instance_dir()))
         return {
-            "pending": len(sections.get("pending", [])),
-            "in_progress": len(sections.get("in_progress", [])),
-            "done": len(sections.get("done", [])),
-            "failed": len(sections.get("failed", [])),
+            "pending": len(store.get_by_status("pending")),
+            "in_progress": len(store.get_by_status("in_progress")),
+            "done": len(store.get_by_status("done")),
+            "failed": len(store.get_by_status("failed")),
         }
     except Exception as e:
         log.error("mission count error: %s", e)

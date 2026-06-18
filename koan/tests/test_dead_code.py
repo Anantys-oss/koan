@@ -78,9 +78,9 @@ class TestHandleQueueMission:
         assert "Dead code scan queued" in result
         assert "myproject" in result
         mock_insert.assert_called_once()
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "/dead_code" in mission_entry
-        assert "[project:myproject]" in mission_entry
+        assert mock_insert.call_args[0][1] == "myproject"
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
     @patch("app.utils.insert_pending_mission")
@@ -91,8 +91,8 @@ class TestHandleQueueMission:
         assert "Dead code scan queued" in result
         assert "koan" in result
         mock_insert.assert_called_once()
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in mission_entry
+        mission_entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "koan"
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
     @patch("app.utils.insert_pending_mission")
@@ -101,7 +101,7 @@ class TestHandleQueueMission:
         result = handler.handle(ctx)
 
         assert "Dead code scan queued" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "--no-queue" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value=None)
@@ -122,8 +122,7 @@ class TestHandleQueueMission:
 
         assert "Dead code scan queued" in result
         assert "backend" in result
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:backend]" in mission_entry
+        assert mock_insert.call_args[0][1] == "backend"
 
     @patch("app.utils.get_known_projects", return_value=[])
     def test_no_projects_configured(self, mock_projects, handler, ctx):
@@ -143,9 +142,9 @@ class TestHandleQueueMission:
             result = handler.handle(ctx)
 
         assert "Dead code scan queued" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "--no-queue" in mission_entry
-        assert "[project:default]" in mission_entry
+        assert mock_insert.call_args[0][1] == "default"
 
 
 # ---------------------------------------------------------------------------
@@ -583,8 +582,8 @@ class TestQueueMissions:
     def test_queue_entry_format(self, mock_insert, tmp_path):
         _queue_missions(tmp_path, "myproj", ["Remove unused import"])
 
-        entry = mock_insert.call_args[0][1]
-        assert entry == "- [project:myproj] Remove unused import"
+        assert mock_insert.call_args[0][0] == "Remove unused import"
+        assert mock_insert.call_args[0][1] == "myproj"
 
     @patch("app.utils.insert_pending_mission")
     def test_empty_missions(self, mock_insert, tmp_path):

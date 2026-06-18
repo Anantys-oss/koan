@@ -39,18 +39,23 @@ def handle(ctx):
         prefs = prefs_file.read_text()
 
     recent_missions = ""
-    missions_file = instance_dir / "missions.md"
-    if missions_file.exists():
-        from app.missions import parse_sections
-        sections = parse_sections(missions_file.read_text())
-        in_progress = sections.get("in_progress", [])
-        pending = sections.get("pending", [])
+    try:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(instance_dir))
+        in_progress = store.get_by_status("in_progress")
+        pending = store.get_by_status("pending")
         parts = []
         if in_progress:
-            parts.append("In progress:\n" + "\n".join(in_progress[:5]))
+            parts.append(
+                "In progress:\n" + "\n".join(r.display_title() for r in in_progress[:5])
+            )
         if pending:
-            parts.append("Pending:\n" + "\n".join(pending[:5]))
+            parts.append(
+                "Pending:\n" + "\n".join(r.display_title() for r in pending[:5])
+            )
         recent_missions = "\n".join(parts)
+    except Exception as e:
+        log("error", f"Sparring: could not load mission store: {e}")
 
     hour = datetime.now().hour
     time_hint = (

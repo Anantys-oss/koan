@@ -238,9 +238,7 @@ def queue_github_mission(
     if context:
         mission_text += f" {context}"
 
-    mission_entry = f"- [project:{project_name}] {mission_text}"
-    missions_path = ctx.instance_dir / "missions.md"
-    return insert_pending_mission(missions_path, mission_entry, urgent=urgent)
+    return insert_pending_mission(mission_text, project_name, urgent=urgent)
 
 
 def queue_github_mission_once(

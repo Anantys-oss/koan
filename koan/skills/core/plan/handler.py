@@ -117,9 +117,7 @@ def _queue_new_plan(ctx, project_name, idea):
 
     project_label = project_name or _project_name_for_path(project_path)
 
-    mission_entry = f"- [project:{project_label}] /plan {idea}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission(f"/plan {idea}", project_label)
 
     return f"\U0001f9e0 Plan queued: {idea[:100]}{'...' if len(idea) > 100 else ''} (project: {project_label})"
 
@@ -133,9 +131,7 @@ def _queue_issue_plan(ctx, owner, repo, issue_number):
     project_path = _resolve_project_path(repo, fallback=True, owner=owner)
     project_label = _project_name_for_path(project_path) if project_path else repo
 
-    mission_entry = f"- [project:{project_label}] /plan {issue_url}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission(f"/plan {issue_url}", project_label)
 
     return f"\U0001f4d6 Plan queued for issue #{issue_number} ({owner}/{repo})"
 
@@ -156,9 +152,7 @@ def _queue_tracker_issue_plan(ctx, issue_url: str):
             "Configure projects.yaml issue_tracker.jira_project."
         )
 
-    mission_entry = f"- [project:{ref.project_name}] /plan {issue_url}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission(f"/plan {issue_url}", ref.project_name)
     return f"\U0001f4d6 Plan queued for {ref.provider} issue {ref.label}"
 
 

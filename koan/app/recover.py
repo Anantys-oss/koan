@@ -14,11 +14,7 @@ Recovery attempts are now tracked in the stagnation_monitor tracker
 [r:N] tag embedded in mission text is still supported for backward
 compatibility — if a mission carries an [r:N] tag from a previous Kōan
 version and that count exceeds the tracker value, the tag value is used
-instead. Normally [r:N] tags are not written back to missions.md (the
-tracker owns the count). The one exception is the degraded path: if the
-tracker module fails to import, recovery falls back to persisting the
-incremented count inline as [r:N] so escalation still progresses instead
-of resetting to 0 every cycle.
+instead. New missions will not have [r:N] tags written back to missions.md.
 
 All recovery events are logged to instance/recovery.jsonl for forensics.
 
@@ -27,9 +23,8 @@ The ### block format is used for multi-step missions that group related sub-task
 under a project sub-header.  Recovery handles these as atomic blocks — the entire
 block is either requeued to Pending or escalated to Failed together.  The block
 boundary ends at the next blank line or the next ### header, whichever comes first.
-This is the primary handler for stale complex missions. The
-_flush_in_progress_to_failed() call inside start_mission() acts as a secondary
-safety net, catching any stale entries recover.py missed.
+This is a second safety net; the primary is that start_mission() flushes stale
+In Progress entries to Failed via _flush_in_progress_to_failed().
 
 Usage from shell:
     python3 recover.py /path/to/instance [--dry-run]
@@ -40,7 +35,6 @@ Returns via stdout:
 """
 
 import contextlib
-import json
 import re
 import sys
 from datetime import datetime
@@ -61,23 +55,11 @@ def _strip_recovery_counter(mission_line: str) -> str:
     return _RECOVERY_COUNTER_RE.sub("", mission_line).rstrip()
 
 
-def _set_recovery_counter(mission_line: str, count: int) -> str:
-    """Return *mission_line* with any existing [r:N] replaced by [r:count].
-
-    Used only in the degraded path where the stagnation tracker is unavailable:
-    the crash count must then be persisted inline so the next recovery cycle
-    sees a higher value and escalation still progresses (otherwise the count
-    resets to 0 every cycle and the mission retries forever).
-    """
-    return f"{_strip_recovery_counter(mission_line)} [r:{count}]"
-
-
 # ---------------------------------------------------------------------------
 # State classification
 # ---------------------------------------------------------------------------
 
 def classify_mission_state(
-    *,
     crash_count: int = 0,
     max_crash_retries: int = 3,
     has_pending_journal: bool = False,
@@ -198,8 +180,9 @@ def recover_missions(
 
     All events are logged to recovery.jsonl for forensics.
 
-    Uses modify_missions_file() for atomic read-modify-write under exclusive lock,
-    preventing race conditions with concurrent mission additions.
+    Uses the mission store's locked_store() context manager for an atomic
+    load → mutate → save cycle under exclusive lock, preventing race conditions
+    with concurrent mission additions.
 
     This is the *primary* crash-recovery safety net — it runs once at startup,
     before the agent loop, and recovers to Pending. A second, narrower net lives
@@ -211,7 +194,7 @@ def recover_missions(
     Args:
         instance_dir: Path to instance directory.
         dry_run: If True, classify and log but do not modify missions.md.
-        has_pending_journal: Optional pre-computed pending.md presence. When
+        has_pending_journal: Optional pre-computed pending.md presence (S6). When
             a caller has already read pending.md (e.g. the CLI entry point via
             ``check_pending_journal()``), it passes the result here so this
             function does not read the same file a second time — removing the
@@ -223,13 +206,9 @@ def recover_missions(
         Tuple of (count of missions moved to Pending, list of escalated mission lines).
     """
     missions_path = Path(instance_dir) / "missions.md"
-    try:
-        missions_path.read_text()
-    except FileNotFoundError:
+    json_path = Path(instance_dir) / "missions.json"
+    if not json_path.exists() and not missions_path.exists():
         return 0, []
-
-    from app.missions import find_section_boundaries, normalize_content
-    from app.utils import atomic_write, modify_missions_file
 
     # Determine pending.md presence for partial-state detection. Reuse a
     # caller-supplied value when available (single read); otherwise read once
@@ -247,162 +226,61 @@ def recover_missions(
     except ImportError:
         _read_cp = None
 
-    # Retry limits and the crash tracker are loaded as two SEPARATE concerns,
-    # because they fail differently:
-    #
-    #  1. Config load — safe to fall back to defaults. The defaults below match
-    #     get_stagnation_config()'s own defaults, so escalation still works.
-    #  2. Tracker functions — these are the escalation safety net. If they fail
-    #     and we silently set everything to 0/None, classify_mission_state can
-    #     NEVER return "unrecoverable" (crash_count is always 0, max_total is 0),
-    #     so a repeatedly crashing mission loops Pending→crash→Pending forever.
-    #     When the tracker is unavailable we fall back to the legacy inline
-    #     [r:N] counter (read by _get_old_r_count, persisted via
-    #     _set_recovery_counter) as the sole crash-count rail so escalation
-    #     still progresses.
+    # Load stagnation config for retry limits
     try:
         from app.config import get_stagnation_config as _get_stag_cfg
-    except ImportError as e:
-        print(f"[recover] Warning: could not import stagnation config; "
-              f"using defaults (max_crash_retries=3, max_total_retries=0): {e}",
-              file=sys.stderr)
-        _get_stag_cfg = None
-    _max_total_retries = 0
-    _max_crash_retries = 3
-    if _get_stag_cfg is not None:
-        try:
-            _stagnation_cfg = _get_stag_cfg()
-            _max_total_retries = int(_stagnation_cfg.get("max_total_retries", 0))
-            _max_crash_retries = int(_stagnation_cfg.get("max_crash_retries", 3))
-        except Exception as e:
-            print(f"[recover] Warning: could not load stagnation config; "
-                  f"using defaults (max_crash_retries={_max_crash_retries}, "
-                  f"max_total_retries={_max_total_retries}): {e}",
-                  file=sys.stderr)
-
-    try:
         from app.stagnation_monitor import (
             get_total_attempts as _get_total,
             get_crash_count as _get_crash,
             increment_crash_count as _inc_crash,
-            seed_crash_count as _seed_crash,
         )
-    except (ImportError, AttributeError) as e:
-        print(f"[recover] Warning: retry tracker unavailable; falling back to inline "
-              f"[r:N] counter so escalation still works: {e}", file=sys.stderr)
+        _stagnation_cfg = _get_stag_cfg()
+        _max_total_retries = int(_stagnation_cfg.get("max_total_retries", 0))
+        _max_crash_retries = int(_stagnation_cfg.get("max_crash_retries", 3))
+    except Exception as e:
+        print(f"[recover] Warning: could not load stagnation config or tracker: {e}", file=sys.stderr)
         _get_total = None
         _get_crash = None
         _inc_crash = None
-        _seed_crash = None
+        _max_total_retries = 0
+        _max_crash_retries = 3
 
     recovered_count = 0
     escalated_missions: list = []
     recovered_mission_texts: list = []  # clean mission texts for checkpoint lookup
 
-    def _recover_transform(content: str) -> str:
-        nonlocal recovered_count, escalated_missions, recovered_mission_texts
-        lines = content.splitlines()
+    from app.mission_store import MissionStore, locked_store
 
-        boundaries = find_section_boundaries(lines)
-        if "pending" not in boundaries or "in_progress" not in boundaries:
-            return content
+    # In dry-run mode we must not persist anything, so load a detached store
+    # under a null context; otherwise use the locked load→mutate→save cycle.
+    if dry_run:
+        store_ctx = contextlib.nullcontext(MissionStore.load(instance_dir))
+    else:
+        store_ctx = locked_store(instance_dir)
 
-        pending_start = boundaries["pending"][0]
-        in_progress_start, in_progress_end = boundaries["in_progress"]
-        failed_bounds = boundaries.get("failed")
+    # pending.md context belongs to at most one mission (the one that was
+    # running when the process was interrupted). Consume it on first use so
+    # subsequent in-progress missions are not all marked "partial".
+    journal_available = has_pending_journal
 
-        # Classify and sort each candidate mission
-        recovered = []      # missions to move to Pending (simple items or full ### blocks)
-        escalated = []      # missions to move to Failed
-        remaining_in_progress = []
-        # pending.md context belongs to at most one mission (the one that was
-        # running when the process was interrupted). Consume it on first use so
-        # subsequent missions in the same In Progress block are not all marked
-        # "partial" — which would give them misleading "recovery context" status.
-        journal_available = has_pending_journal
-        complex_block_header: str = ""   # raw header line for current ### block
-        complex_block_lines: list = []   # all lines in the current ### block
+    with store_ctx as store:
+        in_progress_records = store.get_by_status("in_progress")[:]
 
-        def _safe_get_crash(title: str) -> int:
-            if _get_crash is None:
-                return 0
-            try:
-                return _get_crash(instance_dir, title)
-            except Exception as e:
-                print(f"[recover] Warning: tracker get_crash failed for "
-                      f"{title!r}, using 0: {e}", file=sys.stderr)
-                return 0
+        for record in in_progress_records:
+            clean_text = record.text
 
-        def _safe_get_total(title: str) -> int:
-            if _get_total is None:
-                return 0
-            try:
-                return _get_total(instance_dir, title)
-            except Exception as e:
-                print(f"[recover] Warning: tracker get_total failed for "
-                      f"{title!r}, using 0: {e}", file=sys.stderr)
-                return 0
+            # crash_count comes from the record; the stagnation tracker may
+            # hold a higher value (legacy crashes recorded before the store).
+            crash_count = record.crash_count
+            if _get_crash is not None:
+                tracker_count = _get_crash(instance_dir, clean_text)
+                if tracker_count > crash_count:
+                    crash_count = tracker_count
+            total = _get_total(instance_dir, clean_text) if _get_total else 0
 
-        def _safe_seed_crash(title: str, value: int) -> None:
-            if _seed_crash is None:
-                return
-            try:
-                _seed_crash(instance_dir, title, value)
-            except Exception as e:
-                print(f"[recover] Warning: tracker seed_crash failed for "
-                      f"{title!r}, legacy [r:{value}] may be lost: {e}",
-                      file=sys.stderr)
-
-        def _safe_inc_crash(title: str) -> bool:
-            """Try to increment via tracker. Returns True on success."""
-            if _inc_crash is None:
-                return False
-            try:
-                _inc_crash(instance_dir, title)
-                return True
-            except Exception as e:
-                print(f"[recover] Warning: tracker inc_crash failed for "
-                      f"{title!r}, falling back to inline [r:N]: {e}",
-                      file=sys.stderr)
-                return False
-
-        def _get_old_r_count(line: str) -> int:
-            m = _RECOVERY_COUNTER_RE.search(line)
-            if not m:
-                return 0
-            with contextlib.suppress(ValueError, TypeError):
-                return int(m.group(1))
-            return 0
-
-        def _append_escalated_entry(out: list, m: str) -> None:
-            """Append one escalated item to out, handling complex blocks (multi-line)."""
-            if "\n" in m:
-                block_lines = m.splitlines()
-                header = _strip_recovery_counter(block_lines[0]).rstrip().removeprefix("### ")
-                out.append(f"- ❌ needs_input: {header}")
-                out.extend(f"  {sub.rstrip()}" for sub in block_lines[1:])
-            else:
-                clean = _strip_recovery_counter(m).rstrip()
-                out.append(f"- ❌ needs_input: {clean.removeprefix('- ')}")
-
-        def _finalize_complex_block():
-            """Classify the collected complex mission block and dispatch it."""
-            nonlocal journal_available
-            if not complex_block_header:
-                return
-            header = complex_block_header.strip()
-            clean_title = _strip_recovery_counter(header).removeprefix("### ").strip()
             has_checkpoint = False
             if _read_cp is not None:
-                cp = _read_cp(instance_dir, clean_title)
-                has_checkpoint = cp is not None
-
-            old_r = _get_old_r_count(header)
-            crash_count = _safe_get_crash(clean_title)
-            if old_r > crash_count:
-                crash_count = old_r
-                _safe_seed_crash(clean_title, old_r)
-            total = _safe_get_total(clean_title)
+                has_checkpoint = _read_cp(instance_dir, clean_text) is not None
 
             state = classify_mission_state(
                 crash_count=crash_count,
@@ -412,170 +290,30 @@ def recover_missions(
                 total_attempts=total,
                 max_total_retries=_max_total_retries,
             )
+            # Once a mission claims the journal context, mark it consumed
             if journal_available and state == "partial":
                 journal_available = False
 
             if dry_run:
-                print(f"[recover] [dry-run] mission={header!r:.60} state={state} "
+                print(f"[recover] [dry-run] mission={clean_text!r:.60} state={state} "
                       f"attempts={crash_count} checkpoint={has_checkpoint}")
-                _log_recovery_event(instance_dir, header, state, "dry_run", crash_count,
-                                    has_checkpoint=has_checkpoint)
-                remaining_in_progress.extend(complex_block_lines)
-                return
+                _log_recovery_event(instance_dir, clean_text, state, "dry_run",
+                                    crash_count, has_checkpoint=has_checkpoint)
+                continue
 
             if state == "unrecoverable":
-                escalated.append("\n".join(complex_block_lines))
-                _log_recovery_event(instance_dir, header, state, "escalated", crash_count,
-                                    has_checkpoint=has_checkpoint)
+                store.fail(clean_text, extra_tags=["needs_input"])
+                escalated_missions.append(f"- {clean_text}")
+                _log_recovery_event(instance_dir, clean_text, state, "escalated",
+                                    crash_count, has_checkpoint=has_checkpoint)
             else:
-                # Convert ### block to - item: extract_next_pending() treats ### as
-                # project sub-headers in Pending, which would fragment the block on
-                # the next mission pick. Use - format so it's picked up as a unit.
-                dash_line = f"- {clean_title}"
-                if not _safe_inc_crash(clean_title):
-                    dash_line = _set_recovery_counter(dash_line, crash_count + 1)
-                recovered.append(dash_line)
-                recovered_mission_texts.append(clean_title)
-                _log_recovery_event(instance_dir, header, state, "recovered", crash_count + 1,
-                                    has_checkpoint=has_checkpoint)
-
-        for i in range(in_progress_start + 1, in_progress_end):
-            line = lines[i]
-            stripped = line.strip()
-
-            if stripped.startswith("### "):
-                # Finalize any previous complex block before starting a new one
-                _finalize_complex_block()
-                complex_block_header = line
-                complex_block_lines = [line]
-                continue
-
-            # Blank lines end the current complex mission block
-            if stripped == "":
-                if complex_block_header:
-                    _finalize_complex_block()
-                    complex_block_header = ""
-                    complex_block_lines = []
-                remaining_in_progress.append(line)
-                continue
-
-            if complex_block_header:
-                complex_block_lines.append(line)
-                continue
-
-            if stripped.startswith("- ") and "~~" not in stripped:
-                old_r = _get_old_r_count(line)
-                clean_line = _strip_recovery_counter(line).rstrip()
-                clean_text = clean_line.removeprefix("- ").strip()
-
-                crash_count = _safe_get_crash(clean_text)
-                if old_r > crash_count:
-                    crash_count = old_r
-                    _safe_seed_crash(clean_text, old_r)
-                total = _safe_get_total(clean_text)
-
-                # Check for a structured checkpoint for this mission
-                has_checkpoint = False
-                if _read_cp is not None:
-                    cp = _read_cp(instance_dir, clean_text)
-                    has_checkpoint = cp is not None
-
-                # Classify this mission; journal context is single-use
-                state = classify_mission_state(
-                    crash_count=crash_count,
-                    max_crash_retries=_max_crash_retries,
-                    has_pending_journal=journal_available,
-                    has_checkpoint=has_checkpoint,
-                    total_attempts=total,
-                    max_total_retries=_max_total_retries,
-                )
-                # Once a mission claims the journal context, mark it consumed
-                if journal_available and state == "partial":
-                    journal_available = False
-
-                if dry_run:
-                    attempts = crash_count
-                    print(f"[recover] [dry-run] mission={stripped!r:.60} state={state} "
-                          f"attempts={attempts} checkpoint={has_checkpoint}")
-                    _log_recovery_event(instance_dir, line, state, "dry_run", attempts,
-                                        has_checkpoint=has_checkpoint)
-                    remaining_in_progress.append(line)
-                    continue
-
-                if state == "unrecoverable":
-                    escalated.append(line)
-                    _log_recovery_event(instance_dir, line, state, "escalated", crash_count,
-                                        has_checkpoint=has_checkpoint)
-                else:
-                    if _safe_inc_crash(clean_text):
-                        recovered.append(clean_line)
-                    else:
-                        recovered.append(_set_recovery_counter(clean_line, crash_count + 1))
-                    recovered_mission_texts.append(clean_text)
-                    _log_recovery_event(instance_dir, line, state, "recovered", crash_count + 1,
-                                        has_checkpoint=has_checkpoint)
-
-            elif stripped == "(aucune)" or stripped == "(none)":
-                remaining_in_progress.append(line)
-            else:
-                remaining_in_progress.append(line)
-
-        # Finalize any complex block that ends at the section boundary (no trailing blank line)
-        _finalize_complex_block()
-
-        if not recovered and not escalated:
-            return content
-
-        recovered_count = len(recovered_mission_texts)
-        escalated_missions = escalated
-
-        # Rebuild file: recovered → Pending, escalated → Failed, rest stays
-        new_lines = []
-        for i, line in enumerate(lines):
-            if pending_start < i < in_progress_start:
-                if line.strip() in ("(aucune)", "(none)"):
-                    continue
-
-            if in_progress_start < i < in_progress_end:
-                continue
-
-            # Skip existing failed section content — we'll rebuild it below
-            if failed_bounds and failed_bounds[0] < i < failed_bounds[1]:
-                continue
-
-            new_lines.append(line)
-
-            if i == pending_start:
-                new_lines.append("")
-                new_lines.extend(recovered)
-
-            if i == in_progress_start:
-                new_lines.extend(remaining_in_progress)
-                if not any(m.strip() for m in remaining_in_progress):
-                    new_lines.append("")
-
-            # Restore failed section content then append escalated missions
-            if failed_bounds and i == failed_bounds[0]:
-                # Re-insert original failed content (minus section boundaries we'll re-emit)
-                orig_failed = lines[failed_bounds[0] + 1 : failed_bounds[1]]
-                new_lines.extend(orig_failed)
-                if escalated:
-                    for m in escalated:
-                        _append_escalated_entry(new_lines, m)
-                    new_lines.append("")
-
-        # If there's no Failed section but we have escalated missions, append one
-        if escalated and not failed_bounds:
-            new_lines.append("")
-            new_lines.append("## Failed")
-            new_lines.append("")
-            for m in escalated:
-                _append_escalated_entry(new_lines, m)
-            new_lines.append("")
-
-        return normalize_content("\n".join(new_lines) + "\n")
-
-    modify_missions_file(missions_path, _recover_transform)
+                store.requeue(clean_text)
+                recovered_count += 1
+                recovered_mission_texts.append(clean_text)
+                if _inc_crash is not None:
+                    _inc_crash(instance_dir, clean_text)
+                _log_recovery_event(instance_dir, clean_text, state, "recovered",
+                                    crash_count + 1, has_checkpoint=has_checkpoint)
 
     # Write checkpoint recovery context to pending.md if available.
     # This makes structured checkpoint data visible to the agent's normal
@@ -640,7 +378,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     instance_dir = args[0]
-    # Single read of pending.md: check_pending_journal() reads + logs once,
+    # Single read of pending.md (S6): check_pending_journal() reads + logs once,
     # then hands the result to recover_missions() so it does not re-read the file.
     has_pending = check_pending_journal(instance_dir)
     count, escalated_lines = recover_missions(

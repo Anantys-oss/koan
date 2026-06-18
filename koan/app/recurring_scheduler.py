@@ -24,14 +24,13 @@ def main():
 
     instance_dir = Path(sys.argv[1])
     recurring_path = instance_dir / "recurring.json"
-    missions_path = instance_dir / "missions.md"
 
     if not recurring_path.exists():
         sys.exit(0)
 
     try:
         from app.recurring import check_and_inject
-        injected = check_and_inject(recurring_path, missions_path)
+        injected = check_and_inject(recurring_path, instance_dir)
         for desc in injected:
             print(f"[recurring] Injected: {desc}")
     except Exception as e:

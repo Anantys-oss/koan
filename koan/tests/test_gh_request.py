@@ -108,7 +108,7 @@ class TestGhRequestHandler:
 
         assert "queued" in result.lower()
         mock_insert.assert_called_once()
-        mission = mock_insert.call_args[0][1]
+        mission = mock_insert.call_args[0][0]
         # No /gh_request prefix — Claude handles plain text naturally
         assert "/gh_request" not in mission
         assert "https://github.com/owner/repo/pull/42" in mission
@@ -259,7 +259,7 @@ class TestGhRequestRouting:
         assert success is True
         assert error is None
         mock_insert.assert_called_once()
-        mission = mock_insert.call_args[0][1]
+        mission = mock_insert.call_args[0][0]
         assert "/gh_request" in mission
         assert "can you take a look at this PR?" in mission
 
@@ -355,6 +355,6 @@ class TestGhRequestRouting:
 
         assert success is True
         mock_insert.assert_called_once()
-        mission = mock_insert.call_args[0][1]
+        mission = mock_insert.call_args[0][0]
         assert "/rebase" in mission
         assert "/gh_request" not in mission

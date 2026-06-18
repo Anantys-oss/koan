@@ -117,4 +117,4 @@ class TestPathResolution:
         # Check that check_and_inject was called with correct paths
         args = mock_inject.call_args[0]
         assert args[0] == recurring_file
-        assert args[1] == tmp_path / "missions.md"
+        assert args[1] == tmp_path

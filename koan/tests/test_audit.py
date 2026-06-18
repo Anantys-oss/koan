@@ -73,8 +73,8 @@ class TestHandleQueueMission:
         assert "Audit queued" in result
         assert "koan" in result
         mock_insert.assert_called_once()
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in mission_entry
+        mission_entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "koan"
         assert "/audit" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -85,9 +85,9 @@ class TestHandleQueueMission:
 
         assert "Audit queued" in result
         assert "focus: focus on error handling" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "/audit focus on error handling" in mission_entry
-        assert "[project:koan]" in mission_entry
+        assert mock_insert.call_args[0][1] == "koan"
 
     @patch("app.utils.resolve_project_path", return_value=None)
     @patch("app.utils.get_known_projects", return_value=[("web", "/path/web")])
@@ -107,8 +107,8 @@ class TestHandleQueueMission:
 
         assert "Audit queued" in result
         assert "backend" in result
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:backend]" in mission_entry
+        mission_entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "backend"
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
     @patch("app.utils.insert_pending_mission")
@@ -118,7 +118,7 @@ class TestHandleQueueMission:
 
         assert "Audit queued" in result
         assert "limit=10" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "limit=10" in mission_entry
         assert "/audit focus on auth" in mission_entry
         # limit=10 should not be in the context part
@@ -129,7 +129,7 @@ class TestHandleQueueMission:
     def test_default_limit_not_in_mission(self, mock_insert, mock_resolve, handler, ctx):
         ctx.args = "koan"
         handler.handle(ctx)
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "limit=" not in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -140,7 +140,7 @@ class TestHandleQueueMission:
 
         assert "Audit queued" in result
         assert "limit=3" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "limit=3" in mission_entry
 
 
@@ -1192,7 +1192,7 @@ class TestHandleAutoFixQueue:
         result = handler.handle(ctx)
 
         assert "auto-fix" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "--auto-fix" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -1202,7 +1202,7 @@ class TestHandleAutoFixQueue:
         result = handler.handle(ctx)
 
         assert "auto-fix=critical" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "--auto-fix=critical" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
@@ -1211,7 +1211,7 @@ class TestHandleAutoFixQueue:
         ctx.args = "koan"
         handler.handle(ctx)
 
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "--auto-fix" not in mission_entry
 
 
@@ -1269,9 +1269,10 @@ class TestQueueAutoFixMissions:
         )
         return (finding, url)
 
-    def test_queues_matching_severity(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    def test_queues_matching_severity(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        missions = tmp_path / "instance" / "missions.md"
 
         entries = (
             self._make_entry("critical", "https://github.com/o/r/issues/1"),
@@ -1289,9 +1290,9 @@ class TestQueueAutoFixMissions:
         assert "/fix https://github.com/o/r/issues/2" in content
         assert "/fix https://github.com/o/r/issues/3" not in content
 
-    def test_respects_cap(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    def test_respects_cap(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
         entries = tuple(
             self._make_entry("critical", f"https://github.com/o/r/issues/{i}")
@@ -1304,9 +1305,9 @@ class TestQueueAutoFixMissions:
 
         assert count == AUTO_FIX_CAP
 
-    def test_skips_pvrs_advisories(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    def test_skips_pvrs_advisories(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
         entries = (
             self._make_entry("critical", "https://github.com/o/r/security/advisories/GHSA-xxx"),
@@ -1318,9 +1319,9 @@ class TestQueueAutoFixMissions:
 
         assert count == 0
 
-    def test_empty_entries(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    def test_empty_entries(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
         count = queue_auto_fix_missions(
             (), "myproj", str(tmp_path), threshold="high",
@@ -1328,9 +1329,12 @@ class TestQueueAutoFixMissions:
 
         assert count == 0
 
-    def test_notify_fn_called(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    def test_notify_fn_called(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
 
         entries = (
             self._make_entry("critical", "https://github.com/o/r/issues/1"),
@@ -1345,9 +1349,12 @@ class TestQueueAutoFixMissions:
         notify.assert_called_once()
         assert "Auto-fix" in notify.call_args[0][0]
 
-    def test_mission_format(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    def test_mission_format(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
 
         entries = (
             self._make_entry("critical", "https://github.com/o/r/issues/1"),
@@ -1357,12 +1364,17 @@ class TestQueueAutoFixMissions:
             entries, "myproj", str(tmp_path), threshold="high",
         )
 
-        content = missions.read_text()
-        assert "- [project:myproj] /fix https://github.com/o/r/issues/1" in content
+        content = (instance_dir / "missions.md").read_text()
+        # Project tag is rendered after the mission text by the store.
+        assert "/fix https://github.com/o/r/issues/1" in content
+        assert "[project:myproj]" in content
 
-    def test_critical_only_threshold(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    def test_critical_only_threshold(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
 
         entries = (
             self._make_entry("critical", "https://github.com/o/r/issues/1"),
@@ -1374,7 +1386,7 @@ class TestQueueAutoFixMissions:
         )
 
         assert count == 1
-        content = missions.read_text()
+        content = (instance_dir / "missions.md").read_text()
         assert "/fix https://github.com/o/r/issues/1" in content
         assert "/fix https://github.com/o/r/issues/2" not in content
 

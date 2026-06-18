@@ -561,7 +561,7 @@ class TestInjectRecurring:
 class TestFallbackMissionExtract:
 
     def test_no_missions_file(self, tmp_path):
-        """Returns (None, None) when missions.md doesn't exist."""
+        """Returns (None, None) when no store exists."""
         inst = tmp_path / "instance"
         inst.mkdir()
         project, title = _fallback_mission_extract(inst, PROJECTS_STR, "test context")
@@ -577,9 +577,8 @@ class TestFallbackMissionExtract:
         assert project is None
         assert title is None
 
-    @patch("app.pick_mission.fallback_extract", return_value=("koan", "Fix bug"))
-    def test_extracts_pending_mission(self, mock_extract, tmp_path):
-        """Extracts mission when pending count > 0."""
+    def test_extracts_pending_mission(self, tmp_path):
+        """Extracts mission from the store when pending missions exist."""
         inst = tmp_path / "instance"
         inst.mkdir()
         (inst / "missions.md").write_text(
@@ -589,25 +588,16 @@ class TestFallbackMissionExtract:
         assert project == "koan"
         assert title == "Fix bug"
 
-    @patch("app.pick_mission.fallback_extract", return_value=(None, None))
-    def test_fallback_extract_fails(self, mock_extract, tmp_path):
-        """Returns (None, None) when fallback_extract fails to find a mission."""
+    def test_handles_store_error(self, tmp_path, monkeypatch):
+        """Returns (None, None) when MissionStore raises an OSError."""
         inst = tmp_path / "instance"
         inst.mkdir()
         (inst / "missions.md").write_text(
             "# Missions\n\n## Pending\n- [project:koan] Fix bug\n\n## Done\n"
         )
-        project, title = _fallback_mission_extract(inst, PROJECTS_STR, "test context")
-        assert project is None
-        assert title is None
-
-    @patch("app.pick_mission.fallback_extract", side_effect=OSError("boom"))
-    def test_handles_import_error(self, mock_extract, tmp_path):
-        """Returns (None, None) on exception from fallback_extract."""
-        inst = tmp_path / "instance"
-        inst.mkdir()
-        (inst / "missions.md").write_text(
-            "# Missions\n\n## Pending\n- [project:koan] Fix bug\n\n## Done\n"
+        monkeypatch.setattr(
+            "app.mission_store.MissionStore.load",
+            lambda *_: (_ for _ in ()).throw(OSError("boom")),
         )
         project, title = _fallback_mission_extract(inst, PROJECTS_STR, "test context")
         assert project is None
@@ -3688,9 +3678,11 @@ class TestMaybeInjectDiagnosticMission:
     @patch("app.session_tracker.get_staleness_score", return_value=5)
     @patch("app.mission_metrics.compute_project_trend", return_value="declining")
     def test_all_gates_pass_injects_mission(
-        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir, monkeypatch,
     ):
         self._make_missions_file(instance_dir)
+        # insert_pending_mission writes to KOAN_ROOT/instance — point it at instance_dir's parent
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
         result = _maybe_inject_diagnostic_mission(
             "koan", str(instance_dir), "deep",
         )

@@ -41,17 +41,11 @@ from app.conversation_history import (
     format_conversation_history,
 )
 from app.missions import (
-    cancel_pending_mission,
-    edit_pending_mission,
     extract_project_tag,
-    group_by_project,
-    reorder_mission,
 )
 from app.utils import (
     PROJECT_TAG_FULL_RE,
-    modify_missions_file,
     parse_project,
-    insert_pending_mission,
     get_known_projects,
 )
 from app.automation_rules import (
@@ -70,7 +64,7 @@ from app.automation_rules import (
 
 KOAN_ROOT = Path(os.environ["KOAN_ROOT"])
 INSTANCE_DIR = KOAN_ROOT / "instance"
-MISSIONS_FILE = INSTANCE_DIR / "missions.md"
+MISSIONS_JSON_FILE = INSTANCE_DIR / "missions.json"
 OUTBOX_FILE = INSTANCE_DIR / "outbox.md"
 SOUL_FILE = INSTANCE_DIR / "soul.md"
 SUMMARY_FILE = INSTANCE_DIR / "memory" / "summary.md"
@@ -252,14 +246,17 @@ def api_forecast():
 
 
 def parse_missions() -> dict:
-    """Parse missions.md into structured sections."""
-    from app.missions import parse_sections
-
-    content = read_file(MISSIONS_FILE)
-    if not content:
+    """Return missions grouped by status as rendered Markdown lines."""
+    try:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(INSTANCE_DIR))
+    except (OSError, ValueError):
         return {"pending": [], "in_progress": [], "done": []}
-
-    return parse_sections(content)
+    return {
+        "pending": [store._render_record(r) for r in store.get_by_status("pending")],
+        "in_progress": [store._render_record(r) for r in store.get_by_status("in_progress")],
+        "done": [store._render_record(r) for r in store.get_by_status("done")],
+    }
 
 
 def _filter_missions_by_project(missions: dict, project: str) -> dict:
@@ -428,12 +425,18 @@ def index():
     project_stats = {}
     projects_list = _get_all_project_names()
     if len(projects_list) > 1:
-        by_project = group_by_project(read_file(MISSIONS_FILE))
-        for pname, pdata in by_project.items():
-            project_stats[pname] = {
-                "pending": len(pdata["pending"]),
-                "in_progress": len(pdata["in_progress"]),
-            }
+        try:
+            from app.mission_store import MissionStore
+            store = MissionStore.load(str(INSTANCE_DIR))
+            for status_key in ("in_progress", "pending"):
+                for r in store.get_by_status(status_key):
+                    pname = r.project or "default"
+                    bucket = project_stats.setdefault(
+                        pname, {"pending": 0, "in_progress": 0}
+                    )
+                    bucket[status_key] += 1
+        except Exception as e:
+            logging.warning("Could not load mission store for project stats: %s", e)
 
     # Map structured state to the template's existing state vocabulary
     tpl_state = agent_state["state"]
@@ -496,7 +499,13 @@ def add_mission():
     else:
         entry = f"- {text}"
 
-    inserted = insert_pending_mission(MISSIONS_FILE, entry)
+    from app.mission_store import locked_store
+    from app.missions import is_duplicate_mission
+    inserted = False
+    with locked_store(str(INSTANCE_DIR)) as store:
+        if not is_duplicate_mission(store.to_markdown(), entry):
+            store.add(text, project or "")
+            inserted = True
     if inserted:
         try:
             from app.api.mission_index import record_mission
@@ -534,7 +543,13 @@ def chat_send():
         else:
             entry = f"- {mission_text}"
 
-        inserted = insert_pending_mission(MISSIONS_FILE, entry)
+        from app.mission_store import locked_store
+        from app.missions import is_duplicate_mission
+        inserted = False
+        with locked_store(str(INSTANCE_DIR)) as store:
+            if not is_duplicate_mission(store.to_markdown(), entry):
+                store.add(mission_text, project or "")
+                inserted = True
         if inserted:
             try:
                 from app.api.mission_index import record_mission
@@ -720,8 +735,8 @@ def api_state_stream():
                     state["attention_count"] = 0
                 # Add mission counts (uses mtime check to avoid re-parsing)
                 try:
-                    if MISSIONS_FILE.exists():
-                        mtime = MISSIONS_FILE.stat().st_mtime
+                    if MISSIONS_JSON_FILE.exists():
+                        mtime = MISSIONS_JSON_FILE.stat().st_mtime
                         if mtime != missions_mtime[0]:
                             missions_mtime[0] = mtime
                             m = parse_missions()
@@ -1267,18 +1282,22 @@ def api_missions_reorder():
         return jsonify({"ok": False, "error": "position and target must be integers"}), 400
 
     try:
-        result = {}
-
-        def transform(content):
-            new_content, display = reorder_mission(content, position, target)
-            result["display"] = display
-            return new_content
-
-        modify_missions_file(MISSIONS_FILE, transform)
+        from app.mission_store import locked_store
+        with locked_store(str(INSTANCE_DIR)) as store:
+            record = store.get_pending_at(position - 1)
+            if record is None:
+                raise ValueError(
+                    f"Invalid position: {position}. Check how many pending missions exist."
+                )
+            display = record.text
+            if not store.reorder_pending(position - 1, target - 1):
+                raise ValueError(
+                    f"Invalid target: {target}. Check the pending mission count."
+                )
         missions = parse_missions()
         return jsonify({
             "ok": True,
-            "display": result.get("display", ""),
+            "display": display,
             "pending": missions["pending"],
         })
     except ValueError as e:
@@ -1295,15 +1314,18 @@ def api_missions_cancel():
         return jsonify({"ok": False, "error": "Missing position"}), 400
 
     try:
-        result = {}
-
-        def transform(content):
-            new_content, cancelled = cancel_pending_mission(content, str(int(position)))
-            result["cancelled"] = cancelled
-            return new_content
-
-        modify_missions_file(MISSIONS_FILE, transform)
-        cancelled_text = result.get("cancelled", "")
+        from app.mission_store import locked_store
+        with locked_store(str(INSTANCE_DIR)) as store:
+            record = store.get_pending_at(int(position) - 1)
+            if record is None:
+                raise ValueError(
+                    f"Mission #{position} not found. Check the pending mission count."
+                )
+            if record.project:
+                cancelled_text = f"[project:{record.project}] {record.text}"
+            else:
+                cancelled_text = record.text
+            store.cancel_pending(record.text)
         if cancelled_text:
             try:
                 from app.api.mission_index import cancel_by_text
@@ -1338,18 +1360,19 @@ def api_missions_edit():
         return jsonify({"ok": False, "error": "position must be an integer"}), 400
 
     try:
-        result = {}
-
-        def transform(content):
-            new_content, display = edit_pending_mission(content, position, text)
-            result["display"] = display
-            return new_content
-
-        modify_missions_file(MISSIONS_FILE, transform)
+        from app.mission_store import locked_store
+        with locked_store(str(INSTANCE_DIR)) as store:
+            record = store.get_pending_at(position - 1)
+            if record is None:
+                raise ValueError(
+                    f"Invalid position: {position}. Check how many pending missions exist."
+                )
+            store.edit(record.text, text)
+            display = text
         missions = parse_missions()
         return jsonify({
             "ok": True,
-            "display": result.get("display", ""),
+            "display": display,
             "pending": missions["pending"],
         })
     except ValueError as e:
@@ -1689,19 +1712,21 @@ def api_plan_detail(project, number):
 
 def _find_linked_missions(issue_url: str, issue_number: int) -> list:
     """Find missions that reference the given plan issue URL or number."""
-    content = read_file(MISSIONS_FILE)
-    if not content:
+    try:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(str(INSTANCE_DIR))
+    except (OSError, ValueError):
         return []
 
-    linked = []
     issue_number_str = f"#{issue_number}"
-    for line in content.splitlines():
-        stripped = line.strip().lstrip("- ~")
-        if issue_url and issue_url in line:
-            linked.append(stripped)
-        elif issue_number_str in line and "/plan" in line.lower():
-            linked.append(stripped)
-    return linked[:20]  # cap to avoid huge responses
+    linked = []
+    for r in store.get_by_status("pending") + store.get_by_status("in_progress") + store.get_by_status("done"):
+        text = r.text
+        if issue_url and issue_url in text:
+            linked.append(text)
+        elif issue_number_str in text and "/plan" in text.lower():
+            linked.append(text)
+    return linked[:20]
 
 
 @app.route("/api/status")

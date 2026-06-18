@@ -1463,19 +1463,17 @@ def _enqueue_ci_check(
     pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
 
     try:
-        from app.missions import add_ci_item
-        from app.utils import load_config, modify_missions_file, project_name_for_path
+        from app.ci_queue import monitor_add_item
+        from app.utils import load_config, project_name_for_path
 
         config = load_config()
         max_attempts = config.get("ci_fix_max_attempts", 5)
         project_name = project_name_for_path(project_path)
-        missions_path = Path(instance_dir) / "missions.md"
 
-        modify_missions_file(
-            missions_path,
-            lambda c: add_ci_item(c, project_name, pr_url, pr_number, branch, full_repo, max_attempts),
+        monitor_add_item(
+            instance_dir, project_name, pr_url, pr_number, branch, full_repo, max_attempts,
         )
-        actions_log.append("CI check enqueued in ## CI (async)")
+        actions_log.append("CI check enqueued for monitoring (async)")
         return "CI will be checked asynchronously."
     except Exception as e:
         print(f"[rebase] CI enqueue failed: {e}", file=sys.stderr)

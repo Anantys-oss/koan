@@ -88,18 +88,14 @@ def _queue_deepplan_from_issue(ctx, issue_result):
             return (
                 f"\u274c Could not resolve Koan project for Jira issue {number}."
             )
-        mission_entry = f"- [project:{project_name}] /deepplan {url}"
-        missions_path = ctx.instance_dir / "missions.md"
-        insert_pending_mission(missions_path, mission_entry)
+        insert_pending_mission(f"/deepplan {url}", project_name)
         return f"\U0001f9e0 Deep plan queued from Jira issue {number} (project: {project_name})"
 
     project_path, project_name = resolve_project_for_repo(repo, owner=owner)
     if not project_path:
         return format_project_not_found_error(repo, owner=owner)
 
-    mission_entry = f"- [project:{project_name}] /deepplan {url}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission(f"/deepplan {url}", project_name)
 
     return f"\U0001f9e0 Deep plan queued from issue #{number} ({owner}/{repo}, project: {project_name})"
 
@@ -145,9 +141,7 @@ def _queue_deepplan(ctx, project_name, idea):
 
     project_label = project_name or _project_name_for_path(project_path)
 
-    mission_entry = f"- [project:{project_label}] /deepplan {idea}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission(f"/deepplan {idea}", project_label)
 
     preview = idea[:100] + ('...' if len(idea) > 100 else '')
     return f"\U0001f9e0 Deep plan queued: {preview} (project: {project_label})"

@@ -143,34 +143,24 @@ class TestFlushBeforeUnlockAudit:
 class TestUtilsFlush:
     """Verify utils.py file-locked writes flush before unlock."""
 
-    def test_insert_pending_mission_flushes(self, tmp_path):
+    def test_insert_pending_mission_flushes(self, tmp_path, monkeypatch):
         """insert_pending_mission flushes before releasing lock."""
-        missions = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions = instance_dir / "missions.md"
         missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
 
         from app.utils import insert_pending_mission
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.utils.fcntl") as mock_fcntl:
             mock_fcntl.LOCK_EX = 2
             mock_fcntl.LOCK_UN = 8
             # Let flock pass through — we're testing flush ordering
-            insert_pending_mission(missions, "test mission")
+            insert_pending_mission("test mission")
 
         content = missions.read_text()
         assert "test mission" in content
-
-    def test_modify_missions_file_flushes(self, tmp_path):
-        """modify_missions_file flushes before releasing lock."""
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
-
-        from app.utils import modify_missions_file
-
-        result = modify_missions_file(missions, lambda c: c + "\n- extra line\n")
-
-        content = missions.read_text()
-        assert "extra line" in content
-        assert "extra line" in result
 
     def test_append_to_outbox_flushes(self, tmp_path):
         """append_to_outbox flushes before releasing lock."""

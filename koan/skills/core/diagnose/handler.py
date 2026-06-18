@@ -4,12 +4,7 @@ import re
 from datetime import date, timedelta
 from pathlib import Path
 
-from app.utils import PROJECT_TAG_RE
 
-
-_FAILED_TS_RE = re.compile(
-    r"❌\s*\((\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\)"
-)
 _CAUSE_TAG_RE = re.compile(r"\[([a-z_:]+)\]\s*$")
 _MAX_JOURNAL_CHARS = 3000
 
@@ -42,46 +37,49 @@ def handle(ctx):
 
 
 def _find_last_failure(missions_path, project_filter=None):
-    """Find the most recent failed mission from missions.md.
+    """Find the most recent failed mission from the mission store.
 
     Returns dict with keys: text, date, time, project, cause_tag
     or None if no failures found.
     """
-    from app.missions import parse_sections, strip_timestamps
+    from app.mission_store import MissionStore
 
-    content = missions_path.read_text()
-    sections = parse_sections(content)
-    failed = sections.get("failed", [])
+    instance_dir = Path(missions_path).parent
+    store = MissionStore.load(str(instance_dir))
+    failed = store.get_by_status("failed")
 
     if not failed:
         return None
 
     best = None
-    for entry in failed:
-        first_line = entry.split("\n")[0]
-        if first_line.startswith("- "):
-            first_line = first_line[2:]
-
-        ts_match = _FAILED_TS_RE.search(first_line)
-        if not ts_match:
+    for record in failed:
+        # A failed record without a completion timestamp is skipped, mirroring
+        # the legacy behaviour of ignoring entries without a ❌ (date time) marker.
+        if not record.completed_at:
             continue
 
-        fail_date = ts_match.group(1)
-        fail_time = ts_match.group(2)
+        fail_date, _, fail_time = record.completed_at.partition(" ")
+        if not fail_date or not fail_time:
+            continue
 
-        proj_match = PROJECT_TAG_RE.search(first_line)
-        project = proj_match.group(1) if proj_match else None
-
+        project = record.project or None
         if project_filter and project and project.lower() != project_filter.lower():
             continue
 
-        cause_match = _CAUSE_TAG_RE.search(first_line)
-        cause_tag = cause_match.group(1) if cause_match else None
-
-        clean_text = strip_timestamps(first_line)
-        clean_text = PROJECT_TAG_RE.sub("", clean_text).strip()
-        clean_text = _CAUSE_TAG_RE.sub("", clean_text).strip()
-        clean_text = _FAILED_TS_RE.sub("", clean_text).strip()
+        # Cause tags like ``[stagnation:tool_loop]`` are not captured as
+        # structured store tags (those only cover bare ``[flushed]``/
+        # ``[stagnation]``), so they remain embedded at the end of the text.
+        text = record.text
+        cause_match = _CAUSE_TAG_RE.search(text)
+        if cause_match:
+            cause_tag = cause_match.group(1)
+            clean_text = _CAUSE_TAG_RE.sub("", text).strip()
+        elif record.tags:
+            cause_tag = record.tags[-1]
+            clean_text = text.strip()
+        else:
+            cause_tag = None
+            clean_text = text.strip()
 
         sort_key = f"{fail_date}T{fail_time}"
         if best is None or sort_key > best["sort_key"]:
@@ -131,14 +129,14 @@ def _get_journal_context(instance_dir, project, fail_date):
     return None
 
 
-def _is_already_queued(missions_path, failure_text):
+def _is_already_queued(instance_dir, failure_text):
     """Check if a diagnose mission for this failure is already pending."""
-    from app.missions import parse_sections
+    from app.mission_store import MissionStore
 
-    content = missions_path.read_text()
-    sections = parse_sections(content)
-    for item in sections.get("pending", []) + sections.get("in_progress", []):
-        if "Diagnose and fix" in item and failure_text[:80] in item:
+    store = MissionStore.load(str(instance_dir))
+    needle = failure_text[:80]
+    for record in store.get_by_status("pending") + store.get_by_status("in_progress"):
+        if "Diagnose and fix" in record.text and needle in record.text:
             return True
     return False
 
@@ -147,9 +145,7 @@ def _queue_fix_mission(ctx, failure, journal_context):
     """Compose and queue a diagnostic fix mission."""
     from app.utils import insert_pending_mission
 
-    missions_path = Path(ctx.instance_dir) / "missions.md"
-
-    if _is_already_queued(missions_path, failure["text"]):
+    if _is_already_queued(ctx.instance_dir, failure["text"]):
         return "A diagnose mission for this failure is already queued."
 
     parts = ["Diagnose and fix the following failure:"]
@@ -165,10 +161,7 @@ def _queue_fix_mission(ctx, failure, journal_context):
 
     body = "\n".join(parts)
 
-    project_tag = f"[project:{failure['project']}] " if failure["project"] else ""
-    mission_entry = f"- {project_tag}{body}"
-
-    insert_pending_mission(missions_path, mission_entry, urgent=True)
+    insert_pending_mission(body, failure["project"], urgent=True)
 
     preview = failure["text"][:100]
     cause = f" ({failure['cause_tag']})" if failure["cause_tag"] else ""

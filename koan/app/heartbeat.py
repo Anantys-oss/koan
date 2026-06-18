@@ -15,9 +15,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from app.missions import parse_sections
-from app.utils import parse_project
-
 
 # --- Stale mission detection ---
 
@@ -44,27 +41,22 @@ def check_stale_missions(
 ) -> List[str]:
     """Detect In Progress missions with no recent journal activity.
 
-    Only flags simple missions (- lines), not complex multi-step missions
-    (### headers), matching recover.py's distinction.
-
     Args:
         instance_dir: Path to instance directory.
         max_age_hours: Hours without journal activity before flagging.
 
     Returns:
-        List of stale mission descriptions (already-alerted ones excluded).
+        List of stale mission display titles (already-alerted ones excluded).
     """
-    missions_path = Path(instance_dir) / "missions.md"
-    if not missions_path.exists():
-        return []
-
     try:
-        content = missions_path.read_text()
-    except OSError:
+        from app.mission_store import MissionStore
+        store = MissionStore.load(instance_dir)
+        in_progress = store.get_by_status("in_progress")
+    except Exception as e:
+        import sys
+        print(f"[heartbeat] error loading mission store: {e}", file=sys.stderr)
         return []
 
-    sections = parse_sections(content)
-    in_progress = sections.get("in_progress", [])
     if not in_progress:
         return []
 
@@ -72,32 +64,19 @@ def check_stale_missions(
     now = time.time()
     stale = []
 
-    for mission in in_progress:
-        stripped = mission.strip()
-        # Skip complex missions (### headers) — they can legitimately run for days
-        if stripped.startswith("### "):
-            continue
-        # Skip non-mission lines
-        if not stripped.startswith("- "):
+    for record in in_progress:
+        if record.id in _alerted_stale_missions:
             continue
 
-        # Check if already alerted
-        if stripped in _alerted_stale_missions:
-            continue
-
-        # Check journal activity for this mission's project
-        project_name, _ = parse_project(stripped)
-        last_activity = _get_last_journal_activity(instance_dir, project_name)
-
+        last_activity = _get_last_journal_activity(
+            instance_dir, record.project or None
+        )
         if last_activity < 0:
-            # No journal files at all — can't determine staleness
             continue
 
         if (now - last_activity) > max_age_seconds:
-            _alerted_stale_missions.add(stripped)
-            # Clean display: strip "- " prefix
-            display = stripped[2:] if stripped.startswith("- ") else stripped
-            stale.append(display)
+            _alerted_stale_missions.add(record.id)
+            stale.append(record.display_title())
 
     return stale
 

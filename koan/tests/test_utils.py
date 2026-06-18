@@ -337,57 +337,66 @@ class TestResolveProjectNameAndPath:
 
 
 class TestInsertPendingMission:
-    def test_inserts_into_existing_file(self, tmp_path):
+    def test_inserts_into_existing_file(self, tmp_path, monkeypatch):
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n")
+        from app.missions import parse_sections
 
-        insert_pending_mission(missions, "- New task")
-        content = missions.read_text()
-        assert "- New task" in content
-        assert content.index("- New task") < content.index("## In Progress")
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+        instance_dir = tmp_path / "instance"
 
-    def test_creates_file_if_missing(self, tmp_path):
+        insert_pending_mission("New task")
+        content = (instance_dir / "missions.md").read_text()
+        assert "New task" in content
+        sections = parse_sections(content)
+        assert any("New task" in item for item in sections["pending"])
+
+    def test_creates_file_if_missing(self, tmp_path, monkeypatch):
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
 
-        insert_pending_mission(missions, "- First task")
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        insert_pending_mission("First task")
+        missions = tmp_path / "instance" / "missions.md"
         assert missions.exists()
         content = missions.read_text()
-        assert "- First task" in content
+        assert "First task" in content
         assert "## Pending" in content
 
-    def test_handles_english_sections(self, tmp_path):
+    def test_handles_english_sections(self, tmp_path, monkeypatch):
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n")
 
-        insert_pending_mission(missions, "- English task")
-        content = missions.read_text()
-        assert "- English task" in content
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
-    def test_handles_no_pending_section(self, tmp_path):
+        insert_pending_mission("English task")
+        assert "English task" in (tmp_path / "instance" / "missions.md").read_text()
+
+    def test_handles_no_pending_section(self, tmp_path, monkeypatch):
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## In Progress\n")
 
-        insert_pending_mission(missions, "- Orphan task")
-        content = missions.read_text()
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        insert_pending_mission("Orphan task")
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "## Pending" in content
-        assert "- Orphan task" in content
+        assert "Orphan task" in content
 
-    def test_concurrent_inserts_no_lost_missions(self, tmp_path):
+    def test_concurrent_inserts_no_lost_missions(self, tmp_path, monkeypatch):
         """Regression: concurrent inserts must not lose missions (TOCTOU fix)."""
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
         num_threads = 8
         errors = []
 
         def insert_task(i):
             try:
-                insert_pending_mission(missions, f"- Task {i}")
+                insert_pending_mission(f"Task {i}")
             except Exception as e:
                 errors.append(e)
 
@@ -398,123 +407,77 @@ class TestInsertPendingMission:
             t.join()
 
         assert not errors, f"Errors during concurrent insert: {errors}"
-        content = missions.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         for i in range(num_threads):
-            assert f"- Task {i}" in content, f"Task {i} lost during concurrent insert"
+            assert f"Task {i}" in content, f"Task {i} lost during concurrent insert"
 
-    def test_uses_lockfile_not_data_file(self, tmp_path):
-        """Verify the lock is on a .lock file, not on missions.md itself."""
+    def test_uses_lockfile_not_data_file(self, tmp_path, monkeypatch):
+        """Verify the lock is on a separate sidecar file, not on missions.md itself."""
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n")
 
-        insert_pending_mission(missions, "- Test task")
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
-        lock_file = tmp_path / "missions.lock"
-        assert lock_file.exists(), "Lock file should be created alongside missions.md"
+        insert_pending_mission("Test task")
 
-    def test_no_temp_file_left_on_success(self, tmp_path):
+        # The store holds its lock on a dedicated sidecar so missions.md can be
+        # atomically replaced rather than locked open.
+        lock_file = tmp_path / "instance" / ".missions-store.lock"
+        assert lock_file.exists(), "Store lock file should be created alongside missions.md"
+
+    def test_no_temp_file_left_on_success(self, tmp_path, monkeypatch):
         """Atomic write should clean up temp files on success."""
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n")
 
-        insert_pending_mission(missions, "- Clean task")
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
-        temp_files = list(tmp_path.glob(".missions-*"))
+        insert_pending_mission("Clean task")
+
+        # atomic_write uses a ".koan-" temp prefix and renames on success.
+        temp_files = list((tmp_path / "instance").glob(".koan-*"))
         assert temp_files == [], f"Temp files left behind: {temp_files}"
 
-    def test_atomic_write_preserves_content_on_transform_error(self, tmp_path):
-        """If the transform raises, the original file should be untouched."""
-        from app.utils import modify_missions_file
-        missions = tmp_path / "missions.md"
-        original = "# Missions\n\n## Pending\n- keep this\n\n## In Progress\n"
-        missions.write_text(original)
-
-        def bad_transform(content):
-            raise ValueError("deliberate error")
-
-        with pytest.raises(ValueError, match="deliberate error"):
-            modify_missions_file(missions, bad_transform)
-
-        assert missions.read_text() == original, "Original file must survive a failed transform"
-
-    def test_no_temp_file_left_on_error(self, tmp_path):
-        """Temp file should be cleaned up even when transform raises."""
-        from app.utils import modify_missions_file
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n")
-
-        def bad_transform(content):
-            raise RuntimeError("boom")
-
-        with pytest.raises(RuntimeError):
-            modify_missions_file(missions, bad_transform)
-
-        temp_files = list(tmp_path.glob(".missions-*"))
-        assert temp_files == [], f"Temp files left behind after error: {temp_files}"
-
-    def test_returns_true_when_inserted(self, tmp_path):
+    def test_returns_true_when_inserted(self, tmp_path, monkeypatch):
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
         result = insert_pending_mission(
-            missions, "- [project:koan] /rebase https://github.com/o/r/pull/1"
+            "/rebase https://github.com/o/r/pull/1", "koan"
         )
         assert result is True
-        assert "/rebase" in missions.read_text()
+        assert "/rebase" in (tmp_path / "instance" / "missions.md").read_text()
 
-    def test_returns_false_on_duplicate(self, tmp_path):
+    def test_returns_false_on_duplicate(self, tmp_path, monkeypatch):
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
-        missions.write_text(
-            "# Missions\n\n## Pending\n\n"
-            "- [project:koan] /rebase https://github.com/o/r/pull/1 ⏳(2026-05-16T10:00)\n\n"
-            "## In Progress\n\n## Done\n"
-        )
+        from app.mission_store import locked_store
+
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        # Pre-populate via the store so missions.json is canonical from the start.
+        with locked_store(str(tmp_path / "instance")) as store:
+            store.add("/rebase https://github.com/o/r/pull/1", "koan")
 
         result = insert_pending_mission(
-            missions, "- [project:koan] /rebase https://github.com/o/r/pull/1"
+            "/rebase https://github.com/o/r/pull/1", "koan"
         )
         assert result is False
-        # File unchanged — no double entry
-        content = missions.read_text()
+        # Still only one entry
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert content.count("/rebase https://github.com/o/r/pull/1") == 1
 
-    def test_non_github_mission_always_inserted(self, tmp_path):
+    def test_non_github_mission_always_inserted(self, tmp_path, monkeypatch):
+        from app import utils
         from app.utils import insert_pending_mission
-        missions = tmp_path / "missions.md"
-        missions.write_text(
-            "# Missions\n\n## Pending\n\n"
-            "- [project:koan] Fix the login bug\n\n"
-            "## In Progress\n\n## Done\n"
-        )
 
-        result = insert_pending_mission(
-            missions, "- [project:koan] Fix the login bug"
-        )
-        # Non-GitHub missions are not deduped (no signature)
+        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+
+        result = insert_pending_mission("Fix the login bug", "koan")
+        # Non-GitHub missions are not deduped (no URL signature)
         assert result is True
-
-    def test_modify_missions_file_returns_new_content(self, tmp_path):
-        """modify_missions_file should return the transformed content."""
-        from app.utils import modify_missions_file
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
-
-        result = modify_missions_file(missions, lambda c: c + "# Extra\n")
-        assert result.endswith("# Extra\n")
-        assert missions.read_text() == result
-
-    def test_modify_creates_file_if_missing(self, tmp_path):
-        """modify_missions_file should create the file if it doesn't exist."""
-        from app.utils import modify_missions_file
-        missions = tmp_path / "missions.md"
-
-        result = modify_missions_file(missions, lambda c: c)
-        assert missions.exists()
-        assert "## Pending" in result
 
 
 class TestGetJournalFile:

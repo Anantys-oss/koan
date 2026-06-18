@@ -79,9 +79,10 @@ class TestProjectNameQueuing:
              patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in entry
+            entry = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
             assert "/profile" in entry
+            assert project == "koan"
 
     def test_unknown_project_returns_error(self, handler, ctx):
         ctx.args = "nonexistent"
@@ -98,8 +99,8 @@ class TestProjectNameQueuing:
             result = handler.handle(ctx)
             assert "Profile queued" in result
             assert "backend" in result
-            entry = mock_insert.call_args[0][1]
-            assert "[project:backend]" in entry
+            project = mock_insert.call_args[0][1]
+            assert project == "backend"
 
     def test_unknown_project_lists_known(self, handler, ctx):
         ctx.args = "nonexistent"
@@ -128,7 +129,7 @@ class TestPrUrlQueuing:
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "github.com/sukria/koan/pull/42" in entry
 
     def test_pr_url_in_text_extracted(self, handler, ctx):
@@ -342,10 +343,12 @@ class TestProfileRunner:
         assert report_path.exists()
         assert "newproject" in str(report_path)
 
-    def test_queue_missions(self, tmp_path):
-        instance_dir = tmp_path
+    def test_queue_missions(self, tmp_path, monkeypatch):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
         missions_md = instance_dir / "missions.md"
         missions_md.write_text("## Pending\n\n## In Progress\n\n## Done\n")
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         from skills.core.profile.profile_runner import _queue_missions
         queued = _queue_missions(instance_dir, "koan", ["Fix slow loop", "Add cache"])
         assert queued == 2

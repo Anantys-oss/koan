@@ -762,8 +762,8 @@ class TestHandlerCleanFormat:
 
     def test_plan_handler_clean_format(self, tmp_path, monkeypatch):
         """Plan handler should produce /plan format, not run: format."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         monkeypatch.setattr(
             "app.utils.get_known_projects",
@@ -771,19 +771,19 @@ class TestHandlerCleanFormat:
         )
 
         from skills.core.plan.handler import handle
-        ctx = self._make_ctx(args="Add dark mode", instance_dir=tmp_path)
+        ctx = self._make_ctx(args="Add dark mode", instance_dir=tmp_path / "instance")
         result = handle(ctx)
 
         assert "queued" in result.lower() or "Plan queued" in result
-        content = missions_file.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/plan Add dark mode" in content
         assert "run:" not in content
         assert "python3 -m" not in content
 
     def test_rebase_handler_clean_format(self, tmp_path, monkeypatch):
         """Rebase handler should produce /rebase format."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         monkeypatch.setattr(
             "app.utils.get_known_projects",
@@ -812,19 +812,19 @@ class TestHandlerCleanFormat:
         )
         ctx = self._make_ctx(
             args="https://github.com/sukria/koan/pull/42",
-            instance_dir=tmp_path,
+            instance_dir=tmp_path / "instance",
         )
         result = handle(ctx)
 
         assert "queued" in result.lower()
-        content = missions_file.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/rebase https://github.com/sukria/koan/pull/42" in content
         assert "run:" not in content
 
     def test_ai_handler_clean_format(self, tmp_path, monkeypatch):
         """AI handler should produce /ai format."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         monkeypatch.setattr(
             "app.utils.get_known_projects",
@@ -832,18 +832,18 @@ class TestHandlerCleanFormat:
         )
 
         from skills.core.ai.handler import handle
-        ctx = self._make_ctx(args="koan", instance_dir=tmp_path)
+        ctx = self._make_ctx(args="koan", instance_dir=tmp_path / "instance")
         result = handle(ctx)
 
         assert "queued" in result.lower()
-        content = missions_file.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/ai koan" in content
         assert "run:" not in content
 
     def test_check_handler_clean_format(self, tmp_path, monkeypatch):
         """Check handler should produce /check format."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         monkeypatch.setattr(
             "app.utils.get_known_projects",
@@ -853,19 +853,19 @@ class TestHandlerCleanFormat:
         from skills.core.check.handler import handle
         ctx = self._make_ctx(
             args="https://github.com/sukria/koan/pull/85",
-            instance_dir=tmp_path,
+            instance_dir=tmp_path / "instance",
         )
         result = handle(ctx)
 
         assert "queued" in result.lower()
-        content = missions_file.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/check https://github.com/sukria/koan/pull/85" in content
         assert "run:" not in content
 
     def test_claudemd_handler_clean_format(self, tmp_path, monkeypatch):
         """Claudemd handler should produce /claudemd format."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         monkeypatch.setattr(
             "app.utils.get_known_projects",
@@ -873,18 +873,18 @@ class TestHandlerCleanFormat:
         )
 
         from skills.core.claudemd.handler import handle
-        ctx = self._make_ctx(args="koan", instance_dir=tmp_path)
+        ctx = self._make_ctx(args="koan", instance_dir=tmp_path / "instance")
         result = handle(ctx)
 
         assert "queued" in result.lower()
-        content = missions_file.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/claudemd koan" in content
         assert "run:" not in content
 
     def test_recreate_handler_clean_format(self, tmp_path, monkeypatch):
         """Recreate handler should produce /recreate format."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         monkeypatch.setattr(
             "app.utils.get_known_projects",
@@ -904,12 +904,12 @@ class TestHandlerCleanFormat:
         )
         ctx = self._make_ctx(
             args="https://github.com/sukria/koan/pull/42",
-            instance_dir=tmp_path,
+            instance_dir=tmp_path / "instance",
         )
         result = handle(ctx)
 
         assert "queued" in result.lower()
-        content = missions_file.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/recreate https://github.com/sukria/koan/pull/42" in content
         assert "run:" not in content
 
@@ -1596,10 +1596,10 @@ class TestStripPassthroughCommand:
 class TestExpandComboSkill:
     """Combo skills expand into multiple sub-missions in the queue."""
 
-    def test_rr_expands_to_review_and_rebase(self, tmp_path):
+    def test_rr_expands_to_review_and_rebase(self, tmp_path, monkeypatch):
         """The /rr combo skill should insert /review and /rebase missions."""
-        missions_md = tmp_path / "missions.md"
-        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         result = expand_combo_skill(
             "[project:koan] /rr https://github.com/owner/repo/pull/42",
@@ -1607,17 +1607,21 @@ class TestExpandComboSkill:
         )
 
         assert result is True
-        content = missions_md.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/review https://github.com/owner/repo/pull/42" in content
         assert "/rebase https://github.com/owner/repo/pull/42" in content
-        # Both should have project tag
-        assert "[project:koan] /review" in content
-        assert "[project:koan] /rebase" in content
+        # Both should carry the project tag (rendered after the mission text)
+        from app.missions import parse_sections
+        pending = parse_sections(content)["pending"]
+        review_line = next(i for i in pending if "/review " in i)
+        rebase_line = next(i for i in pending if "/rebase " in i)
+        assert "[project:koan]" in review_line
+        assert "[project:koan]" in rebase_line
 
-    def test_reviewrebase_alias_works(self, tmp_path):
+    def test_reviewrebase_alias_works(self, tmp_path, monkeypatch):
         """The primary command /reviewrebase should also expand."""
-        missions_md = tmp_path / "missions.md"
-        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         result = expand_combo_skill(
             "[project:koan] /reviewrebase https://github.com/owner/repo/pull/42",
@@ -1625,30 +1629,27 @@ class TestExpandComboSkill:
         )
 
         assert result is True
-        content = missions_md.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/review" in content
         assert "/rebase" in content
 
-    def test_review_order_preserved(self, tmp_path):
+    def test_review_order_preserved(self, tmp_path, monkeypatch):
         """/review should come before /rebase in the pending section."""
-        missions_md = tmp_path / "missions.md"
-        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         expand_combo_skill(
             "[project:koan] /rr https://github.com/owner/repo/pull/42",
             str(tmp_path),
         )
 
-        content = missions_md.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         review_pos = content.index("/review")
         rebase_pos = content.index("/rebase")
         assert review_pos < rebase_pos, "/review should come before /rebase"
 
     def test_non_combo_returns_false(self, tmp_path):
         """Regular skills should not be expanded."""
-        missions_md = tmp_path / "missions.md"
-        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
-
         result = expand_combo_skill("/rebase https://github.com/owner/repo/pull/42", str(tmp_path))
         assert result is False
 
@@ -1657,10 +1658,10 @@ class TestExpandComboSkill:
         result = expand_combo_skill("Fix the login bug", str(tmp_path))
         assert result is False
 
-    def test_no_project_tag(self, tmp_path):
+    def test_no_project_tag(self, tmp_path, monkeypatch):
         """/rr without project tag should still expand (no tag in sub-missions)."""
-        missions_md = tmp_path / "missions.md"
-        missions_md.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
         result = expand_combo_skill(
             "/rr https://github.com/owner/repo/pull/42",
@@ -1668,7 +1669,7 @@ class TestExpandComboSkill:
         )
 
         assert result is True
-        content = missions_md.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/review https://github.com/owner/repo/pull/42" in content
         assert "[project:" not in content
 
@@ -1689,9 +1690,10 @@ class TestExpandComboSkill:
 
         assert result is True
         content = missions_md.read_text()
-        assert "[project:koan] /security_audit" in content
-        assert "[project:koan] /dead_code" in content
-        assert "[project:koan] /profile" in content
+        # The store renders the project as a trailing [project:X] tag.
+        assert "/security_audit [project:koan]" in content
+        assert "/dead_code [project:koan]" in content
+        assert "/profile [project:koan]" in content
         assert "Existing mission" in content
 
     def test_parallel_combo_deduplicates_url_missions(self, tmp_path):

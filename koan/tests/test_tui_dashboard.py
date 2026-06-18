@@ -488,8 +488,9 @@ def test_detach_returns_true(tmp_path):
     assert app._detached is True
 
 
-def test_new_mission_queues_to_missions_md(tmp_path):
+def test_new_mission_queues_to_missions_md(tmp_path, monkeypatch):
     _write_config(tmp_path, "x: 1\n")
+    monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
 
     async def scenario():
         app = tui.KoanDashboard(tmp_path)
@@ -508,7 +509,8 @@ def test_new_mission_queues_to_missions_md(tmp_path):
 def test_pilot_status_shows_mission_titles_and_telegram(tmp_path, monkeypatch):
     _write_config(tmp_path, "x: 1\n")
     inst = tmp_path / "instance"
-    # Title carries a [project:koan] tag — must be escaped, not parsed as markup.
+    # display_title() returns "[koan] /review https://x" — brackets must be
+    # escaped so Textual doesn't parse "[koan]" as a markup tag.
     (inst / "missions.md").write_text(
         "# Missions\n\n## Pending\n\n## In Progress\n\n"
         "- /review https://x [project:koan]\n\n## Done\n")
@@ -524,7 +526,7 @@ def test_pilot_status_shows_mission_titles_and_telegram(tmp_path, monkeypatch):
             body = app.query_one("#status-body", tui.Static)
             rendered = body.render()
             text = getattr(rendered, "plain", str(rendered))
-            assert "project:koan" in text  # tag rendered literally, not parsed
+            assert "koan" in text  # project name rendered literally, not parsed as markup
             assert "telegram" in text
 
     asyncio.run(scenario())
