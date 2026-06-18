@@ -50,6 +50,7 @@ def _get_agent_state() -> dict:
         "focus": full["focus"] is not None,
         "status_text": full["label"],
         "pause": pause_info,
+        "elapsed_seconds": full["elapsed"],
     }
 
 
@@ -76,9 +77,27 @@ def _mission_counts() -> dict:
 def status():
     state = _get_agent_state()
     counts = _mission_counts()
+
+    from app.agent_state import get_signal_status
+
+    sigs = get_signal_status(_koan_root())
+
+    try:
+        from app.attention import get_attention_count
+
+        attn = get_attention_count(str(_koan_root()))
+    except Exception:
+        attn = 0
+
     return jsonify(
         {
             "agent": state,
             "missions": counts,
+            "signals": {
+                "stop_requested": sigs["stop_requested"],
+                "quota_paused": sigs["quota_paused"],
+                "paused": sigs["paused"],
+            },
+            "attention_count": attn,
         }
     )
