@@ -1055,6 +1055,81 @@ class TestDryRun:
 # ---------------------------------------------------------------------------
 
 
+class TestTrackerRuntimeErrorIsolation:
+    """Tracker runtime errors must not abort recovery for ALL missions.
+
+    When the tracker module imports successfully but a function raises at
+    runtime (e.g., corrupt .stagnation-retries.json), each per-mission call
+    must degrade to the inline [r:N] counter instead of propagating the
+    exception through _recover_transform.
+    """
+
+    def test_get_crash_runtime_error_degrades_gracefully(self, instance_dir):
+        """A runtime error from get_crash_count falls back to 0 for that mission."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Task A\n- Task B"))
+
+        def _exploding_get_crash(inst, title):
+            if "Task A" in title:
+                raise OSError("corrupt tracker")
+            return 0
+
+        with patch("app.stagnation_monitor.get_crash_count", side_effect=_exploding_get_crash):
+            count, _ = recover_missions(str(instance_dir))
+
+        assert count == 2
+        content = missions.read_text()
+        assert "Task A" in content
+        assert "Task B" in content
+
+    def test_inc_crash_runtime_error_falls_back_to_inline(self, instance_dir):
+        """If increment_crash_count raises, the mission uses inline [r:N] fallback."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Flaky task"))
+
+        with patch("app.stagnation_monitor.increment_crash_count",
+                   side_effect=OSError("write failed")):
+            count, _ = recover_missions(str(instance_dir))
+
+        assert count == 1
+        content = missions.read_text()
+        assert "[r:1]" in content
+
+    def test_one_corrupt_mission_doesnt_block_others(self, instance_dir):
+        """A single corrupt tracker entry must not abort recovery for all missions."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(in_progress="- Good task\n- Bad task\n- Another good"))
+
+        def _selective_crash(inst, title):
+            if "Bad task" in title:
+                raise ValueError("corrupt entry")
+            return 0
+
+        with patch("app.stagnation_monitor.get_crash_count", side_effect=_selective_crash):
+            count, _ = recover_missions(str(instance_dir))
+
+        assert count == 3
+        content = missions.read_text()
+        assert "Good task" in content
+        assert "Bad task" in content
+        assert "Another good" in content
+
+    def test_complex_block_tracker_error_degrades(self, instance_dir):
+        """Tracker error during complex ### block recovery uses inline fallback."""
+        missions = instance_dir / "missions.md"
+        missions.write_text(_missions(
+            in_progress="### Complex Task\n- Step 1\n- Step 2"
+        ))
+
+        with patch("app.stagnation_monitor.increment_crash_count",
+                   side_effect=OSError("write failed")):
+            count, _ = recover_missions(str(instance_dir))
+
+        assert count == 1
+        content = missions.read_text()
+        assert "[r:1]" in content
+
+
 class TestCheckpointAwareRecovery:
     """Tests for checkpoint integration in recovery."""
 
