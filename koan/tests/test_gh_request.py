@@ -301,10 +301,11 @@ class TestGhRequestRouting:
         )
 
         assert success is False
-        assert error is None
+        # Single-comment errors are delegated to the caller, not posted inline.
+        assert error is not None
+        assert "`blahblah`" in error
         mock_nlp.assert_called_once()
-        mock_error_reply.assert_called_once()
-        assert "`blahblah`" in mock_error_reply.call_args[0][4]
+        mock_error_reply.assert_not_called()
 
     @patch("app.github_command_handler._is_subject_closed", return_value=None)
     @patch("app.github_command_handler.mark_notification_read")

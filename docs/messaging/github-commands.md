@@ -139,6 +139,17 @@ github:
 
 When disabled (the default), reactions are still placed.
 
+#### Reply circuit breaker
+
+To prevent a runaway reply loop from spamming a thread (e.g. a misconfiguration or a future regression that keeps re-discovering the same comments), Kōan caps the number of bot comments it will post to a single PR/issue thread within a rolling hour:
+
+```yaml
+github:
+  max_replies_per_thread_per_hour: 10   # default: 10; set 0 to disable
+```
+
+Once the cap is reached, further acks/errors/replies on that thread are suppressed (logged, with a single Telegram heads-up to the operator) until the rolling window clears. The counter is persisted under `instance/`, so the breaker survives restarts.
+
 #### Reply threading
 
 All AI-generated replies (from `reply_enabled`, `/ask`, and command acknowledgments) are threaded to the original comment:
@@ -227,6 +238,8 @@ Two-tier approach to prevent duplicate missions:
 
 The mission is inserted **before** the reaction is added. If Kōan crashes between these two steps, the worst case is a duplicate mission — never a lost command.
 
+Because a single notification thread is rescanned for **all** unprocessed @mentions on every poll, *every* comment Kōan acts on — whether it queued a mission, posted an error, denied permission, or sent help — is also recorded in the persistent comment tracker (`instance/.koan-github-processed.json`). The reaction alone is volatile (it depends on the reactions API and a correctly-configured `bot_username`); the local tracker is the durable backstop that guarantees a comment is answered **at most once** and never re-discovered on a later poll. This is what prevents the same error/help reply from being re-posted on every cycle.
+
 ### Polling & backoff
 
 Notifications are checked during the agent's interruptible sleep cycle, with exponential backoff:
@@ -253,7 +266,12 @@ parks on this backoff so it does not flood logs while waiting for the next poll.
 When a command fails validation (unknown command, permission denied), Kōan:
 1. Posts an error reply on the GitHub comment thread (❌ with explanation)
 2. Includes the list of available commands for "unknown command" errors
-3. Deduplicates error replies to avoid spam
+3. Deduplicates error replies to avoid spam, and marks the triggering comment processed so it is never re-answered on a later poll
+4. Honours the per-thread reply circuit breaker (`max_replies_per_thread_per_hour`) — once tripped, error replies are suppressed
+
+### Closed / merged subjects
+
+Commands are meaningless on a closed or merged PR/issue, so Kōan never posts acks, errors, or replies on them. The closed-subject check is enforced on **every** reply path — both the main notification handler and the error-reply fallback — and the affected comments are reacted to (👀) and marked processed so the closed thread is not re-scanned every poll. A single Telegram notice is sent the first time a closed subject is skipped.
 
 ### Code block protection
 

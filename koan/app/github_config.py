@@ -260,6 +260,21 @@ def get_github_subscribe_max_per_cycle(config: dict) -> int:
         return 5
 
 
+def get_github_max_replies_per_thread(config: dict) -> int:
+    """Max bot replies/acks allowed on a single thread per rolling hour.
+
+    Circuit breaker against runaway reply loops: once a thread reaches this
+    many bot-posted comments within the window, further acks/errors/replies
+    are suppressed (the operator is warned once via Telegram). Set to 0 to
+    disable the breaker. Default: 10.
+    """
+    github = config.get("github") or {}
+    try:
+        return max(0, int(github.get("max_replies_per_thread_per_hour", 10)))
+    except (ValueError, TypeError):
+        return 10
+
+
 def get_github_webhook_enabled(config: dict) -> bool:
     """Check if the push-based webhook receiver is enabled.
 

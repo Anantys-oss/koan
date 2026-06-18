@@ -220,13 +220,14 @@ class TestProcessSingleNotificationLogging:
     """Verify debug logs in process_single_notification."""
 
     @patch("app.github_command_handler.mark_notification_read")
-    @patch("app.github_command_handler.get_comment_from_notification")
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification", return_value=None)
-    def test_logs_unknown_repo_skipped(self, mock_project, mock_stale, mock_comment, mock_read, caplog):
+    def test_logs_unknown_repo_skipped(self, mock_project, mock_mentions, mock_read, caplog):
         from app.github_command_handler import process_single_notification
 
-        mock_comment.return_value = {"id": "c1", "user": {"login": "alice"}, "body": "@bot rebase"}
+        mock_mentions.return_value = [
+            {"id": "c1", "user": {"login": "alice"}, "body": "@bot rebase"}
+        ]
 
         notif = {
             "id": "1",
@@ -250,15 +251,16 @@ class TestProcessSingleNotificationLogging:
     @patch("app.github_command_handler.check_user_permission", return_value=False)
     @patch("app.github_command_handler.get_github_authorized_users", return_value=["allowed"])
     @patch("app.github_command_handler._validate_and_parse_command")
-    @patch("app.github_command_handler.get_comment_from_notification")
-    @patch("app.github_command_handler.is_notification_stale", return_value=False)
+    @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification", return_value=("myproj", "o", "r"))
     def test_logs_permission_denied(
-        self, mock_project, mock_stale, mock_comment, mock_validate, mock_auth, mock_perm, mock_read, caplog
+        self, mock_project, mock_mentions, mock_validate, mock_auth, mock_perm, mock_read, caplog
     ):
         from app.github_command_handler import process_single_notification
 
-        mock_comment.return_value = {"id": "c1", "user": {"login": "intruder"}, "body": "@bot rebase"}
+        mock_mentions.return_value = [
+            {"id": "c1", "user": {"login": "intruder"}, "body": "@bot rebase"}
+        ]
         mock_validate.return_value = (MagicMock(), "rebase", "")
 
         notif = {"id": "1", "repository": {"full_name": "o/r"}, "subject": {"url": ""}}

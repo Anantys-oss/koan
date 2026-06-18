@@ -740,6 +740,15 @@ class TestCheckAlreadyProcessedWithUrl:
     def setup_method(self):
         _processed_comments.clear()
 
+    @pytest.fixture(autouse=True)
+    def _no_persistent_tracker(self, monkeypatch):
+        """These tests verify reactions-endpoint selection, which is
+        independent of the persistent comment tracker. Clear KOAN_ROOT so a
+        comment id already recorded on disk (the tracker file is shared across
+        runs) can't short-circuit check_already_processed before the API call.
+        """
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+
     @patch("app.github_notifications.api")
     def test_pr_review_comment_uses_correct_endpoint(self, mock_api):
         """PR review comments should use pulls/comments endpoint."""

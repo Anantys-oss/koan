@@ -613,3 +613,55 @@ class TestTruncateText:
         result = truncate_text("x" * 200, 100)
         assert len(result) < 200
         assert "(truncated)" in result
+
+
+class TestReplyCircuitBreaker:
+    """Per-thread reply budget enforced in post_reply / post_threaded_reply."""
+
+    def test_posts_allowed_until_cap(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "instance").mkdir()
+        from app.github_reply import _enforce_reply_budget
+
+        with patch(
+            "app.github_config.get_github_max_replies_per_thread",
+            return_value=10,
+        ):
+            allowed = [_enforce_reply_budget("o", "r", "42") for _ in range(10)]
+            assert all(allowed)
+            # 11th call exceeds the cap → suppressed.
+            assert _enforce_reply_budget("o", "r", "42") is False
+
+    def test_post_reply_suppressed_when_breaker_tripped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "instance").mkdir()
+        from app.github_notification_tracker import record_thread_reply
+
+        for _ in range(10):
+            record_thread_reply(str(tmp_path / "instance"), "owner", "repo", "42")
+
+        with patch("app.github_reply.api") as mock_api, \
+                patch("app.notify.send_telegram"), \
+                patch(
+                    "app.github_config.get_github_max_replies_per_thread",
+                    return_value=10,
+                ):
+            assert post_reply("owner", "repo", "42", "body") is False
+            mock_api.assert_not_called()
+
+    def test_breaker_disabled_when_cap_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        (tmp_path / "instance").mkdir()
+        from app.github_reply import _enforce_reply_budget
+
+        with patch(
+            "app.github_config.get_github_max_replies_per_thread",
+            return_value=0,
+        ):
+            # Cap 0 disables the breaker — always allowed.
+            assert all(_enforce_reply_budget("o", "r", "42") for _ in range(25))
+
+    def test_fails_open_without_koan_root(self, monkeypatch):
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        from app.github_reply import _enforce_reply_budget
+        assert _enforce_reply_budget("o", "r", "42") is True

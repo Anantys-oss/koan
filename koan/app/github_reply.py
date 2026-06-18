@@ -14,7 +14,11 @@ Flow:
 
 import json
 import logging
+import os
 import re
+import threading
+import time
+from pathlib import Path
 from typing import Optional
 
 from app.cli_provider import run_command
@@ -23,6 +27,78 @@ from app.prompts import load_prompt
 from app.utils import truncate_text
 
 log = logging.getLogger(__name__)
+
+# Throttle for the "thread reply budget exceeded" Telegram heads-up: at most
+# one warning per thread per window so a tripped breaker doesn't itself spam.
+_budget_warn_lock = threading.Lock()
+_last_budget_warning: dict = {}
+_BUDGET_WARN_THROTTLE_SECONDS = 3600
+
+
+def _warn_reply_budget_once(owner: str, repo: str, issue_number: str, cap: int) -> None:
+    """Send a single Telegram heads-up when a thread's reply budget trips."""
+    thread_key = f"{owner}/{repo}#{issue_number}"
+    now = time.monotonic()
+    with _budget_warn_lock:
+        last = _last_budget_warning.get(thread_key, 0.0)
+        if now - last < _BUDGET_WARN_THROTTLE_SECONDS:
+            return
+        _last_budget_warning[thread_key] = now
+    try:
+        from app.notify import NotificationPriority, send_telegram
+
+        send_telegram(
+            f"🛑 Reply circuit breaker tripped on {thread_key}: reached "
+            f"{cap} bot replies within the hour — further replies suppressed.",
+            priority=NotificationPriority.ACTION,
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort notification
+        log.warning("Failed to send reply-budget warning for %s: %s", thread_key, e)
+
+
+def _enforce_reply_budget(owner: str, repo: str, issue_number: str) -> bool:
+    """Per-thread circuit breaker. Return True if a reply may be posted.
+
+    Records the reply when allowed. When the rolling-hour cap is reached,
+    suppresses the post (logs + warns the operator once) and returns False.
+    Fails open: if state cannot be read (no KOAN_ROOT, file error), the reply
+    is allowed.
+    """
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        return True
+    try:
+        from app.github_config import get_github_max_replies_per_thread
+        from app.utils import load_config
+
+        cap = get_github_max_replies_per_thread(load_config())
+    except Exception as e:  # noqa: BLE001 — config failure must not block replies
+        log.debug("Reply budget: config load failed, allowing reply: %s", e)
+        return True
+    if cap <= 0:
+        return True  # breaker disabled
+
+    instance_dir = str(Path(koan_root) / "instance")
+    try:
+        from app.github_notification_tracker import try_consume_reply_budget
+
+        # Atomic check-and-record: the count check and the slot record happen
+        # inside one lock, so concurrent callers can't both pass and overshoot
+        # the cap (no check-then-act race).
+        if not try_consume_reply_budget(
+            instance_dir, owner, repo, str(issue_number), cap,
+        ):
+            log.warning(
+                "GitHub: reply circuit breaker tripped for %s/%s#%s "
+                "(cap=%d/hour) — suppressing reply",
+                owner, repo, issue_number, cap,
+            )
+            _warn_reply_budget_once(owner, repo, str(issue_number), cap)
+            return False
+    except Exception as e:  # noqa: BLE001 — tracker failure must not block replies
+        log.debug("Reply budget: tracker access failed, allowing reply: %s", e)
+        return True
+    return True
 
 # Regex for stripping code blocks before mention extraction
 _CODE_BLOCK_RE = re.compile(r'```.*?```|`[^`]+`', re.DOTALL)
@@ -246,6 +322,8 @@ def post_reply(
     Returns:
         True if posted successfully.
     """
+    if not _enforce_reply_budget(owner, repo, issue_number):
+        return False
     try:
         safe_body = sanitize_github_comment(body)
         api(
@@ -279,6 +357,8 @@ def post_threaded_reply(
     Falls back to a plain ``post_reply`` when threading metadata is
     unavailable.
     """
+    if not _enforce_reply_budget(owner, repo, issue_number):
+        return False
     safe_body = sanitize_github_comment(body)
 
     # PR review comments support native threading via in_reply_to
