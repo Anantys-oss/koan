@@ -1062,9 +1062,9 @@ def main_loop():
                 for _s in list(_live_sessions.values()):
                     try:
                         kill_session(_s, registry)
+                        registry.remove(_s.id)
                     except Exception as _ke:
                         log("error", f"kill_session error: {_ke}")
-                    registry.remove(_s.id)
                 _live_sessions.clear()
             except Exception as e:
                 log("error", f"parallel session cleanup error: {e}")
@@ -1436,7 +1436,7 @@ def _parallel_reap_sessions(
             )
         except Exception as e:
             log("error", f"[parallel] post-mission failed for {session.id}: {e}")
-            post = {"success": False, "quota_exhausted": True}
+            post = {"success": False, "quota_exhausted": False}
 
         # Persist missions.md state transition via locked read-modify-write
         try:
@@ -1601,9 +1601,9 @@ def _parallel_dispatch_sessions(
             try:
                 from app.session_manager import kill_session
                 kill_session(session, registry)
+                _live_sessions.pop(session.id, None)
             except Exception as ke:
                 log("error", f"[parallel] kill_session cleanup failed: {ke}")
-            _live_sessions.pop(session.id, None)
             continue
 
         log("koan", f"[parallel] Spawned {session.id} [{project_name}]: {mission_text[:60]}")

@@ -534,9 +534,10 @@ def _run_iteration(
                     _kill(_cb_session, registry)
                 except Exception as _ke:
                     log("error", f"[parallel] circuit-breaker kill failed for {_cb_session.id}: {_ke}")
-                import contextlib
-                with contextlib.suppress(Exception):
+                try:
                     _run._get_session_registry(instance).remove(_cb_session.id)
+                except Exception as _re:
+                    log("error", f"[parallel] circuit-breaker registry remove failed for {_cb_session.id}: {_re}")
             _run._live_sessions.clear()
 
     # Build status prefix that includes slot utilisation when parallel is active
