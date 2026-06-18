@@ -4,7 +4,10 @@ Kōan -- GitHub CLI authentication helper.
 
 Manages GitHub CLI identity switching for gh commands. When GITHUB_USER
 is configured, retrieves a session token via `gh auth token --user <user>`
-and exports it as GH_TOKEN for all gh CLI calls in the session.
+and exports it as GH_TOKEN for all gh CLI calls in the session. If a
+GH_TOKEN is already present in the environment, it is trusted as-is and the
+`gh auth token --user` lookup is skipped (that lookup only reads gh's stored
+config, so it would otherwise warn falsely about env-var-based auth).
 
 Usage from Python:
     from app.github_auth import get_gh_env, setup_github_auth
@@ -94,6 +97,16 @@ def setup_github_auth() -> bool:
     username = get_github_user()
     if not username:
         return True  # No user configured, nothing to do
+
+    # A GH_TOKEN already in the environment (e.g. exported via .env or the
+    # shell) is valid auth on its own — gh CLI uses it directly. The
+    # `gh auth token --user` lookup below only reads gh's *stored* config
+    # (~/.config/gh/hosts.yml) and returns nothing for an env-var token,
+    # which would raise a false "authentication failed" warning. Trust the
+    # existing token, matching get_gh_env()'s behavior.
+    if os.environ.get("GH_TOKEN", "").strip():
+        print(f"[github_auth] Using GH_TOKEN from environment for {username}")
+        return True
 
     token = get_gh_token(username)
     if token:

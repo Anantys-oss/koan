@@ -117,6 +117,20 @@ class TestSetupGithubAuth:
 
     @patch("app.notify.send_telegram")
     @patch("app.github_auth.get_gh_token", return_value=None)
+    def test_trusts_existing_gh_token_without_user_lookup(
+        self, mock_token, mock_send, monkeypatch
+    ):
+        # GH_TOKEN exported in env should be trusted directly: no
+        # `gh auth token --user` lookup, no false-failure alert.
+        monkeypatch.setenv("GITHUB_USER", "my-bot")
+        monkeypatch.setenv("GH_TOKEN", "existing-token-123")
+        assert setup_github_auth() is True
+        mock_token.assert_not_called()
+        mock_send.assert_not_called()
+        assert os.environ.get("GH_TOKEN") == "existing-token-123"
+
+    @patch("app.notify.send_telegram")
+    @patch("app.github_auth.get_gh_token", return_value=None)
     def test_sends_alert_on_failure(self, mock_token, mock_send, monkeypatch):
         monkeypatch.setenv("GITHUB_USER", "my-bot")
         monkeypatch.delenv("GH_TOKEN", raising=False)
