@@ -96,7 +96,7 @@ _DONE_CAP = 50
 _FAILED_CAP = 30
 
 
-@dataclass
+@dataclass(frozen=True)
 class MissionRecord:
     """A single mission with all lifecycle state stored as typed fields.
 
@@ -107,9 +107,13 @@ class MissionRecord:
     (no ``⏳``, ``▶``, ``✅/❌``, ``[r:N]``, ``[complexity:X]``).  Markers
     are re-rendered into ``missions.md`` by :meth:`MissionStore._render_record`.
 
-    The ``tags`` list holds arbitrary string labels such as ``"flushed"`` and
+    The ``tags`` tuple holds arbitrary string labels such as ``"flushed"`` and
     ``"stagnation"`` that appear after the completion timestamp in the Markdown
     view (e.g. ``❌ (2026-06-14 20:00) [flushed]``).
+
+    The dataclass is frozen so external callers cannot mutate fields without
+    going through the store's mutation API.  Internal store methods that need
+    to update fields use ``object.__setattr__(record, "field", value)``.
     """
 
     id: str                        # UUID — stable across entire lifecycle
@@ -119,7 +123,7 @@ class MissionRecord:
     queued_at: str | None          # ISO8601 "YYYY-MM-DDTHH:MM" or None
     started_at: str | None
     completed_at: str | None
-    tags: list[str]                # e.g. ["flushed", "stagnation"]
+    tags: tuple[str, ...]          # e.g. ("flushed", "stagnation")
     complexity: str | None         # None | "trivial" | "simple" | "medium" | "complex"
     crash_count: int               # crash-recovery requeue count (replaces [r:N])
 
@@ -168,7 +172,7 @@ class MissionRecord:
             "queued_at": self.queued_at,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
-            "tags": self.tags,
+            "tags": list(self.tags),
             "complexity": self.complexity,
             "crash_count": self.crash_count,
         }
@@ -184,7 +188,7 @@ class MissionRecord:
             queued_at=d.get("queued_at"),
             started_at=d.get("started_at"),
             completed_at=d.get("completed_at"),
-            tags=list(d.get("tags", [])),
+            tags=tuple(d.get("tags", [])),
             complexity=d.get("complexity"),
             crash_count=int(d.get("crash_count", 0)),
         )
@@ -442,7 +446,7 @@ class MissionStore:
             queued_at=self._now_iso(),
             started_at=None,
             completed_at=None,
-            tags=[],
+            tags=(),
             complexity=complexity,
             crash_count=0,
         )
@@ -478,13 +482,13 @@ class MissionStore:
 
         # Flush stale in-progress records (safety net — normally empty)
         for stale in self.get_by_status("in_progress"):
-            stale.status = "failed"
-            stale.completed_at = self._now_display()
+            object.__setattr__(stale, "status", "failed")
+            object.__setattr__(stale, "completed_at", self._now_display())
             if "flushed" not in stale.tags:
-                stale.tags.append("flushed")
+                object.__setattr__(stale, "tags", (*stale.tags, "flushed"))
 
-        record.status = "in_progress"
-        record.started_at = self._now_iso()
+        object.__setattr__(record, "status", "in_progress")
+        object.__setattr__(record, "started_at", self._now_iso())
         return True
 
     def complete(self, text: str) -> bool:
@@ -504,8 +508,8 @@ class MissionStore:
         if record is None or record.status not in ("in_progress", "pending"):
             return False
 
-        record.status = "done"
-        record.completed_at = self._now_display()
+        object.__setattr__(record, "status", "done")
+        object.__setattr__(record, "completed_at", self._now_display())
         return True
 
     def fail(self, text: str, extra_tags: list[str] | None = None) -> bool:
@@ -525,12 +529,14 @@ class MissionStore:
         if record is None or record.status not in ("in_progress", "pending"):
             return False
 
-        record.status = "failed"
-        record.completed_at = self._now_display()
+        object.__setattr__(record, "status", "failed")
+        object.__setattr__(record, "completed_at", self._now_display())
         if extra_tags:
+            new_tags = record.tags
             for tag in extra_tags:
-                if tag not in record.tags:
-                    record.tags.append(tag)
+                if tag not in new_tags:
+                    new_tags = (*new_tags, tag)
+            object.__setattr__(record, "tags", new_tags)
         return True
 
     def requeue(self, text: str) -> bool:
@@ -555,11 +561,11 @@ class MissionStore:
         # Move to queue-top by removing and prepending
         self._records.remove(record)
 
-        record.status = "pending"
-        record.queued_at = self._now_iso()
-        record.started_at = None
-        record.completed_at = None
-        record.crash_count += 1
+        object.__setattr__(record, "status", "pending")
+        object.__setattr__(record, "queued_at", self._now_iso())
+        object.__setattr__(record, "started_at", None)
+        object.__setattr__(record, "completed_at", None)
+        object.__setattr__(record, "crash_count", record.crash_count + 1)
 
         # Prepend to the pending section: find the first pending record.
         # When none exist, insert after the last in-progress record (or at 0).
@@ -606,10 +612,10 @@ class MissionStore:
         flushed = []
         for record in self._records:
             if record.status == "in_progress":
-                record.status = "failed"
-                record.completed_at = self._now_display()
+                object.__setattr__(record, "status", "failed")
+                object.__setattr__(record, "completed_at", self._now_display())
                 if "flushed" not in record.tags:
-                    record.tags.append("flushed")
+                    object.__setattr__(record, "tags", (*record.tags, "flushed"))
                 flushed.append(record)
         return flushed
 
@@ -673,7 +679,7 @@ class MissionStore:
                 if existing is not None:
                     matched_ids.add(existing.id)
                     # Update status to match what the Markdown says
-                    existing.status = status
+                    object.__setattr__(existing, "status", status)
                     new_records.append(existing)
                 else:
                     # New record — parse metadata from the raw line
@@ -860,7 +866,7 @@ class MissionStore:
         record = pending_matches[0] if pending_matches else None
         if record is None:
             return False
-        record.text = canonical_mission_key(new_text) or new_text.strip()
+        object.__setattr__(record, "text", canonical_mission_key(new_text) or new_text.strip())
         return True
 
     def cancel_pending(self, text: str) -> bool:
@@ -891,7 +897,7 @@ class MissionStore:
         record = self.find(text)
         if record is None or record.status != "pending":
             return False
-        record.complexity = tier
+        object.__setattr__(record, "complexity", tier)
         return True
 
     def prune(self, done_cap: int = _DONE_CAP, failed_cap: int = _FAILED_CAP) -> int:
@@ -1209,7 +1215,7 @@ def _parse_record_from_markdown_line(raw_item: str, status: str) -> MissionRecor
         queued_at=queued_at,
         started_at=started_at,
         completed_at=completed_at,
-        tags=tags,
+        tags=tuple(tags),
         complexity=complexity,
         crash_count=crash_count,
     )

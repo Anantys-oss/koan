@@ -86,15 +86,16 @@ class TestMissionRecord:
         r = MissionRecord.from_dict({"text": "Do something"})
         assert r.status == "pending"
         assert r.project == ""
-        assert r.tags == []
+        assert r.tags == ()
         assert r.crash_count == 0
         assert r.id != ""  # UUID generated
 
-    def test_tags_are_copied(self):
-        original_tags = ["flushed"]
-        r = MissionRecord.from_dict({"tags": original_tags})
-        r.tags.append("stagnation")
-        assert original_tags == ["flushed"]  # not mutated
+    def test_tags_are_immutable(self):
+        # With frozen=True and tags as tuple, external callers cannot mutate tags
+        r = MissionRecord.from_dict({"tags": ["flushed"]})
+        assert r.tags == ("flushed",)
+        # Tuples don't have append — callers cannot mutate tags on the record
+        assert not hasattr(r.tags, "append") or not callable(getattr(r.tags, "append", None))
 
 
 # ---------------------------------------------------------------------------
@@ -399,8 +400,8 @@ class TestMissionStoreStart:
     def test_start_flushes_stale_in_progress(self, store):
         store.add("Stale mission")
         store.start("Stale mission")
-        # Manually put another mission in pending (bypassing store API)
-        store._records[0].status = "in_progress"  # force stale
+        # Force stale in_progress state (bypassing frozen check via object.__setattr__)
+        object.__setattr__(store._records[0], "status", "in_progress")
 
         store.add("New mission")
         store.start("New mission")
@@ -596,8 +597,8 @@ class TestFlushStaleInProgress:
         # Force two records into in_progress (unusual state)
         store.add("Mission A")
         store.add("Mission B")
-        store._records[0].status = "in_progress"
-        store._records[1].status = "in_progress"
+        object.__setattr__(store._records[0], "status", "in_progress")
+        object.__setattr__(store._records[1], "status", "in_progress")
         flushed = store.flush_stale_in_progress()
         assert len(flushed) == 2
         for r in flushed:
@@ -731,8 +732,8 @@ class TestGenerateView:
     def test_to_markdown_caps_done_at_50(self, store):
         for i in range(60):
             r = store.add(f"Mission {i}")
-            r.status = "done"
-            r.completed_at = "2026-06-14 10:00"
+            object.__setattr__(r, "status", "done")
+            object.__setattr__(r, "completed_at", "2026-06-14 10:00")
         view = store.to_markdown()
         from app.missions import parse_sections
         sections = parse_sections(view)
@@ -741,8 +742,8 @@ class TestGenerateView:
     def test_to_markdown_caps_failed_at_30(self, store):
         for i in range(40):
             r = store.add(f"Mission {i}")
-            r.status = "failed"
-            r.completed_at = "2026-06-14 10:00"
+            object.__setattr__(r, "status", "failed")
+            object.__setattr__(r, "completed_at", "2026-06-14 10:00")
         view = store.to_markdown()
         from app.missions import parse_sections
         sections = parse_sections(view)
@@ -764,7 +765,7 @@ class TestGenerateView:
 
     def test_to_markdown_complexity_before_crash_count_before_timestamp(self, store):
         r = store.add("Fix bug", complexity="simple")
-        r.crash_count = 2
+        object.__setattr__(r, "crash_count", 2)
         view = store.to_markdown()
         line = [l for l in view.splitlines() if "Fix bug" in l][0]
         comp_pos = line.find("[complexity:")
