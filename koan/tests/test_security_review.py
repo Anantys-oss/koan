@@ -1184,7 +1184,7 @@ class TestDispatchVariantMissions:
     @patch("app.utils.insert_pending_mission", return_value=True)
     def test_skips_already_dispatched(self, mock_insert, mock_load, mock_save, tmp_path):
         fp = hashlib.sha256("myapp:src/a.py:10".encode()).hexdigest()[:12]
-        mock_load.return_value = {fp: True}
+        mock_load.return_value = {f"myapp:{fp}": True}
         hits = [
             ("src/a.py", 10, "eval(x)"),
             ("src/b.py", 20, "eval(y)"),
@@ -1353,7 +1353,10 @@ class TestGrepIncludesForFinding:
 
     def test_python_pattern(self):
         includes = _grep_includes_for_finding("eval() usage")
-        assert includes == ["--include=*.py"]
+        assert includes == [
+            "--include=*.py", "--include=*.js", "--include=*.jsx",
+            "--include=*.ts", "--include=*.tsx",
+        ]
 
     def test_js_pattern(self):
         includes = _grep_includes_for_finding("potential XSS via innerHTML")
@@ -1362,7 +1365,12 @@ class TestGrepIncludesForFinding:
 
     def test_universal_pattern(self):
         includes = _grep_includes_for_finding("hardcoded secret")
-        assert includes == []
+        assert includes == [
+            "--include=*.py", "--include=*.js", "--include=*.jsx",
+            "--include=*.ts", "--include=*.tsx", "--include=*.rb",
+            "--include=*.java", "--include=*.go", "--include=*.sh",
+            "--include=*.yaml", "--include=*.yml",
+        ]
 
 
 class TestSemgrepLanguagesForFinding:
