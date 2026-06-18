@@ -526,10 +526,19 @@ def _notify_raw(instance: str, message: str):
 
 
 def _is_ci_check_mission(mission_title: str) -> bool:
-    """Return True if *mission_title* is a /ci_check skill mission."""
+    """Return True if *mission_title* is a CI-related mission.
+
+    Matches both /ci_check skill missions and ci_dispatch-generated
+    "Fix CI failure:" missions so all CI failure notifications use
+    🚦 instead of the alarming ❌.
+    """
     from app.skill_dispatch import parse_skill_mission
-    _, cmd, _ = parse_skill_mission(mission_title)
-    return cmd == "ci_check"
+    _, cmd, args = parse_skill_mission(mission_title)
+    if cmd == "ci_check":
+        return True
+    if not cmd and args.startswith("Fix CI failure:"):
+        return True
+    return False
 
 
 def _notify_mission_end(
