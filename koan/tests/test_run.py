@@ -4119,6 +4119,20 @@ class TestIsCiCheckMission:
         from app.run import _is_ci_check_mission
         assert not _is_ci_check_mission("")
 
+    def test_ci_dispatch_fix_mission(self):
+        from app.run import _is_ci_check_mission
+        assert _is_ci_check_mission(
+            "[project:myapp] Fix CI failure: build on PR #984 — Job: build"
+        )
+
+    def test_ci_dispatch_fix_mission_no_project(self):
+        from app.run import _is_ci_check_mission
+        assert _is_ci_check_mission("Fix CI failure: lint on PR #42 — context")
+
+    def test_non_ci_fix_mission(self):
+        from app.run import _is_ci_check_mission
+        assert not _is_ci_check_mission("Fix the CI pipeline configuration")
+
 
 # ---------------------------------------------------------------------------
 # Test: Koan branch helpers
