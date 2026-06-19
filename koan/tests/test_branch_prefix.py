@@ -285,13 +285,16 @@ class TestMissionRunnerBranchPrefix:
         result = check_auto_merge("/inst", "proj", "/path")
         assert result is None
 
-    @patch("app.git_auto_merge.auto_merge_branch")
+    @patch("app.git_auto_merge.auto_merge_branch", return_value=0)
     @patch("app.config.get_branch_prefix", return_value="mybot/")
     @patch("app.git_sync.run_git", return_value="mybot/fix-thing")
     def test_auto_merge_matches_custom_prefix(self, mock_git, mock_prefix, mock_merge):
         """check_auto_merge processes branches matching prefix."""
         from app.mission_runner import check_auto_merge
-        result = check_auto_merge("/inst", "proj", "/path")
+        config = {"projects": {"proj": {"git_auto_merge": {
+            "enabled": True, "rules": [{"pattern": "mybot/*", "auto_merge": True}],
+        }}}}
+        result = check_auto_merge("/inst", "proj", "/path", projects_config=config)
         assert result == "mybot/fix-thing"
 
 

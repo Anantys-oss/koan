@@ -425,14 +425,41 @@ class TestTriggerReflection:
 class TestCheckAutoMerge:
     """Test check_auto_merge function."""
 
-    @patch("app.git_auto_merge.auto_merge_branch")
+    @patch("app.git_auto_merge.auto_merge_branch", return_value=0)
     @patch("app.git_sync.run_git", return_value="koan/my-feature")
     @patch("app.config.get_branch_prefix", return_value="koan/")
-    def test_checks_koan_branch(self, mock_prefix, mock_git, mock_merge, tmp_path):
+    def test_returns_branch_when_auto_merge_enabled(self, mock_prefix, mock_git, mock_merge, tmp_path):
         from app.mission_runner import check_auto_merge
 
-        result = check_auto_merge(str(tmp_path), "project", str(tmp_path))
+        config = {"projects": {"project": {"git_auto_merge": {
+            "enabled": True, "rules": [{"pattern": "koan/*", "auto_merge": True}],
+        }}}}
+        result = check_auto_merge(str(tmp_path), "project", str(tmp_path), projects_config=config)
         assert result == "koan/my-feature"
+        mock_merge.assert_called_once()
+
+    @patch("app.git_auto_merge.auto_merge_branch", return_value=0)
+    @patch("app.git_sync.run_git", return_value="koan/my-feature")
+    @patch("app.config.get_branch_prefix", return_value="koan/")
+    def test_returns_none_when_auto_merge_not_configured(self, mock_prefix, mock_git, mock_merge, tmp_path):
+        from app.mission_runner import check_auto_merge
+
+        config = {"projects": {"project": {"path": str(tmp_path)}}}
+        result = check_auto_merge(str(tmp_path), "project", str(tmp_path), projects_config=config)
+        assert result is None
+        mock_merge.assert_called_once()
+
+    @patch("app.git_auto_merge.auto_merge_branch", return_value=0)
+    @patch("app.git_sync.run_git", return_value="koan/my-feature")
+    @patch("app.config.get_branch_prefix", return_value="koan/")
+    def test_returns_none_when_enabled_but_no_matching_rule(self, mock_prefix, mock_git, mock_merge, tmp_path):
+        from app.mission_runner import check_auto_merge
+
+        config = {"projects": {"project": {"git_auto_merge": {
+            "enabled": True, "rules": [{"pattern": "koan/release-*", "auto_merge": True}],
+        }}}}
+        result = check_auto_merge(str(tmp_path), "project", str(tmp_path), projects_config=config)
+        assert result is None
         mock_merge.assert_called_once()
 
     @patch("app.git_sync.run_git", return_value="main")
@@ -1454,14 +1481,18 @@ class TestCheckAutoMergeVerifyBlocked:
         captured = capsys.readouterr()
         assert "blocked by verification failure" in captured.out
 
-    @patch("app.git_auto_merge.auto_merge_branch")
+    @patch("app.git_auto_merge.auto_merge_branch", return_value=0)
     @patch("app.git_sync.run_git", return_value="koan/feature")
     @patch("app.config.get_branch_prefix", return_value="koan/")
     def test_verify_not_blocked_allows_merge(self, mock_prefix, mock_git, mock_merge, tmp_path):
         from app.mission_runner import check_auto_merge
 
+        config = {"projects": {"project": {"git_auto_merge": {
+            "enabled": True, "rules": [{"pattern": "koan/*", "auto_merge": True}],
+        }}}}
         result = check_auto_merge(
-            str(tmp_path), "project", str(tmp_path), verify_blocked=False
+            str(tmp_path), "project", str(tmp_path),
+            verify_blocked=False, projects_config=config,
         )
         assert result == "koan/feature"
         mock_merge.assert_called_once()
@@ -2140,13 +2171,16 @@ class TestRunPostMissionOrdering:
 class TestCheckAutoMergeBranchPrefix:
     """Test check_auto_merge with various branch prefixes."""
 
-    @patch("app.git_auto_merge.auto_merge_branch")
+    @patch("app.git_auto_merge.auto_merge_branch", return_value=0)
     @patch("app.git_sync.run_git", return_value="koan.atoomic/my-feature")
     @patch("app.config.get_branch_prefix", return_value="koan.atoomic/")
     def test_matches_dotted_prefix(self, mock_prefix, mock_git, mock_merge, tmp_path):
         from app.mission_runner import check_auto_merge
 
-        result = check_auto_merge(str(tmp_path), "koan", str(tmp_path))
+        config = {"projects": {"koan": {"git_auto_merge": {
+            "enabled": True, "rules": [{"pattern": "koan.atoomic/*", "auto_merge": True}],
+        }}}}
+        result = check_auto_merge(str(tmp_path), "koan", str(tmp_path), projects_config=config)
         assert result == "koan.atoomic/my-feature"
         mock_merge.assert_called_once()
 
@@ -2164,8 +2198,11 @@ class TestCheckAutoMergeBranchPrefix:
         """A branch named exactly like the prefix (no suffix) should still match."""
         from app.mission_runner import check_auto_merge
 
-        with patch("app.git_auto_merge.auto_merge_branch"):
-            result = check_auto_merge(str(tmp_path), "koan", str(tmp_path))
+        config = {"projects": {"koan": {"git_auto_merge": {
+            "enabled": True, "rules": [{"pattern": "koan/*", "auto_merge": True}],
+        }}}}
+        with patch("app.git_auto_merge.auto_merge_branch", return_value=0):
+            result = check_auto_merge(str(tmp_path), "koan", str(tmp_path), projects_config=config)
         assert result == "koan/"
 
 

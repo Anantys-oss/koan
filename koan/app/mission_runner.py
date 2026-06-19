@@ -1047,8 +1047,13 @@ def check_auto_merge(
                     _log_runner("error", f"Quality comment failed: {e}")
                 return None
 
-        auto_merge_branch(instance_dir, project_name, project_path, branch)
-        return branch
+        merge_rc = auto_merge_branch(instance_dir, project_name, project_path, branch)
+        if merge_rc == 0 and auto_merge_enabled:
+            from app.git_auto_merge import should_auto_merge
+            should_merge, _, _ = should_auto_merge(auto_merge_cfg, branch)
+            if should_merge:
+                return branch
+        return None
     except Exception as e:
         _log_runner("error", f"Auto-merge check failed: {e}")
         return None
