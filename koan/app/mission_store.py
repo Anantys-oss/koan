@@ -11,11 +11,11 @@ Architecture
   method writes JSON atomically (via :func:`app.utils.atomic_write`) and then
   regenerates ``missions.md`` from scratch.
 - ``instance/missions.md`` is a *view*.  It must never be mutated directly by
-  code; only :meth:`MissionStore.save` writes it.  Humans may edit it, but
+  code; only :meth:`MissionStore._save` writes it.  Humans may edit it, but
   those edits are reconciled back into JSON on the next write.
 - Human edits to ``missions.md`` are detected by comparing
   ``sha256(missions.md content)`` against a hash stored alongside the JSON.
-  When the hash diverges, :meth:`MissionStore.save` calls
+  When the hash diverges, :meth:`MissionStore._save` calls
   :meth:`MissionStore._reconcile_from_markdown` before persisting, so no human
   edit is silently discarded.
 
@@ -213,19 +213,20 @@ class MissionStore:
     """Structured mission store backed by ``instance/missions.json``.
 
     Callers should obtain an instance via :meth:`MissionStore.load`, mutate it
-    through the public methods, and then call :meth:`save`.  The store holds all
-    records in memory as an ordered list (``_records``); ordering within a status
-    group reflects queue position (pending[0] is next to run).
+    through the public methods, and then the store is saved automatically via
+    :func:`locked_store`.  The store holds all records in memory as an ordered
+    list (``_records``); ordering within a status group reflects queue position
+    (pending[0] is next to run).
 
     Thread/process safety
     ---------------------
     All mutating operations that persist to disk must hold the exclusive lock on
-    the sidecar lock file for the duration of load→mutate→save.  When using
-    :meth:`load` + mutate + :meth:`save` as a transaction, callers are
-    responsible for acquiring the lock before calling :meth:`load` and releasing
-    it after :meth:`save`.  Convenience wrappers like :meth:`start`,
-    :meth:`complete`, and :meth:`fail` each perform their own locked
-    load→mutate→save cycle internally when called on a *fresh* store object.
+    the sidecar lock file for the duration of load→mutate→save.  The canonical
+    entry point is :func:`locked_store`, which acquires the lock, loads the
+    store, yields it to the caller, then calls :meth:`_save` on clean exit.
+    Convenience wrappers like :meth:`start`, :meth:`complete`, and :meth:`fail`
+    each perform their own locked load→mutate→save cycle internally when called
+    on a *fresh* store object.
 
     For performance-critical callers that need to hold the lock across multiple
     mutations, acquire it manually via :meth:`_lock_path` before instantiating.
@@ -319,7 +320,7 @@ class MissionStore:
 
         return store
 
-    def save(self) -> None:
+    def _save(self) -> None:
         """Persist the store to ``missions.json`` and regenerate ``missions.md``.
 
         Performs an atomic write (temp file + rename) for both files so a
@@ -329,7 +330,7 @@ class MissionStore:
         The generated ``missions.md`` is compatible with all existing parsers
         (``parse_sections()``, ``extract_project_tag()``, etc.).
         """
-        view_content = self.to_markdown()
+        view_content = self._to_markdown()
         view_hash = _view_hash(view_content)
         self._last_view_hash = view_hash
 
@@ -676,7 +677,7 @@ class MissionStore:
     # View generation
     # ------------------------------------------------------------------
 
-    def to_markdown(self) -> str:
+    def _to_markdown(self) -> str:
         """Generate the Markdown content for ``missions.md``.
 
         The output is compatible with all existing parsers (``parse_sections()``,
@@ -1005,7 +1006,7 @@ class MissionStore:
         if not content.strip():
             # Nothing to migrate — save to create missions.json so subsequent
             # loads skip migration entirely rather than re-entering this path.
-            store.save()
+            store._save()
             return store
 
         # Preserve the Ideas backlog across migration
@@ -1020,7 +1021,7 @@ class MissionStore:
                     store._records.append(record)
 
         # Persist the migrated store immediately
-        store.save()
+        store._save()
         return store
 
 
@@ -1036,7 +1037,7 @@ def locked_store(instance_dir: str) -> Generator[MissionStore, None, None]:
     Acquires both the in-process thread lock and the per-instance file lock,
     then yields a freshly loaded :class:`MissionStore`.  On clean exit the
     store is saved.  On exception from the caller's block, the save is
-    skipped so on-disk state is left unchanged.  Note: if :meth:`save`
+    skipped so on-disk state is left unchanged.  Note: if :meth:`_save`
     itself raises, the exception propagates and the lock is still released
     via ``finally``, but on-disk state may be partially updated.
 
@@ -1058,7 +1059,7 @@ def locked_store(instance_dir: str) -> Generator[MissionStore, None, None]:
                 store = MissionStore.load(instance_dir)
                 yield store
                 store.prune()   # keep JSON bounded; runs only on clean exit
-                store.save()
+                store._save()
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
 

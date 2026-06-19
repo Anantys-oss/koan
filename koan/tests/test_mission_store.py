@@ -223,7 +223,7 @@ class TestMissionStoreLoad:
         # Create a store, save it
         s = MissionStore(tmp_instance)
         s.add("Original mission")
-        s.save()
+        s._save()
 
         # Simulate human adding a mission directly to missions.md
         view_path = Path(tmp_instance) / "missions.md"
@@ -248,17 +248,17 @@ class TestMissionStoreLoad:
 class TestMissionStoreSave:
     def test_save_creates_json_file(self, store, tmp_instance):
         store.add("Test mission")
-        store.save()
+        store._save()
         assert Path(tmp_instance, "missions.json").exists()
 
     def test_save_creates_md_file(self, store, tmp_instance):
         store.add("Test mission")
-        store.save()
+        store._save()
         assert Path(tmp_instance, "missions.md").exists()
 
     def test_save_json_is_valid(self, store, tmp_instance):
         store.add("Test mission")
-        store.save()
+        store._save()
         payload = json.loads(Path(tmp_instance, "missions.json").read_text())
         assert "records" in payload
         assert "view_hash" in payload
@@ -267,7 +267,7 @@ class TestMissionStoreSave:
     def test_save_md_is_parseable(self, store, tmp_instance):
         store.add("Mission A")
         store.add("Mission B")
-        store.save()
+        store._save()
         from app.missions import parse_sections
         content = Path(tmp_instance, "missions.md").read_text()
         sections = parse_sections(content)
@@ -275,7 +275,7 @@ class TestMissionStoreSave:
 
     def test_save_stores_view_hash(self, store, tmp_instance):
         store.add("Test mission")
-        store.save()
+        store._save()
         assert store._last_view_hash is not None
         # Hash should also be in the JSON
         payload = json.loads(Path(tmp_instance, "missions.json").read_text())
@@ -623,14 +623,14 @@ class TestReconcileFromMarkdown:
 class TestGenerateView:
     def test_to_markdown_has_all_sections(self, store):
         store.add("Fix bug")
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert "## In Progress" in view
         assert "## Pending" in view
         assert "## Done" in view
         assert "## Failed" in view
 
     def test_to_markdown_section_order(self, store):
-        view = store.to_markdown()
+        view = store._to_markdown()
         ip_pos = view.index("## In Progress")
         p_pos = view.index("## Pending")
         d_pos = view.index("## Done")
@@ -639,52 +639,52 @@ class TestGenerateView:
 
     def test_to_markdown_pending_uses_queued_marker(self, store):
         store.add("Fix bug")
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert "⏳" in view
         assert "Fix bug" in view
 
     def test_to_markdown_in_progress_uses_started_marker(self, store):
         store.add("Fix bug")
         store.start("Fix bug")
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert "▶" in view
 
     def test_to_markdown_done_uses_checkmark(self, store):
         store.add("Fix bug")
         store.start("Fix bug")
         store.complete("Fix bug")
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert "✅" in view
 
     def test_to_markdown_failed_uses_cross(self, store):
         store.add("Fix bug")
         store.start("Fix bug")
         store.fail("Fix bug")
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert "❌" in view
 
     def test_to_markdown_includes_project_tag(self, store):
         store.add("Fix bug", project="webapp")
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert "[project:webapp]" in view
 
     def test_to_markdown_includes_complexity(self, store):
         store.add("Fix bug", complexity="complex")
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert "[complexity:complex]" in view
 
     def test_to_markdown_includes_crash_count(self, store):
         store.add("Fix bug")
         store.start("Fix bug")
         store.requeue("Fix bug")
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert "[r:1]" in view
 
     def test_to_markdown_includes_fate_tags_in_failed(self, store):
         store.add("Fix bug")
         store.start("Fix bug")
         store.fail("Fix bug", extra_tags=["stagnation"])
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert "[stagnation]" in view
 
     def test_to_markdown_caps_done_at_50(self, store):
@@ -692,7 +692,7 @@ class TestGenerateView:
             r, _ = store.add(f"Mission {i}")
             object.__setattr__(r, "status", "done")
             object.__setattr__(r, "completed_at", "2026-06-14 10:00")
-        view = store.to_markdown()
+        view = store._to_markdown()
         from app.missions import parse_sections
         sections = parse_sections(view)
         assert len(sections["done"]) == 50
@@ -702,7 +702,7 @@ class TestGenerateView:
             r, _ = store.add(f"Mission {i}")
             object.__setattr__(r, "status", "failed")
             object.__setattr__(r, "completed_at", "2026-06-14 10:00")
-        view = store.to_markdown()
+        view = store._to_markdown()
         from app.missions import parse_sections
         sections = parse_sections(view)
         assert len(sections["failed"]) == 30
@@ -711,20 +711,20 @@ class TestGenerateView:
         store.add("Mission A")
         store.add("Mission B", project="myapp")
         store.start("Mission A")
-        view = store.to_markdown()
+        view = store._to_markdown()
         from app.missions import parse_sections
         sections = parse_sections(view)
         assert len(sections["in_progress"]) == 1
         assert len(sections["pending"]) == 1
 
     def test_to_markdown_ends_with_newline(self, store):
-        view = store.to_markdown()
+        view = store._to_markdown()
         assert view.endswith("\n")
 
     def test_to_markdown_complexity_before_crash_count_before_timestamp(self, store):
         r, _ = store.add("Fix bug", complexity="simple")
         object.__setattr__(r, "crash_count", 2)
-        view = store.to_markdown()
+        view = store._to_markdown()
         line = [l for l in view.splitlines() if "Fix bug" in l][0]
         comp_pos = line.find("[complexity:")
         r_pos = line.find("[r:")
@@ -854,20 +854,20 @@ class TestMissionStoreIntegration:
         # Create and save
         s = MissionStore.load(tmp_instance)
         s.add("Deploy app", project="webapp")
-        s.save()
+        s._save()
 
         # Reload and start
         s2 = MissionStore.load(tmp_instance)
         assert s2.find("Deploy app") is not None
         s2.start("Deploy app")
-        s2.save()
+        s2._save()
 
         # Reload and complete
         s3 = MissionStore.load(tmp_instance)
         r = s3.find("Deploy app")
         assert r.status == "in_progress"
         s3.complete("Deploy app")
-        s3.save()
+        s3._save()
 
         # Reload and verify final state
         s4 = MissionStore.load(tmp_instance)
@@ -882,7 +882,7 @@ class TestMissionStoreIntegration:
 
         # Complete a mission
         s.complete("Add logging")
-        s.save()
+        s._save()
 
         # Reload — should use JSON path now
         s2 = MissionStore.load(populated_md)
@@ -897,7 +897,7 @@ class TestMissionStoreIntegration:
         s.complete("Mission A")
         s.fail("Mission B", extra_tags=["stagnation"])
         s.add("Mission C")
-        s.save()
+        s._save()
 
         content = Path(tmp_instance, "missions.md").read_text()
         sections = parse_sections(content)
@@ -913,7 +913,7 @@ class TestMissionStoreIntegration:
         s.add("Mission B")
         s.start("Mission A")
         s.requeue("Mission A")
-        s.save()
+        s._save()
 
         content = Path(tmp_instance, "missions.md").read_text()
         sections = parse_sections(content)
