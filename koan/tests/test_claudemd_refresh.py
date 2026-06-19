@@ -331,12 +331,26 @@ class TestRunRefresh:
         assert result == 0
         self._mock_pr_create.assert_not_called()
 
-    def test_init_mode_uses_prompt_template(self, tmp_path):
-        """When no CLAUDE.md exists, use the prompt template in INIT mode."""
+    def test_init_mode_uses_builtin_init_for_claude_provider(self, tmp_path):
+        """When no CLAUDE.md exists and provider is claude, use /init."""
         project = tmp_path / "project"
         project.mkdir()
 
-        with patch("app.claudemd_refresh.build_git_context", return_value="No CLAUDE.md exists") as mock_git_ctx:
+        with patch("app.claudemd_refresh.build_git_context", return_value="ctx") as mock_git_ctx, \
+             patch("app.config.get_cli_provider_name", return_value="claude"):
+            run_refresh(str(project), "test")
+
+        mock_git_ctx.assert_called_once_with(str(project.resolve()), False)
+        self._mock_prompt.assert_not_called()
+        assert self._mock_build_cmd.call_args[1]["prompt"] == "/init"
+
+    def test_init_mode_uses_prompt_template_for_non_claude_provider(self, tmp_path):
+        """When no CLAUDE.md exists and provider is not claude, use template."""
+        project = tmp_path / "project"
+        project.mkdir()
+
+        with patch("app.claudemd_refresh.build_git_context", return_value="No CLAUDE.md exists") as mock_git_ctx, \
+             patch("app.config.get_cli_provider_name", return_value="codex"):
             run_refresh(str(project), "test")
 
         mock_git_ctx.assert_called_once_with(str(project.resolve()), False)
