@@ -1186,3 +1186,73 @@ class TestRetryTrackerConcurrency:
             t.join()
 
         assert get_retry_count(str(tmp_path), "shared mission") == n
+
+
+class TestMigrationTrackerCache:
+    """_migrate_tracker_filename caches after first check per instance_dir."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_migration_cache(self):
+        yield
+        from app.stagnation_monitor import _migration_checked
+        _migration_checked.clear()
+
+    def test_migration_stat_only_once(self, tmp_path):
+        """After first call, subsequent calls skip the filesystem check."""
+        from app.stagnation_monitor import (
+            _RETRY_TRACKER_OLD_FILENAME,
+            _migrate_tracker_filename,
+            _migration_checked,
+        )
+
+        instance = str(tmp_path)
+        _migration_checked.discard(instance)
+
+        old_path = tmp_path / _RETRY_TRACKER_OLD_FILENAME
+
+        _migrate_tracker_filename(instance)
+        assert instance in _migration_checked
+
+        old_path.write_text('{"late": 1}')
+        _migrate_tracker_filename(instance)
+        _migrate_tracker_filename(instance)
+        assert old_path.exists()
+
+    def test_migration_performs_rename_then_caches(self, tmp_path):
+        """When old file exists, rename happens once, then cache prevents re-check."""
+        from app.stagnation_monitor import (
+            _RETRY_TRACKER_FILENAME,
+            _RETRY_TRACKER_OLD_FILENAME,
+            _migrate_tracker_filename,
+            _migration_checked,
+        )
+
+        instance = str(tmp_path)
+        _migration_checked.discard(instance)
+
+        old_path = tmp_path / _RETRY_TRACKER_OLD_FILENAME
+        old_path.write_text('{"k": 1}')
+
+        _migrate_tracker_filename(instance)
+        new_path = tmp_path / _RETRY_TRACKER_FILENAME
+        assert new_path.exists()
+        assert not old_path.exists()
+        assert instance in _migration_checked
+
+    def test_different_instance_dirs_checked_independently(self, tmp_path):
+        """Each instance_dir gets its own cache entry."""
+        from app.stagnation_monitor import _migrate_tracker_filename, _migration_checked
+
+        dir_a = str(tmp_path / "a")
+        dir_b = str(tmp_path / "b")
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        _migration_checked.discard(dir_a)
+        _migration_checked.discard(dir_b)
+
+        _migrate_tracker_filename(dir_a)
+        assert dir_a in _migration_checked
+        assert dir_b not in _migration_checked
+
+        _migrate_tracker_filename(dir_b)
+        assert dir_b in _migration_checked

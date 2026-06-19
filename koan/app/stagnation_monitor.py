@@ -408,17 +408,24 @@ class StagnationMonitor:
 # in missions.py (S2) so there is one definition of "stable mission identity".
 
 
+_migration_checked: set[str] = set()
+
+
 def _migrate_tracker_filename(instance_dir: str) -> None:
     """Rename old .stagnation-retries.json to .mission-retries.json if needed.
 
     One-shot migration: runs at path-resolution time so any existing tracker
     data is preserved across the rename without operator intervention.
+    Result is cached per instance_dir to avoid repeated stat syscalls.
     """
+    if instance_dir in _migration_checked:
+        return
     old = Path(instance_dir) / _RETRY_TRACKER_OLD_FILENAME
     new = Path(instance_dir) / _RETRY_TRACKER_FILENAME
     if old.exists() and not new.exists():
         with contextlib.suppress(OSError):
             old.rename(new)
+    _migration_checked.add(instance_dir)
 
 
 def _retry_tracker_path(instance_dir: str) -> Path:
