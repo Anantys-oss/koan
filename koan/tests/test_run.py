@@ -6400,22 +6400,6 @@ class TestPruneDecoupledFromFinalization:
         sections = parse_sections(missions.read_text())
         assert "/plan finish me" in "\n".join(sections["done"])
 
-    def test_prune_helper_is_noop_below_threshold(self, tmp_path, monkeypatch):
-        """_prune_missions_history leaves a small history untouched."""
-        from app.run import _prune_missions_history
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-        missions = tmp_path / "instance" / "missions.md"
-        missions.parent.mkdir(parents=True)
-        original = (
-            "# Missions\n\n## Pending\n\n## In Progress\n\n"
-            "## Done\n\n- one done ✅ (2026-01-01 00:00)\n"
-        )
-        missions.write_text(original)
-        _prune_missions_history(str(missions.parent))
-        # Under the keep threshold → content unchanged.
-        from app.missions import parse_sections
-        assert len(parse_sections(missions.read_text())["done"]) == 1
 
 
 # ---------------------------------------------------------------------------

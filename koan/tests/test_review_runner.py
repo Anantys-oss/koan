@@ -2019,9 +2019,9 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 100, "reply": "Good question — see L42."}]
         repliable = [{"id": 100, "type": "review_comment", "user": "alice", "body": "Why?"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        posted = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 1
+        assert len(posted) == 1
         call_args = mock_gh.call_args[0]
         assert "repos/owner/repo/pulls/42/comments" in call_args[1]
         assert "-X" in call_args
@@ -2033,9 +2033,9 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 200, "reply": "Thanks for the feedback."}]
         repliable = [{"id": 200, "type": "issue_comment", "user": "bob", "body": "Nice work"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        posted = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 1
+        assert len(posted) == 1
         call_args = mock_gh.call_args[0]
         assert "pr" in call_args
         assert "comment" in call_args
@@ -2045,8 +2045,8 @@ class TestPostCommentReplies:
 
     def test_empty_replies(self):
         """No-op when replies list is empty."""
-        count = _post_comment_replies("owner", "repo", "42", [], [])
-        assert count == 0
+        posted = _post_comment_replies("owner", "repo", "42", [], [])
+        assert posted == []
 
     @patch("app.review_runner.run_gh")
     def test_skips_unknown_comment_id(self, mock_gh):
@@ -2054,9 +2054,9 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 999, "reply": "Reply to nothing"}]
         repliable = [{"id": 100, "type": "issue_comment", "user": "alice", "body": "Hello"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        posted = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 0
+        assert posted == []
         mock_gh.assert_not_called()
 
     @patch("app.review_runner.run_gh", side_effect=RuntimeError("API error"))
@@ -2065,9 +2065,9 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 100, "reply": "Reply"}]
         repliable = [{"id": 100, "type": "issue_comment", "user": "a", "body": "b"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        posted = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 0
+        assert posted == []
 
     @patch("app.review_runner.run_gh")
     def test_skips_empty_reply(self, mock_gh):
@@ -2075,9 +2075,9 @@ class TestPostCommentReplies:
         replies = [{"comment_id": 100, "reply": ""}]
         repliable = [{"id": 100, "type": "issue_comment", "user": "a", "body": "b"}]
 
-        count = _post_comment_replies("owner", "repo", "42", replies, repliable)
+        posted = _post_comment_replies("owner", "repo", "42", replies, repliable)
 
-        assert count == 0
+        assert posted == []
         mock_gh.assert_not_called()
 
 

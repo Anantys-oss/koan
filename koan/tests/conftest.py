@@ -107,7 +107,7 @@ def _mock_fetch_pr_state():
 
 
 @pytest.fixture(autouse=True)
-def isolate_env(monkeypatch):
+def isolate_env(monkeypatch, tmp_path):
     """Ensure tests don't touch real instance/ or send real Telegram messages."""
     monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "fake-token")
     monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "123456")
@@ -115,6 +115,12 @@ def isolate_env(monkeypatch):
     # Prevent host CLI provider env vars from leaking into tests
     monkeypatch.delenv("CLI_PROVIDER", raising=False)
     monkeypatch.delenv("KOAN_CLI_PROVIDER", raising=False)
+    # Redirect app.utils.KOAN_ROOT to an isolated temp directory so every
+    # call to MissionStore.load() / locked_store() lands in tmp_path, not the
+    # real instance on the host.  Tests that need a specific layout can
+    # override this with their own monkeypatch.setattr("app.utils.KOAN_ROOT", …).
+    import app.utils as _utils
+    monkeypatch.setattr(_utils, "KOAN_ROOT", tmp_path)
     # Reset projects_merged module-level cache so parallel workers don't
     # see stale project lists from a prior test's KOAN_ROOT.
     try:

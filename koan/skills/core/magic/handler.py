@@ -40,7 +40,7 @@ def handle(ctx):
 
     git_activity = gather_git_activity(path)
     project_structure = gather_project_structure(path)
-    missions_context = get_missions_context(ctx.instance_dir)
+    missions_context = get_missions_context()
 
     soul = ""
     soul_path = ctx.instance_dir / "soul.md"

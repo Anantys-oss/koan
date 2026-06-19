@@ -103,6 +103,21 @@ def _stub_subject_info(subject_closed_state, subject_head_sha):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_gh_network():
+    """Block gh CLI calls that slip through per-test mocks.
+
+    ``find_mention_in_thread`` is called when ``get_comment_from_notification``
+    returns None (thread-search fallback). ``post_threaded_reply`` is called by
+    ``_post_command_acknowledgment`` after a mission is queued. Both hit the
+    real gh CLI. Stub them here so tests remain offline by default; individual
+    tests can override with their own patches.
+    """
+    with patch("app.github_command_handler.find_mention_in_thread", return_value=None), \
+         patch("app.github_reply.post_threaded_reply", return_value=None):
+        yield
+
+
 @pytest.fixture
 def mock_skill():
     """A github-enabled skill."""

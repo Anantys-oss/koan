@@ -45,7 +45,6 @@ def fallback_extract(content: str, projects_str: str) -> tuple[str | None, str |
 
 
 def pick_mission(
-    instance_dir: str,
     projects_str: str,
     run_num: str,
     autonomous_mode: str,
@@ -76,16 +75,15 @@ def pick_mission(
 if __name__ == "__main__":
     if len(sys.argv) < 5:
         print(
-            f"Usage: {sys.argv[0]} <instance_dir> <projects_str> <run_num> <autonomous_mode> [last_project]",
+            f"Usage: {sys.argv[0]} <projects_str> <run_num> <autonomous_mode> [last_project]",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    instance_dir = sys.argv[1]
-    projects_str = sys.argv[2]
-    run_num = sys.argv[3]
-    autonomous_mode = sys.argv[4]
-    last_project = sys.argv[5] if len(sys.argv) > 5 else ""
+    projects_str = sys.argv[1]
+    run_num = sys.argv[2]
+    autonomous_mode = sys.argv[3]
+    last_project = sys.argv[4] if len(sys.argv) > 4 else ""
 
-    result = pick_mission(instance_dir, projects_str, run_num, autonomous_mode, last_project)
+    result = pick_mission(projects_str, run_num, autonomous_mode, last_project)
     print(result)

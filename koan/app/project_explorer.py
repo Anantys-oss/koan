@@ -78,7 +78,7 @@ def gather_project_structure(project_path: str) -> str:
         return "Structure unavailable."
 
 
-def get_missions_context(instance_dir: Path) -> str:
+def get_missions_context() -> str:
     """Get current missions context for exploration prompts."""
     try:
         from app.mission_store import MissionStore

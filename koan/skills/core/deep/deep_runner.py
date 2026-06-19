@@ -34,7 +34,7 @@ def _build_project_context(
 
     git_activity = gather_git_activity(project_path)
     project_structure = gather_project_structure(project_path)
-    missions_context = get_missions_context(Path(instance_dir))
+    missions_context = get_missions_context()
 
     from app.skill_memory import build_memory_block_for_skill
     from app.ai_runner import _build_project_health_block

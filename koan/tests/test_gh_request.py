@@ -217,8 +217,9 @@ class TestGhRequestRouting:
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
     @patch("app.github_reply.extract_mention_text")
+    @patch("app.github_reply.post_threaded_reply", return_value=None)
     def test_nlp_enabled_routes_to_gh_request(
-        self, mock_extract, mock_insert, mock_resolve, mock_mentions,
+        self, mock_post, mock_extract, mock_insert, mock_resolve, mock_mentions,
         mock_processed, mock_perm,
         mock_react, mock_read, mock_closed, registry_with_gh_request, tmp_path,
     ):
@@ -315,8 +316,9 @@ class TestGhRequestRouting:
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
+    @patch("app.github_reply.post_threaded_reply", return_value=None)
     def test_recognized_command_still_works_with_nlp_enabled(
-        self, mock_insert, mock_resolve, mock_mentions,
+        self, mock_post, mock_insert, mock_resolve, mock_mentions,
         mock_processed, mock_perm,
         mock_react, mock_read, mock_closed, registry_with_gh_request, tmp_path,
     ):

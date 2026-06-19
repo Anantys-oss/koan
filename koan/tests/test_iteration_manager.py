@@ -2807,9 +2807,10 @@ class TestCLI:
         usage_md = instance_dir / "usage.md"
         usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
 
-        # Create missions.md with a pending mission
-        missions_md = instance_dir / "missions.md"
-        missions_md.write_text(
+        # Create missions.md in koan_root/instance so subprocess finds it via KOAN_ROOT env
+        kr_instance = koan_root / "instance"
+        kr_instance.mkdir(exist_ok=True)
+        (kr_instance / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n"
             "- [project:koan] Fix the test CLI\n\n"
             "## In Progress\n\n## Done\n"

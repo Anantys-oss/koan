@@ -168,57 +168,58 @@ class TestGatherProjectStructure:
 # get_missions_context
 # ---------------------------------------------------------------------------
 
+def _write_missions(tmp_path, content):
+    instance = tmp_path / "instance"
+    instance.mkdir(exist_ok=True)
+    (instance / "missions.md").write_text(content)
+
+
 class TestGetMissionsContext:
     def test_returns_in_progress_and_pending(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text(
+        _write_missions(tmp_path,
             "# Missions\n\n## Pending\n\n- pending task\n\n"
             "## In Progress\n\n- active task\n\n## Done\n"
         )
-        result = get_missions_context(tmp_path)
+        result = get_missions_context()
         assert "active task" in result
         assert "pending task" in result
 
     def test_returns_no_active_when_empty(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text(
+        _write_missions(tmp_path,
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
-        result = get_missions_context(tmp_path)
+        result = get_missions_context()
         assert "No active" in result
 
     def test_handles_missing_file(self, tmp_path):
-        result = get_missions_context(tmp_path)
+        result = get_missions_context()
         assert "No active" in result
 
     def test_limits_entries(self, tmp_path):
         """Should limit to 5 entries per section."""
-        missions_file = tmp_path / "missions.md"
         pending = "\n".join(f"- task {i}" for i in range(10))
-        missions_file.write_text(
+        _write_missions(tmp_path,
             f"# Missions\n\n## Pending\n\n{pending}\n\n"
             "## In Progress\n\n## Done\n"
         )
-        result = get_missions_context(tmp_path)
+        result = get_missions_context()
         assert "task 4" in result
         assert "task 5" not in result
 
     def test_only_pending(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text(
+        _write_missions(tmp_path,
             "# Missions\n\n## Pending\n\n- fix auth\n\n"
             "## In Progress\n\n## Done\n"
         )
-        result = get_missions_context(tmp_path)
+        result = get_missions_context()
         assert "fix auth" in result
         assert "In progress" not in result
 
     def test_only_in_progress(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text(
+        _write_missions(tmp_path,
             "# Missions\n\n## Pending\n\n"
             "## In Progress\n\n- working on it\n\n## Done\n"
         )
-        result = get_missions_context(tmp_path)
+        result = get_missions_context()
         assert "working on it" in result
         assert "Pending" not in result

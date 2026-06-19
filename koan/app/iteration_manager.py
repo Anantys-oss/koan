@@ -426,7 +426,7 @@ def _pick_mission(instance_dir: Path, projects_str: str, run_num: int,
     try:
         from app.pick_mission import pick_mission
         result = pick_mission(
-            str(instance_dir), projects_str,
+            projects_str,
             str(run_num), autonomous_mode, last_project,
         )
         if result:

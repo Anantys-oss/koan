@@ -53,76 +53,80 @@ class TestFallbackExtract:
         assert title == "fix tests"
 
 
+def _write_missions(koan_root, content):
+    instance = koan_root / "instance"
+    instance.mkdir(parents=True, exist_ok=True)
+    (instance / "missions.md").write_text(content)
+
+
 class TestPickMission:
     """Tests for FIFO mission picking behavior."""
 
-    def test_picks_first_pending_mission(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text(
+    def test_picks_first_pending_mission(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        _write_missions(tmp_path,
             "# Missions\n\n## Pending\n\n"
             "- [project:koan] fix tests\n"
             "- [project:anantys] implement dashboard\n\n"
             "## In Progress\n\n## Done\n"
         )
-        result = pick_mission(str(tmp_path), "koan:/p1;anantys:/p2", "2", "implement", "koan")
-        # Must pick first item (koan:fix tests), NOT rotate to anantys
+        result = pick_mission("koan:/p1;anantys:/p2", "2", "implement", "koan")
         assert result == "koan:fix tests"
 
-    def test_fifo_with_multiple_projects(self, tmp_path):
+    def test_fifo_with_multiple_projects(self, tmp_path, monkeypatch):
         """FIFO order is respected even when last_project matches first mission."""
-        missions = tmp_path / "missions.md"
-        missions.write_text(
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        _write_missions(tmp_path,
             "# Missions\n\n## Pending\n\n"
             "- [project:koan] fix tests\n"
             "- [project:koan] refactor utils\n"
             "- [project:anantys] implement dashboard\n\n"
             "## In Progress\n\n## Done\n"
         )
-        # Even though last_project is koan, we still pick the first koan mission
-        result = pick_mission(str(tmp_path), "koan:/p1;anantys:/p2", "2", "implement", "koan")
+        result = pick_mission("koan:/p1;anantys:/p2", "2", "implement", "koan")
         assert result == "koan:fix tests"
 
-    def test_empty_when_no_missions(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
-        result = pick_mission(str(tmp_path), "koan:/p1", "1", "implement")
+    def test_empty_when_no_missions(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        _write_missions(tmp_path, "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+        result = pick_mission("koan:/p1", "1", "implement")
         assert result == ""
 
-    def test_missing_missions_file(self, tmp_path):
-        result = pick_mission(str(tmp_path), "koan:/p1", "1", "implement")
+    def test_missing_missions_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        result = pick_mission("koan:/p1", "1", "implement")
         assert result == ""
 
-    def test_fifo_respects_queue_order_across_projects(self, tmp_path):
+    def test_fifo_respects_queue_order_across_projects(self, tmp_path, monkeypatch):
         """When project A's mission is queued before project B's, A goes first."""
-        missions = tmp_path / "missions.md"
-        missions.write_text(
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        _write_missions(tmp_path,
             "# Missions\n\n## Pending\n\n"
             "- [project:grep] implement issue #36\n"
             "- [project:koan] investigate ordering bug\n"
             "- [project:grep] implement issue #33\n\n"
             "## In Progress\n\n## Done\n"
         )
-        result = pick_mission(str(tmp_path), "koan:/p1;grep:/p2", "5", "deep", "grep")
-        # Must pick grep issue #36 (first in queue), even though last_project was grep
+        result = pick_mission("koan:/p1;grep:/p2", "5", "deep", "grep")
         assert result == "grep:implement issue #36"
 
-    def test_single_mission(self, tmp_path):
-        missions = tmp_path / "missions.md"
-        missions.write_text(
+    def test_single_mission(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        _write_missions(tmp_path,
             "# Missions\n\n## Pending\n\n- [project:koan] fix tests\n\n## In Progress\n\n## Done\n"
         )
-        result = pick_mission(str(tmp_path), "koan:/p1;anantys:/p2", "1", "implement")
+        result = pick_mission("koan:/p1;anantys:/p2", "1", "implement")
         assert result == "koan:fix tests"
 
-    def test_strips_timestamps_from_title(self, tmp_path):
+    def test_strips_timestamps_from_title(self, tmp_path, monkeypatch):
         """Queued timestamps should be included in the extracted title."""
-        missions = tmp_path / "missions.md"
-        missions.write_text(
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        _write_missions(tmp_path,
             "# Missions\n\n## Pending\n\n"
             "- [project:koan] fix tests ⏳(2026-03-11T21:00)\n\n"
             "## In Progress\n\n## Done\n"
         )
-        result = pick_mission(str(tmp_path), "koan:/p1", "1", "implement")
+        result = pick_mission("koan:/p1", "1", "implement")
         assert result.startswith("koan:")
         assert "fix tests" in result
 

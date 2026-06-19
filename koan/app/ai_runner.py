@@ -190,7 +190,7 @@ def run_exploration(
     # Gather context
     git_activity = gather_git_activity(project_path)
     project_structure = gather_project_structure(project_path)
-    missions_context = get_missions_context(Path(instance_dir))
+    missions_context = get_missions_context()
 
     # Build focus block (mirrors audit's EXTRA_CONTEXT pattern)
     focus_block = ""

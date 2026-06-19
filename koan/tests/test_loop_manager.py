@@ -960,23 +960,25 @@ class TestCheckHelpers:
     def test_check_pending_missions_with_missions(self, tmp_path):
         from app.loop_manager import check_pending_missions
 
-        missions = tmp_path / "missions.md"
-        missions.write_text("## Pending\n\n- Do something\n\n## Done\n")
+        instance = tmp_path / "instance"
+        instance.mkdir(exist_ok=True)
+        (instance / "missions.md").write_text("## Pending\n\n- Do something\n\n## Done\n")
 
-        assert check_pending_missions(str(tmp_path)) is True
+        assert check_pending_missions() is True
 
     def test_check_pending_missions_empty(self, tmp_path):
         from app.loop_manager import check_pending_missions
 
-        missions = tmp_path / "missions.md"
-        missions.write_text("## Pending\n\n## Done\n")
+        instance = tmp_path / "instance"
+        instance.mkdir(exist_ok=True)
+        (instance / "missions.md").write_text("## Pending\n\n## Done\n")
 
-        assert check_pending_missions(str(tmp_path)) is False
+        assert check_pending_missions() is False
 
     def test_check_pending_missions_no_file(self, tmp_path):
         from app.loop_manager import check_pending_missions
 
-        assert check_pending_missions(str(tmp_path)) is False
+        assert check_pending_missions() is False
 
 
 # --- Test GitHub notification backoff ---
@@ -2109,6 +2111,8 @@ class TestCLI:
         koan_root.mkdir()
         instance.mkdir()
 
+        import os
+        env = {**os.environ, "KOAN_ROOT": str(koan_root)}
         result = subprocess.run(
             [sys.executable, "-m", "app.loop_manager", "interruptible-sleep",
              "--interval", "1",
@@ -2118,6 +2122,7 @@ class TestCLI:
             capture_output=True, text=True,
             cwd=str(Path(__file__).parent.parent),
             timeout=10,
+            env=env,
         )
         assert result.returncode == 0
         assert "timeout" in result.stdout.strip()

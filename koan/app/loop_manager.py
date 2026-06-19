@@ -1662,7 +1662,7 @@ def _consume_check_notifications_signal(koan_root: str) -> bool:
         return False
 
 
-def check_pending_missions(instance_dir: str) -> bool:
+def check_pending_missions() -> bool:
     """Check if there are pending missions in the mission store."""
     try:
         from app.mission_store import MissionStore
@@ -1702,7 +1702,7 @@ def interruptible_sleep(
     elapsed = 0
     while elapsed < interval:
         # Check signals BEFORE sleeping so events are detected immediately.
-        if wake_on_mission and check_pending_missions(instance_dir):
+        if wake_on_mission and check_pending_missions():
             return "mission"
         if _check_signal_file(koan_root, ".koan-stop"):
             return "stop"

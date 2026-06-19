@@ -156,7 +156,7 @@ class TestMagicSkillMd:
 class TestGetProjects:
     @patch("app.utils.get_known_projects")
     def test_returns_projects_from_yaml(self, mock_get, handler, ctx, tmp_path):
-        mock_get.return_value = [("foo", str(tmp_path)), ("bar", "/nonexistent")]
+        mock_get.return_value = [("foo", str(tmp_path)), ("bar", str(tmp_path / "no_such_dir"))]
         projects = handler.get_projects()
         assert len(projects) == 1
         assert projects[0][0] == "foo"

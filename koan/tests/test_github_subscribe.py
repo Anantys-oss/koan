@@ -43,6 +43,14 @@ def _stub_is_subject_closed(subject_closed_state):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_gh_network():
+    """Block gh CLI calls that slip through per-test mocks."""
+    with patch("app.github_command_handler.find_mention_in_thread", return_value=None), \
+         patch("app.github_reply.post_threaded_reply", return_value=None):
+        yield
+
+
 @pytest.fixture
 def mock_skill():
     return Skill(

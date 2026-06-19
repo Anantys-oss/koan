@@ -1142,7 +1142,7 @@ def _sleep_between_runs(
 
     Checks for pending missions first — skips sleep entirely if found.
     """
-    if check_pending_missions(instance):
+    if check_pending_missions():
         log("koan", "Pending missions found — skipping sleep")
         if run_num:
             set_status(koan_root, f"Run {run_num}/{max_runs} — done, next run starting")
@@ -1290,7 +1290,7 @@ def _handle_contemplative(
     # next successful iteration commits.
     _commit_instance(instance)
 
-    if check_pending_missions(instance):
+    if check_pending_missions():
         log("koan", "Pending missions found after contemplation — skipping sleep")
     else:
         set_status(koan_root, f"Idle — post-contemplation sleep ({time.strftime('%H:%M')})")
