@@ -54,6 +54,15 @@ SENSITIVE_CONTENT_PATTERNS = [
     (r"(?i)(?:pickle|marshal)\.loads?\s*\(", "unsafe deserialization"),
     (r"(?i)\.innerHTML\s*=", "potential XSS via innerHTML"),
     (r"(?i)dangerouslySetInnerHTML", "React XSS risk"),
+    (r"(?i)yaml\.(?:unsafe_)?load\s*\(", "unsafe YAML deserialization"),
+    (r"BEGIN[ \t]+(?:RSA |DSA |EC |OPENSSH )?PRIVATE KEY", "private key in source"),
+    (r"(?i)hashlib\.(?:md5|sha1)\s*\(", "weak cryptographic hash"),
+    (r"(?i)tempfile\.mktemp\s*\(", "insecure temp file creation"),
+    (r"(?i)render_template_string\s*\(", "potential template injection"),
+    (r"(?i)verify\s*=\s*False", "SSL/TLS verification bypass"),
+    (r"(?i)\.extractall\s*\(", "unsafe archive extraction"),
+    (r"(?i)__import__\s*\(", "dynamic import"),
+    (r"AKIA[A-Z0-9]{16}", "AWS access key ID"),
 ]
 
 # Risk level thresholds (cumulative score → risk)
