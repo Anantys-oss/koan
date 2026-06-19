@@ -583,15 +583,17 @@ class TestIdeaHandler:
             args=args,
         )
 
-    def test_no_missions_file(self, tmp_path):
+    def test_no_missions_file(self, tmp_path, monkeypatch):
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         ctx = self._make_ctx(tmp_path, command="idea")
         result = handle(ctx)
         assert "No ideas" in result or "No missions file" in result
 
-    def test_list_empty(self, tmp_path):
+    def test_list_empty(self, tmp_path, monkeypatch):
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         ctx = self._make_ctx(
             tmp_path,
@@ -601,8 +603,9 @@ class TestIdeaHandler:
         result = handle(ctx)
         assert "No ideas" in result
 
-    def test_list_with_ideas(self, tmp_path):
+    def test_list_with_ideas(self, tmp_path, monkeypatch):
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = textwrap.dedent("""\
             # Missions
@@ -622,8 +625,9 @@ class TestIdeaHandler:
         assert "1. first idea" in result
         assert "2. second idea" in result
 
-    def test_ideas_command_always_lists(self, tmp_path):
+    def test_ideas_command_always_lists(self, tmp_path, monkeypatch):
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n- item\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="ideas")
@@ -631,8 +635,9 @@ class TestIdeaHandler:
         assert "IDEAS" in result
         assert "1. item" in result
 
-    def test_add_idea(self, tmp_path):
+    def test_add_idea(self, tmp_path, monkeypatch):
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="my new idea")
@@ -644,8 +649,9 @@ class TestIdeaHandler:
         written = (tmp_path / "instance" / "missions.md").read_text()
         assert "my new idea" in written
 
-    def test_add_idea_with_project_tag(self, tmp_path):
+    def test_add_idea_with_project_tag(self, tmp_path, monkeypatch):
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(
@@ -666,8 +672,9 @@ class TestIdeaHandler:
         result = handle(ctx)
         assert "Idea saved" in result
 
-    def test_delete_idea(self, tmp_path):
+    def test_delete_idea(self, tmp_path, monkeypatch):
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n- to delete\n- to keep\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="delete 1")
@@ -687,16 +694,18 @@ class TestIdeaHandler:
         result = handle(ctx)
         assert "Deleted" in result
 
-    def test_delete_invalid_index(self, tmp_path):
+    def test_delete_invalid_index(self, tmp_path, monkeypatch):
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n- only one\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="delete 5")
         result = handle(ctx)
         assert "Invalid index" in result
 
-    def test_promote_idea(self, tmp_path):
+    def test_promote_idea(self, tmp_path, monkeypatch):
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = textwrap.dedent("""\
             # Missions
@@ -739,9 +748,10 @@ class TestIdeaHandler:
         result = handle(ctx)
         assert "Invalid index" in result
 
-    def test_promote_multiline_via_handler(self, tmp_path):
+    def test_promote_multiline_via_handler(self, tmp_path, monkeypatch):
         """Handler correctly promotes multi-line ideas."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = textwrap.dedent("""\
             # Missions
@@ -773,9 +783,10 @@ class TestIdeaHandler:
         sections = parse_sections(written)
         assert any("implement /plan skill" in p for p in sections["pending"])
 
-    def test_promote_with_french_headers_via_handler(self, tmp_path):
+    def test_promote_with_french_headers_via_handler(self, tmp_path, monkeypatch):
         """Handler works with French section headers (## Pending)."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = textwrap.dedent("""\
             # Missions
@@ -802,18 +813,20 @@ class TestIdeaHandler:
         sections = parse_sections(written)
         assert len(sections["pending"]) == 2
 
-    def test_promote_no_ideas_via_handler(self, tmp_path):
+    def test_promote_no_ideas_via_handler(self, tmp_path, monkeypatch):
         """Promote on empty ideas section returns informative message."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="promote 1")
         result = handle(ctx)
         assert "No ideas to promote" in result
 
-    def test_promote_all_via_handler(self, tmp_path):
+    def test_promote_all_via_handler(self, tmp_path, monkeypatch):
         """Handler promotes all ideas at once."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = textwrap.dedent("""\
             # Missions
@@ -843,18 +856,20 @@ class TestIdeaHandler:
         sections = parse_sections(written)
         assert len(sections["pending"]) == 3
 
-    def test_promote_all_empty_via_handler(self, tmp_path):
+    def test_promote_all_empty_via_handler(self, tmp_path, monkeypatch):
         """Handler returns informative message when no ideas to promote."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="promote all")
         result = handle(ctx)
         assert "No ideas to promote" in result
 
-    def test_promote_all_with_push_alias(self, tmp_path):
+    def test_promote_all_with_push_alias(self, tmp_path, monkeypatch):
         """Handler supports 'push all' alias."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n- single\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="push all")
@@ -862,18 +877,20 @@ class TestIdeaHandler:
         assert "Promoted 1 idea" in result
         assert "ideas" not in result  # singular
 
-    def test_promote_all_single_idea_singular(self, tmp_path):
+    def test_promote_all_single_idea_singular(self, tmp_path, monkeypatch):
         """Singular form used when promoting exactly one idea."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n- lonely idea\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="activate all")
         result = handle(ctx)
         assert "Promoted 1 idea to" in result
 
-    def test_delete_multiline_via_handler(self, tmp_path):
+    def test_delete_multiline_via_handler(self, tmp_path, monkeypatch):
         """Handler deletes multi-line ideas completely."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = textwrap.dedent("""\
             # Missions
@@ -896,9 +913,10 @@ class TestIdeaHandler:
         assert "continuation" not in written
         assert "keep this" in written
 
-    def test_list_multiline_ideas_via_handler(self, tmp_path):
+    def test_list_multiline_ideas_via_handler(self, tmp_path, monkeypatch):
         """Handler lists multi-line ideas showing only the first line."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = textwrap.dedent("""\
             # Missions
@@ -918,9 +936,10 @@ class TestIdeaHandler:
         assert "1. main idea" in result
 
     @patch("app.utils.get_known_projects", return_value=[("koan", "/p/koan"), ("web", "/p/web")])
-    def test_add_idea_auto_detect_project_from_first_word(self, mock_proj, tmp_path):
+    def test_add_idea_auto_detect_project_from_first_word(self, mock_proj, tmp_path, monkeypatch):
         """'/idea koan some text' auto-detects koan as project."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="koan add retry logic")
@@ -960,9 +979,10 @@ class TestIdeaHandler:
         assert "Which project" not in result
 
     @patch("app.utils.get_known_projects", return_value=[("koan", "/p/koan"), ("web", "/p/web")])
-    def test_add_idea_explicit_tag_takes_priority(self, mock_proj, tmp_path):
+    def test_add_idea_explicit_tag_takes_priority(self, mock_proj, tmp_path, monkeypatch):
         """Explicit [project:X] tag takes priority over first-word detection."""
         from skills.core.idea.handler import handle
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(
@@ -1055,15 +1075,18 @@ class TestCleanIdea:
 
 class TestIdeaCommandRouting:
     @patch("app.command_handlers.send_telegram")
-    def test_idea_routes_via_skill(self, mock_send, tmp_path):
+    def test_idea_routes_via_skill(self, mock_send, tmp_path, monkeypatch):
         from app.command_handlers import handle_command
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
-        missions_file = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Ideas\n\n- test idea\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", instance_dir), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/idea")
         mock_send.assert_called_once()
@@ -1072,15 +1095,18 @@ class TestIdeaCommandRouting:
         assert "test idea" in output
 
     @patch("app.command_handlers.send_telegram")
-    def test_ideas_routes_via_skill(self, mock_send, tmp_path):
+    def test_ideas_routes_via_skill(self, mock_send, tmp_path, monkeypatch):
         from app.command_handlers import handle_command
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
 
-        missions_file = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Ideas\n\n- listed idea\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", instance_dir), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/ideas")
         mock_send.assert_called_once()

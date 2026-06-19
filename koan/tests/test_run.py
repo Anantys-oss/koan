@@ -6198,10 +6198,11 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
 class TestUpdateMissionInFile:
     """Test _update_mission_in_file needle matching."""
 
-    def test_finds_original_title_in_progress(self, tmp_path):
+    def test_finds_original_title_in_progress(self, tmp_path, monkeypatch):
         """The original (untranslated) title must match the In Progress line."""
         from app.run import _update_mission_in_file
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
         missions.write_text(
@@ -6240,10 +6241,11 @@ class TestUpdateMissionInFile:
         # Mission should still be in In Progress (not moved)
         assert "/scope.myskill do something" in content.split("## In Progress")[1].split("##")[0]
 
-    def test_returns_true_when_moved(self, tmp_path):
+    def test_returns_true_when_moved(self, tmp_path, monkeypatch):
         """A successful move returns True so callers know the mission cleared."""
         from app.run import _update_mission_in_file
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
         missions.write_text(
@@ -6264,7 +6266,7 @@ class TestUpdateMissionInFile:
         )
         assert _update_mission_in_file(str(missions.parent), "/plan absent mission") is False
 
-    def test_mission_with_double_spaces_is_moved(self, tmp_path):
+    def test_mission_with_double_spaces_is_moved(self, tmp_path, monkeypatch):
         """Regression: a mission with internal double spaces must clear the queue.
 
         Previously the runner exited 0 but the mission stayed in Pending and
@@ -6273,6 +6275,7 @@ class TestUpdateMissionInFile:
         """
         from app.run import _update_mission_in_file
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         mission = "/plan https://github.com/owner/repo/issues/15 cli  and  dashboard reconcile"
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
@@ -6290,10 +6293,11 @@ class TestUpdateMissionInFile:
 class TestStartMissionSanityFlushLog:
     """A sanity flush during start_mission() is surfaced to operators."""
 
-    def test_stale_in_progress_is_flushed_and_logged(self, tmp_path):
+    def test_stale_in_progress_is_flushed_and_logged(self, tmp_path, monkeypatch):
         from app.run import _start_mission_in_file
         from app.missions import parse_sections
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
         # A stale In Progress mission recover.py "missed", plus the one we start.
@@ -6320,9 +6324,10 @@ class TestStartMissionSanityFlushLog:
         ]
         assert any("Sanity flush" in w and "leftover stale" in w for w in warnings)
 
-    def test_no_log_when_in_progress_empty(self, tmp_path):
+    def test_no_log_when_in_progress_empty(self, tmp_path, monkeypatch):
         from app.run import _start_mission_in_file
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
         missions.write_text(
@@ -6355,11 +6360,12 @@ class TestPruneDecoupledFromFinalization:
         )
         return missions
 
-    def test_finalization_triggers_history_prune(self, tmp_path):
+    def test_finalization_triggers_history_prune(self, tmp_path, monkeypatch):
         """Completing a mission still trims an oversized Failed section..."""
         from app.run import _update_mission_in_file
         from app.missions import parse_sections
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = self._missions_with_many_failed(tmp_path, n_failed=35)
         assert _update_mission_in_file(str(missions.parent), "/plan finish me") is True
 
@@ -6369,7 +6375,7 @@ class TestPruneDecoupledFromFinalization:
         # ...and the mission still moved to Done.
         assert "/plan finish me" in "\n".join(sections["done"])
 
-    def test_prune_failure_does_not_break_finalization(self, tmp_path):
+    def test_prune_failure_does_not_break_finalization(self, tmp_path, monkeypatch):
         """A pruning error must not roll back or fail the mission move.
 
         Pruning runs as its own locked step (``_prune_missions_history``)
@@ -6379,6 +6385,7 @@ class TestPruneDecoupledFromFinalization:
         from app.run import _update_mission_in_file
         from app.missions import parse_sections
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = self._missions_with_many_failed(tmp_path, n_failed=35)
 
         with patch(
@@ -6393,10 +6400,11 @@ class TestPruneDecoupledFromFinalization:
         sections = parse_sections(missions.read_text())
         assert "/plan finish me" in "\n".join(sections["done"])
 
-    def test_prune_helper_is_noop_below_threshold(self, tmp_path):
+    def test_prune_helper_is_noop_below_threshold(self, tmp_path, monkeypatch):
         """_prune_missions_history leaves a small history untouched."""
         from app.run import _prune_missions_history
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
         original = (

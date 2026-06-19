@@ -56,48 +56,54 @@ class TestExtractComplexityTag:
 # ---------------------------------------------------------------------------
 
 class TestTagComplexityInPending:
-    def _make_missions(self, content: str) -> Path:
-        """Create a temp directory with missions.md so the store can find it."""
+    def _make_missions(self, content: str, monkeypatch) -> Path:
+        """Create a temp directory with instance/missions.md so the store can find it."""
         import tempfile
         tmpdir = Path(tempfile.mkdtemp())
-        path = tmpdir / "missions.md"
+        instance_dir = tmpdir / "instance"
+        instance_dir.mkdir()
+        path = instance_dir / "missions.md"
         path.write_text(content)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmpdir)
         return path
 
     def teardown_method(self, method):
-        pass
+        """Clean up any temp files left by the test."""
+        pass  # Files cleaned individually
 
-    def test_basic_round_trip(self):
+    def test_basic_round_trip(self, monkeypatch):
         content = "## Pending\n- Fix typo in README\n## Done\n"
-        path = self._make_missions(content)
+        path = self._make_missions(content, monkeypatch)
         try:
             tag_complexity_in_pending("Fix typo in README", "trivial", path)
             updated = path.read_text()
             assert "[complexity:trivial]" in updated
+            # Verify round-trip extraction
             line = [l for l in updated.splitlines() if "Fix typo" in l][0]
             assert extract_complexity_tag(line) == "trivial"
         finally:
             import shutil
-            shutil.rmtree(path.parent, ignore_errors=True)
+            shutil.rmtree(path.parent.parent, ignore_errors=True)
 
-    def test_tag_inserted_before_timestamp(self):
+    def test_tag_inserted_before_timestamp(self, monkeypatch):
         content = "## Pending\n- Fix typo ⏳(2024-01-01T10:00)\n## Done\n"
-        path = self._make_missions(content)
+        path = self._make_missions(content, monkeypatch)
         try:
             tag_complexity_in_pending("Fix typo ⏳(2024-01-01T10:00)", "simple", path)
             updated = path.read_text()
             line = [l for l in updated.splitlines() if "Fix typo" in l][0]
+            # Tag should appear before the timestamp marker
             tag_pos = line.index("[complexity:simple]")
             ts_pos = line.index("⏳")
             assert tag_pos < ts_pos
         finally:
             import shutil
-            shutil.rmtree(path.parent, ignore_errors=True)
+            shutil.rmtree(path.parent.parent, ignore_errors=True)
 
-    def test_idempotent_does_not_double_tag(self):
+    def test_idempotent_does_not_double_tag(self, monkeypatch):
         """Calling tag_complexity_in_pending twice must not add a second tag."""
         content = "## Pending\n- Fix bug\n## Done\n"
-        path = self._make_missions(content)
+        path = self._make_missions(content, monkeypatch)
         try:
             tag_complexity_in_pending("Fix bug", "medium", path)
             tag_complexity_in_pending("Fix bug [complexity:medium]", "medium", path)
@@ -105,15 +111,15 @@ class TestTagComplexityInPending:
             assert updated.count("[complexity:") == 1
         finally:
             import shutil
-            shutil.rmtree(path.parent, ignore_errors=True)
+            shutil.rmtree(path.parent.parent, ignore_errors=True)
 
-    def test_only_tags_pending_section(self):
+    def test_only_tags_pending_section(self, monkeypatch):
         """Missions in Done must not be tagged."""
         content = (
             "## Pending\n- New mission\n"
             "## Done\n- Old mission\n"
         )
-        path = self._make_missions(content)
+        path = self._make_missions(content, monkeypatch)
         try:
             tag_complexity_in_pending("Old mission", "trivial", path)
             updated = path.read_text()
@@ -121,11 +127,11 @@ class TestTagComplexityInPending:
             assert "[complexity:" not in done_section
         finally:
             import shutil
-            shutil.rmtree(path.parent, ignore_errors=True)
+            shutil.rmtree(path.parent.parent, ignore_errors=True)
 
-    def test_no_match_leaves_file_unchanged(self):
+    def test_no_match_leaves_file_unchanged(self, monkeypatch):
         content = "## Pending\n- Some other mission\n## Done\n"
-        path = self._make_missions(content)
+        path = self._make_missions(content, monkeypatch)
         try:
             tag_complexity_in_pending("Nonexistent mission", "trivial", path)
             updated = path.read_text()
@@ -133,11 +139,11 @@ class TestTagComplexityInPending:
             assert "Some other mission" in updated
         finally:
             import shutil
-            shutil.rmtree(path.parent, ignore_errors=True)
+            shutil.rmtree(path.parent.parent, ignore_errors=True)
 
-    def test_project_tag_coexists(self):
+    def test_project_tag_coexists(self, monkeypatch):
         content = "## Pending\n- [project:koan] fix the thing\n## Done\n"
-        path = self._make_missions(content)
+        path = self._make_missions(content, monkeypatch)
         try:
             # Pass just the text (no project prefix) — project is stored separately
             tag_complexity_in_pending("fix the thing", "simple", path)
@@ -146,7 +152,7 @@ class TestTagComplexityInPending:
             assert "[project:koan]" in updated
         finally:
             import shutil
-            shutil.rmtree(path.parent, ignore_errors=True)
+            shutil.rmtree(path.parent.parent, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

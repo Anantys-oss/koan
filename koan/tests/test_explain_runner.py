@@ -593,20 +593,20 @@ class TestSkillDispatchIntegration:
 
 
 class TestMissionDedup:
-    """Test that /explain and /xp are covered by mission dedup regex."""
+    """Test that /explain and /xp produce stable dedup keys via canonical_mission_key."""
 
     def test_explain_dedup(self):
-        from app.missions import _extract_mission_signature
+        from app.missions import canonical_mission_key
 
-        sig = _extract_mission_signature(
+        key = canonical_mission_key(
             "/explain https://github.com/owner/repo/pull/42"
         )
-        assert sig == "explain:https://github.com/owner/repo/pull/42"
+        assert key == "/explain https://github.com/owner/repo/pull/42"
 
     def test_xp_alias_dedup(self):
-        from app.missions import _extract_mission_signature
+        from app.missions import canonical_mission_key
 
-        sig = _extract_mission_signature(
+        key = canonical_mission_key(
             "/xp https://github.com/owner/repo/pull/42"
         )
-        assert sig == "xp:https://github.com/owner/repo/pull/42"
+        assert key == "/xp https://github.com/owner/repo/pull/42"

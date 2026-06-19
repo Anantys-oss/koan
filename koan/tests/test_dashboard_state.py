@@ -240,22 +240,22 @@ class TestApiStateStream:
 
         return inst, tpl_dest
 
-    def test_stream_returns_sse_content_type(self, tmp_path):
+    def test_stream_returns_sse_content_type(self, tmp_path, monkeypatch):
         inst, tpl_dest = self._make_client(tmp_path)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_JSON_FILE", inst / "missions.md"):
+             patch.object(dashboard, "INSTANCE_DIR", inst):
             with dashboard.app.test_request_context("/api/state/stream"):
                 resp = dashboard.api_state_stream()
         assert resp.content_type == "text/event-stream; charset=utf-8"
         assert resp.headers.get("Cache-Control") == "no-cache"
 
-    def test_stream_emits_valid_json(self, tmp_path):
+    def test_stream_emits_valid_json(self, tmp_path, monkeypatch):
         (tmp_path / ".koan-status").write_text("Run 1/5 — executing mission on koan")
         inst, _ = self._make_client(tmp_path)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_JSON_FILE", inst / "missions.md"), \
              patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")
         data_line = None
@@ -270,7 +270,7 @@ class TestApiStateStream:
         assert payload["state"] == "working"
         assert payload["run_info"] == "1/5"
 
-    def test_stream_includes_mission_counts(self, tmp_path):
+    def test_stream_includes_mission_counts(self, tmp_path, monkeypatch):
         """SSE payload should include pending/in_progress/done counts."""
         (tmp_path / ".koan-status").write_text("Idle")
         inst, _ = self._make_client(tmp_path)
@@ -278,9 +278,10 @@ class TestApiStateStream:
             "# Missions\n\n## Pending\n\n- task1\n- task2\n\n"
             "## In Progress\n\n- task3\n\n## Done\n\n- task4\n"
         )
+        # Patch app.utils.KOAN_ROOT so MissionStore.load() reads from tmp instance dir.
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_JSON_FILE", inst / "missions.md"), \
              patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")
         data_line = None
@@ -302,7 +303,7 @@ class TestApiStateStream:
 class TestApiStatusAgentState:
     """Test that /api/status returns agent_state field."""
 
-    def test_api_status_includes_agent_state(self, tmp_path):
+    def test_api_status_includes_agent_state(self, tmp_path, monkeypatch):
         from jinja2 import FileSystemLoader
         from pathlib import Path
         import shutil
@@ -322,9 +323,9 @@ class TestApiStatusAgentState:
         (tmp_path / ".koan-status").write_text("Run 2/10 — IMPLEMENT on koan")
         (tmp_path / ".koan-project").write_text("koan")
 
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_JSON_FILE", inst / "missions.md"):
+             patch.object(dashboard, "INSTANCE_DIR", inst):
             dashboard.app.config["TESTING"] = True
             dashboard.app.jinja_loader = FileSystemLoader(str(tpl_dest))
             with dashboard.app.test_client() as client:

@@ -90,36 +90,44 @@ class TestReadJournal:
 # ---------------------------------------------------------------------------
 
 class TestParseCompletedMissions:
-    def test_real_format_with_timestamps(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
+    def test_real_format_with_timestamps(self, tmp_path, monkeypatch):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Done\n\n"
             "- [project:koan] fix auth bug ⏳(2026-02-17T16:00) ▶(2026-02-17T16:12) ✅ (2026-02-17 21:16)\n"
             "- [project:my-toolkit] plan for case PROJ-11339 ✅ (2026-02-17 16:12)\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file):
             result = _parse_completed_missions()
         assert len(result) == 2
         assert "fix auth bug" in result[0]
         assert "plan for case PROJ-11339" in result[1]
 
-    def test_legacy_bold_entries(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
+    def test_legacy_bold_entries(self, tmp_path, monkeypatch):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Done\n\n"
             "- **Fix IDOR** (session 22)\n"
             "- **Dunning emails** — session 20\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file):
             result = _parse_completed_missions()
         assert len(result) == 2
         assert "Fix IDOR" in result[0]
         assert "Dunning emails" in result[1]
 
-    def test_mixed_formats(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
+    def test_mixed_formats(self, tmp_path, monkeypatch):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Done\n\n"
@@ -127,6 +135,7 @@ class TestParseCompletedMissions:
             "- **Old format** (session 1)\n"
             "- plain entry no tags\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file):
             result = _parse_completed_missions()
         assert len(result) == 3
@@ -138,14 +147,17 @@ class TestParseCompletedMissions:
             result = _parse_completed_missions()
         assert result == []
 
-    def test_date_filter_matches(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
+    def test_date_filter_matches(self, tmp_path, monkeypatch):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Done\n\n"
             "- [project:koan] yesterdays task ✅ (2026-02-17 21:16)\n"
             "- [project:koan] todays task ✅ (2026-02-18 10:30)\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file):
             result = _parse_completed_missions(target_date=date(2026, 2, 18))
         assert len(result) == 1
@@ -162,28 +174,34 @@ class TestParseCompletedMissions:
             result = _parse_completed_missions(target_date=date(2026, 2, 18))
         assert result == []
 
-    def test_no_date_filter_returns_all(self, tmp_path):
+    def test_no_date_filter_returns_all(self, tmp_path, monkeypatch):
         """Without target_date, all done missions are returned."""
-        missions_file = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Done\n\n"
             "- [project:koan] task A ✅ (2026-02-15 10:00)\n"
             "- [project:koan] task B ✅ (2026-02-18 10:00)\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file):
             result = _parse_completed_missions()
         assert len(result) == 2
 
-    def test_date_filter_skips_missions_without_timestamp(self, tmp_path):
+    def test_date_filter_skips_missions_without_timestamp(self, tmp_path, monkeypatch):
         """Missions without ✅ timestamp are skipped when date filter is active."""
-        missions_file = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Done\n\n"
             "- [project:koan] has timestamp ✅ (2026-02-18 10:00)\n"
             "- plain entry no timestamp\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file):
             result = _parse_completed_missions(target_date=date(2026, 2, 18))
         assert len(result) == 1
@@ -195,8 +213,10 @@ class TestParseCompletedMissions:
 # ---------------------------------------------------------------------------
 
 class TestCountPendingMissions:
-    def test_count(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
+    def test_count(self, tmp_path, monkeypatch):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Pending\n\n"
@@ -204,12 +224,16 @@ class TestCountPendingMissions:
             "- task 2\n\n"
             "## In Progress\n\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file):
             assert _count_pending_missions() == 2
 
-    def test_no_pending(self, tmp_path):
-        missions_file = tmp_path / "missions.md"
+    def test_no_pending(self, tmp_path, monkeypatch):
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text("# Missions\n\n## Pending\n\n(none)\n\n## In Progress\n\n")
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file):
             assert _count_pending_missions() == 0
 
@@ -219,10 +243,12 @@ class TestCountPendingMissions:
 # ---------------------------------------------------------------------------
 
 class TestGenerateReport:
-    def test_morning_report_real_format(self, tmp_path):
+    def test_morning_report_real_format(self, tmp_path, monkeypatch):
         yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
         today = date.today().strftime("%Y-%m-%d")
-        missions_file = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Pending\n\n"
@@ -233,8 +259,9 @@ class TestGenerateReport:
             f"- [project:koan] done thing ✅ ({yesterday} 21:16)\n"
             f"- [project:koan] older thing ✅ (2025-01-01 10:00)\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file), \
-             patch("app.daily_report.INSTANCE_DIR", tmp_path):
+             patch("app.daily_report.INSTANCE_DIR", instance_dir):
             report = generate_report("morning")
 
         assert "Report for" in report
@@ -246,9 +273,11 @@ class TestGenerateReport:
         assert "In Progress:" in report
         assert "-- Kōan" in report
 
-    def test_morning_report_legacy_format(self, tmp_path):
+    def test_morning_report_legacy_format(self, tmp_path, monkeypatch):
         yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-        missions_file = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Pending\n\n"
@@ -259,8 +288,9 @@ class TestGenerateReport:
             "## Done\n\n"
             f"- **Done thing** ✅ ({yesterday} 15:00)\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file), \
-             patch("app.daily_report.INSTANCE_DIR", tmp_path):
+             patch("app.daily_report.INSTANCE_DIR", instance_dir):
             report = generate_report("morning")
 
         assert "Report for" in report
@@ -318,9 +348,11 @@ class TestGenerateReport:
         assert "Report for" in report
         assert "-- Kōan" in report
 
-    def test_in_progress_with_real_missions(self, tmp_path):
+    def test_in_progress_with_real_missions(self, tmp_path, monkeypatch):
         """In-progress missions in real format should appear in report."""
-        missions_file = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n"
             "## Pending\n\n"
@@ -329,8 +361,9 @@ class TestGenerateReport:
             "- [project:ulc] fixing SSL cert reuse\n\n"
             "## Done\n\n"
         )
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.daily_report.MISSIONS_FILE", missions_file), \
-             patch("app.daily_report.INSTANCE_DIR", tmp_path):
+             patch("app.daily_report.INSTANCE_DIR", instance_dir):
             report = generate_report("evening")
         assert "In Progress:" in report
         assert "refactoring utils" in report

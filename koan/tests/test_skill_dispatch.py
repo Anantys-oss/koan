@@ -1673,9 +1673,11 @@ class TestExpandComboSkill:
         assert "/review https://github.com/owner/repo/pull/42" in content
         assert "[project:" not in content
 
-    def test_parallel_combo_batch_inserts(self, tmp_path):
+    def test_parallel_combo_batch_inserts(self, tmp_path, monkeypatch):
         """Parallel combo skills batch-insert all sub-missions atomically."""
-        missions_md = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        missions_md = tmp_path / "instance" / "missions.md"
         missions_md.write_text("## Pending\n\n- Existing mission\n\n## In Progress\n\n## Done\n")
 
         from unittest.mock import patch
@@ -1689,17 +1691,19 @@ class TestExpandComboSkill:
             )
 
         assert result is True
-        content = missions_md.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         # The store renders the project as a trailing [project:X] tag.
         assert "/security_audit [project:koan]" in content
         assert "/dead_code [project:koan]" in content
         assert "/profile [project:koan]" in content
         assert "Existing mission" in content
 
-    def test_parallel_combo_deduplicates_url_missions(self, tmp_path):
+    def test_parallel_combo_deduplicates_url_missions(self, tmp_path, monkeypatch):
         """Parallel combo should skip URL-based sub-missions that are already pending."""
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         url = "https://github.com/owner/repo/pull/42"
-        missions_md = tmp_path / "missions.md"
+        missions_md = tmp_path / "instance" / "missions.md"
         missions_md.write_text(
             f"## Pending\n\n- [project:koan] /review {url}\n\n## In Progress\n\n## Done\n"
         )
@@ -1715,13 +1719,15 @@ class TestExpandComboSkill:
             )
 
         assert result is True
-        content = missions_md.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert f"/rebase {url}" in content
         assert content.count(f"/review {url}") == 1
 
-    def test_parallel_combo_no_project_tag(self, tmp_path):
+    def test_parallel_combo_no_project_tag(self, tmp_path, monkeypatch):
         """Parallel combo without project tag omits tag from sub-missions."""
-        missions_md = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        missions_md = tmp_path / "instance" / "missions.md"
         missions_md.write_text("## Pending\n\n## In Progress\n\n## Done\n")
 
         from unittest.mock import patch
@@ -1732,13 +1738,15 @@ class TestExpandComboSkill:
             result = expand_combo_skill("/audit_all", str(tmp_path))
 
         assert result is True
-        content = missions_md.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "/security_audit" in content
         assert "[project:" not in content
 
-    def test_parallel_combo_preserves_existing_pending(self, tmp_path):
+    def test_parallel_combo_preserves_existing_pending(self, tmp_path, monkeypatch):
         """Parallel batch insert must not clobber existing pending missions."""
-        missions_md = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        missions_md = tmp_path / "instance" / "missions.md"
         missions_md.write_text(
             "## Pending\n\n- Fix login bug\n- Update docs\n\n## In Progress\n\n## Done\n"
         )
@@ -1750,7 +1758,7 @@ class TestExpandComboSkill:
         with patch("app.skill_dispatch._build_combo_cache", return_value=combo_map):
             expand_combo_skill("[project:koan] /audit_all", str(tmp_path))
 
-        content = missions_md.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "Fix login bug" in content
         assert "Update docs" in content
         assert "/security_audit" in content

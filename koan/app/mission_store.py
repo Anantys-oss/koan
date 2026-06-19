@@ -1073,8 +1073,13 @@ def locked_store(instance_dir: str | None = None) -> Generator[MissionStore, Non
             try:
                 store = MissionStore.load(instance_dir)
                 yield store
-                store.prune()   # keep JSON bounded; runs only on clean exit
-                store._save()
+                store._save()   # persist mutation first; prune is best-effort
+                try:
+                    store.prune()   # keep JSON bounded; runs only on clean exit
+                    store._save()   # re-save after trimming history
+                except Exception as _prune_err:  # prune failure must not undo the mutation
+                    import sys
+                    print(f"[mission_store] prune error (mutation already saved): {_prune_err}", file=sys.stderr)
             finally:
                 fcntl.flock(lf, fcntl.LOCK_UN)
 

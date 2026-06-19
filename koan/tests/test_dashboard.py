@@ -42,11 +42,14 @@ def instance_dir(tmp_path):
 
 
 @pytest.fixture
-def app_client(instance_dir, tmp_path):
+def app_client(instance_dir, tmp_path, monkeypatch):
     """Create a Flask test client with patched paths."""
     # Copy real templates so Flask can render them
     tpl_dest = tmp_path / "koan" / "templates"
     shutil.copytree(REAL_TEMPLATES, tpl_dest)
+    # Patch app.utils.KOAN_ROOT so MissionStore.load() and locked_store() read
+    # from the temp instance dir instead of the real KOAN_ROOT.
+    monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
     with patch.object(dashboard, "INSTANCE_DIR", instance_dir), \
          patch.object(dashboard, "OUTBOX_FILE", instance_dir / "outbox.md"), \
          patch.object(dashboard, "SOUL_FILE", instance_dir / "soul.md"), \
@@ -61,14 +64,16 @@ def app_client(instance_dir, tmp_path):
 
 
 class TestParsingMissions:
-    def test_parse_sections(self, instance_dir):
+    def test_parse_sections(self, instance_dir, monkeypatch):
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
         with patch.object(dashboard, "INSTANCE_DIR", instance_dir):
             result = dashboard.parse_missions()
             assert len(result["pending"]) == 2
             assert len(result["in_progress"]) == 1
             assert len(result["done"]) == 1
 
-    def test_parse_empty(self, tmp_path):
+    def test_parse_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch.object(dashboard, "INSTANCE_DIR", tmp_path / "nope"):
             result = dashboard.parse_missions()
             assert result == {"pending": [], "in_progress": [], "done": []}
@@ -1640,8 +1645,9 @@ class TestPlansPage:
         assert "✅ Done" in data["latest_body"]
         assert data["progress"]["completed"] == 1
 
-    def test_find_linked_missions(self, instance_dir):
+    def test_find_linked_missions(self, instance_dir, monkeypatch):
         """_find_linked_missions finds missions that reference an issue URL."""
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
         missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "## Pending\n\n"
