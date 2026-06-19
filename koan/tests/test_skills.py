@@ -1,5 +1,6 @@
 """Tests for app/skills.py — SKILL.md parsing, registry, and skill execution."""
 
+import re
 import sys
 import textwrap
 from pathlib import Path
@@ -24,6 +25,7 @@ from app.skills import (
     execute_skill,
     get_default_skills_dir,
     parse_skill_md,
+    validate_skill_metadata,
 )
 
 
@@ -3099,3 +3101,115 @@ class TestExecuteHandlerSkillsImport:
             for k in [k for k in sys.modules if k == "skills" or k.startswith("skills.")]:
                 sys.modules.pop(k, None)
             sys.modules.update(saved_modules)
+
+
+# ---------------------------------------------------------------------------
+# validate_skill_metadata
+# ---------------------------------------------------------------------------
+
+class TestValidateSkillMetadata:
+    def _meta(self, **over):
+        meta = {
+            "name": "status",
+            "description": "Show status",
+            "commands": [{"name": "status"}],
+        }
+        meta.update(over)
+        return meta
+
+    def test_clean_metadata_no_warnings(self, tmp_path):
+        assert validate_skill_metadata(self._meta(), tmp_path / "SKILL.md") == []
+
+    def test_missing_description(self, tmp_path):
+        meta = self._meta()
+        del meta["description"]
+        warnings = validate_skill_metadata(meta, tmp_path / "SKILL.md")
+        assert any("description" in w for w in warnings)
+
+    def test_blank_description(self, tmp_path):
+        warnings = validate_skill_metadata(self._meta(description="   "), tmp_path / "SKILL.md")
+        assert any("description" in w for w in warnings)
+
+    def test_missing_commands(self, tmp_path):
+        meta = self._meta()
+        del meta["commands"]
+        warnings = validate_skill_metadata(meta, tmp_path / "SKILL.md")
+        assert any("commands" in w for w in warnings)
+
+    def test_commands_inline_string_form_flagged(self, tmp_path):
+        # Inline-list form parses to bare strings, which parse_skill_md drops.
+        warnings = validate_skill_metadata(self._meta(commands=["status", "ping"]), tmp_path / "SKILL.md")
+        assert any("no valid entries" in w for w in warnings)
+
+    def test_unknown_key_typo_suggests_correction(self, tmp_path):
+        meta = self._meta()
+        meta["descrption"] = "typo"  # noqa: typo intentional
+        warnings = validate_skill_metadata(meta, tmp_path / "SKILL.md")
+        assert any("unknown key 'descrption'" in w and "description" in w for w in warnings)
+
+    def test_unknown_key_without_close_match(self, tmp_path):
+        meta = self._meta()
+        meta["zzzzzz"] = "x"
+        warnings = validate_skill_metadata(meta, tmp_path / "SKILL.md")
+        assert any("unknown key 'zzzzzz'" in w for w in warnings)
+
+    def test_all_known_keys_accepted(self, tmp_path):
+        from app.skills import _KNOWN_SKILL_KEYS
+        meta = {k: "x" for k in _KNOWN_SKILL_KEYS}
+        meta["description"] = "desc"
+        meta["commands"] = [{"name": "c"}]
+        warnings = validate_skill_metadata(meta, tmp_path / "SKILL.md")
+        assert not any("unknown key" in w for w in warnings)
+
+    def test_declared_handler_missing_file(self, tmp_path):
+        warnings = validate_skill_metadata(self._meta(handler="handler.py"), tmp_path / "SKILL.md")
+        assert any("handler" in w and "not found" in w for w in warnings)
+
+    def test_declared_handler_present(self, tmp_path):
+        (tmp_path / "handler.py").write_text("def handle(ctx): pass\n")
+        warnings = validate_skill_metadata(self._meta(handler="handler.py"), tmp_path / "SKILL.md")
+        assert not any("handler" in w for w in warnings)
+
+    def test_parse_skill_md_logs_warning_for_typo(self, tmp_path, caplog):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text(
+            "---\n"
+            "name: demo\n"
+            "descrption: typo here\n"  # noqa: typo intentional
+            "commands:\n"
+            "  - name: demo\n"
+            "---\n"
+            "body\n"
+        )
+        import logging
+        with caplog.at_level(logging.WARNING):
+            skill = parse_skill_md(skill_md)
+        # Parsing still succeeds (warning-only, non-blocking)...
+        assert skill is not None
+        # ...but the typo is surfaced in the logs.
+        assert any("descrption" in r.message for r in caplog.records)
+
+    def test_all_core_skills_pass_validation(self):
+        """Every core SKILL.md must produce zero validation warnings."""
+        skills_dir = get_default_skills_dir()
+        core_dir = skills_dir / "core"
+        assert core_dir.is_dir(), f"Core skills dir not found: {core_dir}"
+
+        failures = []
+        for skill_md in sorted(core_dir.rglob("SKILL.md")):
+            content = skill_md.read_text()
+            match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+            if not match:
+                continue
+            meta = _parse_yaml_lite(match.group(1))
+            if "name" not in meta:
+                continue
+            warnings = validate_skill_metadata(meta, skill_md)
+            if warnings:
+                name = skill_md.parent.name
+                failures.extend(f"{name}: {w}" for w in warnings)
+
+        assert not failures, (
+            f"Core skills with validation warnings:\n"
+            + "\n".join(f"  - {f}" for f in failures)
+        )

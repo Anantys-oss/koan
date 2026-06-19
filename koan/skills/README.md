@@ -67,6 +67,22 @@ handler: handler.py
 | `sub_commands` | no | List of skill commands to expand into when triggered. Defines a combo skill — see [Combo skills](#combo-skills). Defaults to `[]`. |
 | `parallel` | no | Set to `true` to batch-insert all `sub_commands` atomically in a single write. Only meaningful with `sub_commands`. See [Parallel combo skills](#parallel-combo-skills). Defaults to `false`. |
 
+### Frontmatter validation
+
+At parse time, `validate_skill_metadata()` checks each SKILL.md and logs (non-blocking)
+warnings at startup for the common silent-failure modes:
+
+- **Missing required fields** — `description` and `commands` must be present and non-empty.
+- **Unknown keys** — any top-level key outside the recognized set is flagged, with a
+  nearest-match suggestion (e.g. `descrption:` → "did you mean 'description'?"). This catches
+  typos that would otherwise be silently dropped.
+- **Inline `commands`** — `commands: [a, b]` parses to bare strings that never register;
+  use the block form (`- name: <cmd>`) instead.
+- **Dangling `handler`** — a declared `handler:` whose file is absent in the skill directory.
+
+Warnings never prevent registration — they surface misconfigurations in the startup log so
+they can be fixed. Run the skill loader (or the test suite) after editing a SKILL.md.
+
 ### Audience
 
 The `audience` field controls where a skill is available:

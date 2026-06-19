@@ -226,6 +226,64 @@ def _parse_bool_flag(meta: Dict[str, Any], key: str) -> bool:
     return meta.get(key, "").lower() in ("true", "yes", "1")
 
 
+# All frontmatter keys recognized by parse_skill_md(). Used to flag typos
+# (e.g. ``descrption:``) as unknown keys at parse time rather than silently
+# dropping them. ``aliases``/``usage`` are command-level keys (nested under
+# ``commands:``), not top-level, so they are excluded here.
+_KNOWN_SKILL_KEYS = frozenset({
+    "name", "scope", "description", "version", "commands", "handler",
+    "worker", "github_enabled", "github_context_aware", "caveman",
+    "forward_result", "iterative", "title_markers", "audience", "cli_skill",
+    "group", "emoji", "requirements", "sub_commands", "parallel", "model_key",
+})
+
+
+def validate_skill_metadata(meta: Dict[str, Any], path: Path) -> List[str]:
+    """Return human-readable warnings about SKILL.md frontmatter problems.
+
+    Catches the silent-failure modes called out in the skill authoring guide:
+    typo'd keys (``descrption:``), missing required fields, and a declared
+    ``handler:`` whose file is absent. Returns an empty list when the metadata
+    is clean. Pure function — never logs or raises — so callers decide how to
+    surface the warnings (logged at registry build, asserted in tests).
+    """
+    import difflib
+
+    warnings: List[str] = []
+
+    # Required non-empty fields. ``name`` is enforced separately by the caller
+    # (a missing name means the file isn't a parseable skill at all).
+    if not str(meta.get("description", "")).strip():
+        warnings.append("missing required field 'description'")
+
+    commands = meta.get("commands")
+    if not commands:
+        warnings.append("missing required field 'commands'")
+    elif isinstance(commands, list) and not any(
+        isinstance(c, dict) and c.get("name") for c in commands
+    ):
+        # Inline form (``commands: [a, b]``) parses to bare strings, which
+        # parse_skill_md() silently drops — the skill ends up uninvokable.
+        warnings.append(
+            "'commands' has no valid entries — use block form with "
+            "'- name: <cmd>' so the command is registered"
+        )
+
+    # Unknown keys — almost always typos. Suggest the nearest known key.
+    for key in meta:
+        if key not in _KNOWN_SKILL_KEYS:
+            suggestion = difflib.get_close_matches(key, _KNOWN_SKILL_KEYS, n=1, cutoff=0.6)
+            hint = f" (did you mean '{suggestion[0]}'?)" if suggestion else ""
+            warnings.append(f"unknown key '{key}'{hint}")
+
+    # Cross-reference: a declared handler must exist on disk.
+    handler_name = str(meta.get("handler", "")).strip()
+    if handler_name and not (path.parent / handler_name).exists():
+        warnings.append(f"declared handler '{handler_name}' not found in skill directory")
+
+    return warnings
+
+
 def parse_skill_md(path: Path) -> Optional[Skill]:
     """Parse a SKILL.md file into a Skill object.
 
@@ -247,6 +305,11 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
 
     if "name" not in meta:
         return None
+
+    # Surface frontmatter problems (typos, missing fields, dangling handler)
+    # at parse time so they show up in startup logs instead of failing silently.
+    for warning in validate_skill_metadata(meta, path):
+        _log.warning("Skill %s: %s", path.parent.name, warning)
 
     # Parse commands
     commands = [
