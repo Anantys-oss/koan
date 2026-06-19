@@ -238,7 +238,7 @@ class TestParseProjects:
         with pytest.raises(SystemExit):
             parse_projects()
 
-    def test_projects_yaml_used(self, tmp_path):
+    def test_projects_yaml_used(self, tmp_path, monkeypatch):
         """parse_projects reads from projects.yaml when available."""
         from app.run import parse_projects
         p = tmp_path / "myproject"
