@@ -190,11 +190,16 @@ then replaces it with the answer — the same idea as Slack's own assistant
 - **Scope**: this uses the `chat:write` scope the app already has — no extra
   setup is strictly required. (`assistant:write` is also accepted and is
   included in the manifest for the richest experience.)
-- **Where it renders**: Slack shows this status most reliably inside **Assistant
-  threads** (the AI-apps pane / DMs with the app). On a plain channel @mention it
-  may not render, depending on your workspace. If you don't see it in a channel,
-  reinstall the app with the updated manifest (which enables the Assistant
-  feature) or chat with Kōan in the Assistant pane.
+- **Where it renders**: Slack renders this status most reliably inside
+  **Assistant threads**; on a plain channel @mention it may not show, depending
+  on your workspace. Reinstalling with the updated manifest (which enables the
+  `assistant:write` scope and the Assistant feature) gives it the best chance of
+  rendering on channel threads. If it still doesn't appear, that's a Slack
+  rendering limitation, not a failure — the reply is unaffected.
+- **Scope note**: Kōan currently listens and replies **only in the configured
+  channel** (`KOAN_SLACK_CHANNEL_ID`). It does not yet hold conversations in the
+  Assistant pane / DMs, so enabling the Assistant feature affects status
+  rendering only, not where Kōan responds.
 - **Safe by design**: a failed status update is logged at most once to stderr
   and never blocks or alters the actual reply.
 
