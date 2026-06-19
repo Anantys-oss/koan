@@ -3143,7 +3143,7 @@ class TestValidateSkillMetadata:
 
     def test_unknown_key_typo_suggests_correction(self, tmp_path):
         meta = self._meta()
-        meta["descrption"] = "typo"  # noqa: typo intentional
+        meta["descrption"] = "typo"  # 'descrption' typo is intentional
         warnings = validate_skill_metadata(meta, tmp_path / "SKILL.md")
         assert any("unknown key 'descrption'" in w and "description" in w for w in warnings)
 
@@ -3175,7 +3175,7 @@ class TestValidateSkillMetadata:
         skill_md.write_text(
             "---\n"
             "name: demo\n"
-            "descrption: typo here\n"  # noqa: typo intentional
+            "descrption: typo here\n"  # 'descrption' typo is intentional
             "commands:\n"
             "  - name: demo\n"
             "---\n"
@@ -3210,6 +3210,6 @@ class TestValidateSkillMetadata:
                 failures.extend(f"{name}: {w}" for w in warnings)
 
         assert not failures, (
-            f"Core skills with validation warnings:\n"
+            "Core skills with validation warnings:\n"
             + "\n".join(f"  - {f}" for f in failures)
         )
