@@ -48,7 +48,7 @@ def _list_pending(missions_file):
     """Show numbered list of pending missions for selection."""
     from app.mission_store import MissionStore
 
-    store = MissionStore.load(str(missions_file.parent))
+    store = MissionStore.load()
     pending = store.get_by_status("pending")
 
     if not pending:
@@ -68,7 +68,7 @@ def _cancel_mission(missions_file, identifier):
 
     cancelled_display = None
 
-    with locked_store(str(missions_file.parent)) as store:
+    with locked_store() as store:
         pending = store.get_by_status("pending")
         if not pending:
             return "ℹ️ No pending missions."
@@ -99,7 +99,7 @@ def _cancel_bulk(missions_file, positions):
     """Cancel multiple pending missions by position."""
     from app.mission_store import locked_store
 
-    with locked_store(str(missions_file.parent)) as store:
+    with locked_store() as store:
         pending = store.get_by_status("pending")
         if not pending:
             return "ℹ️ No pending missions."

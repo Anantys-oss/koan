@@ -186,7 +186,7 @@ def handle(ctx):
 
     from app.mission_store import MissionStore
 
-    store = MissionStore.load(str(ctx.instance_dir))
+    store = MissionStore.load()
     in_progress = store.get_by_status("in_progress")
     pending = store.get_by_status("pending")
 

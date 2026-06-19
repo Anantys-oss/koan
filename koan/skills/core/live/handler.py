@@ -59,7 +59,7 @@ def _get_in_progress_missions(instance_dir):
     try:
         from app.mission_store import MissionStore
 
-        store = MissionStore.load(str(instance_dir))
+        store = MissionStore.load()
         # record.text is already clean (no project tag, no timestamps);
         # untagged missions map to the "default" project (matching
         # extract_project_tag's fallback).

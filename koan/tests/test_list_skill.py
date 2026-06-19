@@ -594,12 +594,14 @@ class TestListCommandRouting:
     def test_list_routes_via_skill(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- test mission\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/list")
         mock_send.assert_called_once()
@@ -611,12 +613,14 @@ class TestListCommandRouting:
     def test_queue_alias_routes_to_list(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- queued task\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/queue")
         mock_send.assert_called_once()
@@ -626,12 +630,14 @@ class TestListCommandRouting:
     def test_ls_alias_routes_to_list(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- ls task\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/ls")
         mock_send.assert_called_once()
@@ -641,12 +647,14 @@ class TestListCommandRouting:
     def test_list_empty_queue(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/list")
         mock_send.assert_called_once()

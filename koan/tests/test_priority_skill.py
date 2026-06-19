@@ -290,13 +290,15 @@ class TestPriorityCommandRouting:
     def test_priority_routes_via_skill(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- first\n- second\n- third\n\n"
             "## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/priority 3")
         mock_send.assert_called_once()
@@ -307,13 +309,15 @@ class TestPriorityCommandRouting:
     def test_priority_bare_shows_queue(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- task A\n\n"
             "## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/priority")
         mock_send.assert_called_once()

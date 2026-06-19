@@ -187,7 +187,8 @@ class TestGetInProgressMissions:
 
     def test_single_in_progress_mission(self, tmp_path):
         mod = _load_handler()
-        (tmp_path / "missions.md").write_text(
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        (tmp_path / "instance" / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n"
             "- [project:myapp] /audit security check ▶(2026-03-26T10:00)\n\n"
             "## Done\n"
@@ -200,7 +201,8 @@ class TestGetInProgressMissions:
 
     def test_multiple_in_progress_missions(self, tmp_path):
         mod = _load_handler()
-        (tmp_path / "missions.md").write_text(
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        (tmp_path / "instance" / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n"
             "- [project:alpha] /review code ▶(2026-03-26T10:00)\n"
             "- [project:beta] fix the login bug ▶(2026-03-26T10:05)\n\n"
@@ -253,7 +255,8 @@ class TestHandleLive:
         """When a mission is in progress but pending.md doesn't exist yet."""
         mod = _load_handler()
         (tmp_path / "journal").mkdir()
-        (tmp_path / "missions.md").write_text(
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        (tmp_path / "instance" / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n"
             "- [project:koan] /audit full security audit ▶(2026-03-26T10:00)\n\n"
             "## Done\n"
@@ -271,7 +274,8 @@ class TestHandleLive:
         pending = tmp_path / "journal" / "pending.md"
         pending.parent.mkdir(parents=True)
         pending.write_text("")
-        (tmp_path / "missions.md").write_text(
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        (tmp_path / "instance" / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n"
             "- [project:myapp] implement feature X ▶(2026-03-26T10:00)\n\n"
             "## Done\n"

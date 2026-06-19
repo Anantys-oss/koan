@@ -49,7 +49,7 @@ def _show_queue_with_hint(missions_file):
     """Show queue with usage hint when /priority is called bare."""
     from app.mission_store import MissionStore
 
-    store = MissionStore.load(str(missions_file.parent))
+    store = MissionStore.load()
     pending = store.get_by_status("pending")
     if not pending:
         return "ℹ️ Queue is empty.\n\nUsage: /prio <n>"
@@ -68,7 +68,7 @@ def _reorder_single(missions_file, position):
     """Move a single pending mission to top of queue."""
     from app.mission_store import locked_store
 
-    with locked_store(str(missions_file.parent)) as store:
+    with locked_store() as store:
         pending = store.get_by_status("pending")
         if not pending:
             return "⚠️ No pending missions to reorder."
@@ -91,7 +91,7 @@ def _reorder_bulk(missions_file, positions):
 
     displays = []
 
-    with locked_store(str(missions_file.parent)) as store:
+    with locked_store() as store:
         pending = store.get_by_status("pending")
         if not pending:
             return "⚠️ No pending missions to reorder."

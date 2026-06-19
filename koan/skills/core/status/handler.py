@@ -50,7 +50,7 @@ def _count_pending_missions(missions_file) -> int:
     from app.mission_store import MissionStore
 
     try:
-        store = MissionStore.load(str(Path(missions_file).parent))
+        store = MissionStore.load()
         return len(store.get_by_status("pending"))
     except Exception:
         return 0
@@ -62,7 +62,7 @@ def _get_in_progress_missions(missions_file) -> str:
     from app.mission_store import MissionStore
 
     try:
-        store = MissionStore.load(str(Path(missions_file).parent))
+        store = MissionStore.load()
         in_progress = store.get_by_status("in_progress")
         if not in_progress:
             return ""
@@ -126,7 +126,7 @@ def _group_missions_by_project(instance_dir) -> dict:
     from app.mission_store import MissionStore
 
     try:
-        store = MissionStore.load(str(instance_dir))
+        store = MissionStore.load()
     except Exception:
         return {}
 
@@ -551,7 +551,7 @@ def _handle_usage(ctx) -> str:
     missions_text = "No missions."
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load(str(instance_dir))
+        store = MissionStore.load()
         in_progress = store.get_by_status("in_progress")
         pending = store.get_by_status("pending")
         done = store.get_by_status("done")

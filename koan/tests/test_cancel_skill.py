@@ -342,12 +342,14 @@ class TestCancelCommandRouting:
     def test_cancel_routes_via_skill(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- test mission\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/cancel")
         mock_send.assert_called_once()
@@ -359,12 +361,14 @@ class TestCancelCommandRouting:
     def test_cancel_with_number_routes(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- task A\n- task B\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/cancel 1")
         mock_send.assert_called_once()
@@ -376,12 +380,14 @@ class TestCancelCommandRouting:
     def test_cancel_with_keyword_routes(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- fix auth bug\n- add dark mode\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/cancel dark")
         mock_send.assert_called_once()
@@ -392,12 +398,14 @@ class TestCancelCommandRouting:
     def test_remove_alias_routes_to_cancel(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- task A\n- task B\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/remove")
         mock_send.assert_called_once()
@@ -409,12 +417,14 @@ class TestCancelCommandRouting:
     def test_remove_alias_cancels_by_number(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- task A\n- task B\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/remove 1")
         mock_send.assert_called_once()
@@ -426,12 +436,14 @@ class TestCancelCommandRouting:
     def test_clear_alias_routes_to_cancel(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- task X\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/clear")
         mock_send.assert_called_once()
@@ -443,12 +455,14 @@ class TestCancelCommandRouting:
     def test_clear_alias_cancels_by_keyword(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
 
-        missions_file = tmp_path / "missions.md"
+        (tmp_path / "instance").mkdir(exist_ok=True)
+
+        missions_file = tmp_path / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n- fix auth\n- add dark mode\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", tmp_path / "instance"), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/clear auth")
         mock_send.assert_called_once()

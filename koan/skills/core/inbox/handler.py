@@ -11,7 +11,7 @@ def _count_github_missions(instance_dir):
     """Count pending missions originating from GitHub (@mention 📬 marker)."""
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load(str(instance_dir))
+        store = MissionStore.load()
     except Exception as e:
         print(f"[inbox] error loading mission store: {e}", file=sys.stderr)
         return 0
