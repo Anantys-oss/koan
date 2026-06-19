@@ -13,19 +13,18 @@ def handle(ctx):
     /cancel auth       — cancel first mission matching keyword "auth"
     """
     args = ctx.args.strip()
-    missions_file = ctx.instance_dir / "missions.md"
 
     if not args:
-        return _list_pending(missions_file)
+        return _list_pending()
 
     positions = _parse_positions(args)
     if positions is not None:
         if len(positions) == 1:
-            return _cancel_mission(missions_file, str(positions[0]))
-        return _cancel_bulk(missions_file, positions)
+            return _cancel_mission(str(positions[0]))
+        return _cancel_bulk(positions)
 
     # Keyword match
-    return _cancel_mission(missions_file, args)
+    return _cancel_mission(args)
 
 
 def _parse_positions(args):
@@ -44,7 +43,7 @@ def _parse_positions(args):
         return None
 
 
-def _list_pending(missions_file):
+def _list_pending():
     """Show numbered list of pending missions for selection."""
     from app.mission_store import MissionStore
 
@@ -62,7 +61,7 @@ def _list_pending(missions_file):
     return "\n".join(parts)
 
 
-def _cancel_mission(missions_file, identifier):
+def _cancel_mission(identifier):
     """Cancel a mission by number or keyword."""
     from app.mission_store import locked_store
 
@@ -95,7 +94,7 @@ def _cancel_mission(missions_file, identifier):
     return f"🗑 Mission cancelled: {cancelled_display}"
 
 
-def _cancel_bulk(missions_file, positions):
+def _cancel_bulk(positions):
     """Cancel multiple pending missions by position."""
     from app.mission_store import locked_store
 

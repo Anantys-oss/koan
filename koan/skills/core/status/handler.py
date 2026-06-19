@@ -44,9 +44,8 @@ def _truncate(text: str, max_len: int = 60) -> str:
     return text[:max_len - 1].rstrip() + "…"
 
 
-def _count_pending_missions(missions_file) -> int:
+def _count_pending_missions() -> int:
     """Return the total number of pending missions across all projects."""
-    from pathlib import Path
     from app.mission_store import MissionStore
 
     try:
@@ -56,9 +55,8 @@ def _count_pending_missions(missions_file) -> int:
         return 0
 
 
-def _get_in_progress_missions(missions_file) -> str:
+def _get_in_progress_missions() -> str:
     """Return a short display of in-progress missions, or empty string."""
-    from pathlib import Path
     from app.mission_store import MissionStore
 
     try:
@@ -158,7 +156,6 @@ def _handle_status(ctx) -> str:
     """Build status message with structured unicode layout."""
     koan_root = ctx.koan_root
     instance_dir = ctx.instance_dir
-    missions_file = instance_dir / "missions.md"
 
     version = _get_version()
     branch = _get_branch()
@@ -174,7 +171,7 @@ def _handle_status(ctx) -> str:
     pause_file = koan_root / ".koan-pause"
     stop_file = koan_root / ".koan-stop"
 
-    pending_count = _count_pending_missions(missions_file)
+    pending_count = _count_pending_missions()
     queue_suffix = f" — {pending_count} in queue" if pending_count else " — queue empty"
     workers = _get_parallel_workers()
     if workers > 1:
@@ -182,7 +179,7 @@ def _handle_status(ctx) -> str:
 
     if stop_file.exists():
         parts.append("  ⛔ Stopping")
-        in_flight = _get_in_progress_missions(missions_file)
+        in_flight = _get_in_progress_missions()
         if in_flight:
             parts.append(f"  ⏳ Finishing: {in_flight}")
     elif pause_file.exists():
@@ -212,7 +209,7 @@ def _handle_status(ctx) -> str:
             parts.append(f"  ⏸️ Paused (max runs reached){queue_suffix}")
         else:
             parts.append(f"  ⏸️ Paused{queue_suffix}")
-        in_flight = _get_in_progress_missions(missions_file)
+        in_flight = _get_in_progress_missions()
         if in_flight:
             parts.append(f"  ⏳ Finishing: {in_flight}")
         parts.append("  → /resume to unpause")

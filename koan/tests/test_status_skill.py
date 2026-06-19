@@ -408,23 +408,24 @@ class TestCountPendingMissions:
 
     def test_no_file(self, tmp_path):
         from skills.core.status.handler import _count_pending_missions
-        assert _count_pending_missions(tmp_path / "missing.md") == 0
+        assert _count_pending_missions() == 0
 
     def test_no_pending(self, tmp_path):
-        f = tmp_path / "missions.md"
-        f.write_text("## Pending\n\n## In Progress\n\n- task\n\n## Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        (tmp_path / "instance" / "missions.md").write_text(
+            "## Pending\n\n## In Progress\n\n- task\n\n## Done\n"
+        )
         from skills.core.status.handler import _count_pending_missions
-        assert _count_pending_missions(f) == 0
+        assert _count_pending_missions() == 0
 
     def test_counts_pending(self, tmp_path):
         (tmp_path / "instance").mkdir(exist_ok=True)
-        f = tmp_path / "instance" / "missions.md"
-        f.write_text(
+        (tmp_path / "instance" / "missions.md").write_text(
             "## Pending\n\n- task one\n- task two\n- task three\n\n"
             "## In Progress\n\n- current\n\n## Done\n"
         )
         from skills.core.status.handler import _count_pending_missions
-        assert _count_pending_missions(f) == 3
+        assert _count_pending_missions() == 3
 
 
 class TestGetInProgressMissions:
@@ -432,52 +433,56 @@ class TestGetInProgressMissions:
 
     def test_no_file(self, tmp_path):
         from skills.core.status.handler import _get_in_progress_missions
-        assert _get_in_progress_missions(tmp_path / "missing.md") == ""
+        assert _get_in_progress_missions() == ""
 
     def test_no_in_progress(self, tmp_path):
-        f = tmp_path / "missions.md"
-        f.write_text("## Pending\n\n- task\n\n## In Progress\n\n## Done\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        (tmp_path / "instance" / "missions.md").write_text(
+            "## Pending\n\n- task\n\n## In Progress\n\n## Done\n"
+        )
         from skills.core.status.handler import _get_in_progress_missions
-        assert _get_in_progress_missions(f) == ""
+        assert _get_in_progress_missions() == ""
 
     def test_single_mission_with_project(self, tmp_path):
         (tmp_path / "instance").mkdir(exist_ok=True)
-        f = tmp_path / "instance" / "missions.md"
-        f.write_text("## In Progress\n\n- [project:koan] /rebase PR #5\n\n## Done\n")
+        (tmp_path / "instance" / "missions.md").write_text(
+            "## In Progress\n\n- [project:koan] /rebase PR #5\n\n## Done\n"
+        )
         from skills.core.status.handler import _get_in_progress_missions
-        result = _get_in_progress_missions(f)
+        result = _get_in_progress_missions()
         assert "/rebase PR #5" in result
         assert "[koan]" in result
 
     def test_single_mission_without_project(self, tmp_path):
         (tmp_path / "instance").mkdir(exist_ok=True)
-        f = tmp_path / "instance" / "missions.md"
-        f.write_text("## In Progress\n\n- fix the bug\n\n## Done\n")
+        (tmp_path / "instance" / "missions.md").write_text(
+            "## In Progress\n\n- fix the bug\n\n## Done\n"
+        )
         from skills.core.status.handler import _get_in_progress_missions
-        result = _get_in_progress_missions(f)
+        result = _get_in_progress_missions()
         assert "fix the bug" in result
         assert "[" not in result
 
     def test_multiple_missions(self, tmp_path):
         (tmp_path / "instance").mkdir(exist_ok=True)
-        f = tmp_path / "instance" / "missions.md"
-        f.write_text(
+        (tmp_path / "instance" / "missions.md").write_text(
             "## In Progress\n\n"
             "- [project:a] task one\n"
             "- [project:b] task two\n\n"
             "## Done\n"
         )
         from skills.core.status.handler import _get_in_progress_missions
-        result = _get_in_progress_missions(f)
+        result = _get_in_progress_missions()
         assert "task one" in result
         assert "task two" in result
 
     def test_long_mission_truncated(self, tmp_path):
         (tmp_path / "instance").mkdir(exist_ok=True)
-        f = tmp_path / "instance" / "missions.md"
-        f.write_text(f"## In Progress\n\n- {'x' * 80}\n\n## Done\n")
+        (tmp_path / "instance" / "missions.md").write_text(
+            f"## In Progress\n\n- {'x' * 80}\n\n## Done\n"
+        )
         from skills.core.status.handler import _get_in_progress_missions
-        result = _get_in_progress_missions(f)
+        result = _get_in_progress_missions()
         assert "…" in result
 
 

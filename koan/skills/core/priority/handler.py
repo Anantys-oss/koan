@@ -13,19 +13,18 @@ def handle(ctx):
     /priority 4 , 6, 5     — same (commas with spaces)
     """
     args = ctx.args.strip()
-    missions_file = ctx.instance_dir / "missions.md"
 
     if not args:
-        return _show_queue_with_hint(missions_file)
+        return _show_queue_with_hint()
 
     positions = _parse_positions(args)
     if positions is None:
         return "⚠️ Could not parse positions.\nUsage: /prio 3 or /prio 4,6,5"
 
     if len(positions) == 1:
-        return _reorder_single(missions_file, positions[0])
+        return _reorder_single(positions[0])
 
-    return _reorder_bulk(missions_file, positions)
+    return _reorder_bulk(positions)
 
 
 def _parse_positions(args):
@@ -45,7 +44,7 @@ def _parse_positions(args):
         return None
 
 
-def _show_queue_with_hint(missions_file):
+def _show_queue_with_hint():
     """Show queue with usage hint when /priority is called bare."""
     from app.mission_store import MissionStore
 
@@ -64,7 +63,7 @@ def _show_queue_with_hint(missions_file):
     return "\n".join(parts)
 
 
-def _reorder_single(missions_file, position):
+def _reorder_single(position):
     """Move a single pending mission to top of queue."""
     from app.mission_store import locked_store
 
@@ -82,7 +81,7 @@ def _reorder_single(missions_file, position):
     return f"⬆️ Bumped to top: {moved_display}"
 
 
-def _reorder_bulk(missions_file, positions):
+def _reorder_bulk(positions):
     """Reorder multiple pending missions to the top of the queue."""
     from app.mission_store import locked_store
 

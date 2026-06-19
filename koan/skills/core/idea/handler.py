@@ -8,36 +8,34 @@ def handle(ctx):
     command = ctx.command_name
     args = ctx.args.strip()
 
-    missions_file = ctx.instance_dir / "missions.md"
-
     # /ideas is always listing
     if command == "ideas":
-        return _list_ideas(missions_file)
+        return _list_ideas()
 
     # /idea or /buffer with no args → list
     if not args:
-        return _list_ideas(missions_file)
+        return _list_ideas()
 
     # /idea delete N
     delete_match = re.match(r"^(?:delete|del|remove|rm)\s+(\d+)$", args, re.IGNORECASE)
     if delete_match:
-        return _delete_idea(missions_file, int(delete_match.group(1)))
+        return _delete_idea(int(delete_match.group(1)))
 
     # /idea promote all
     promote_all_match = re.match(r"^(?:promote|push|activate)\s+all$", args, re.IGNORECASE)
     if promote_all_match:
-        return _promote_all_ideas(missions_file)
+        return _promote_all_ideas()
 
     # /idea promote N
     promote_match = re.match(r"^(?:promote|push|activate)\s+(\d+)$", args, re.IGNORECASE)
     if promote_match:
-        return _promote_idea(missions_file, int(promote_match.group(1)))
+        return _promote_idea(int(promote_match.group(1)))
 
     # /idea <text> → add new idea
-    return _add_idea(missions_file, args)
+    return _add_idea(args)
 
 
-def _list_ideas(missions_file):
+def _list_ideas():
     """List all ideas with numbered index."""
     from app.missions import clean_mission_display
     from app.mission_store import MissionStore
@@ -57,7 +55,7 @@ def _list_ideas(missions_file):
     return "\n".join(parts)
 
 
-def _add_idea(missions_file, text):
+def _add_idea(text):
     """Add a new idea to the backlog."""
     from app.utils import (
         parse_project,
@@ -107,7 +105,7 @@ def _add_idea(missions_file, text):
     return ack
 
 
-def _delete_idea(missions_file, index):
+def _delete_idea(index):
     """Delete an idea by index."""
     from app.missions import clean_mission_display
     from app.mission_store import locked_store
@@ -128,7 +126,7 @@ def _delete_idea(missions_file, index):
     return f"🗑 Deleted: {display}"
 
 
-def _promote_idea(missions_file, index):
+def _promote_idea(index):
     """Promote an idea to the pending queue."""
     from app.missions import clean_mission_display
     from app.mission_store import locked_store
@@ -149,7 +147,7 @@ def _promote_idea(missions_file, index):
     return f"⬆️ Promoted to pending: {display}"
 
 
-def _promote_all_ideas(missions_file):
+def _promote_all_ideas():
     """Promote all ideas to the pending queue."""
     from app.missions import clean_mission_display
     from app.mission_store import locked_store

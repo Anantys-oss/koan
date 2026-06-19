@@ -174,7 +174,7 @@ class TestGetInProgressMissions:
 
     def test_no_missions_file(self, tmp_path):
         mod = _load_handler()
-        result = mod._get_in_progress_missions(tmp_path)
+        result = mod._get_in_progress_missions()
         assert result == []
 
     def test_empty_missions_file(self, tmp_path):
@@ -182,7 +182,7 @@ class TestGetInProgressMissions:
         (tmp_path / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
-        result = mod._get_in_progress_missions(tmp_path)
+        result = mod._get_in_progress_missions()
         assert result == []
 
     def test_single_in_progress_mission(self, tmp_path):
@@ -193,7 +193,7 @@ class TestGetInProgressMissions:
             "- [project:myapp] /audit security check ▶(2026-03-26T10:00)\n\n"
             "## Done\n"
         )
-        result = mod._get_in_progress_missions(tmp_path)
+        result = mod._get_in_progress_missions()
         assert len(result) == 1
         project, text = result[0]
         assert project == "myapp"
@@ -208,7 +208,7 @@ class TestGetInProgressMissions:
             "- [project:beta] fix the login bug ▶(2026-03-26T10:05)\n\n"
             "## Done\n"
         )
-        result = mod._get_in_progress_missions(tmp_path)
+        result = mod._get_in_progress_missions()
         assert len(result) == 2
         assert result[0][0] == "alpha"
         assert result[1][0] == "beta"
