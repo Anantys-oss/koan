@@ -370,8 +370,8 @@ class TestInjectCiFixMission:
     """Verify _inject_ci_fix_mission uses dedup via insert_pending_mission."""
 
     def test_uses_insert_pending_mission_for_dedup(self):
-        """_inject_ci_fix_mission must route through insert_pending_mission,
-        not raw insert_mission, so is_duplicate_mission is checked."""
+        """_inject_ci_fix_mission must route through insert_pending_mission
+        so store.add() dedup is applied."""
         from app.ci_queue_runner import _inject_ci_fix_mission
 
         entry = {"project": "proj", "project_path": ""}
