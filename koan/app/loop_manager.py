@@ -1299,6 +1299,7 @@ def _post_error_for_notification(notif: dict, error: str) -> None:
     rather than silently dropping it.
     """
     from app.github_command_handler import (
+        _is_subject_closed,
         post_error_reply,
         resolve_project_from_notification,
         extract_issue_number_from_notification,
@@ -1309,6 +1310,17 @@ def _post_error_for_notification(notif: dict, error: str) -> None:
     issue_num = extract_issue_number_from_notification(notif)
 
     if not project_info or not issue_num:
+        return
+
+    # Never post error replies on a closed/merged subject — commands there are
+    # meaningless and replying just spams a dead thread.
+    closed_reason = _is_subject_closed(notif)
+    if closed_reason:
+        repo_name = notif.get("repository", {}).get("full_name", "?")
+        log.info(
+            "GitHub: suppressing error reply on %s subject %s#%s",
+            closed_reason, repo_name, issue_num,
+        )
         return
 
     _, owner, repo = project_info
@@ -1322,6 +1334,9 @@ def _post_error_for_notification(notif: dict, error: str) -> None:
         comment_id = str(comment.get("id", ""))
         comment_api_url = comment.get("url", "")
         if not comment_id:
+            return
+        from app.github_reply import _enforce_reply_budget
+        if not _enforce_reply_budget(owner, repo, issue_num):
             return
         post_error_reply(owner, repo, issue_num, comment_id, error,
                          comment_api_url=comment_api_url)

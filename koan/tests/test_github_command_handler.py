@@ -605,7 +605,7 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
-    def test_invalid_command_posts_help_inline(
+    def test_invalid_command_returns_help_error(
         self, mock_resolve, mock_mentions,
         mock_processed, mock_read, mock_error_reply,
         registry, sample_notification,
@@ -622,10 +622,11 @@ class TestProcessSingleNotification:
             sample_notification, registry, config, None, "testbot",
         )
         assert success is False
-        assert error is None
-        mock_error_reply.assert_called_once()
-        error_msg = mock_error_reply.call_args[0][4]
-        assert "`badcmd`" in error_msg
+        # Single-comment errors are delegated to the caller (loop_manager),
+        # not posted inline — the message is returned for the caller to post once.
+        assert error is not None
+        assert "`badcmd`" in error
+        mock_error_reply.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_already_processed", return_value=False)
@@ -654,7 +655,7 @@ class TestProcessSingleNotification:
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
-    def test_permission_denied_posts_error_inline(
+    def test_permission_denied_returns_error(
         self, mock_resolve, mock_mentions,
         mock_processed, mock_perm, mock_read, mock_error_reply,
         registry, sample_notification,
@@ -671,10 +672,10 @@ class TestProcessSingleNotification:
             sample_notification, registry, config, None, "testbot",
         )
         assert success is False
-        assert error is None
-        mock_error_reply.assert_called_once()
-        error_msg = mock_error_reply.call_args[0][4]
-        assert "Permission denied" in error_msg
+        # Single-comment errors are delegated to the caller, not posted inline.
+        assert error is not None
+        assert "Permission denied" in error
+        mock_error_reply.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.check_user_permission", return_value=False)
@@ -729,9 +730,10 @@ class TestProcessSingleNotification:
             )
 
         assert success is False
-        assert error is None
-        mock_error_reply.assert_called_once()
-        assert "Failed to queue mission" in mock_error_reply.call_args[0][4]
+        # Single-comment errors are delegated to the caller, not posted inline.
+        assert error is not None
+        assert "Failed to queue mission" in error
+        mock_error_reply.assert_not_called()
         mock_read.assert_called_with("12345")
         # Reaction should NOT have been added (mission wasn't persisted)
         mock_react.assert_not_called()
@@ -765,9 +767,10 @@ class TestProcessSingleNotification:
             )
 
         assert success is False
-        assert error is None
-        mock_error_reply.assert_called_once()
-        assert "read-only" in mock_error_reply.call_args[0][4]
+        # Single-comment errors are delegated to the caller, not posted inline.
+        assert error is not None
+        assert "read-only" in error
+        mock_error_reply.assert_not_called()
         mock_read.assert_called_with("12345")
 
     @patch("app.github_command_handler.post_error_reply")
@@ -800,9 +803,10 @@ class TestProcessSingleNotification:
             )
 
         assert success is False
-        assert error is None
-        mock_error_reply.assert_called_once()
-        assert "KOAN_ROOT" in mock_error_reply.call_args[0][4]
+        # Single-comment errors are delegated to the caller, not posted inline.
+        assert error is not None
+        assert "KOAN_ROOT" in error
+        mock_error_reply.assert_not_called()
         mock_insert.assert_not_called()
         mock_read.assert_called_with("12345")
 
@@ -836,9 +840,10 @@ class TestProcessSingleNotification:
         )
 
         assert success is False
-        assert error is None
-        mock_error_reply.assert_called_once()
-        assert "KOAN_ROOT" in mock_error_reply.call_args[0][4]
+        # Single-comment errors are delegated to the caller, not posted inline.
+        assert error is not None
+        assert "KOAN_ROOT" in error
+        mock_error_reply.assert_not_called()
         mock_insert.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
@@ -1261,9 +1266,10 @@ class TestProcessNotificationWithReply:
         )
 
         assert success is False
-        assert error is None
-        mock_error_reply.assert_called_once()
-        assert "`what`" in mock_error_reply.call_args[0][4]
+        # Single-comment errors are delegated to the caller, not posted inline.
+        assert error is not None
+        assert "`what`" in error
+        mock_error_reply.assert_not_called()
 
 
 class TestTryReplyAuthorizedUsers:
@@ -3133,7 +3139,7 @@ class TestProcessNotificationWithNLP:
         mock_processed, mock_read, mock_error_reply,
         registry, sample_notification,
     ):
-        """NLP returns None → error posted inline with help message."""
+        """NLP returns None → help-message error returned for the caller to post."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
             "id": "99999",
@@ -3148,9 +3154,10 @@ class TestProcessNotificationWithNLP:
         )
 
         assert success is False
-        assert error is None
-        mock_error_reply.assert_called_once()
-        assert "`blahblah`" in mock_error_reply.call_args[0][4]
+        # Single-comment errors are delegated to the caller, not posted inline.
+        assert error is not None
+        assert "`blahblah`" in error
+        mock_error_reply.assert_not_called()
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
@@ -4759,31 +4766,118 @@ class TestMultiMentionPerThread:
         assert cmds[0] == {"command": "review", "author": "alice"}
         assert cmds[1] == {"command": "rebase", "author": "bob"}
 
-    def test_error_posted_inline_not_returned(
+    def test_single_errored_comment_delegated_not_posted_inline(
         self, notification, registry, monkeypatch,
     ):
-        """Errors are posted inline, never returned to caller (no double posting)."""
+        """A single errored comment is delegated to the caller's retry path
+        (via the returned error), not posted inline — so it is posted exactly
+        once, never doubly. The comment is still durably tracked."""
         monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
 
         comment = {
-            "id": "301",
-            "url": "https://api.github.com/repos/owner/repo/issues/comments/301",
-            "body": "@bot badcmd",
-            "user": {"login": "alice"},
+            "id": "303",
+            "url": "https://api.github.com/repos/o/r/issues/comments/303",
+            "body": "@bot badcmd", "user": {"login": "alice"},
         }
 
         with patch("app.github_command_handler._find_all_thread_mentions",
                     return_value=[comment]), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("myproject", "owner", "repo")), \
-             patch("app.github_command_handler._is_subject_closed", return_value=None), \
-             patch("app.github_command_handler.check_already_processed", return_value=False), \
+             patch("app.github_command_handler._is_subject_closed",
+                   return_value=None), \
+             patch("app.github_command_handler._process_mention_comment",
+                   return_value=(False, "Unknown command badcmd")), \
+             patch("app.github_reply._enforce_reply_budget", return_value=True), \
+             patch("app.github_command_handler.extract_issue_number_from_notification",
+                   return_value="99"), \
+             patch("app.github_command_handler.post_error_reply") as mock_err, \
              patch("app.github_command_handler.mark_notification_read"), \
-             patch("app.github_command_handler.get_github_nickname", return_value="bot"), \
-             patch("app.github_command_handler.post_error_reply") as mock_err:
+             patch("app.github_notification_tracker.track_comment") as mock_track:
             success, error = process_single_notification(
                 notification, registry, {}, None, "bot",
             )
 
+        # Not posted inline (the caller owns the single-comment post); the
+        # error is returned for the caller to post once, and the comment is
+        # durably tracked regardless.
+        mock_err.assert_not_called()
+        assert success is False
+        assert error == "Unknown command badcmd"
+        mock_track.assert_any_call("/tmp/test-koan/instance", "303")
+
+    def test_multi_errored_comments_posted_inline(
+        self, notification, registry, monkeypatch,
+    ):
+        """Each errored comment in a multi-mention thread gets its own inline
+        error reply (the caller's single-error return path can't cover them),
+        and all are durably tracked."""
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        comments = [
+            {"id": "501", "url": "https://api.github.com/repos/o/r/issues/comments/501",
+             "body": "@bot badcmd", "user": {"login": "alice"}},
+            {"id": "502", "url": "https://api.github.com/repos/o/r/issues/comments/502",
+             "body": "@bot worsecmd", "user": {"login": "bob"}},
+        ]
+
+        with patch("app.github_command_handler._find_all_thread_mentions",
+                    return_value=comments), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed",
+                   return_value=None), \
+             patch("app.github_command_handler._process_mention_comment",
+                   return_value=(False, "Unknown command")), \
+             patch("app.github_reply._enforce_reply_budget", return_value=True), \
+             patch("app.github_command_handler.extract_issue_number_from_notification",
+                   return_value="99"), \
+             patch("app.github_command_handler.post_error_reply") as mock_err, \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_notification_tracker.track_comment") as mock_track:
+            success, error = process_single_notification(
+                notification, registry, {}, None, "bot",
+            )
+
+        # One inline reply per errored comment; nothing delegated to the caller
+        # (multi-comment returns no single error).
+        assert mock_err.call_count == 2
+        assert success is False
         assert error is None
-        mock_err.assert_called_once()
+        mock_track.assert_any_call("/tmp/test-koan/instance", "501")
+        mock_track.assert_any_call("/tmp/test-koan/instance", "502")
+
+    def test_multi_errored_comments_suppressed_when_breaker_tripped(
+        self, notification, registry, monkeypatch,
+    ):
+        """When the per-thread breaker is tripped, inline error replies for a
+        multi-mention thread are suppressed, but the comments are still
+        durably tracked."""
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+
+        comments = [
+            {"id": "404", "url": "https://api.github.com/repos/o/r/issues/comments/404",
+             "body": "@bot badcmd", "user": {"login": "alice"}},
+            {"id": "405", "url": "https://api.github.com/repos/o/r/issues/comments/405",
+             "body": "@bot worsecmd", "user": {"login": "bob"}},
+        ]
+
+        with patch("app.github_command_handler._find_all_thread_mentions",
+                    return_value=comments), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("myproject", "owner", "repo")), \
+             patch("app.github_command_handler._is_subject_closed",
+                   return_value=None), \
+             patch("app.github_command_handler._process_mention_comment",
+                   return_value=(False, "Unknown command badcmd")), \
+             patch("app.github_reply._enforce_reply_budget", return_value=False), \
+             patch("app.github_command_handler.extract_issue_number_from_notification",
+                   return_value="99"), \
+             patch("app.github_command_handler.post_error_reply") as mock_err, \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.github_notification_tracker.track_comment") as mock_track:
+            process_single_notification(notification, registry, {}, None, "bot")
+
+        mock_err.assert_not_called()
+        mock_track.assert_any_call("/tmp/test-koan/instance", "404")
+        mock_track.assert_any_call("/tmp/test-koan/instance", "405")

@@ -3070,6 +3070,7 @@ class TestErrorReplyRetryQueue:
 
         with patch("app.github_command_handler.resolve_project_from_notification",
                     return_value=("proj", "o", "r")), \
+             patch("app.github_command_handler._is_subject_closed", return_value=None), \
              patch("app.github_command_handler.extract_issue_number_from_notification",
                     return_value=42), \
              patch("app.github_notifications.get_comment_from_notification",
@@ -3086,6 +3087,35 @@ class TestErrorReplyRetryQueue:
             assert entry["issue_num"] == 42
             assert entry["comment_id"] == "999"
             assert entry["attempts"] == 1
+
+    def test_no_error_reply_on_closed_subject(self):
+        """Error replies are suppressed when the PR/issue is closed/merged."""
+        import app.loop_manager as lm
+
+        notif = {
+            "id": "9",
+            "updated_at": "2026-03-20T10:00:00Z",
+            "subject": {"url": "https://api.github.com/repos/o/r/issues/9"},
+            "repository": {"full_name": "o/r"},
+        }
+
+        with lm._pending_error_replies_lock:
+            lm._pending_error_replies.clear()
+
+        with patch("app.github_command_handler.resolve_project_from_notification",
+                    return_value=("proj", "o", "r")), \
+             patch("app.github_command_handler._is_subject_closed",
+                    return_value="closed"), \
+             patch("app.github_command_handler.extract_issue_number_from_notification",
+                    return_value=9), \
+             patch("app.github_notifications.get_comment_from_notification") as mock_get, \
+             patch("app.github_command_handler.post_error_reply") as mock_reply:
+            lm._post_error_for_notification(notif, "some error")
+            mock_reply.assert_not_called()
+            mock_get.assert_not_called()
+
+        with lm._pending_error_replies_lock:
+            assert len(lm._pending_error_replies) == 0
 
     def test_error_reply_queued_when_get_comment_raises(self):
         """Regression: NameError when get_comment_from_notification raises.
@@ -3108,6 +3138,7 @@ class TestErrorReplyRetryQueue:
 
         with patch("app.github_command_handler.resolve_project_from_notification",
                     return_value=("proj", "o", "r")), \
+             patch("app.github_command_handler._is_subject_closed", return_value=None), \
              patch("app.github_command_handler.extract_issue_number_from_notification",
                     return_value=5), \
              patch("app.github_notifications.get_comment_from_notification",

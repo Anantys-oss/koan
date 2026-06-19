@@ -189,3 +189,160 @@ class TestReviewCooldown:
         """Clearing a non-existent cooldown does not raise."""
         clear_review_cooldown(instance_dir, "owner", "repo", "999")
         assert not is_review_on_cooldown(instance_dir, "owner", "repo", "999")
+
+
+class TestThreadReplyCounter:
+    """Per-thread reply circuit-breaker counter."""
+
+    def test_count_starts_at_zero(self, instance_dir):
+        from app.github_notification_tracker import thread_reply_count
+        assert thread_reply_count(instance_dir, "owner", "repo", "42") == 0
+
+    def test_record_increments_within_window(self, instance_dir):
+        from app.github_notification_tracker import (
+            record_thread_reply,
+            thread_reply_count,
+        )
+        assert record_thread_reply(instance_dir, "owner", "repo", "42") == 1
+        assert record_thread_reply(instance_dir, "owner", "repo", "42") == 2
+        assert thread_reply_count(instance_dir, "owner", "repo", "42") == 2
+
+    def test_counter_is_per_thread(self, instance_dir):
+        from app.github_notification_tracker import (
+            record_thread_reply,
+            thread_reply_count,
+        )
+        record_thread_reply(instance_dir, "owner", "repo", "1")
+        record_thread_reply(instance_dir, "owner", "repo", "1")
+        record_thread_reply(instance_dir, "owner", "repo", "2")
+        assert thread_reply_count(instance_dir, "owner", "repo", "1") == 2
+        assert thread_reply_count(instance_dir, "owner", "repo", "2") == 1
+
+    def test_old_replies_outside_window_not_counted(self, instance_dir):
+        from app.github_notification_tracker import (
+            _REPLY_WINDOW_SECONDS,
+            _replies_path,
+            _reply_key_prefix,
+            thread_reply_count,
+        )
+        prefix = _reply_key_prefix("owner", "repo", "42")
+        stale = time.time() - _REPLY_WINDOW_SECONDS - 10
+        recent = time.time() - 5
+        _replies_path(instance_dir).write_text(
+            json.dumps({f"{prefix}{stale}": stale, f"{prefix}{recent}": recent})
+        )
+        assert thread_reply_count(instance_dir, "owner", "repo", "42") == 1
+
+
+class TestTryConsumeReplyBudget:
+    """Atomic check-and-record reply budget (no check-then-act race)."""
+
+    def test_allows_until_cap_then_blocks(self, instance_dir):
+        from app.github_notification_tracker import (
+            thread_reply_count,
+            try_consume_reply_budget,
+        )
+        # cap=3: first three allowed and recorded, fourth blocked.
+        assert try_consume_reply_budget(instance_dir, "o", "r", "42", 3) is True
+        assert try_consume_reply_budget(instance_dir, "o", "r", "42", 3) is True
+        assert try_consume_reply_budget(instance_dir, "o", "r", "42", 3) is True
+        assert try_consume_reply_budget(instance_dir, "o", "r", "42", 3) is False
+        # The blocked attempt recorded nothing — count stays exactly at the cap.
+        assert thread_reply_count(instance_dir, "o", "r", "42") == 3
+
+    def test_never_overshoots_cap_under_repeated_consume(self, instance_dir):
+        """Sequential consume calls never record more slots than the cap.
+
+        This is the regression guard for the TOCTOU race: even with many
+        attempts, the recorded count is clamped to the cap because the check
+        and the record share one lock.
+        """
+        from app.github_notification_tracker import (
+            thread_reply_count,
+            try_consume_reply_budget,
+        )
+        cap = 5
+        allowed = sum(
+            1 for _ in range(20)
+            if try_consume_reply_budget(instance_dir, "o", "r", "7", cap)
+        )
+        assert allowed == cap
+        assert thread_reply_count(instance_dir, "o", "r", "7") == cap
+
+    def test_cap_zero_disables_breaker(self, instance_dir):
+        from app.github_notification_tracker import (
+            thread_reply_count,
+            try_consume_reply_budget,
+        )
+        # cap<=0 means disabled: always allowed and nothing recorded.
+        assert try_consume_reply_budget(instance_dir, "o", "r", "42", 0) is True
+        assert thread_reply_count(instance_dir, "o", "r", "42") == 0
+
+    def test_fails_open_on_tracker_error(self, instance_dir, monkeypatch):
+        """A tracker write failure must allow the reply (fail open)."""
+        import app.locked_file as locked_file
+        from app.github_notification_tracker import try_consume_reply_budget
+
+        def _boom(*a, **k):
+            raise RuntimeError("disk gone")
+
+        monkeypatch.setattr(locked_file, "locked_json_modify", _boom)
+        assert try_consume_reply_budget(instance_dir, "o", "r", "42", 1) is True
+
+    def test_breaker_state_isolated_from_dedup_tracker(self, instance_dir):
+        """Reply-breaker keys never touch the shared dedup/cooldown file.
+
+        The breaker is high-churn; if its keys shared the dedup tracker they
+        could evict durable comment/cooldown keys via the entry cap and
+        silently reintroduce re-processing. They must live in their own file.
+        """
+        from app.github_notification_tracker import (
+            _threads_path,
+            is_review_on_cooldown,
+            record_thread_reply,
+            set_review_cooldown,
+            try_consume_reply_budget,
+        )
+        set_review_cooldown(instance_dir, "o", "r", "42")
+        for _ in range(50):
+            record_thread_reply(instance_dir, "o", "r", "42")
+            try_consume_reply_budget(instance_dir, "o", "r", "42", 1000)
+        # The shared threads file holds only the cooldown key — no reply churn.
+        shared = json.loads(_threads_path(instance_dir).read_text())
+        assert all(not k.startswith("reply:") for k in shared)
+        assert is_review_on_cooldown(instance_dir, "o", "r", "42") is True
+
+    def test_stale_keys_pruned_on_record(self, instance_dir):
+        """Recording prunes entries older than the window (storage reclaimed)."""
+        from app.github_notification_tracker import (
+            _REPLY_WINDOW_SECONDS,
+            _load_replies,
+            _replies_path,
+            _reply_key_prefix,
+            record_thread_reply,
+        )
+        prefix = _reply_key_prefix("o", "r", "42")
+        stale = time.time() - _REPLY_WINDOW_SECONDS - 10
+        _replies_path(instance_dir).write_text(
+            json.dumps({f"{prefix}{stale}": stale})
+        )
+        record_thread_reply(instance_dir, "o", "r", "42")
+        # The stale key is gone; only the freshly recorded one remains on disk.
+        on_disk = json.loads(_replies_path(instance_dir).read_text())
+        assert len(on_disk) == 1
+        assert all(v > stale for v in _load_replies(instance_dir).values())
+
+
+class TestTrackCommentDefensive:
+    """track_comment is best-effort: must swallow all errors, not just OSError."""
+
+    def test_track_comment_swallows_non_oserror(self, instance_dir, monkeypatch):
+        import app.locked_file as locked_file
+
+        def _boom(*a, **k):
+            raise RuntimeError("unexpected non-OSError")
+
+        monkeypatch.setattr(locked_file, "locked_json_modify", _boom)
+        # Must not raise — the caller's loop (and mark_notification_read) must
+        # never be aborted by a best-effort tracker write.
+        track_comment(instance_dir, "999")

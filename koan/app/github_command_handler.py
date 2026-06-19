@@ -1579,20 +1579,33 @@ def process_single_notification(
         _notify_closed_subject_skipped(
             owner, repo, subject_title, subject_state, notification,
         )
+        closed_koan_root = os.environ.get("KOAN_ROOT", "")
+        closed_instance_dir = (
+            os.path.join(closed_koan_root, "instance") if closed_koan_root else ""
+        )
         for c in comments:
+            c_id = str(c.get("id", ""))
             add_reaction(
-                owner, repo, str(c.get("id", "")), emoji="eyes",
+                owner, repo, c_id, emoji="eyes",
                 comment_api_url=c.get("url", ""),
             )
+            # Durable backstop so a failed reaction doesn't re-loop the
+            # closed-subject notification on the next poll.
+            if closed_instance_dir:
+                from app.github_notification_tracker import track_comment
+                track_comment(closed_instance_dir, c_id)
         mark_notification_read(str(notification.get("id", "")))
         return False, None
 
-    # Process each comment in chronological order.
-    # Errors are posted inline to the specific comment — never returned to
-    # the caller.  This avoids double-posting: the caller's error handler
-    # would fetch the latest comment (which may differ from the one that
-    # triggered the error) and post a second error reply.
+    # Persistent dedup directory (best-effort; no-op without KOAN_ROOT).
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    instance_dir = os.path.join(koan_root, "instance") if koan_root else ""
+
+    from app.github_reply import _enforce_reply_budget
+
+    # Process each comment in chronological order
     any_queued = False
+    last_error = None
     for comment in comments:
         queued, error = _process_mention_comment(
             notification, comment, registry, config, projects_config,
@@ -1601,20 +1614,57 @@ def process_single_notification(
         if queued:
             any_queued = True
         if error:
+            last_error = error
+            # Post error reply to the specific comment that caused it,
+            # subject to the per-thread reply circuit breaker.
+            #
+            # Single-comment notifications are delegated to the caller
+            # (loop_manager._post_error_for_notification) via the returned
+            # ``last_error`` below — that path posts the same error with
+            # retry-on-failure. Posting inline here too would double-post
+            # the reply (and double-spend the breaker budget). So only post
+            # inline for the *extra* comments of a multi-mention thread,
+            # which the single-error return path does not cover.
             issue_number = extract_issue_number_from_notification(notification)
             comment_id = str(comment.get("id", ""))
-            if issue_number and comment_id:
-                post_error_reply(
-                    owner, repo, issue_number, comment_id, error,
-                    comment_api_url=comment.get("url", ""),
-                )
+            if len(comments) > 1 and issue_number and comment_id:
+                if _enforce_reply_budget(owner, repo, issue_number):
+                    post_error_reply(
+                        owner, repo, issue_number, comment_id, error,
+                        comment_api_url=comment.get("url", ""),
+                    )
+                else:
+                    log.info(
+                        "GitHub: error reply suppressed by circuit breaker for "
+                        "%s/%s#%s comment %s: %s",
+                        owner, repo, issue_number, comment_id, error,
+                    )
+
+        # Persistently mark every handled comment processed — regardless of
+        # outcome (queued, error, help, permission-denied, no-op). The
+        # per-path reaction is volatile (depends on the reactions API and a
+        # correctly-configured bot_username); this local tracker is the
+        # durable backstop that stops the full-thread rescan from
+        # re-discovering and re-replying to the same comment every poll.
+        if instance_dir:
+            from app.github_notification_tracker import track_comment
+            track_comment(instance_dir, str(comment.get("id", "")))
 
     mark_notification_read(str(notification.get("id", "")))
 
     if any_queued:
         notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_QUEUED
 
-    return any_queued, None
+    # Return success=True if any comment was queued, or if no errors occurred
+    # (e.g. all comments were help requests or already processed).
+    # Only return an error when there was exactly one comment with an error
+    # and no queued missions — this preserves backward-compatible error
+    # posting for the single-comment case via the caller in loop_manager.
+    if any_queued:
+        return True, None
+    if last_error and len(comments) == 1:
+        return False, last_error
+    return False, None
 
 
 def _post_command_acknowledgment(

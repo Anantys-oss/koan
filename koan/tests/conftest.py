@@ -127,6 +127,44 @@ def isolate_env(monkeypatch):
         pass
 
 
+@pytest.fixture(autouse=True)
+def _reset_reply_breaker():
+    """Clear per-thread reply circuit-breaker state between tests.
+
+    The breaker (``github_reply._enforce_reply_budget``) persists reply
+    counts under ``KOAN_ROOT/instance``. Without a reset these counts
+    accumulate across the whole session — many tests reuse the same
+    ``owner/repo#42`` — and eventually trip the cap, making unrelated
+    posting tests fail. Mirror the other module-cache resets above.
+    """
+    try:
+        import app.github_reply as gr
+        gr._last_budget_warning.clear()
+    except Exception:
+        pass
+    root = os.environ.get("KOAN_ROOT", "")
+    if root:
+        tracker = Path(root) / "instance" / ".koan-github-processed-threads.json"
+        try:
+            # Reply-breaker counts live in their own file; drop it wholesale.
+            (Path(root) / "instance" / ".koan-github-reply-counts.json").unlink(
+                missing_ok=True,
+            )
+            # Legacy safety: scrub any stray reply: keys from the shared tracker.
+            if tracker.exists():
+                import json
+                data = json.loads(tracker.read_text())
+                if isinstance(data, dict):
+                    cleaned = {
+                        k: v for k, v in data.items()
+                        if not k.startswith("reply:")
+                    }
+                    tracker.write_text(json.dumps(cleaned))
+        except Exception:
+            pass
+    yield
+
+
 @pytest.fixture
 def instance_dir(tmp_path):
     """Create a minimal instance directory structure."""

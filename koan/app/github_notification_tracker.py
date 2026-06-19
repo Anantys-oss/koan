@@ -1,17 +1,22 @@
 """Persistent trackers for processed GitHub notifications.
 
-Two parallel trackers live here:
+Three parallel trackers live here:
 
 - **Comment tracker** (``instance/.koan-github-processed.json``):
   records comment IDs for @mention notifications. Used as a fallback when
   the reactions API fails to confirm a 👍/👀 was placed.
 - **Thread tracker** (``instance/.koan-github-processed-threads.json``):
   records ``"<notification_id>:<updated_at>"`` keys for assignment
-  notifications (``review_requested`` / ``assign``). These have no comment
-  to react to, so without persistent tracking the same notification gets
-  re-processed on every restart.
+  notifications (``review_requested`` / ``assign``) and review cooldowns.
+  These have no comment to react to, so without persistent tracking the same
+  notification gets re-processed on every restart.
+- **Reply-breaker counter** (``instance/.koan-github-reply-counts.json``):
+  records one timestamped key per bot reply, for the per-thread reply circuit
+  breaker. Kept in its own file (see the breaker section below) so its high
+  churn cannot evict durable dedup/cooldown keys.
 
-Both survive process restarts and use the same TTL/cap/locking pattern.
+All survive process restarts and use the same cap/locking pattern; the first
+two prune on a 7-day TTL, the reply-breaker counter on a 1-hour window.
 """
 
 import json
@@ -104,8 +109,8 @@ def track_comment(instance_dir: str, comment_id: str) -> None:
             _cap_entries(data)
 
         locked_json_modify(_tracker_path(instance_dir), _update)
-    except OSError:
-        pass  # Best-effort — don't break notification processing
+    except Exception as e:  # noqa: BLE001 — best-effort; must not break notification processing
+        log.debug("track_comment: failed to record %s: %s", comment_id, e)
 
 
 def is_thread_tracked(instance_dir: str, thread_key: str) -> bool:
@@ -140,8 +145,8 @@ def track_thread(instance_dir: str, thread_key: str) -> None:
             _cap_entries(data)
 
         locked_json_modify(_threads_path(instance_dir), _update)
-    except OSError:
-        pass  # Best-effort — don't break notification processing
+    except Exception as e:  # noqa: BLE001 — best-effort; must not break notification processing
+        log.debug("track_thread: failed to record %s: %s", thread_key, e)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +183,7 @@ def set_review_cooldown(instance_dir: str, owner: str, repo: str, pr_number: str
             _cap_entries(data)
 
         locked_json_modify(_threads_path(instance_dir), _update)
-    except OSError:
+    except Exception:  # noqa: BLE001 — best-effort; must not break notification processing
         log.warning("Failed to set review cooldown for %s/%s#%s", owner, repo, pr_number)
 
 
@@ -196,5 +201,130 @@ def clear_review_cooldown(instance_dir: str, owner: str, repo: str, pr_number: s
             data.pop(key, None)
 
         locked_json_modify(_threads_path(instance_dir), _update)
-    except OSError:
+    except Exception:  # noqa: BLE001 — best-effort; must not break notification processing
         log.warning("Failed to clear review cooldown for %s/%s#%s", owner, repo, pr_number)
+
+
+# ---------------------------------------------------------------------------
+# Per-thread reply circuit breaker — caps bot comments per thread per window
+# ---------------------------------------------------------------------------
+#
+# Breaker state lives in its OWN file, separate from the dedup/cooldown thread
+# tracker. Reply events are high-churn (one key per posted reply) and only
+# meaningful for a rolling hour. Keeping them out of the shared threads file
+# means their volume can never evict durable dedup/cooldown keys through
+# ``_cap_entries`` (which would silently reintroduce re-processing), and lets
+# us prune them on the 1-hour window instead of the 7-day TTL so storage is
+# reclaimed promptly.
+
+_REPLY_WINDOW_SECONDS = 3600  # rolling 1 hour
+_TRACKER_FILE_REPLIES = ".koan-github-reply-counts.json"
+
+
+def _replies_path(instance_dir: str) -> Path:
+    return Path(instance_dir) / _TRACKER_FILE_REPLIES
+
+
+def _reply_key_prefix(owner: str, repo: str, number: str) -> str:
+    return f"reply:{owner}/{repo}#{number}:"
+
+
+def _prune_reply_window(data: dict) -> None:
+    """Drop reply entries older than the rolling window (in-place)."""
+    now = time.time()
+    expired = [k for k, v in data.items() if now - v >= _REPLY_WINDOW_SECONDS]
+    for k in expired:
+        del data[k]
+
+
+def _load_replies(instance_dir: str) -> dict:
+    """Load reply-counter data, pruning entries older than the rolling window."""
+    path = _replies_path(instance_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+    now = time.time()
+    return {
+        k: v for k, v in data.items()
+        if isinstance(v, (int, float)) and now - v < _REPLY_WINDOW_SECONDS
+    }
+
+
+def thread_reply_count(instance_dir: str, owner: str, repo: str, number: str) -> int:
+    """Count bot replies recorded for a thread within the rolling window.
+
+    Each recorded reply is stored as its own timestamped key; ``_load_replies``
+    drops keys older than the window, so a simple prefix match is the count.
+    """
+    prefix = _reply_key_prefix(owner, repo, str(number))
+    data = _load_replies(instance_dir)
+    return sum(1 for k in data if k.startswith(prefix))
+
+
+def record_thread_reply(instance_dir: str, owner: str, repo: str, number: str) -> int:
+    """Record one bot reply on a thread; return the count within the window.
+
+    The returned count includes the reply just recorded. Best-effort: on file
+    error the recorded count falls back to a best-guess read so callers still
+    get a sane number.
+    """
+    prefix = _reply_key_prefix(owner, repo, str(number))
+    holder = {"n": 0}
+    try:
+        from app.locked_file import locked_json_modify
+
+        def _update(data):
+            _prune_reply_window(data)
+            now = time.time()
+            # Unique key per event (microsecond timestamp avoids collisions).
+            data[f"{prefix}{now:.6f}"] = now
+            holder["n"] = sum(1 for k in data if k.startswith(prefix))
+            _cap_entries(data)
+
+        locked_json_modify(_replies_path(instance_dir), _update)
+    except Exception as e:  # noqa: BLE001 — best-effort; must not break notification processing
+        log.debug("record_thread_reply: tracker access failed: %s", e)
+        holder["n"] = thread_reply_count(instance_dir, owner, repo, number) + 1
+    return holder["n"]
+
+
+def try_consume_reply_budget(
+    instance_dir: str, owner: str, repo: str, number: str, cap: int,
+) -> bool:
+    """Atomically check the rolling-window reply count and record one reply
+    iff still under ``cap``.
+
+    Returns True when the reply is allowed (and a slot was recorded), False
+    when the cap is already reached (nothing recorded). The count check and
+    the record happen inside a single locked read-modify-write, so concurrent
+    callers cannot both pass the check and overshoot the cap (closes the
+    check-then-act TOCTOU race). Fails open on file error.
+    """
+    if cap <= 0:
+        return True
+    prefix = _reply_key_prefix(owner, repo, str(number))
+    holder = {"allowed": True}
+    try:
+        from app.locked_file import locked_json_modify
+
+        def _update(data):
+            _prune_reply_window(data)
+            count = sum(1 for k in data if k.startswith(prefix))
+            if count >= cap:
+                holder["allowed"] = False
+                return
+            now = time.time()
+            # Unique key per event (microsecond timestamp avoids collisions).
+            data[f"{prefix}{now:.6f}"] = now
+            _cap_entries(data)
+
+        locked_json_modify(_replies_path(instance_dir), _update)
+    except Exception as e:  # noqa: BLE001 — best-effort; fail open so replies aren't lost
+        log.warning("try_consume_reply_budget: tracker access failed, allowing: %s", e)
+        holder["allowed"] = True
+    return holder["allowed"]
