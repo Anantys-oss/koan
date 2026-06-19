@@ -124,11 +124,12 @@ def fetch_koan_open_prs(project_path: str) -> List[dict]:
 def fetch_failing_check_runs(
     full_repo: str,
     head_sha: str,
-) -> List[dict]:
+) -> Optional[List[dict]]:
     """Fetch failed check runs for a given commit SHA.
 
-    Returns list of dicts: {id, name, conclusion, html_url}.
-    Only returns runs with conclusion == "failure".
+    Returns list of dicts with conclusion == "failure", or None if the
+    GitHub API call failed (so callers can distinguish "CI green" from
+    "couldn't reach GitHub").
     """
     try:
         raw = run_gh(
@@ -138,7 +139,7 @@ def fetch_failing_check_runs(
         )
     except RuntimeError as e:
         log.debug("Failed to fetch check runs for %s: %s", head_sha[:8], e)
-        return []
+        return None
 
     if not raw.strip():
         return []
@@ -267,6 +268,7 @@ def check_and_dispatch_ci_fixes(
             tracker_changed = True
             continue
 
+        api_failed = False
         for pr in prs:
             pr_number = pr["number"]
             head_sha = pr.get("headRefOid", "")
@@ -274,6 +276,9 @@ def check_and_dispatch_ci_fixes(
                 continue
 
             failures = fetch_failing_check_runs(full_repo, head_sha)
+            if failures is None:
+                api_failed = True
+                continue
             if not failures:
                 continue
 
@@ -317,8 +322,9 @@ def check_and_dispatch_ci_fixes(
                 tracker[fp_key] = fingerprint
                 tracker_changed = True
 
-        tracker[project_key] = now
-        tracker_changed = True
+        if not api_failed:
+            tracker[project_key] = now
+            tracker_changed = True
 
     if tracker_changed:
         _save_tracker(instance_dir, tracker)

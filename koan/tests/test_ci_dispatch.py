@@ -98,8 +98,8 @@ class TestFetchFailingCheckRuns:
         assert result[1]["name"] == "test"
 
     @patch("app.ci_dispatch.run_gh", side_effect=RuntimeError("err"))
-    def test_returns_empty_on_error(self, _gh):
-        assert fetch_failing_check_runs("owner/repo", "sha") == []
+    def test_returns_none_on_api_error(self, _gh):
+        assert fetch_failing_check_runs("owner/repo", "sha") is None
 
     @patch("app.ci_dispatch.run_gh", return_value="")
     def test_returns_empty_on_no_runs(self, _gh):
@@ -262,6 +262,33 @@ class TestCheckAndDispatchCiFixes:
             check_and_dispatch_ci_fixes(instance_dir, koan_root)
 
         mock_prs.assert_not_called()
+
+    @patch("app.ci_dispatch.fetch_failing_check_runs", return_value=None)
+    @patch("app.ci_dispatch.fetch_koan_open_prs")
+    @patch("app.ci_dispatch._resolve_full_repo", return_value="owner/repo")
+    @patch("app.ci_dispatch._save_tracker")
+    @patch("app.ci_dispatch._load_tracker", return_value={})
+    @patch("app.ci_dispatch._get_ci_dispatch_config")
+    def test_api_failure_skips_cooldown_update(
+        self, mock_config, mock_load, mock_save, mock_repo,
+        mock_prs, mock_fails, instance_dir, koan_root,
+    ):
+        mock_config.return_value = {
+            "enabled": True, "cooldown_minutes": 0, "log_snippet_bytes": 4096,
+        }
+        mock_prs.return_value = [
+            {"number": 42, "title": "Fix", "headRefName": "koan/fix", "headRefOid": "sha123"},
+        ]
+
+        with patch("app.projects_config.load_projects_config") as mock_pc, \
+             patch("app.projects_config.get_projects_from_config") as mock_gp:
+            mock_pc.return_value = {}
+            mock_gp.return_value = [("myproject", "/path/to/project")]
+
+            count = check_and_dispatch_ci_fixes(instance_dir, koan_root)
+
+        assert count == 0
+        mock_save.assert_not_called()
 
     @patch("app.ci_dispatch._get_ci_dispatch_config")
     def test_handles_missing_projects_config(self, mock_config):
