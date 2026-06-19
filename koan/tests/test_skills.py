@@ -2246,7 +2246,17 @@ class TestClaudemdSkillListSync:
         for entry in sorted(core_dir.iterdir()):
             if entry.name in skip or not entry.is_dir():
                 continue
-            if not (entry / "SKILL.md").is_file():
+            if (entry / "SKILL.md").is_file():
+                continue
+            # A directory whose only contents are build artifacts (__pycache__)
+            # is a stale leftover from a deleted skill, not a checked-in orphan.
+            # These are gitignored and regenerated locally, so flagging them
+            # would make the test fail on developer machines for no real reason.
+            has_source = any(
+                p.is_file() and "__pycache__" not in p.parts
+                for p in entry.rglob("*")
+            )
+            if has_source:
                 orphans.append(entry.name)
 
         assert not orphans, (
