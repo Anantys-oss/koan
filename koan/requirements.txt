@@ -11,5 +11,6 @@ pytest-xdist>=3.5
 # stdlib: sqlite3 (used by memory_db.py — FTS5 extension required for ranked
 # search; graceful fallback to JSONL when FTS5 unavailable)
 
-# Optional: Slack provider (install with: pip install slack-sdk)
-# slack-sdk>=3.27
+# Slack provider (Socket Mode bridge). Pure-Python, light; only loaded when
+# KOAN_MESSAGING_PROVIDER=slack. Telegram remains the default provider.
+slack-sdk>=3.27

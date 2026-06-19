@@ -140,7 +140,8 @@ class TestHandleSocketEvent:
     """Test Socket Mode event handling and filtering logic."""
     
     def _make_request(self, event_type, channel, text,
-                      bot_id=None, subtype=None, ts="123.456"):
+                      bot_id=None, subtype=None, ts="123.456",
+                      user="U100", thread_ts=None):
         """Create a mock Socket Mode request with the given event properties."""
         req = MagicMock()
         req.envelope_id = "env-1"
@@ -150,15 +151,19 @@ class TestHandleSocketEvent:
             "text": text,
             "ts": ts,
         }
+        if user:
+            event["user"] = user
         if bot_id:
             event["bot_id"] = bot_id
         if subtype:
             event["subtype"] = subtype
+        if thread_ts:
+            event["thread_ts"] = thread_ts
         req.payload = {"event": event}
         return req
 
-    def test_message_event(self, provider):
-        req = self._make_request("message", "C123", "hello")
+    def test_app_mention_event(self, provider):
+        req = self._make_request("app_mention", "C123", "<@U999> hello")
         provider._handle_socket_event(MagicMock(), req)
         assert provider._message_queue.qsize() == 1
         update = provider._message_queue.get_nowait()
@@ -170,23 +175,41 @@ class TestHandleSocketEvent:
         update = provider._message_queue.get_nowait()
         assert update.message.text == "do something"
 
+    def test_plain_message_without_mention_ignored(self, provider):
+        # Mention-gating: ordinary channel chatter must not trigger the bot.
+        req = self._make_request("message", "C123", "just chatting")
+        provider._handle_socket_event(MagicMock(), req)
+        assert provider._message_queue.empty()
+
+    def test_inline_mention_in_message_processed(self, provider):
+        req = self._make_request("message", "C123", "hey <@U999> ship it")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "hey ship it"
+
     def test_ignores_other_channels(self, provider):
-        req = self._make_request("message", "C999", "wrong channel")
+        req = self._make_request("app_mention", "C999", "<@U999> wrong channel")
         provider._handle_socket_event(MagicMock(), req)
         assert provider._message_queue.empty()
 
     def test_ignores_bot_messages(self, provider):
-        req = self._make_request("message", "C123", "bot msg", bot_id="B123")
+        req = self._make_request("message", "C123", "<@U999> bot msg", bot_id="B123")
+        provider._handle_socket_event(MagicMock(), req)
+        assert provider._message_queue.empty()
+
+    def test_ignores_own_messages(self, provider):
+        req = self._make_request("app_mention", "C123", "<@U999> echo", user="U999")
         provider._handle_socket_event(MagicMock(), req)
         assert provider._message_queue.empty()
 
     def test_ignores_subtypes(self, provider):
-        req = self._make_request("message", "C123", "edited", subtype="message_changed")
+        req = self._make_request("message", "C123", "<@U999> edited",
+                                 subtype="message_changed")
         provider._handle_socket_event(MagicMock(), req)
         assert provider._message_queue.empty()
 
     def test_ignores_empty_text(self, provider):
-        req = self._make_request("message", "C123", "")
+        req = self._make_request("app_mention", "C123", "")
         provider._handle_socket_event(MagicMock(), req)
         assert provider._message_queue.empty()
 
@@ -195,9 +218,40 @@ class TestHandleSocketEvent:
         provider._handle_socket_event(MagicMock(), req)
         assert provider._message_queue.empty()
 
+    def test_duplicate_ts_processed_once(self, provider):
+        # app_mention + message double-delivery share a ts; act once.
+        mention = self._make_request("app_mention", "C123", "<@U999> go", ts="9.1")
+        echo = self._make_request("message", "C123", "<@U999> go", ts="9.1")
+        provider._handle_socket_event(MagicMock(), mention)
+        provider._handle_socket_event(MagicMock(), echo)
+        assert provider._message_queue.qsize() == 1
+
+    def test_thread_continuation_without_mention(self, provider):
+        # First a mention at channel root (ts=10.0) engages the thread...
+        root = self._make_request("app_mention", "C123", "<@U999> start", ts="10.0")
+        provider._handle_socket_event(MagicMock(), root)
+        provider._message_queue.get_nowait()
+        # ...then a plain reply in that thread is handled without re-mention.
+        reply = self._make_request("message", "C123", "and continue",
+                                   ts="11.0", thread_ts="10.0")
+        provider._handle_socket_event(MagicMock(), reply)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "and continue"
+
+    def test_envelope_is_telegram_shaped(self, provider):
+        # The bridge main loop reads message.text / message.chat.id / message_id.
+        req = self._make_request("app_mention", "C123", "<@U999> hi")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        env = update.raw_data
+        assert env["message"]["text"] == "hi"
+        assert env["message"]["chat"]["id"] == "C123"
+        assert isinstance(env["message"]["message_id"], int)
+        assert env["message"]["message_id"] != 0
+
     def test_update_counter_increments(self, provider):
-        req1 = self._make_request("message", "C123", "first")
-        req2 = self._make_request("message", "C123", "second")
+        req1 = self._make_request("app_mention", "C123", "<@U999> first", ts="1.0")
+        req2 = self._make_request("app_mention", "C123", "<@U999> second", ts="2.0")
         provider._handle_socket_event(MagicMock(), req1)
         provider._handle_socket_event(MagicMock(), req2)
         u1 = provider._message_queue.get_nowait()
@@ -217,6 +271,42 @@ class TestHandleSocketEvent:
         }):
             provider._handle_socket_event(mock_client, req)
         mock_client.send_socket_mode_response.assert_called_once()
+
+
+class TestThreadedSend:
+    """Replies route into the Slack thread of the originating message."""
+
+    def test_reply_uses_thread_ts(self, provider):
+        provider._web_client.chat_postMessage.return_value = {"ok": True}
+        # Simulate an inbound mention that registered token 1 -> thread_ts.
+        req = MagicMock()
+        req.envelope_id = "e1"
+        req.payload = {"event": {
+            "type": "app_mention", "channel": "C123",
+            "text": "<@U999> hi", "ts": "100.5", "user": "U100",
+        }}
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        token = update.raw_data["message"]["message_id"]
+
+        assert provider.send_message("reply", reply_to_message_id=token) is True
+        provider._web_client.chat_postMessage.assert_called_once_with(
+            channel="C123", text="reply", thread_ts="100.5"
+        )
+
+    def test_unknown_token_posts_to_channel_root(self, provider):
+        provider._web_client.chat_postMessage.return_value = {"ok": True}
+        assert provider.send_message("hi", reply_to_message_id=4242) is True
+        provider._web_client.chat_postMessage.assert_called_once_with(
+            channel="C123", text="hi"
+        )
+
+    def test_no_reply_context_posts_to_channel_root(self, provider):
+        provider._web_client.chat_postMessage.return_value = {"ok": True}
+        assert provider.send_message("async note") is True
+        provider._web_client.chat_postMessage.assert_called_once_with(
+            channel="C123", text="async note"
+        )
 
 
 class TestSendRaw:
