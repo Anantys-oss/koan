@@ -598,40 +598,6 @@ class MissionStore:
         self._records.insert(insert_at, record)
         return True
 
-    def remove(self, text: str) -> bool:
-        """Remove a record from the store entirely.
-
-        Args:
-            text: Mission text used to locate the record.
-
-        Returns:
-            ``True`` if the record was found and removed, ``False`` otherwise.
-        """
-        record = self.find(text)
-        if record is None:
-            return False
-        self._records.remove(record)
-        return True
-
-    def flush_stale_in_progress(self) -> list[MissionRecord]:
-        """Move all ``in_progress`` records to ``failed`` with ``[flushed]`` tag.
-
-        Used at startup (mirrors ``recover.py``).  Under normal operation the
-        list should be empty; this handles crash-recovery cases.
-
-        Returns:
-            List of records that were flushed.
-        """
-        flushed = []
-        for record in self._records:
-            if record.status == "in_progress":
-                object.__setattr__(record, "status", "failed")
-                object.__setattr__(record, "completed_at", self._now_display())
-                if "flushed" not in record.tags:
-                    object.__setattr__(record, "tags", (*record.tags, "flushed"))
-                flushed.append(record)
-        return flushed
-
     # ------------------------------------------------------------------
     # Reconciliation
     # ------------------------------------------------------------------

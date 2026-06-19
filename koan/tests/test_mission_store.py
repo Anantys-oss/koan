@@ -565,53 +565,6 @@ class TestMissionStoreRequeue:
 
 
 # ---------------------------------------------------------------------------
-# remove()
-# ---------------------------------------------------------------------------
-
-class TestMissionStoreRemove:
-    def test_remove_deletes_record(self, store):
-        store.add("Fix bug")
-        result = store.remove("Fix bug")
-        assert result is True
-        assert store.find("Fix bug") is None
-        assert len(store._records) == 0
-
-    def test_remove_returns_false_for_missing(self, store):
-        assert store.remove("Nonexistent") is False
-
-
-# ---------------------------------------------------------------------------
-# flush_stale_in_progress()
-# ---------------------------------------------------------------------------
-
-class TestFlushStaleInProgress:
-    def test_flush_moves_in_progress_to_failed(self, store):
-        store.add("Fix bug")
-        store.start("Fix bug")
-        flushed = store.flush_stale_in_progress()
-        assert len(flushed) == 1
-        assert flushed[0].status == "failed"
-        assert "flushed" in flushed[0].tags
-
-    def test_flush_returns_empty_list_when_nothing_in_progress(self, store):
-        store.add("Fix bug")
-        flushed = store.flush_stale_in_progress()
-        assert flushed == []
-
-    def test_flush_handles_multiple_in_progress(self, store):
-        # Force two records into in_progress (unusual state)
-        store.add("Mission A")
-        store.add("Mission B")
-        object.__setattr__(store._records[0], "status", "in_progress")
-        object.__setattr__(store._records[1], "status", "in_progress")
-        flushed = store.flush_stale_in_progress()
-        assert len(flushed) == 2
-        for r in flushed:
-            assert r.status == "failed"
-            assert "flushed" in r.tags
-
-
-# ---------------------------------------------------------------------------
 # _reconcile_from_markdown()
 # ---------------------------------------------------------------------------
 
