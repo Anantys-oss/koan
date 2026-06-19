@@ -243,7 +243,12 @@ def run_refresh(project_path: str, project_name: str) -> int:
             return 0
     else:
         mode = "INIT"
-        # No git context needed — the built-in /init skill explores the project itself
+        mode_instructions = (
+            "No CLAUDE.md exists yet. Explore the project structure, read key "
+            "files (README, package manifests, entry points, tests), and create "
+            "a comprehensive CLAUDE.md from scratch."
+        )
+        git_context = build_git_context(project_path, False)
 
     # Remember the base branch for the PR
     base_branch = run_git_strict(
@@ -260,12 +265,14 @@ def run_refresh(project_path: str, project_name: str) -> int:
         print(f"Failed to create branch {branch_name}: {e}", file=sys.stderr)
         return 1
 
-    if claude_md_exists:
-        # Build project memory block (learnings, context, priorities)
-        task_text = f"CLAUDE.md refresh for {project_name}\n{git_context}"
+    # Claude provider has a built-in /init skill — use it directly
+    from app.config import get_cli_provider_name
+    if mode == "INIT" and get_cli_provider_name() == "claude":
+        prompt = "/init"
+    else:
+        task_text = f"CLAUDE.md {'refresh' if claude_md_exists else 'creation'} for {project_name}\n{git_context}"
         project_memory = build_memory_block_for_skill(project_path, task_text)
 
-        # Build prompt
         skill_dir = Path(__file__).parent.parent / "skills" / "core" / "claudemd"
         prompt = load_skill_prompt(
             skill_dir, "refresh-claude-md",
@@ -276,8 +283,6 @@ def run_refresh(project_path: str, project_name: str) -> int:
             GIT_CONTEXT=git_context,
             PROJECT_MEMORY=project_memory,
         )
-    else:
-        prompt = "/init"
 
     # Build CLI command
     models = get_model_config()
