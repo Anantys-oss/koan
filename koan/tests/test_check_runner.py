@@ -807,14 +807,13 @@ class TestHelperEdgeCases:
 # ---------------------------------------------------------------------------
 
 class TestQueueRebase:
-    def test_rebase_entry_format(self, instance_dir, koan_root):
+    def test_rebase_entry_format(self):
         from app.check_runner import _queue_rebase
 
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.resolve_project_path", return_value="/home/proj"), \
              patch("app.utils.project_name_for_path", return_value="proj"):
-            _queue_rebase("owner", "repo", "42", instance_dir,
-                          koan_root)
+            _queue_rebase("owner", "repo", "42")
             mock_insert.assert_called_once()
             text = mock_insert.call_args[0][0]
             project = mock_insert.call_args[0][1]
@@ -822,13 +821,12 @@ class TestQueueRebase:
             assert "Rebase PR #42" in text
             assert "owner/repo" in text
 
-    def test_rebase_without_project_path(self, instance_dir, koan_root):
+    def test_rebase_without_project_path(self):
         from app.check_runner import _queue_rebase
 
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.resolve_project_path", return_value=None):
-            _queue_rebase("owner", "repo", "10", instance_dir,
-                          koan_root)
+            _queue_rebase("owner", "repo", "10")
             entry = mock_insert.call_args[0][0]
             assert "--project-path" not in entry
 
@@ -838,13 +836,13 @@ class TestQueueRebase:
 # ---------------------------------------------------------------------------
 
 class TestQueuePrReview:
-    def test_review_entry_format(self, instance_dir):
+    def test_review_entry_format(self):
         from app.check_runner import _queue_pr_review
 
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.resolve_project_path", return_value="/home/proj"), \
              patch("app.utils.project_name_for_path", return_value="proj"):
-            _queue_pr_review("owner", "repo", "99", instance_dir)
+            _queue_pr_review("owner", "repo", "99")
             mock_insert.assert_called_once()
             text = mock_insert.call_args[0][0]
             project = mock_insert.call_args[0][1]
@@ -852,12 +850,12 @@ class TestQueuePrReview:
             assert "Review PR #99" in text
             assert "/pr https://github.com/owner/repo/pull/99" in text
 
-    def test_review_unknown_project_uses_repo_name(self, instance_dir):
+    def test_review_unknown_project_uses_repo_name(self):
         from app.check_runner import _queue_pr_review
 
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.resolve_project_path", return_value=None):
-            _queue_pr_review("owner", "unknown-repo", "5", instance_dir)
+            _queue_pr_review("owner", "unknown-repo", "5")
             project = mock_insert.call_args[0][1]
             assert project == "unknown-repo"
 

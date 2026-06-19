@@ -161,13 +161,13 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
 
     # 1. Check if rebase is needed
     if needs_reb:
-        _queue_rebase(owner, repo, pr_number, instance_dir, koan_root)
+        _queue_rebase(owner, repo, pr_number)
         actions.append("\u267b\ufe0f Rebase queued \u2014 PR has merge conflicts")
 
     # 2. Check if review is needed
     is_draft = pr_data.get("isDraft", False)
     if _has_no_reviews(pr_data) and not is_draft and not needs_reb:
-        _queue_pr_review(owner, repo, pr_number, instance_dir)
+        _queue_pr_review(owner, repo, pr_number)
         actions.append("\U0001f4dd PR review queued \u2014 no reviews yet")
 
     # Record the check
@@ -192,17 +192,16 @@ def _handle_pr(owner, repo, pr_number, instance_dir, koan_root, notify_fn):
     return True, msg
 
 
-def _queue_rebase(owner, repo, pr_number, instance_dir,
-                  koan_root):
+def _queue_rebase(owner, repo, pr_number):
     """Queue a rebase mission for the PR."""
-    from app.utils import insert_pending_mission, resolve_project_path
+    from app.utils import KOAN_ROOT, insert_pending_mission, resolve_project_path
 
     project_path = resolve_project_path(repo, owner=owner)
     project_name = _resolve_project_name(repo, owner=owner)
 
     cmd = (
-        f"cd {koan_root}/koan && "
-        f"{koan_root}/.venv/bin/python3 -m app.rebase_pr "
+        f"cd {KOAN_ROOT}/koan && "
+        f"{KOAN_ROOT}/.venv/bin/python3 -m app.rebase_pr "
         f"https://github.com/{owner}/{repo}/pull/{pr_number}"
     )
     if project_path:
@@ -215,7 +214,7 @@ def _queue_rebase(owner, repo, pr_number, instance_dir,
     insert_pending_mission(mission_text, project_name)
 
 
-def _queue_pr_review(owner, repo, pr_number, instance_dir):
+def _queue_pr_review(owner, repo, pr_number):
     """Queue a PR review mission."""
     from app.utils import insert_pending_mission
 
