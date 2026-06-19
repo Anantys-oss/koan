@@ -72,8 +72,7 @@ class TestParsingMissions:
             assert len(result["in_progress"]) == 1
             assert len(result["done"]) == 1
 
-    def test_parse_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+    def test_parse_empty(self, tmp_path):
         with patch.object(dashboard, "INSTANCE_DIR", tmp_path / "nope"):
             result = dashboard.parse_missions()
             assert result == {"pending": [], "in_progress": [], "done": []}
@@ -1106,7 +1105,7 @@ class TestIndexState:
         assert resp.status_code == 200
         assert b"5/20" in resp.data
 
-    def test_idle_state(self, app_client, tmp_path):
+    def test_idle_state(self, app_client):
         """No signal files at all — idle."""
         resp = app_client.get("/")
         assert resp.status_code == 200
@@ -2080,7 +2079,7 @@ class TestAgentControls:
         assert lines[1] == str(fixed_time + 7200)
         assert lines[2] == "Dashboard pause (2h)"
 
-    def test_pause_invalid_duration(self, app_client, tmp_path):
+    def test_pause_invalid_duration(self, app_client):
         resp = app_client.post("/api/agent/pause", json={"duration": "xyz"})
         assert resp.status_code == 422
         data = resp.get_json()

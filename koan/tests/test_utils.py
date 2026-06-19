@@ -16,25 +16,19 @@ def clean_env(monkeypatch):
 
 
 class TestLoadDotenv:
-    def test_loads_env_file(self, tmp_path, monkeypatch):
+    def test_loads_env_file(self, tmp_path):
         from app.utils import load_dotenv, KOAN_ROOT
 
         env_file = tmp_path / ".env"
         env_file.write_text('FOO_TEST=bar\nBAZ_TEST="quoted"\n')
 
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         load_dotenv()
         assert os.environ.get("FOO_TEST") == "bar"
         assert os.environ.get("BAZ_TEST") == "quoted"
 
-    def test_skips_comments_and_blanks(self, tmp_path, monkeypatch):
+    def test_skips_comments_and_blanks(self, tmp_path):
         env_file = tmp_path / ".env"
         env_file.write_text('# comment\n\nKEY_TEST=val\n')
-
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
 
         from app.utils import load_dotenv
         load_dotenv()
@@ -45,16 +39,11 @@ class TestLoadDotenv:
         env_file = tmp_path / ".env"
         env_file.write_text("EXISTING_TEST=overwritten\n")
 
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         from app.utils import load_dotenv
         load_dotenv()
         assert os.environ["EXISTING_TEST"] == "original"
 
-    def test_missing_env_file(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_missing_env_file(self):
         # Should not raise
         from app.utils import load_dotenv
         load_dotenv()
@@ -337,12 +326,9 @@ class TestResolveProjectNameAndPath:
 
 
 class TestInsertPendingMission:
-    def test_inserts_into_existing_file(self, tmp_path, monkeypatch):
-        from app import utils
+    def test_inserts_into_existing_file(self, tmp_path):
         from app.utils import insert_pending_mission
         from app.missions import parse_sections
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         instance_dir = tmp_path / "instance"
 
         insert_pending_mission("New task")
@@ -351,12 +337,8 @@ class TestInsertPendingMission:
         sections = parse_sections(content)
         assert any("New task" in item for item in sections["pending"])
 
-    def test_creates_file_if_missing(self, tmp_path, monkeypatch):
-        from app import utils
+    def test_creates_file_if_missing(self, tmp_path):
         from app.utils import insert_pending_mission
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         insert_pending_mission("First task")
         missions = tmp_path / "instance" / "missions.md"
         assert missions.exists()
@@ -364,33 +346,21 @@ class TestInsertPendingMission:
         assert "First task" in content
         assert "## Pending" in content
 
-    def test_handles_english_sections(self, tmp_path, monkeypatch):
-        from app import utils
+    def test_handles_english_sections(self, tmp_path):
         from app.utils import insert_pending_mission
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         insert_pending_mission("English task")
         assert "English task" in (tmp_path / "instance" / "missions.md").read_text()
 
-    def test_handles_no_pending_section(self, tmp_path, monkeypatch):
-        from app import utils
+    def test_handles_no_pending_section(self, tmp_path):
         from app.utils import insert_pending_mission
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         insert_pending_mission("Orphan task")
         content = (tmp_path / "instance" / "missions.md").read_text()
         assert "## Pending" in content
         assert "Orphan task" in content
 
-    def test_concurrent_inserts_no_lost_missions(self, tmp_path, monkeypatch):
+    def test_concurrent_inserts_no_lost_missions(self, tmp_path):
         """Regression: concurrent inserts must not lose missions (TOCTOU fix)."""
-        from app import utils
         from app.utils import insert_pending_mission
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         num_threads = 8
         errors = []
 
@@ -411,13 +381,9 @@ class TestInsertPendingMission:
         for i in range(num_threads):
             assert f"Task {i}" in content, f"Task {i} lost during concurrent insert"
 
-    def test_uses_lockfile_not_data_file(self, tmp_path, monkeypatch):
+    def test_uses_lockfile_not_data_file(self, tmp_path):
         """Verify the lock is on a separate sidecar file, not on missions.md itself."""
-        from app import utils
         from app.utils import insert_pending_mission
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         insert_pending_mission("Test task")
 
         # The store holds its lock on a dedicated sidecar so missions.md can be
@@ -425,38 +391,26 @@ class TestInsertPendingMission:
         lock_file = tmp_path / "instance" / ".missions-store.lock"
         assert lock_file.exists(), "Store lock file should be created alongside missions.md"
 
-    def test_no_temp_file_left_on_success(self, tmp_path, monkeypatch):
+    def test_no_temp_file_left_on_success(self, tmp_path):
         """Atomic write should clean up temp files on success."""
-        from app import utils
         from app.utils import insert_pending_mission
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         insert_pending_mission("Clean task")
 
         # atomic_write uses a ".koan-" temp prefix and renames on success.
         temp_files = list((tmp_path / "instance").glob(".koan-*"))
         assert temp_files == [], f"Temp files left behind: {temp_files}"
 
-    def test_returns_true_when_inserted(self, tmp_path, monkeypatch):
-        from app import utils
+    def test_returns_true_when_inserted(self, tmp_path):
         from app.utils import insert_pending_mission
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         result = insert_pending_mission(
             "/rebase https://github.com/o/r/pull/1", "koan"
         )
         assert result is True
         assert "/rebase" in (tmp_path / "instance" / "missions.md").read_text()
 
-    def test_returns_false_on_duplicate(self, tmp_path, monkeypatch):
-        from app import utils
+    def test_returns_false_on_duplicate(self, tmp_path):
         from app.utils import insert_pending_mission
         from app.mission_store import locked_store
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         # Pre-populate via the store so missions.json is canonical from the start.
         with locked_store(str(tmp_path / "instance")) as store:
             store.add("/rebase https://github.com/o/r/pull/1", "koan")
@@ -469,12 +423,8 @@ class TestInsertPendingMission:
         content = (tmp_path / "instance" / "missions.md").read_text()
         assert content.count("/rebase https://github.com/o/r/pull/1") == 1
 
-    def test_non_github_mission_always_inserted(self, tmp_path, monkeypatch):
-        from app import utils
+    def test_non_github_mission_always_inserted(self):
         from app.utils import insert_pending_mission
-
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
         result = insert_pending_mission("Fix the login bug", "koan")
         # Non-GitHub missions are not deduped (no URL signature)
         assert result is True
@@ -836,88 +786,68 @@ class TestCompactTelegramHistory:
 
 
 class TestGetMaxRuns:
-    def test_returns_config_value(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_config_value(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("max_runs_per_day: 30\n")
         from app.utils import get_max_runs
         assert get_max_runs() == 30
 
-    def test_returns_default_when_missing(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_default_when_missing(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("other_setting: value\n")
         from app.utils import get_max_runs
         assert get_max_runs() == 20
 
-    def test_returns_default_when_no_config(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_default_when_no_config(self):
         from app.utils import get_max_runs
         assert get_max_runs() == 20
 
 
 class TestGetIntervalSeconds:
-    def test_returns_config_value(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_config_value(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("interval_seconds: 600\n")
         from app.utils import get_interval_seconds
         assert get_interval_seconds() == 600
 
-    def test_returns_default_when_missing(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_default_when_missing(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("other_setting: value\n")
         from app.utils import get_interval_seconds
         assert get_interval_seconds() == 300
 
-    def test_returns_default_when_no_config(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_default_when_no_config(self):
         from app.utils import get_interval_seconds
         assert get_interval_seconds() == 300
 
 
 class TestGetStartOnPause:
-    def test_returns_true_when_enabled(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_true_when_enabled(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("start_on_pause: true\n")
         from app.utils import get_start_on_pause
         assert get_start_on_pause() is True
 
-    def test_returns_false_when_disabled(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_false_when_disabled(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("start_on_pause: false\n")
         from app.utils import get_start_on_pause
         assert get_start_on_pause() is False
 
-    def test_returns_false_when_missing(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_false_when_missing(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("other_setting: value\n")
         from app.utils import get_start_on_pause
         assert get_start_on_pause() is False
 
-    def test_returns_false_when_no_config(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_false_when_no_config(self):
         # No config file at all
         from app.utils import get_start_on_pause
         assert get_start_on_pause() is False
@@ -927,8 +857,6 @@ class TestGetKnownProjects:
     """Tests for get_known_projects() — returns List[Tuple[str, str]]."""
 
     def test_parses_koan_projects_env(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan;web:/home/web")
         from app.utils import get_known_projects
         result = get_known_projects()
@@ -937,8 +865,6 @@ class TestGetKnownProjects:
         assert result[1] == ("web", "/home/web")
 
     def test_sorted_alphabetically(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "zebra:/z;alpha:/a")
         from app.utils import get_known_projects
         result = get_known_projects()
@@ -947,23 +873,17 @@ class TestGetKnownProjects:
 
     def test_project_path_no_longer_supported(self, tmp_path, monkeypatch):
         """KOAN_PROJECT_PATH is no longer a fallback for get_known_projects()."""
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.delenv("KOAN_PROJECTS", raising=False)
         monkeypatch.setenv("KOAN_PROJECT_PATH", "/single/path")
         from app.utils import get_known_projects
         assert get_known_projects() == []
 
     def test_empty_when_no_config(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.delenv("KOAN_PROJECTS", raising=False)
         from app.utils import get_known_projects
         assert get_known_projects() == []
 
     def test_handles_whitespace(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", " koan : /home/koan ; web : /home/web ")
         from app.utils import get_known_projects
         result = get_known_projects()
@@ -971,8 +891,6 @@ class TestGetKnownProjects:
         assert result[0] == ("koan", "/home/koan")
 
     def test_skips_malformed_entries(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan;badentry;web:/home/web")
         from app.utils import get_known_projects
         result = get_known_projects()
@@ -1107,68 +1025,52 @@ class TestIsKnownProject:
 
 
 class TestGetFastReplyModel:
-    def test_returns_lightweight_model_when_enabled(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_lightweight_model_when_enabled(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("fast_reply: true\nmodels:\n  lightweight: haiku\n")
         from app.utils import get_fast_reply_model
         assert get_fast_reply_model() == "haiku"
 
-    def test_returns_empty_when_disabled(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_empty_when_disabled(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("fast_reply: false\n")
         from app.utils import get_fast_reply_model
         assert get_fast_reply_model() == ""
 
-    def test_returns_empty_when_missing(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_empty_when_missing(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("other_setting: value\n")
         from app.utils import get_fast_reply_model
         assert get_fast_reply_model() == ""
 
-    def test_returns_empty_when_no_config(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_empty_when_no_config(self):
         from app.utils import get_fast_reply_model
         assert get_fast_reply_model() == ""
 
 
 class TestGetContemplativeChance:
-    def test_returns_config_value(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_config_value(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("contemplative_chance: 25\n")
         from app.utils import get_contemplative_chance
         assert get_contemplative_chance() == 25
 
-    def test_returns_default_when_missing(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_default_when_missing(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("other_setting: value\n")
         from app.utils import get_contemplative_chance
         assert get_contemplative_chance() == 10
 
-    def test_returns_default_when_no_config(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_returns_default_when_no_config(self):
         from app.utils import get_contemplative_chance
         assert get_contemplative_chance() == 10
 
-    def test_zero_disables_contemplative_mode(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_zero_disables_contemplative_mode(self, tmp_path):
         config_dir = tmp_path / "instance"
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("contemplative_chance: 0\n")
@@ -1599,7 +1501,6 @@ class TestKoanTmpDir:
     def _reset_cache(self, monkeypatch):
         # The resolved path is cached in a module global; clear it so each
         # test re-resolves from the env it sets up.
-        from app import utils
         monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
 
     def test_respects_env_override(self, tmp_path, monkeypatch):
@@ -1669,7 +1570,6 @@ class TestKoanTmpDir:
 
     def test_different_roots_yield_different_dirs(self, tmp_path, monkeypatch):
         """Two users (different KOAN_TMP_DIR/uid) never share a path."""
-        from app import utils
         from app.utils import koan_tmp_dir
 
         monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "user_a"))

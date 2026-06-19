@@ -838,8 +838,6 @@ class TestGetKnownProjectsWithYaml:
     """Tests for get_known_projects() when projects.yaml exists."""
 
     def test_projects_yaml_takes_priority(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "envproject:/env/path")
 
         # Write projects.yaml
@@ -854,8 +852,6 @@ projects:
         assert result[0] == ("yamlproject", "/yaml/path")
 
     def test_falls_back_to_env_when_no_yaml(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "envproject:/env/path")
 
         # No projects.yaml
@@ -865,8 +861,6 @@ projects:
         assert result[0] == ("envproject", "/env/path")
 
     def test_falls_back_on_invalid_yaml(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "fallback:/fallback")
 
         # Write broken projects.yaml
@@ -878,8 +872,6 @@ projects:
 
     def test_defaults_only_yaml_returns_no_projects(self, tmp_path, monkeypatch):
         """projects.yaml with only defaults: and no projects: is valid; returns [] projects."""
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", "fallback:/fallback")
 
         # Valid YAML with only defaults: — no longer a schema error
@@ -891,8 +883,6 @@ projects:
 
     def test_legacy_project_path_no_longer_supported(self, tmp_path, monkeypatch):
         """KOAN_PROJECT_PATH is no longer a fallback — returns empty list."""
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.delenv("KOAN_PROJECTS", raising=False)
         monkeypatch.setenv("KOAN_PROJECT_PATH", "/legacy/path")
 

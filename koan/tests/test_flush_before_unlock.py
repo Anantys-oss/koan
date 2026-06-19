@@ -143,7 +143,7 @@ class TestFlushBeforeUnlockAudit:
 class TestUtilsFlush:
     """Verify utils.py file-locked writes flush before unlock."""
 
-    def test_insert_pending_mission_flushes(self, tmp_path, monkeypatch):
+    def test_insert_pending_mission_flushes(self, tmp_path):
         """insert_pending_mission flushes before releasing lock."""
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
@@ -151,8 +151,6 @@ class TestUtilsFlush:
         missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
 
         from app.utils import insert_pending_mission
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.utils.fcntl") as mock_fcntl:
             mock_fcntl.LOCK_EX = 2
             mock_fcntl.LOCK_UN = 8

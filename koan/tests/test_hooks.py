@@ -665,13 +665,12 @@ class TestAutomationRuleExecution:
         outbox = (tmp_path / "outbox.md").read_text()
         assert "mission done" in outbox
 
-    def test_create_mission_appends_to_pending(self, tmp_path, monkeypatch):
+    def test_create_mission_appends_to_pending(self, tmp_path):
         _write_rules(str(tmp_path), [
             {"id": "r1", "event": "post_mission", "action": "create_mission",
              "params": {"text": "Follow-up task"}, "enabled": True, "created": ""},
         ])
         # insert_pending_mission writes to KOAN_ROOT/instance — point it at tmp_path
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir(exist_ok=True)
         (instance_dir / "missions.md").write_text(
@@ -744,7 +743,7 @@ class TestAutomationRuleExecution:
                 str(tmp_path), "myproj", str(tmp_path), "koan/test-branch"
             )
 
-    def test_exception_in_rule_does_not_block_subsequent_rules(self, tmp_path, monkeypatch):
+    def test_exception_in_rule_does_not_block_subsequent_rules(self, tmp_path):
         _write_rules(str(tmp_path), [
             # First rule: bad action that will raise internally
             {"id": "r_bad", "event": "post_mission", "action": "notify",
@@ -756,7 +755,6 @@ class TestAutomationRuleExecution:
         hooks_dir = tmp_path / "hooks"
         hooks_dir.mkdir()
         # insert_pending_mission writes to KOAN_ROOT/instance — point it at tmp_path
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir(exist_ok=True)
         (instance_dir / "missions.md").write_text(

@@ -55,15 +55,13 @@ class TestCheckStaleMissions:
         instance.mkdir()
         assert check_stale_missions(str(instance)) == []
 
-    def test_no_in_progress(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+    def test_no_in_progress(self, tmp_path):
         instance = tmp_path / "instance"
         instance.mkdir()
         _create_missions_file(instance, "## Pending\n\n## In Progress\n\n## Done\n")
         assert check_stale_missions(str(instance)) == []
 
-    def test_fresh_mission_not_stale(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+    def test_fresh_mission_not_stale(self, tmp_path):
         instance = tmp_path / "instance"
         instance.mkdir()
         _create_missions_file(instance, (
@@ -75,8 +73,7 @@ class TestCheckStaleMissions:
         _create_journal_file(instance, "myapp", age_seconds=60)
         assert check_stale_missions(str(instance)) == []
 
-    def test_stale_mission_detected(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+    def test_stale_mission_detected(self, tmp_path):
         instance = tmp_path / "instance"
         instance.mkdir()
         _create_missions_file(instance, (
@@ -90,10 +87,9 @@ class TestCheckStaleMissions:
         assert len(result) == 1
         assert "Fix the bug" in result[0]
 
-    def test_legacy_complex_mission_migrated_and_checked(self, monkeypatch, tmp_path):
+    def test_legacy_complex_mission_migrated_and_checked(self, tmp_path):
         # In the store era the ### block format is migrated to a plain record;
         # stale detection applies to all in_progress records uniformly.
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         instance = tmp_path / "instance"
         instance.mkdir()
         _create_missions_file(instance, (
@@ -109,8 +105,7 @@ class TestCheckStaleMissions:
         assert len(result) == 1
         assert "Big refactoring" in result[0]
 
-    def test_alerts_only_once(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+    def test_alerts_only_once(self, tmp_path):
         instance = tmp_path / "instance"
         instance.mkdir()
         _create_missions_file(instance, (
@@ -125,8 +120,7 @@ class TestCheckStaleMissions:
         result2 = check_stale_missions(str(instance), max_age_hours=2)
         assert len(result2) == 0
 
-    def test_multiple_stale_missions(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+    def test_multiple_stale_missions(self, tmp_path):
         instance = tmp_path / "instance"
         instance.mkdir()
         _create_missions_file(instance, (
@@ -140,9 +134,8 @@ class TestCheckStaleMissions:
         result = check_stale_missions(str(instance), max_age_hours=2)
         assert len(result) == 2
 
-    def test_no_journal_files_not_flagged(self, monkeypatch, tmp_path):
+    def test_no_journal_files_not_flagged(self, tmp_path):
         """Missions with no journal at all are not flagged as stale."""
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         instance = tmp_path / "instance"
         instance.mkdir()
         _create_missions_file(instance, (
@@ -179,9 +172,8 @@ class TestGetLastJournalActivity:
 class TestRunStaleMissionCheck:
 
     @patch("app.heartbeat._send_stale_alert")
-    def test_throttled(self, mock_alert, monkeypatch, tmp_path):
+    def test_throttled(self, mock_alert, tmp_path):
         """Second call within STALE_CHECK_INTERVAL returns empty."""
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         instance = tmp_path / "instance"
         instance.mkdir()
         _create_missions_file(instance, (
@@ -198,8 +190,7 @@ class TestRunStaleMissionCheck:
         assert len(result2) == 0
 
     @patch("app.notify.send_telegram")
-    def test_sends_alert(self, mock_send, monkeypatch, tmp_path):
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+    def test_sends_alert(self, mock_send, tmp_path):
         instance = tmp_path / "instance"
         instance.mkdir()
         _create_missions_file(instance, (

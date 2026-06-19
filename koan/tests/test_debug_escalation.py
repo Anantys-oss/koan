@@ -20,8 +20,6 @@ class TestMaybeEscalateToDebug:
 
     def test_escalates_fix_failure_when_enabled(self, tmp_path, monkeypatch):
         from app.mission_executor import _maybe_escalate_to_debug
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
         missions_file = self._setup_missions(tmp_path)
         monkeypatch.setattr("app.config.is_debug_on_fix_failure", lambda: True)
 
@@ -83,8 +81,6 @@ class TestMaybeEscalateToDebug:
 
     def test_extracts_issue_url_with_context(self, tmp_path, monkeypatch):
         from app.mission_executor import _maybe_escalate_to_debug
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
         missions_file = self._setup_missions(tmp_path)
         monkeypatch.setattr("app.config.is_debug_on_fix_failure", lambda: True)
 
@@ -98,8 +94,6 @@ class TestMaybeEscalateToDebug:
 
     def test_handles_project_tag_prefix(self, tmp_path, monkeypatch):
         from app.mission_executor import _maybe_escalate_to_debug
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(tmp_path))
         missions_file = self._setup_missions(tmp_path)
         monkeypatch.setattr("app.config.is_debug_on_fix_failure", lambda: True)
 

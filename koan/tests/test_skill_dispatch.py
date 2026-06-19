@@ -763,8 +763,6 @@ class TestHandlerCleanFormat:
     def test_plan_handler_clean_format(self, tmp_path, monkeypatch):
         """Plan handler should produce /plan format, not run: format."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("koan", "/workspace/koan")],
@@ -783,8 +781,6 @@ class TestHandlerCleanFormat:
     def test_rebase_handler_clean_format(self, tmp_path, monkeypatch):
         """Rebase handler should produce /rebase format."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("koan", "/workspace/koan")],
@@ -824,8 +820,6 @@ class TestHandlerCleanFormat:
     def test_ai_handler_clean_format(self, tmp_path, monkeypatch):
         """AI handler should produce /ai format."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("koan", str(tmp_path))],
@@ -843,8 +837,6 @@ class TestHandlerCleanFormat:
     def test_check_handler_clean_format(self, tmp_path, monkeypatch):
         """Check handler should produce /check format."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("koan", "/workspace/koan")],
@@ -865,8 +857,6 @@ class TestHandlerCleanFormat:
     def test_claudemd_handler_clean_format(self, tmp_path, monkeypatch):
         """Claudemd handler should produce /claudemd format."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("koan", "/workspace/koan")],
@@ -884,8 +874,6 @@ class TestHandlerCleanFormat:
     def test_recreate_handler_clean_format(self, tmp_path, monkeypatch):
         """Recreate handler should produce /recreate format."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         monkeypatch.setattr(
             "app.utils.get_known_projects",
             lambda: [("koan", "/workspace/koan")],
@@ -1596,11 +1584,9 @@ class TestStripPassthroughCommand:
 class TestExpandComboSkill:
     """Combo skills expand into multiple sub-missions in the queue."""
 
-    def test_rr_expands_to_review_and_rebase(self, tmp_path, monkeypatch):
+    def test_rr_expands_to_review_and_rebase(self, tmp_path):
         """The /rr combo skill should insert /review and /rebase missions."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         result = expand_combo_skill(
             "[project:koan] /rr https://github.com/owner/repo/pull/42",
             str(tmp_path),
@@ -1618,11 +1604,9 @@ class TestExpandComboSkill:
         assert "[project:koan]" in review_line
         assert "[project:koan]" in rebase_line
 
-    def test_reviewrebase_alias_works(self, tmp_path, monkeypatch):
+    def test_reviewrebase_alias_works(self, tmp_path):
         """The primary command /reviewrebase should also expand."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         result = expand_combo_skill(
             "[project:koan] /reviewrebase https://github.com/owner/repo/pull/42",
             str(tmp_path),
@@ -1633,11 +1617,9 @@ class TestExpandComboSkill:
         assert "/review" in content
         assert "/rebase" in content
 
-    def test_review_order_preserved(self, tmp_path, monkeypatch):
+    def test_review_order_preserved(self, tmp_path):
         """/review should come before /rebase in the pending section."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         expand_combo_skill(
             "[project:koan] /rr https://github.com/owner/repo/pull/42",
             str(tmp_path),
@@ -1658,11 +1640,9 @@ class TestExpandComboSkill:
         result = expand_combo_skill("Fix the login bug", str(tmp_path))
         assert result is False
 
-    def test_no_project_tag(self, tmp_path, monkeypatch):
+    def test_no_project_tag(self, tmp_path):
         """/rr without project tag should still expand (no tag in sub-missions)."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
-
         result = expand_combo_skill(
             "/rr https://github.com/owner/repo/pull/42",
             str(tmp_path),
@@ -1673,10 +1653,9 @@ class TestExpandComboSkill:
         assert "/review https://github.com/owner/repo/pull/42" in content
         assert "[project:" not in content
 
-    def test_parallel_combo_batch_inserts(self, tmp_path, monkeypatch):
+    def test_parallel_combo_batch_inserts(self, tmp_path):
         """Parallel combo skills batch-insert all sub-missions atomically."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions_md = tmp_path / "instance" / "missions.md"
         missions_md.write_text("## Pending\n\n- Existing mission\n\n## In Progress\n\n## Done\n")
 
@@ -1698,10 +1677,9 @@ class TestExpandComboSkill:
         assert "/profile [project:koan]" in content
         assert "Existing mission" in content
 
-    def test_parallel_combo_deduplicates_url_missions(self, tmp_path, monkeypatch):
+    def test_parallel_combo_deduplicates_url_missions(self, tmp_path):
         """Parallel combo should skip URL-based sub-missions that are already pending."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         url = "https://github.com/owner/repo/pull/42"
         missions_md = tmp_path / "instance" / "missions.md"
         missions_md.write_text(
@@ -1723,10 +1701,9 @@ class TestExpandComboSkill:
         assert f"/rebase {url}" in content
         assert content.count(f"/review {url}") == 1
 
-    def test_parallel_combo_no_project_tag(self, tmp_path, monkeypatch):
+    def test_parallel_combo_no_project_tag(self, tmp_path):
         """Parallel combo without project tag omits tag from sub-missions."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions_md = tmp_path / "instance" / "missions.md"
         missions_md.write_text("## Pending\n\n## In Progress\n\n## Done\n")
 
@@ -1742,10 +1719,9 @@ class TestExpandComboSkill:
         assert "/security_audit" in content
         assert "[project:" not in content
 
-    def test_parallel_combo_preserves_existing_pending(self, tmp_path, monkeypatch):
+    def test_parallel_combo_preserves_existing_pending(self, tmp_path):
         """Parallel batch insert must not clobber existing pending missions."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions_md = tmp_path / "instance" / "missions.md"
         missions_md.write_text(
             "## Pending\n\n- Fix login bug\n- Update docs\n\n## In Progress\n\n## Done\n"

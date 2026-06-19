@@ -184,8 +184,6 @@ class TestParseProjects:
     """
 
     def test_multi_project(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         from app.run import parse_projects
         p1 = tmp_path / "a"
         p2 = tmp_path / "b"
@@ -198,8 +196,6 @@ class TestParseProjects:
         assert result[1] == ("b", str(p2))
 
     def test_single_project_via_env(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         from app.run import parse_projects
         p = tmp_path / "proj"
         p.mkdir()
@@ -209,16 +205,12 @@ class TestParseProjects:
         assert result[0] == ("proj", str(p))
 
     def test_no_project_exits(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.delenv("KOAN_PROJECTS", raising=False)
         from app.run import parse_projects
         with pytest.raises(SystemExit):
             parse_projects()
 
     def test_all_nonexistent_paths_exits(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         monkeypatch.setenv("KOAN_PROJECTS", f"bad:{tmp_path}/nonexistent")
         from app.run import parse_projects
         with pytest.raises(SystemExit):
@@ -226,8 +218,6 @@ class TestParseProjects:
 
     def test_some_nonexistent_paths_filtered(self, tmp_path, monkeypatch):
         """Missing project dirs are skipped; valid ones are kept."""
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         from app.run import parse_projects
         p = tmp_path / "good"
         p.mkdir()
@@ -237,8 +227,6 @@ class TestParseProjects:
         assert result[0] == ("good", str(p))
 
     def test_too_many_projects(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         from app.run import parse_projects
         # 51 projects
         dirs = []
@@ -250,10 +238,8 @@ class TestParseProjects:
         with pytest.raises(SystemExit):
             parse_projects()
 
-    def test_projects_yaml_used(self, tmp_path, monkeypatch):
+    def test_projects_yaml_used(self, tmp_path):
         """parse_projects reads from projects.yaml when available."""
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         from app.run import parse_projects
         p = tmp_path / "myproject"
         p.mkdir()
@@ -1322,7 +1308,7 @@ class TestWatchdogTimeoutGuard:
 
         assert run_mod._last_mission_timed_out is False
 
-    def test_retry_skipped_on_watchdog_timeout(self, tmp_path, monkeypatch):
+    def test_retry_skipped_on_watchdog_timeout(self, tmp_path):
         """_maybe_retry_mission returns immediately when watchdog timed out."""
         import app.run as run_mod
 
@@ -1349,7 +1335,7 @@ class TestWatchdogTimeoutGuard:
         # Should return the same exit code — no retry
         assert result[0] == 1
 
-    def test_normal_failure_can_still_retry(self, tmp_path, monkeypatch):
+    def test_normal_failure_can_still_retry(self, tmp_path):
         """Non-timeout failures with RETRYABLE pattern still get retried."""
         import app.run as run_mod
 
@@ -1380,7 +1366,7 @@ class TestWatchdogTimeoutGuard:
 
             assert mock_task.called
 
-    def test_retry_skipped_on_stagnation(self, tmp_path, monkeypatch):
+    def test_retry_skipped_on_stagnation(self, tmp_path):
         """_maybe_retry_mission returns immediately when stagnation monitor aborted."""
         import app.run as run_mod
 
@@ -6198,11 +6184,9 @@ class TestRunSkillMissionCleanup(TestRunSkillMissionEnv):
 class TestUpdateMissionInFile:
     """Test _update_mission_in_file needle matching."""
 
-    def test_finds_original_title_in_progress(self, tmp_path, monkeypatch):
+    def test_finds_original_title_in_progress(self, tmp_path):
         """The original (untranslated) title must match the In Progress line."""
         from app.run import _update_mission_in_file
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
         missions.write_text(
@@ -6241,11 +6225,9 @@ class TestUpdateMissionInFile:
         # Mission should still be in In Progress (not moved)
         assert "/scope.myskill do something" in content.split("## In Progress")[1].split("##")[0]
 
-    def test_returns_true_when_moved(self, tmp_path, monkeypatch):
+    def test_returns_true_when_moved(self, tmp_path):
         """A successful move returns True so callers know the mission cleared."""
         from app.run import _update_mission_in_file
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
         missions.write_text(
@@ -6266,7 +6248,7 @@ class TestUpdateMissionInFile:
         )
         assert _update_mission_in_file(str(missions.parent), "/plan absent mission") is False
 
-    def test_mission_with_double_spaces_is_moved(self, tmp_path, monkeypatch):
+    def test_mission_with_double_spaces_is_moved(self, tmp_path):
         """Regression: a mission with internal double spaces must clear the queue.
 
         Previously the runner exited 0 but the mission stayed in Pending and
@@ -6274,8 +6256,6 @@ class TestUpdateMissionInFile:
         whitespace on the file line but not on the search needle.
         """
         from app.run import _update_mission_in_file
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         mission = "/plan https://github.com/owner/repo/issues/15 cli  and  dashboard reconcile"
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
@@ -6293,11 +6273,9 @@ class TestUpdateMissionInFile:
 class TestStartMissionSanityFlushLog:
     """A sanity flush during start_mission() is surfaced to operators."""
 
-    def test_stale_in_progress_is_flushed_and_logged(self, tmp_path, monkeypatch):
+    def test_stale_in_progress_is_flushed_and_logged(self, tmp_path):
         from app.run import _start_mission_in_file
         from app.missions import parse_sections
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
         # A stale In Progress mission recover.py "missed", plus the one we start.
@@ -6324,10 +6302,8 @@ class TestStartMissionSanityFlushLog:
         ]
         assert any("Sanity flush" in w and "leftover stale" in w for w in warnings)
 
-    def test_no_log_when_in_progress_empty(self, tmp_path, monkeypatch):
+    def test_no_log_when_in_progress_empty(self, tmp_path):
         from app.run import _start_mission_in_file
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = tmp_path / "instance" / "missions.md"
         missions.parent.mkdir(parents=True)
         missions.write_text(
@@ -6360,12 +6336,10 @@ class TestPruneDecoupledFromFinalization:
         )
         return missions
 
-    def test_finalization_triggers_history_prune(self, tmp_path, monkeypatch):
+    def test_finalization_triggers_history_prune(self, tmp_path):
         """Completing a mission still trims an oversized Failed section..."""
         from app.run import _update_mission_in_file
         from app.missions import parse_sections
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = self._missions_with_many_failed(tmp_path, n_failed=35)
         assert _update_mission_in_file(str(missions.parent), "/plan finish me") is True
 
@@ -6375,7 +6349,7 @@ class TestPruneDecoupledFromFinalization:
         # ...and the mission still moved to Done.
         assert "/plan finish me" in "\n".join(sections["done"])
 
-    def test_prune_failure_does_not_break_finalization(self, tmp_path, monkeypatch):
+    def test_prune_failure_does_not_break_finalization(self, tmp_path):
         """A pruning error must not roll back or fail the mission move.
 
         Pruning runs as its own locked step (``_prune_missions_history``)
@@ -6384,8 +6358,6 @@ class TestPruneDecoupledFromFinalization:
         """
         from app.run import _update_mission_in_file
         from app.missions import parse_sections
-
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         missions = self._missions_with_many_failed(tmp_path, n_failed=35)
 
         with patch(

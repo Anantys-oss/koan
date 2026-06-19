@@ -343,12 +343,11 @@ class TestProfileRunner:
         assert report_path.exists()
         assert "newproject" in str(report_path)
 
-    def test_queue_missions(self, tmp_path, monkeypatch):
+    def test_queue_missions(self, tmp_path):
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
         missions_md = instance_dir / "missions.md"
         missions_md.write_text("## Pending\n\n## In Progress\n\n## Done\n")
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         from skills.core.profile.profile_runner import _queue_missions
         queued = _queue_missions(instance_dir, "koan", ["Fix slow loop", "Add cache"])
         assert queued == 2

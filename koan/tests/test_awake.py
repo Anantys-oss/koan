@@ -311,9 +311,8 @@ class TestParseProject:
 
 class TestHandleMission:
     @patch("app.command_handlers.send_telegram")
-    def test_mission_appended_to_pending(self, mock_send, tmp_path, monkeypatch):
+    def test_mission_appended_to_pending(self, mock_send, tmp_path):
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         handle_mission("mission: audit security")
 
         content = (tmp_path / "instance" / "missions.md").read_text()
@@ -321,9 +320,8 @@ class TestHandleMission:
         mock_send.assert_called_once()
 
     @patch("app.command_handlers.send_telegram")
-    def test_mission_with_project_tag(self, mock_send, tmp_path, monkeypatch):
+    def test_mission_with_project_tag(self, mock_send, tmp_path):
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         handle_mission("[project:koan] add tests")
 
         content = (tmp_path / "instance" / "missions.md").read_text()
@@ -332,10 +330,9 @@ class TestHandleMission:
         assert "[project:koan]" in content
 
     @patch("app.command_handlers.send_telegram")
-    def test_mission_auto_detects_project_from_first_word(self, mock_send, tmp_path, monkeypatch):
+    def test_mission_auto_detects_project_from_first_word(self, mock_send, tmp_path):
         """'koan fix bug' should auto-detect project 'koan' from the first word."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.utils.get_known_projects", return_value=[("koan", "/path/to/koan")]):
             handle_mission("koan fix the bug")
 
@@ -347,10 +344,9 @@ class TestHandleMission:
         assert "project: koan" in msg
 
     @patch("app.command_handlers.send_telegram")
-    def test_mission_no_project_when_first_word_unknown(self, mock_send, tmp_path, monkeypatch):
+    def test_mission_no_project_when_first_word_unknown(self, mock_send, tmp_path):
         """First word 'fix' should not be detected as project."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.utils.get_known_projects", return_value=[("koan", "/path/to/koan")]):
             handle_mission("fix the bug")
 
@@ -1438,7 +1434,7 @@ class TestCheckConfig:
              pytest.raises(SystemExit):
             check_config()
 
-    def test_exits_without_chat_id(self, monkeypatch, tmp_path):
+    def test_exits_without_chat_id(self):
         with patch("app.messaging.resolve_provider_name", return_value="telegram"), \
              patch("app.awake.BOT_TOKEN", "token"), \
              patch("app.awake.CHAT_ID", ""), \
@@ -2406,10 +2402,9 @@ class TestMissionProjectAutoDetection:
     """Test /mission auto-detects project from first word."""
 
     @patch("app.command_handlers.send_telegram")
-    def test_mission_skill_detects_project_from_first_word(self, mock_send, tmp_path, monkeypatch):
+    def test_mission_skill_detects_project_from_first_word(self, mock_send, tmp_path):
         """'/mission koan fix bug' should detect 'koan' as project."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
              patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/path/to/koan")]):
@@ -2421,10 +2416,9 @@ class TestMissionProjectAutoDetection:
         assert "[project:koan]" in content
 
     @patch("app.command_handlers.send_telegram")
-    def test_mission_skill_explicit_tag_takes_precedence(self, mock_send, tmp_path, monkeypatch):
+    def test_mission_skill_explicit_tag_takes_precedence(self, mock_send, tmp_path):
         """'[project:web] koan fix bug' uses explicit tag, not first word."""
         (tmp_path / "instance").mkdir(exist_ok=True)
-        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
              patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/p1"), ("web", "/p2")]):
@@ -2789,7 +2783,7 @@ class TestWorkerDispatch:
 
     @patch("app.command_handlers._run_in_worker_cb")
     @patch("app.command_handlers.send_telegram")
-    def test_worker_skill_runs_in_worker_thread(self, mock_send, mock_worker, tmp_path):
+    def test_worker_skill_runs_in_worker_thread(self, mock_send, mock_worker):
         """Skills with worker=true should dispatch to worker thread."""
         from app.skills import Skill, SkillCommand
         skill = Skill(

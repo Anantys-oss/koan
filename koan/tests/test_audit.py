@@ -1269,9 +1269,7 @@ class TestQueueAutoFixMissions:
         )
         return (finding, url)
 
-    def test_queues_matching_severity(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_queues_matching_severity(self, tmp_path):
         missions = tmp_path / "instance" / "missions.md"
 
         entries = (
@@ -1290,10 +1288,7 @@ class TestQueueAutoFixMissions:
         assert "/fix https://github.com/o/r/issues/2" in content
         assert "/fix https://github.com/o/r/issues/3" not in content
 
-    def test_respects_cap(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
+    def test_respects_cap(self, tmp_path):
         entries = tuple(
             self._make_entry("critical", f"https://github.com/o/r/issues/{i}")
             for i in range(10)
@@ -1305,10 +1300,7 @@ class TestQueueAutoFixMissions:
 
         assert count == AUTO_FIX_CAP
 
-    def test_skips_pvrs_advisories(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
+    def test_skips_pvrs_advisories(self, tmp_path):
         entries = (
             self._make_entry("critical", "https://github.com/o/r/security/advisories/GHSA-xxx"),
         )
@@ -1319,19 +1311,14 @@ class TestQueueAutoFixMissions:
 
         assert count == 0
 
-    def test_empty_entries(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
-
+    def test_empty_entries(self, tmp_path):
         count = queue_auto_fix_missions(
             (), "myproj", str(tmp_path), threshold="high",
         )
 
         assert count == 0
 
-    def test_notify_fn_called(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_notify_fn_called(self, tmp_path):
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
         (instance_dir / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
@@ -1349,9 +1336,7 @@ class TestQueueAutoFixMissions:
         notify.assert_called_once()
         assert "Auto-fix" in notify.call_args[0][0]
 
-    def test_mission_format(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_mission_format(self, tmp_path):
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
         (instance_dir / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
@@ -1369,9 +1354,7 @@ class TestQueueAutoFixMissions:
         assert "/fix https://github.com/o/r/issues/1" in content
         assert "[project:myproj]" in content
 
-    def test_critical_only_threshold(self, tmp_path, monkeypatch):
-        from app import utils
-        monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
+    def test_critical_only_threshold(self, tmp_path):
         instance_dir = tmp_path / "instance"
         instance_dir.mkdir()
         (instance_dir / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
