@@ -643,6 +643,7 @@ class TestResolveProjectPathWithOwner:
 
     def test_without_owner_unchanged(self, monkeypatch):
         """Without owner, behavior is identical to before."""
+        from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", Path("/tmp/test"))
         monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan;web:/home/web")
 
@@ -651,6 +652,7 @@ class TestResolveProjectPathWithOwner:
 
     def test_exact_name_match(self, monkeypatch):
         """Exact project name match still works."""
+        from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", Path("/tmp/test"))
         monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan")
 
@@ -724,6 +726,7 @@ class TestResolveProjectPathWithOwner:
 
     def test_single_project_fallback(self, monkeypatch):
         """Falls back to single project without owner."""
+        from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", Path("/tmp/test"))
         monkeypatch.setenv("KOAN_PROJECTS", "only:/home/only")
 
@@ -732,6 +735,7 @@ class TestResolveProjectPathWithOwner:
 
     def test_no_match_returns_none(self, monkeypatch):
         """Returns None when nothing matches with multiple projects."""
+        from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", Path("/tmp/test"))
         monkeypatch.setenv("KOAN_PROJECTS", "koan:/home/koan;web:/home/web")
 
@@ -741,6 +745,7 @@ class TestResolveProjectPathWithOwner:
 
     def test_basename_match(self, monkeypatch):
         """Directory basename match still works."""
+        from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", Path("/tmp/test"))
         monkeypatch.setenv("KOAN_PROJECTS", "myproject:/home/workspace/koan")
 

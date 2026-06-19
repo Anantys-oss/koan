@@ -1501,6 +1501,7 @@ class TestKoanTmpDir:
     def _reset_cache(self, monkeypatch):
         # The resolved path is cached in a module global; clear it so each
         # test re-resolves from the env it sets up.
+        from app import utils
         monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
 
     def test_respects_env_override(self, tmp_path, monkeypatch):
@@ -1570,6 +1571,7 @@ class TestKoanTmpDir:
 
     def test_different_roots_yield_different_dirs(self, tmp_path, monkeypatch):
         """Two users (different KOAN_TMP_DIR/uid) never share a path."""
+        from app import utils
         from app.utils import koan_tmp_dir
 
         monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "user_a"))
