@@ -874,7 +874,7 @@ class KoanDashboard(App):
         try:
             from app.mission_store import MissionStore
 
-            store = MissionStore.load()
+            store = MissionStore()
             titles = []
             for r in store.get_by_status("in_progress"):
                 title = r.display_title()
@@ -962,7 +962,7 @@ class KoanDashboard(App):
         try:
             from app.mission_store import MissionStore
 
-            pending_count = len(MissionStore.load().get_by_status("pending"))
+            pending_count = len(MissionStore().get_by_status("pending"))
         except (OSError, PermissionError, ValueError) as exc:
             self.log(f"pending count failed: {exc}")
             pending_count = 0

@@ -40,7 +40,7 @@ def _list_ideas():
     from app.missions import clean_mission_display
     from app.mission_store import MissionStore
 
-    ideas = MissionStore.load().get_ideas()
+    ideas = MissionStore().get_ideas()
 
     if not ideas:
         return "ℹ️ No ideas in the backlog. Add one with /idea <description>"

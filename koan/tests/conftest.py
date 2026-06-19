@@ -116,7 +116,7 @@ def isolate_env(monkeypatch, tmp_path):
     monkeypatch.delenv("CLI_PROVIDER", raising=False)
     monkeypatch.delenv("KOAN_CLI_PROVIDER", raising=False)
     # Redirect app.utils.KOAN_ROOT to an isolated temp directory so every
-    # call to MissionStore.load() / locked_store() lands in tmp_path, not the
+    # call to MissionStore() / locked_store() lands in tmp_path, not the
     # real instance on the host.  Tests that need a specific layout can
     # override this with their own monkeypatch.setattr("app.utils.KOAN_ROOT", …).
     import app.utils as _utils

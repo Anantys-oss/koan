@@ -48,7 +48,7 @@ def _show_queue_with_hint():
     """Show queue with usage hint when /priority is called bare."""
     from app.mission_store import MissionStore
 
-    store = MissionStore.load()
+    store = MissionStore()
     pending = store.get_by_status("pending")
     if not pending:
         return "ℹ️ Queue is empty.\n\nUsage: /prio <n>"

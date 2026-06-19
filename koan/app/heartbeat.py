@@ -50,7 +50,7 @@ def check_stale_missions(
     """
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load()
+        store = MissionStore()
         in_progress = store.get_by_status("in_progress")
     except Exception as e:
         import sys

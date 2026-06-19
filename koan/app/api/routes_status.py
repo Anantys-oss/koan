@@ -58,7 +58,7 @@ def _mission_counts() -> dict:
     """Count missions by status from the mission store."""
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load()
+        store = MissionStore()
         return {
             "pending": len(store.get_by_status("pending")),
             "in_progress": len(store.get_by_status("in_progress")),

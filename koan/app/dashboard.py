@@ -249,7 +249,7 @@ def parse_missions() -> dict:
     """Return missions grouped by status as rendered Markdown lines."""
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load()
+        store = MissionStore()
     except (OSError, ValueError):
         return {"pending": [], "in_progress": [], "done": []}
     return {
@@ -427,7 +427,7 @@ def index():
     if len(projects_list) > 1:
         try:
             from app.mission_store import MissionStore
-            store = MissionStore.load()
+            store = MissionStore()
             for status_key in ("in_progress", "pending"):
                 for r in store.get_by_status(status_key):
                     pname = r.project or "default"
@@ -1708,7 +1708,7 @@ def _find_linked_missions(issue_url: str, issue_number: int) -> list:
     """Find missions that reference the given plan issue URL or number."""
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load()
+        store = MissionStore()
     except (OSError, ValueError):
         return []
 

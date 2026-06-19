@@ -1666,7 +1666,7 @@ def check_pending_missions() -> bool:
     """Check if there are pending missions in the mission store."""
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load()
+        store = MissionStore()
         return len(store.get_by_status("pending")) > 0
     except (OSError, ValueError) as e:
         _log_loop("error", f"Error reading mission store: {e}")

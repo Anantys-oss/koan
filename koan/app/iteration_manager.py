@@ -391,7 +391,7 @@ def _fallback_mission_extract(instance_dir: Path, projects_str: str,
     try:
         from app.mission_store import MissionStore
 
-        store = MissionStore.load()
+        store = MissionStore()
         pending = store.get_by_status("pending")
         if not pending:
             return None, None

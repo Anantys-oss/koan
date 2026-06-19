@@ -47,7 +47,7 @@ def _list_pending():
     """Show numbered list of pending missions for selection."""
     from app.mission_store import MissionStore
 
-    store = MissionStore.load()
+    store = MissionStore()
     pending = store.get_by_status("pending")
 
     if not pending:

@@ -47,7 +47,7 @@ def app_client(instance_dir, tmp_path, monkeypatch):
     # Copy real templates so Flask can render them
     tpl_dest = tmp_path / "koan" / "templates"
     shutil.copytree(REAL_TEMPLATES, tpl_dest)
-    # Patch app.utils.KOAN_ROOT so MissionStore.load() and locked_store() read
+    # Patch app.utils.KOAN_ROOT so MissionStore() and locked_store() read
     # from the temp instance dir instead of the real KOAN_ROOT.
     monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
     with patch.object(dashboard, "INSTANCE_DIR", instance_dir), \

@@ -1154,7 +1154,7 @@ def _try_assignment_notification(
     try:
         from app.mission_store import MissionStore
 
-        store = MissionStore.load()
+        store = MissionStore()
         active = store.get_by_status("pending") + store.get_by_status("in_progress")
         url_lower = web_url.lower()
         for record in active:

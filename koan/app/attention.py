@@ -119,7 +119,7 @@ def _collect_failed_missions(koan_root: str) -> list:
     try:
         from app.mission_store import MissionStore
 
-        store = MissionStore.load()
+        store = MissionStore()
         for record in store.get_by_status("failed"):
             item_id = _make_id("failed-mission", record.id)
             detail = record.display_title()

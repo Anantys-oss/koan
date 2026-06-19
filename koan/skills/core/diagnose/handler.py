@@ -44,7 +44,7 @@ def _find_last_failure(missions_path, project_filter=None):
     """
     from app.mission_store import MissionStore
 
-    store = MissionStore.load()
+    store = MissionStore()
     failed = store.get_by_status("failed")
 
     if not failed:
@@ -132,7 +132,7 @@ def _is_already_queued(instance_dir, failure_text):
     """Check if a diagnose mission for this failure is already pending."""
     from app.mission_store import MissionStore
 
-    store = MissionStore.load()
+    store = MissionStore()
     needle = failure_text[:80]
     for record in store.get_by_status("pending") + store.get_by_status("in_progress"):
         if "Diagnose and fix" in record.text and needle in record.text:

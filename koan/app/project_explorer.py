@@ -83,7 +83,7 @@ def get_missions_context() -> str:
     try:
         from app.mission_store import MissionStore
 
-        store = MissionStore.load()
+        store = MissionStore()
         in_progress = store.get_by_status("in_progress")
         pending = store.get_by_status("pending")
     except (OSError, ValueError):

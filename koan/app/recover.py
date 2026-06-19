@@ -254,7 +254,7 @@ def recover_missions(
     # In dry-run mode we must not persist anything, so load a detached store
     # under a null context; otherwise use the locked load→mutate→save cycle.
     if dry_run:
-        store_ctx = contextlib.nullcontext(MissionStore.load())
+        store_ctx = contextlib.nullcontext(MissionStore())
     else:
         store_ctx = locked_store()
 
