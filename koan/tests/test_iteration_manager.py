@@ -3306,9 +3306,11 @@ class TestFocusModePromptOverride:
         from app.prompt_builder import _apply_focus_mode_override
         sample = (
             "# Mission\n\n"
+            "<!-- BEGIN:github-issue-selection -->\n"
             "## GitHub Issue Selection (IMPLEMENT and DEEP modes)\n\n"
             "When you choose to work on a GitHub issue...\n"
-            "more text here\n\n"
+            "more text here\n"
+            "<!-- END:github-issue-selection -->\n\n"
             "# Autonomy\n\n"
             "some autonomy content\n"
         )
@@ -3316,16 +3318,36 @@ class TestFocusModePromptOverride:
             result = _apply_focus_mode_override(sample)
         assert "Focus Mode" in result
         assert "GitHub Issue Selection" not in result
-        assert "# Autonomy" in result  # downstream content preserved
+        assert "# Autonomy" in result
 
     def test_github_section_intact_when_not_focus(self):
         from app.prompt_builder import _apply_focus_mode_override
         sample = (
+            "<!-- BEGIN:github-issue-selection -->\n"
             "## GitHub Issue Selection (IMPLEMENT and DEEP modes)\n\n"
-            "content\n\n"
+            "content\n"
+            "<!-- END:github-issue-selection -->\n\n"
             "# Autonomy\n"
         )
         with patch("app.prompt_builder._is_focus_mode", return_value=False):
+            result = _apply_focus_mode_override(sample)
+        assert result == sample
+
+    def test_missing_sentinels_returns_prompt_unchanged(self):
+        from app.prompt_builder import _apply_focus_mode_override
+        sample = "## GitHub Issue Selection\n\ncontent\n\n# Autonomy\n"
+        with patch("app.prompt_builder._is_focus_mode", return_value=True):
+            result = _apply_focus_mode_override(sample)
+        assert result == sample
+
+    def test_misordered_sentinels_returns_prompt_unchanged(self):
+        from app.prompt_builder import _apply_focus_mode_override
+        sample = (
+            "<!-- END:github-issue-selection -->\n"
+            "## GitHub Issue Selection\n\ncontent\n"
+            "<!-- BEGIN:github-issue-selection -->\n"
+        )
+        with patch("app.prompt_builder._is_focus_mode", return_value=True):
             result = _apply_focus_mode_override(sample)
         assert result == sample
 

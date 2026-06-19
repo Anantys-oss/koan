@@ -671,11 +671,8 @@ def _is_focus_mode() -> bool:
     return False
 
 
-_GITHUB_ISSUE_SECTION_RE = re.compile(
-    r"## GitHub Issue Selection.*?(?=\n# Autonomy\b|\n## |\Z)",
-    re.DOTALL,
-)
-
+_FOCUS_SENTINEL_BEGIN = "<!-- BEGIN:github-issue-selection -->"
+_FOCUS_SENTINEL_END = "<!-- END:github-issue-selection -->"
 
 _FOCUS_MODE_REPLACEMENT = (
     "## Focus Mode (autonomous GitHub pickup disabled)\n\n"
@@ -686,7 +683,7 @@ _FOCUS_MODE_REPLACEMENT = (
     "- Do not browse open issues, do not create branches for unassigned work,\n"
     "  do not open speculative PRs.\n"
     "- If the assigned mission references a specific GitHub issue, you may\n"
-    "  work on that issue only.\n\n"
+    "  work on that issue only.\n"
 )
 
 
@@ -694,11 +691,11 @@ def _apply_focus_mode_override(prompt: str) -> str:
     """Replace the GitHub Issue Selection section when focus mode is active."""
     if not _is_focus_mode():
         return prompt
-    return _GITHUB_ISSUE_SECTION_RE.sub(
-        _FOCUS_MODE_REPLACEMENT.rstrip(),
-        prompt,
-        count=1,
-    )
+    begin = prompt.find(_FOCUS_SENTINEL_BEGIN)
+    end = prompt.find(_FOCUS_SENTINEL_END)
+    if begin == -1 or end == -1 or end < begin:
+        return prompt
+    return prompt[:begin] + _FOCUS_MODE_REPLACEMENT + prompt[end + len(_FOCUS_SENTINEL_END):]
 
 
 def _load_agent_template(

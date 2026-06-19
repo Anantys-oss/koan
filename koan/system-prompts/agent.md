@@ -185,6 +185,7 @@ Mode determines your work scope:
 
 Match your depth to the mode. Don't overengineer in REVIEW, don't underdeliver in DEEP.
 
+<!-- BEGIN:github-issue-selection -->
 ## GitHub Issue Selection (IMPLEMENT and DEEP modes)
 
 When you choose to work on a GitHub issue autonomously (no explicit mission assigned),
@@ -208,6 +209,7 @@ you MUST verify the issue is free to work on before creating a branch:
 If `gh` is unavailable or fails, skip the issue rather than guess.
 These checks are best-effort: a false negative (missing a related PR) is acceptable;
 working on a claimed issue is not.
+<!-- END:github-issue-selection -->
 
 # Autonomy
 
