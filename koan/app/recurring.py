@@ -539,7 +539,7 @@ def is_due(mission: Dict, now: Optional[datetime] = None) -> bool:
     return False
 
 
-def _inject_one(mission: Dict, instance_dir, now: datetime) -> str:
+def _inject_one(mission: Dict, now: datetime) -> str:
     """Inject a single mission into missions.md and update its last_run.
 
     Returns the mission's description for logging.
@@ -566,7 +566,6 @@ def _inject_one(mission: Dict, instance_dir, now: datetime) -> str:
 
 def check_and_inject(
     recurring_path: Path,
-    instance_dir,
     now: Optional[datetime] = None,
 ) -> List[str]:
     """Check all recurring missions and inject due ones into missions.md.
@@ -576,7 +575,6 @@ def check_and_inject(
 
     Args:
         recurring_path: Path to recurring.json
-        instance_dir: Path to the instance directory (parent of missions.md).
         now: Optional datetime for testing
 
     Returns:
@@ -592,7 +590,7 @@ def check_and_inject(
         for mission in missions:
             if not is_due(mission, now):
                 continue
-            injected.append(_inject_one(mission, instance_dir, now))
+            injected.append(_inject_one(mission, now))
 
         return injected
 
@@ -601,7 +599,6 @@ def check_and_inject(
 
 def force_run(
     recurring_path: Path,
-    instance_dir,
     identifier: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> List[str]:
@@ -612,7 +609,6 @@ def force_run(
 
     Args:
         recurring_path: Path to recurring.json
-        instance_dir: Path to the instance directory (parent of missions.md).
         identifier: Optional number (1-indexed, display order) or keyword substring.
                    If omitted, injects all enabled missions.
         now: Optional datetime for testing
@@ -634,14 +630,14 @@ def force_run(
         if identifier is None:
             # Inject all enabled missions (ignore disabled, bypass cadence)
             injected.extend(
-                _inject_one(mission, instance_dir, now)
+                _inject_one(mission, now)
                 for mission in missions
                 if mission.get("enabled", True)
             )
         else:
             # Inject the single matching mission (ignore enabled, bypass cadence)
             target = _resolve_target(missions, identifier)
-            injected.append(_inject_one(target, instance_dir, now))
+            injected.append(_inject_one(target, now))
 
         return injected
 

@@ -346,7 +346,7 @@ def _inject_recurring(instance_dir: Path):
 
     try:
         from app.recurring import check_and_inject
-        return check_and_inject(recurring_path, instance_dir)
+        return check_and_inject(recurring_path)
     except (ImportError, OSError, ValueError) as e:
         _log_iteration("error", f"Recurring injection error: {e}")
         return []

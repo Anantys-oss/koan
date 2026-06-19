@@ -30,7 +30,7 @@ def main():
 
     try:
         from app.recurring import check_and_inject
-        injected = check_and_inject(recurring_path, instance_dir)
+        injected = check_and_inject(recurring_path)
         for desc in injected:
             print(f"[recurring] Injected: {desc}")
     except Exception as e:

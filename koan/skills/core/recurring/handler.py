@@ -214,7 +214,7 @@ def _handle_run(ctx, identifier=None):
 
     # Attempt to force run
     try:
-        injected = force_run(recurring_path, ctx.instance_dir, identifier=identifier)
+        injected = force_run(recurring_path, identifier=identifier)
         if injected:
             return f"Forced run of {len(injected)} mission(s):\n" + "\n".join(f"  • {text}" for text in injected)
         return "No missions matched the identifier."
