@@ -500,12 +500,9 @@ def add_mission():
         entry = f"- {text}"
 
     from app.mission_store import locked_store
-    from app.missions import is_duplicate_mission
     inserted = False
     with locked_store(str(INSTANCE_DIR)) as store:
-        if not is_duplicate_mission(store.to_markdown(), entry):
-            store.add(text, project or "")
-            inserted = True
+        _, inserted = store.add(text, project or "")
     if inserted:
         try:
             from app.api.mission_index import record_mission
@@ -544,12 +541,9 @@ def chat_send():
             entry = f"- {mission_text}"
 
         from app.mission_store import locked_store
-        from app.missions import is_duplicate_mission
         inserted = False
         with locked_store(str(INSTANCE_DIR)) as store:
-            if not is_duplicate_mission(store.to_markdown(), entry):
-                store.add(mission_text, project or "")
-                inserted = True
+            _, inserted = store.add(mission_text, project or "")
         if inserted:
             try:
                 from app.api.mission_index import record_mission
