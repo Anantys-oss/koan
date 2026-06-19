@@ -1,6 +1,8 @@
 """Tests for memory_manager.py — scoped summary, compaction, learnings dedup, journal archival."""
 
 import contextlib
+import os
+import unittest.mock
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -1956,6 +1958,36 @@ class TestPruneMemoryLog:
         append_memory_entry(instance, "session", "proj", "recent", ts="2099-12-31T00:00:00Z")
         removed = prune_memory_log(instance, horizon_days=365)
         assert removed == 0
+
+    def test_fsync_after_prune(self, tmp_path):
+        """Verify flush+fsync is called after truncate+write to prevent crash data loss."""
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "proj", "old", ts="2020-01-01T00:00:00Z")
+        append_memory_entry(instance, "session", "proj", "new", ts="2099-01-01T00:00:00Z")
+        fsync_calls = []
+        real_fsync = os.fsync
+
+        def tracking_fsync(fd):
+            fsync_calls.append(fd)
+            return real_fsync(fd)
+
+        with unittest.mock.patch("os.fsync", side_effect=tracking_fsync):
+            removed = prune_memory_log(instance, horizon_days=1)
+        assert removed == 1
+        assert len(fsync_calls) >= 1
+        remaining = read_memory_window(instance, "proj", max_entries=100)
+        assert len(remaining) == 1
+        assert remaining[0]["content"] == "new"
+
+    def test_no_fsync_when_nothing_pruned(self, tmp_path):
+        """No fsync needed when no entries were removed."""
+        instance = str(tmp_path)
+        append_memory_entry(instance, "session", "proj", "recent", ts="2099-12-31T00:00:00Z")
+        fsync_calls = []
+        with unittest.mock.patch("os.fsync", side_effect=lambda fd: fsync_calls.append(fd)):
+            removed = prune_memory_log(instance, horizon_days=365)
+        assert removed == 0
+        assert len(fsync_calls) == 0
 
 
 class TestMigrateMarkdownToJsonl:

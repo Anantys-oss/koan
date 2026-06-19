@@ -29,6 +29,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -1461,6 +1462,8 @@ class MemoryManager:
                 f.seek(0)
                 f.truncate()
                 f.write("\n".join(kept) + "\n" if kept else "")
+                f.flush()
+                os.fsync(f.fileno())
         finally:
             f.close()
 
