@@ -112,8 +112,8 @@ class TelegramProvider(MessagingProvider):
             me = requests.get(f"{self._api_base}/getMe", timeout=5).json()
             if me.get("ok"):
                 self._bot_username = me.get("result", {}).get("username", "")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[telegram] getMe failed: {e}", file=sys.stderr)
 
         return True
 
