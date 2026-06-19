@@ -412,7 +412,7 @@ class TestInsertPendingMission:
         from app.utils import insert_pending_mission
         from app.mission_store import locked_store
         # Pre-populate via the store so missions.json is canonical from the start.
-        with locked_store(str(tmp_path / "instance")) as store:
+        with locked_store() as store:
             store.add("/rebase https://github.com/o/r/pull/1", "koan")
 
         result = insert_pending_mission(

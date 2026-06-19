@@ -278,7 +278,7 @@ class MissionStore:
     # ------------------------------------------------------------------
 
     @classmethod
-    def load(cls, instance_dir: str | None = None) -> "MissionStore":
+    def load(cls) -> "MissionStore":
         """Load the store from ``missions.json``, or migrate from ``missions.md``.
 
         If ``missions.json`` does not exist, reads ``missions.md`` and calls
@@ -289,27 +289,22 @@ class MissionStore:
         load-then-mutate semantics must acquire the lock explicitly before
         calling :meth:`load`.
 
-        Args:
-            instance_dir: Path to the ``instance/`` directory.  Defaults to
-                ``KOAN_ROOT / "instance"`` when ``None``.
-
         Returns:
             A populated :class:`MissionStore`.
         """
-        if instance_dir is None:
-            instance_dir = _default_instance_dir()
+        instance_dir = _default_instance_dir()
         store = cls(instance_dir)
         store_path = store._store_path()
 
         if not store_path.exists():
             # First run or pre-migration instance — seed from missions.md
-            return cls._migrate_from_markdown(instance_dir)
+            return cls._migrate_from_markdown()
 
         try:
             raw = json.loads(store_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             # Corrupted JSON — migrate from Markdown as fallback
-            return cls._migrate_from_markdown(instance_dir)
+            return cls._migrate_from_markdown()
 
         records_data = raw.get("records", [])
         for item in records_data:
@@ -982,7 +977,7 @@ class MissionStore:
     # ------------------------------------------------------------------
 
     @classmethod
-    def _migrate_from_markdown(cls, instance_dir: str) -> "MissionStore":
+    def _migrate_from_markdown(cls) -> "MissionStore":
         """Seed a new store by parsing the existing ``missions.md``.
 
         Reads the Markdown file, parses all sections, extracts lifecycle markers
@@ -993,15 +988,12 @@ class MissionStore:
         This is called exactly once per instance — when ``missions.json`` is
         absent.
 
-        Args:
-            instance_dir: Path to the ``instance/`` directory.
-
         Returns:
             A populated :class:`MissionStore` (already saved to disk).
         """
         from app.missions import parse_ideas, parse_sections  # lazy import
 
-        store = cls(instance_dir)
+        store = cls(_default_instance_dir())
         view_path = store._view_path()
 
         if view_path.exists():
@@ -1040,7 +1032,7 @@ class MissionStore:
 
 
 @contextlib.contextmanager
-def locked_store(instance_dir: str | None = None) -> Generator[MissionStore, None, None]:
+def locked_store() -> Generator[MissionStore, None, None]:
     """Context manager for an atomic load → mutate → save transaction.
 
     Acquires both the in-process thread lock and the per-instance file lock,
@@ -1058,20 +1050,15 @@ def locked_store(instance_dir: str | None = None) -> Generator[MissionStore, Non
     This is the canonical entry point for all mission-queue mutations:
     ``missions.md`` is regenerated from the store on save and is never
     written directly.
-
-    Args:
-        instance_dir: Path to the ``instance/`` directory.  Defaults to
-            ``KOAN_ROOT / "instance"`` when ``None``.
     """
-    if instance_dir is None:
-        instance_dir = _default_instance_dir()
+    instance_dir = _default_instance_dir()
     lock_path = Path(instance_dir) / _STORE_LOCK_FILENAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with _STORE_LOCK:
         with open(lock_path, "w") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
-                store = MissionStore.load(instance_dir)
+                store = MissionStore.load()
                 yield store
                 store._save()   # persist mutation first; prune is best-effort
                 try:

@@ -23,8 +23,10 @@ from app.mission_store import (
 
 @pytest.fixture
 def tmp_instance(tmp_path):
-    """An empty instance directory."""
-    return str(tmp_path)
+    """An empty instance directory (matches KOAN_ROOT/instance used by load())."""
+    d = tmp_path / "instance"
+    d.mkdir()
+    return str(d)
 
 
 @pytest.fixture
@@ -36,7 +38,9 @@ def store(tmp_instance):
 @pytest.fixture
 def populated_md(tmp_path):
     """Instance directory with a pre-existing missions.md."""
-    md = tmp_path / "missions.md"
+    instance = tmp_path / "instance"
+    instance.mkdir()
+    md = instance / "missions.md"
     md.write_text(
         "# Missions\n\n"
         "## In Progress\n\n"
@@ -50,7 +54,7 @@ def populated_md(tmp_path):
         "- Deploy staging ❌ (2026-06-14 06:00) [flushed]\n",
         encoding="utf-8",
     )
-    return str(tmp_path)
+    return str(instance)
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +130,7 @@ class TestMissionStoreInit:
 
 class TestMissionStoreLoad:
     def test_load_empty_instance_returns_empty_store(self, tmp_instance):
-        s = MissionStore.load(tmp_instance)
+        s = MissionStore.load()
         assert s._records == []
 
     def test_load_from_existing_json(self, tmp_instance):
@@ -148,7 +152,7 @@ class TestMissionStoreLoad:
         Path(tmp_instance, "missions.json").write_text(
             json.dumps(payload), encoding="utf-8"
         )
-        s = MissionStore.load(tmp_instance)
+        s = MissionStore.load()
         assert len(s._records) == 1
         assert s._records[0].text == "Test mission"
 
@@ -158,11 +162,11 @@ class TestMissionStoreLoad:
             "# Missions\n\n## Pending\n\n- Fallback mission ⏳(2026-06-14T10:00)\n",
             encoding="utf-8",
         )
-        s = MissionStore.load(tmp_instance)
+        s = MissionStore.load()
         assert any(r.text == "Fallback mission" for r in s._records)
 
     def test_load_triggers_migration_when_no_json(self, populated_md):
-        s = MissionStore.load(populated_md)
+        s = MissionStore.load()
         texts = [r.text for r in s._records]
         assert "Fix auth bug" in texts
         assert "Add logging" in texts
@@ -173,7 +177,7 @@ class TestMissionStoreLoad:
         assert Path(populated_md, "missions.json").exists()
 
     def test_migration_preserves_status(self, populated_md):
-        s = MissionStore.load(populated_md)
+        s = MissionStore.load()
         by_text = {r.text: r for r in s._records}
         assert by_text["Fix auth bug"].status == "in_progress"
         assert by_text["Add logging"].status == "pending"
@@ -181,14 +185,14 @@ class TestMissionStoreLoad:
         assert by_text["Deploy staging"].status == "failed"
 
     def test_migration_extracts_project(self, populated_md):
-        s = MissionStore.load(populated_md)
+        s = MissionStore.load()
         by_text = {r.text: r for r in s._records}
         assert by_text["Fix auth bug"].project == "webapp"
         assert by_text["Refactor DB"].project == "api"
         assert by_text["Add logging"].project == ""
 
     def test_migration_extracts_timestamps(self, populated_md):
-        s = MissionStore.load(populated_md)
+        s = MissionStore.load()
         by_text = {r.text: r for r in s._records}
         assert by_text["Fix auth bug"].started_at == "2026-06-14T10:00"
         assert by_text["Add logging"].queued_at == "2026-06-14T09:00"
@@ -197,24 +201,24 @@ class TestMissionStoreLoad:
         assert by_text["Deploy staging"].completed_at == "2026-06-14 06:00"
 
     def test_migration_extracts_complexity(self, populated_md):
-        s = MissionStore.load(populated_md)
+        s = MissionStore.load()
         by_text = {r.text: r for r in s._records}
         assert by_text["Refactor DB"].complexity == "medium"
         assert by_text["Add logging"].complexity is None
 
     def test_migration_extracts_crash_count(self, populated_md):
-        s = MissionStore.load(populated_md)
+        s = MissionStore.load()
         by_text = {r.text: r for r in s._records}
         assert by_text["Refactor DB"].crash_count == 1
         assert by_text["Add logging"].crash_count == 0
 
     def test_migration_extracts_tags(self, populated_md):
-        s = MissionStore.load(populated_md)
+        s = MissionStore.load()
         by_text = {r.text: r for r in s._records}
         assert "flushed" in by_text["Deploy staging"].tags
 
     def test_migration_strips_project_from_text(self, populated_md):
-        s = MissionStore.load(populated_md)
+        s = MissionStore.load()
         by_text = {r.text: r for r in s._records}
         assert "[project:" not in by_text["Fix auth bug"].text
         assert "[project:" not in by_text["Refactor DB"].text
@@ -235,7 +239,7 @@ class TestMissionStoreLoad:
         view_path.write_text(patched, encoding="utf-8")
 
         # Reload — should detect the hash mismatch and reconcile
-        s2 = MissionStore.load(tmp_instance)
+        s2 = MissionStore.load()
         texts = [r.text for r in s2._records]
         assert "Original mission" in texts
         assert "Human added mission" in texts
@@ -852,32 +856,32 @@ class TestParseRecordFromMarkdownLine:
 class TestMissionStoreIntegration:
     def test_full_lifecycle_persists_correctly(self, tmp_instance):
         # Create and save
-        s = MissionStore.load(tmp_instance)
+        s = MissionStore.load()
         s.add("Deploy app", project="webapp")
         s._save()
 
         # Reload and start
-        s2 = MissionStore.load(tmp_instance)
+        s2 = MissionStore.load()
         assert s2.find("Deploy app") is not None
         s2.start("Deploy app")
         s2._save()
 
         # Reload and complete
-        s3 = MissionStore.load(tmp_instance)
+        s3 = MissionStore.load()
         r = s3.find("Deploy app")
         assert r.status == "in_progress"
         s3.complete("Deploy app")
         s3._save()
 
         # Reload and verify final state
-        s4 = MissionStore.load(tmp_instance)
+        s4 = MissionStore.load()
         r = s4.find("Deploy app")
         assert r.status == "done"
         assert r.completed_at is not None
 
     def test_migration_then_store_operations(self, populated_md):
         # First load triggers migration
-        s = MissionStore.load(populated_md)
+        s = MissionStore.load()
         assert Path(populated_md, "missions.json").exists()
 
         # Complete a mission
@@ -885,12 +889,12 @@ class TestMissionStoreIntegration:
         s._save()
 
         # Reload — should use JSON path now
-        s2 = MissionStore.load(populated_md)
+        s2 = MissionStore.load()
         assert s2.find("Add logging").status == "done"
 
     def test_view_parseable_after_lifecycle_transitions(self, tmp_instance):
         from app.missions import parse_sections
-        s = MissionStore.load(tmp_instance)
+        s = MissionStore.load()
         s.add("Mission A")
         s.add("Mission B")
         s.start("Mission A")
@@ -908,7 +912,7 @@ class TestMissionStoreIntegration:
 
     def test_requeue_appears_at_top_of_pending_in_view(self, tmp_instance):
         from app.missions import parse_sections
-        s = MissionStore.load(tmp_instance)
+        s = MissionStore.load()
         s.add("Mission A")
         s.add("Mission B")
         s.start("Mission A")
