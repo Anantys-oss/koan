@@ -1428,6 +1428,7 @@ class MemoryManager:
             return []
 
         project_lower = project.lower() if project else None
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         entries = []
         for line in raw.splitlines():
             line = line.strip()
@@ -1436,6 +1437,9 @@ class MemoryManager:
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            expires = obj.get("expires_at", "")
+            if expires and expires < now_iso:
                 continue
             entry_project = obj.get("project")
             if entry_project is None:

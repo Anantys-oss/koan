@@ -159,11 +159,15 @@ def _build_entry_dict(proj, type_, content, ts, skill, tags_str, conf_str, exp):
     if skill:
         entry["source_skill"] = skill
     if tags_str:
-        with contextlib.suppress(json.JSONDecodeError, TypeError):
+        try:
             entry["tags"] = json.loads(tags_str)
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning("[memory_db] Malformed tags in entry ts=%s: %s", ts, e)
     if conf_str:
-        with contextlib.suppress(ValueError, TypeError):
+        try:
             entry["confidence"] = float(conf_str)
+        except (ValueError, TypeError) as e:
+            logger.warning("[memory_db] Malformed confidence in entry ts=%s: %s", ts, e)
     if exp:
         entry["expires_at"] = exp
     return entry
@@ -376,6 +380,7 @@ def migrate_jsonl_to_sqlite(instance: str) -> int:
             return 0
 
         entries = []
+        skipped = 0
         for line in raw.splitlines():
             line = line.strip()
             if not line:
@@ -397,7 +402,11 @@ def migrate_jsonl_to_sqlite(instance: str) -> int:
                     obj.get("expires_at") or "",
                 ))
             except json.JSONDecodeError:
+                skipped += 1
                 continue
+
+        if skipped:
+            logger.warning("[memory_db] Skipped %d malformed JSONL lines during migration", skipped)
 
         if entries:
             conn.executemany(

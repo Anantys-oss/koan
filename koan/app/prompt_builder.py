@@ -436,6 +436,15 @@ def _get_learnings_section(
     )
 
 
+def _extract_skill_from_mission(mission_title: str) -> str:
+    """Extract skill name from a /command mission title, or empty string."""
+    if mission_title and mission_title.lstrip().startswith("/"):
+        parts = mission_title.lstrip().split(None, 1)
+        if parts:
+            return parts[0].lstrip("/").lower()
+    return ""
+
+
 def _get_memory_log_section(
     instance: str, project_name: str,
     max_entries_override: int = 0,
@@ -471,9 +480,10 @@ def _get_memory_log_section(
 
     try:
         from app.memory_manager import read_memory_window, scoped_summary
+        current_skill = _extract_skill_from_mission(mission_title) or None
         entries = read_memory_window(
             instance, project_name, max_entries=max_entries,
-            query_text=mission_title,
+            query_text=mission_title, current_skill=current_skill,
         )
         # Filter out learning entries — _get_learnings_section() already
         # injects task-aware filtered learnings; including them here would
