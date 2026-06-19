@@ -451,7 +451,7 @@ def _maybe_escalate_to_debug(
     project, _ = parse_project(cleaned)
 
     entry = f"/debug {fix_args}"
-    with locked_store(instance) as store:
+    with locked_store() as store:
         _, inserted = store.add(entry, project, urgent=True)
 
     if not inserted:

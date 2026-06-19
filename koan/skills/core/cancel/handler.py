@@ -66,10 +66,9 @@ def _cancel_mission(missions_file, identifier):
     """Cancel a mission by number or keyword."""
     from app.mission_store import locked_store
 
-    instance_dir = str(missions_file.parent)
     cancelled_display = None
 
-    with locked_store(instance_dir) as store:
+    with locked_store(str(missions_file.parent)) as store:
         pending = store.get_by_status("pending")
         if not pending:
             return "ℹ️ No pending missions."
@@ -100,9 +99,7 @@ def _cancel_bulk(missions_file, positions):
     """Cancel multiple pending missions by position."""
     from app.mission_store import locked_store
 
-    instance_dir = str(missions_file.parent)
-
-    with locked_store(instance_dir) as store:
+    with locked_store(str(missions_file.parent)) as store:
         pending = store.get_by_status("pending")
         if not pending:
             return "ℹ️ No pending missions."

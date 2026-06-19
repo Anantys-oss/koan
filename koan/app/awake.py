@@ -318,7 +318,7 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     else:
         try:
             from app.mission_store import MissionStore
-            store = MissionStore.load(str(INSTANCE_DIR))
+            store = MissionStore.load()
             in_progress_recs = store.get_by_status("in_progress")
             pending_recs = store.get_by_status("pending")
             if in_progress_recs or pending_recs:

@@ -56,6 +56,12 @@ from typing import Any
 # threads within the same process do not race on the JSON store.
 _STORE_LOCK = threading.Lock()
 
+
+def _default_instance_dir() -> str:
+    """Return the default instance directory path from KOAN_ROOT."""
+    from app.utils import KOAN_ROOT
+    return str(KOAN_ROOT / "instance")
+
 # Sidecar lock filename — single source of truth used by both locked_store()
 # and MissionStore._lock_path().
 _STORE_LOCK_FILENAME = ".missions-store.lock"
@@ -272,7 +278,7 @@ class MissionStore:
     # ------------------------------------------------------------------
 
     @classmethod
-    def load(cls, instance_dir: str) -> "MissionStore":
+    def load(cls, instance_dir: str | None = None) -> "MissionStore":
         """Load the store from ``missions.json``, or migrate from ``missions.md``.
 
         If ``missions.json`` does not exist, reads ``missions.md`` and calls
@@ -284,11 +290,14 @@ class MissionStore:
         calling :meth:`load`.
 
         Args:
-            instance_dir: Path to the ``instance/`` directory.
+            instance_dir: Path to the ``instance/`` directory.  Defaults to
+                ``KOAN_ROOT / "instance"`` when ``None``.
 
         Returns:
             A populated :class:`MissionStore`.
         """
+        if instance_dir is None:
+            instance_dir = _default_instance_dir()
         store = cls(instance_dir)
         store_path = store._store_path()
 
@@ -1031,7 +1040,7 @@ class MissionStore:
 
 
 @contextlib.contextmanager
-def locked_store(instance_dir: str) -> Generator[MissionStore, None, None]:
+def locked_store(instance_dir: str | None = None) -> Generator[MissionStore, None, None]:
     """Context manager for an atomic load → mutate → save transaction.
 
     Acquires both the in-process thread lock and the per-instance file lock,
@@ -1043,13 +1052,19 @@ def locked_store(instance_dir: str) -> Generator[MissionStore, None, None]:
 
     Usage::
 
-        with locked_store(instance_dir) as store:
+        with locked_store() as store:
             store.start("Fix bug")
 
     This is the canonical entry point for all mission-queue mutations:
     ``missions.md`` is regenerated from the store on save and is never
     written directly.
+
+    Args:
+        instance_dir: Path to the ``instance/`` directory.  Defaults to
+            ``KOAN_ROOT / "instance"`` when ``None``.
     """
+    if instance_dir is None:
+        instance_dir = _default_instance_dir()
     lock_path = Path(instance_dir) / _STORE_LOCK_FILENAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with _STORE_LOCK:

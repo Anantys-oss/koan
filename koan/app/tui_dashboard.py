@@ -963,9 +963,8 @@ class KoanDashboard(App):
         try:
             from app.mission_store import MissionStore
 
-            instance_dir = self.koan_root / "instance"
             pending_count = len(
-                MissionStore.load(str(instance_dir)).get_by_status("pending")
+                MissionStore.load(str(self.koan_root / "instance")).get_by_status("pending")
             )
         except (OSError, PermissionError, ValueError) as exc:
             self.log(f"pending count failed: {exc}")

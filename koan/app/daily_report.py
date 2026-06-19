@@ -79,7 +79,7 @@ def _parse_completed_missions(target_date: Optional[date] = None) -> List[str]:
     """
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load(str(MISSIONS_FILE.parent))
+        store = MissionStore.load()
         done_records = store.get_by_status("done")
     except (OSError, ValueError):
         return []
@@ -101,7 +101,7 @@ def _count_pending_missions() -> int:
     """Count pending missions."""
     from app.mission_store import MissionStore
 
-    return len(MissionStore.load(str(MISSIONS_FILE.parent)).get_by_status("pending"))
+    return len(MissionStore.load().get_by_status("pending"))
 
 
 def generate_report(report_type: str = "morning") -> str:
@@ -157,7 +157,7 @@ def generate_report(report_type: str = "morning") -> str:
     # In-progress items
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load(str(MISSIONS_FILE.parent))
+        store = MissionStore.load()
         in_progress_records = store.get_by_status("in_progress")
         if in_progress_records:
             lines.append("In Progress:")

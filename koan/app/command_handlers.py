@@ -59,7 +59,7 @@ def _has_in_progress_mission() -> bool:
     """Check if any mission is currently in progress."""
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load(str(INSTANCE_DIR))
+        store = MissionStore.load()
         return len(store.get_by_status("in_progress")) > 0
     except (OSError, ValueError):
         return False

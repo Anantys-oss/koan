@@ -579,9 +579,8 @@ def insert_pending_mission(
     from app.mission_store import locked_store
 
     project = project or ""
-    instance_dir = str(KOAN_ROOT / "instance")
 
-    with locked_store(instance_dir) as store:
+    with locked_store() as store:
         _, was_new = store.add(text, project, urgent=urgent)
 
     return was_new

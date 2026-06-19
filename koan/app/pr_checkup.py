@@ -99,7 +99,7 @@ def _get_pending_missions_text(instance_dir: Path) -> str:
     """Return pending mission texts joined by newline."""
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load(str(instance_dir))
+        store = MissionStore.load()
         return "\n".join(r.text for r in store.get_by_status("pending"))
     except Exception as e:
         import sys

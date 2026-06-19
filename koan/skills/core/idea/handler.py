@@ -42,8 +42,7 @@ def _list_ideas(missions_file):
     from app.missions import clean_mission_display
     from app.mission_store import MissionStore
 
-    instance_dir = str(missions_file.parent)
-    ideas = MissionStore.load(instance_dir).get_ideas()
+    ideas = MissionStore.load().get_ideas()
 
     if not ideas:
         return "ℹ️ No ideas in the backlog. Add one with /idea <description>"
@@ -94,8 +93,7 @@ def _add_idea(missions_file, text):
     else:
         entry = clean_text
 
-    instance_dir = str(missions_file.parent)
-    with locked_store(instance_dir) as store:
+    with locked_store() as store:
         store.add_idea(entry)
 
     display = clean_text[:100]
@@ -114,11 +112,10 @@ def _delete_idea(missions_file, index):
     from app.missions import clean_mission_display
     from app.mission_store import locked_store
 
-    instance_dir = str(missions_file.parent)
     deleted_text = None
     total = 0
 
-    with locked_store(instance_dir) as store:
+    with locked_store() as store:
         total = len(store._ideas)
         deleted_text = store.delete_idea(index)
 
@@ -136,11 +133,10 @@ def _promote_idea(missions_file, index):
     from app.missions import clean_mission_display
     from app.mission_store import locked_store
 
-    instance_dir = str(missions_file.parent)
     promoted_text = None
     total = 0
 
-    with locked_store(instance_dir) as store:
+    with locked_store() as store:
         total = len(store._ideas)
         promoted_text = store.promote_idea(index)
 
@@ -158,9 +154,7 @@ def _promote_all_ideas(missions_file):
     from app.missions import clean_mission_display
     from app.mission_store import locked_store
 
-    instance_dir = str(missions_file.parent)
-
-    with locked_store(instance_dir) as store:
+    with locked_store() as store:
         promoted_list = store.promote_all_ideas()
 
     if not promoted_list:

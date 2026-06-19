@@ -1158,7 +1158,7 @@ def expand_combo_skill(
         # store.add() already deduplicates internally — no outer check needed.
         from app.mission_store import locked_store
 
-        with locked_store(instance_dir) as store:
+        with locked_store() as store:
             for sub_cmd in combo.commands:
                 entry = f"/{sub_cmd} {args}".rstrip()
                 store.add(entry, project_id)

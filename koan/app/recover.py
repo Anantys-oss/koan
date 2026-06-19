@@ -254,9 +254,9 @@ def recover_missions(
     # In dry-run mode we must not persist anything, so load a detached store
     # under a null context; otherwise use the locked load→mutate→save cycle.
     if dry_run:
-        store_ctx = contextlib.nullcontext(MissionStore.load(instance_dir))
+        store_ctx = contextlib.nullcontext(MissionStore.load())
     else:
-        store_ctx = locked_store(instance_dir)
+        store_ctx = locked_store()
 
     # pending.md context belongs to at most one mission (the one that was
     # running when the process was interrupted). Consume it on first use so

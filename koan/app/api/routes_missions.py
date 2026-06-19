@@ -153,7 +153,7 @@ def reorder_mission_route():
     clean_text = _store_lookup_key(stored_text)
 
     try:
-        with locked_store(str(_instance_dir())) as store:
+        with locked_store() as store:
             from app.missions import canonical_mission_key
             needle = canonical_mission_key(clean_text)
             pending_matches = [
@@ -216,7 +216,7 @@ def delete_mission(mission_id: str):
     stored_text = rec.get("text", "")
     clean_text = _store_lookup_key(stored_text)
 
-    with locked_store(str(_instance_dir())) as store:
+    with locked_store() as store:
         store.cancel_pending(clean_text)
 
     cancel_mission(_instance_dir(), mission_id)
@@ -265,7 +265,7 @@ def edit_mission(mission_id: str):
     project = rec.get("project")
 
     try:
-        with locked_store(str(_instance_dir())) as store:
+        with locked_store() as store:
             if not store.edit(clean_text, new_text):
                 raise ValueError("Mission not found in pending queue")
     except ValueError as e:

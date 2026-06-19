@@ -44,8 +44,7 @@ def _find_last_failure(missions_path, project_filter=None):
     """
     from app.mission_store import MissionStore
 
-    instance_dir = Path(missions_path).parent
-    store = MissionStore.load(str(instance_dir))
+    store = MissionStore.load(str(missions_path.parent))
     failed = store.get_by_status("failed")
 
     if not failed:

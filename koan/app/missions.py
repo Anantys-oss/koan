@@ -561,7 +561,7 @@ def tag_complexity_in_pending(
 
     Locates the matching record by canonical key and records its complexity
     tier as a typed field. The tag is rendered back into the missions.md view
-    by MissionStore.save().
+    by MissionStore._save().
 
     Args:
         mission_text: The mission description to find and tag (first-line match).
@@ -569,16 +569,13 @@ def tag_complexity_in_pending(
         missions_path: Path-like object pointing to missions.md (its parent
             directory is the instance dir).
     """
-    from pathlib import Path
-
     from app.mission_store import locked_store
 
-    instance_dir = str(Path(missions_path).parent)
     search_key = mission_text.splitlines()[0].strip() if mission_text else ""
     if not search_key:
         return
 
-    with locked_store(instance_dir) as store:
+    with locked_store() as store:
         store.set_complexity(search_key, tier)
 
 

@@ -59,7 +59,7 @@ def pick_mission(
     """
     try:
         from app.mission_store import MissionStore
-        store = MissionStore.load(instance_dir)
+        store = MissionStore.load()
         pending = store.get_by_status("pending")
     except (OSError, ValueError):
         return ""

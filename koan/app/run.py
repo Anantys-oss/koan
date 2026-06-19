@@ -2177,7 +2177,7 @@ def _start_mission_in_file(instance: str, mission_title: str, project_name: str 
     """
     try:
         from app.mission_store import locked_store
-        with locked_store(instance) as store:
+        with locked_store() as store:
             stale = store.get_by_status("in_progress")[:]
             moved = store.start(mission_title)
         if not moved:
@@ -2243,7 +2243,7 @@ def _update_mission_in_file(
     """
     try:
         from app.mission_store import locked_store
-        with locked_store(instance) as store:
+        with locked_store() as store:
             if failed:
                 moved = store.fail(
                     mission_title,
@@ -2265,7 +2265,7 @@ def _requeue_mission_in_file(instance: str, mission_title: str, *, reason: str =
     """Move mission from In Progress back to Pending via the mission store."""
     try:
         from app.mission_store import locked_store
-        with locked_store(instance) as store:
+        with locked_store() as store:
             store.requeue(mission_title, reason=reason)
     except Exception as e:
         log("error", f"Could not requeue mission: {e}")

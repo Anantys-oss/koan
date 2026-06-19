@@ -68,9 +68,7 @@ def _reorder_single(missions_file, position):
     """Move a single pending mission to top of queue."""
     from app.mission_store import locked_store
 
-    instance_dir = str(missions_file.parent)
-
-    with locked_store(instance_dir) as store:
+    with locked_store(str(missions_file.parent)) as store:
         pending = store.get_by_status("pending")
         if not pending:
             return "⚠️ No pending missions to reorder."
@@ -91,10 +89,9 @@ def _reorder_bulk(missions_file, positions):
     if len(set(positions)) != len(positions):
         return "⚠️ Duplicate positions: use each position only once."
 
-    instance_dir = str(missions_file.parent)
     displays = []
 
-    with locked_store(instance_dir) as store:
+    with locked_store(str(missions_file.parent)) as store:
         pending = store.get_by_status("pending")
         if not pending:
             return "⚠️ No pending missions to reorder."
