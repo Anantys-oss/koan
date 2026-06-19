@@ -30,8 +30,8 @@ serialized.
 
 Migration
 ---------
-When ``missions.json`` does not exist yet, :meth:`MissionStore.load` calls
-:meth:`MissionStore._migrate_from_markdown` to seed the JSON from the current
+When ``missions.json`` does not exist yet, :meth:`MissionStore.__init__` calls
+:meth:`MissionStore._migrate_in_place` to seed the JSON from the current
 ``missions.md`` content.
 """
 
@@ -218,11 +218,11 @@ def _view_hash(content: str) -> str:
 class MissionStore:
     """Structured mission store backed by ``instance/missions.json``.
 
-    Callers should obtain an instance via :meth:`MissionStore.load`, mutate it
-    through the public methods, and then the store is saved automatically via
-    :func:`locked_store`.  The store holds all records in memory as an ordered
-    list (``_records``); ordering within a status group reflects queue position
-    (pending[0] is next to run).
+    Construct with ``MissionStore()`` — the store loads from disk automatically.
+    Mutate through the public methods; :func:`locked_store` handles the
+    atomic load→mutate→save cycle for all writes.  The store holds all records
+    in memory as an ordered list (``_records``); ordering within a status group
+    reflects queue position (pending[0] is next to run).
 
     Thread/process safety
     ---------------------
@@ -238,8 +238,8 @@ class MissionStore:
     mutations, acquire it manually via :meth:`_lock_path` before instantiating.
     """
 
-    def __init__(self, instance_dir: str) -> None:
-        self._instance_dir = Path(instance_dir)
+    def __init__(self) -> None:
+        self._instance_dir = Path(_default_instance_dir())
         # Ordered list of all records (across all statuses).
         # Within each status the list order defines queue position.
         self._records: list[MissionRecord] = []
@@ -251,6 +251,7 @@ class MissionStore:
         # sha256 of the last missions.md content we wrote, used to detect
         # human edits between save() calls.
         self._last_view_hash: str | None = None
+        self._load()
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -277,52 +278,42 @@ class MissionStore:
     # Persistence
     # ------------------------------------------------------------------
 
-    @classmethod
-    def load(cls) -> "MissionStore":
+    def _load(self) -> None:
         """Load the store from ``missions.json``, or migrate from ``missions.md``.
 
-        If ``missions.json`` does not exist, reads ``missions.md`` and calls
-        :meth:`_migrate_from_markdown` to seed the JSON store.  The migrated
-        store is immediately persisted so subsequent loads use the JSON path.
-
-        This method does *not* hold a lock — callers that need atomic
-        load-then-mutate semantics must acquire the lock explicitly before
-        calling :meth:`load`.
-
-        Returns:
-            A populated :class:`MissionStore`.
+        Called automatically by ``__init__``.  If ``missions.json`` does not
+        exist, falls back to :meth:`_migrate_in_place` to seed the JSON store
+        from the existing Markdown file.  Not lock-safe on its own — callers
+        that need atomic load-then-mutate semantics must use :func:`locked_store`.
         """
-        instance_dir = _default_instance_dir()
-        store = cls(instance_dir)
-        store_path = store._store_path()
+        store_path = self._store_path()
 
         if not store_path.exists():
             # First run or pre-migration instance — seed from missions.md
-            return cls._migrate_from_markdown()
+            self._migrate_in_place()
+            return
 
         try:
             raw = json.loads(store_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             # Corrupted JSON — migrate from Markdown as fallback
-            return cls._migrate_from_markdown()
+            self._migrate_in_place()
+            return
 
-        records_data = raw.get("records", [])
-        for item in records_data:
-            store._records.append(MissionRecord.from_dict(item))
+        for item in raw.get("records", []):
+            self._records.append(MissionRecord.from_dict(item))
 
-        store._ideas = list(raw.get("ideas", []))
-        store._last_view_hash = raw.get("view_hash")
+        self._ideas = list(raw.get("ideas", []))
+        self._last_view_hash = raw.get("view_hash")
 
         # Detect human edits to missions.md since the last save
-        view_path = store._view_path()
+        view_path = self._view_path()
         if view_path.exists():
             current_content = view_path.read_text(encoding="utf-8")
             current_hash = _view_hash(current_content)
-            if store._last_view_hash is not None and current_hash != store._last_view_hash:
+            if self._last_view_hash is not None and current_hash != self._last_view_hash:
                 # Human edited the Markdown view — reconcile back into the store
-                store._reconcile_from_markdown(current_content)
-
-        return store
+                self._reconcile_from_markdown(current_content)
 
     def _save(self) -> None:
         """Persist the store to ``missions.json`` and regenerate ``missions.md``.
@@ -976,25 +967,17 @@ class MissionStore:
     # Migration (classmethod)
     # ------------------------------------------------------------------
 
-    @classmethod
-    def _migrate_from_markdown(cls) -> "MissionStore":
-        """Seed a new store by parsing the existing ``missions.md``.
+    def _migrate_in_place(self) -> None:
+        """Seed self by parsing the existing ``missions.md``.
 
-        Reads the Markdown file, parses all sections, extracts lifecycle markers
-        and metadata into typed fields, and returns a fully populated
-        :class:`MissionStore`.  Saves the resulting JSON immediately so
-        subsequent loads use the fast JSON path.
-
-        This is called exactly once per instance — when ``missions.json`` is
-        absent.
-
-        Returns:
-            A populated :class:`MissionStore` (already saved to disk).
+        Reads the Markdown file, parses all sections, and populates ``self``
+        with typed records.  Saves the resulting JSON immediately so subsequent
+        loads use the fast JSON path.  Called by :meth:`_load` when
+        ``missions.json`` is absent or corrupt.
         """
         from app.missions import parse_ideas, parse_sections  # lazy import
 
-        store = cls(_default_instance_dir())
-        view_path = store._view_path()
+        view_path = self._view_path()
 
         if view_path.exists():
             try:
@@ -1007,11 +990,11 @@ class MissionStore:
         if not content.strip():
             # Nothing to migrate — save to create missions.json so subsequent
             # loads skip migration entirely rather than re-entering this path.
-            store._save()
-            return store
+            self._save()
+            return
 
         # Preserve the Ideas backlog across migration
-        store._ideas = [_strip_list_marker(item) for item in parse_ideas(content)]
+        self._ideas = [_strip_list_marker(item) for item in parse_ideas(content)]
 
         sections = parse_sections(content)
 
@@ -1019,11 +1002,10 @@ class MissionStore:
             for raw_item in sections.get(status, []):
                 record = _parse_record_from_markdown_line(raw_item, status)
                 if record.text and "~~" not in record.text:
-                    store._records.append(record)
+                    self._records.append(record)
 
         # Persist the migrated store immediately
-        store._save()
-        return store
+        self._save()
 
 
 # ---------------------------------------------------------------------------
@@ -1051,14 +1033,13 @@ def locked_store() -> Generator[MissionStore, None, None]:
     ``missions.md`` is regenerated from the store on save and is never
     written directly.
     """
-    instance_dir = _default_instance_dir()
-    lock_path = Path(instance_dir) / _STORE_LOCK_FILENAME
+    lock_path = Path(_default_instance_dir()) / _STORE_LOCK_FILENAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with _STORE_LOCK:
         with open(lock_path, "w") as lf:
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
-                store = MissionStore.load()
+                store = MissionStore()
                 yield store
                 store._save()   # persist mutation first; prune is best-effort
                 try:
