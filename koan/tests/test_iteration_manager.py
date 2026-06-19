@@ -596,7 +596,7 @@ class TestFallbackMissionExtract:
             "# Missions\n\n## Pending\n- [project:koan] Fix bug\n\n## Done\n"
         )
         monkeypatch.setattr(
-            "app.mission_store.MissionStore.load",
+            "app.mission_store.MissionStore.__init__",
             lambda *_: (_ for _ in ()).throw(OSError("boom")),
         )
         project, title = _fallback_mission_extract(inst, PROJECTS_STR, "test context")
