@@ -1471,7 +1471,7 @@ def _enqueue_ci_check(
         project_name = project_name_for_path(project_path)
 
         monitor_add_item(
-            instance_dir, project_name, pr_url, pr_number, branch, full_repo, max_attempts,
+            project_name, pr_url, pr_number, branch, full_repo, max_attempts,
         )
         actions_log.append("CI check enqueued for monitoring (async)")
         return "CI will be checked asynchronously."

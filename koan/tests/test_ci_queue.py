@@ -51,7 +51,7 @@ def _make_entry(pr_url="https://github.com/owner/repo/pull/1",
 
 class TestQueuePath:
     def test_returns_json_file_in_instance(self, instance_dir):
-        p = _queue_path(instance_dir)
+        p = _queue_path()
         assert p.name == ".ci-queue.json"
         assert p.parent == instance_dir
 
@@ -62,30 +62,30 @@ class TestQueuePath:
 
 class TestLoadSave:
     def test_load_returns_empty_list_when_no_file(self, instance_dir):
-        assert _load(instance_dir) == []
+        assert _load() == []
 
     def test_load_returns_empty_list_on_invalid_json(self, instance_dir):
-        _queue_path(instance_dir).write_text("not json")
-        assert _load(instance_dir) == []
+        _queue_path().write_text("not json")
+        assert _load() == []
 
     def test_load_returns_empty_list_when_json_is_not_a_list(self, instance_dir):
-        _queue_path(instance_dir).write_text('{"key": "val"}')
-        assert _load(instance_dir) == []
+        _queue_path().write_text('{"key": "val"}')
+        assert _load() == []
 
     @patch("app.utils.atomic_write")
     def test_save_calls_atomic_write(self, mock_aw, instance_dir):
         entries = [_make_entry()]
-        _save(instance_dir, entries)
+        _save(entries)
         mock_aw.assert_called_once()
         path_arg, data_arg = mock_aw.call_args[0]
-        assert path_arg == _queue_path(instance_dir)
+        assert path_arg == _queue_path()
         assert json.loads(data_arg) == entries
 
     def test_roundtrip(self, instance_dir):
         entries = [_make_entry()]
         # Write directly (bypass atomic_write for roundtrip test)
-        _queue_path(instance_dir).write_text(json.dumps(entries))
-        loaded = _load(instance_dir)
+        _queue_path().write_text(json.dumps(entries))
+        loaded = _load()
         assert len(loaded) == 1
         assert loaded[0]["pr_url"] == entries[0]["pr_url"]
 
@@ -127,7 +127,6 @@ class TestEnqueue:
     @patch("app.utils.atomic_write")
     def test_enqueue_new_entry_returns_true(self, mock_aw, instance_dir):
         result = enqueue(
-            instance_dir,
             pr_url="https://github.com/o/r/pull/1",
             branch="koan/feat",
             full_repo="o/r",
@@ -147,10 +146,9 @@ class TestEnqueue:
             pr_url="https://github.com/o/r/pull/1",
             branch="old-branch",
         )]
-        _queue_path(instance_dir).write_text(json.dumps(existing))
+        _queue_path().write_text(json.dumps(existing))
 
         result = enqueue(
-            instance_dir,
             pr_url="https://github.com/o/r/pull/1",
             branch="new-branch",
             full_repo="o/r",
@@ -164,13 +162,13 @@ class TestEnqueue:
 
     @patch("app.utils.atomic_write")
     def test_enqueue_multiple_distinct_prs(self, mock_aw, instance_dir):
-        enqueue(instance_dir, "https://github.com/o/r/pull/1",
+        enqueue("https://github.com/o/r/pull/1",
                 "b1", "o/r", "1", "/tmp/p")
         # Simulate the first write persisting
         saved_first = json.loads(mock_aw.call_args[0][1])
-        _queue_path(instance_dir).write_text(json.dumps(saved_first))
+        _queue_path().write_text(json.dumps(saved_first))
 
-        enqueue(instance_dir, "https://github.com/o/r/pull/2",
+        enqueue("https://github.com/o/r/pull/2",
                 "b2", "o/r", "2", "/tmp/p")
         saved_second = json.loads(mock_aw.call_args[0][1])
         assert len(saved_second) == 2
@@ -184,15 +182,15 @@ class TestRemove:
     @patch("app.utils.atomic_write")
     def test_remove_existing_returns_true(self, mock_aw, instance_dir):
         entries = [_make_entry(pr_url="https://github.com/o/r/pull/1")]
-        _queue_path(instance_dir).write_text(json.dumps(entries))
+        _queue_path().write_text(json.dumps(entries))
 
-        result = remove(instance_dir, "https://github.com/o/r/pull/1")
+        result = remove("https://github.com/o/r/pull/1")
         assert result is True
         saved = json.loads(mock_aw.call_args[0][1])
         assert len(saved) == 0
 
     def test_remove_nonexistent_returns_false(self, instance_dir):
-        result = remove(instance_dir, "https://github.com/o/r/pull/999")
+        result = remove("https://github.com/o/r/pull/999")
         assert result is False
 
     @patch("app.utils.atomic_write")
@@ -201,9 +199,9 @@ class TestRemove:
             _make_entry(pr_url="https://github.com/o/r/pull/1"),
             _make_entry(pr_url="https://github.com/o/r/pull/2"),
         ]
-        _queue_path(instance_dir).write_text(json.dumps(entries))
+        _queue_path().write_text(json.dumps(entries))
 
-        remove(instance_dir, "https://github.com/o/r/pull/1")
+        remove("https://github.com/o/r/pull/1")
         saved = json.loads(mock_aw.call_args[0][1])
         assert len(saved) == 1
         assert saved[0]["pr_url"] == "https://github.com/o/r/pull/2"
@@ -215,7 +213,7 @@ class TestRemove:
 
 class TestPeek:
     def test_peek_empty_queue_returns_none(self, instance_dir):
-        assert peek(instance_dir) is None
+        assert peek() is None
 
     def test_peek_returns_oldest_valid_entry(self, instance_dir):
         older = _make_entry(
@@ -225,9 +223,9 @@ class TestPeek:
         newer = _make_entry(
             pr_url="https://github.com/o/r/pull/2",
         )
-        _queue_path(instance_dir).write_text(json.dumps([older, newer]))
+        _queue_path().write_text(json.dumps([older, newer]))
 
-        result = peek(instance_dir)
+        result = peek()
         assert result["pr_url"] == "https://github.com/o/r/pull/1"
 
     @patch("app.utils.atomic_write")
@@ -237,9 +235,9 @@ class TestPeek:
             queued_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
         )
         valid = _make_entry(pr_url="https://github.com/o/r/pull/new")
-        _queue_path(instance_dir).write_text(json.dumps([expired, valid]))
+        _queue_path().write_text(json.dumps([expired, valid]))
 
-        result = peek(instance_dir)
+        result = peek()
         assert result["pr_url"] == "https://github.com/o/r/pull/new"
         # The expired entry was pruned and the queue was saved
         mock_aw.assert_called()
@@ -251,9 +249,9 @@ class TestPeek:
         expired = _make_entry(
             queued_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
         )
-        _queue_path(instance_dir).write_text(json.dumps([expired]))
+        _queue_path().write_text(json.dumps([expired]))
 
-        result = peek(instance_dir)
+        result = peek()
         assert result is None
 
 
@@ -263,7 +261,7 @@ class TestPeek:
 
 class TestListEntries:
     def test_empty_queue(self, instance_dir):
-        assert list_entries(instance_dir) == []
+        assert list_entries() == []
 
     def test_filters_expired(self, instance_dir):
         expired = _make_entry(
@@ -271,9 +269,9 @@ class TestListEntries:
             queued_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
         )
         valid = _make_entry(pr_url="https://github.com/o/r/pull/new")
-        _queue_path(instance_dir).write_text(json.dumps([expired, valid]))
+        _queue_path().write_text(json.dumps([expired, valid]))
 
-        entries = list_entries(instance_dir)
+        entries = list_entries()
         assert len(entries) == 1
         assert entries[0]["pr_url"] == "https://github.com/o/r/pull/new"
 
@@ -282,9 +280,9 @@ class TestListEntries:
             _make_entry(pr_url=f"https://github.com/o/r/pull/{i}")
             for i in range(3)
         ]
-        _queue_path(instance_dir).write_text(json.dumps(entries))
+        _queue_path().write_text(json.dumps(entries))
 
-        result = list_entries(instance_dir)
+        result = list_entries()
         assert len(result) == 3
 
 
@@ -294,13 +292,13 @@ class TestListEntries:
 
 class TestSize:
     def test_empty_queue(self, instance_dir):
-        assert size(instance_dir) == 0
+        assert size() == 0
 
     def test_counts_non_expired(self, instance_dir):
         expired = _make_entry(
             queued_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
         )
         valid = _make_entry()
-        _queue_path(instance_dir).write_text(json.dumps([expired, valid]))
+        _queue_path().write_text(json.dumps([expired, valid]))
 
-        assert size(instance_dir) == 1
+        assert size() == 1

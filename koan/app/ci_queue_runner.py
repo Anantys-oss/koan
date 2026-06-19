@@ -41,7 +41,7 @@ def check_ci_status(branch: str, full_repo: str) -> Tuple[str, Optional[int], st
     return check_existing_ci(branch, full_repo)
 
 
-def drain_one(instance_dir: str) -> Optional[str]:
+def drain_one(instance_dir: str = "") -> Optional[str]:
     """Check CI entries in ## CI section (non-blocking). Returns a status message or None.
 
     Called once per iteration from the run loop. Reads the ## CI section,
@@ -54,6 +54,9 @@ def drain_one(instance_dir: str) -> Optional[str]:
 
     Also migrates legacy .ci-queue.json entries and any ## CI section in
     missions.md to .ci-monitor.json on first call.
+
+    The ``instance_dir`` parameter is ignored — kept for call-site compatibility
+    while callers are updated.
     """
     from app.ci_queue import (
         monitor_get_items,
@@ -63,10 +66,10 @@ def drain_one(instance_dir: str) -> Optional[str]:
     )
 
     # One-time migrations: legacy JSON queue and the old ## CI section.
-    _maybe_migrate_json_queue(instance_dir)
-    monitor_migrate_from_missions_md(instance_dir)
+    _maybe_migrate_json_queue()
+    monitor_migrate_from_missions_md()
 
-    items = monitor_get_items(instance_dir)
+    items = monitor_get_items()
     if not items:
         return None
 
@@ -84,10 +87,9 @@ def drain_one(instance_dir: str) -> Optional[str]:
     # past failed CI runs would keep re-queueing /ci_check forever.
     pr_state = _check_pr_state_safe(pr_number, full_repo)
     if pr_state in ("CLOSED", "MERGED"):
-        monitor_remove_item(instance_dir, pr_url)
+        monitor_remove_item(pr_url)
         if pr_state == "CLOSED":
             _write_outbox(
-                instance_dir,
                 f"🚫 PR #{pr_number} was closed — removed from CI queue: {pr_url}",
             )
         return f"PR #{pr_number} {pr_state.lower()} — removed from CI monitor"
@@ -95,9 +97,8 @@ def drain_one(instance_dir: str) -> Optional[str]:
     status, _run_id, _logs = check_ci_status(branch, full_repo)
 
     if status == "success":
-        monitor_remove_item(instance_dir, pr_url)
+        monitor_remove_item(pr_url)
         _write_outbox(
-            instance_dir,
             f"✅ CI passed for PR #{pr_number} — ready for review: {pr_url}",
         )
         return f"CI passed for PR #{pr_number} ({branch})"
@@ -108,21 +109,20 @@ def drain_one(instance_dir: str) -> Optional[str]:
             # inserted.  If a /ci_check for this PR is already pending or in
             # progress, skip — avoids rapid-fire duplicate missions and
             # premature attempt exhaustion.
-            if _inject_ci_fix_mission(instance_dir, pr_url, entry):
-                monitor_update_attempt(instance_dir, pr_url)
+            if _inject_ci_fix_mission(pr_url, entry):
+                monitor_update_attempt(pr_url)
                 return f"CI failed for PR #{pr_number} — /ci_check mission queued (attempt {attempt + 1}/{max_attempts})"
             return None
         else:
             # Max attempts exhausted
-            monitor_remove_item(instance_dir, pr_url)
+            monitor_remove_item(pr_url)
             _write_outbox(
-                instance_dir,
                 f"🚦 CI still failing after {max_attempts} attempts for PR #{pr_number}: {pr_url}",
             )
             return f"CI failed {max_attempts} times for PR #{pr_number} — giving up"
 
     if status == "none":
-        monitor_remove_item(instance_dir, pr_url)
+        monitor_remove_item(pr_url)
         return f"No CI runs found for PR #{pr_number} — removed from CI monitor"
 
     if status == CI_STATUS_BLOCKED_APPROVAL:
@@ -130,9 +130,8 @@ def drain_one(instance_dir: str) -> Optional[str]:
         # environment approval; nothing Kōan does will unstick them.
         # Drop the PR from the monitor so retries stop and notify the human
         # so they can approve in the UI (or politely ping the maintainer).
-        monitor_remove_item(instance_dir, pr_url)
+        monitor_remove_item(pr_url)
         _write_outbox(
-            instance_dir,
             f"⏸ CI workflows on PR #{pr_number} are waiting for maintainer "
             f"approval — Kōan stopped retrying: {pr_url}",
         )
@@ -161,7 +160,7 @@ def _check_pr_state_safe(pr_number: str, full_repo: str) -> str:
         return "UNKNOWN"
 
 
-def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict) -> bool:
+def _inject_ci_fix_mission(pr_url: str, entry: dict) -> bool:
     """Inject a /ci_check mission into the pending queue.
 
     Returns True if the mission was inserted, False if a duplicate
@@ -191,18 +190,18 @@ def _project_name_from_path(project_path: str) -> str:
     return project_name_for_path(project_path)
 
 
-def _write_outbox(instance_dir: str, message: str):
+def _write_outbox(message: str):
     """Append a message to outbox.md."""
-    from app.utils import append_to_outbox
+    from app.utils import KOAN_ROOT, append_to_outbox
 
-    outbox_path = Path(instance_dir) / "outbox.md"
+    outbox_path = KOAN_ROOT / "instance" / "outbox.md"
     try:
         append_to_outbox(outbox_path, message)
     except Exception as e:
         print(f"[ci_queue] Failed to write outbox: {e}", file=sys.stderr)
 
 
-def _maybe_migrate_json_queue(instance_dir: str):
+def _maybe_migrate_json_queue():
     """One-time migration from legacy .ci-queue.json to .ci-monitor.json.
 
     Reads any entries from the legacy JSON queue and adds them to the CI
@@ -210,7 +209,9 @@ def _maybe_migrate_json_queue(instance_dir: str):
     """
     import os
 
-    json_path = Path(instance_dir) / ".ci-queue.json"
+    from app.utils import KOAN_ROOT
+    instance_dir = KOAN_ROOT / "instance"
+    json_path = instance_dir / ".ci-queue.json"
     if not json_path.exists():
         return
 
@@ -245,13 +246,13 @@ def _maybe_migrate_json_queue(instance_dir: str):
             continue
 
         monitor_add_item(
-            instance_dir, project_name, pr_url, pr_number, branch, full_repo, max_attempts,
+            project_name, pr_url, pr_number, branch, full_repo, max_attempts,
         )
         print(f"[ci_queue] Migrated {pr_url} from JSON queue to CI monitor", file=sys.stderr)
 
     try:
         os.remove(json_path)
-        lock_path = Path(instance_dir) / ".ci-queue.lock"
+        lock_path = instance_dir / ".ci-queue.lock"
         if lock_path.exists():
             os.remove(lock_path)
     except OSError:
@@ -267,19 +268,11 @@ def _reenqueue_for_monitoring(
     This ensures drain_one() picks up the new CI run result during
     interruptible_sleep, rather than leaving it unmonitored.
     """
-    import os
-
     from app.config import is_ci_check_enabled
     if not is_ci_check_enabled():
         print("[ci_check] CI check disabled, skipping re-enqueue", file=sys.stderr)
         return
 
-    koan_root = os.environ.get("KOAN_ROOT", "")
-    if not koan_root:
-        print("[ci_check] KOAN_ROOT not set, cannot re-enqueue", file=sys.stderr)
-        return
-
-    instance_dir = os.path.join(koan_root, "instance")
     project_name = _project_name_from_path(project_path)
 
     from app.ci_queue import monitor_add_item
@@ -290,7 +283,7 @@ def _reenqueue_for_monitoring(
 
     try:
         monitor_add_item(
-            instance_dir, project_name, pr_url, pr_number, branch, full_repo, max_attempts,
+            project_name, pr_url, pr_number, branch, full_repo, max_attempts,
         )
         print(f"[ci_check] Re-enqueued {pr_url} for CI monitoring", file=sys.stderr)
     except Exception as e:
@@ -316,8 +309,6 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     4. Force-push fixes and re-check CI
     5. Restore original branch
     """
-    import os
-
     from app.config import is_ci_check_enabled
     if not is_ci_check_enabled():
         return False, "CI check system is disabled in config.yaml (ci_check.enabled: false)."
@@ -329,14 +320,11 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
 
     # Determine max attempts from the CI monitor entry (respects per-enqueue config)
     max_fix_attempts = 2  # fallback if not monitored
-    koan_root = os.environ.get("KOAN_ROOT", "")
-    if koan_root:
-        from app.ci_queue import monitor_get_items
-        instance_dir = os.path.join(koan_root, "instance")
-        for item in monitor_get_items(instance_dir):
-            if item.get("pr_url") == pr_url:
-                max_fix_attempts = item.get("max_attempts", max_fix_attempts)
-                break
+    from app.ci_queue import monitor_get_items
+    for item in monitor_get_items():
+        if item.get("pr_url") == pr_url:
+            max_fix_attempts = item.get("max_attempts", max_fix_attempts)
+            break
 
     # Fetch minimal PR context needed for CI fix
     from app.rebase_pr import fetch_pr_context

@@ -31,13 +31,18 @@ from typing import List, Optional
 _MAX_AGE_HOURS = 24
 
 
-def _queue_path(instance_dir) -> Path:
-    return Path(instance_dir) / ".ci-queue.json"
+def _default_instance_dir() -> Path:
+    from app.utils import KOAN_ROOT
+    return KOAN_ROOT / "instance"
 
 
-def _load(instance_dir) -> List[dict]:
+def _queue_path() -> Path:
+    return _default_instance_dir() / ".ci-queue.json"
+
+
+def _load() -> List[dict]:
     """Load queue from disk. Returns list of entries."""
-    path = _queue_path(instance_dir)
+    path = _queue_path()
     if not path.exists():
         return []
     try:
@@ -47,11 +52,11 @@ def _load(instance_dir) -> List[dict]:
         return []
 
 
-def _save(instance_dir, entries: List[dict]):
+def _save(entries: List[dict]):
     """Persist queue to disk (atomic write)."""
     from app.utils import atomic_write
 
-    path = _queue_path(instance_dir)
+    path = _queue_path()
     atomic_write(path, json.dumps(entries, indent=2) + "\n")
 
 
@@ -68,7 +73,7 @@ def _is_expired(entry: dict) -> bool:
         return True
 
 
-def enqueue(instance_dir, pr_url: str, branch: str, full_repo: str,
+def enqueue(pr_url: str, branch: str, full_repo: str,
             pr_number: str, project_path: str) -> bool:
     """Add a CI check to the queue. Returns True if added, False if duplicate.
 
@@ -102,12 +107,12 @@ def enqueue(instance_dir, pr_url: str, branch: str, full_repo: str,
         return True
 
     return locked_json_modify(
-        _queue_path(instance_dir), _update,
+        _queue_path(), _update,
         default_factory=list, indent=2,
     )
 
 
-def remove(instance_dir, pr_url: str) -> bool:
+def remove(pr_url: str) -> bool:
     """Remove a CI check from the queue by PR URL. Returns True if found."""
     from app.locked_file import locked_json_modify
 
@@ -117,14 +122,14 @@ def remove(instance_dir, pr_url: str) -> bool:
         return len(entries) < original_len
 
     return locked_json_modify(
-        _queue_path(instance_dir), _update,
+        _queue_path(), _update,
         default_factory=list, indent=2,
     )
 
 
-def peek(instance_dir) -> Optional[dict]:
+def peek() -> Optional[dict]:
     """Return the oldest non-expired entry without removing it, or None."""
-    entries = _load(instance_dir)
+    entries = _load()
     # Prune expired entries
     valid = [e for e in entries if not _is_expired(e)]
     if len(valid) != len(entries):
@@ -135,23 +140,23 @@ def peek(instance_dir) -> Optional[dict]:
             entries[:] = [e for e in entries if not _is_expired(e)]
 
         locked_json_modify(
-            _queue_path(instance_dir), _prune,
+            _queue_path(), _prune,
             default_factory=list, indent=2,
         )
         # Re-read pruned result
-        valid = [e for e in _load(instance_dir) if not _is_expired(e)]
+        valid = [e for e in _load() if not _is_expired(e)]
     return valid[0] if valid else None
 
 
-def list_entries(instance_dir) -> List[dict]:
+def list_entries() -> List[dict]:
     """Return all non-expired entries."""
-    entries = _load(instance_dir)
+    entries = _load()
     return [e for e in entries if not _is_expired(e)]
 
 
-def size(instance_dir) -> int:
+def size() -> int:
     """Return the number of non-expired entries in the queue."""
-    return len(list_entries(instance_dir))
+    return len(list_entries())
 
 
 # ---------------------------------------------------------------------------
@@ -173,16 +178,16 @@ def size(instance_dir) -> int:
 import fcntl  # noqa: E402 — after existing imports
 
 
-def _monitor_path(instance_dir) -> Path:
-    return Path(instance_dir) / ".ci-monitor.json"
+def _monitor_path() -> Path:
+    return _default_instance_dir() / ".ci-monitor.json"
 
 
-def _monitor_lock_path(instance_dir) -> Path:
-    return Path(instance_dir) / ".ci-monitor.lock"
+def _monitor_lock_path() -> Path:
+    return _default_instance_dir() / ".ci-monitor.lock"
 
 
-def _monitor_load(instance_dir) -> list:
-    p = _monitor_path(instance_dir)
+def _monitor_load() -> list:
+    p = _monitor_path()
     if not p.exists():
         return []
     try:
@@ -192,20 +197,19 @@ def _monitor_load(instance_dir) -> list:
         return []
 
 
-def _monitor_save(instance_dir, items: list) -> None:
+def _monitor_save(items: list) -> None:
     from app.utils import atomic_write
-    p = _monitor_path(instance_dir)
+    p = _monitor_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(p, json.dumps(items, indent=2) + "\n")
 
 
-def monitor_get_items(instance_dir) -> list:
+def monitor_get_items() -> list:
     """Return all CI monitoring entries in insertion order."""
-    return _monitor_load(instance_dir)
+    return _monitor_load()
 
 
 def monitor_add_item(
-    instance_dir,
     project_name: str,
     pr_url: str,
     pr_number: str,
@@ -214,12 +218,12 @@ def monitor_add_item(
     max_attempts: int,
 ) -> None:
     """Add or reset a CI monitoring entry (deduped by *pr_url*)."""
-    lp = _monitor_lock_path(instance_dir)
+    lp = _monitor_lock_path()
     Path(lp).parent.mkdir(parents=True, exist_ok=True)
     with open(lp, "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:
-            items = _monitor_load(instance_dir)
+            items = _monitor_load()
             items = [i for i in items if i.get("pr_url") != pr_url]
             items.append({
                 "pr_url": pr_url,
@@ -231,51 +235,52 @@ def monitor_add_item(
                 "attempt": 0,
                 "max_attempts": max_attempts,
             })
-            _monitor_save(instance_dir, items)
+            _monitor_save(items)
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
-def monitor_remove_item(instance_dir, pr_url: str) -> None:
+def monitor_remove_item(pr_url: str) -> None:
     """Remove the CI monitoring entry for *pr_url* (no-op if not found)."""
-    lp = _monitor_lock_path(instance_dir)
+    lp = _monitor_lock_path()
     Path(lp).parent.mkdir(parents=True, exist_ok=True)
     with open(lp, "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:
-            items = [i for i in _monitor_load(instance_dir) if i.get("pr_url") != pr_url]
-            _monitor_save(instance_dir, items)
+            items = [i for i in _monitor_load() if i.get("pr_url") != pr_url]
+            _monitor_save(items)
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
-def monitor_update_attempt(instance_dir, pr_url: str) -> None:
+def monitor_update_attempt(pr_url: str) -> None:
     """Increment the attempt counter for the entry matching *pr_url*."""
-    lp = _monitor_lock_path(instance_dir)
+    lp = _monitor_lock_path()
     Path(lp).parent.mkdir(parents=True, exist_ok=True)
     with open(lp, "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:
-            items = _monitor_load(instance_dir)
+            items = _monitor_load()
             for item in items:
                 if item.get("pr_url") == pr_url:
                     item["attempt"] = item.get("attempt", 0) + 1
                     break
-            _monitor_save(instance_dir, items)
+            _monitor_save(items)
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
-def monitor_migrate_from_missions_md(instance_dir) -> int:
+def monitor_migrate_from_missions_md() -> int:
     """One-time migration from ``## CI`` section in missions.md → .ci-monitor.json.
 
     Called at startup when the JSON file is absent but missions.md has a
     ``## CI`` section.  Returns the count of items migrated.
     """
-    if _monitor_path(instance_dir).exists():
+    if _monitor_path().exists():
         return 0
 
-    md_path = Path(instance_dir) / "missions.md"
+    instance_dir = _default_instance_dir()
+    md_path = instance_dir / "missions.md"
     if not md_path.exists():
         return 0
 
@@ -308,6 +313,6 @@ def monitor_migrate_from_missions_md(instance_dir) -> int:
     ]
 
     if json_items:
-        _monitor_save(instance_dir, json_items)
+        _monitor_save(json_items)
 
     return len(json_items)

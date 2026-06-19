@@ -227,7 +227,7 @@ class TestDrainOneErrorHandling:
 
         assert result is not None
         assert "passed" in result.lower()
-        mock_remove.assert_called_once_with("/tmp/instance", PR_URL)
+        mock_remove.assert_called_once_with(PR_URL)
 
     def test_drain_one_failure_injects_mission(self):
         """On CI failure under max attempts, a /ci_check mission is injected."""
@@ -292,7 +292,7 @@ class TestDrainOneErrorHandling:
         mock_remove.assert_called_once()
         mock_outbox.assert_called_once()
         # Failure notification should mention the PR URL
-        assert PR_URL in mock_outbox.call_args[0][1]
+        assert PR_URL in mock_outbox.call_args[0][0]
 
     def test_drain_one_closed_pr_removed_and_notifies(self):
         """A PR closed without merging is removed from CI monitor and the human is notified.
@@ -319,7 +319,7 @@ class TestDrainOneErrorHandling:
         assert "closed" in result.lower()
         mock_remove.assert_called_once()
         mock_outbox.assert_called_once()
-        assert PR_URL in mock_outbox.call_args[0][1]
+        assert PR_URL in mock_outbox.call_args[0][0]
         # CI status must not be checked and no fix mission must be injected
         mock_status.assert_not_called()
         mock_inject.assert_not_called()
@@ -376,7 +376,7 @@ class TestInjectCiFixMission:
 
         entry = {"project": "proj", "project_path": ""}
         with patch("app.utils.insert_pending_mission", return_value=True) as mock_insert:
-            result = _inject_ci_fix_mission("/tmp/instance", PR_URL, entry)
+            result = _inject_ci_fix_mission(PR_URL, entry)
 
         assert result is True
         mock_insert.assert_called_once()
@@ -391,7 +391,7 @@ class TestInjectCiFixMission:
 
         entry = {"project": "proj", "project_path": ""}
         with patch("app.utils.insert_pending_mission", return_value=False):
-            result = _inject_ci_fix_mission("/tmp/instance", PR_URL, entry)
+            result = _inject_ci_fix_mission(PR_URL, entry)
 
         assert result is False
 
@@ -401,7 +401,7 @@ class TestInjectCiFixMission:
 
         entry = {"project_path": "/home/user/repos/my-toolkit"}
         with patch("app.utils.insert_pending_mission", return_value=True) as mock_insert:
-            _inject_ci_fix_mission("/tmp/instance", PR_URL, entry)
+            _inject_ci_fix_mission(PR_URL, entry)
 
         project = mock_insert.call_args[0][1]
         assert project == "my-toolkit"
@@ -435,18 +435,20 @@ class TestLegacyJsonQueueMigration:
     def test_no_legacy_file_is_noop(self, tmp_path):
         from app.ci_queue_runner import _maybe_migrate_json_queue
 
-        _maybe_migrate_json_queue(str(tmp_path))
+        _maybe_migrate_json_queue()
 
-        monitor = tmp_path / ".ci-monitor.json"
+        monitor = tmp_path / "instance" / ".ci-monitor.json"
         assert not monitor.exists()
 
     def test_invalid_json_is_removed_without_touching_monitor(self, tmp_path):
         from app.ci_queue_runner import _maybe_migrate_json_queue
 
-        legacy = tmp_path / ".ci-queue.json"
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        legacy = instance / ".ci-queue.json"
         legacy.write_text("not-json")
 
-        _maybe_migrate_json_queue(str(tmp_path))
+        _maybe_migrate_json_queue()
 
         assert not legacy.exists()
 
@@ -454,8 +456,10 @@ class TestLegacyJsonQueueMigration:
         from app.ci_queue_runner import _maybe_migrate_json_queue
         from app.ci_queue import monitor_get_items
 
-        legacy = tmp_path / ".ci-queue.json"
-        lock = tmp_path / ".ci-queue.lock"
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        legacy = instance / ".ci-queue.json"
+        lock = instance / ".ci-queue.lock"
         lock.write_text("")
         legacy.write_text(json.dumps([
             {
@@ -469,9 +473,9 @@ class TestLegacyJsonQueueMigration:
         ]))
 
         with patch("app.utils.load_config", return_value={"ci_fix_max_attempts": 7}):
-            _maybe_migrate_json_queue(str(tmp_path))
+            _maybe_migrate_json_queue()
 
-        items = monitor_get_items(str(tmp_path))
+        items = monitor_get_items()
         pr_urls = [i["pr_url"] for i in items]
         assert PR_URL in pr_urls
         assert "https://github.com/owner/repo/pull/99" not in pr_urls
@@ -487,30 +491,18 @@ class TestLegacyJsonQueueMigration:
         from app.ci_queue_runner import _maybe_migrate_json_queue
         from app.ci_queue import monitor_get_items
 
-        legacy = tmp_path / ".ci-queue.json"
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        legacy = instance / ".ci-queue.json"
         legacy.write_text(json.dumps({"pr_url": PR_URL}))
 
-        _maybe_migrate_json_queue(str(tmp_path))
+        _maybe_migrate_json_queue()
 
         assert not legacy.exists()
-        assert monitor_get_items(str(tmp_path)) == []
+        assert monitor_get_items() == []
 
 
 class TestReenqueueForMonitoring:
-    def test_missing_koan_root_returns_without_write(self, capsys):
-        from app.ci_queue_runner import _reenqueue_for_monitoring
-
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            patch("app.ci_queue.monitor_add_item") as mock_add,
-        ):
-            _reenqueue_for_monitoring(
-                PR_URL, "fix-branch", "owner/repo", "42", PROJECT_PATH,
-            )
-
-        assert "KOAN_ROOT not set" in capsys.readouterr().err
-        mock_add.assert_not_called()
-
     def test_modify_failure_is_logged_not_raised(self, tmp_path, capsys):
         from app.ci_queue_runner import _reenqueue_for_monitoring
 
@@ -580,7 +572,7 @@ class TestCiQueueSmallHelpers:
         from app.ci_queue_runner import _write_outbox
 
         with patch("app.utils.append_to_outbox", side_effect=OSError("full")):
-            _write_outbox("/tmp/instance", "message")
+            _write_outbox("message")
 
         assert "Failed to write outbox" in capsys.readouterr().err
 
@@ -1119,11 +1111,11 @@ class TestDrainOneBlockedApproval:
 
         assert result is not None
         assert "approval" in result.lower()
-        mock_remove.assert_called_once_with("/tmp/instance", self.PR_URL)
+        mock_remove.assert_called_once_with(self.PR_URL)
         mock_outbox.assert_called_once()
         # Outbox message should reference the PR so the human can act
-        assert self.PR_URL in mock_outbox.call_args[0][1]
-        assert "approval" in mock_outbox.call_args[0][1].lower()
+        assert self.PR_URL in mock_outbox.call_args[0][0]
+        assert "approval" in mock_outbox.call_args[0][0].lower()
         # No fix mission should be queued — Kōan can't unstick it
         mock_inject.assert_not_called()
 

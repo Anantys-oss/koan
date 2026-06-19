@@ -114,7 +114,6 @@ class TestPathResolution:
             mock_inject.return_value = []
             main()
 
-        # Check that check_and_inject was called with correct paths
+        # Check that check_and_inject was called with the recurring file path
         args = mock_inject.call_args[0]
         assert args[0] == recurring_file
-        assert args[1] == tmp_path
