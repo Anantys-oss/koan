@@ -105,6 +105,7 @@ def run_fix(
         notify_fn = send_telegram
 
     print("[fix] Starting fix runner", flush=True)
+    skip_diagnose, context = _extract_skip_diagnose(context or "")
     context_label = f" ({context})" if context else ""
     project_name = project_name or project_name_for_path(project_path)
     print(f"[fix] Fetching tracker issue {issue_url}", flush=True)
@@ -159,9 +160,6 @@ def run_fix(
     # Build full issue body (include relevant comments)
     full_body = _build_issue_body(body, comments)
 
-    # Parse --skip-diagnose from context
-    skip_diagnose, context = _extract_skip_diagnose(context or "")
-
     # Run diagnostic step (lightweight, read-only)
     diagnostic_context = ""
     if not skip_diagnose:
@@ -170,14 +168,21 @@ def run_fix(
             format_diagnostic_context,
         )
         print("[fix] Running pre-fix diagnostic...", flush=True)
-        diagnostic = run_diagnostic(
-            project_path=project_path,
-            issue_url=issue_url,
-            issue_title=title,
-            issue_body=full_body,
-            context=context or "",
-            skill_dir=skill_dir,
-        )
+        try:
+            diagnostic = run_diagnostic(
+                project_path=project_path,
+                issue_url=issue_url,
+                issue_title=title,
+                issue_body=full_body,
+                context=context or "",
+                skill_dir=skill_dir,
+            )
+        except Exception as e:
+            logger.error("Diagnostic step failed unexpectedly: %s", e, exc_info=True)
+            diagnostic = {
+                "confidence": "LOW", "hypothesis": "", "code_paths": "",
+                "analysis": "", "raw": "", "error": str(e),
+            }
         diagnostic_context = format_diagnostic_context(diagnostic)
         confidence = diagnostic.get("confidence", "LOW")
         diag_error = diagnostic.get("error")

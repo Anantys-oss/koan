@@ -1,5 +1,6 @@
 """Tests for fix_diagnose.py — the pre-fix diagnostic step."""
 
+import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -104,9 +105,9 @@ class TestRunDiagnostic:
         )
         assert result["confidence"] == "LOW"
 
-    @patch("app.cli_provider.run_command_streaming", side_effect=Exception("timeout"))
+    @patch("app.cli_provider.run_command_streaming", side_effect=RuntimeError("timeout"))
     @patch(f"{_DIAG_MODULE}.load_prompt_or_skill", return_value="prompt")
-    def test_exception_returns_low_confidence(self, mock_prompt, mock_run):
+    def test_runtime_error_returns_low_confidence(self, mock_prompt, mock_run):
         result = run_diagnostic(
             project_path="/path",
             issue_url="https://github.com/o/r/issues/42",
@@ -115,6 +116,17 @@ class TestRunDiagnostic:
         )
         assert result["confidence"] == "LOW"
         assert "timeout" in result.get("error", "")
+
+    @patch("app.cli_provider.run_command_streaming", side_effect=TypeError("unexpected"))
+    @patch(f"{_DIAG_MODULE}.load_prompt_or_skill", return_value="prompt")
+    def test_unexpected_exception_propagates(self, mock_prompt, mock_run):
+        with pytest.raises(TypeError, match="unexpected"):
+            run_diagnostic(
+                project_path="/path",
+                issue_url="https://github.com/o/r/issues/42",
+                issue_title="Bug",
+                issue_body="Body",
+            )
 
     @patch("app.cli_provider.run_command_streaming", return_value="CONFIDENCE: HIGH\n\nHYPOTHESIS: X\n\nCODE_PATHS:\n\nANALYSIS:\nY")
     @patch(f"{_DIAG_MODULE}.load_prompt_or_skill", return_value="prompt")
@@ -126,6 +138,7 @@ class TestRunDiagnostic:
             issue_body="Body",
         )
         tools = mock_run.call_args.kwargs["allowed_tools"]
+        assert "Bash" not in tools
         assert "Edit" not in tools
         assert "Write" not in tools
         assert "Read" in tools

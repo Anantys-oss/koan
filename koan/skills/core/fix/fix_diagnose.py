@@ -21,7 +21,7 @@ _SECTION_RE = re.compile(
 )
 
 _READ_ONLY_TOOLS = [
-    "Bash", "Glob", "Grep", "Read", "WebFetch", "WebSearch",
+    "Glob", "Grep", "Read", "WebFetch", "WebSearch",
 ]
 
 
@@ -58,16 +58,6 @@ def run_diagnostic(
         )
     except (OSError, RuntimeError) as e:
         logger.warning("Diagnostic step failed: %s", e)
-        return {
-            "confidence": "LOW",
-            "hypothesis": "",
-            "code_paths": "",
-            "analysis": "",
-            "raw": "",
-            "error": str(e),
-        }
-    except Exception as e:
-        logger.error("Diagnostic step failed unexpectedly: %s", e, exc_info=True)
         return {
             "confidence": "LOW",
             "hypothesis": "",
@@ -115,6 +105,8 @@ def _parse_diagnostic(raw: str) -> Dict[str, str]:
 def format_diagnostic_context(diagnostic: Dict[str, str]) -> str:
     """Format a parsed diagnostic as context for the fix prompt."""
     if not diagnostic.get("hypothesis"):
+        if diagnostic.get("raw"):
+            logger.warning("Diagnostic produced output but no parseable hypothesis")
         return ""
 
     parts = [
