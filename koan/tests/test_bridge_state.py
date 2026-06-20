@@ -308,3 +308,23 @@ class TestContextGetters:
         monkeypatch.setattr(bs, "summary_path", tmp_path / "missing.md")
         monkeypatch.setattr(bs, "SUMMARY", "startup summary")
         assert bs.get_summary() == "startup summary"
+
+    def test_get_soul_empty_file_does_not_fallback(self, tmp_path, monkeypatch):
+        """Intentionally empty soul.md must return '' — not stale startup value."""
+        import app.bridge_state as bs
+        self._reset_cache()
+        soul = tmp_path / "soul.md"
+        soul.write_text("")
+        monkeypatch.setattr(bs, "soul_path", soul)
+        monkeypatch.setattr(bs, "SOUL", "startup soul")
+        assert bs.get_soul() == ""
+
+    def test_get_summary_empty_file_does_not_fallback(self, tmp_path, monkeypatch):
+        """Intentionally empty summary.md must return '' — not stale startup value."""
+        import app.bridge_state as bs
+        self._reset_cache()
+        summary = tmp_path / "summary.md"
+        summary.write_text("")
+        monkeypatch.setattr(bs, "summary_path", summary)
+        monkeypatch.setattr(bs, "SUMMARY", "startup summary")
+        assert bs.get_summary() == ""

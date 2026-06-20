@@ -89,12 +89,13 @@ if summary_path.exists():
 _context_cache: dict[str, tuple[float, str]] = {}
 
 
-def _read_cached(path: Path) -> str:
-    """Read ``path`` with mtime-based caching; re-read only when it changes."""
+def _read_cached(path: Path) -> Optional[str]:
+    """Read ``path`` with mtime-based caching.  Returns None only when the file
+    is missing or unreadable; an empty file returns ``""``."""
     try:
         mtime = path.stat().st_mtime
     except OSError:
-        return ""
+        return None
     key = str(path)
     cached = _context_cache.get(key)
     if cached is not None and cached[0] >= mtime:
@@ -102,19 +103,21 @@ def _read_cached(path: Path) -> str:
     try:
         content = path.read_text()
     except OSError:
-        return ""
+        return None
     _context_cache[key] = (mtime, content)
     return content
 
 
 def get_soul() -> str:
     """Current soul.md content, refreshed on edit (falls back to startup value)."""
-    return _read_cached(soul_path) or SOUL
+    content = _read_cached(soul_path)
+    return content if content is not None else SOUL
 
 
 def get_summary() -> str:
     """Current summary.md content, refreshed on append (falls back to startup value)."""
-    return _read_cached(summary_path) or SUMMARY
+    content = _read_cached(summary_path)
+    return content if content is not None else SUMMARY
 
 # Skills registry — cached with mtime-based invalidation.
 # Rebuilds automatically when skill directories change on disk
