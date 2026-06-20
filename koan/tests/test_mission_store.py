@@ -725,7 +725,10 @@ class TestGenerateView:
         view = store._to_markdown()
         assert view.endswith("\n")
 
-    def test_to_markdown_complexity_before_crash_count_before_timestamp(self, store):
+    def test_to_markdown_complexity_before_timestamp_before_crash_count(self, store):
+        # Legacy order: [complexity:X] is inserted before the timestamps, while
+        # the [r:N] crash counter is appended after them (matching recover.py and
+        # tag_complexity_in_pending on the legacy missions.md format).
         r, _ = store.add("Fix bug", complexity="simple")
         object.__setattr__(r, "crash_count", 2)
         view = store._to_markdown()
@@ -733,7 +736,7 @@ class TestGenerateView:
         comp_pos = line.find("[complexity:")
         r_pos = line.find("[r:")
         ts_pos = line.find("⏳")
-        assert comp_pos < r_pos < ts_pos
+        assert comp_pos < ts_pos < r_pos
 
 
 # ---------------------------------------------------------------------------

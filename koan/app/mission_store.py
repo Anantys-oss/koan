@@ -48,7 +48,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.utils import atomic_write
+from app.utils import atomic_write, instance_dir
 from collections.abc import Generator
 from typing import Any
 
@@ -56,15 +56,10 @@ from typing import Any
 # threads within the same process do not race on the JSON store.
 _STORE_LOCK = threading.Lock()
 
-
-def _default_instance_dir() -> str:
-    """Return the default instance directory path from KOAN_ROOT."""
-    from app.utils import KOAN_ROOT
-    return str(KOAN_ROOT / "instance")
-
-# Sidecar lock filename — single source of truth used by both locked_store()
-# and MissionStore._lock_path().
+# Filenames for key store files in the instance directory.
+_STORE_FILENAME = "missions.json"
 _STORE_LOCK_FILENAME = ".missions-store.lock"
+_MARKDOWN_FILENAME = "missions.md"
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -239,7 +234,6 @@ class MissionStore:
     """
 
     def __init__(self) -> None:
-        self._instance_dir = Path(_default_instance_dir())
         # Ordered list of all records (across all statuses).
         # Within each status the list order defines queue position.
         self._records: list[MissionRecord] = []
@@ -259,15 +253,15 @@ class MissionStore:
 
     def _store_path(self) -> Path:
         """Absolute path to ``instance/missions.json``."""
-        return self._instance_dir / "missions.json"
+        return Path(instance_dir(), _STORE_FILENAME)
 
     def _view_path(self) -> Path:
         """Absolute path to ``instance/missions.md``."""
-        return self._instance_dir / "missions.md"
+        return Path(instance_dir(), _MARKDOWN_FILENAME)
 
     def _lock_path(self) -> Path:
         """Sidecar lock file path for the JSON store."""
-        return self._instance_dir / _STORE_LOCK_FILENAME
+        return Path(instance_dir(), _STORE_LOCK_FILENAME)
 
     # ------------------------------------------------------------------
     # Hashing
@@ -721,10 +715,10 @@ class MissionStore:
         earlier timestamps are retained, so later states accumulate markers.
 
         Format (pending):
-            ``- [project:webapp] text [r:2] ⏳(2026-06-14T21:00)``
+            ``- [project:webapp] text [complexity:simple] ⏳(2026-06-14T21:00) [r:2]``
 
         Format (in_progress):
-            ``- [project:webapp] text [r:1] ⏳(2026-06-14T21:00) ▶(2026-06-14T21:30)``
+            ``- [project:webapp] text ⏳(2026-06-14T21:00) ▶(2026-06-14T21:30) [r:1]``
 
         Format (done):
             ``- [project:webapp] text ⏳(…) ▶(…) ✅ (2026-06-14 20:00)``
@@ -732,9 +726,12 @@ class MissionStore:
         Format (failed):
             ``- [project:webapp] text ⏳(…) ▶(…) ❌ (2026-06-14 19:00) [flushed]``
 
-        The ``[r:N]`` counter is placed *before* the timestamp so that existing
-        parsers (which scan for ``⏳``/``▶`` after any inline tags) still work.
-        The ``[complexity:X]`` tag is placed before ``[r:N]``.
+        Marker order matches the legacy ``missions.md`` format: ``[complexity:X]``
+        is placed before the timestamps, while the ``[r:N]`` crash counter and
+        ``[s:N]`` stagnation counter are appended after them (mirroring
+        ``recover.py`` and ``tag_complexity_in_pending``). Parsing is
+        position-independent (regex search over the whole line), so this order is
+        cosmetic, not load-bearing.
 
         Args:
             r: The :class:`MissionRecord` to render.
@@ -758,12 +755,13 @@ class MissionStore:
         if r.status == "in_progress" or r.started_at:
             ts = r.started_at or time.strftime(_TS_FORMAT)
             parts.append(f"▶({ts})")
+
         if r.crash_count > 0:
             parts.append(f"[r:{r.crash_count}]")
 
         if r.stagnation_count > 0:
             parts.append(f"[s:{r.stagnation_count}]")
-            
+
         if r.status == "done":
             ts = r.completed_at or time.strftime("%Y-%m-%d %H:%M")
             parts.append(f"✅ ({ts})")
@@ -1040,7 +1038,7 @@ def locked_store() -> Generator[MissionStore, None, None]:
     ``missions.md`` is regenerated from the store on save and is never
     written directly.
     """
-    lock_path = Path(_default_instance_dir()) / _STORE_LOCK_FILENAME
+    lock_path = Path(instance_dir()) / _STORE_LOCK_FILENAME
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with _STORE_LOCK:
         with open(lock_path, "w") as lf:

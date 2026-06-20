@@ -34,6 +34,10 @@ if "KOAN_ROOT" not in os.environ:
     raise SystemExit("KOAN_ROOT environment variable is not set. Run via 'make run' or 'make awake'.")
 KOAN_ROOT = Path(os.environ["KOAN_ROOT"])
 
+def instance_dir() -> Path:
+    """Return the default instance directory path from KOAN_ROOT."""
+    return Path(KOAN_ROOT, "instance")
+
 # Single source of truth for the project-name character class.
 # Dots are allowed because project names may be domain-like, e.g. developers.esphome.io.
 # Extend here (not in scattered call sites) when the allowed character set changes.
