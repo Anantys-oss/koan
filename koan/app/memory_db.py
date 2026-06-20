@@ -63,6 +63,52 @@ def _table_has_expected_columns(conn: sqlite3.Connection) -> bool:
         return False
 
 
+def _reindex_from_jsonl(conn: sqlite3.Connection, instance: str) -> None:
+    """Re-index JSONL entries into an empty FTS5 table after schema upgrade."""
+    log_path = Path(instance) / "memory" / "log.jsonl"
+    if not log_path.exists():
+        return
+    try:
+        raw = log_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    entries = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            tags_raw = obj.get("tags")
+            tags_str = json.dumps(tags_raw) if tags_raw else ""
+            conf_raw = obj.get("confidence")
+            conf_str = str(conf_raw) if conf_raw is not None else ""
+            entries.append((
+                obj.get("project") or "",
+                obj.get("type") or "",
+                obj.get("content") or "",
+                obj.get("ts") or "",
+                obj.get("source_skill") or "",
+                tags_str,
+                conf_str,
+                obj.get("expires_at") or "",
+            ))
+        except json.JSONDecodeError:
+            continue
+    if entries:
+        try:
+            conn.executemany(
+                "INSERT INTO entries(project, type, content, ts, "
+                "source_skill, tags, confidence, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                entries,
+            )
+            conn.commit()
+            logger.info("[memory_db] Re-indexed %d JSONL entries after schema upgrade", len(entries))
+        except sqlite3.DatabaseError as e:
+            logger.warning("[memory_db] Re-index after schema upgrade failed: %s", e)
+
+
 def ensure_db(instance: str) -> Optional[sqlite3.Connection]:
     """Open (or create) ``instance/memory/memory.db`` with WAL mode.
 
@@ -82,6 +128,7 @@ def ensure_db(instance: str) -> Optional[sqlite3.Connection]:
             return None
 
         # Check if existing table needs schema upgrade
+        upgraded = False
         try:
             conn.execute("SELECT * FROM entries LIMIT 0")
         except sqlite3.OperationalError as e:
@@ -91,9 +138,14 @@ def ensure_db(instance: str) -> Optional[sqlite3.Connection]:
         else:
             if not _table_has_expected_columns(conn):
                 try:
+                    row_count = entry_count(conn)
                     conn.execute("DROP TABLE entries")
                     conn.commit()
-                    logger.info("[memory_db] Dropped old entries table for schema upgrade")
+                    logger.warning(
+                        "[memory_db] Dropped old entries table for schema upgrade (%s rows lost, will re-index from JSONL)",
+                        row_count if row_count is not None else "unknown",
+                    )
+                    upgraded = True
                 except sqlite3.DatabaseError as e:
                     logger.warning("[memory_db] Failed to drop old entries table: %s", e)
                     conn.close()
@@ -102,9 +154,13 @@ def ensure_db(instance: str) -> Optional[sqlite3.Connection]:
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS entries "
             "USING fts5(project, type, content, ts UNINDEXED, "
-            "source_skill, tags, confidence UNINDEXED, expires_at UNINDEXED)"
+            "source_skill UNINDEXED, tags UNINDEXED, confidence UNINDEXED, expires_at UNINDEXED)"
         )
         conn.commit()
+
+        if upgraded:
+            _reindex_from_jsonl(conn, instance)
+
         return conn
     except sqlite3.DatabaseError as e:
         logger.warning("[memory_db] ensure_db failed: %s", e)
@@ -325,7 +381,7 @@ def recent_entries(
 
         results = []
         for proj, type_, content, ts, skill, tags_str, conf_str, exp in rows:
-            if exp and exp < now_iso:
+            if _is_expired(exp, now_iso):
                 continue
             entry_proj = proj or ""
             if entry_proj == "" or (project_lower and entry_proj.lower() == project_lower):

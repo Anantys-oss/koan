@@ -691,8 +691,9 @@ class TestSkillAwareBoosting:
         )
         review_indices = [i for i, r in enumerate(results) if r.get("source_skill") == "review"]
         fix_indices = [i for i, r in enumerate(results) if r.get("source_skill") == "fix"]
-        if review_indices and fix_indices:
-            assert max(review_indices) < min(fix_indices)
+        assert review_indices, "expected review entries in results"
+        assert fix_indices, "expected fix entries in results"
+        assert max(review_indices) < min(fix_indices)
 
     def test_recall_full_bypasses_fts(self, instance_dir):
         from app.skill_memory import _load_filtered_learnings
