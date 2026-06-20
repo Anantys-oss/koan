@@ -4065,3 +4065,53 @@ class TestBudgetModeFallbackUnlimitedQuota:
         )
         assert result["action"] == "mission"
         mock_warn_burn.assert_not_called()
+
+
+class TestClassifyMission:
+    """_classify_mission caches the tier on the pending record via the store."""
+
+    def test_cache_miss_classifies_and_persists_to_store(self):
+        from app.complexity_classifier import MissionTier
+        from app.iteration_manager import _classify_mission
+        from app.mission_store import MissionStore, locked_store
+
+        with locked_store() as store:
+            store.add("Refactor the parser", project="webapp")
+
+        with patch(
+            "app.config.get_complexity_routing_config",
+            return_value={"enabled": True, "tiers": {}},
+        ), patch(
+            "app.complexity_classifier.classify_mission_complexity",
+            return_value=MissionTier.COMPLEX,
+        ):
+            tier = _classify_mission("Refactor the parser", "webapp")
+
+        assert tier == "complex"
+        # Persisted on the record (source of truth) and rendered in the view.
+        record = MissionStore().find("Refactor the parser")
+        assert record is not None
+        assert record.complexity == "complex"
+        from app.utils import instance_dir
+        view = (instance_dir() / "missions.md").read_text()
+        assert "[complexity:complex]" in view
+
+    def test_cache_hit_reads_store_without_classifying(self):
+        from app.iteration_manager import _classify_mission
+        from app.mission_store import locked_store
+
+        with locked_store() as store:
+            store.add("Tidy imports", project="webapp")
+            store.set_complexity("Tidy imports", "simple")
+
+        classifier = MagicMock()
+        with patch(
+            "app.config.get_complexity_routing_config",
+            return_value={"enabled": True, "tiers": {}},
+        ), patch(
+            "app.complexity_classifier.classify_mission_complexity", classifier,
+        ):
+            tier = _classify_mission("Tidy imports", "webapp")
+
+        assert tier == "simple"
+        classifier.assert_not_called()

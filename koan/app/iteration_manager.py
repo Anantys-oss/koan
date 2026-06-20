@@ -447,17 +447,16 @@ def _pick_mission(instance_dir: Path, projects_str: str, run_num: int,
 def _classify_mission(
     mission_title: str,
     project_name: str,
-    missions_path,
 ) -> Optional[str]:
-    """Classify mission complexity and cache the tier in missions.md.
+    """Classify mission complexity and cache the tier in the mission store.
 
-    Checks for an existing [complexity:X] tag first (cache hit).  If
-    absent, calls the lightweight model to classify the mission.
+    Checks the pending record's stored complexity first (cache hit).  If
+    absent, calls the lightweight model to classify the mission and
+    persists the tier back onto the record.
 
     Args:
         mission_title: The mission text to classify.
         project_name: Project name for per-project model/routing config.
-        missions_path: Path to missions.md for tag caching.
 
     Returns:
         Tier string ("trivial", "simple", "medium", "complex") or None
@@ -474,14 +473,14 @@ def _classify_mission(
 
     # Cache hit — already classified
     try:
-        from app.missions import extract_complexity_tag
-        cached = extract_complexity_tag(mission_title)
-        if cached is not None:
+        from app.mission_store import MissionStore
+        record = MissionStore().find(mission_title)
+        if record is not None and record.complexity:
             _log_iteration("complexity",
-                f"mission='{mission_title[:60]}' tier={cached} (cached)")
-            return cached
+                f"mission='{mission_title[:60]}' tier={record.complexity} (cached)")
+            return record.complexity
     except Exception as e:
-        _log_iteration("error", f"Complexity tag extraction error: {e}")
+        _log_iteration("error", f"Complexity cache lookup error: {e}")
 
     # Cache miss — call the classifier
     try:
@@ -495,10 +494,13 @@ def _classify_mission(
     _log_iteration("complexity",
         f"mission='{mission_title[:60]}' tier={tier}")
 
-    # Write tag to missions.md (best-effort — never block execution)
+    # Cache the tier on the pending record via the mission store
+    # (best-effort — never block execution). The store regenerates
+    # missions.md, rendering the [complexity:X] tag in the view.
     try:
-        from app.missions import tag_complexity_in_pending
-        tag_complexity_in_pending(mission_title, tier, missions_path)
+        from app.mission_store import locked_store
+        with locked_store() as store:
+            store.set_complexity(mission_title, tier)
     except Exception as e:
         _log_iteration("error", f"Complexity tag write error: {e}")
 
@@ -1561,13 +1563,11 @@ def plan_iteration(
             )
 
     # Step 5b: Pre-classify mission complexity (when a mission was picked
-    # and project resolved successfully).  Cache the tier in missions.md
-    # so re-runs skip the classifier call entirely.
+    # and project resolved successfully).  Cache the tier in the mission
+    # store so re-runs skip the classifier call entirely.
     mission_tier: Optional[str] = None
     if mission_project and mission_title and project_path is not None:
-        mission_tier = _classify_mission(
-            mission_title, project_name, instance / "missions.md"
-        )
+        mission_tier = _classify_mission(mission_title, project_name)
 
         # Step 5c: Re-check affordability now that tier is known.
         # Tier-based model upgrades (e.g. complex → opus) can increase
