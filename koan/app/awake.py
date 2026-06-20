@@ -194,6 +194,24 @@ def is_command(text: str) -> bool:
     return text.startswith("/")
 
 
+def promote_bare_skill_command(text: str) -> Optional[str]:
+    """Promote a bare core-skill word to its slash form.
+
+    If the first word of a plain message names a core skill command or alias,
+    return the text with a leading slash so ``time`` is handled exactly like
+    ``/time``. Only ``core`` skills are promoted — never custom/instance
+    skills — so an installed skill colliding with a common word can't hijack
+    chat. Returns None when the first word is not a core skill.
+    """
+    match = re.match(r"[A-Za-z][\w]*", text)
+    if not match:
+        return None
+    skill = _get_registry().find_by_command(match.group(0).lower())
+    if skill is not None and skill.scope == "core":
+        return "/" + text
+    return None
+
+
 def parse_project(text: str) -> Tuple[Optional[str], str]:
     """Extract [project:name] or [projet:name] from message."""
     return _parse_project(text)
@@ -732,7 +750,14 @@ def handle_message(text: str):
 
     if is_command(text):
         handle_command(text)
-    elif is_mission(text):
+        return
+
+    promoted = promote_bare_skill_command(text)
+    if promoted is not None:
+        handle_command(promoted)
+        return
+
+    if is_mission(text):
         handle_mission(text)
     else:
         _run_in_worker(handle_chat, text)

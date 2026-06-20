@@ -13,6 +13,7 @@ import pytest
 from app.awake import (
     is_mission,
     is_command,
+    promote_bare_skill_command,
     parse_project,
     handle_chat,
     handle_message,
@@ -225,6 +226,42 @@ class TestIsCommand:
         assert is_command("hello") is False
         assert is_command("fix the bug") is False
         assert is_command("") is False
+
+
+# ---------------------------------------------------------------------------
+# promote_bare_skill_command
+# ---------------------------------------------------------------------------
+
+class TestPromoteBareSkillCommand:
+    def test_bare_skill_word_promoted(self):
+        """A bare core-skill word gains a leading slash."""
+        assert promote_bare_skill_command("time") == "/time"
+        assert promote_bare_skill_command("status") == "/status"
+
+    def test_skill_word_with_args_promoted(self):
+        """Args after the skill word are preserved."""
+        assert promote_bare_skill_command(
+            "review https://github.com/o/r/pull/1"
+        ) == "/review https://github.com/o/r/pull/1"
+
+    def test_non_skill_word_not_promoted(self):
+        assert promote_bare_skill_command("hello there") is None
+        assert promote_bare_skill_command("") is None
+
+    def test_already_slashed_not_double_promoted(self):
+        """Leading-slash text is not a bare word, so it isn't promoted."""
+        assert promote_bare_skill_command("/time") is None
+
+    def test_case_insensitive(self):
+        assert promote_bare_skill_command("TIME") == "/TIME"
+
+    @patch("app.awake.handle_command")
+    @patch("app.command_handlers._run_in_worker_cb")
+    def test_handle_message_routes_bare_skill_to_command(self, mock_worker, mock_cmd):
+        """A bare skill word reaches handle_command as its slash form, not chat."""
+        handle_message("time")
+        mock_cmd.assert_called_once_with("/time")
+        mock_worker.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1307,8 +1344,10 @@ class TestHandleMessage:
 
     @patch("app.awake.handle_mission")
     def test_dispatches_mission(self, mock_mission):
-        handle_message("implement dark mode")
-        mock_mission.assert_called_once_with("implement dark mode")
+        # "build" is an imperative mission verb but not a core skill, so it
+        # routes to handle_mission rather than being promoted to a command.
+        handle_message("build dark mode")
+        mock_mission.assert_called_once_with("build dark mode")
 
     @patch("app.awake._run_in_worker")
     def test_dispatches_chat(self, mock_worker):
