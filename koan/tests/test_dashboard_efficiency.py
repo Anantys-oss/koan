@@ -87,6 +87,14 @@ def test_efficiency_no_data(tmp_path):
             assert data["by_project"] == {}
 
 
+def test_efficiency_week_granularity_offset(client):
+    """Granularity=week with offset=1 shifts by 1 ISO week, matching /api/usage."""
+    resp = client.get("/api/efficiency?days=7&granularity=week&offset=1")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["by_project"] == {}
+
+
 def test_efficiency_cost_only_project(client, tmp_path):
     """Project in cost data but not in outcome data."""
     with patch("app.dashboard.INSTANCE_DIR", tmp_path):

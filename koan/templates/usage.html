@@ -1470,7 +1470,7 @@ function loadAll() {
         .catch(() => {});
 
     // Fetch efficiency data and populate Waste % column
-    fetch('/api/efficiency?days=' + days + projParam + offsetParam)
+    fetch('/api/efficiency?days=' + days + projParam + offsetParam + granularityParam)
         .then(r => r.json())
         .then(eff => {
             document.querySelectorAll('#by-project tbody .waste-cell').forEach(cell => {

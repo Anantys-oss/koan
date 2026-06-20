@@ -1095,12 +1095,17 @@ def api_metrics():
 @app.route("/api/efficiency")
 def api_efficiency():
     """Per-project token efficiency: cost per productive outcome."""
+    import calendar as _calendar
+
     from app.cost_tracker import summarize_range
     from app.session_tracker import load_outcomes
 
     days = request.args.get("days", "30", type=str)
     selected_project = request.args.get("project", "")
     offset_raw = request.args.get("offset", "0", type=str)
+    granularity = request.args.get("granularity", "day")
+    if granularity not in ("day", "week", "month"):
+        granularity = "day"
     try:
         days = int(days)
         days = max(1, min(days, 365))
@@ -1113,8 +1118,21 @@ def api_efficiency():
         offset = 0
 
     today = date.today()
-    end = today - timedelta(days=offset * days)
-    start = end - timedelta(days=days - 1)
+    if granularity == "week":
+        end = today - timedelta(weeks=offset)
+        start = end - timedelta(days=days - 1)
+    elif granularity == "month":
+        year, month = today.year, today.month
+        month -= offset
+        while month <= 0:
+            month += 12
+            year -= 1
+        last_day = _calendar.monthrange(year, month)[1]
+        end = date(year, month, min(today.day, last_day))
+        start = end - timedelta(days=days - 1)
+    else:
+        end = today - timedelta(days=offset * days)
+        start = end - timedelta(days=days - 1)
 
     # --- Outcome counts by project ---
     outcomes_path = INSTANCE_DIR / "session_outcomes.json"
