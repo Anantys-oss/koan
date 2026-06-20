@@ -960,7 +960,7 @@ def quarantine_mission(text: str, reason: str, source: str = "unknown"):
 
 
 def handle_mission(text: str):
-    """Append to missions.md with optional project tag."""
+    """Queue a mission via the mission store with an optional project tag."""
     from app.missions import extract_now_flag, sanitize_mission_text
 
     # Sanitize multi-line input (e.g. from Telegram) into a single line
@@ -1006,7 +1006,7 @@ def handle_mission(text: str):
                 log("guard", f"WARNING mission: {guard_result.reason} | {mission_text[:100]}")
                 quarantine_mission(mission_text, guard_result.reason, source="telegram")
 
-    # Append to missions.md under pending section (with file locking)
+    # Queue into the pending section via the mission store (locked + atomic)
     insert_pending_mission(mission_text, project, urgent=urgent)
 
     # Acknowledge with project info

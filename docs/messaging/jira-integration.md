@@ -235,7 +235,7 @@ Jira notifications are checked in two places:
    e. Handle branch: override if present (or use per-project config default)
    f. Validate command → skill must have github_enabled: true
    g. Check user permission → allowlist of Jira account emails
-   h. Insert mission into missions.md (with branch:X token if set)
+   h. Insert mission via the mission store (with branch:X token if set)
    i. Mark comment as processed (in-memory + persistent tracker)
    j. Post 👍 acknowledgment reply on the Jira comment
    k. Notify via Telegram (🎫 emoji prefix)
@@ -379,7 +379,7 @@ GH_TOKEN=ghp_xxxx
 KOAN_JIRA_API_TOKEN=xxxx
 ```
 
-Both integrations poll independently during the agent's sleep cycle — GitHub notifications are checked first, then Jira. Each has its own backoff schedule. Missions from both sources enter the same `missions.md` queue and are processed identically by the agent loop.
+Both integrations poll independently during the agent's sleep cycle — GitHub notifications are checked first, then Jira. Each has its own backoff schedule. Missions from both sources enter the same mission queue (`missions.json` via `MissionStore`) and are processed identically by the agent loop.
 
 ### When to use which
 
@@ -407,7 +407,7 @@ Both can trigger the same set of commands. The difference is the context URL att
 
 ### Mission queued but not executed
 
-The 🎫 mission was written to `missions.md`. Check:
+The 🎫 mission was written to the mission store (and rendered into `missions.md`). Check:
 - `instance/missions.md` — the mission should be in the Pending section
 - Agent loop logs — the mission will be picked up in the next iteration
 - Project name resolution — the `repo:` override or project mapping must point to a valid Koan project in `projects.yaml` or `KOAN_ROOT/workspace/`

@@ -794,7 +794,7 @@ Usually auto-triggered when CI fails after a `/rebase`, but can also be invoked 
 - **Usage:** `/diagnose [project]`
 - **Alias:** `/dx`
 
-Reads the Failed section of `missions.md`, finds the most recent failure (optionally filtered by project), pulls journal context from that session, and queues an urgent diagnostic mission with all the context baked in.
+Reads the failed missions from the mission store, finds the most recent failure (optionally filtered by project), pulls journal context from that session, and queues an urgent diagnostic mission with all the context baked in.
 
 <details>
 <summary>Use cases</summary>

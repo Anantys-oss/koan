@@ -1136,7 +1136,7 @@ def expand_combo_skill(
     we expand them into separate pending missions.
 
     When ``parallel=True`` in the skill's SKILL.md, all sub-missions are
-    batch-inserted in a single atomic write via ``modify_missions_file()``.
+    batch-inserted in a single locked transaction via ``locked_store()``.
     Otherwise, they are inserted one at a time (preserving FIFO ordering).
 
     Args:

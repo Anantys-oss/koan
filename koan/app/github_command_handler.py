@@ -10,7 +10,7 @@ Command flow:
 3. Check permissions → verify user is authorized
 4. Add reaction → mark as processed (👍)
 5. Build mission → format with project tag
-6. Insert mission → write to missions.md
+6. Insert mission → queue via the mission store (regenerates missions.md)
 
 Reply flow (when reply_enabled=true and command not recognized):
 1. Verify user is authorized

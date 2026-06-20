@@ -3,8 +3,9 @@
 Kōan -- Recurring missions
 
 Manages recurring missions (hourly, daily, weekly) stored in instance/recurring.json.
-The scheduler checks which missions are due and inserts them into missions.md pending
-section for normal execution by the run loop.
+The scheduler checks which missions are due and queues them into the pending
+section via the mission store (which regenerates missions.md) for normal
+execution by the run loop.
 
 Storage format (recurring.json):
 [

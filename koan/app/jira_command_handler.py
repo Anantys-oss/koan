@@ -8,7 +8,7 @@ Command flow:
 2. Validate command → check skill has github_enabled (reused for Jira)
 3. Check permissions → verify user is in authorized_users
 4. Build mission → format with project tag and Jira URL
-5. Insert mission → write to missions.md
+5. Insert mission → queue via the mission store (regenerates missions.md)
 6. Mark comment as processed → write to .jira-processed.json
 
 Mission format:

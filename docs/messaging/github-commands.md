@@ -224,7 +224,7 @@ skills.py                ← Skill flags: github_enabled, github_context_aware
    e. Parse @mention → extract (command, context)
    f. Validate command → skill must have github_enabled: true
    g. Check user permission → allowlist + GitHub write access
-   h. Insert mission into missions.md (BEFORE reacting — crash-safe)
+   h. Insert mission via the mission store (regenerates missions.md) (BEFORE reacting — crash-safe)
    i. React with 👍 on comment (marks as processed)
    j. Mark notification thread as read
 ```
@@ -342,7 +342,7 @@ Comments posted by the bot itself are always ignored, preventing infinite loops.
 
 ### Mission-first ordering
 
-The mission is written to `missions.md` before the 👍 reaction is added. This guarantees:
+The mission is written to the mission store (regenerating `missions.md`) before the 👍 reaction is added. This guarantees:
 - **No lost commands**: If Kōan crashes after writing the mission but before reacting, the mission persists. On restart, it will re-process the notification but find the mission already exists.
 - **At-most-once reaction**: The reaction serves as a durable "processed" marker.
 
