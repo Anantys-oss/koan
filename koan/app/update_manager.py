@@ -43,8 +43,8 @@ class UpdateResult:
 
     @property
     def changed(self) -> bool:
-        """True if new commits were pulled."""
-        return self.commits_pulled > 0
+        """True if HEAD moved (covers both forward pulls and tag downgrades)."""
+        return self.old_commit != self.new_commit
 
     def summary(self) -> str:
         """Human-readable summary for Telegram."""
@@ -52,8 +52,10 @@ class UpdateResult:
             return f"Update failed: {self.error}"
         if not self.changed:
             base = "Already up to date."
-        else:
+        elif self.commits_pulled > 0:
             base = f"Updated: {self.old_commit} → {self.new_commit} ({self.commits_pulled} new commit{'s' if self.commits_pulled != 1 else ''})"
+        else:
+            base = f"Updated: {self.old_commit} → {self.new_commit}"
         if self.stash_error:
             base += " ⚠️ Stash restore failed — run `git stash pop` manually."
         return base
@@ -170,15 +172,42 @@ def _restore_stash(koan_root: Path) -> Optional[str]:
     return None
 
 
-def _get_latest_tag(koan_root: Path, remote: str) -> Optional[str]:
-    """Get the latest remote-merged tag by version sort order."""
+def _get_latest_tag(
+    koan_root: Path, remote: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Get the latest upstream release tag by version sort order.
+
+    Only considers tags published on the remote AND merged into
+    ``{remote}/main`` — local-only tags are excluded.
+
+    Returns ``(tag, None)`` on success, ``(None, error_msg)`` on git
+    failure, or ``(None, None)`` when no qualifying tags exist.
+    """
+    ls_result = _run_git(["ls-remote", "--tags", "--refs", remote], koan_root)
+    if ls_result.returncode != 0:
+        return None, f"Failed to list remote tags: {ls_result.stderr.strip()}"
+
+    remote_tags: set[str] = set()
+    for line in ls_result.stdout.strip().splitlines():
+        if "\t" in line:
+            ref = line.split("\t", 1)[1]
+            remote_tags.add(ref.removeprefix("refs/tags/"))
+
+    if not remote_tags:
+        return None, None
+
     result = _run_git(
         ["tag", "--sort=-version:refname", "--merged", f"{remote}/main"],
         koan_root,
     )
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    return result.stdout.strip().splitlines()[0]
+    if result.returncode != 0:
+        return None, f"Failed to list merged tags: {result.stderr.strip()}"
+
+    for tag in result.stdout.strip().splitlines():
+        if tag in remote_tags:
+            return tag, None
+
+    return None, None
 
 
 def checkout_latest_tag(koan_root: Path, timeout: int = 120) -> UpdateResult:
@@ -245,13 +274,13 @@ def checkout_latest_tag(koan_root: Path, timeout: int = 120) -> UpdateResult:
             stashed=stashed, stash_error=stash_err,
         )
 
-    # Find latest tag (only tags merged into remote/main)
-    latest_tag = _get_latest_tag(koan_root, remote)
+    # Find latest tag (only tags published on the remote and merged into remote/main)
+    latest_tag, tag_error = _get_latest_tag(koan_root, remote)
     if latest_tag is None:
         stash_err = _restore_stash(koan_root) if stashed else None
         return UpdateResult(
             success=False, old_commit=old_sha, new_commit=old_sha,
-            commits_pulled=0, error="No release tags found upstream",
+            commits_pulled=0, error=tag_error or "No release tags found upstream",
             stashed=stashed, stash_error=stash_err,
         )
 

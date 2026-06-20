@@ -31,6 +31,11 @@ class TestUpdateResult:
         r = UpdateResult(success=True, old_commit="abc", new_commit="abc", commits_pulled=0)
         assert r.changed is False
 
+    def test_changed_true_on_downgrade(self):
+        """Downgrade: HEAD moved but rev-list old..new returns 0."""
+        r = UpdateResult(success=True, old_commit="abc", new_commit="def", commits_pulled=0)
+        assert r.changed is True
+
     def test_summary_success_with_changes(self):
         r = UpdateResult(success=True, old_commit="abc1234", new_commit="def5678", commits_pulled=5)
         assert "abc1234" in r.summary()
@@ -45,6 +50,14 @@ class TestUpdateResult:
     def test_summary_no_changes(self):
         r = UpdateResult(success=True, old_commit="abc", new_commit="abc", commits_pulled=0)
         assert "up to date" in r.summary()
+
+    def test_summary_downgrade(self):
+        """Downgrade shows SHA transition without commit count."""
+        r = UpdateResult(success=True, old_commit="abc1234", new_commit="old5678", commits_pulled=0)
+        s = r.summary()
+        assert "abc1234" in s
+        assert "old5678" in s
+        assert "new commit" not in s
 
     def test_summary_failure(self):
         r = UpdateResult(success=False, old_commit="abc", new_commit="abc", commits_pulled=0, error="network error")
@@ -464,7 +477,8 @@ class TestCheckoutLatestTag:
             MagicMock(returncode=0, stdout="upstream\n"),       # find_upstream_remote
             MagicMock(returncode=0, stdout=""),                  # _is_dirty (clean)
             MagicMock(returncode=0, stdout=""),                  # fetch --tags
-            MagicMock(returncode=0, stdout="v2.0.0\nv1.9.0\n"), # _get_latest_tag
+            MagicMock(returncode=0, stdout="sha1\trefs/tags/v2.0.0\nsha2\trefs/tags/v1.9.0\n"),  # ls-remote
+            MagicMock(returncode=0, stdout="v2.0.0\nv1.9.0\n"), # tag --merged
             MagicMock(returncode=1, stdout=""),                  # merge-base HEAD includes tag? No
             MagicMock(returncode=0, stdout=""),                  # merge-base tag includes HEAD? (irrelevant since first failed)
             MagicMock(returncode=0, stdout=""),                  # checkout v2.0.0
@@ -486,7 +500,8 @@ class TestCheckoutLatestTag:
             MagicMock(returncode=0, stdout="upstream\n"),       # find_upstream_remote
             MagicMock(returncode=0, stdout=""),                  # _is_dirty
             MagicMock(returncode=0, stdout=""),                  # fetch --tags
-            MagicMock(returncode=0, stdout="v2.0.0\n"),          # _get_latest_tag
+            MagicMock(returncode=0, stdout="sha1\trefs/tags/v2.0.0\n"),  # ls-remote
+            MagicMock(returncode=0, stdout="v2.0.0\n"),          # tag --merged
             MagicMock(returncode=0, stdout=""),                  # merge-base --is-ancestor tag HEAD (yes)
             MagicMock(returncode=0, stdout=""),                  # merge-base --is-ancestor HEAD tag (yes)
         ]
@@ -502,7 +517,7 @@ class TestCheckoutLatestTag:
             MagicMock(returncode=0, stdout="upstream\n"),
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),                  # fetch
-            MagicMock(returncode=0, stdout=""),                  # no tags
+            MagicMock(returncode=0, stdout=""),                  # ls-remote (no tags on remote)
         ]
 
         result = checkout_latest_tag(Path("/repo"))
@@ -528,7 +543,8 @@ class TestCheckoutLatestTag:
             MagicMock(returncode=0, stdout=" M dirty.py\n"),     # dirty
             MagicMock(returncode=0, stdout=""),                   # stash push
             MagicMock(returncode=0, stdout=""),                   # fetch --tags
-            MagicMock(returncode=0, stdout="v3.0.0\n"),           # latest tag
+            MagicMock(returncode=0, stdout="sha1\trefs/tags/v3.0.0\n"),  # ls-remote
+            MagicMock(returncode=0, stdout="v3.0.0\n"),           # tag --merged
             MagicMock(returncode=1, stdout=""),                   # not ancestor
             MagicMock(returncode=0, stdout=""),                   # irrelevant
             MagicMock(returncode=0, stdout=""),                   # checkout tag
@@ -548,7 +564,8 @@ class TestCheckoutLatestTag:
             MagicMock(returncode=0, stdout="upstream\n"),
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),                   # fetch
-            MagicMock(returncode=0, stdout="v2.0.0\n"),
+            MagicMock(returncode=0, stdout="sha1\trefs/tags/v2.0.0\n"),  # ls-remote
+            MagicMock(returncode=0, stdout="v2.0.0\n"),           # tag --merged
             MagicMock(returncode=1, stdout=""),                   # not ancestor
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=1, stdout="", stderr="checkout error"),
@@ -567,7 +584,8 @@ class TestCheckoutLatestTag:
             MagicMock(returncode=0, stdout=" M dirty.py\n"),     # dirty
             MagicMock(returncode=0, stdout=""),                   # stash push
             MagicMock(returncode=0, stdout=""),                   # fetch --tags
-            MagicMock(returncode=0, stdout="v3.0.0\n"),           # latest tag
+            MagicMock(returncode=0, stdout="sha1\trefs/tags/v3.0.0\n"),  # ls-remote
+            MagicMock(returncode=0, stdout="v3.0.0\n"),           # tag --merged
             MagicMock(returncode=1, stdout=""),                   # not ancestor
             MagicMock(returncode=0, stdout=""),                   # irrelevant
             MagicMock(returncode=0, stdout=""),                   # checkout tag
@@ -581,3 +599,64 @@ class TestCheckoutLatestTag:
         assert result.stash_error is not None
         assert "CONFLICT" in result.stash_error
         assert "stash" in result.summary().lower()
+
+    @patch("app.update_manager._run_git")
+    def test_local_only_tag_filtered(self, mock_run):
+        """Tags not published on the remote are excluded from selection."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc1234\n"),        # sha
+            MagicMock(returncode=0, stdout="upstream\n"),        # remote
+            MagicMock(returncode=0, stdout=""),                   # clean
+            MagicMock(returncode=0, stdout=""),                   # fetch --tags
+            # Remote only has v1.0.0
+            MagicMock(returncode=0, stdout="sha1\trefs/tags/v1.0.0\n"),
+            # Local has v2.0.0-local (not on remote) and v1.0.0
+            MagicMock(returncode=0, stdout="v2.0.0-local\nv1.0.0\n"),
+            # merge-base checks for v1.0.0 (v2.0.0-local skipped)
+            MagicMock(returncode=1, stdout=""),                   # not ancestor
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),                   # checkout v1.0.0
+            MagicMock(returncode=0, stdout="def5678\n"),          # new sha
+            MagicMock(returncode=0, stdout="3\n"),                # count
+        ]
+
+        result = checkout_latest_tag(Path("/repo"))
+        assert result.success is True
+        assert result.changed is True
+
+    @patch("app.update_manager._run_git")
+    def test_downgrade_reports_changed(self, mock_run):
+        """Moving backward to an older tag reports changed=True."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc1234\n"),        # sha (on main, ahead of tag)
+            MagicMock(returncode=0, stdout="upstream\n"),        # remote
+            MagicMock(returncode=0, stdout=""),                   # clean
+            MagicMock(returncode=0, stdout=""),                   # fetch --tags
+            MagicMock(returncode=0, stdout="sha1\trefs/tags/v1.0.0\n"),  # ls-remote
+            MagicMock(returncode=0, stdout="v1.0.0\n"),           # tag --merged
+            MagicMock(returncode=0, stdout=""),                   # tag IS ancestor of HEAD (HEAD ahead)
+            MagicMock(returncode=1, stdout=""),                   # HEAD is NOT ancestor of tag
+            MagicMock(returncode=0, stdout=""),                   # checkout tag
+            MagicMock(returncode=0, stdout="older99\n"),          # new sha (different)
+            MagicMock(returncode=0, stdout="0\n"),                # rev-list returns 0 (downgrade)
+        ]
+
+        result = checkout_latest_tag(Path("/repo"))
+        assert result.success is True
+        assert result.changed is True
+        assert result.commits_pulled == 0
+
+    @patch("app.update_manager._run_git")
+    def test_ls_remote_failure_reports_error(self, mock_run):
+        """Git ls-remote failure produces a specific error, not 'No tags'."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="abc1234\n"),
+            MagicMock(returncode=0, stdout="upstream\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),                   # fetch
+            MagicMock(returncode=1, stdout="", stderr="network unreachable"),  # ls-remote fails
+        ]
+
+        result = checkout_latest_tag(Path("/repo"))
+        assert result.success is False
+        assert "remote tags" in result.error.lower()
