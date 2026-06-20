@@ -31,10 +31,8 @@ services:
       - PYTHONPATH=/app/koan
       - SSH_AUTH_SOCK=/run/ssh-agent.sock
     volumes:
-      # Instance state — persisted across restarts
+      # Instance state — persisted across restarts (mission queue included)
       - ./instance:/app/instance
-      # Isolated mission queue for Docker (overlays instance/ mount)
-      - ./instance/missions.docker.md:/app/instance/missions.md
       # Logs
       - ./logs:/app/logs
     restart: unless-stopped
