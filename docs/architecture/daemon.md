@@ -24,7 +24,8 @@ process does not stop cleanly.
 - loads messaging configuration and command registries;
 - polls Telegram, Slack, Matrix, GitHub, or Jira integration paths as configured;
 - routes slash commands through command handlers and skill dispatch;
-- classifies non-command text as chat or mission intent;
+- promotes a plain message whose first word names a core skill to its slash form (`time` → `/time`);
+- classifies remaining non-command text as chat or mission intent;
 - appends missions to `instance/missions.md`;
 - drains `instance/outbox.md` back to the messaging provider.
 

@@ -103,6 +103,8 @@ By default, Kōan processes one mission at a time. When idle, it picks the next 
 
 Just send a regular message — Kōan classifies it automatically. Short conversational messages get instant replies (chat mode). Task-like messages get queued as missions.
 
+**Bare skill shortcut:** if the first word of a plain message is the name (or alias) of a core skill, Kōan treats the whole message as that slash command — `time` runs `/time`, `review <url>` runs `/review <url>`. Only core skills trigger this; custom/instance skills do not. If a common word collides with a skill name and you meant to chat, prefix with `/chat`.
+
 If Kōan misclassifies your message, use `/chat` to force chat mode:
 
 **`/chat`** — Force a message to be treated as chat, not a mission.
