@@ -237,3 +237,94 @@ class TestModuleLevelConstants:
         """TOPICS_FILE should be a known filename."""
         from app.bridge_state import INSTANCE_DIR, TOPICS_FILE
         assert TOPICS_FILE == INSTANCE_DIR / "previous-discussions-topics.json"
+
+
+class TestContextGetters:
+    """Tests for get_soul()/get_summary() — mtime-cached context refresh."""
+
+    def _reset_cache(self):
+        import app.bridge_state as bs
+        bs._context_cache.clear()
+
+    def test_get_soul_reads_current_file(self, tmp_path, monkeypatch):
+        import app.bridge_state as bs
+        self._reset_cache()
+        soul = tmp_path / "soul.md"
+        soul.write_text("I am Koan")
+        monkeypatch.setattr(bs, "soul_path", soul)
+        assert bs.get_soul() == "I am Koan"
+
+    def test_get_summary_reads_current_file(self, tmp_path, monkeypatch):
+        import app.bridge_state as bs
+        self._reset_cache()
+        summary = tmp_path / "summary.md"
+        summary.write_text("Session 1: did things")
+        monkeypatch.setattr(bs, "summary_path", summary)
+        assert bs.get_summary() == "Session 1: did things"
+
+    def test_get_soul_refreshes_on_mtime_change(self, tmp_path, monkeypatch):
+        """Editing soul.md after first read returns the new content (no restart)."""
+        import os
+        import app.bridge_state as bs
+        self._reset_cache()
+        soul = tmp_path / "soul.md"
+        soul.write_text("old soul")
+        monkeypatch.setattr(bs, "soul_path", soul)
+        assert bs.get_soul() == "old soul"
+
+        soul.write_text("new soul")
+        # Force a later mtime so the cache is invalidated deterministically.
+        future = soul.stat().st_mtime + 100
+        os.utime(soul, (future, future))
+        assert bs.get_soul() == "new soul"
+
+    def test_get_soul_serves_cached_when_unchanged(self, tmp_path, monkeypatch):
+        """A second read with unchanged mtime returns cached content, not a re-read."""
+        import os
+        import app.bridge_state as bs
+        self._reset_cache()
+        soul = tmp_path / "soul.md"
+        soul.write_text("cached soul")
+        monkeypatch.setattr(bs, "soul_path", soul)
+        assert bs.get_soul() == "cached soul"
+
+        # Rewrite content but pin the original mtime: cache must win.
+        mtime = soul.stat().st_mtime
+        soul.write_text("changed but same mtime")
+        os.utime(soul, (mtime, mtime))
+        assert bs.get_soul() == "cached soul"
+
+    def test_get_soul_falls_back_to_startup_value(self, tmp_path, monkeypatch):
+        """Missing file -> fall back to the module-level SOUL loaded at startup."""
+        import app.bridge_state as bs
+        self._reset_cache()
+        monkeypatch.setattr(bs, "soul_path", tmp_path / "does-not-exist.md")
+        monkeypatch.setattr(bs, "SOUL", "startup soul")
+        assert bs.get_soul() == "startup soul"
+
+    def test_get_summary_falls_back_to_startup_value(self, tmp_path, monkeypatch):
+        import app.bridge_state as bs
+        self._reset_cache()
+        monkeypatch.setattr(bs, "summary_path", tmp_path / "missing.md")
+        monkeypatch.setattr(bs, "SUMMARY", "startup summary")
+        assert bs.get_summary() == "startup summary"
+
+    def test_get_soul_empty_file_does_not_fallback(self, tmp_path, monkeypatch):
+        """Intentionally empty soul.md must return '' — not stale startup value."""
+        import app.bridge_state as bs
+        self._reset_cache()
+        soul = tmp_path / "soul.md"
+        soul.write_text("")
+        monkeypatch.setattr(bs, "soul_path", soul)
+        monkeypatch.setattr(bs, "SOUL", "startup soul")
+        assert bs.get_soul() == ""
+
+    def test_get_summary_empty_file_does_not_fallback(self, tmp_path, monkeypatch):
+        """Intentionally empty summary.md must return '' — not stale startup value."""
+        import app.bridge_state as bs
+        self._reset_cache()
+        summary = tmp_path / "summary.md"
+        summary.write_text("")
+        monkeypatch.setattr(bs, "summary_path", summary)
+        monkeypatch.setattr(bs, "SUMMARY", "startup summary")
+        assert bs.get_summary() == ""

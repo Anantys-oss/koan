@@ -42,6 +42,8 @@ from app.bridge_state import (
     CONVERSATION_HISTORY_FILE,
     TOPICS_FILE,
     _get_registry,
+    get_soul,
+    get_summary,
 )
 from app.cli_provider import build_full_command
 from app.command_handlers import (
@@ -364,8 +366,9 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
 
     from app.prompts import load_prompt
 
+    summary = get_summary()
     summary_budget = 0 if lite else 1500
-    summary_block = f"Summary of past sessions:\n{SUMMARY[:summary_budget]}" if SUMMARY and summary_budget else ""
+    summary_block = f"Summary of past sessions:\n{summary[:summary_budget]}" if summary and summary_budget else ""
     prefs_block = f"About the human:\n{prefs_context}" if prefs_context else ""
     journal_block = f"Today's journal (excerpt):\n{journal_context}" if journal_context else ""
     missions_block = f"Current missions state:\n{missions_context}" if missions_context else ""
@@ -385,7 +388,7 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
 
     prompt = load_prompt(
         "chat",
-        SOUL=SOUL,
+        SOUL=get_soul(),
         TOOLS_DESC=tools_desc or "",
         PREFS=prefs_block,
         SUMMARY=summary_block,

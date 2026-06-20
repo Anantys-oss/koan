@@ -82,6 +82,43 @@ summary_path = INSTANCE_DIR / "memory" / "summary.md"
 if summary_path.exists():
     SUMMARY = summary_path.read_text()
 
+
+# mtime-cached refresh of soul.md / summary.md so the long-running bridge picks
+# up edits (e.g. soul.md changed via the dashboard, summary.md appended by run
+# sessions) without a restart — while still avoiding a disk read per chat.
+_context_cache: dict[str, tuple[float, str]] = {}
+
+
+def _read_cached(path: Path) -> Optional[str]:
+    """Read ``path`` with mtime-based caching.  Returns None only when the file
+    is missing or unreadable; an empty file returns ``""``."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    key = str(path)
+    cached = _context_cache.get(key)
+    if cached is not None and cached[0] >= mtime:
+        return cached[1]
+    try:
+        content = path.read_text()
+    except OSError:
+        return None
+    _context_cache[key] = (mtime, content)
+    return content
+
+
+def get_soul() -> str:
+    """Current soul.md content, refreshed on edit (falls back to startup value)."""
+    content = _read_cached(soul_path)
+    return content if content is not None else SOUL
+
+
+def get_summary() -> str:
+    """Current summary.md content, refreshed on append (falls back to startup value)."""
+    content = _read_cached(summary_path)
+    return content if content is not None else SUMMARY
+
 # Skills registry — cached with mtime-based invalidation.
 # Rebuilds automatically when skill directories change on disk
 # (e.g., after code deployment adds a new core skill).
