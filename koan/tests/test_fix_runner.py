@@ -11,6 +11,7 @@ from skills.core.fix.fix_runner import (
     _build_prompt,
     _submit_fix_pr,
     _get_existing_koan_branch,
+    _extract_skip_diagnose,
     main,
 )
 from app.issue_tracker.types import IssueContent, IssueRef
@@ -27,7 +28,14 @@ from app.pr_submit import (
 
 
 _FIX_MODULE = "skills.core.fix.fix_runner"
+_DIAG_MODULE = "skills.core.fix.fix_diagnose"
 _PR_MODULE = "app.pr_submit"
+
+_MOCK_DIAGNOSTIC = {
+    "confidence": "HIGH", "hypothesis": "Test hypothesis",
+    "code_paths": "", "analysis": "", "raw": "",
+}
+
 
 
 def _github_issue(
@@ -248,11 +256,13 @@ class TestResolveSubmitTarget:
 # ---------------------------------------------------------------------------
 
 class TestRunFix:
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC)
     @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan.atoomic/fix-issue-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
     @patch(f"{_FIX_MODULE}.fetch_issue")
-    def test_success_with_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr):
+    def test_success_with_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr, _d1, _d2):
         mock_fetch.return_value = _github_issue()
         notify = MagicMock()
 
@@ -308,11 +318,13 @@ class TestRunFix:
         assert success is False
         assert "no content" in summary.lower()
 
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC)
     @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value=None)
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan.atoomic/fix-issue-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
     @patch(f"{_FIX_MODULE}.fetch_issue")
-    def test_success_no_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr):
+    def test_success_no_pr(self, mock_fetch, mock_execute, mock_branch, mock_pr, _d1, _d2):
         mock_fetch.return_value = _github_issue(body="Body text")
         notify = MagicMock()
 
@@ -324,9 +336,11 @@ class TestRunFix:
         assert success is True
         assert "Branch: koan.atoomic/fix-issue-42" in summary
 
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC)
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="")
     @patch(f"{_FIX_MODULE}.fetch_issue")
-    def test_empty_claude_output(self, mock_fetch, mock_execute):
+    def test_empty_claude_output(self, mock_fetch, mock_execute, _d1, _d2):
         mock_fetch.return_value = _github_issue(body="Body")
         notify = MagicMock()
 
@@ -358,12 +372,14 @@ class TestRunFix:
         assert "already closed" in notification_text.lower()
         assert "⏭" in notification_text
 
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC)
     @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
     @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_explicit_project_name_reaches_tracker_and_memory(
-        self, mock_fetch, mock_execute, mock_branch, mock_pr,
+        self, mock_fetch, mock_execute, mock_branch, mock_pr, _d1, _d2,
     ):
         mock_fetch.return_value = _github_issue()
 
@@ -505,13 +521,15 @@ class TestGetExistingKoanBranch:
 # ---------------------------------------------------------------------------
 
 class TestRunFixInPlace:
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC)
     @patch(f"{_FIX_MODULE}._get_existing_koan_branch", return_value="koan/fix-issue-99")
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-99")
     @patch(f"{_FIX_MODULE}._submit_fix_pr")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
     @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_in_place_skips_pr_creation(
-        self, mock_fetch, mock_execute, mock_submit, mock_branch, mock_existing,
+        self, mock_fetch, mock_execute, mock_submit, mock_branch, mock_existing, _d1, _d2,
     ):
         """When fixing an existing koan PR, _submit_fix_pr must NOT be called."""
         mock_fetch.return_value = _github_issue(body="Some content")
@@ -527,13 +545,15 @@ class TestRunFixInPlace:
         mock_submit.assert_not_called()
         assert "koan/fix-issue-99" in summary
 
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC)
     @patch(f"{_FIX_MODULE}._get_existing_koan_branch", return_value="koan/fix-issue-99")
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-99")
     @patch(f"{_FIX_MODULE}._submit_fix_pr")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
     @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_in_place_passes_existing_branch_to_execute(
-        self, mock_fetch, mock_execute, mock_submit, mock_branch, mock_existing,
+        self, mock_fetch, mock_execute, mock_submit, mock_branch, mock_existing, _d1, _d2,
     ):
         """existing_branch must be forwarded to _execute_fix."""
         mock_fetch.return_value = _github_issue(body="Some content")
@@ -546,13 +566,15 @@ class TestRunFixInPlace:
 
         assert mock_execute.call_args.kwargs["existing_branch"] == "koan/fix-issue-99"
 
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC)
     @patch(f"{_FIX_MODULE}._get_existing_koan_branch", return_value=None)
     @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
     @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-42")
     @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
     @patch(f"{_FIX_MODULE}.fetch_issue")
     def test_non_koan_pr_creates_new_pr(
-        self, mock_fetch, mock_execute, mock_branch, mock_submit, mock_existing,
+        self, mock_fetch, mock_execute, mock_branch, mock_submit, mock_existing, _d1, _d2,
     ):
         """When the PR is not koan-owned, the normal PR creation path runs."""
         mock_fetch.return_value = _github_issue(body="Some content")
@@ -602,3 +624,106 @@ class TestBuildPromptExistingBranch:
         )
         assert "koan/fix-issue-42" in prompt
         assert "Never commit on" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _extract_skip_diagnose
+# ---------------------------------------------------------------------------
+
+class TestExtractSkipDiagnose:
+    def test_extracts_flag(self):
+        skip, ctx = _extract_skip_diagnose("--skip-diagnose focus on backend")
+        assert skip is True
+        assert ctx == "focus on backend"
+
+    def test_no_flag(self):
+        skip, ctx = _extract_skip_diagnose("focus on backend")
+        assert skip is False
+        assert ctx == "focus on backend"
+
+    def test_empty_context(self):
+        skip, ctx = _extract_skip_diagnose("")
+        assert skip is False
+        assert ctx == ""
+
+    def test_none_context(self):
+        skip, ctx = _extract_skip_diagnose(None)
+        assert skip is False
+        assert ctx == ""
+
+    def test_flag_only(self):
+        skip, ctx = _extract_skip_diagnose("--skip-diagnose")
+        assert skip is True
+        assert ctx == ""
+
+
+# ---------------------------------------------------------------------------
+# run_fix — diagnostic integration
+# ---------------------------------------------------------------------------
+
+class TestRunFixDiagnostic:
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="## Diagnostic\nHigh confidence")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value={
+        "confidence": "HIGH", "hypothesis": "Bug in X",
+        "code_paths": "a.py:1", "analysis": "Root cause", "raw": "",
+    })
+    @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-42")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_diagnostic_called_before_fix(
+        self, mock_fetch, mock_execute, mock_branch, mock_pr, mock_diag, mock_format,
+    ):
+        mock_fetch.return_value = _github_issue()
+        run_fix(
+            project_path="/path",
+            issue_url="https://github.com/o/r/issues/42",
+            notify_fn=MagicMock(),
+        )
+        mock_diag.assert_called_once()
+        mock_execute.assert_called_once()
+        assert mock_execute.call_args.kwargs["diagnostic"] == "## Diagnostic\nHigh confidence"
+
+    @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-42")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_skip_diagnose_bypasses_diagnostic(
+        self, mock_fetch, mock_execute, mock_branch, mock_pr,
+    ):
+        mock_fetch.return_value = _github_issue()
+        with patch(f"{_DIAG_MODULE}.run_diagnostic") as mock_diag:
+            run_fix(
+                project_path="/path",
+                issue_url="https://github.com/o/r/issues/42",
+                context="--skip-diagnose focus on backend",
+                notify_fn=MagicMock(),
+            )
+            mock_diag.assert_not_called()
+        assert "--skip-diagnose" not in (mock_execute.call_args.kwargs.get("context", ""))
+
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value={
+        "confidence": "LOW", "hypothesis": "", "code_paths": "",
+        "analysis": "", "raw": "unstructured", "error": "",
+    })
+    @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-42")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_low_confidence_emits_warning(
+        self, mock_fetch, mock_execute, mock_branch, mock_pr, mock_diag, mock_format,
+    ):
+        mock_fetch.return_value = _github_issue()
+        notify = MagicMock()
+        run_fix(
+            project_path="/path",
+            issue_url="https://github.com/o/r/issues/42",
+            notify_fn=notify,
+        )
+        warning_calls = [
+            c for c in notify.call_args_list
+            if "low-confidence" in c[0][0].lower() or "Low-confidence" in c[0][0]
+        ]
+        assert len(warning_calls) == 1
+        mock_execute.assert_called_once()

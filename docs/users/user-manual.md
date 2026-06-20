@@ -502,16 +502,20 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 
 > **Blocker handling:** When the plan is ambiguous or under-specified, `/implement` chooses the simplest interpretation consistent with existing code patterns, documents the assumption in a commit message, and delivers a draft PR. If the first pass produces no committed changes, an escalated retry pass runs automatically. Only a genuine hard impossibility (no repo access, no actionable plan) results in a soft failure notification.  
 
-**`/fix`** — Fix a GitHub or Jira issue end-to-end: understand, plan, test, implement, and submit a PR.
+**`/fix`** — Fix a GitHub or Jira issue end-to-end: diagnose, understand, plan, test, implement, and submit a PR.
 
 - **Usage:** `/fix <issue-url> [additional context]`
 - **GitHub @mention:** `@koan-bot /fix` on an issue
+- **Flags:** `--skip-diagnose` — Skip the pre-fix diagnostic step (useful for trivial issues where the root cause is obvious)
+
+Before attempting a fix, `/fix` runs a lightweight read-only diagnostic phase using a smaller model to form a hypothesis about the root cause. The fix session receives this analysis as context. If diagnostic confidence is LOW, a Telegram warning is sent but the fix still proceeds.
 
 <details>
 <summary>Use cases</summary>
 
-- `/fix https://github.com/org/repo/issues/99` — Full bug-fix pipeline
+- `/fix https://github.com/org/repo/issues/99` — Full bug-fix pipeline (with automatic diagnostic)
 - `/fix https://github.com/org/repo/issues/99 Regression from v2.3` — Provide extra context
+- `/fix https://github.com/org/repo/issues/99 --skip-diagnose` — Skip diagnostic for a trivial fix
 - `/fix https://myorg.atlassian.net/browse/PROJ-123 branch:main` — Fix a Jira ticket using a one-off target branch
 </details>
 

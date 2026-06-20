@@ -13,6 +13,7 @@ CLI:
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -31,6 +32,20 @@ from app.prompts import load_prompt_or_skill
 from app.github_url_parser import parse_pr_url
 
 logger = logging.getLogger(__name__)
+
+_SKIP_DIAGNOSE_RE = re.compile(r'\s*--skip-diagnose\s*', re.IGNORECASE)
+
+
+def _extract_skip_diagnose(context):
+    """Extract --skip-diagnose flag from context string.
+
+    Returns (skip_diagnose: bool, cleaned_context: str).
+    """
+    if not context:
+        return False, context or ""
+    if _SKIP_DIAGNOSE_RE.search(context):
+        return True, _SKIP_DIAGNOSE_RE.sub(" ", context).strip()
+    return False, context
 
 
 def _build_footer() -> str:
@@ -90,6 +105,7 @@ def run_fix(
         notify_fn = send_telegram
 
     print("[fix] Starting fix runner", flush=True)
+    skip_diagnose, context = _extract_skip_diagnose(context or "")
     context_label = f" ({context})" if context else ""
     project_name = project_name or project_name_for_path(project_path)
     print(f"[fix] Fetching tracker issue {issue_url}", flush=True)
@@ -144,6 +160,46 @@ def run_fix(
     # Build full issue body (include relevant comments)
     full_body = _build_issue_body(body, comments)
 
+    # Run diagnostic step (lightweight, read-only)
+    diagnostic_context = ""
+    if not skip_diagnose:
+        from skills.core.fix.fix_diagnose import (
+            run_diagnostic,
+            format_diagnostic_context,
+        )
+        print("[fix] Running pre-fix diagnostic...", flush=True)
+        try:
+            diagnostic = run_diagnostic(
+                project_path=project_path,
+                issue_url=issue_url,
+                issue_title=title,
+                issue_body=full_body,
+                context=context or "",
+                skill_dir=skill_dir,
+            )
+        except Exception as e:
+            logger.error("Diagnostic step failed unexpectedly: %s", e, exc_info=True)
+            diagnostic = {
+                "confidence": "LOW", "hypothesis": "", "code_paths": "",
+                "analysis": "", "raw": "", "error": str(e),
+            }
+        diagnostic_context = format_diagnostic_context(diagnostic)
+        confidence = diagnostic.get("confidence", "LOW")
+        diag_error = diagnostic.get("error")
+        print(f"[fix] Diagnostic confidence: {confidence}", flush=True)
+        if diag_error and notify_fn:
+            notify_fn(
+                f"⚠️ Diagnostic step failed for {label}: {diag_error} — "
+                f"fix will proceed without diagnostic context"
+            )
+        elif confidence == "LOW" and notify_fn:
+            notify_fn(
+                f"⚠️ Low-confidence diagnostic for {label} — "
+                f"fix will proceed but may need human review"
+            )
+    else:
+        print("[fix] Diagnostic skipped (--skip-diagnose)", flush=True)
+
     # Resolve effective base branch once and feed it through the whole
     # pipeline: the fix prompt needs it so Claude knows which branch counts
     # as "the base" for this project (e.g. `staging`), and the post-fix PR
@@ -168,6 +224,7 @@ def run_fix(
             instance_dir=instance_dir,
             base_branch=effective_base_branch,
             existing_branch=existing_branch,
+            diagnostic=diagnostic_context,
         )
     except Exception as e:
         return False, f"Fix failed: {str(e)[:300]}"
@@ -273,6 +330,7 @@ def _execute_fix(
     instance_dir: str = "",
     base_branch: Optional[str] = None,
     existing_branch: Optional[str] = None,
+    diagnostic: str = "",
 ) -> str:
     """Execute the fix via Claude CLI."""
     from app.config import get_branch_prefix
@@ -297,6 +355,7 @@ def _execute_fix(
         project_memory=project_memory,
         base_branch=effective_base,
         existing_branch=existing_branch,
+        diagnostic=diagnostic,
     )
 
     from app.claude_step import run_skill_loop
@@ -335,6 +394,7 @@ def _build_prompt(
     project_memory: str = "",
     base_branch: str = "main",
     existing_branch: Optional[str] = None,
+    diagnostic: str = "",
 ) -> str:
     """Build the fix prompt from the issue content."""
     branch_section = _build_branch_section(
@@ -353,6 +413,7 @@ def _build_prompt(
         PROJECT_MEMORY=project_memory,
         BASE_BRANCH=base_branch,
         BRANCH_SECTION=branch_section,
+        DIAGNOSTIC=diagnostic,
     )
 
     return load_prompt_or_skill(skill_dir, "fix", **template_vars)
