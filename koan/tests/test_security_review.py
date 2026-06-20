@@ -211,6 +211,83 @@ class TestScanDiffForPatterns:
         findings = scan_diff_for_patterns(diff)
         assert len(findings) == 2
 
+    def test_detects_unsafe_yaml_load(self):
+        diff = "+data = yaml.load(raw_input)"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "unsafe YAML deserialization"
+
+    def test_detects_yaml_unsafe_load(self):
+        diff = "+data = yaml.unsafe_load(content)"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "unsafe YAML deserialization"
+
+    def test_yaml_safe_loader_not_flagged(self):
+        diff = "+data = yaml.load(content, Loader=yaml.SafeLoader)"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 0
+
+    def test_detects_private_key(self):
+        diff = "+-----BEGIN RSA PRIVATE KEY-----"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "private key in source"
+
+    def test_detects_generic_private_key(self):
+        diff = "+-----BEGIN PRIVATE KEY-----"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "private key in source"
+
+    def test_detects_weak_hash_md5(self):
+        diff = "+digest = hashlib.md5(data)"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "weak cryptographic hash"
+
+    def test_detects_weak_hash_sha1(self):
+        diff = "+h = hashlib.sha1(payload)"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "weak cryptographic hash"
+
+    def test_detects_insecure_mktemp(self):
+        diff = "+path = tempfile.mktemp(suffix='.tmp')"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "insecure temp file creation"
+
+    def test_detects_template_injection(self):
+        diff = "+return render_template_string(user_input)"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "potential template injection"
+
+    def test_detects_verify_false(self):
+        diff = "+requests.get(url, verify=False)"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "SSL/TLS verification bypass"
+
+    def test_detects_extractall(self):
+        diff = "+tar.extractall('/tmp/output')"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "unsafe archive extraction"
+
+    def test_detects_dynamic_import(self):
+        diff = "+mod = __import__(module_name)"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "dynamic import"
+
+    def test_detects_aws_access_key(self):
+        diff = "+aws_key = '" + "AKIA" + "A" * 16 + "'"
+        findings = scan_diff_for_patterns(diff)
+        assert len(findings) == 1
+        assert findings[0][0] == "AWS access key ID"
+
     def test_empty_diff(self):
         assert scan_diff_for_patterns("") == []
 
