@@ -1671,10 +1671,10 @@ class TestExpandComboSkill:
 
         assert result is True
         content = (tmp_path / "instance" / "missions.md").read_text()
-        # The store renders the project as a trailing [project:X] tag.
-        assert "/security_audit [project:koan]" in content
-        assert "/dead_code [project:koan]" in content
-        assert "/profile [project:koan]" in content
+        # The store renders the project as a leading [project:X] tag.
+        assert "[project:koan] /security_audit" in content
+        assert "[project:koan] /dead_code" in content
+        assert "[project:koan] /profile" in content
         assert "Existing mission" in content
 
     def test_parallel_combo_deduplicates_url_missions(self, tmp_path):

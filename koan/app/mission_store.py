@@ -715,17 +715,22 @@ class MissionStore:
     def _render_record(self, r: MissionRecord) -> str:
         """Format one record as a Markdown list item with lifecycle markers.
 
+        The ``[project:X]`` tag is placed immediately after the dash, before
+        the text, matching the legacy ``- [project:X] text …`` format produced
+        throughout the codebase. As a mission moves through its lifecycle the
+        earlier timestamps are retained, so later states accumulate markers.
+
         Format (pending):
-            ``- text [r:2] ⏳(2026-06-14T21:00) [project:webapp]``
+            ``- [project:webapp] text [r:2] ⏳(2026-06-14T21:00)``
 
         Format (in_progress):
-            ``- text [r:1] ▶(2026-06-14T21:30) [project:webapp]``
+            ``- [project:webapp] text [r:1] ⏳(2026-06-14T21:00) ▶(2026-06-14T21:30)``
 
         Format (done):
-            ``- text [project:webapp] ✅ (2026-06-14 20:00)``
+            ``- [project:webapp] text ⏳(…) ▶(…) ✅ (2026-06-14 20:00)``
 
         Format (failed):
-            ``- text [project:webapp] ❌ (2026-06-14 19:00) [flushed]``
+            ``- [project:webapp] text ⏳(…) ▶(…) ❌ (2026-06-14 19:00) [flushed]``
 
         The ``[r:N]`` counter is placed *before* the timestamp so that existing
         parsers (which scan for ``⏳``/``▶`` after any inline tags) still work.
@@ -737,27 +742,29 @@ class MissionStore:
         Returns:
             A ``"- ..."`` string (no trailing newline).
         """
-        parts = [f"- {r.text}"]
+        parts = ["-"]
 
         if r.project:
             parts.append(f"[project:{r.project}]")
 
+        parts.append(r.text)
+
         if r.complexity:
             parts.append(f"[complexity:{r.complexity}]")
 
+        if r.status == "pending" or r.queued_at:
+            ts = r.queued_at or time.strftime(_TS_FORMAT)
+            parts.append(f"⏳({ts})")
+        if r.status == "in_progress" or r.started_at:
+            ts = r.started_at or time.strftime(_TS_FORMAT)
+            parts.append(f"▶({ts})")
         if r.crash_count > 0:
             parts.append(f"[r:{r.crash_count}]")
 
         if r.stagnation_count > 0:
             parts.append(f"[s:{r.stagnation_count}]")
-
-        if r.status == "pending":
-            ts = r.queued_at or time.strftime(_TS_FORMAT)
-            parts.append(f"⏳({ts})")
-        elif r.status == "in_progress":
-            ts = r.started_at or time.strftime(_TS_FORMAT)
-            parts.append(f"▶({ts})")
-        elif r.status == "done":
+            
+        if r.status == "done":
             ts = r.completed_at or time.strftime("%Y-%m-%d %H:%M")
             parts.append(f"✅ ({ts})")
             parts.extend(f"[{tag}]" for tag in r.tags)

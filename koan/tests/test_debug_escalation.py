@@ -103,8 +103,8 @@ class TestMaybeEscalateToDebug:
             instance=str(tmp_path / "instance"),
         )
         assert result is True
-        # The store renders the project as a trailing [project:X] tag.
-        assert "/debug https://github.com/org/repo/issues/42 [project:foo]" in missions_file.read_text()
+        # The store renders the project as a leading [project:X] tag.
+        assert "[project:foo] /debug https://github.com/org/repo/issues/42" in missions_file.read_text()
 
     def test_recursion_guard_with_project_tag(self, tmp_path, monkeypatch):
         from app.mission_executor import _maybe_escalate_to_debug
