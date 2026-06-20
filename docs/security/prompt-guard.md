@@ -45,3 +45,10 @@ Operators who want to audit detections before enforcing can set
   for injected instructions to escape the data boundary.
 - **OPSEC rules** in the system prompt — instruct the agent to treat
   mission text, PR bodies, and code as data, not instructions.
+- **Assembly-time memory scanning** (`memory_manager.sanitize_memory_entry`)
+  — last line of defense before stored memory reaches the LLM. Every entry
+  returned by `read_memory_window()` is run through `scan_mission_text()`;
+  flagged entries have their content replaced with
+  `[BLOCKED: injection pattern detected]` while the original line stays in
+  the JSONL truth log for audit. This catches entries written before the
+  intake guard existed, since scanning runs at read time, not write time.

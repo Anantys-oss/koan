@@ -1415,7 +1415,7 @@ class MemoryManager:
                                 query_text[:60],
                             )
                         )
-                        return fts_results
+                        return _sanitize_entries(fts_results)
             except Exception as e:
                 logger.warning("[memory_manager] FTS5 retrieval failed, falling back to JSONL: %s", e)
 
@@ -1453,7 +1453,7 @@ class MemoryManager:
                 entries.append(obj)
 
         # Return the max_entries most recent (tail), oldest-first order
-        return entries[-max_entries:]
+        return _sanitize_entries(entries[-max_entries:])
 
     def prune_memory_log(self, horizon_days: int = 365) -> int:
         """Remove log entries older than ``horizon_days``. Returns removed count.
@@ -1695,6 +1695,39 @@ def append_memory_entry(
         confidence=confidence,
         expires_at=expires_at,
     )
+
+
+def sanitize_memory_entry(content: str) -> Tuple[str, bool]:
+    """Scan a memory entry for prompt-injection patterns at assembly time.
+
+    Last line of defense before stored memory reaches the LLM: an entry
+    written before the intake scanner existed (or one that slipped through)
+    is checked here, on every read. Reuses ``prompt_guard.scan_mission_text``
+    so memory content is held to the same injection bar as incoming missions.
+
+    Returns ``(content, False)`` for clean entries and
+    ``("[BLOCKED: injection pattern detected]", True)`` for flagged ones.
+    """
+    if not content:
+        return content, False
+    from app.prompt_guard import scan_mission_text
+
+    result = scan_mission_text(content)
+    if result.blocked:
+        logger.warning(
+            "[memory] Blocked injection pattern in memory entry: %s", result.reason
+        )
+        return "[BLOCKED: injection pattern detected]", True
+    return content, False
+
+
+def _sanitize_entries(entries: List[dict]) -> List[dict]:
+    """Replace the ``content`` of any injection-flagged entry with a placeholder."""
+    for entry in entries:
+        sanitized, blocked = sanitize_memory_entry(entry.get("content") or "")
+        if blocked:
+            entry["content"] = sanitized
+    return entries
 
 
 def read_memory_window(
