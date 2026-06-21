@@ -1261,6 +1261,7 @@ def _run_iteration(
     plugin_dir = None  # generated plugin dir for Skill tool (cleaned up in finally)
     cmd_cleanup_paths: List[str] = []  # temp files created by build_mission_command
     _dc_container_id = ""  # set inside try if devcontainer is used; referenced in finally
+    _worktree_info = None  # set inside try if worktree isolation is used; cleaned up in finally
     try:
         provider_name, provider_label = _run._provider_identity()
         # Build CLI command (provider-agnostic with per-project overrides)
@@ -1374,15 +1375,28 @@ def _run_iteration(
                 container_tmp_dir=_container_tmp_dir or "",
             )
 
+        # --- Worktree isolation ---
+        execution_cwd = project_path
+        if not _dc_present:
+            try:
+                from app.config import get_worktree_isolation
+                if get_worktree_isolation():
+                    from app.worktree_manager import create_worktree
+                    _worktree_info = create_worktree(project_path)
+                    execution_cwd = _worktree_info.path
+                    log("worktree", f"Mission running in isolated worktree: {execution_cwd}")
+            except Exception as e:
+                log("error", f"Worktree creation failed, falling back to project dir: {e}")
+
         # Capture git HEAD before execution for retry safety check
-        pre_head = _run._get_git_head(project_path)
+        pre_head = _run._get_git_head(execution_cwd)
 
         # Snapshot core files before execution for integrity check
         from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
         core_snapshot = snapshot_core_files(koan_root, project_path)
 
         claude_exit = _run.run_claude_task(
-            cmd, stdout_file, stderr_file, cwd=project_path,
+            cmd, stdout_file, stderr_file, cwd=execution_cwd,
             instance_dir=instance, project_name=project_name, run_num=run_num,
             provider=mission_cli_provider,
         )
@@ -1621,6 +1635,8 @@ def _run_iteration(
             except Exception as e:
                 log("error", f"Checkpoint cleanup failed (non-blocking): {e}")
     finally:
+        if _worktree_info:
+            _run._cleanup_worktree(_worktree_info, project_path, instance=instance)
         if _dc_container_id:
             log("devcontainer", f"Stopping container {_dc_container_id[:12]} after mission")
             _dc.stop_container(_dc_container_id)
