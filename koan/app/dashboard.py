@@ -64,18 +64,15 @@ from app.automation_rules import (
     update_rule_params,
 )
 from app.recurring import (
+    _locked_modify as _recurring_locked_modify,
     add_recurring,
     add_recurring_interval,
     force_run,
-    format_interval,
     list_recurring,
     load_recurring,
     parse_at_time,
     parse_days,
     parse_interval,
-    remove_recurring,
-    save_recurring,
-    toggle_recurring,
 )
 
 # ---------------------------------------------------------------------------
@@ -2135,6 +2132,13 @@ def api_recurring_create():
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
 
+    days = data.get("days")
+    if days:
+        try:
+            days = parse_days(days)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
     if frequency == "every":
         interval_str = data.get("interval", "")
         if not interval_str:
@@ -2159,19 +2163,17 @@ def api_recurring_create():
             at=at,
         )
 
-    days = data.get("days")
     if days:
-        try:
-            days = parse_days(days)
-            missions = load_recurring(RECURRING_FILE)
+        task_id = task["id"]
+
+        def _set_days(missions):
             for m in missions:
-                if m["id"] == task["id"]:
+                if m["id"] == task_id:
                     m["days"] = days
                     break
-            save_recurring(RECURRING_FILE, missions)
-            task["days"] = days
-        except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+
+        _recurring_locked_modify(RECURRING_FILE, _set_days)
+        task["days"] = days
 
     return jsonify(task), 201
 
@@ -2179,67 +2181,86 @@ def api_recurring_create():
 @app.route("/api/recurring/<task_id>", methods=["PATCH"])
 def api_recurring_update(task_id):
     """Update a recurring task's fields."""
-    data = request.get_json(force=True) or {}
-    missions = load_recurring(RECURRING_FILE)
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid or empty JSON body"}), 400
 
-    target = None
-    for m in missions:
-        if m["id"] == task_id:
-            target = m
-            break
-
-    if target is None:
-        return jsonify({"error": "Task not found"}), 404
-
-    if "enabled" in data:
-        target["enabled"] = bool(data["enabled"])
-    if "text" in data and data["text"].strip():
-        target["text"] = data["text"].strip()
     if "frequency" in data:
         freq = data["frequency"]
         if freq not in ("hourly", "daily", "weekly", "every"):
             return jsonify({"error": f"Invalid frequency: {freq}"}), 400
-        target["frequency"] = freq
-    if "at" in data:
-        at_val = data["at"]
-        if at_val:
-            try:
+    if "at" in data and data["at"]:
+        try:
+            parse_at_time(data["at"] + " _")
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    if "days" in data and data["days"]:
+        try:
+            parse_days(data["days"])
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    if "interval" in data and data.get("interval"):
+        try:
+            parse_interval(data["interval"])
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    result = {}
+
+    def _update(missions):
+        target = None
+        for m in missions:
+            if m["id"] == task_id:
+                target = m
+                break
+        if target is None:
+            return None
+
+        if "enabled" in data:
+            target["enabled"] = bool(data["enabled"])
+        if "text" in data and data["text"].strip():
+            target["text"] = data["text"].strip()
+        if "frequency" in data:
+            target["frequency"] = data["frequency"]
+        if "at" in data:
+            at_val = data["at"]
+            if at_val:
                 at_val, _ = parse_at_time(at_val + " _")
-            except ValueError as exc:
-                return jsonify({"error": str(exc)}), 400
-        target["at"] = at_val or None
-    if "days" in data:
-        days_val = data["days"]
-        if days_val:
-            try:
+            target["at"] = at_val or None
+        if "days" in data:
+            days_val = data["days"]
+            if days_val:
                 days_val = parse_days(days_val)
-            except ValueError as exc:
-                return jsonify({"error": str(exc)}), 400
-        target["days"] = days_val or None
-    if "project" in data:
-        target["project"] = data["project"] or None
-    if "interval" in data and target.get("frequency") == "every":
-        interval_str = data["interval"]
-        if interval_str:
-            try:
+            target["days"] = days_val or None
+        if "project" in data:
+            target["project"] = data["project"] or None
+        if "interval" in data and target.get("frequency") == "every":
+            interval_str = data["interval"]
+            if interval_str:
                 target["interval_seconds"] = parse_interval(interval_str)
                 target["interval_display"] = interval_str.strip().lower()
-            except ValueError as exc:
-                return jsonify({"error": str(exc)}), 400
 
-    save_recurring(RECURRING_FILE, missions)
-    return jsonify(target)
+        result.update(target)
+        return True
+
+    found = _recurring_locked_modify(RECURRING_FILE, _update)
+    if found is None:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify(result)
 
 
 @app.route("/api/recurring/<task_id>", methods=["DELETE"])
 def api_recurring_delete(task_id):
     """Delete a recurring task."""
-    missions = load_recurring(RECURRING_FILE)
-    before = len(missions)
-    missions = [m for m in missions if m["id"] != task_id]
-    if len(missions) == before:
+
+    def _delete(missions):
+        before = len(missions)
+        missions[:] = [m for m in missions if m["id"] != task_id]
+        return len(missions) < before
+
+    found = _recurring_locked_modify(RECURRING_FILE, _delete)
+    if not found:
         return jsonify({"error": "Task not found"}), 404
-    save_recurring(RECURRING_FILE, missions)
     return jsonify({"ok": True})
 
 
