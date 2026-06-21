@@ -278,6 +278,7 @@ class TestApiStateStream:
         )
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst), \
+             patch.object(dashboard, "MISSIONS_JSON_FILE", inst / "missions.md"), \
              patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")
         data_line = None

@@ -164,6 +164,53 @@ def check_pending_journal(instance_dir: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tracker call isolation
+# ---------------------------------------------------------------------------
+#
+# The stagnation tracker is the crash-count safety net, but a corrupt or
+# unwritable tracker file must never abort recovery for ALL missions. Each
+# per-mission tracker call is routed through a _safe_* wrapper that catches
+# runtime errors, logs a warning, and degrades to the inline [r:N] counter
+# (persisted automatically when store.requeue() bumps crash_count).
+
+
+def _safe_get_crash(get_crash, instance_dir: str, text: str) -> int:
+    """Read crash_count from the tracker, returning 0 if it raises."""
+    if get_crash is None:
+        return 0
+    try:
+        return get_crash(instance_dir, text)
+    except Exception as e:
+        print(f"[recover] Warning: tracker get_crash failed for {text!r}: {e}", file=sys.stderr)
+        return 0
+
+
+def _safe_get_total(get_total, instance_dir: str, text: str) -> int:
+    """Read total_attempts from the tracker, returning 0 if it raises."""
+    if get_total is None:
+        return 0
+    try:
+        return get_total(instance_dir, text)
+    except Exception as e:
+        print(f"[recover] Warning: tracker get_total failed for {text!r}: {e}", file=sys.stderr)
+        return 0
+
+
+def _safe_inc_crash(inc_crash, instance_dir: str, text: str) -> None:
+    """Increment crash_count in the tracker, swallowing runtime errors.
+
+    Failure here is non-fatal: store.requeue() has already bumped the record's
+    crash_count (rendered as inline [r:N]), so escalation still progresses.
+    """
+    if inc_crash is None:
+        return
+    try:
+        inc_crash(instance_dir, text)
+    except Exception as e:
+        print(f"[recover] Warning: tracker inc_crash failed for {text!r}: {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Main recovery logic
 # ---------------------------------------------------------------------------
 
@@ -272,11 +319,10 @@ def recover_missions(
             # crash_count comes from the record; the stagnation tracker may
             # hold a higher value (legacy crashes recorded before the store).
             crash_count = record.crash_count
-            if _get_crash is not None:
-                tracker_count = _get_crash(instance_dir, clean_text)
-                if tracker_count > crash_count:
-                    crash_count = tracker_count
-            total = _get_total(instance_dir, clean_text) if _get_total else 0
+            tracker_count = _safe_get_crash(_get_crash, instance_dir, clean_text)
+            if tracker_count > crash_count:
+                crash_count = tracker_count
+            total = _safe_get_total(_get_total, instance_dir, clean_text)
 
             has_checkpoint = False
             if _read_cp is not None:
@@ -310,8 +356,7 @@ def recover_missions(
                 store.requeue(clean_text)
                 recovered_count += 1
                 recovered_mission_texts.append(clean_text)
-                if _inc_crash is not None:
-                    _inc_crash(instance_dir, clean_text)
+                _safe_inc_crash(_inc_crash, instance_dir, clean_text)
                 _log_recovery_event(instance_dir, clean_text, state, "recovered",
                                     crash_count + 1, has_checkpoint=has_checkpoint)
 
