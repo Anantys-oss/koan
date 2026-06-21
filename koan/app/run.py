@@ -1486,14 +1486,16 @@ def _parallel_reap_sessions(
             log("error", f"[parallel] post-mission failed for {session.id}: {e}")
             post = {"success": False, "quota_exhausted": False}
 
-        # Persist missions.md state transition via locked read-modify-write
+        # Persist missions.md state transition via atomic read-modify-write.
+        # The mission store has no session-id-based transition API, so the
+        # parallel path applies the legacy text transforms directly.
         try:
-            from app.utils import modify_missions_file
             missions_path = Path(instance) / "missions.md"
+            content = missions_path.read_text(encoding="utf-8") if missions_path.exists() else ""
             if result.exit_code == 0:
-                modify_missions_file(missions_path, lambda c: complete_mission_by_session(c, session.id))
+                atomic_write(missions_path, complete_mission_by_session(content, session.id))
             else:
-                modify_missions_file(missions_path, lambda c: fail_mission_by_session(c, session.id))
+                atomic_write(missions_path, fail_mission_by_session(content, session.id))
         except Exception as e:
             log("error", f"[parallel] missions.md update failed for {session.id}: {e}")
             try:
@@ -1639,11 +1641,13 @@ def _parallel_dispatch_sessions(
         # Keep in-memory reference (preserves _proc for poll_sessions)
         _live_sessions[session.id] = session
 
-        # Transition mission Pending → In Progress in missions.md
+        # Transition mission Pending → In Progress in missions.md.
+        # The mission store has no session-id-based transition API, so the
+        # parallel path applies the legacy text transform directly.
         try:
-            from app.utils import modify_missions_file
             missions_path = Path(instance) / "missions.md"
-            modify_missions_file(missions_path, lambda c: start_mission_parallel(c, mission_text, session.id))
+            content = missions_path.read_text(encoding="utf-8") if missions_path.exists() else ""
+            atomic_write(missions_path, start_mission_parallel(content, mission_text, session.id))
         except Exception as e:
             log("error", f"[parallel] missions.md start failed for {session.id} — killing session: {e}")
             try:
