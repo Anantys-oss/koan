@@ -23,7 +23,8 @@ def instance_dir(tmp_path):
 
 @pytest.fixture
 def api_client(tmp_path, instance_dir):
-    with patch.dict(os.environ, {"KOAN_API_TOKEN": _TOKEN, "KOAN_ROOT": str(tmp_path)}):
+    with patch.dict(os.environ, {"KOAN_API_TOKEN": _TOKEN, "KOAN_ROOT": str(tmp_path)}), \
+         patch("app.utils.KOAN_ROOT", tmp_path):
         app = create_app(koan_root=tmp_path, instance_dir=instance_dir)
         app.config["TESTING"] = True
         with app.test_client() as client:
@@ -508,9 +509,11 @@ class TestEditMission:
         )
         mission_id = resp.get_json()["id"]
 
+        # Inject a second identical pending entry directly into the Pending
+        # section to create an ambiguous match.
         content = (instance_dir / "missions.md").read_text()
         content = content.replace(
-            "## In Progress", "- Duplicate task\n\n## In Progress"
+            "## Pending\n", "## Pending\n\n- Duplicate task\n", 1
         )
         (instance_dir / "missions.md").write_text(content)
 
@@ -647,9 +650,11 @@ class TestReorderMission:
         )
         mission_id = resp.get_json()["id"]
 
+        # Inject a second identical pending entry directly into the Pending
+        # section to create an ambiguous match.
         content = (instance_dir / "missions.md").read_text()
         content = content.replace(
-            "## In Progress", "- Dup reorder\n\n## In Progress"
+            "## Pending\n", "## Pending\n\n- Dup reorder\n", 1
         )
         (instance_dir / "missions.md").write_text(content)
 

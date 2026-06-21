@@ -34,9 +34,7 @@ def handle(ctx):
     from app.utils import insert_pending_mission
 
     context_suffix = f" {focus_context}" if focus_context else ""
-    mission_entry = f"- [project:{name}] /deep {name}{context_suffix}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission(f"/deep {name}{context_suffix}", name)
 
     context_hint = f" (focus: {focus_context})" if focus_context else ""
     return f"🧠 Deep exploration queued for {name}{context_hint}"

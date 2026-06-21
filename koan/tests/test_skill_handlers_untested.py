@@ -208,8 +208,8 @@ class TestRefactorHandler:
 
         mock_insert.assert_called_once()
         call_args = mock_insert.call_args[0]
-        assert "refactor" in call_args[1]
-        assert "src/utils.py" in call_args[1]
+        assert "refactor" in call_args[0]
+        assert "src/utils.py" in call_args[0]
         assert "src/utils.py" in result
 
     def test_non_url_treated_as_file_path(self, tmp_path):

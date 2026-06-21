@@ -67,9 +67,9 @@ class TestHandleQueueMission:
         assert "Tech debt scan queued" in result
         assert "myproject" in result
         mock_insert.assert_called_once()
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "/tech_debt" in mission_entry
-        assert "[project:myproject]" in mission_entry
+        assert mock_insert.call_args[0][1] == "myproject"
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
     @patch("app.utils.insert_pending_mission")
@@ -80,8 +80,8 @@ class TestHandleQueueMission:
         assert "Tech debt scan queued" in result
         assert "koan" in result
         mock_insert.assert_called_once()
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in mission_entry
+        mission_entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "koan"
 
     @patch("app.utils.resolve_project_path", return_value="/path/koan")
     @patch("app.utils.insert_pending_mission")
@@ -90,7 +90,7 @@ class TestHandleQueueMission:
         result = handler.handle(ctx)
 
         assert "Tech debt scan queued" in result
-        mission_entry = mock_insert.call_args[0][1]
+        mission_entry = mock_insert.call_args[0][0]
         assert "--no-queue" in mission_entry
 
     @patch("app.utils.resolve_project_path", return_value=None)
@@ -111,8 +111,7 @@ class TestHandleQueueMission:
 
         assert "Tech debt scan queued" in result
         assert "backend" in result
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:backend]" in mission_entry
+        assert mock_insert.call_args[0][1] == "backend"
 
     @patch("app.utils.get_known_projects", return_value=[])
     def test_no_projects_configured(self, mock_projects, handler, ctx):
@@ -293,8 +292,8 @@ class TestQueueMissions:
     def test_queue_entry_format(self, mock_insert, tmp_path):
         _queue_missions(tmp_path, "myproj", ["Refactor auth"])
 
-        entry = mock_insert.call_args[0][1]
-        assert entry == "- [project:myproj] Refactor auth"
+        assert mock_insert.call_args[0][0] == "Refactor auth"
+        assert mock_insert.call_args[0][1] == "myproj"
 
     @patch("app.utils.insert_pending_mission")
     def test_empty_missions(self, mock_insert, tmp_path):

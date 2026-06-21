@@ -327,15 +327,14 @@ def check_and_dispatch_ci_fixes(
                 if log_snippet:
                     context += f"\n\nCI output:\n```\n{log_snippet}\n```"
 
-                mission = (
-                    f"[project:{project_name}] Fix CI failure: "
+                mission_text = (
+                    f"Fix CI failure: "
                     f"{job_name} on PR #{pr_number} — {context}"
                 )
 
                 try:
                     from app.utils import insert_pending_mission
-                    missions_path = Path(instance_dir) / "missions.md"
-                    inserted = insert_pending_mission(missions_path, f"- {mission}")
+                    inserted = insert_pending_mission(mission_text, project_name)
                 except (ImportError, OSError) as e:
                     log.warning("Failed to insert CI fix mission: %s", e)
                     continue

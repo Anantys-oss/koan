@@ -71,9 +71,7 @@ def _queue_doc(ctx, project_name, categories, mode):
     if mode != "create":
         suffix += f" --mode={mode}"
 
-    mission_entry = f"- [project:{project_name}] /doc{suffix}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission(f"/doc{suffix}", project_name)
 
     cat_text = categories if categories else "all"
     return f"\U0001f4da Documentation extraction queued for {project_name} (categories: {cat_text}, mode: {mode})"

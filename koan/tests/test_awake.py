@@ -311,63 +311,47 @@ class TestParseProject:
 
 class TestHandleMission:
     @patch("app.command_handlers.send_telegram")
-    @patch("app.command_handlers.MISSIONS_FILE")
-    @patch("app.command_handlers.INSTANCE_DIR")
-    def test_mission_appended_to_pending(self, mock_inst, mock_file, mock_send, tmp_path):
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text(
-            "# Missions\n\n## Pending\n\n(none)\n\n## In Progress\n\n## Done\n"
-        )
-        mock_file.__class__ = type(missions_file)
-        # Directly test the file manipulation logic
-        with patch("app.command_handlers.MISSIONS_FILE", missions_file):
-            handle_mission("mission: audit security")
+    def test_mission_appended_to_pending(self, mock_send, tmp_path):
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        handle_mission("mission: audit security")
 
-        content = missions_file.read_text()
-        assert "- audit security" in content
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        assert "audit security" in content
         mock_send.assert_called_once()
 
     @patch("app.command_handlers.send_telegram")
     def test_mission_with_project_tag(self, mock_send, tmp_path):
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text(
-            "# Missions\n\n## Pending\n\n(none)\n\n## In Progress\n\n"
-        )
-        with patch("app.command_handlers.MISSIONS_FILE", missions_file):
-            handle_mission("[project:koan] add tests")
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        handle_mission("[project:koan] add tests")
 
-        content = missions_file.read_text()
-        assert "- [project:koan] add tests" in content
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        # Project tag is rendered after the mission text by the store.
+        assert "add tests" in content
+        assert "[project:koan]" in content
 
     @patch("app.command_handlers.send_telegram")
     def test_mission_auto_detects_project_from_first_word(self, mock_send, tmp_path):
         """'koan fix bug' should auto-detect project 'koan' from the first word."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text(
-            "# Missions\n\n## Pending\n\n(none)\n\n## In Progress\n\n"
-        )
-        with patch("app.command_handlers.MISSIONS_FILE", missions_file), \
-             patch("app.utils.get_known_projects", return_value=[("koan", "/path/to/koan")]):
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        with patch("app.utils.get_known_projects", return_value=[("koan", "/path/to/koan")]):
             handle_mission("koan fix the bug")
 
-        content = missions_file.read_text()
-        assert "- [project:koan] fix the bug" in content
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        # Project tag is rendered after the mission text by the store.
+        assert "fix the bug" in content
+        assert "[project:koan]" in content
         msg = mock_send.call_args[0][0]
         assert "project: koan" in msg
 
     @patch("app.command_handlers.send_telegram")
     def test_mission_no_project_when_first_word_unknown(self, mock_send, tmp_path):
         """First word 'fix' should not be detected as project."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text(
-            "# Missions\n\n## Pending\n\n(none)\n\n## In Progress\n\n"
-        )
-        with patch("app.command_handlers.MISSIONS_FILE", missions_file), \
-             patch("app.utils.get_known_projects", return_value=[("koan", "/path/to/koan")]):
+        (tmp_path / "instance").mkdir(exist_ok=True)
+        with patch("app.utils.get_known_projects", return_value=[("koan", "/path/to/koan")]):
             handle_mission("fix the bug")
 
-        content = missions_file.read_text()
-        assert "- fix the bug" in content
+        content = (tmp_path / "instance" / "missions.md").read_text()
+        assert "fix the bug" in content
         assert "[project:" not in content
 
 
@@ -1450,7 +1434,7 @@ class TestCheckConfig:
              pytest.raises(SystemExit):
             check_config()
 
-    def test_exits_without_chat_id(self, monkeypatch, tmp_path):
+    def test_exits_without_chat_id(self):
         with patch("app.messaging.resolve_provider_name", return_value="telegram"), \
              patch("app.awake.BOT_TOKEN", "token"), \
              patch("app.awake.CHAT_ID", ""), \
@@ -2420,30 +2404,26 @@ class TestMissionProjectAutoDetection:
     @patch("app.command_handlers.send_telegram")
     def test_mission_skill_detects_project_from_first_word(self, mock_send, tmp_path):
         """'/mission koan fix bug' should detect 'koan' as project."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
              patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
-             patch("app.command_handlers.MISSIONS_FILE", missions_file), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/path/to/koan")]):
             handle_command("/mission koan fix the bug")
         msg = mock_send.call_args[0][0]
         assert "fix the bug" in msg
         assert "project: koan" in msg
-        content = missions_file.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "[project:koan]" in content
 
     @patch("app.command_handlers.send_telegram")
     def test_mission_skill_explicit_tag_takes_precedence(self, mock_send, tmp_path):
         """'[project:web] koan fix bug' uses explicit tag, not first word."""
-        missions_file = tmp_path / "missions.md"
-        missions_file.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n")
+        (tmp_path / "instance").mkdir(exist_ok=True)
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
              patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
-             patch("app.command_handlers.MISSIONS_FILE", missions_file), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/p1"), ("web", "/p2")]):
             handle_command("/mission [project:web] fix the bug")
-        content = missions_file.read_text()
+        content = (tmp_path / "instance" / "missions.md").read_text()
         assert "[project:web]" in content
 
     @patch("app.command_handlers.send_telegram")
@@ -2803,7 +2783,7 @@ class TestWorkerDispatch:
 
     @patch("app.command_handlers._run_in_worker_cb")
     @patch("app.command_handlers.send_telegram")
-    def test_worker_skill_runs_in_worker_thread(self, mock_send, mock_worker, tmp_path):
+    def test_worker_skill_runs_in_worker_thread(self, mock_send, mock_worker):
         """Skills with worker=true should dispatch to worker thread."""
         from app.skills import Skill, SkillCommand
         skill = Skill(
@@ -3762,6 +3742,9 @@ class TestLoadCachedContext:
 
     def test_returns_empty_on_oserror(self, tmp_path):
         """OSError during stat or read yields empty string."""
+        import os
+        if os.getuid() == 0:
+            pytest.skip("chmod(000) has no effect when running as root")
         from app.awake import _load_cached_context
 
         f = tmp_path / "unreadable.md"

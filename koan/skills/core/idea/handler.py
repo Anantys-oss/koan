@@ -8,43 +8,39 @@ def handle(ctx):
     command = ctx.command_name
     args = ctx.args.strip()
 
-    missions_file = ctx.instance_dir / "missions.md"
-
     # /ideas is always listing
     if command == "ideas":
-        return _list_ideas(missions_file)
+        return _list_ideas()
 
     # /idea or /buffer with no args → list
     if not args:
-        return _list_ideas(missions_file)
+        return _list_ideas()
 
     # /idea delete N
     delete_match = re.match(r"^(?:delete|del|remove|rm)\s+(\d+)$", args, re.IGNORECASE)
     if delete_match:
-        return _delete_idea(missions_file, int(delete_match.group(1)))
+        return _delete_idea(int(delete_match.group(1)))
 
     # /idea promote all
     promote_all_match = re.match(r"^(?:promote|push|activate)\s+all$", args, re.IGNORECASE)
     if promote_all_match:
-        return _promote_all_ideas(missions_file)
+        return _promote_all_ideas()
 
     # /idea promote N
     promote_match = re.match(r"^(?:promote|push|activate)\s+(\d+)$", args, re.IGNORECASE)
     if promote_match:
-        return _promote_idea(missions_file, int(promote_match.group(1)))
+        return _promote_idea(int(promote_match.group(1)))
 
     # /idea <text> → add new idea
-    return _add_idea(missions_file, args)
+    return _add_idea(args)
 
 
-def _list_ideas(missions_file):
+def _list_ideas():
     """List all ideas with numbered index."""
-    if not missions_file.exists():
-        return "ℹ️ No missions file found."
+    from app.missions import clean_mission_display
+    from app.mission_store import MissionStore
 
-    from app.missions import parse_ideas, clean_mission_display
-
-    ideas = parse_ideas(missions_file.read_text())
+    ideas = MissionStore().get_ideas()
 
     if not ideas:
         return "ℹ️ No ideas in the backlog. Add one with /idea <description>"
@@ -59,15 +55,14 @@ def _list_ideas(missions_file):
     return "\n".join(parts)
 
 
-def _add_idea(missions_file, text):
+def _add_idea(text):
     """Add a new idea to the backlog."""
-    from app.missions import insert_idea
     from app.utils import (
         parse_project,
         detect_project_from_text,
         get_known_projects,
-        modify_missions_file,
     )
+    from app.mission_store import locked_store
 
     # Check for explicit [project:name] tag first
     project, clean_text = parse_project(text)
@@ -92,11 +87,12 @@ def _add_idea(missions_file, text):
             )
 
     if project:
-        entry = f"- [project:{project}] {clean_text}"
+        entry = f"[project:{project}] {clean_text}"
     else:
-        entry = f"- {clean_text}"
+        entry = clean_text
 
-    modify_missions_file(missions_file, lambda content: insert_idea(content, entry))
+    with locked_store() as store:
+        store.add_idea(entry)
 
     display = clean_text[:100]
     if len(clean_text) > 100:
@@ -109,69 +105,55 @@ def _add_idea(missions_file, text):
     return ack
 
 
-def _delete_idea(missions_file, index):
+def _delete_idea(index):
     """Delete an idea by index."""
-    from app.missions import delete_idea, clean_mission_display
-    from app.utils import modify_missions_file
+    from app.missions import clean_mission_display
+    from app.mission_store import locked_store
 
     deleted_text = None
+    total = 0
 
-    def _transform(content):
-        nonlocal deleted_text
-        updated, deleted_text = delete_idea(content, index)
-        return updated
-
-    modify_missions_file(missions_file, _transform)
+    with locked_store() as store:
+        total = len(store._ideas)
+        deleted_text = store.delete_idea(index)
 
     if deleted_text is None:
-        from app.missions import parse_ideas
-        count = len(parse_ideas(missions_file.read_text()))
-        if count == 0:
+        if total == 0:
             return "ℹ️ No ideas to delete."
-        return f"⚠️ Invalid index. Use 1-{count}."
+        return f"⚠️ Invalid index. Use 1-{total}."
 
     display = clean_mission_display(deleted_text)
     return f"🗑 Deleted: {display}"
 
 
-def _promote_idea(missions_file, index):
+def _promote_idea(index):
     """Promote an idea to the pending queue."""
-    from app.missions import promote_idea, clean_mission_display
-    from app.utils import modify_missions_file
+    from app.missions import clean_mission_display
+    from app.mission_store import locked_store
 
     promoted_text = None
+    total = 0
 
-    def _transform(content):
-        nonlocal promoted_text
-        updated, promoted_text = promote_idea(content, index)
-        return updated
-
-    modify_missions_file(missions_file, _transform)
+    with locked_store() as store:
+        total = len(store._ideas)
+        promoted_text = store.promote_idea(index)
 
     if promoted_text is None:
-        from app.missions import parse_ideas
-        count = len(parse_ideas(missions_file.read_text()))
-        if count == 0:
+        if total == 0:
             return "ℹ️ No ideas to promote."
-        return f"⚠️ Invalid index. Use 1-{count}."
+        return f"⚠️ Invalid index. Use 1-{total}."
 
     display = clean_mission_display(promoted_text)
     return f"⬆️ Promoted to pending: {display}"
 
 
-def _promote_all_ideas(missions_file):
+def _promote_all_ideas():
     """Promote all ideas to the pending queue."""
-    from app.missions import promote_all_ideas, clean_mission_display
-    from app.utils import modify_missions_file
+    from app.missions import clean_mission_display
+    from app.mission_store import locked_store
 
-    promoted_list = None
-
-    def _transform(content):
-        nonlocal promoted_list
-        updated, promoted_list = promote_all_ideas(content)
-        return updated
-
-    modify_missions_file(missions_file, _transform)
+    with locked_store() as store:
+        promoted_list = store.promote_all_ideas()
 
     if not promoted_list:
         return "ℹ️ No ideas to promote."

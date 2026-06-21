@@ -274,10 +274,13 @@ class TestCheckAndDispatch:
     """Integration test for the main dispatch orchestrator."""
 
     @pytest.fixture()
-    def instance_dir(self, tmp_path):
-        missions = tmp_path / "missions.md"
+    def instance_dir(self, tmp_path, monkeypatch):
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        missions = instance / "missions.md"
         missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
-        return str(tmp_path)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+        return str(instance)
 
     @patch("app.review_comment_dispatch._get_review_dispatch_config")
     def test_disabled_config_returns_zero(self, mock_config, instance_dir):

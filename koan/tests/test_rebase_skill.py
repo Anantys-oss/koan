@@ -98,8 +98,8 @@ class TestMissionQueuing:
             assert "queued" in result.lower()
             assert "#42" in result
             mock_insert.assert_called_once()
-            mission_entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in mission_entry
+            mission_entry = mock_insert.call_args[0][0]
+            assert mock_insert.call_args[0][1] == "koan"
             assert "/rebase https://github.com/sukria/koan/pull/42" in mission_entry
 
     def test_url_with_fragment_accepted(self, handler, ctx):
@@ -140,8 +140,8 @@ class TestMissionQueuing:
              patch("app.utils.insert_pending_mission") as mock_insert, \
              self._own_pr_patch(handler):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert entry.startswith("- [project:koan]")
+            entry = mock_insert.call_args[0][0]
+            assert mock_insert.call_args[0][1] == "koan"
             assert "/rebase https://github.com/sukria/koan/pull/42" in entry
             assert "run:" not in entry
             assert "python3 -m" not in entry
@@ -156,20 +156,19 @@ class TestMissionQueuing:
              self._own_pr_patch(handler):
             result = handler.handle(ctx)
             assert "queued" in result.lower()
-            entry = mock_insert.call_args[0][1]
             # Falls back to directory basename when path doesn't match known projects
-            assert "[project:myrepo]" in entry
+            assert mock_insert.call_args[0][1] == "myrepo"
 
     def test_missions_path_uses_instance_dir(self, handler, ctx):
-        """Verify insert_pending_mission is called with the correct missions path."""
+        """Verify insert_pending_mission is called with the correct project."""
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert, \
              self._own_pr_patch(handler):
             handler.handle(ctx)
-            missions_path = mock_insert.call_args[0][0]
-            assert missions_path == ctx.instance_dir / "missions.md"
+            assert mock_insert.call_args[0][1] == "koan"
+            assert "/rebase" in mock_insert.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------

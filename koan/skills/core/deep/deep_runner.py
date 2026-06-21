@@ -34,7 +34,7 @@ def _build_project_context(
 
     git_activity = gather_git_activity(project_path)
     project_structure = gather_project_structure(project_path)
-    missions_context = get_missions_context(Path(instance_dir))
+    missions_context = get_missions_context()
 
     from app.skill_memory import build_memory_block_for_skill
     from app.ai_runner import _build_project_health_block
@@ -206,18 +206,20 @@ def _extract_missions_legacy(text: str, project_name: str) -> list:
 
 
 def _queue_missions(
-    missions_path: Path,
+    instance_dir,
     missions: list,
     findings: Optional[List[DeepFinding]] = None,
 ):
-    """Insert extracted missions into Pending section of missions.md."""
-    from app.utils import insert_pending_mission
+    """Insert extracted missions into the pending queue."""
+    from app.utils import insert_pending_mission, parse_project
 
     for i, entry in enumerate(missions):
         urgent = False
         if findings and i < len(findings):
             urgent = findings[i].priority == "high"
-        insert_pending_mission(missions_path, entry, urgent=urgent)
+        project, text = parse_project(entry)
+        text = text.removeprefix("- ")
+        insert_pending_mission(text, project, urgent=urgent)
 
 
 def run_deep_exploration(
@@ -265,8 +267,7 @@ def run_deep_exploration(
         missions = _extract_missions_legacy(raw_output, project_name)
 
     if missions:
-        missions_path = Path(instance_dir) / "missions.md"
-        _queue_missions(missions_path, missions, findings if findings else None)
+        _queue_missions(instance_dir, missions, findings if findings else None)
 
     from app.text_utils import clean_cli_response
     cleaned = clean_cli_response(raw_output)

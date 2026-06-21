@@ -413,11 +413,11 @@ class TestParseResetTimeEdgeCases:
         """Parse with US/Eastern timezone."""
         from app.reset_parser import parse_reset_time
 
-        now = datetime(2026, 2, 4, 8, 0, 0, tzinfo=ZoneInfo("US/Eastern"))
-        ts, info = parse_reset_time("resets 10am (US/Eastern)", now=now)
+        now = datetime(2026, 2, 4, 8, 0, 0, tzinfo=ZoneInfo("America/New_York"))
+        ts, info = parse_reset_time("resets 10am (America/New_York)", now=now)
 
         assert ts is not None
-        reset_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("US/Eastern"))
+        reset_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("America/New_York"))
         assert reset_dt.hour == 10
 
     def test_date_12pm_edge(self):

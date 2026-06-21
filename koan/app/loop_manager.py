@@ -39,7 +39,6 @@ from app.constants import (
     NOTIF_CACHE_MAX as _NOTIF_CACHE_MAX,
     NOTIF_CACHE_TTL as _NOTIF_CACHE_TTL,
 )
-from app.missions import count_pending
 from app.run_log import log_safe as _log_loop, suppress_logged
 from app.utils import atomic_write
 
@@ -1663,15 +1662,14 @@ def _consume_check_notifications_signal(koan_root: str) -> bool:
         return False
 
 
-def check_pending_missions(instance_dir: str) -> bool:
-    """Check if there are pending missions in missions.md."""
+def check_pending_missions() -> bool:
+    """Check if there are pending missions in the mission store."""
     try:
-        content = (Path(instance_dir) / "missions.md").read_text()
-        return count_pending(content) > 0
-    except FileNotFoundError:
-        return False
+        from app.mission_store import MissionStore
+        store = MissionStore()
+        return len(store.get_by_status("pending")) > 0
     except (OSError, ValueError) as e:
-        _log_loop("error", f"Error reading missions.md: {e}")
+        _log_loop("error", f"Error reading mission store: {e}")
         return False
 
 
@@ -1704,7 +1702,7 @@ def interruptible_sleep(
     elapsed = 0
     while elapsed < interval:
         # Check signals BEFORE sleeping so events are detected immediately.
-        if wake_on_mission and check_pending_missions(instance_dir):
+        if wake_on_mission and check_pending_missions():
             return "mission"
         if _check_signal_file(koan_root, ".koan-stop"):
             return "stop"

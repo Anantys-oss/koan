@@ -194,12 +194,22 @@ def cancel_mission(instance_dir: Path, mission_id: str) -> bool:
 
 
 _LIFECYCLE_TS = re.compile(r"\s*[⏳▶✅❌]\s*\([^)]*\)")
+_PROJECT_TAG_RE = re.compile(r"\[projec?t:([^\]]+)\]", re.IGNORECASE)
 
 
 def _normalize_for_match(text: str) -> str:
-    """Strip leading ``- ``, lifecycle timestamps, and whitespace."""
+    """Strip leading ``- ``, lifecycle timestamps, normalize project tag position."""
     text = text.lstrip("- ").strip()
-    return _LIFECYCLE_TS.sub("", text).strip()
+    text = _LIFECYCLE_TS.sub("", text).strip()
+    # Normalize project tag to a canonical position (after text) so that the
+    # old "- [project:X] text" format and the new "- text [project:X]" format
+    # both produce the same key.
+    proj_m = _PROJECT_TAG_RE.search(text)
+    if proj_m:
+        proj = proj_m.group(1)
+        text = _PROJECT_TAG_RE.sub("", text).strip()
+        text = f"{text} [project:{proj}]"
+    return text
 
 
 def update_mission_text(instance_dir: Path, mission_id: str, new_text: str) -> bool:

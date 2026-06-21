@@ -87,8 +87,8 @@ class TestMissionQueuing:
             assert "queued" in result.lower()
             assert "#42" in result
             mock_insert.assert_called_once()
-            mission_entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in mission_entry
+            mission_entry = mock_insert.call_args[0][0]
+            assert mock_insert.call_args[0][1] == "koan"
             assert "/squash https://github.com/sukria/koan/pull/42" in mission_entry
 
     def test_returns_ack_message(self, handler, ctx):
@@ -105,7 +105,7 @@ class TestMissionQueuing:
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
              patch("app.utils.insert_pending_mission") as mock_insert:
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
+            entry = mock_insert.call_args[0][0]
             assert "/squash " in entry
             assert "/rebase " not in entry
 

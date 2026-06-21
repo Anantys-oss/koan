@@ -346,8 +346,7 @@ def _inject_recurring(instance_dir: Path):
 
     try:
         from app.recurring import check_and_inject
-        missions_path = instance_dir / "missions.md"
-        return check_and_inject(recurring_path, missions_path)
+        return check_and_inject(recurring_path)
     except (ImportError, OSError, ValueError) as e:
         _log_iteration("error", f"Recurring injection error: {e}")
         return []
@@ -382,31 +381,30 @@ def _fallback_mission_extract(instance_dir: Path, projects_str: str,
                               context_msg: str):
     """Attempt direct mission extraction when the picker fails or returns empty.
 
-    Safety net that bypasses the Claude-based picker and reads missions.md
-    directly.  Shared by both the "picker returned nothing" and "picker
+    Safety net that bypasses the Claude-based picker and reads the mission
+    store directly.  Shared by both the "picker returned nothing" and "picker
     crashed" branches inside ``_pick_mission()``.
 
     Returns:
         (project_name, mission_title) or (None, None)
     """
     try:
-        from app.missions import count_pending
-        from app.pick_mission import fallback_extract
+        from app.mission_store import MissionStore
 
-        missions_path = instance_dir / "missions.md"
-        try:
-            content = missions_path.read_text()
-        except FileNotFoundError:
-            return None, None
-
-        pending_count = count_pending(content)
-        if pending_count <= 0:
+        store = MissionStore()
+        pending = store.get_by_status("pending")
+        if not pending:
             return None, None
 
         _log_iteration("error",
-            f"{context_msg} — {pending_count} pending mission(s) exist "
+            f"{context_msg} — {len(pending)} pending mission(s) exist "
             f"— attempting direct extraction")
-        project, title = fallback_extract(content, projects_str)
+        record = pending[0]
+        project = record.project
+        if not project:
+            parts = [p for p in projects_str.split(";") if p]
+            project = parts[0].split(":")[0] if parts else "default"
+        title = record.text
         if project and title:
             _log_iteration("mission",
                 f"Direct fallback picked: [{project}] {title[:60]}")
@@ -428,7 +426,7 @@ def _pick_mission(instance_dir: Path, projects_str: str, run_num: int,
     try:
         from app.pick_mission import pick_mission
         result = pick_mission(
-            str(instance_dir), projects_str,
+            projects_str,
             str(run_num), autonomous_mode, last_project,
         )
         if result:
@@ -449,17 +447,16 @@ def _pick_mission(instance_dir: Path, projects_str: str, run_num: int,
 def _classify_mission(
     mission_title: str,
     project_name: str,
-    missions_path,
 ) -> Optional[str]:
-    """Classify mission complexity and cache the tier in missions.md.
+    """Classify mission complexity and cache the tier in the mission store.
 
-    Checks for an existing [complexity:X] tag first (cache hit).  If
-    absent, calls the lightweight model to classify the mission.
+    Checks the pending record's stored complexity first (cache hit).  If
+    absent, calls the lightweight model to classify the mission and
+    persists the tier back onto the record.
 
     Args:
         mission_title: The mission text to classify.
         project_name: Project name for per-project model/routing config.
-        missions_path: Path to missions.md for tag caching.
 
     Returns:
         Tier string ("trivial", "simple", "medium", "complex") or None
@@ -476,14 +473,14 @@ def _classify_mission(
 
     # Cache hit — already classified
     try:
-        from app.missions import extract_complexity_tag
-        cached = extract_complexity_tag(mission_title)
-        if cached is not None:
+        from app.mission_store import MissionStore
+        record = MissionStore().find(mission_title)
+        if record is not None and record.complexity:
             _log_iteration("complexity",
-                f"mission='{mission_title[:60]}' tier={cached} (cached)")
-            return cached
+                f"mission='{mission_title[:60]}' tier={record.complexity} (cached)")
+            return record.complexity
     except Exception as e:
-        _log_iteration("error", f"Complexity tag extraction error: {e}")
+        _log_iteration("error", f"Complexity cache lookup error: {e}")
 
     # Cache miss — call the classifier
     try:
@@ -497,10 +494,13 @@ def _classify_mission(
     _log_iteration("complexity",
         f"mission='{mission_title[:60]}' tier={tier}")
 
-    # Write tag to missions.md (best-effort — never block execution)
+    # Cache the tier on the pending record via the mission store
+    # (best-effort — never block execution). The store regenerates
+    # missions.md, rendering the [complexity:X] tag in the view.
     try:
-        from app.missions import tag_complexity_in_pending
-        tag_complexity_in_pending(mission_title, tier, missions_path)
+        from app.mission_store import locked_store
+        with locked_store() as store:
+            store.set_complexity(mission_title, tier)
     except Exception as e:
         _log_iteration("error", f"Complexity tag write error: {e}")
 
@@ -1030,14 +1030,11 @@ def _maybe_inject_diagnostic_mission(
 
     # All gates passed — select diagnostic type and inject
     diag_type = _select_diagnostic_type(instance_dir, project_name)
-    mission_entry = (
-        f"- [autonomous:health] [project:{project_name}] /{diag_type}"
-    )
+    mission_text = f"[autonomous:health] /{diag_type}"
 
     try:
         from app.utils import insert_pending_mission
-        missions_path = Path(instance_dir) / "missions.md"
-        inserted = insert_pending_mission(missions_path, mission_entry)
+        inserted = insert_pending_mission(mission_text, project_name)
     except (ImportError, OSError) as e:
         _log_iteration("error", f"Failed to inject diagnostic mission: {e}")
         return None
@@ -1053,7 +1050,7 @@ def _maybe_inject_diagnostic_mission(
         f"(success_rate={rate:.0%}, staleness={staleness}, "
         f"cooldown={health_cfg['cooldown_days']}d)")
 
-    return mission_entry
+    return f"[project:{project_name}] {mission_text}" if project_name else mission_text
 
 
 FilterResult = namedtuple("FilterResult", ["projects", "pr_limited", "branch_saturated", "focus_gated"],
@@ -1566,13 +1563,11 @@ def plan_iteration(
             )
 
     # Step 5b: Pre-classify mission complexity (when a mission was picked
-    # and project resolved successfully).  Cache the tier in missions.md
-    # so re-runs skip the classifier call entirely.
+    # and project resolved successfully).  Cache the tier in the mission
+    # store so re-runs skip the classifier call entirely.
     mission_tier: Optional[str] = None
     if mission_project and mission_title and project_path is not None:
-        mission_tier = _classify_mission(
-            mission_title, project_name, instance / "missions.md"
-        )
+        mission_tier = _classify_mission(mission_title, project_name)
 
         # Step 5c: Re-check affordability now that tier is known.
         # Tier-based model upgrades (e.g. complex → opus) can increase

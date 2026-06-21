@@ -25,70 +25,70 @@ class TestCiQueue:
     def _instance(self, tmp_path):
         d = tmp_path / "instance"
         d.mkdir()
-        return str(d)
+        return d
 
     def test_enqueue_adds_entry(self, tmp_path):
         from app.ci_queue import enqueue, size, list_entries
-        inst = self._instance(tmp_path)
-        added = enqueue(inst, "https://gh/pr/1", "feat", "o/r", "1", "/p")
+        self._instance(tmp_path)
+        added = enqueue("https://gh/pr/1", "feat", "o/r", "1", "/p")
         assert added is True
-        assert size(inst) == 1
-        entries = list_entries(inst)
+        assert size() == 1
+        entries = list_entries()
         assert entries[0]["pr_url"] == "https://gh/pr/1"
 
     def test_enqueue_deduplicates(self, tmp_path):
         from app.ci_queue import enqueue, size
-        inst = self._instance(tmp_path)
-        enqueue(inst, "https://gh/pr/1", "feat", "o/r", "1", "/p")
-        added = enqueue(inst, "https://gh/pr/1", "feat2", "o/r", "1", "/p")
+        self._instance(tmp_path)
+        enqueue("https://gh/pr/1", "feat", "o/r", "1", "/p")
+        added = enqueue("https://gh/pr/1", "feat2", "o/r", "1", "/p")
         assert added is False
-        assert size(inst) == 1
+        assert size() == 1
 
     def test_remove(self, tmp_path):
         from app.ci_queue import enqueue, remove, size
-        inst = self._instance(tmp_path)
-        enqueue(inst, "https://gh/pr/1", "feat", "o/r", "1", "/p")
-        assert remove(inst, "https://gh/pr/1") is True
-        assert size(inst) == 0
+        self._instance(tmp_path)
+        enqueue("https://gh/pr/1", "feat", "o/r", "1", "/p")
+        assert remove("https://gh/pr/1") is True
+        assert size() == 0
 
     def test_remove_nonexistent(self, tmp_path):
         from app.ci_queue import remove
-        inst = self._instance(tmp_path)
-        assert remove(inst, "https://gh/pr/99") is False
+        self._instance(tmp_path)
+        assert remove("https://gh/pr/99") is False
 
     def test_peek_returns_oldest(self, tmp_path):
         from app.ci_queue import enqueue, peek
-        inst = self._instance(tmp_path)
-        enqueue(inst, "https://gh/pr/1", "a", "o/r", "1", "/p")
-        enqueue(inst, "https://gh/pr/2", "b", "o/r", "2", "/p")
-        entry = peek(inst)
+        self._instance(tmp_path)
+        enqueue("https://gh/pr/1", "a", "o/r", "1", "/p")
+        enqueue("https://gh/pr/2", "b", "o/r", "2", "/p")
+        entry = peek()
         assert entry["pr_url"] == "https://gh/pr/1"
 
     def test_peek_returns_none_when_empty(self, tmp_path):
         from app.ci_queue import peek
-        inst = self._instance(tmp_path)
-        assert peek(inst) is None
+        self._instance(tmp_path)
+        assert peek() is None
 
     def test_expired_entries_are_pruned(self, tmp_path):
         from app.ci_queue import _queue_path, peek, size
-        inst = self._instance(tmp_path)
+        self._instance(tmp_path)
         old_time = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
         entries = [{"pr_url": "old", "queued_at": old_time}]
-        _queue_path(inst).write_text(json.dumps(entries))
-        assert peek(inst) is None
-        assert size(inst) == 0
+        _queue_path().write_text(json.dumps(entries))
+        assert peek() is None
+        assert size() == 0
 
     def test_load_handles_corrupt_json(self, tmp_path):
         from app.ci_queue import _load, _queue_path
-        inst = self._instance(tmp_path)
-        _queue_path(inst).write_text("not json")
-        assert _load(inst) == []
+        self._instance(tmp_path)
+        _queue_path().write_text("not json")
+        assert _load() == []
 
     def test_load_handles_non_list(self, tmp_path):
         from app.ci_queue import _load, _queue_path
-        inst = self._instance(tmp_path)
-        _queue_path(inst).write_text(json.dumps({"not": "list"}))
-        assert _load(inst) == []
+        self._instance(tmp_path)
+        _queue_path().write_text(json.dumps({"not": "list"}))
+        assert _load() == []
 
     def test_is_expired_missing_timestamp(self):
         from app.ci_queue import _is_expired
@@ -100,15 +100,15 @@ class TestCiQueue:
 
     def test_list_entries_filters_expired(self, tmp_path):
         from app.ci_queue import enqueue, list_entries, _queue_path
-        inst = self._instance(tmp_path)
-        enqueue(inst, "https://gh/pr/1", "a", "o/r", "1", "/p")
+        self._instance(tmp_path)
+        enqueue("https://gh/pr/1", "a", "o/r", "1", "/p")
         # Manually add an expired entry
-        path = _queue_path(inst)
+        path = _queue_path()
         entries = json.loads(path.read_text())
         old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
         entries.append({"pr_url": "old", "queued_at": old})
         path.write_text(json.dumps(entries))
-        valid = list_entries(inst)
+        valid = list_entries()
         assert len(valid) == 1
         assert valid[0]["pr_url"] == "https://gh/pr/1"
 

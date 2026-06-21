@@ -49,7 +49,7 @@ class TestTick:
 
         mock_insert.assert_called_once()
         call_args = mock_insert.call_args
-        assert "Check CI status" in call_args[0][1]
+        assert "Check CI status" in call_args[0][0]
         assert result == ["Check CI status"]
 
     def test_future_event_not_inserted(self, tmp_path):
@@ -104,7 +104,7 @@ class TestTick:
 
         inserted = []
 
-        def _fake_insert(path, entry, **kw):
+        def _fake_insert(entry, project="", **kw):
             inserted.append(entry)
             return True
 

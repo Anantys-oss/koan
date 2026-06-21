@@ -153,7 +153,7 @@ def git_project(tmp_path):
     (proj / ".env").write_text("SECRET=xxx\n")
     subprocess.run(["git", "add", "CLAUDE.md"], cwd=str(proj), capture_output=True, check=True)
     subprocess.run(
-        ["git", "commit", "-m", "init"],
+        ["git", "-c", "commit.gpgsign=false", "commit", "-m", "init"],
         cwd=str(proj), capture_output=True, check=True,
     )
     return proj

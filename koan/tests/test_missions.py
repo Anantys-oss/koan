@@ -41,7 +41,6 @@ from app.missions import (
     stamp_queued,
     stamp_started,
     start_mission,
-    canonical_mission_key,
     strip_all_lifecycle_markers,
     strip_timestamps,
     prune_completed_sections,
@@ -2244,39 +2243,6 @@ class TestProjectTagPreservation:
 
 
 # ---------------------------------------------------------------------------
-# modify_missions_file return value
-# ---------------------------------------------------------------------------
-
-class TestModifyMissionsFileReturn:
-    """modify_missions_file must return transformed content for diagnostics."""
-
-    def test_returns_transformed_content(self, tmp_path):
-        missions_path = tmp_path / "missions.md"
-        missions_path.write_text(
-            "# Missions\n\n## Pending\n- test mission\n\n## Done\n"
-        )
-        from app.utils import modify_missions_file
-
-        result = modify_missions_file(
-            missions_path,
-            lambda c: complete_mission(c, "test mission"),
-        )
-        assert result is not None
-        assert "## Done" in result
-        assert "test mission" in result
-        assert "\u2705" in result
-
-    def test_returns_unchanged_on_noop(self, tmp_path):
-        missions_path = tmp_path / "missions.md"
-        original = "# Missions\n\n## Pending\n\n## Done\n"
-        missions_path.write_text(original)
-        from app.utils import modify_missions_file
-
-        result = modify_missions_file(missions_path, lambda c: c)
-        assert result == original
-
-
-# ---------------------------------------------------------------------------
 # _flush_in_progress_to_failed — sanity enforcement
 # ---------------------------------------------------------------------------
 
@@ -2697,43 +2663,6 @@ class TestMissionTimingDisplay:
         text = "Bug ▶(2026-02-18T11:00) ✅ (2026-02-18 10:00)"
         result = mission_timing_display(text)
         assert result == ""
-
-
-# --- canonical_mission_key ---
-
-class TestCanonicalMissionKey:
-    """S2: single source of truth for stable mission identity."""
-
-    def test_strips_leading_dash(self):
-        assert canonical_mission_key("- fix bug") == "fix bug"
-
-    def test_strips_lifecycle_timestamps(self):
-        base = canonical_mission_key("fix bug [project:foo]")
-        full = canonical_mission_key(
-            "fix bug [project:foo] ⏳(2026-01-01T00:00) ▶(2026-01-01T00:05)"
-        )
-        assert base == full == "fix bug [project:foo]"
-
-    def test_strips_recovery_and_complexity_tags(self):
-        assert (
-            canonical_mission_key("fix bug [r:3] [complexity:large]") == "fix bug"
-        )
-
-    def test_keeps_project_tag(self):
-        """Project tag is identity-bearing and must be preserved."""
-        assert "[project:foo]" in canonical_mission_key("fix bug [project:foo]")
-        assert (
-            canonical_mission_key("fix bug [project:foo]")
-            != canonical_mission_key("fix bug [project:bar]")
-        )
-
-    def test_stable_across_full_lifecycle_line(self):
-        clean = canonical_mission_key("fix bug [project:foo]")
-        lifecycle = canonical_mission_key(
-            "- fix bug [project:foo] [r:2] [complexity:medium] "
-            "⏳(2026-01-01T00:00) ▶(2026-01-01T00:05)"
-        )
-        assert clean == lifecycle
 
 
 # --- strip_timestamps ---
@@ -3439,105 +3368,3 @@ class TestQuarantineSizeCap:
         # New entry present
         assert "new entry" in content
 
-
-# --- Duplicate detection ---
-
-from app.missions import is_duplicate_mission, _extract_mission_signature
-
-
-class TestExtractMissionSignature:
-    def test_rebase_url(self):
-        line = "- [project:koan] /rebase https://github.com/owner/repo/pull/123 📬"
-        assert _extract_mission_signature(line) == "rebase:https://github.com/owner/repo/pull/123"
-
-    def test_review_url(self):
-        line = "- [project:koan] /review https://github.com/owner/repo/pull/42"
-        assert _extract_mission_signature(line) == "review:https://github.com/owner/repo/pull/42"
-
-    def test_ci_check_url(self):
-        line = "- [project:foo] /ci_check https://github.com/org/foo/pull/99"
-        assert _extract_mission_signature(line) == "ci_check:https://github.com/org/foo/pull/99"
-
-    def test_recreate_url(self):
-        line = "/recreate https://github.com/owner/repo/pull/7"
-        assert _extract_mission_signature(line) == "recreate:https://github.com/owner/repo/pull/7"
-
-    def test_non_github_mission_returns_none(self):
-        line = "- [project:koan] Fix the login bug"
-        assert _extract_mission_signature(line) is None
-
-    def test_unknown_command_returns_none(self):
-        line = "- /deploy https://github.com/owner/repo/pull/1"
-        assert _extract_mission_signature(line) is None
-
-    def test_strips_trailing_paren(self):
-        line = "/review https://github.com/o/r/pull/5)"
-        assert _extract_mission_signature(line) == "review:https://github.com/o/r/pull/5"
-
-
-class TestIsDuplicateMission:
-    def test_duplicate_in_pending(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "- [project:koan] /rebase https://github.com/owner/repo/pull/10 ⏳(2026-05-16T10:00)\n\n"
-            "## In Progress\n\n"
-            "## Done\n"
-        )
-        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
-        assert is_duplicate_mission(content, new_entry) is True
-
-    def test_duplicate_in_progress(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "## In Progress\n\n"
-            "- [project:koan] /review https://github.com/owner/repo/pull/5 ⏳(2026-05-16T09:00) ▶(2026-05-16T09:01)\n\n"
-            "## Done\n"
-        )
-        new_entry = "- [project:koan] /review https://github.com/owner/repo/pull/5"
-        assert is_duplicate_mission(content, new_entry) is True
-
-    def test_not_duplicate_different_pr(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "- [project:koan] /rebase https://github.com/owner/repo/pull/10\n\n"
-            "## In Progress\n\n"
-            "## Done\n"
-        )
-        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/11"
-        assert is_duplicate_mission(content, new_entry) is False
-
-    def test_not_duplicate_different_command(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "- [project:koan] /review https://github.com/owner/repo/pull/10\n\n"
-            "## In Progress\n\n"
-            "## Done\n"
-        )
-        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
-        assert is_duplicate_mission(content, new_entry) is False
-
-    def test_non_github_mission_never_duplicate(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "- [project:koan] Fix the login bug\n\n"
-            "## In Progress\n\n"
-            "## Done\n"
-        )
-        new_entry = "- [project:koan] Fix the login bug"
-        assert is_duplicate_mission(content, new_entry) is False
-
-    def test_done_section_not_checked(self):
-        content = (
-            "# Missions\n\n"
-            "## Pending\n\n"
-            "## In Progress\n\n"
-            "## Done\n\n"
-            "- [project:koan] /rebase https://github.com/owner/repo/pull/10 ✅ (2026-05-16 10:00)\n"
-        )
-        new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
-        assert is_duplicate_mission(content, new_entry) is False

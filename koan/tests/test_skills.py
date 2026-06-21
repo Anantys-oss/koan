@@ -2129,62 +2129,6 @@ class TestCoreSkillGroupEnforcement:
         assert "no 'group:'" in caplog.text
 
 
-class TestGithubActionRegexSync:
-    """Ensure _GITHUB_ACTION_RE stays in sync with github_enabled skills."""
-
-    def test_all_github_enabled_commands_in_regex(self):
-        """Every command/alias from github_enabled core skills must appear in _GITHUB_ACTION_RE."""
-        from app.missions import _GITHUB_ACTION_RE
-
-        skills_dir = get_default_skills_dir()
-        core_dir = skills_dir / "core"
-
-        skill_commands: set[str] = set()
-        for skill_md in sorted(core_dir.rglob("SKILL.md")):
-            skill = parse_skill_md(skill_md)
-            if skill is None or not skill.github_enabled:
-                continue
-            for cmd in skill.commands:
-                skill_commands.add(cmd.name)
-                skill_commands.update(cmd.aliases)
-
-        missing = []
-        for cmd_name in sorted(skill_commands):
-            test_line = f"/{cmd_name} https://github.com/owner/repo/pull/1"
-            if not _GITHUB_ACTION_RE.search(test_line):
-                missing.append(cmd_name)
-
-        assert not missing, (
-            f"github_enabled commands/aliases missing from _GITHUB_ACTION_RE in missions.py "
-            f"(mission dedup will fail for these): {', '.join(missing)}"
-        )
-
-    def test_regex_entries_are_valid_skill_commands(self):
-        """Every alternative in _GITHUB_ACTION_RE should correspond to a known skill command."""
-        import re
-        from app.missions import _GITHUB_ACTION_RE
-
-        skills_dir = get_default_skills_dir()
-        core_dir = skills_dir / "core"
-
-        all_commands: set[str] = set()
-        for skill_md in sorted(core_dir.rglob("SKILL.md")):
-            skill = parse_skill_md(skill_md)
-            if skill is None:
-                continue
-            for cmd in skill.commands:
-                all_commands.add(cmd.name)
-                all_commands.update(cmd.aliases)
-
-        regex_alts = set(re.findall(r"[a-z_]+", _GITHUB_ACTION_RE.pattern.split(r"\s+")[0]))
-        orphaned = sorted(regex_alts - all_commands)
-
-        assert not orphaned, (
-            f"_GITHUB_ACTION_RE contains entries not matching any skill command/alias: "
-            f"{', '.join(orphaned)}. Remove them or add the corresponding skill."
-        )
-
-
 class TestClaudemdSkillListSync:
     """Ensure the CLAUDE.md core skills list stays in sync with actual skills."""
 

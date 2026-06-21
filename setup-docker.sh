@@ -210,15 +210,8 @@ detect_dir "~/.gitconfig" "/home/koan/.gitconfig" "ro" "Git config" || true
 section "Workspace"
 resolve_workspace
 
-# 2b. Ensure missions.docker.md exists (isolated mission queue for container)
-if [ ! -f "instance/missions.docker.md" ]; then
-    touch "instance/missions.docker.md"
-    success "Created instance/missions.docker.md (empty mission queue for container)"
-else
-    success "Found instance/missions.docker.md"
-fi
 
-# 2c. Generate projects.docker.yaml with workspace entries (smart merge)
+# 2b. Generate projects.docker.yaml with workspace entries (smart merge)
 generate_projects_yaml() {
     local yaml_file="projects.docker.yaml"
 

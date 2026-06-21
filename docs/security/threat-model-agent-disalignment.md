@@ -185,7 +185,7 @@ read-only MCP configurations where possible.
 
 ### 3.7 Missions Queue Manipulation (LOW)
 
-**How it works**: Agent can insert new missions into missions.md that will be
+**How it works**: Agent can insert new missions into the mission queue (`missions.json`, via `MissionStore`) that will be
 executed by future runs.
 
 **Blast radius**: Limited — subsequent runs still go through Claude's alignment.

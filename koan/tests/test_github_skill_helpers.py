@@ -280,10 +280,8 @@ class TestQueueGithubMission:
             ctx, "review", "https://github.com/o/r/pull/1", "myproject"
         )
         mock_insert.assert_called_once()
-        args = mock_insert.call_args
-        assert args[0][0] == ctx.instance_dir / "missions.md"
-        entry = args[0][1]
-        assert "[project:myproject]" in entry
+        entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "myproject"
         assert "/review https://github.com/o/r/pull/1" in entry
 
     @patch("app.utils.insert_pending_mission")
@@ -293,9 +291,9 @@ class TestQueueGithubMission:
             ctx, "implement", "https://github.com/o/r/issues/5",
             "koan", context="phase 1"
         )
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         assert "/implement https://github.com/o/r/issues/5 phase 1" in entry
-        assert "[project:koan]" in entry
+        assert mock_insert.call_args[0][1] == "koan"
 
     @patch("app.utils.insert_pending_mission")
     def test_no_context(self, mock_insert, tmp_path):
@@ -303,7 +301,7 @@ class TestQueueGithubMission:
         queue_github_mission(
             ctx, "rebase", "https://github.com/o/r/pull/10", "proj"
         )
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         assert entry.endswith("/rebase https://github.com/o/r/pull/10")
 
 
@@ -518,7 +516,7 @@ class TestHandleGithubSkill:
         )
         result = handle_github_skill(ctx, "review", "pr-or-issue", self._parse_3tuple, "Review queued")
         assert "phase 1 only" in result
-        entry = mock_insert.call_args[0][1]
+        entry = mock_insert.call_args[0][0]
         assert "phase 1 only" in entry
 
     @patch("app.utils.insert_pending_mission")
@@ -527,8 +525,8 @@ class TestHandleGithubSkill:
     def test_mission_entry_format(self, mock_path, mock_name, mock_insert, tmp_path):
         ctx = self._make_ctx(tmp_path, args="https://github.com/o/r/pull/1")
         handle_github_skill(ctx, "rebase", "pr", self._parse_3tuple, "Rebase queued")
-        entry = mock_insert.call_args[0][1]
-        assert entry.startswith("- [project:myproject]")
+        entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "myproject"
         assert "/rebase https://github.com/o/r/pull/1" in entry
 
     def test_url_type_filtering_rejects_wrong_type(self, tmp_path):
@@ -563,8 +561,8 @@ class TestHandleGithubSkill:
             )
 
         assert "Implementation queued for Jira issue FOO-123" in result
-        entry = mock_insert.call_args[0][1]
-        assert "[project:myapp]" in entry
+        entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "myapp"
         assert "/implement https://test.atlassian.net/browse/FOO-123 phase 1" in entry
 
     @patch("app.utils.insert_pending_mission", return_value=False)

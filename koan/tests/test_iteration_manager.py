@@ -561,7 +561,7 @@ class TestInjectRecurring:
 class TestFallbackMissionExtract:
 
     def test_no_missions_file(self, tmp_path):
-        """Returns (None, None) when missions.md doesn't exist."""
+        """Returns (None, None) when no store exists."""
         inst = tmp_path / "instance"
         inst.mkdir()
         project, title = _fallback_mission_extract(inst, PROJECTS_STR, "test context")
@@ -577,9 +577,8 @@ class TestFallbackMissionExtract:
         assert project is None
         assert title is None
 
-    @patch("app.pick_mission.fallback_extract", return_value=("koan", "Fix bug"))
-    def test_extracts_pending_mission(self, mock_extract, tmp_path):
-        """Extracts mission when pending count > 0."""
+    def test_extracts_pending_mission(self, tmp_path):
+        """Extracts mission from the store when pending missions exist."""
         inst = tmp_path / "instance"
         inst.mkdir()
         (inst / "missions.md").write_text(
@@ -589,25 +588,16 @@ class TestFallbackMissionExtract:
         assert project == "koan"
         assert title == "Fix bug"
 
-    @patch("app.pick_mission.fallback_extract", return_value=(None, None))
-    def test_fallback_extract_fails(self, mock_extract, tmp_path):
-        """Returns (None, None) when fallback_extract fails to find a mission."""
+    def test_handles_store_error(self, tmp_path, monkeypatch):
+        """Returns (None, None) when MissionStore raises an OSError."""
         inst = tmp_path / "instance"
         inst.mkdir()
         (inst / "missions.md").write_text(
             "# Missions\n\n## Pending\n- [project:koan] Fix bug\n\n## Done\n"
         )
-        project, title = _fallback_mission_extract(inst, PROJECTS_STR, "test context")
-        assert project is None
-        assert title is None
-
-    @patch("app.pick_mission.fallback_extract", side_effect=OSError("boom"))
-    def test_handles_import_error(self, mock_extract, tmp_path):
-        """Returns (None, None) on exception from fallback_extract."""
-        inst = tmp_path / "instance"
-        inst.mkdir()
-        (inst / "missions.md").write_text(
-            "# Missions\n\n## Pending\n- [project:koan] Fix bug\n\n## Done\n"
+        monkeypatch.setattr(
+            "app.mission_store.MissionStore.__init__",
+            lambda *_: (_ for _ in ()).throw(OSError("boom")),
         )
         project, title = _fallback_mission_extract(inst, PROJECTS_STR, "test context")
         assert project is None
@@ -2817,9 +2807,10 @@ class TestCLI:
         usage_md = instance_dir / "usage.md"
         usage_md.write_text("Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20% (Resets in 5d)\n")
 
-        # Create missions.md with a pending mission
-        missions_md = instance_dir / "missions.md"
-        missions_md.write_text(
+        # Create missions.md in koan_root/instance so subprocess finds it via KOAN_ROOT env
+        kr_instance = koan_root / "instance"
+        kr_instance.mkdir(exist_ok=True)
+        (kr_instance / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n"
             "- [project:koan] Fix the test CLI\n\n"
             "## In Progress\n\n## Done\n"
@@ -3688,9 +3679,11 @@ class TestMaybeInjectDiagnosticMission:
     @patch("app.session_tracker.get_staleness_score", return_value=5)
     @patch("app.mission_metrics.compute_project_trend", return_value="declining")
     def test_all_gates_pass_injects_mission(
-        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir, monkeypatch,
     ):
         self._make_missions_file(instance_dir)
+        # insert_pending_mission writes to KOAN_ROOT/instance — point it at instance_dir's parent
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
         result = _maybe_inject_diagnostic_mission(
             "koan", str(instance_dir), "deep",
         )
@@ -3722,9 +3715,10 @@ class TestMaybeInjectDiagnosticMission:
     })
     def test_empty_heavy_injects_dead_code(
         self, _mock_metrics, _mock_trend, _mock_stale, _mock_rates,
-        _mock_cfg, instance_dir,
+        _mock_cfg, instance_dir, monkeypatch,
     ):
         self._make_missions_file(instance_dir)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
         result = _maybe_inject_diagnostic_mission(
             "koan", str(instance_dir), "deep",
         )
@@ -3743,9 +3737,10 @@ class TestMaybeInjectDiagnosticMission:
     @patch("app.session_tracker.get_staleness_score", return_value=5)
     @patch("app.mission_metrics.compute_project_trend", return_value="declining")
     def test_cooldown_prevents_second_injection(
-        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir, monkeypatch,
     ):
         self._make_missions_file(instance_dir)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
 
         # First injection should succeed
         result1 = _maybe_inject_diagnostic_mission(
@@ -3771,10 +3766,11 @@ class TestMaybeInjectDiagnosticMission:
     @patch("app.session_tracker.get_staleness_score", return_value=5)
     @patch("app.mission_metrics.compute_project_trend", return_value="declining")
     def test_different_project_not_blocked_by_cooldown(
-        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir,
+        self, _mock_trend, _mock_stale, _mock_rates, _mock_cfg, instance_dir, monkeypatch,
     ):
         """Cooldown for project A should not block project B."""
         self._make_missions_file(instance_dir)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", instance_dir.parent)
         _save_diagnostic_cooldown(str(instance_dir), "backend")
 
         result = _maybe_inject_diagnostic_mission(
@@ -4069,3 +4065,53 @@ class TestBudgetModeFallbackUnlimitedQuota:
         )
         assert result["action"] == "mission"
         mock_warn_burn.assert_not_called()
+
+
+class TestClassifyMission:
+    """_classify_mission caches the tier on the pending record via the store."""
+
+    def test_cache_miss_classifies_and_persists_to_store(self):
+        from app.complexity_classifier import MissionTier
+        from app.iteration_manager import _classify_mission
+        from app.mission_store import MissionStore, locked_store
+
+        with locked_store() as store:
+            store.add("Refactor the parser", project="webapp")
+
+        with patch(
+            "app.config.get_complexity_routing_config",
+            return_value={"enabled": True, "tiers": {}},
+        ), patch(
+            "app.complexity_classifier.classify_mission_complexity",
+            return_value=MissionTier.COMPLEX,
+        ):
+            tier = _classify_mission("Refactor the parser", "webapp")
+
+        assert tier == "complex"
+        # Persisted on the record (source of truth) and rendered in the view.
+        record = MissionStore().find("Refactor the parser")
+        assert record is not None
+        assert record.complexity == "complex"
+        from app.utils import instance_dir
+        view = (instance_dir() / "missions.md").read_text()
+        assert "[complexity:complex]" in view
+
+    def test_cache_hit_reads_store_without_classifying(self):
+        from app.iteration_manager import _classify_mission
+        from app.mission_store import locked_store
+
+        with locked_store() as store:
+            store.add("Tidy imports", project="webapp")
+            store.set_complexity("Tidy imports", "simple")
+
+        classifier = MagicMock()
+        with patch(
+            "app.config.get_complexity_routing_config",
+            return_value={"enabled": True, "tiers": {}},
+        ), patch(
+            "app.complexity_classifier.classify_mission_complexity", classifier,
+        ):
+            tier = _classify_mission("Tidy imports", "webapp")
+
+        assert tier == "simple"
+        classifier.assert_not_called()

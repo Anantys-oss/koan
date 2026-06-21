@@ -347,6 +347,9 @@ class TestTailHashEdgeCases:
 
     def test_returns_none_when_file_unreadable_during_read(self, tmp_path):
         """OSError during open/read returns None (lines 84-85)."""
+        import os
+        if os.getuid() == 0:
+            pytest.skip("chmod(000) has no effect when running as root")
         f = tmp_path / "out.log"
         _make_stdout(f, 60)
         # Make file unreadable — getsize succeeds but open fails.

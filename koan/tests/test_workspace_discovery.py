@@ -59,7 +59,7 @@ def test_symlinks_resolved(workspace):
 def test_broken_symlinks_skipped(workspace):
     """Broken symlinks are skipped with a warning."""
     ws = workspace / "workspace"
-    (ws / "broken").symlink_to("/nonexistent/path")
+    (ws / "broken").symlink_to("/nonexistent/path/that/should/wont/exist")
     (ws / "good").mkdir()
 
     result = discover_workspace_projects(str(workspace))

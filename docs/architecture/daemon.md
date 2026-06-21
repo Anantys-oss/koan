@@ -26,7 +26,7 @@ process does not stop cleanly.
 - routes slash commands through command handlers and skill dispatch;
 - promotes a plain message whose first word names a core skill to its slash form (`time` → `/time`);
 - classifies remaining non-command text as chat or mission intent;
-- appends missions to `instance/missions.md`;
+- queues missions via the mission store (`insert_pending_mission` → `locked_store()`, which regenerates `instance/missions.md`);
 - drains `instance/outbox.md` back to the messaging provider.
 
 Bridge state that would otherwise create circular imports lives in

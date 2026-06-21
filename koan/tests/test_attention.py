@@ -93,8 +93,9 @@ class TestCollectFailedMissions:
         items = attention._collect_failed_missions(koan_root)
         assert items == []
 
-    def test_failed_missions_returned(self, tmp_path):
+    def test_failed_missions_returned(self, tmp_path, monkeypatch):
         koan_root = _make_koan_root(tmp_path)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(koan_root))
         missions_file = Path(koan_root) / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
@@ -108,8 +109,9 @@ class TestCollectFailedMissions:
         sources = {i["source"] for i in items}
         assert sources == {"mission"}
 
-    def test_ids_are_deterministic(self, tmp_path):
+    def test_ids_are_deterministic(self, tmp_path, monkeypatch):
         koan_root = _make_koan_root(tmp_path)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(koan_root))
         missions_file = Path(koan_root) / "instance" / "missions.md"
         content = (
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
@@ -120,8 +122,9 @@ class TestCollectFailedMissions:
         items2 = attention._collect_failed_missions(koan_root)
         assert items1[0]["id"] == items2[0]["id"]
 
-    def test_url_links_to_missions_page(self, tmp_path):
+    def test_url_links_to_missions_page(self, tmp_path, monkeypatch):
         koan_root = _make_koan_root(tmp_path)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(koan_root))
         missions_file = Path(koan_root) / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
@@ -251,8 +254,9 @@ class TestGetAttentionItems:
             items = attention.get_attention_items(koan_root)
         assert items == []
 
-    def test_dismissed_items_filtered(self, tmp_path):
+    def test_dismissed_items_filtered(self, tmp_path, monkeypatch):
         koan_root = _make_koan_root(tmp_path)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(koan_root))
         missions_file = Path(koan_root) / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
@@ -450,8 +454,9 @@ class TestAttentionRoutes:
         assert data["ok"] is True
         assert "test123" in attention.load_dismissed(koan_root)
 
-    def test_dismiss_all_returns_count(self, client):
+    def test_dismiss_all_returns_count(self, client, monkeypatch):
         c, koan_root = client
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(koan_root))
         missions_file = Path(koan_root) / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
@@ -486,8 +491,9 @@ class TestDismissAll:
     def setup_method(self):
         attention_module._attention_cache = None
 
-    def test_dismiss_all_marks_all_items(self, tmp_path):
+    def test_dismiss_all_marks_all_items(self, tmp_path, monkeypatch):
         koan_root = _make_koan_root(tmp_path)
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(koan_root))
         missions_file = Path(koan_root) / "instance" / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"

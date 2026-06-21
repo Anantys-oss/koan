@@ -47,7 +47,7 @@ signal files). Four tabs:
 
 - `1`/`2`/`3`/`4` (or aliases `s`/`l`/`u`/`c`) — switch to
   Status/Logs/Usage/Config. These work even while the config tree holds focus.
-- `m` — queue a new mission into `missions.md` (modal input; supports
+- `m` — queue a new mission via the mission store (modal input; supports
   `[project:name]` tags).
 - Logs tab: Up/Down scroll one line; Page Up/Page Down scroll one page.
 - Arrow keys browse the focused config tree; Enter (or click) edits the
@@ -58,7 +58,7 @@ signal files). Four tabs:
 
 State-mutating actions are limited to: pause (`.koan-pause`, same signal the
 bridge uses), config edits (`instance/config.yaml`, comments preserved),
-queueing a mission (`missions.md`, via the locked `insert_pending_mission`),
+queueing a mission (via `insert_pending_mission`, which mutates the store under lock and regenerates `missions.md`),
 and the two toggles.
 
 ## Theme

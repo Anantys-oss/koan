@@ -84,28 +84,30 @@ class TestHandlePrQueuing:
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in entry
-            assert "/check https://github.com/sukria/koan/pull/42" in entry
-            assert "run:" not in entry
+            text = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert project == "koan"
+            assert "/check https://github.com/sukria/koan/pull/42" in text
+            assert "run:" not in text
 
     def test_pr_mission_uses_clean_format(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert entry.startswith("- [project:koan]")
-            assert "/check " in entry
-            assert "python3 -m" not in entry
+            text = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert project == "koan"
+            assert "/check " in text
+            assert "python3 -m" not in text
 
     def test_pr_mission_contains_url(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert "github.com/sukria/koan/pull/42" in entry
+            text = mock_insert.call_args[0][0]
+            assert "github.com/sukria/koan/pull/42" in text
 
     def test_pr_url_in_surrounding_text(self, handler, ctx):
         ctx.args = "please check https://github.com/sukria/koan/pull/99 thanks"
@@ -135,18 +137,19 @@ class TestHandleIssueQueuing:
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in entry
-            assert "/check https://github.com/sukria/koan/issues/42" in entry
-            assert "run:" not in entry
+            text = mock_insert.call_args[0][0]
+            project = mock_insert.call_args[0][1]
+            assert project == "koan"
+            assert "/check https://github.com/sukria/koan/issues/42" in text
+            assert "run:" not in text
 
     def test_issue_mission_has_correct_url(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/issues/42"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert "github.com/sukria/koan/issues/42" in entry
+            text = mock_insert.call_args[0][0]
+            assert "github.com/sukria/koan/issues/42" in text
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +164,8 @@ class TestUrlPriority:
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             result = handler.handle(ctx)
             assert "PR #42" in result
-            entry = mock_insert.call_args[0][1]
-            assert "pull/42" in entry
+            text = mock_insert.call_args[0][0]
+            assert "pull/42" in text
 
 
 # ---------------------------------------------------------------------------
@@ -175,24 +178,24 @@ class TestProjectResolution:
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in entry
+            project = mock_insert.call_args[0][1]
+            assert project == "koan"
 
     def test_unknown_project_uses_repo_name(self, handler, ctx):
         ctx.args = "https://github.com/unknown/myrepo/pull/10"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert "[project:myrepo]" in entry
+            project = mock_insert.call_args[0][1]
+            assert project == "myrepo"
 
     def test_case_insensitive_project_match(self, handler, ctx):
         ctx.args = "https://github.com/sukria/Koan/pull/42"
         with patch("app.utils.insert_pending_mission") as mock_insert, \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
             handler.handle(ctx)
-            entry = mock_insert.call_args[0][1]
-            assert "[project:koan]" in entry
+            project = mock_insert.call_args[0][1]
+            assert project == "koan"
 
 
 # ---------------------------------------------------------------------------

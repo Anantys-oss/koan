@@ -8,7 +8,7 @@ Command flow:
 2. Validate command → check skill has github_enabled (reused for Jira)
 3. Check permissions → verify user is in authorized_users
 4. Build mission → format with project tag and Jira URL
-5. Insert mission → write to missions.md
+5. Insert mission → queue via the mission store (regenerates missions.md)
 6. Mark comment as processed → write to .jira-processed.json
 
 Mission format:
@@ -392,11 +392,12 @@ def process_jira_mention(
         log.error("Jira: KOAN_ROOT not set — cannot insert mission")
         return False, "KOAN_ROOT not configured"
 
-    from app.utils import insert_pending_mission
+    from app.utils import insert_pending_mission, parse_project
 
-    missions_path = Path(koan_root) / "instance" / "missions.md"
+    jira_instance_dir = Path(koan_root) / "instance"
+    proj, clean = parse_project(mission_entry)
     try:
-        insert_pending_mission(missions_path, mission_entry)
+        insert_pending_mission(clean.removeprefix("- "), proj)
     except OSError as e:
         log.warning("Jira: failed to insert mission: %s", e)
         return False, f"Failed to queue mission: {e}"

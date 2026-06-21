@@ -670,9 +670,15 @@ class TestAutomationRuleExecution:
             {"id": "r1", "event": "post_mission", "action": "create_mission",
              "params": {"text": "Follow-up task"}, "enabled": True, "created": ""},
         ])
+        # insert_pending_mission writes to KOAN_ROOT/instance — point it at tmp_path
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
         registry = self._make_registry(tmp_path)
         registry.fire("post_mission")
-        missions = (tmp_path / "missions.md").read_text()
+        missions = (instance_dir / "missions.md").read_text()
         assert "Follow-up task" in missions
 
     def test_pause_action_writes_koan_pause(self, tmp_path):
@@ -748,7 +754,10 @@ class TestAutomationRuleExecution:
         ])
         hooks_dir = tmp_path / "hooks"
         hooks_dir.mkdir()
-        (tmp_path / "missions.md").write_text(
+        # insert_pending_mission writes to KOAN_ROOT/instance — point it at tmp_path
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir(exist_ok=True)
+        (instance_dir / "missions.md").write_text(
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
         from app.hooks import HookRegistry
@@ -763,7 +772,7 @@ class TestAutomationRuleExecution:
             original(rule, ctx)
         registry._execute_rule = patched_execute
         registry.fire("post_mission")
-        missions = (tmp_path / "missions.md").read_text()
+        missions = (instance_dir / "missions.md").read_text()
         assert "second rule ran" in missions
 
     def test_no_registry_when_instance_dir_absent(self, tmp_path):

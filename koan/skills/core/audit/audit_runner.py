@@ -732,7 +732,6 @@ def queue_auto_fix_missions(
     """
     from app.utils import insert_pending_mission
 
-    missions_path = Path(instance_dir) / "missions.md"
     queued = 0
 
     for finding, url in created_entries:
@@ -746,8 +745,8 @@ def queue_auto_fix_missions(
         if "/advisories/" in url:
             continue
 
-        mission_entry = f"- [project:{project_name}] /fix {url}"
-        inserted = insert_pending_mission(missions_path, mission_entry)
+        mission_text = f"/fix {url}"
+        inserted = insert_pending_mission(mission_text, project_name)
         if inserted:
             queued += 1
 

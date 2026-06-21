@@ -585,14 +585,12 @@ class TestIdeaHandler:
 
     def test_no_missions_file(self, tmp_path):
         from skills.core.idea.handler import handle
-
         ctx = self._make_ctx(tmp_path, command="idea")
         result = handle(ctx)
-        assert "No missions file" in result
+        assert "No ideas" in result or "No missions file" in result
 
     def test_list_empty(self, tmp_path):
         from skills.core.idea.handler import handle
-
         ctx = self._make_ctx(
             tmp_path,
             "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n",
@@ -603,7 +601,6 @@ class TestIdeaHandler:
 
     def test_list_with_ideas(self, tmp_path):
         from skills.core.idea.handler import handle
-
         content = textwrap.dedent("""\
             # Missions
 
@@ -624,7 +621,6 @@ class TestIdeaHandler:
 
     def test_ideas_command_always_lists(self, tmp_path):
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n- item\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="ideas")
         result = handle(ctx)
@@ -633,7 +629,6 @@ class TestIdeaHandler:
 
     def test_add_idea(self, tmp_path):
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="my new idea")
         result = handle(ctx)
@@ -646,7 +641,6 @@ class TestIdeaHandler:
 
     def test_add_idea_with_project_tag(self, tmp_path):
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(
             tmp_path, content, command="idea",
@@ -668,7 +662,6 @@ class TestIdeaHandler:
 
     def test_delete_idea(self, tmp_path):
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n- to delete\n- to keep\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="delete 1")
         result = handle(ctx)
@@ -689,7 +682,6 @@ class TestIdeaHandler:
 
     def test_delete_invalid_index(self, tmp_path):
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n- only one\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="delete 5")
         result = handle(ctx)
@@ -697,7 +689,6 @@ class TestIdeaHandler:
 
     def test_promote_idea(self, tmp_path):
         from skills.core.idea.handler import handle
-
         content = textwrap.dedent("""\
             # Missions
 
@@ -742,7 +733,6 @@ class TestIdeaHandler:
     def test_promote_multiline_via_handler(self, tmp_path):
         """Handler correctly promotes multi-line ideas."""
         from skills.core.idea.handler import handle
-
         content = textwrap.dedent("""\
             # Missions
 
@@ -776,7 +766,6 @@ class TestIdeaHandler:
     def test_promote_with_french_headers_via_handler(self, tmp_path):
         """Handler works with French section headers (## Pending)."""
         from skills.core.idea.handler import handle
-
         content = textwrap.dedent("""\
             # Missions
 
@@ -805,7 +794,6 @@ class TestIdeaHandler:
     def test_promote_no_ideas_via_handler(self, tmp_path):
         """Promote on empty ideas section returns informative message."""
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="promote 1")
         result = handle(ctx)
@@ -814,7 +802,6 @@ class TestIdeaHandler:
     def test_promote_all_via_handler(self, tmp_path):
         """Handler promotes all ideas at once."""
         from skills.core.idea.handler import handle
-
         content = textwrap.dedent("""\
             # Missions
 
@@ -846,7 +833,6 @@ class TestIdeaHandler:
     def test_promote_all_empty_via_handler(self, tmp_path):
         """Handler returns informative message when no ideas to promote."""
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="promote all")
         result = handle(ctx)
@@ -855,7 +841,6 @@ class TestIdeaHandler:
     def test_promote_all_with_push_alias(self, tmp_path):
         """Handler supports 'push all' alias."""
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n- single\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="push all")
         result = handle(ctx)
@@ -865,7 +850,6 @@ class TestIdeaHandler:
     def test_promote_all_single_idea_singular(self, tmp_path):
         """Singular form used when promoting exactly one idea."""
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n- lonely idea\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="activate all")
         result = handle(ctx)
@@ -874,7 +858,6 @@ class TestIdeaHandler:
     def test_delete_multiline_via_handler(self, tmp_path):
         """Handler deletes multi-line ideas completely."""
         from skills.core.idea.handler import handle
-
         content = textwrap.dedent("""\
             # Missions
 
@@ -899,7 +882,6 @@ class TestIdeaHandler:
     def test_list_multiline_ideas_via_handler(self, tmp_path):
         """Handler lists multi-line ideas showing only the first line."""
         from skills.core.idea.handler import handle
-
         content = textwrap.dedent("""\
             # Missions
 
@@ -921,7 +903,6 @@ class TestIdeaHandler:
     def test_add_idea_auto_detect_project_from_first_word(self, mock_proj, tmp_path):
         """'/idea koan some text' auto-detects koan as project."""
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(tmp_path, content, command="idea", args="koan add retry logic")
         result = handle(ctx)
@@ -963,7 +944,6 @@ class TestIdeaHandler:
     def test_add_idea_explicit_tag_takes_priority(self, mock_proj, tmp_path):
         """Explicit [project:X] tag takes priority over first-word detection."""
         from skills.core.idea.handler import handle
-
         content = "# Missions\n\n## Ideas\n\n## Pending\n\n## Done\n"
         ctx = self._make_ctx(
             tmp_path, content, command="idea",
@@ -1057,13 +1037,14 @@ class TestIdeaCommandRouting:
     @patch("app.command_handlers.send_telegram")
     def test_idea_routes_via_skill(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
-
-        missions_file = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Ideas\n\n- test idea\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", instance_dir), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/idea")
         mock_send.assert_called_once()
@@ -1074,13 +1055,14 @@ class TestIdeaCommandRouting:
     @patch("app.command_handlers.send_telegram")
     def test_ideas_routes_via_skill(self, mock_send, tmp_path):
         from app.command_handlers import handle_command
-
-        missions_file = tmp_path / "missions.md"
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_file = instance_dir / "missions.md"
         missions_file.write_text(
             "# Missions\n\n## Ideas\n\n- listed idea\n\n## Pending\n\n## In Progress\n\n## Done\n"
         )
         with patch("app.command_handlers.KOAN_ROOT", tmp_path), \
-             patch("app.command_handlers.INSTANCE_DIR", tmp_path), \
+             patch("app.command_handlers.INSTANCE_DIR", instance_dir), \
              patch("app.command_handlers.MISSIONS_FILE", missions_file):
             handle_command("/ideas")
         mock_send.assert_called_once()

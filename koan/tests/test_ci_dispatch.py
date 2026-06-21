@@ -21,17 +21,18 @@ from app.ci_dispatch import (
 
 
 @pytest.fixture
-def instance_dir(tmp_path):
-    missions = tmp_path / "missions.md"
+def instance_dir(tmp_path, monkeypatch):
+    instance = tmp_path / "instance"
+    instance.mkdir()
+    missions = instance / "missions.md"
     missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
-    return str(tmp_path)
+    monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
+    return str(instance)
 
 
 @pytest.fixture
 def koan_root(tmp_path):
-    root = tmp_path / "koan-root"
-    root.mkdir()
-    return str(root)
+    return str(tmp_path)
 
 
 class TestComputeCiFingerprint:

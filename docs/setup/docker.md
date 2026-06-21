@@ -184,7 +184,6 @@ Dockerfile and rebuild (`docker compose up --build`).
 | Host | Container | Purpose |
 |------|-----------|---------|
 | `./instance/` | `/app/instance/` | Runtime state (missions, memory, journal) |
-| `instance/missions.docker.md` | `/app/instance/missions.md` | Isolated mission queue (see below) |
 | *(per-project — see below)* | `/app/workspace/<name>` | Project repositories (one mount per project) |
 | `./logs/` | `/app/logs/` | Log files |
 | `./claude-auth/` | `/home/koan/.claude/` | Claude CLI auth state (interactive login) |
@@ -197,12 +196,22 @@ Dockerfile and rebuild (`docker compose up --build`).
 > `docker-compose.override.yml` (e.g. `/real/path/to/myapp:/app/workspace/myapp`).
 > Re-run `./setup-docker.sh` after adding or removing projects.
 
-### Isolated mission queue
+### Shared mission queue
 
-The container mounts `instance/missions.docker.md` over
-`instance/missions.md`. This means Docker and a native (non-Docker) Koan
-instance each have their own mission queue — they won't interfere if you run
-both.
+The container mounts the whole `instance/` directory, so the mission queue
+(`missions.json`, the source of truth, plus its generated `missions.md` view)
+is shared with the host. A native (non-Docker) Koan instance pointed at the
+same `instance/` reads and writes the same queue — **don't run both against
+the same `instance/` at once.** If you need a separate queue for the
+container, point it at its own directory (e.g.
+`- ./instance-docker:/app/instance` in `docker-compose.override.yml`).
+
+> **Why not a single-file overlay?** Earlier versions bind-mounted a separate
+> `missions.docker.md` over `missions.md` to isolate the queue. That stopped
+> working once `missions.json` became the source of truth — the JSON lives in
+> the shared `instance/` mount with no overlay, and atomic writes (temp file +
+> rename) fail with `EBUSY` against a single-file bind mount anyway. The
+> overlay was removed; isolate via a separate `instance/` directory instead.
 
 ### Health check
 
@@ -359,7 +368,10 @@ CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
 
 ### Docker and native Koan sharing state
 
-Mission queues are isolated by default (`missions.docker.md` vs
-`missions.md`). However, `instance/` state (memory, journal, config) is
-shared. If you run both simultaneously, avoid editing `instance/config.yaml`
-from both sides.
+The entire `instance/` directory is shared between Docker and a native Koan
+instance pointed at the same path — including the mission queue
+(`missions.json` / `missions.md`), memory, journal, and config. Running both
+against the same `instance/` simultaneously will cause them to fight over the
+queue and config. Run only one at a time, or give the container its own
+directory (`- ./instance-docker:/app/instance` in
+`docker-compose.override.yml`).

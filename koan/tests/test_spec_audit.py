@@ -41,8 +41,7 @@ class TestSpecAuditHandler:
 
         assert "queued" in result.lower()
         assert "backend" in result
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:backend]" in mission_entry
+        assert mock_insert.call_args[0][1] == "backend"
 
     @patch("app.utils.resolve_project_name_and_path", return_value=("koan", "/path/koan"))
     @patch("app.utils.insert_pending_mission")
@@ -52,8 +51,8 @@ class TestSpecAuditHandler:
 
         assert "queued" in result.lower()
         assert "koan" in result
-        mission_entry = mock_insert.call_args[0][1]
-        assert "[project:koan]" in mission_entry
+        mission_entry = mock_insert.call_args[0][0]
+        assert mock_insert.call_args[0][1] == "koan"
         assert "/spec_audit" in mission_entry
 
     @patch("app.utils.resolve_project_name_and_path", return_value=("nonexistent", None))

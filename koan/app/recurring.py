@@ -3,8 +3,9 @@
 Kōan -- Recurring missions
 
 Manages recurring missions (hourly, daily, weekly) stored in instance/recurring.json.
-The scheduler checks which missions are due and inserts them into missions.md pending
-section for normal execution by the run loop.
+The scheduler checks which missions are due and queues them into the pending
+section via the mission store (which regenerates missions.md) for normal
+execution by the run loop.
 
 Storage format (recurring.json):
 [
@@ -539,7 +540,7 @@ def is_due(mission: Dict, now: Optional[datetime] = None) -> bool:
     return False
 
 
-def _inject_one(mission: Dict, missions_path: Path, now: datetime) -> str:
+def _inject_one(mission: Dict, now: datetime) -> str:
     """Inject a single mission into missions.md and update its last_run.
 
     Returns the mission's description for logging.
@@ -554,13 +555,10 @@ def _inject_one(mission: Dict, missions_path: Path, now: datetime) -> str:
         tag = f"[every {interval_display}] "
     else:
         tag = f"[{freq}] "
-    if project:
-        entry = f"- [project:{project}] {tag}{text}"
-    else:
-        entry = f"- {tag}{text}"
+    mission_text = f"{tag}{text}"
 
     # Insert into pending section
-    insert_pending_mission(missions_path, entry)
+    insert_pending_mission(mission_text, project)
 
     # Update last_run
     mission["last_run"] = now.isoformat(timespec="seconds")
@@ -569,7 +567,6 @@ def _inject_one(mission: Dict, missions_path: Path, now: datetime) -> str:
 
 def check_and_inject(
     recurring_path: Path,
-    missions_path: Path,
     now: Optional[datetime] = None,
 ) -> List[str]:
     """Check all recurring missions and inject due ones into missions.md.
@@ -579,7 +576,6 @@ def check_and_inject(
 
     Args:
         recurring_path: Path to recurring.json
-        missions_path: Path to missions.md
         now: Optional datetime for testing
 
     Returns:
@@ -595,7 +591,7 @@ def check_and_inject(
         for mission in missions:
             if not is_due(mission, now):
                 continue
-            injected.append(_inject_one(mission, missions_path, now))
+            injected.append(_inject_one(mission, now))
 
         return injected
 
@@ -604,7 +600,6 @@ def check_and_inject(
 
 def force_run(
     recurring_path: Path,
-    missions_path: Path,
     identifier: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> List[str]:
@@ -615,7 +610,6 @@ def force_run(
 
     Args:
         recurring_path: Path to recurring.json
-        missions_path: Path to missions.md
         identifier: Optional number (1-indexed, display order) or keyword substring.
                    If omitted, injects all enabled missions.
         now: Optional datetime for testing
@@ -637,14 +631,14 @@ def force_run(
         if identifier is None:
             # Inject all enabled missions (ignore disabled, bypass cadence)
             injected.extend(
-                _inject_one(mission, missions_path, now)
+                _inject_one(mission, now)
                 for mission in missions
                 if mission.get("enabled", True)
             )
         else:
             # Inject the single matching mission (ignore enabled, bypass cadence)
             target = _resolve_target(missions, identifier)
-            injected.append(_inject_one(target, missions_path, now))
+            injected.append(_inject_one(target, now))
 
         return injected
 

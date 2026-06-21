@@ -33,12 +33,13 @@ def handler():
 
 
 @pytest.fixture
-def ctx(tmp_path):
+def ctx(tmp_path, monkeypatch):
     """Create a basic SkillContext for tests."""
     instance_dir = tmp_path / "instance"
     instance_dir.mkdir()
     missions_path = instance_dir / "missions.md"
     missions_path.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    monkeypatch.setattr("app.utils.KOAN_ROOT", tmp_path)
     return SkillContext(
         koan_root=tmp_path,
         instance_dir=instance_dir,

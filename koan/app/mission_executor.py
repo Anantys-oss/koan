@@ -444,15 +444,15 @@ def _maybe_escalate_to_debug(
 
     fix_args = match.group(1).strip()
 
-    # Preserve project tag if present
-    tag_match = _PROJECT_TAG_STRIP_RE.match(cleaned)
-    tag_prefix = tag_match.group(0) if tag_match else ""
+    from app.mission_store import locked_store
+    from app.utils import parse_project
 
-    from app.utils import insert_pending_mission
+    # Preserve the project tag (if present) as a separate store field.
+    project, _ = parse_project(cleaned)
 
-    missions_path = Path(os.path.join(instance, "missions.md"))
-    entry = f"- {tag_prefix}/debug {fix_args}"
-    inserted = insert_pending_mission(missions_path, entry, urgent=True)
+    entry = f"/debug {fix_args}"
+    with locked_store() as store:
+        _, inserted = store.add(entry, project, urgent=True)
 
     if not inserted:
         import app.run as _run

@@ -223,7 +223,6 @@ class TestProcessJiraMention:
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-
         with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
              patch("app.jira_command_handler.get_jira_authorized_users", return_value=["*"]), \
              patch("app.jira_config.get_jira_max_age_hours", return_value=24), \
@@ -277,7 +276,6 @@ class TestProcessJiraMention:
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-
         override_mention = dict(mention, body_text="@koan-bot plan repo:override-project")
 
         with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
@@ -308,7 +306,6 @@ class TestProcessJiraMention:
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-
         alias_mention = dict(mention, body_text="@koan-bot plan repo:myalias")
 
         with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \
@@ -339,7 +336,6 @@ class TestProcessJiraMention:
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-
         direct_mention = dict(mention, body_text="@koan-bot plan repo:real-project")
 
         with patch("app.jira_command_handler.get_jira_nickname", return_value="koan-bot"), \

@@ -243,8 +243,7 @@ class TestApiStateStream:
     def test_stream_returns_sse_content_type(self, tmp_path):
         inst, tpl_dest = self._make_client(tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"):
+             patch.object(dashboard, "INSTANCE_DIR", inst):
             with dashboard.app.test_request_context("/api/state/stream"):
                 resp = dashboard.api_state_stream()
         assert resp.content_type == "text/event-stream; charset=utf-8"
@@ -255,7 +254,6 @@ class TestApiStateStream:
         inst, _ = self._make_client(tmp_path)
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
              patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")
         data_line = None
@@ -280,7 +278,7 @@ class TestApiStateStream:
         )
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
              patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
+             patch.object(dashboard, "MISSIONS_JSON_FILE", inst / "missions.md"), \
              patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")
         data_line = None
@@ -321,10 +319,8 @@ class TestApiStatusAgentState:
 
         (tmp_path / ".koan-status").write_text("Run 2/10 — IMPLEMENT on koan")
         (tmp_path / ".koan-project").write_text("koan")
-
         with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"):
+             patch.object(dashboard, "INSTANCE_DIR", inst):
             dashboard.app.config["TESTING"] = True
             dashboard.app.jinja_loader = FileSystemLoader(str(tpl_dest))
             with dashboard.app.test_client() as client:

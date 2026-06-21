@@ -960,23 +960,25 @@ class TestCheckHelpers:
     def test_check_pending_missions_with_missions(self, tmp_path):
         from app.loop_manager import check_pending_missions
 
-        missions = tmp_path / "missions.md"
-        missions.write_text("## Pending\n\n- Do something\n\n## Done\n")
+        instance = tmp_path / "instance"
+        instance.mkdir(exist_ok=True)
+        (instance / "missions.md").write_text("## Pending\n\n- Do something\n\n## Done\n")
 
-        assert check_pending_missions(str(tmp_path)) is True
+        assert check_pending_missions() is True
 
     def test_check_pending_missions_empty(self, tmp_path):
         from app.loop_manager import check_pending_missions
 
-        missions = tmp_path / "missions.md"
-        missions.write_text("## Pending\n\n## Done\n")
+        instance = tmp_path / "instance"
+        instance.mkdir(exist_ok=True)
+        (instance / "missions.md").write_text("## Pending\n\n## Done\n")
 
-        assert check_pending_missions(str(tmp_path)) is False
+        assert check_pending_missions() is False
 
     def test_check_pending_missions_no_file(self, tmp_path):
         from app.loop_manager import check_pending_missions
 
-        assert check_pending_missions(str(tmp_path)) is False
+        assert check_pending_missions() is False
 
 
 # --- Test GitHub notification backoff ---
@@ -1062,7 +1064,8 @@ class TestGitHubNotificationBackoff:
              patch("app.github_notifications.fetch_unread_notifications", return_value=FetchResult([fake_notif], [])), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("proj", "o", "r")), \
-             patch("app.github_command_handler.process_single_notification", return_value=(True, None)):
+             patch("app.github_command_handler.process_single_notification", return_value=(True, None)), \
+             patch("app.github_notifications.mark_notification_read"):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert result == 1
@@ -1860,7 +1863,8 @@ class TestProcessNotificationsConsoleOutput:
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.process_single_notification", return_value=(True, None)), \
-             patch("app.loop_manager._notify_mission_from_mention"):
+             patch("app.loop_manager._notify_mission_from_mention"), \
+             patch("app.github_notifications.mark_notification_read"):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert result == 1
@@ -1896,7 +1900,8 @@ class TestProcessNotificationsConsoleOutput:
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler.process_single_notification", return_value=(False, "Permission denied")), \
-             patch("app.loop_manager._post_error_for_notification"):
+             patch("app.loop_manager._post_error_for_notification"), \
+             patch("app.github_notifications.mark_notification_read"):
             result = process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert result == 0
@@ -2106,6 +2111,8 @@ class TestCLI:
         koan_root.mkdir()
         instance.mkdir()
 
+        import os
+        env = {**os.environ, "KOAN_ROOT": str(koan_root)}
         result = subprocess.run(
             [sys.executable, "-m", "app.loop_manager", "interruptible-sleep",
              "--interval", "1",
@@ -2115,6 +2122,7 @@ class TestCLI:
             capture_output=True, text=True,
             cwd=str(Path(__file__).parent.parent),
             timeout=10,
+            env=env,
         )
         assert result.returncode == 0
         assert "timeout" in result.stdout.strip()
@@ -3263,7 +3271,8 @@ class TestErrorReplyRetryQueue:
              patch("app.github_command_handler.process_single_notification",
                    side_effect=mock_process), \
              patch("app.loop_manager._post_error_for_notification",
-                   side_effect=mock_post_error):
+                   side_effect=mock_post_error), \
+             patch("app.github_notifications.mark_notification_read"):
             process_github_notifications(str(tmp_path), str(tmp_path))
 
         assert call_order == [("post_error", True)], \

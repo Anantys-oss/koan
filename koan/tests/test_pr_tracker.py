@@ -323,7 +323,6 @@ def app_client(instance_dir, tmp_path):
     tpl_dest = tmp_path / "koan" / "templates"
     shutil.copytree(REAL_TEMPLATES, tpl_dest)
     with patch.object(dashboard, "INSTANCE_DIR", instance_dir), \
-         patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"), \
          patch.object(dashboard, "OUTBOX_FILE", instance_dir / "outbox.md"), \
          patch.object(dashboard, "SOUL_FILE", instance_dir / "soul.md"), \
          patch.object(dashboard, "SUMMARY_FILE", instance_dir / "memory" / "summary.md"), \

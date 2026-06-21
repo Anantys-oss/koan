@@ -206,9 +206,10 @@ class TestCheckNotificationsHandler:
         handler_mod = import_module("skills.core.check_notifications.handler")
 
         ctx = MagicMock()
-        ctx.koan_root = Path("/nonexistent/path/that/should/fail")
+        ctx.koan_root = tmp_path
 
-        result = handler_mod.handle(ctx)
+        with patch("builtins.open", side_effect=OSError("Permission denied")):
+            result = handler_mod.handle(ctx)
 
         assert "Failed" in result
 

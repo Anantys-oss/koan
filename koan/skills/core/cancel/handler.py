@@ -13,19 +13,18 @@ def handle(ctx):
     /cancel auth       — cancel first mission matching keyword "auth"
     """
     args = ctx.args.strip()
-    missions_file = ctx.instance_dir / "missions.md"
 
     if not args:
-        return _list_pending(missions_file)
+        return _list_pending()
 
     positions = _parse_positions(args)
     if positions is not None:
         if len(positions) == 1:
-            return _cancel_mission(missions_file, str(positions[0]))
-        return _cancel_bulk(missions_file, positions)
+            return _cancel_mission(str(positions[0]))
+        return _cancel_bulk(positions)
 
     # Keyword match
-    return _cancel_mission(missions_file, args)
+    return _cancel_mission(args)
 
 
 def _parse_positions(args):
@@ -44,70 +43,77 @@ def _parse_positions(args):
         return None
 
 
-def _list_pending(missions_file):
+def _list_pending():
     """Show numbered list of pending missions for selection."""
-    if not missions_file.exists():
-        return "ℹ️ No pending missions."
+    from app.mission_store import MissionStore
 
-    from app.missions import list_pending, clean_mission_display
-
-    pending = list_pending(missions_file.read_text())
+    store = MissionStore()
+    pending = store.get_by_status("pending")
 
     if not pending:
         return "ℹ️ No pending missions."
 
     parts = ["Pending missions:\n"]
-    for i, m in enumerate(pending, 1):
-        display = clean_mission_display(m)
-        parts.append(f"  {i}. {display}")
+    for i, r in enumerate(pending, 1):
+        parts.append(f"  {i}. {r.display_title()}")
 
     parts.append("\nReply /cancel <number> or /cancel 3,5,7 to cancel.")
     return "\n".join(parts)
 
 
-def _cancel_mission(missions_file, identifier):
+def _cancel_mission(identifier):
     """Cancel a mission by number or keyword."""
-    from app.missions import cancel_pending_mission, clean_mission_display
-    from app.utils import modify_missions_file
+    from app.mission_store import locked_store
 
-    cancelled_text = None
+    cancelled_display = None
 
-    def _transform(content):
-        nonlocal cancelled_text
-        updated, cancelled_text = cancel_pending_mission(content, identifier)
-        return updated
+    with locked_store() as store:
+        pending = store.get_by_status("pending")
+        if not pending:
+            return "ℹ️ No pending missions."
 
-    try:
-        modify_missions_file(missions_file, _transform)
-    except ValueError as e:
-        return f"⚠️ {e}"
+        record = None
+        if identifier.lstrip("-").isdigit():
+            pos = int(identifier)
+            if 1 <= pos <= len(pending):
+                record = pending[pos - 1]
+            else:
+                return f"⚠️ Invalid position. Use 1-{len(pending)}."
+        else:
+            kw = identifier.lower()
+            for r in pending:
+                if kw in r.text.lower():
+                    record = r
+                    break
+            if record is None:
+                return f"⚠️ No pending mission matching '{identifier}'."
 
-    if cancelled_text is None:
-        return "⚠️ Error during cancellation."
+        cancelled_display = record.display_title()
+        store.cancel_pending(record.text)
 
-    display = clean_mission_display(cancelled_text)
-    return f"🗑 Mission cancelled: {display}"
+    return f"🗑 Mission cancelled: {cancelled_display}"
 
 
-def _cancel_bulk(missions_file, positions):
+def _cancel_bulk(positions):
     """Cancel multiple pending missions by position."""
-    from app.missions import cancel_pending_missions_bulk
-    from app.utils import modify_missions_file
+    from app.mission_store import locked_store
 
-    displays = None
+    with locked_store() as store:
+        pending = store.get_by_status("pending")
+        if not pending:
+            return "ℹ️ No pending missions."
 
-    def _transform(content):
-        nonlocal displays
-        updated, displays = cancel_pending_missions_bulk(content, positions)
-        return updated
+        for pos in positions:
+            if pos < 1 or pos > len(pending):
+                return f"⚠️ Invalid position {pos}. Use 1-{len(pending)}."
 
-    try:
-        modify_missions_file(missions_file, _transform)
-    except ValueError as e:
-        return f"⚠️ {e}"
+        # Snapshot records at the given positions before any mutation
+        records_to_cancel = [pending[pos - 1] for pos in positions]
 
-    if displays is None:
-        return "⚠️ Error during cancellation."
+        displays = []
+        for record in records_to_cancel:
+            displays.append(record.display_title())
+            store.cancel_pending(record.text)
 
     parts = ["🗑 Cancelled missions:"]
     parts.extend(f"  • {d}" for d in displays)

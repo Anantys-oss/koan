@@ -52,7 +52,6 @@ def tick(instance_dir: str) -> List[str]:
     if not events_dir.exists():
         return []
 
-    missions_path = instance / "missions.md"
     archive_dir = events_dir / "archive"
     now = datetime.now()
     enqueued: List[str] = []
@@ -76,7 +75,9 @@ def tick(instance_dir: str) -> List[str]:
         if run_at > now:
             continue
 
-        insert_pending_mission(missions_path, mission)
+        from app.utils import parse_project
+        proj, clean = parse_project(mission)
+        insert_pending_mission(clean.removeprefix("- "), proj)
         enqueued.append(mission)
 
         archive_dir.mkdir(parents=True, exist_ok=True)

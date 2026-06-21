@@ -188,14 +188,15 @@ def strip_all_lifecycle_markers(text: str) -> str:
 
 
 # Markers that vary across a mission's lifecycle but do not change its identity:
-# lifecycle timestamps (⏳ ▶ ✅/❌), the [r:N] crash-recovery counter, and the
-# [complexity:X] classifier tag. Stripping them yields a key that is stable
-# across requeue and crash-recovery cycles.
+# lifecycle timestamps (⏳ ▶ ✅/❌), the [r:N] crash-recovery counter, the
+# [s:N] stagnation-retry counter, and the [complexity:X] classifier tag.
+# Stripping them yields a key that is stable across requeue and retry cycles.
 _CANONICAL_KEY_STRIP_RE = re.compile(
     r"\s*⏳\([^)]*\)"               # ⏳(queued-timestamp)
     r"|\s*▶\([^)]*\)"               # ▶(started-timestamp)
     r"|\s*[✅❌]\s*\([^)]*\)"       # ✅/❌ (completed-timestamp)
     r"|\s*\[r:\d+\]"                # [r:N] crash-recovery counter
+    r"|\s*\[s:\d+\]"                # [s:N] stagnation-retry counter
     r"|\s*\[complexity:[^\]]*\]"    # [complexity:X] classifier tag
 )
 
@@ -204,9 +205,10 @@ def canonical_mission_key(text: str) -> str:
     """Return a stable identity string for a mission, independent of lifecycle.
 
     Strips lifecycle timestamps (⏳ ▶ ✅ ❌), the ``[r:N]`` crash-recovery
-    counter, the ``[complexity:X]`` classifier tag, and a leading ``"- "`` so the
-    same logical mission maps to the same key across requeue and crash-recovery
-    cycles. This is the single source of truth for stable mission identity (S2);
+    counter, the ``[s:N]`` stagnation-retry counter, the ``[complexity:X]``
+    classifier tag, and a leading ``"- "`` so the same logical mission maps to
+    the same key across all requeue and retry cycles. This is the single source
+    of truth for stable mission identity (S2);
     ``stagnation_monitor._mission_key`` hashes its output.
 
     Note: ``[project:X]`` tags are intentionally *kept* — two missions with the
@@ -555,69 +557,26 @@ def tag_complexity_in_pending(
     tier: str,
     missions_path,
 ) -> None:
-    """Append a [complexity:X] tag to a pending mission line (atomic write).
+    """Set the [complexity:X] tag on a pending mission via the mission store.
 
-    Modifies only the first line of the mission that matches *mission_text*
-    in the Pending section.  Uses modify_missions_file() for atomic,
-    cross-process-safe writes.
-
-    The tag is inserted before any timestamp markers (⏳, ▶) so it does not
-    interfere with timestamp parsing.
+    Locates the matching record by canonical key and records its complexity
+    tier as a typed field. The tag is rendered back into the missions.md view
+    by MissionStore._save().
 
     Args:
         mission_text: The mission description to find and tag (first-line match).
         tier: Tier string — one of "trivial", "simple", "medium", "complex".
-        missions_path: Path-like object pointing to missions.md.
+        missions_path: Path-like object pointing to missions.md (its parent
+            directory is the instance dir).
     """
-    from app.utils import modify_missions_file
-    from pathlib import Path
+    from app.mission_store import locked_store
 
-    missions_path = Path(missions_path)
+    search_key = mission_text.splitlines()[0].strip() if mission_text else ""
+    if not search_key:
+        return
 
-    def _apply(content: str) -> str:
-        lines = content.splitlines(keepends=True)
-        # Normalise the search key to first line only
-        search_key = mission_text.splitlines()[0].strip() if mission_text else ""
-        if not search_key:
-            return content
-
-        in_pending = False
-        for i, raw_line in enumerate(lines):
-            stripped = raw_line.strip()
-            # Track section headers
-            if stripped.startswith("##") and not stripped.startswith("###"):
-                section_name = stripped.lstrip("#").strip().lower()
-                normalized = _SECTION_MAP.get(section_name, "")
-                in_pending = normalized == "pending"
-                continue
-
-            if not in_pending:
-                continue
-
-            # First-line match — skip lines that already have the tag
-            if search_key in raw_line and not _COMPLEXITY_TAG_RE.search(raw_line):
-                # Insert tag before any timestamp markers (⏳ or ▶)
-                base = raw_line.rstrip("\n").rstrip("\r")
-                tag = f"[complexity:{tier}]"
-                # Find position of first timestamp marker if present
-                ts_match = re.search(r'\s*[⏳▶]\(', base)
-                if ts_match:
-                    insert_pos = ts_match.start()
-                    new_line = (
-                        base[:insert_pos]
-                        + f" {tag}"
-                        + base[insert_pos:]
-                    )
-                else:
-                    new_line = f"{base} {tag}"
-                # Restore original line ending
-                ending = raw_line[len(raw_line.rstrip("\r\n")):]
-                lines[i] = new_line + (ending or "\n")
-                break  # Only tag the first matching line
-
-        return "".join(lines)
-
-    modify_missions_file(missions_path, _apply)
+    with locked_store() as store:
+        store.set_complexity(search_key, tier)
 
 
 def group_by_project(content: str) -> Dict[str, Dict[str, List[str]]]:
@@ -2255,64 +2214,3 @@ def update_ci_item_attempt(content: str, pr_url: str) -> str:
             break
 
     return normalize_content("\n".join(lines))
-
-
-# ---------------------------------------------------------------------------
-# Duplicate detection
-# ---------------------------------------------------------------------------
-
-# Regex to extract the "action signature" from a mission line:
-# /command https://github.com/... → ("command", "url")
-_GITHUB_ACTION_RE = re.compile(
-    r"/(ask|audit|benchmark|brainstorm|check|check_need|ci_check"
-    r"|dbg|debug|deeplan|deepplan|doc|docs|doit|explain|fix|gh_request"
-    r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile"
-    r"|rb|rc|rebase|recreate|refactor|review|reviewrebase|rf|rr|rv|xp"
-    r"|secu|security|security_audit|sq|squash"
-    r"|ultrareview|ultra_review|urv)\s+"
-    r"(https://github\.com/[^\s]+)"
-)
-
-
-def _extract_mission_signature(text: str) -> Optional[str]:
-    """Extract a normalized signature from a mission line for dedup.
-
-    For GitHub-related missions (/rebase, /review, etc.), the signature is
-    "command:url" — two missions are duplicates if they target the same
-    command on the same URL.
-
-    For other missions, returns None (no signature-based dedup).
-    """
-    match = _GITHUB_ACTION_RE.search(text)
-    if match:
-        command = match.group(1)
-        url = match.group(2).rstrip("/)")  # strip trailing paren or slash
-        return f"{command}:{url}"
-    return None
-
-
-def is_duplicate_mission(content: str, new_entry: str) -> bool:
-    """Check if a mission with the same action signature already exists.
-
-    Checks both Pending and In Progress sections.
-
-    Args:
-        content: Full missions.md content.
-        new_entry: The mission entry about to be inserted.
-
-    Returns:
-        True if a duplicate exists, False otherwise.
-    """
-    signature = _extract_mission_signature(new_entry)
-    if signature is None:
-        return False
-
-    sections = parse_sections(content)
-    existing = sections.get("pending", []) + sections.get("in_progress", [])
-
-    for item in existing:
-        item_sig = _extract_mission_signature(item)
-        if item_sig == signature:
-            return True
-
-    return False

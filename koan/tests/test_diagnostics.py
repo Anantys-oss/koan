@@ -729,7 +729,7 @@ class TestInstanceCheckFix:
             missions_results = [r for r in results if r.name == "missions_md"]
             assert len(missions_results) == 1
             assert missions_results[0].success is True
-            mock_write.assert_called_once()
+            mock_write.assert_called()
 
     def test_recovers_stale_missions(self, tmp_path):
         from diagnostics.instance_check import fix

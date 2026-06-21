@@ -72,12 +72,10 @@ class TestInboxHandler:
         assert "No GitHub missions" in result
 
     def test_signal_write_failure(self, tmp_path):
+        from unittest.mock import patch as _patch
         from skills.core.inbox.handler import handle
 
         ctx = self._make_ctx(tmp_path)
-        os.chmod(tmp_path, 0o444)
-        try:
+        with _patch("builtins.open", side_effect=OSError("permission denied")):
             result = handle(ctx)
-            assert "Failed" in result
-        finally:
-            os.chmod(tmp_path, 0o755)
+        assert "Failed" in result

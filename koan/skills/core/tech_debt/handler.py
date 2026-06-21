@@ -60,8 +60,6 @@ def _queue_tech_debt(ctx, project_name, no_queue):
         project_name = projects[0][0]
 
     suffix = " --no-queue" if no_queue else ""
-    mission_entry = f"- [project:{project_name}] /tech_debt{suffix}"
-    missions_path = ctx.instance_dir / "missions.md"
-    insert_pending_mission(missions_path, mission_entry)
+    insert_pending_mission(f"/tech_debt{suffix}", project_name)
 
     return f"\U0001f50d Tech debt scan queued for {project_name}"

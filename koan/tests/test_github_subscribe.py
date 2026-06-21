@@ -43,6 +43,14 @@ def _stub_is_subject_closed(subject_closed_state):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_gh_network():
+    """Block gh CLI calls that slip through per-test mocks."""
+    with patch("app.github_command_handler.find_mention_in_thread", return_value=None), \
+         patch("app.github_reply.post_threaded_reply", return_value=None):
+        yield
+
+
 @pytest.fixture
 def mock_skill():
     return Skill(
@@ -130,6 +138,7 @@ class TestTrySubscriptionNotification:
         new_comments = [{"id": 500, "body": "Can you check this?", "user_login": "alice"}]
 
         with patch.dict(os.environ, {"KOAN_ROOT": str(tmp_path)}), \
+             patch("app.utils.KOAN_ROOT", tmp_path), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
              patch("app.github_command_handler._fetch_new_comments_since",
@@ -214,6 +223,7 @@ class TestSubscriptionInProcessNotification:
         new_comments = [{"id": 500, "body": "What about this?", "user_login": "alice"}]
 
         with patch.dict(os.environ, {"KOAN_ROOT": str(tmp_path)}), \
+             patch("app.utils.KOAN_ROOT", tmp_path), \
              patch("app.github_command_handler._find_all_thread_mentions", return_value=[]), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \
@@ -260,6 +270,7 @@ class TestSubscriptionInProcessNotification:
         missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
 
         with patch.dict(os.environ, {"KOAN_ROOT": str(tmp_path)}), \
+             patch("app.utils.KOAN_ROOT", tmp_path), \
              patch("app.github_command_handler._find_all_thread_mentions", return_value=[comment]), \
              patch("app.github_command_handler.resolve_project_from_notification",
                    return_value=("koan", "sukria", "koan")), \

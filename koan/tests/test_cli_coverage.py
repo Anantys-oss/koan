@@ -173,8 +173,9 @@ class TestRecoverCLI:
         out = capsys.readouterr().out
         assert "No stale" in out or "0" in out
 
-    def test_cli_with_stale_missions(self, instance_dir, capsys):
+    def test_cli_with_stale_missions(self, instance_dir, capsys, monkeypatch):
         """Stale missions recovered and notification sent."""
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(instance_dir.parent))
         missions = instance_dir / "missions.md"
         missions.write_text(
             "# Missions\n\n"
@@ -194,8 +195,9 @@ class TestRecoverCLI:
 class TestRecoverComplexMissionFallback:
     """Cover L74 — complex mission ending with non-sub-item line."""
 
-    def test_complex_mission_ends_with_non_subitem(self, instance_dir):
+    def test_complex_mission_ends_with_non_subitem(self, instance_dir, monkeypatch):
         """Everything from ### header to blank line is recovered as a unit."""
+        monkeypatch.setattr("app.utils.KOAN_ROOT", Path(instance_dir.parent))
         from app.recover import recover_missions
         missions = instance_dir / "missions.md"
         missions.write_text(

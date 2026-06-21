@@ -7,8 +7,7 @@ Core shared utilities used across modules:
 - load_config: config.yaml loading
 - parse_project: [project:name] / [projet:name] tag extraction
 - atomic_write: crash-safe file writes
-- insert_pending_mission: append mission to missions.md pending section
-- modify_missions_file: locked read-modify-write on missions.md
+- insert_pending_mission: queue a mission via the mission store (regenerates missions.md)
 - get_known_projects / resolve_project_path: project registry
 - append_to_outbox: outbox file appending
 
@@ -25,7 +24,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import yaml
 from pathlib import Path
@@ -35,6 +33,10 @@ from typing import List, Optional, Tuple
 if "KOAN_ROOT" not in os.environ:
     raise SystemExit("KOAN_ROOT environment variable is not set. Run via 'make run' or 'make awake'.")
 KOAN_ROOT = Path(os.environ["KOAN_ROOT"])
+
+def instance_dir() -> Path:
+    """Return the default instance directory path from KOAN_ROOT."""
+    return Path(KOAN_ROOT, "instance")
 
 # Single source of truth for the project-name character class.
 # Dots are allowed because project names may be domain-like, e.g. developers.esphome.io.
@@ -57,9 +59,6 @@ PROJECT_HINT_RE = re.compile(rf'\(?\s*projec?t\s*:\s*([{PROJECT_NAME_CHARS}]+)\s
 # Anchored to end (and requires leading whitespace) so a "project:" mid-sentence
 # is never misread as a tag — used as a lenient fallback for command input.
 PROJECT_TRAILING_HINT_RE = re.compile(rf'\s+projec?t:([{PROJECT_NAME_CHARS}]+)\s*$', re.IGNORECASE)
-
-_MISSIONS_DEFAULT = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
-_MISSIONS_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -567,101 +566,28 @@ def _build_footer(skipped: list[str], kept_count: int) -> str:
 
 
 
-def _locked_missions_rw(missions_path: Path, transform):
-    """Read-modify-write missions.md with crash-safe atomic writes.
-
-    Uses a separate lock file for cross-process synchronization so that
-    the data file can be replaced atomically via temp + rename. A process
-    crash between truncate() and write() previously risked leaving
-    missions.md empty; this pattern eliminates that window entirely.
+def insert_pending_mission(
+    text: str, project: str | None = None, *, urgent: bool = False,
+) -> bool:
+    """Queue a mission into the pending queue via the mission store.
 
     Args:
-        missions_path: Path to missions.md
-        transform: Callable(content: str) -> str that returns modified content.
-
-    Returns the transformed content.
-    """
-    lock_path = missions_path.with_suffix(".lock")
-    missions_path = Path(missions_path)
-
-    with _MISSIONS_LOCK:
-        # Ensure parent directory exists (for first-run or test scenarios)
-        missions_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(lock_path, "w") as lock_f:
-            fcntl.flock(lock_f, fcntl.LOCK_EX)
-            try:
-                # Read current content (or default if missing/empty)
-                if missions_path.exists():
-                    content = missions_path.read_text(encoding="utf-8")
-                else:
-                    content = ""
-                if not content.strip():
-                    content = _MISSIONS_DEFAULT
-
-                new_content = transform(content)
-
-                # Atomic write: temp file + rename (same dir = same filesystem)
-                fd, tmp = tempfile.mkstemp(
-                    dir=str(missions_path.parent), prefix=".missions-",
-                )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        f.write(new_content)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(tmp, str(missions_path))
-                except BaseException:
-                    with contextlib.suppress(OSError):
-                        os.unlink(tmp)
-                    raise
-            finally:
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
-
-    return new_content
-
-
-def insert_pending_mission(
-    missions_path: Path, entry: str, *, urgent: bool = False,
-) -> bool:
-    """Insert a mission entry into the pending section of missions.md.
-
-    By default, inserts at the bottom of the pending section (FIFO queue).
-    When urgent=True, inserts at the top (next to be picked up).
-
-    Uses file locking for the entire read-modify-write cycle to prevent
-    TOCTOU race conditions between awake.py and dashboard.py.
-    Creates the file with default structure if it doesn't exist.
+        text: Clean mission text — no leading "- " and no "[project:X]" tag.
+        project: Project name, or None/"" if untagged.
+        urgent: When True, insert at the top of the pending queue (next to run).
 
     Returns:
         True if the mission was inserted, False if it was a duplicate
         (same command + URL already pending or in progress).
     """
-    from app.missions import insert_mission, is_duplicate_mission
+    from app.mission_store import locked_store
 
-    inserted = True
+    project = project or ""
 
-    def _transform(content: str) -> str:
-        nonlocal inserted
-        if is_duplicate_mission(content, entry):
-            inserted = False
-            return content
-        return insert_mission(content, entry, urgent=urgent)
+    with locked_store() as store:
+        _, was_new = store.add(text, project, urgent=urgent)
 
-    _locked_missions_rw(missions_path, _transform)
-    return inserted
-
-
-def modify_missions_file(missions_path: Path, transform):
-    """Apply a transform function to missions.md content with file locking.
-
-    Args:
-        missions_path: Path to missions.md
-        transform: Callable(content: str) -> str that returns modified content.
-
-    Returns the transformed content.
-    """
-    return _locked_missions_rw(missions_path, transform)
+    return was_new
 
 
 def _get_known_projects_for_root(koan_root: Path) -> list:

@@ -13,19 +13,18 @@ def handle(ctx):
     /priority 4 , 6, 5     — same (commas with spaces)
     """
     args = ctx.args.strip()
-    missions_file = ctx.instance_dir / "missions.md"
 
     if not args:
-        return _show_queue_with_hint(missions_file)
+        return _show_queue_with_hint()
 
     positions = _parse_positions(args)
     if positions is None:
         return "⚠️ Could not parse positions.\nUsage: /prio 3 or /prio 4,6,5"
 
     if len(positions) == 1:
-        return _reorder_single(missions_file, positions[0])
+        return _reorder_single(positions[0])
 
-    return _reorder_bulk(missions_file, positions)
+    return _reorder_bulk(positions)
 
 
 def _parse_positions(args):
@@ -45,21 +44,18 @@ def _parse_positions(args):
         return None
 
 
-def _show_queue_with_hint(missions_file):
+def _show_queue_with_hint():
     """Show queue with usage hint when /priority is called bare."""
-    if not missions_file.exists():
-        return "ℹ️ Queue is empty.\n\nUsage: /prio <n>"
+    from app.mission_store import MissionStore
 
-    from app.missions import list_pending, clean_mission_display
-
-    pending = list_pending(missions_file.read_text())
+    store = MissionStore()
+    pending = store.get_by_status("pending")
     if not pending:
         return "ℹ️ Queue is empty.\n\nUsage: /prio <n>"
 
     parts = ["PENDING"]
-    for i, m in enumerate(pending, 1):
-        display = clean_mission_display(m)
-        parts.append(f"  {i}. {display}")
+    for i, r in enumerate(pending, 1):
+        parts.append(f"  {i}. {r.display_title()}")
 
     parts.append("\nUsage:")
     parts.append("  /prio <n>       — bump mission #n to the top")
@@ -67,47 +63,58 @@ def _show_queue_with_hint(missions_file):
     return "\n".join(parts)
 
 
-def _reorder_single(missions_file, position):
+def _reorder_single(position):
     """Move a single pending mission to top of queue."""
-    from app.missions import reorder_mission
-    from app.utils import modify_missions_file
+    from app.mission_store import locked_store
 
-    moved_display = None
+    with locked_store() as store:
+        pending = store.get_by_status("pending")
+        if not pending:
+            return "⚠️ No pending missions to reorder."
+        if position < 1 or position > len(pending):
+            return f"⚠️ Invalid position. Use 1-{len(pending)}."
 
-    def _transform(content):
-        nonlocal moved_display
-        updated, moved_display = reorder_mission(content, position, 1)
-        return updated
-
-    try:
-        modify_missions_file(missions_file, _transform)
-    except ValueError as e:
-        return f"⚠️ {e}"
-
-    if moved_display is None:
-        return "⚠️ Error during reorder."
+        record = pending[position - 1]
+        moved_display = record.display_title()
+        store.reorder_pending(position - 1, 0)
 
     return f"⬆️ Bumped to top: {moved_display}"
 
 
-def _reorder_bulk(missions_file, positions):
+def _reorder_bulk(positions):
     """Reorder multiple pending missions to the top of the queue."""
-    from app.missions import reorder_missions_bulk
-    from app.utils import modify_missions_file
+    from app.mission_store import locked_store
 
-    displays = None
+    if len(set(positions)) != len(positions):
+        return "⚠️ Duplicate positions: use each position only once."
 
-    def _transform(content):
-        nonlocal displays
-        updated, displays = reorder_missions_bulk(content, positions)
-        return updated
+    displays = []
 
-    try:
-        modify_missions_file(missions_file, _transform)
-    except ValueError as e:
-        return f"⚠️ {e}"
+    with locked_store() as store:
+        pending = store.get_by_status("pending")
+        if not pending:
+            return "⚠️ No pending missions to reorder."
 
-    if displays is None:
+        for pos in positions:
+            if pos < 1 or pos > len(pending):
+                return f"⚠️ Invalid position {pos}. Use 1-{len(pending)}."
+
+        # Snapshot records at the original positions before any mutation
+        target_records = [pending[pos - 1] for pos in positions]
+
+        for i, record in enumerate(target_records):
+            displays.append(record.display_title())
+
+            # Find current index of this record in the pending sub-queue
+            current_pending = store.get_by_status("pending")
+            from_idx = next(
+                (idx for idx, r in enumerate(current_pending) if r.id == record.id),
+                None,
+            )
+            if from_idx is not None:
+                store.reorder_pending(from_idx, i)
+
+    if not displays:
         return "⚠️ Error during reorder."
 
     parts = ["🔀 Reordered queue:"]
