@@ -8,7 +8,7 @@ Covers:
 
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, call
 
 import pytest
 
@@ -55,30 +55,28 @@ class TestGetWorktreeIsolation:
 class TestRecoverOrphanedWorktrees:
     """Tests for startup_manager.recover_orphaned_worktrees()."""
 
-    def test_skips_when_isolation_disabled(self, tmp_path):
-        """When worktree_isolation is False, does nothing."""
+    def test_runs_regardless_of_config(self, tmp_path):
+        """Recovery runs even when worktree_isolation is False."""
         from app.startup_manager import recover_orphaned_worktrees
         proj = tmp_path / "proj"
         proj.mkdir()
         wt_dir = proj / ".worktrees" / "stale-session"
         wt_dir.mkdir(parents=True)
 
-        with patch("app.config.get_worktree_isolation", return_value=False):
+        with patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup:
             recover_orphaned_worktrees(str(tmp_path), [("proj", str(proj))])
 
-        # Stale worktree dir should still exist (not cleaned)
-        assert wt_dir.exists()
+        mock_cleanup.assert_called_once_with(str(proj), active_session_ids=[])
 
-    def test_cleans_orphaned_worktrees_when_enabled(self, tmp_path):
-        """When enabled, calls cleanup_stale_worktrees for projects with .worktrees."""
+    def test_cleans_orphaned_worktrees(self, tmp_path):
+        """Calls cleanup_stale_worktrees for projects with .worktrees."""
         from app.startup_manager import recover_orphaned_worktrees
         proj = tmp_path / "proj"
         proj.mkdir()
         wt_dir = proj / ".worktrees" / "stale-session"
         wt_dir.mkdir(parents=True)
 
-        with patch("app.config.get_worktree_isolation", return_value=True), \
-             patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup:
+        with patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup:
             recover_orphaned_worktrees(str(tmp_path), [("proj", str(proj))])
 
         mock_cleanup.assert_called_once_with(str(proj), active_session_ids=[])
@@ -89,8 +87,7 @@ class TestRecoverOrphanedWorktrees:
         proj = tmp_path / "proj"
         proj.mkdir()
 
-        with patch("app.config.get_worktree_isolation", return_value=True), \
-             patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup:
+        with patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup:
             recover_orphaned_worktrees(str(tmp_path), [("proj", str(proj))])
 
         mock_cleanup.assert_not_called()
@@ -103,8 +100,7 @@ class TestRecoverOrphanedWorktrees:
         wt_dir = proj / ".worktrees" / "broken"
         wt_dir.mkdir(parents=True)
 
-        with patch("app.config.get_worktree_isolation", return_value=True), \
-             patch("app.worktree_manager.cleanup_stale_worktrees",
+        with patch("app.worktree_manager.cleanup_stale_worktrees",
                    side_effect=OSError("git failed")):
             # Should not raise
             recover_orphaned_worktrees(str(tmp_path), [("proj", str(proj))])
@@ -192,6 +188,29 @@ class TestCleanupWorktree:
 
         assert Path(wt.path).exists()
 
+    def test_notifies_operator_on_push_failure(self, git_repo, tmp_path):
+        """When push fails and instance provided, sends Telegram notification."""
+        from app.worktree_manager import create_worktree
+        from app.run import _cleanup_worktree
+
+        wt = create_worktree(git_repo)
+
+        # Create a commit in the worktree
+        test_file = Path(wt.path) / "new_file.txt"
+        test_file.write_text("test content\n")
+        subprocess.run(["git", "add", "."], cwd=wt.path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "test commit"],
+            cwd=wt.path, capture_output=True, check=True,
+        )
+
+        instance_dir = str(tmp_path / "instance")
+        with patch("app.run._notify") as mock_notify:
+            _cleanup_worktree(wt, git_repo, instance=instance_dir)
+
+        mock_notify.assert_called_once()
+        assert "push failed" in mock_notify.call_args[0][1].lower()
+
     def test_skips_push_when_no_new_commits(self, git_repo):
         """Worktree with no new commits skips push and cleans up."""
         from app.worktree_manager import create_worktree
@@ -202,6 +221,35 @@ class TestCleanupWorktree:
         _cleanup_worktree(wt, git_repo)
 
         assert not Path(wt.path).exists()
+
+    def test_preserves_worktree_on_detached_head_with_commits(self, git_repo):
+        """Worktree with commits but detached HEAD is preserved (fail-safe)."""
+        from app.worktree_manager import create_worktree, WorktreeInfo
+        from app.run import _cleanup_worktree
+
+        wt = create_worktree(git_repo)
+
+        # Create a commit, then detach HEAD
+        test_file = Path(wt.path) / "new_file.txt"
+        test_file.write_text("test content\n")
+        subprocess.run(["git", "add", "."], cwd=wt.path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "test commit"],
+            cwd=wt.path, capture_output=True, check=True,
+        )
+        head_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=wt.path, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "checkout", head_sha],
+            cwd=wt.path, capture_output=True, check=True,
+        )
+
+        _cleanup_worktree(wt, git_repo)
+
+        # Worktree preserved because push couldn't be done (detached HEAD)
+        assert Path(wt.path).exists()
 
 
 # ---------------------------------------------------------------------------

@@ -3048,7 +3048,7 @@ def _cleanup_temp(*files):
             Path(f).unlink(missing_ok=True)
 
 
-def _cleanup_worktree(worktree_info, project_path: str):
+def _cleanup_worktree(worktree_info, project_path: str, instance: str = ""):
     """Push branches from worktree and remove it.
 
     After a mission runs in an isolated worktree, any new branches
@@ -3069,11 +3069,12 @@ def _cleanup_worktree(worktree_info, project_path: str):
 
     # Push any branches the agent created in the worktree
     try:
-        current_branch = subprocess.run(
+        branch_result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=wt_path,
             capture_output=True, text=True, timeout=5,
-        ).stdout.strip()
+        )
+        current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
 
         # Check if worktree HEAD moved from its initial commit
         has_commits = False
@@ -3084,7 +3085,10 @@ def _cleanup_worktree(worktree_info, project_path: str):
                     cwd=wt_path,
                     capture_output=True, text=True, timeout=5,
                 )
-                has_commits = head.returncode == 0 and head.stdout.strip() != worktree_info.commit
+                if head.returncode != 0:
+                    has_commits = True
+                else:
+                    has_commits = head.stdout.strip() != worktree_info.commit
             except (subprocess.SubprocessError, ValueError):
                 has_commits = True
         else:
@@ -3111,6 +3115,9 @@ def _cleanup_worktree(worktree_info, project_path: str):
             if push_result.returncode != 0:
                 log("error", f"Worktree push failed: {push_result.stderr.strip()}")
                 push_failed = True
+        elif has_commits:
+            log("error", f"Worktree has commits but branch unresolvable (got '{current_branch}')")
+            push_failed = True
     except (subprocess.SubprocessError, OSError) as e:
         log("error", f"Worktree branch push error: {e}")
         push_failed = True
@@ -3118,6 +3125,8 @@ def _cleanup_worktree(worktree_info, project_path: str):
     # Remove the worktree — but preserve it if push failed to avoid data loss
     if push_failed:
         log("error", f"Worktree preserved at {wt_path} — push failed, manual intervention needed")
+        if instance:
+            _notify(instance, f"⚠️ Worktree push failed — preserved at {wt_path}. Manual intervention needed.")
         return
 
     try:

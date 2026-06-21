@@ -95,31 +95,61 @@ def recover_crashed_missions(instance: str):
 
 
 def recover_orphaned_worktrees(koan_root: str, projects: list):
-    """Prune worktrees left behind by crashed sessions.
+    """Push unpushed branches and prune worktrees left behind by crashed sessions.
 
-    Iterates over all configured projects and runs cleanup_stale_worktrees
-    with an empty active-session list (no sessions survive a restart).
+    Always runs regardless of worktree_isolation config — orphaned worktrees
+    may exist from a previous run when isolation was enabled.
     """
-    try:
-        from app.config import get_worktree_isolation
-        if not get_worktree_isolation():
-            return
-    except Exception as e:
-        log("error", f"Worktree isolation config check failed: {e}")
-        return
+    import subprocess as _sp
 
     log("health", "Checking for orphaned worktrees...")
     from app.worktree_manager import cleanup_stale_worktrees
     cleaned = 0
     for name, path in projects:
         wt_dir = Path(path) / ".worktrees"
-        if wt_dir.exists() and any(wt_dir.iterdir()):
+        if not wt_dir.exists():
+            continue
+        try:
+            entries = list(wt_dir.iterdir())
+        except OSError:
+            continue
+        if not entries:
+            continue
+
+        # Push unpushed branches before removing worktrees
+        for entry in entries:
+            if not entry.is_dir():
+                continue
             try:
-                cleanup_stale_worktrees(path, active_session_ids=[])
-                cleaned += 1
-                log("health", f"  Cleaned orphaned worktrees in {name}")
-            except Exception as e:
-                log("error", f"  Worktree cleanup failed for {name}: {e}")
+                branch_result = _sp.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    cwd=str(entry), capture_output=True, text=True, timeout=10,
+                )
+                branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
+                if not branch or branch == "HEAD":
+                    continue
+                ahead = _sp.run(
+                    ["git", "rev-list", "--count", "@{u}..HEAD"],
+                    cwd=str(entry), capture_output=True, text=True, timeout=10,
+                )
+                has_commits = ahead.returncode != 0 or int(ahead.stdout.strip() or "0") > 0
+                if has_commits:
+                    log("health", f"  Pushing orphaned branch {branch} in {name}...")
+                    push = _sp.run(
+                        ["git", "push", "-u", "origin", branch],
+                        cwd=str(entry), capture_output=True, text=True, timeout=60,
+                    )
+                    if push.returncode != 0:
+                        log("error", f"  Orphaned worktree push failed for {branch}: {push.stderr.strip()}")
+            except (OSError, _sp.SubprocessError, ValueError) as e:
+                log("error", f"  Orphaned worktree push check failed in {name}: {e}")
+
+        try:
+            cleanup_stale_worktrees(path, active_session_ids=[])
+            cleaned += 1
+            log("health", f"  Cleaned orphaned worktrees in {name}")
+        except Exception as e:
+            log("error", f"  Worktree cleanup failed for {name}: {e}")
     if cleaned:
         log("health", f"Recovered worktrees in {cleaned} project(s)")
 
