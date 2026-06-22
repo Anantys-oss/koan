@@ -238,7 +238,9 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 GitHub polling also scans configured repositories for open PRs that still
 request the bot as reviewer. If GitHub does not expose a review request through
 the notifications API, Kōan still queues `/review <pr-url>` from the PR's
-requested-reviewer state.
+requested-reviewer state. To limit API usage, each repo is rescanned at most
+once per `github.review_scan_interval_minutes` (default 15; set `0` to scan
+every cycle).
 
 <details>
 <summary>Use cases</summary>

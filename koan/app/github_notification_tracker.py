@@ -206,6 +206,73 @@ def clear_review_cooldown(instance_dir: str, owner: str, repo: str, pr_number: s
 
 
 # ---------------------------------------------------------------------------
+# Requested-review scan throttle — caps per-repo `gh pr list` frequency
+# ---------------------------------------------------------------------------
+#
+# The notification-independent review scan (scan_requested_review_missions)
+# would otherwise issue one `gh pr list` per configured repo on every poll.
+# This per-repo timestamp tracker throttles each repo to at most once per
+# configured interval. Kept in its OWN file so the low-churn scan timestamps
+# never compete with durable dedup/cooldown keys under ``_cap_entries``.
+
+_TRACKER_FILE_REVIEW_SCAN = ".koan-review-scan.json"
+
+
+def _review_scan_path(instance_dir: str) -> Path:
+    return Path(instance_dir) / _TRACKER_FILE_REVIEW_SCAN
+
+
+def is_repo_scan_due(instance_dir: str, repo_slug: str, interval_seconds: float) -> bool:
+    """Return True when ``repo_slug`` has not been scanned within the interval.
+
+    ``interval_seconds <= 0`` disables throttling (always due), and a repo with
+    no recorded scan is always due. File/JSON errors fail open (treated as due)
+    so a corrupt tracker never silently suppresses scanning.
+    """
+    if interval_seconds <= 0:
+        return True
+    path = _review_scan_path(instance_dir)
+    if not path.exists():
+        return True
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            return True
+    except (json.JSONDecodeError, OSError):
+        return True
+    ts = data.get(repo_slug)
+    if not isinstance(ts, (int, float)):
+        return True
+    return time.time() - ts >= interval_seconds
+
+
+def mark_repo_scanned(instance_dir: str, repo_slug: str) -> None:
+    """Record that ``repo_slug`` was just scanned (exclusive lock).
+
+    Best-effort: file errors are swallowed rather than breaking the scan.
+    Prunes entries older than the TTL so stale repos don't accumulate.
+    """
+    if not repo_slug:
+        return
+    try:
+        from app.locked_file import locked_json_modify
+
+        def _update(data):
+            now = time.time()
+            stale = [
+                k for k, v in data.items()
+                if not isinstance(v, (int, float)) or now - v >= _TTL_SECONDS
+            ]
+            for k in stale:
+                del data[k]
+            data[repo_slug] = now
+
+        locked_json_modify(_review_scan_path(instance_dir), _update)
+    except Exception as e:  # noqa: BLE001 — best-effort; must not break the scan
+        log.debug("mark_repo_scanned: failed to record %s: %s", repo_slug, e)
+
+
+# ---------------------------------------------------------------------------
 # Per-thread reply circuit breaker — caps bot comments per thread per window
 # ---------------------------------------------------------------------------
 #

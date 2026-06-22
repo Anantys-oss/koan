@@ -34,11 +34,13 @@ from app.github_config import (
     get_github_authorized_users,
     get_github_natural_language,
     get_github_nickname,
+    get_github_parallel_workers,
     get_github_reply_authorized_users,
     get_github_reply_enabled,
     get_github_reply_rate_limit,
     get_github_subscribe_enabled,
     get_github_subscribe_max_per_cycle,
+    get_review_scan_interval_minutes,
 )
 from app.github_notifications import (
     add_reaction,
@@ -1198,7 +1200,6 @@ def _try_assignment_notification(
         log.error("GitHub assign: KOAN_ROOT not set")
         return False
 
-    from app.missions import list_pending, parse_sections
     from app.utils import insert_pending_mission
 
     missions_path = Path(koan_root) / "instance" / "missions.md"
@@ -1208,20 +1209,16 @@ def _try_assignment_notification(
     # review is still running (e.g., a rebase pushes new commits mid-review).
     try:
         content = missions_path.read_text() if missions_path.exists() else ""
-        sections = parse_sections(content)
-        active = list_pending(content) + sections.get("in_progress", [])
-        url_lower = web_url.lower()
-        for line in active:
-            if url_lower in line.lower():
-                log.debug(
-                    "GitHub assign: mission for %s already active, skipping",
-                    web_url,
-                )
-                mark_notification_read(notif_id)
-                if instance_dir and thread_key:
-                    track_thread(instance_dir, thread_key)
-                notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
-                return True  # Already handled — not an error
+        if _active_mission_targets_url(content, web_url):
+            log.debug(
+                "GitHub assign: mission for %s already active, skipping",
+                web_url,
+            )
+            mark_notification_read(notif_id)
+            if instance_dir and thread_key:
+                track_thread(instance_dir, thread_key)
+            notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+            return True  # Already handled — not an error
     except OSError:
         pass  # If we can't read, proceed with insertion (worst case: a dup)
 
@@ -1252,25 +1249,47 @@ def _try_assignment_notification(
     return True
 
 
+def _active_mission_targets_url(content: str, web_url: str) -> bool:
+    """Return True when a pending/in-progress mission line targets this exact URL.
+
+    Matches on whole whitespace-delimited tokens (normalized for a trailing
+    ``/`` or ``)``), not substrings. PR URLs are prefixes of one another
+    (``…/pull/42`` is a substring of ``…/pull/421``), so a substring test would
+    falsely dedup distinct PRs and silently drop a review request.
+    """
+    if not web_url:
+        return False
+    from app.missions import list_pending, parse_sections
+
+    target = web_url.rstrip("/)").lower()
+    sections = parse_sections(content)
+    active = list_pending(content) + sections.get("in_progress", [])
+    return any(
+        tok.rstrip("/)").lower() == target
+        for line in active
+        for tok in line.split()
+    )
+
+
 def _active_mission_exists_for_url(missions_path: Path, web_url: str) -> bool:
     """Return True when a pending or in-progress mission already targets URL."""
     if not web_url:
         return False
     try:
-        from app.missions import list_pending, parse_sections
-
         content = missions_path.read_text() if missions_path.exists() else ""
-        sections = parse_sections(content)
-        active = list_pending(content) + sections.get("in_progress", [])
     except OSError:
         return False
-
-    url_lower = web_url.lower()
-    return any(url_lower in line.lower() for line in active)
+    return _active_mission_targets_url(content, web_url)
 
 
-def _fetch_requested_review_prs(repo_slug: str, bot_username: str) -> List[dict]:
-    """Fetch open PRs in ``repo_slug`` where ``bot_username`` is a reviewer."""
+def _fetch_requested_review_prs(repo_slug: str, bot_username: str) -> Optional[List[dict]]:
+    """Fetch open PRs in ``repo_slug`` where ``bot_username`` is a reviewer.
+
+    Returns the list of matching PRs (possibly empty) on success, or ``None``
+    when the fetch failed (SSO, timeout, transport, or malformed JSON). The
+    ``None`` vs ``[]`` distinction lets the caller throttle only repos that
+    were actually scanned, so a transient failure retries on the next poll.
+    """
     if not repo_slug or not bot_username:
         return []
 
@@ -1288,19 +1307,19 @@ def _fetch_requested_review_prs(repo_slug: str, bot_username: str) -> List[dict]
         )
     except SSOAuthRequired:
         _record_sso_failure(f"requested_review_scan {repo_slug}")
-        return []
+        return None
     except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
         log.debug("GitHub review scan: failed to list PRs for %s: %s", repo_slug, exc)
-        return []
+        return None
 
     try:
         prs = json.loads(raw) if raw else []
     except json.JSONDecodeError:
         log.debug("GitHub review scan: invalid PR list JSON for %s", repo_slug)
-        return []
+        return None
 
     if not isinstance(prs, list):
-        return []
+        return None
 
     bot_lower = bot_username.lower()
     result = []
@@ -1345,15 +1364,51 @@ def scan_requested_review_missions(
     tracker_dir = instance_dir or str(Path(koan_root) / "instance")
 
     from app.github_notification_tracker import (
+        is_repo_scan_due,
         is_thread_tracked,
+        mark_repo_scanned,
         set_review_cooldown,
         track_thread,
     )
     from app.utils import insert_pending_mission
 
+    # Throttle: only scan repos not scanned within the configured interval.
+    interval_seconds = get_review_scan_interval_minutes(config) * 60
+    due_repos = [
+        (project_name, repo_slug)
+        for project_name, repo_slug in _project_review_scan_repos(projects_config)
+        if is_repo_scan_due(tracker_dir, repo_slug, interval_seconds)
+    ]
+    if not due_repos:
+        return 0
+
+    # Phase 1 — fetch each due repo's PRs concurrently (the slow ``gh`` I/O).
+    def _fetch(entry: Tuple[str, str]) -> Tuple[str, str, Optional[List[dict]]]:
+        project_name, repo_slug = entry
+        return (
+            project_name,
+            repo_slug,
+            _fetch_requested_review_prs(repo_slug, bot_username),
+        )
+
+    workers = min(get_github_parallel_workers(config), len(due_repos))
+    if workers <= 1:
+        fetched = [_fetch(entry) for entry in due_repos]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="gh-review-scan",
+        ) as pool:
+            fetched = list(pool.map(_fetch, due_repos))
+
+    # Phase 2 — process results serially so missions.md writes stay ordered.
     queued = 0
-    for project_name, repo_slug in _project_review_scan_repos(projects_config):
-        prs = _fetch_requested_review_prs(repo_slug, bot_username)
+    for project_name, repo_slug, prs in fetched:
+        if prs is None:
+            # Fetch failed — leave the repo un-marked so it retries next poll.
+            continue
+        mark_repo_scanned(tracker_dir, repo_slug)
         if not prs:
             continue
 

@@ -27,6 +27,7 @@ from app.github_command_handler import (
     _notify_github_question,
     _notify_github_reply,
     _post_help_reply,
+    _active_mission_targets_url,
     _fetch_requested_review_prs,
     _save_reply_timestamps,
     _try_assignment_notification,
@@ -3982,10 +3983,16 @@ class TestRequestedReviewScan:
             },
         }
 
-    def _pr(self, sha="sha-aaaa", draft=False):
+    @pytest.fixture
+    def scan_config(self):
+        # interval 0 disables the per-repo throttle so multi-call tests can
+        # exercise the SHA-based dedup without the time throttle interfering.
+        return {"github": {"nickname": "koan-bot", "review_scan_interval_minutes": 0}}
+
+    def _pr(self, sha="sha-aaaa", draft=False, number=42):
         return {
-            "number": 42,
-            "url": "https://github.com/sukria/koan/pull/42",
+            "number": number,
+            "url": f"https://github.com/sukria/koan/pull/{number}",
             "headRefOid": sha,
             "isDraft": draft,
             "reviewRequests": [{"__typename": "User", "login": "koan-bot"}],
@@ -3993,7 +4000,7 @@ class TestRequestedReviewScan:
         }
 
     def test_queues_review_when_notification_is_missing(
-        self, projects_config, review_registry, tmp_path, monkeypatch,
+        self, projects_config, scan_config, review_registry, tmp_path, monkeypatch,
     ):
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         instance_dir = tmp_path / "instance"
@@ -4006,7 +4013,7 @@ class TestRequestedReviewScan:
                    return_value=[self._pr()]):
             queued = scan_requested_review_missions(
                 projects_config,
-                {"github": {"nickname": "koan-bot"}},
+                scan_config,
                 review_registry,
                 str(instance_dir),
             )
@@ -4016,7 +4023,7 @@ class TestRequestedReviewScan:
         assert "[project:koan] /review https://github.com/sukria/koan/pull/42" in content
 
     def test_same_head_sha_is_deduped(
-        self, projects_config, review_registry, tmp_path, monkeypatch,
+        self, projects_config, scan_config, review_registry, tmp_path, monkeypatch,
     ):
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         instance_dir = tmp_path / "instance"
@@ -4028,7 +4035,7 @@ class TestRequestedReviewScan:
                    return_value=[self._pr("sha-same")]):
             first = scan_requested_review_missions(
                 projects_config,
-                {"github": {"nickname": "koan-bot"}},
+                scan_config,
                 review_registry,
                 str(instance_dir),
             )
@@ -4039,7 +4046,7 @@ class TestRequestedReviewScan:
             )
             second = scan_requested_review_missions(
                 projects_config,
-                {"github": {"nickname": "koan-bot"}},
+                scan_config,
                 review_registry,
                 str(instance_dir),
             )
@@ -4051,7 +4058,7 @@ class TestRequestedReviewScan:
         ) == 1
 
     def test_new_head_sha_queues_new_review(
-        self, projects_config, review_registry, tmp_path, monkeypatch,
+        self, projects_config, scan_config, review_registry, tmp_path, monkeypatch,
     ):
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         instance_dir = tmp_path / "instance"
@@ -4063,7 +4070,7 @@ class TestRequestedReviewScan:
                    return_value=[self._pr("sha-old")]):
             first = scan_requested_review_missions(
                 projects_config,
-                {"github": {"nickname": "koan-bot"}},
+                scan_config,
                 review_registry,
                 str(instance_dir),
             )
@@ -4077,7 +4084,7 @@ class TestRequestedReviewScan:
                    return_value=[self._pr("sha-new")]):
             second = scan_requested_review_missions(
                 projects_config,
-                {"github": {"nickname": "koan-bot"}},
+                scan_config,
                 review_registry,
                 str(instance_dir),
             )
@@ -4088,20 +4095,211 @@ class TestRequestedReviewScan:
             "/review https://github.com/sukria/koan/pull/42",
         ) == 2
 
+    def test_pr_number_prefix_does_not_collide(
+        self, projects_config, scan_config, review_registry, tmp_path, monkeypatch,
+    ):
+        # An active mission for PR #421 must NOT suppress a review for PR #42
+        # (substring collision: "/pull/42" is a substring of "/pull/421").
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:koan] /review https://github.com/sukria/koan/pull/421 📬\n"
+            "\n## Done\n",
+        )
+
+        with patch("app.github_command_handler._fetch_requested_review_prs",
+                   return_value=[self._pr(number=42)]):
+            queued = scan_requested_review_missions(
+                projects_config,
+                scan_config,
+                review_registry,
+                str(instance_dir),
+            )
+
+        assert queued == 1
+        content = missions_path.read_text()
+        assert "/review https://github.com/sukria/koan/pull/42 📬" in content
+
+    def test_throttle_blocks_second_scan_within_interval(
+        self, projects_config, review_registry, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n",
+        )
+        # Default interval (15 min) — second call within the window is throttled.
+        config = {"github": {"nickname": "koan-bot"}}
+
+        with patch("app.github_command_handler._fetch_requested_review_prs",
+                   return_value=[]) as mock_fetch:
+            first = scan_requested_review_missions(
+                projects_config, config, review_registry, str(instance_dir),
+            )
+            second = scan_requested_review_missions(
+                projects_config, config, review_registry, str(instance_dir),
+            )
+
+        assert first == 0
+        assert second == 0
+        # Repo fetched only once; the second scan was throttled before fetching.
+        mock_fetch.assert_called_once()
+
+    def test_throttle_allows_scan_after_interval(
+        self, projects_config, review_registry, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n",
+        )
+        config = {"github": {"nickname": "koan-bot", "review_scan_interval_minutes": 15}}
+
+        with patch("app.github_command_handler._fetch_requested_review_prs",
+                   return_value=[]) as mock_fetch:
+            scan_requested_review_missions(
+                projects_config, config, review_registry, str(instance_dir),
+            )
+            # Backdate the recorded scan timestamp beyond the interval.
+            from app.github_notification_tracker import _review_scan_path
+            path = _review_scan_path(str(instance_dir))
+            data = json.loads(path.read_text())
+            data["sukria/koan"] -= 16 * 60
+            path.write_text(json.dumps(data))
+
+            scan_requested_review_missions(
+                projects_config, config, review_registry, str(instance_dir),
+            )
+
+        assert mock_fetch.call_count == 2
+
+    def test_fetch_failure_does_not_mark_scanned(
+        self, projects_config, review_registry, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n",
+        )
+        config = {"github": {"nickname": "koan-bot"}}
+
+        # Fetch fails (None) — repo must stay un-throttled and be retried.
+        with patch("app.github_command_handler._fetch_requested_review_prs",
+                   return_value=None) as mock_fetch:
+            scan_requested_review_missions(
+                projects_config, config, review_registry, str(instance_dir),
+            )
+            scan_requested_review_missions(
+                projects_config, config, review_registry, str(instance_dir),
+            )
+
+        assert mock_fetch.call_count == 2
+
+    def test_parallel_fetch_aggregates_across_repos(
+        self, review_registry, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        missions_path = instance_dir / "missions.md"
+        missions_path.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        projects_config = {
+            "projects": {
+                "a": {"path": "/a", "github_url": "sukria/a"},
+                "b": {"path": "/b", "github_url": "sukria/b"},
+            },
+        }
+        config = {
+            "github": {
+                "nickname": "koan-bot",
+                "review_scan_interval_minutes": 0,
+                "parallel_workers": 4,
+            },
+        }
+
+        def fake_fetch(repo_slug, bot_username):
+            n = 1 if repo_slug == "sukria/a" else 2
+            return [{
+                "number": n,
+                "url": f"https://github.com/{repo_slug}/pull/{n}",
+                "headRefOid": f"sha-{n}",
+                "isDraft": False,
+                "reviewRequests": [{"login": "koan-bot"}],
+            }]
+
+        with patch("app.github_command_handler._fetch_requested_review_prs",
+                   side_effect=fake_fetch):
+            queued = scan_requested_review_missions(
+                projects_config, config, review_registry, str(instance_dir),
+            )
+
+        assert queued == 2
+        content = missions_path.read_text()
+        assert "https://github.com/sukria/a/pull/1" in content
+        assert "https://github.com/sukria/b/pull/2" in content
+
     def test_draft_pr_is_skipped_by_fetch_filter(self):
         raw = json.dumps([self._pr(draft=True)])
         with patch("app.github.run_gh", return_value=raw):
             assert _fetch_requested_review_prs("sukria/koan", "koan-bot") == []
 
-    def test_sso_error_is_recorded(self):
+    def test_sso_error_returns_none_and_is_recorded(self):
         from app.github import SSOAuthRequired
 
         with patch("app.github.run_gh", side_effect=SSOAuthRequired("SAML SSO")), \
              patch("app.github_notifications._record_sso_failure") as mock_record:
             result = _fetch_requested_review_prs("sukria/koan", "koan-bot")
 
-        assert result == []
+        assert result is None
         mock_record.assert_called_once()
+
+    def test_transport_error_returns_none(self):
+        with patch("app.github.run_gh", side_effect=RuntimeError("boom")):
+            assert _fetch_requested_review_prs("sukria/koan", "koan-bot") is None
+
+
+class TestActiveMissionTargetsUrl:
+    """Exact URL-token matching for mission dedup (no substring collisions)."""
+
+    _CONTENT = (
+        "# Missions\n\n## Pending\n\n"
+        "- [project:koan] /review https://github.com/sukria/koan/pull/421 📬\n"
+        "\n## In Progress\n\n"
+        "- [project:koan] /rebase https://github.com/sukria/koan/pull/7\n"
+        "\n## Done\n"
+    )
+
+    def test_exact_match_found(self):
+        assert _active_mission_targets_url(
+            self._CONTENT, "https://github.com/sukria/koan/pull/421",
+        ) is True
+
+    def test_prefix_number_does_not_match(self):
+        # #42 must not match a line containing #421.
+        assert _active_mission_targets_url(
+            self._CONTENT, "https://github.com/sukria/koan/pull/42",
+        ) is False
+
+    def test_matches_regardless_of_command(self):
+        # A pending /rebase blocks a would-be /review for the same exact URL.
+        assert _active_mission_targets_url(
+            self._CONTENT, "https://github.com/sukria/koan/pull/7",
+        ) is True
+
+    def test_trailing_slash_normalized(self):
+        assert _active_mission_targets_url(
+            self._CONTENT, "https://github.com/sukria/koan/pull/421/",
+        ) is True
+
+    def test_empty_url_is_false(self):
+        assert _active_mission_targets_url(self._CONTENT, "") is False
 
 
 class TestIsBotStillRequested:
