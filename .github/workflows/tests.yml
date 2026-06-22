@@ -40,7 +40,7 @@ jobs:
     name: test (py${{ matrix.python-version }}, ${{ matrix.group.name }})
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: ⚙️ Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
@@ -89,7 +89,7 @@ jobs:
     name: check-coverage
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: ⚙️ Set up Python 3.14
         uses: actions/setup-python@v6
@@ -101,7 +101,7 @@ jobs:
         run: pip install coverage
 
       - name: ⬇️ Download all coverage artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: coverage-py*
           path: coverage-parts
