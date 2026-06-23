@@ -112,32 +112,41 @@ class TestFindOrphans:
 
 class TestRecoverOne:
     def test_successful_rebase_and_pr(self, handler):
-        with patch("app.git_prep.detect_remote_default_branch", return_value="main"):
-            with patch("app.git_utils.run_git") as mock_git:
-                mock_git.return_value = (0, "", "")
-                with patch("app.github.pr_create",
-                           return_value="https://github.com/o/r/pull/42"):
-                    result = handler._recover_one("koan/my-fix", "/project")
+        with patch("app.git_utils.run_git") as mock_git:
+            mock_git.return_value = (0, "", "")
+            with patch("app.github.pr_create",
+                       return_value="https://github.com/o/r/pull/42"):
+                result = handler._recover_one("koan/my-fix", "/project", "main")
         assert result["rebased"] is True
         assert result["pr_url"] == "https://github.com/o/r/pull/42"
         assert result["error"] is None
 
     def test_rebase_failure_still_creates_pr(self, handler):
-        call_count = {"n": 0}
-
         def mock_git(*args, **kwargs):
-            call_count["n"] += 1
             if args[0] == "rebase" and args[1] == "origin/main":
                 return (1, "", "conflict")
             return (0, "", "")
 
-        with patch("app.git_prep.detect_remote_default_branch", return_value="main"):
-            with patch("app.git_utils.run_git", side_effect=mock_git):
-                with patch("app.github.pr_create",
-                           return_value="https://github.com/o/r/pull/99"):
-                    result = handler._recover_one("koan/broken", "/project")
+        with patch("app.git_utils.run_git", side_effect=mock_git):
+            with patch("app.github.pr_create",
+                       return_value="https://github.com/o/r/pull/99"):
+                result = handler._recover_one("koan/broken", "/project", "main")
         assert result["rebased"] is False
         assert result["pr_url"] == "https://github.com/o/r/pull/99"
+
+    def test_rebase_abort_failure_returns_early(self, handler):
+        def mock_git(*args, **kwargs):
+            if args[0] == "rebase" and "--abort" not in args:
+                return (1, "", "conflict")
+            if args[0] == "rebase" and "--abort" in args:
+                return (1, "", "abort failed")
+            return (0, "", "")
+
+        with patch("app.git_utils.run_git", side_effect=mock_git):
+            result = handler._recover_one("koan/stuck", "/project", "main")
+        assert result["error"] is not None
+        assert "abort failed" in result["error"]
+        assert result["pr_url"] is None
 
     def test_checkout_failure(self, handler):
         def mock_git(*args, **kwargs):
@@ -145,9 +154,8 @@ class TestRecoverOne:
                 return (1, "", "error: pathspec")
             return (0, "", "")
 
-        with patch("app.git_prep.detect_remote_default_branch", return_value="main"):
-            with patch("app.git_utils.run_git", side_effect=mock_git):
-                result = handler._recover_one("koan/bad", "/project")
+        with patch("app.git_utils.run_git", side_effect=mock_git):
+            result = handler._recover_one("koan/bad", "/project", "main")
         assert result["error"] is not None
         assert "checkout" in result["error"]
 
@@ -157,19 +165,17 @@ class TestRecoverOne:
                 return (1, "", "permission denied")
             return (0, "", "")
 
-        with patch("app.git_prep.detect_remote_default_branch", return_value="main"):
-            with patch("app.git_utils.run_git", side_effect=mock_git):
-                result = handler._recover_one("koan/nopush", "/project")
+        with patch("app.git_utils.run_git", side_effect=mock_git):
+            result = handler._recover_one("koan/nopush", "/project", "main")
         assert result["error"] is not None
         assert "push" in result["error"]
         assert result["pr_url"] is None
 
     def test_pr_creation_failure(self, handler):
-        with patch("app.git_prep.detect_remote_default_branch", return_value="main"):
-            with patch("app.git_utils.run_git", return_value=(0, "", "")):
-                with patch("app.github.pr_create",
-                           side_effect=RuntimeError("API error")):
-                    result = handler._recover_one("koan/fail-pr", "/project")
+        with patch("app.git_utils.run_git", return_value=(0, "", "")):
+            with patch("app.github.pr_create",
+                       side_effect=RuntimeError("API error")):
+                result = handler._recover_one("koan/fail-pr", "/project", "main")
         assert result["error"] is not None
         assert "PR creation" in result["error"]
 
@@ -180,10 +186,9 @@ class TestRecoverOne:
             git_calls.append(args)
             return (0, "", "")
 
-        with patch("app.git_prep.detect_remote_default_branch", return_value="main"):
-            with patch("app.git_utils.run_git", side_effect=mock_git):
-                with patch("app.github.pr_create", return_value="url"):
-                    handler._recover_one("koan/rebased", "/project")
+        with patch("app.git_utils.run_git", side_effect=mock_git):
+            with patch("app.github.pr_create", return_value="url"):
+                handler._recover_one("koan/rebased", "/project", "main")
 
         push_call = [c for c in git_calls if c[0] == "push"]
         assert len(push_call) == 1
