@@ -95,6 +95,7 @@ _PROJECT_KEY_TYPES = {
     "github": (dict,),
     "security": (dict,),
     "security_review": (dict,),
+    "private_review_gate": (dict,),
     "cli_provider": (str,),
     "submit_to_repository": (dict,),
     "stagnation": (dict, bool),

@@ -1,6 +1,7 @@
 """Tests for fix_runner.py — the fix execution pipeline."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from skills.core.fix.fix_runner import (
@@ -274,6 +275,70 @@ class TestRunFix:
 
         assert success is True
         assert "https://github.com/o/r/pull/1" in summary
+
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC)
+    @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-42")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_private_gate_runs_after_pr_creation(
+        self, mock_fetch, mock_execute, mock_branch, mock_pr, _d1, _d2, tmp_path,
+    ):
+        mock_fetch.return_value = _github_issue()
+        gate_result = SimpleNamespace(
+            ran=True,
+            summary="Private review gate passed",
+        )
+        notify = MagicMock()
+
+        with patch(
+            "app.private_review_gate.run_private_review_gate",
+            return_value=gate_result,
+        ) as mock_gate:
+            success, summary = run_fix(
+                project_path=str(tmp_path),
+                issue_url="https://github.com/o/r/issues/42",
+                notify_fn=notify,
+                project_name="app",
+            )
+
+        assert success is True
+        assert "Private gate: Private review gate passed" in summary
+        mock_gate.assert_called_once()
+        assert mock_gate.call_args.kwargs["pr_url"] == "https://github.com/o/r/pull/1"
+        assert mock_gate.call_args.kwargs["skill_origin"] == "fix"
+
+    @patch(f"{_DIAG_MODULE}.format_diagnostic_context", return_value="")
+    @patch(f"{_DIAG_MODULE}.run_diagnostic", return_value=_MOCK_DIAGNOSTIC)
+    @patch(f"{_FIX_MODULE}._submit_fix_pr", return_value="https://github.com/o/r/pull/1")
+    @patch(f"{_FIX_MODULE}.get_current_branch", return_value="koan/fix-issue-42")
+    @patch(f"{_FIX_MODULE}._execute_fix", return_value="Done")
+    @patch(f"{_FIX_MODULE}.fetch_issue")
+    def test_private_gate_failure_does_not_fail_fix(
+        self, mock_fetch, mock_execute, mock_branch, mock_pr, _d1, _d2, tmp_path,
+    ):
+        mock_fetch.return_value = _github_issue()
+        gate_result = SimpleNamespace(
+            ran=True,
+            summary="Private review gate could not produce a fix: no changes",
+            clean=False,
+        )
+
+        with patch(
+            "app.private_review_gate.run_private_review_gate",
+            return_value=gate_result,
+        ):
+            success, summary = run_fix(
+                project_path=str(tmp_path),
+                issue_url="https://github.com/o/r/issues/42",
+                notify_fn=MagicMock(),
+                project_name="app",
+            )
+
+        assert success is True
+        assert "Draft PR: https://github.com/o/r/pull/1" in summary
+        assert "Private review gate could not produce a fix" in summary
 
     @patch(f"{_FIX_MODULE}.fetch_issue", side_effect=ValueError("bad url"))
     def test_invalid_url(self, mock_fetch):

@@ -25,6 +25,25 @@ Skill names, aliases, and directories use underscores, not hyphens.
 Prompt-only skills omit `handler.py`; their Markdown prompt body is sent through
 the agent path.
 
+## Private Implementation Review Gate
+
+`/fix`, `/implement`, and `/rebase` can call the shared private review gate to
+run a backend-only challenge loop:
+
+- fetch current PR context and analyze it through the same structured review
+  prompt/schema/reflection path as `/review`;
+- filter findings to the configured minimum severity (`warning`/Important by
+  default);
+- run a write-capable fix step on the same branch, commit and push fixes with
+  the caller's branch update strategy, then re-review;
+- stop when clean, no fix is produced, a provider/push error occurs, or
+  `private_review_gate.max_rounds` is reached.
+
+The gate must not post GitHub review comments, issue comments, review verdicts,
+or PR-close decisions. Its configuration lives under
+`private_review_gate` in `config.yaml`, with per-project overrides in
+`projects.yaml`.
+
 ## Documentation Contract
 
 When adding, removing, or changing a core skill:

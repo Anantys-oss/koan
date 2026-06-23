@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
@@ -3332,6 +3333,155 @@ class TestRunRebasePassesChangeSummary:
             # Verify _build_rebase_comment was called with change_summary
             call_kwargs = mock_comment.call_args
             assert call_kwargs[1].get("change_summary") == "Fixed the auth bug."
+
+
+class TestRunRebasePrivateReviewGate:
+    @pytest.fixture(autouse=True)
+    def mock_already_solved(self):
+        with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)):
+            yield
+
+    def _context(self):
+        return {
+            "title": "Fix auth",
+            "body": "",
+            "branch": "feat",
+            "base": "main",
+            "state": "OPEN",
+            "author": "",
+            "url": "https://github.com/o/r/pull/1",
+            "diff": "+code",
+            "review_comments": "",
+            "reviews": "",
+            "issue_comments": "",
+            "head_owner": "o",
+        }
+
+    @patch("app.commit_conventions.get_project_commit_guidance", return_value="")
+    @patch("app.rebase_pr._enqueue_ci_check", return_value="CI queued")
+    @patch("app.rebase_pr._get_diffstat", return_value="1 file changed")
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_runs_gate_after_push_and_before_ci_enqueue(
+        self, mock_ctx, _mock_gh, _mock_safe, _mock_fix_ci, _mock_diffstat,
+        mock_enqueue, _mock_conventions, tmp_path,
+    ):
+        mock_ctx.return_value = self._context()
+        events = []
+
+        def push_side_effect(*_args, **_kwargs):
+            events.append("push")
+            return {"success": True, "actions": ["Force-pushed"], "error": ""}
+
+        def gate_side_effect(**kwargs):
+            events.append("gate")
+            assert kwargs["skill_origin"] == "rebase"
+            assert kwargs["review_skill_dir"] == REBASE_SKILL_DIR.parent / "review"
+            return SimpleNamespace(
+                ran=True,
+                summary="Private review gate passed",
+                skipped_reason="",
+            )
+
+        def enqueue_side_effect(*_args, **_kwargs):
+            events.append("ci")
+            return "CI queued"
+
+        mock_enqueue.side_effect = enqueue_side_effect
+
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._run_git", return_value="abc123\n"), \
+             patch("app.rebase_pr._push_with_fallback", side_effect=push_side_effect), \
+             patch(
+                 "app.private_review_gate.run_private_review_gate",
+                 side_effect=gate_side_effect,
+             ):
+            success, summary = run_rebase(
+                "o", "r", "1", str(tmp_path), notify_fn=MagicMock(),
+                skill_dir=REBASE_SKILL_DIR,
+            )
+
+        assert success is True
+        assert events == ["push", "gate", "ci"]
+        assert "Private review gate passed" in summary
+
+    @patch("app.commit_conventions.get_project_commit_guidance", return_value="")
+    @patch("app.rebase_pr._enqueue_ci_check", return_value="CI queued")
+    @patch("app.rebase_pr._get_diffstat", return_value="1 file changed")
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_gate_uses_rebase_push_callback(
+        self, mock_ctx, _mock_gh, _mock_safe, _mock_fix_ci, _mock_diffstat,
+        _mock_enqueue, _mock_conventions, tmp_path,
+    ):
+        mock_ctx.return_value = self._context()
+
+        def gate_side_effect(**kwargs):
+            kwargs["push_fn"]()
+            return SimpleNamespace(
+                ran=True,
+                summary="Private review gate passed after 1 fix round(s)",
+                skipped_reason="",
+            )
+
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._run_git", return_value="abc123\n"), \
+             patch("app.rebase_pr._push_with_fallback", return_value={
+                 "success": True, "actions": ["Force-pushed"], "error": "",
+             }) as mock_push, \
+             patch(
+                 "app.private_review_gate.run_private_review_gate",
+                 side_effect=gate_side_effect,
+             ):
+            success, summary = run_rebase(
+                "o", "r", "1", str(tmp_path), notify_fn=MagicMock(),
+                skill_dir=REBASE_SKILL_DIR,
+            )
+
+        assert success is True
+        assert mock_push.call_count == 2
+        assert "after 1 fix round" in summary
+
+    @patch("app.commit_conventions.get_project_commit_guidance", return_value="")
+    @patch("app.rebase_pr._enqueue_ci_check", return_value="CI queued")
+    @patch("app.rebase_pr._get_diffstat", return_value="1 file changed")
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_gate_failure_is_non_blocking(
+        self, mock_ctx, _mock_gh, _mock_safe, _mock_fix_ci, _mock_diffstat,
+        _mock_enqueue, _mock_conventions, tmp_path,
+    ):
+        mock_ctx.return_value = self._context()
+
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch", return_value="origin"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._run_git", return_value="abc123\n"), \
+             patch("app.rebase_pr._push_with_fallback", return_value={
+                 "success": True, "actions": ["Force-pushed"], "error": "",
+             }), \
+             patch(
+                 "app.private_review_gate.run_private_review_gate",
+                 side_effect=RuntimeError("review crashed"),
+             ):
+            success, summary = run_rebase(
+                "o", "r", "1", str(tmp_path), notify_fn=MagicMock(),
+                skill_dir=REBASE_SKILL_DIR,
+            )
+
+        assert success is True
+        assert "Private review gate failed after rebase" in summary
+        assert "non-fatal" in summary
 
 # ---------------------------------------------------------------------------
 # _check_if_already_solved

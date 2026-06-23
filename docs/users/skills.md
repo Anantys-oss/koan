@@ -40,8 +40,8 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 |---------|---------|-------------|:-:|
 | `/plan [--iterations N] <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review). `--iterations N` (1-5) runs N critique+refine rounds. | — |
 | `/deepplan <desc>` | `/deeplan` | Spec-first design: explore approaches, post spec, queue /plan | — |
-| `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; never bails — resolves ambiguity with simplest viable solution, retries once before surfacing a problem | Yes |
-| `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR. Runs a lightweight pre-fix diagnostic (bypass with `--skip-diagnose`) | Yes |
+| `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; creates a draft PR, then privately reviews/fixes Important+ findings by default | Yes |
+| `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic | Yes |
 | `/debug <issue>` | `/dbg` | Structured 4-step debug loop: reproduce → hypothesize → minimal fix → verify. Auto-queued when `/fix` fails (opt-in via `debug_escalation.on_fix_failure` in config.yaml) | Yes |
 | `/review <PR> [--bot-comments]` | `/rv` | Review a pull request; `--bot-comments` triages bot findings | Yes |
 | `/ultrareview <PR>` | `/urv` | Ultra-thorough review: architecture + silent-failure passes combined | Yes |
@@ -60,6 +60,11 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 
 For URL-based `/plan`, `/deepplan`, `/implement`, and `/fix`, append `branch:<name>` to
 override the base branch for that mission.
+
+The private post-PR review gate for `/fix`, `/implement`, and `/rebase` is
+backend-only: it reuses `/review` analysis, fixes Blocking/Important findings
+on the same branch, and does not post review comments or verdicts. Configure it
+with `private_review_gate` in `config.yaml` or `projects.yaml`.
 
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 

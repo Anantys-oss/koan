@@ -13,6 +13,7 @@ from app.review_runner import (
     fetch_repliable_comments,
     load_project_learnings,
     run_review,
+    run_private_review,
     _collapse_old_review,
     _detect_plan_url,
     _fetch_plan_body,
@@ -1376,6 +1377,66 @@ class TestRunReview:
 
         assert success is False
         assert "failed to post" in summary.lower()
+
+
+# ---------------------------------------------------------------------------
+# run_private_review
+# ---------------------------------------------------------------------------
+
+class TestRunPrivateReview:
+    """Backend-only review analysis used by the implementation gate."""
+
+    @patch("app.review_runner._post_comment_replies")
+    @patch("app.review_runner._post_review_comment")
+    @patch("app.review_runner._reflect_findings", side_effect=lambda findings, *a, **kw: findings)
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._fetch_pr_state", return_value="OPEN")
+    @patch("app.review_runner.resolve_pr_location", return_value=("owner", "repo"))
+    def test_private_review_returns_data_without_posting(
+        self, _mock_resolve, _mock_state, mock_fetch, mock_claude,
+        _mock_reflect, mock_post, mock_replies, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+
+        success, summary, review_data, context = run_private_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            project_name="app",
+        )
+
+        assert success is True
+        assert "Private review completed" in summary
+        assert review_data["file_comments"][0]["severity"] == "critical"
+        assert context["title"] == pr_context["title"]
+        mock_post.assert_not_called()
+        mock_replies.assert_not_called()
+
+    @patch("app.review_runner._post_review_comment")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._fetch_pr_state", return_value="OPEN")
+    @patch("app.review_runner.resolve_pr_location", return_value=("owner", "repo"))
+    def test_private_review_unparseable_does_not_post(
+        self, _mock_resolve, _mock_state, mock_fetch, mock_claude,
+        mock_post, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = ("not json", "")
+
+        success, summary, review_data, _context = run_private_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is False
+        assert review_data is None
+        assert "unparseable" in summary
+        assert mock_claude.call_count == 2
+        mock_post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

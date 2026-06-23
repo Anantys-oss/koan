@@ -1304,6 +1304,125 @@ def get_plan_review_config() -> dict:
     }
 
 
+_PRIVATE_REVIEW_GATE_DEFAULTS = {
+    "enabled": True,
+    "max_rounds": 3,
+    "min_severity": "warning",
+    "enabled_skills": ["fix", "implement", "rebase"],
+}
+
+_PRIVATE_REVIEW_SEVERITY_ALIASES = {
+    "critical": "critical",
+    "blocking": "critical",
+    "warning": "warning",
+    "important": "warning",
+    "high": "warning",
+    "suggestion": "suggestion",
+    "suggestions": "suggestion",
+    "all": "suggestion",
+}
+
+
+def _safe_bool(value, default: bool) -> bool:
+    """Safely coerce common config bool shapes."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "yes", "1", "on", "enabled"):
+            return True
+        if normalized in ("false", "no", "0", "off", "disabled", ""):
+            return False
+    return default
+
+
+def _normalize_private_review_severity(value) -> str:
+    """Map user-facing severity tokens to review schema severities."""
+    token = str(value or "").strip().lower()
+    return _PRIVATE_REVIEW_SEVERITY_ALIASES.get(
+        token,
+        _PRIVATE_REVIEW_GATE_DEFAULTS["min_severity"],
+    )
+
+
+def _normalize_private_review_gate_skills(value) -> list:
+    """Return configured skill names for the shared private review gate."""
+    default = list(_PRIVATE_REVIEW_GATE_DEFAULTS["enabled_skills"])
+    if value is None:
+        return default
+    if isinstance(value, str):
+        raw_items = value.replace(",", " ").split()
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        return default
+    return [
+        item for item in (
+            str(raw).strip().lower() for raw in raw_items
+        )
+        if item
+    ]
+
+
+def _review_gate_section(config: dict, key: str) -> dict:
+    section = config.get(key, {})
+    return section if isinstance(section, dict) else {}
+
+
+def get_private_review_gate_config(
+    project_name: str = "",
+    skill_origin: str = "",
+) -> dict:
+    """Get the shared private review gate configuration.
+
+    Config key: private_review_gate.
+
+      - enabled (bool): run the backend-only PR review/fix loop. Default: True.
+      - max_rounds (int): maximum review/fix rounds. Default: 3.
+      - min_severity (str): lowest severity to auto-fix. Default: warning
+        (aliases: important/high).
+      - enabled_skills (list[str] or str): skills that use the gate.
+        Default: fix, implement, rebase.
+
+    Per-project overrides in projects.yaml use the same key and override
+    global values one field at a time.
+    """
+    config = _load_config()
+    merged = {
+        **_PRIVATE_REVIEW_GATE_DEFAULTS,
+        **_review_gate_section(config, "private_review_gate"),
+    }
+
+    project_overrides = _load_project_overrides(project_name)
+    merged.update(
+        _review_gate_section(project_overrides, "private_review_gate")
+    )
+
+    max_rounds = _safe_int(
+        merged.get("max_rounds"),
+        _PRIVATE_REVIEW_GATE_DEFAULTS["max_rounds"],
+    )
+    enabled_skills = _normalize_private_review_gate_skills(
+        merged.get("enabled_skills"),
+    )
+    enabled = _safe_bool(
+        merged.get("enabled"),
+        _PRIVATE_REVIEW_GATE_DEFAULTS["enabled"],
+    )
+    skill = str(skill_origin or "").strip().lower()
+    if skill and skill not in enabled_skills:
+        enabled = False
+
+    return {
+        "enabled": enabled,
+        "max_rounds": max(0, max_rounds),
+        "min_severity": _normalize_private_review_severity(
+            merged.get("min_severity"),
+        ),
+        "enabled_skills": enabled_skills,
+    }
+
+
 def get_skill_allowed_hosts() -> List[str]:
     """Return the optional Git-host allow-list for /skill install.
 

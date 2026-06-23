@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from app.github import fetch_issue_with_comments, detect_parent_repo
@@ -1360,6 +1361,68 @@ class TestRunImplementWithPR:
             )
             assert ok
             assert "https://github.com/o/r/pull/99" in msg
+
+    def test_private_gate_runs_after_pr_creation(self, tmp_path):
+        notify = MagicMock()
+        body = "### Summary\nPlan\n#### Phase 1: Do it"
+        gate_result = SimpleNamespace(
+            ran=True,
+            summary="Private review gate passed after 1 fix round(s)",
+        )
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/feat"), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr",
+                    return_value="https://github.com/o/r/pull/99"), \
+             patch("app.private_review_gate.run_private_review_gate",
+                   return_value=gate_result) as mock_gate:
+            ok, msg = run_implement(
+                str(tmp_path),
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+                project_name="app",
+            )
+
+            assert ok
+            assert "Private gate: Private review gate passed" in msg
+            mock_gate.assert_called_once()
+            assert mock_gate.call_args.kwargs["pr_url"] == "https://github.com/o/r/pull/99"
+            assert mock_gate.call_args.kwargs["plan_url"] == "https://github.com/o/r/issues/42"
+            assert mock_gate.call_args.kwargs["skill_origin"] == "implement"
+
+    def test_private_gate_failure_does_not_fail_implementation(self, tmp_path):
+        notify = MagicMock()
+        body = "### Summary\nPlan\n#### Phase 1: Do it"
+        gate_result = SimpleNamespace(
+            ran=True,
+            summary="Private review gate could not complete: review failed",
+            clean=False,
+        )
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(title="Title", body=body)), \
+             patch(f"{_IMPL_MODULE}._run_plan_review_gate", return_value=None), \
+             patch(f"{_IMPL_MODULE}._execute_implementation", return_value="Done"), \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch", return_value="koan/feat"), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr",
+                    return_value="https://github.com/o/r/pull/99"), \
+             patch("app.private_review_gate.run_private_review_gate",
+                   return_value=gate_result):
+            ok, msg = run_implement(
+                str(tmp_path),
+                "https://github.com/o/r/issues/42",
+                notify_fn=notify,
+                project_name="app",
+            )
+
+            assert ok
+            assert "Draft PR: https://github.com/o/r/pull/99" in msg
+            assert "Private review gate could not complete" in msg
 
     def test_branch_in_summary_when_pr_fails(self):
         notify = MagicMock()

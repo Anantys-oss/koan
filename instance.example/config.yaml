@@ -604,6 +604,16 @@ usage:
 #   max_rounds: 3       # Maximum re-generation rounds per plan (default: 3)
 #   implement_gate: true  # Run plan-review gate before /implement execution (default: true)
 
+# Private review gate for /fix, /implement, and /rebase — after a PR branch
+# is updated, privately run the /review analysis path, fix Blocking/Important
+# findings on the same branch, push, and re-review. The gate does not post
+# review comments, verdicts, or issue comments.
+# private_review_gate:
+#   enabled: true          # Master switch (default: true)
+#   enabled_skills: [fix, implement, rebase]
+#   max_rounds: 3          # Review/fix rounds before reporting remaining findings
+#   min_severity: warning  # warning=Important+, critical=Blocking only
+
 # Prompt injection guard — scans incoming missions for suspicious patterns
 # Detects instruction overrides, role confusion, secret extraction, shell injection.
 # Complements outbox_scanner (output defense) with input-side defense.

@@ -34,6 +34,7 @@ from app.github_url_parser import parse_pr_url
 logger = logging.getLogger(__name__)
 
 _SKIP_DIAGNOSE_RE = re.compile(r'\s*--skip-diagnose\s*', re.IGNORECASE)
+_REVIEW_SKILL_DIR = Path(__file__).resolve().parent.parent / "review"
 
 
 def _extract_skip_diagnose(context):
@@ -252,20 +253,39 @@ def run_fix(
 
     # In-place fix: the PR already exists, just report the branch.
     if existing_branch:
-        notify_fn(
-            f"✅ Fix applied to existing PR branch `{branch}`{context_label}"
+        gate_result = _maybe_run_private_review_gate(
+            project_path=project_path,
+            project_name=project_name,
+            pr_url=issue_url,
+            notify_fn=notify_fn,
         )
-        return True, f"Fix applied to existing PR branch {branch}{context_label}"
+        gate_note = _format_gate_note(gate_result)
+        notify_fn(
+            f"✅ Fix applied to existing PR branch `{branch}`"
+            f"{context_label}{gate_note}"
+        )
+        return (
+            True,
+            f"Fix applied to existing PR branch {branch}{context_label}"
+            f"{gate_note}",
+        )
 
     on_base_branch = branch in (effective_base_branch, "main", "master")
+    gate_result = _maybe_run_private_review_gate(
+        project_path=project_path,
+        project_name=project_name,
+        pr_url=pr_url or "",
+        notify_fn=notify_fn,
+    )
+    gate_note = _format_gate_note(gate_result)
     if pr_url:
         notify_fn(
             f"✅ Fix complete for issue {label}"
-            f"{context_label}\nDraft PR: {pr_url}"
+            f"{context_label}\nDraft PR: {pr_url}{gate_note}"
         )
         summary = (
             f"Fix complete for {label}{context_label}"
-            f"\nDraft PR: {pr_url}"
+            f"\nDraft PR: {pr_url}{gate_note}"
         )
     elif not on_base_branch:
         skip_reason = (
@@ -294,6 +314,44 @@ def run_fix(
         )
 
     return True, summary
+
+
+def _maybe_run_private_review_gate(
+    *,
+    project_path: str,
+    project_name: str,
+    pr_url: str,
+    notify_fn,
+):
+    """Run the private post-fix gate when a PR exists."""
+    if not pr_url or not Path(project_path).is_dir():
+        return None
+    try:
+        from app.private_review_gate import run_private_review_gate
+
+        return run_private_review_gate(
+            project_path=project_path,
+            project_name=project_name,
+            pr_url=pr_url,
+            notify_fn=notify_fn,
+            plan_url=None,
+            skill_origin="fix",
+            review_skill_dir=_REVIEW_SKILL_DIR,
+        )
+    except Exception as exc:
+        logger.warning("Fix review gate failed: %s", exc)
+        if notify_fn:
+            notify_fn(
+                "⚠️ Private review gate failed after fix: "
+                f"{str(exc)[:200]}"
+            )
+        return None
+
+
+def _format_gate_note(gate_result) -> str:
+    if gate_result is None or not getattr(gate_result, "ran", False):
+        return ""
+    return f"\nPrivate gate: {gate_result.summary}"
 
 
 def _build_issue_body(body: str, comments: List[dict]) -> str:

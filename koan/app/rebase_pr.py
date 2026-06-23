@@ -10,7 +10,8 @@ Pipeline:
 3. Rebase onto the upstream target branch (resolving conflicts via Claude if needed)
 4. Analyze review comments and apply changes (Claude-powered, if feedback exists)
 5. Force-push to the existing branch (never creates a new PR)
-6. Comment on the PR with a summary
+6. Run the backend-only private review gate and push any fixes
+7. Comment on the PR with a summary
 """
 
 import contextlib
@@ -629,7 +630,8 @@ def run_rebase(
         4. Analyze review comments and apply changes (if feedback exists)
         5. Check existing CI — fix failures before pushing
         6. Force-push to the existing branch (always recycles the PR)
-        7. Comment on the PR with a summary
+        7. Run the backend-only private review gate and push any fixes
+        8. Comment on the PR with a summary
 
     Args:
         owner: GitHub owner (e.g., "owner")
@@ -892,10 +894,7 @@ def run_rebase(
         commit_conventions=commit_conventions,
     )
 
-    # ── Step 6: Collect diffstat before push ──────────────────────────
-    diffstat = _get_diffstat(f"{rebase_remote}/{base}", project_path)
-
-    # ── Step 7: Push the result ───────────────────────────────────────
+    # ── Step 6: Push the result ───────────────────────────────────────
     print(f"[rebase] Pushing `{branch}`", flush=True)
     notify_fn(f"Pushing `{branch}`...")
     push_result = _push_with_fallback(
@@ -912,7 +911,29 @@ def run_rebase(
             "\n".join(f"- {a}" for a in actions_log)
         )
 
-    # ── Step 8: Enqueue async CI check ─────────────────────────────────
+    # ── Step 7: Private review gate ────────────────────────────────────
+    gate_result = _run_rebase_private_review_gate(
+        owner=owner,
+        repo=repo,
+        pr_number=pr_number,
+        branch=branch,
+        base=base,
+        full_repo=full_repo,
+        context=context,
+        project_path=project_path,
+        head_remote=effective_head_remote,
+        notify_fn=notify_fn,
+        skill_dir=skill_dir,
+        actions_log=actions_log,
+    )
+    gate_action = _format_rebase_private_gate_action(gate_result)
+    if gate_action:
+        actions_log.append(gate_action)
+
+    # ── Step 8: Collect final diffstat ─────────────────────────────────
+    diffstat = _get_diffstat(f"{rebase_remote}/{base}", project_path)
+
+    # ── Step 9: Enqueue async CI check ─────────────────────────────────
     ci_section = _enqueue_ci_check(
         branch=branch,
         full_repo=full_repo,
@@ -922,7 +943,7 @@ def run_rebase(
         actions_log=actions_log,
     )
 
-    # ── Step 9: Comment on the PR ─────────────────────────────────────
+    # ── Step 10: Comment on the PR ────────────────────────────────────
     print(f"[rebase] Commenting on PR #{pr_number}", flush=True)
     comment_body = _build_rebase_comment(
         pr_number, branch, base, actions_log, context,
@@ -949,6 +970,89 @@ def run_rebase(
         f"- {a}" for a in actions_log
     )
     return True, summary
+
+
+def _run_rebase_private_review_gate(
+    *,
+    owner: str,
+    repo: str,
+    pr_number: str,
+    branch: str,
+    base: str,
+    full_repo: str,
+    context: dict,
+    project_path: str,
+    head_remote: Optional[str],
+    notify_fn,
+    skill_dir: Optional[Path],
+    actions_log: List[str],
+):
+    """Run the shared private review gate using /rebase push semantics."""
+    if not Path(project_path).is_dir():
+        return None
+
+    pr_url = context.get("url") or f"https://github.com/{full_repo}/pull/{pr_number}"
+    project_name = ""
+    try:
+        from app.utils import project_name_for_path
+        project_name = project_name_for_path(project_path)
+    except Exception as exc:
+        print(
+            f"[rebase_pr] private gate project lookup failed: {exc}",
+            file=sys.stderr,
+        )
+
+    review_skill_dir = None
+    if skill_dir:
+        candidate = Path(skill_dir).parent / "review"
+        if candidate.exists():
+            review_skill_dir = candidate
+
+    def push_gate_fix() -> None:
+        push_result = _push_with_fallback(
+            branch, base, full_repo, pr_number, context, project_path,
+            head_remote=head_remote,
+        )
+        actions_log.extend(push_result.get("actions", []))
+        if not push_result.get("success"):
+            raise RuntimeError(push_result.get("error", "unknown push failure"))
+
+    try:
+        from app.private_review_gate import run_private_review_gate
+
+        return run_private_review_gate(
+            project_path=project_path,
+            project_name=project_name,
+            pr_url=pr_url,
+            notify_fn=notify_fn,
+            plan_url=None,
+            skill_origin="rebase",
+            review_skill_dir=review_skill_dir,
+            push_fn=push_gate_fix,
+        )
+    except Exception as exc:
+        msg = f"Private review gate failed after rebase: {str(exc)[:200]}"
+        actions_log.append(f"{msg} (non-fatal)")
+        with contextlib.suppress(Exception):
+            notify_fn(f"⚠️ {msg}")
+        return None
+
+
+def _format_rebase_private_gate_action(gate_result) -> str:
+    """Return the action-log line for a private gate result."""
+    if gate_result is None:
+        return ""
+    summary = str(getattr(gate_result, "summary", "") or "").strip()
+    if getattr(gate_result, "ran", False):
+        if summary.lower().startswith("private review gate"):
+            return summary
+        return f"Private review gate: {summary}"
+    reason = str(getattr(gate_result, "skipped_reason", "") or "").strip()
+    if reason:
+        return f"Private review gate skipped: {reason}"
+    if summary:
+        return f"Private review gate: {summary}"
+    return ""
 
 
 # ---------------------------------------------------------------------------

@@ -1286,6 +1286,112 @@ class TestGetClaudeFlagsForRole:
             assert call_kwargs["model"] == "sonnet"
 
 
+# --- private_review_gate ---
+
+
+class TestPrivateReviewGateConfig:
+    def test_defaults_enabled(self):
+        from app.config import get_private_review_gate_config
+
+        with _mock_config({}), \
+             patch("app.config._load_project_overrides", return_value={}):
+            result = get_private_review_gate_config("app", skill_origin="rebase")
+
+        assert result == {
+            "enabled": True,
+            "max_rounds": 3,
+            "min_severity": "warning",
+            "enabled_skills": ["fix", "implement", "rebase"],
+        }
+
+    def test_global_config_overrides_defaults(self):
+        from app.config import get_private_review_gate_config
+
+        with _mock_config({
+            "private_review_gate": {
+                "enabled": False,
+                "max_rounds": "5",
+                "min_severity": "critical",
+                "enabled_skills": ["fix"],
+            }
+        }), patch("app.config._load_project_overrides", return_value={}):
+            result = get_private_review_gate_config("app", skill_origin="fix")
+
+        assert result["enabled"] is False
+        assert result["max_rounds"] == 5
+        assert result["min_severity"] == "critical"
+        assert result["enabled_skills"] == ["fix"]
+
+    def test_project_override_wins(self):
+        from app.config import get_private_review_gate_config
+
+        project_overrides = {
+            "private_review_gate": {
+                "enabled": "false",
+                "max_rounds": 1,
+                "min_severity": "important",
+                "enabled_skills": "implement,rebase",
+            }
+        }
+        with _mock_config({
+            "private_review_gate": {
+                "enabled": True,
+                "max_rounds": 3,
+                "min_severity": "critical",
+            }
+        }), patch("app.config._load_project_overrides",
+                  return_value=project_overrides):
+            result = get_private_review_gate_config("app", skill_origin="rebase")
+
+        assert result == {
+            "enabled": False,
+            "max_rounds": 1,
+            "min_severity": "warning",
+            "enabled_skills": ["implement", "rebase"],
+        }
+
+    def test_malformed_values_fall_back(self):
+        from app.config import get_private_review_gate_config
+
+        with _mock_config({
+            "private_review_gate": {
+                "enabled": "maybe",
+                "max_rounds": "bad",
+                "min_severity": "unknown",
+                "enabled_skills": 123,
+            }
+        }), patch("app.config._load_project_overrides", return_value={}):
+            result = get_private_review_gate_config("app", skill_origin="fix")
+
+        assert result == {
+            "enabled": True,
+            "max_rounds": 3,
+            "min_severity": "warning",
+            "enabled_skills": ["fix", "implement", "rebase"],
+        }
+
+    def test_legacy_key_is_ignored(self):
+        # The pre-release implementation_review_gate key is no longer read;
+        # only private_review_gate is honored.
+        from app.config import get_private_review_gate_config
+
+        with _mock_config({
+            "implementation_review_gate": {
+                "enabled": False,
+                "max_rounds": 1,
+                "enabled_skills": ["fix"],
+            }
+        }), patch("app.config._load_project_overrides", return_value={}):
+            result = get_private_review_gate_config("app", skill_origin="rebase")
+
+        assert result == {
+            "enabled": True,
+            "max_rounds": 3,
+            "min_severity": "warning",
+            "enabled_skills": ["fix", "implement", "rebase"],
+        }
+
+
 # --- backward compatibility ---
 
 

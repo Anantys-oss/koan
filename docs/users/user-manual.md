@@ -511,6 +511,8 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 
 > **Blocker handling:** When the plan is ambiguous or under-specified, `/implement` chooses the simplest interpretation consistent with existing code patterns, documents the assumption in a commit message, and delivers a draft PR. If the first pass produces no committed changes, an escalated retry pass runs automatically. Only a genuine hard impossibility (no repo access, no actionable plan) results in a soft failure notification.  
 
+After a draft PR is created, `/implement` runs the private review gate by default. The gate reuses the `/review` analysis path without posting review comments, fixes Blocking/Important findings on the same branch, pushes those fixes, and repeats up to the configured round limit.
+
 **`/fix`** — Fix a GitHub or Jira issue end-to-end: diagnose, understand, plan, test, implement, and submit a PR.
 
 - **Usage:** `/fix <issue-url> [additional context]`
@@ -518,6 +520,8 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 - **Flags:** `--skip-diagnose` — Skip the pre-fix diagnostic step (useful for trivial issues where the root cause is obvious)
 
 Before attempting a fix, `/fix` runs a lightweight read-only diagnostic phase using a smaller model to form a hypothesis about the root cause. The fix session receives this analysis as context. If diagnostic confidence is LOW, a Telegram warning is sent but the fix still proceeds.
+
+After a draft PR is created, `/fix` also runs the private review gate by default. Findings and fix attempts stay backend-only: no review comment, verdict, or issue comment is posted by the gate.
 
 <details>
 <summary>Use cases</summary>
@@ -645,6 +649,13 @@ third-party CI/bot output out of the feedback prompt. Kōan's own comments
 are always kept (never treated as bot output), so review feedback it left on
 a previous iteration is available to a later rebase — important for combined
 review + rebase flows.
+
+After `/rebase` pushes the updated PR branch, it also runs the private
+review gate when `private_review_gate` enables `rebase`. The gate reuses the
+backend-only `/review` analysis path, fixes Blocking/Important findings on the
+same branch, force-pushes any gate fix commits with the normal `/rebase` push
+strategy, and re-reviews up to the configured round limit. Gate failures are
+reported in the rebase summary but do not fail an otherwise successful rebase.
 
 When `/rebase` runs long, Kōan uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout), Kōan now restores the clean rebased checkpoint and still pushes the rebase (without partial feedback edits), so timeout noise does not discard a valid rebase. If the feedback step hits a *provider quota limit*, the rebase still stops so you can retry after quota reset. Any other transient feedback error remains best-effort and does not block pushing the rebase.
 
@@ -1301,6 +1312,13 @@ optimizations:
 #     - "*.lock"       # lock files at any depth
 #   regex:
 #     - '.*\.pb\.go$'  # protobuf-generated files (full path regex)
+
+# Private review gate for /fix, /implement, and /rebase
+private_review_gate:
+  enabled: true              # Default: true
+  enabled_skills: [fix, implement, rebase]
+  max_rounds: 3              # Review/fix rounds before reporting remaining findings
+  min_severity: warning      # warning = Important; critical = Blocking only
 ```
 
 See `instance.example/config.yaml` for all available options.
@@ -1464,6 +1482,7 @@ Key per-project settings:
 - **`issue_tracker`** — Issue provider routing for GitHub/Jira-backed projects
 - **`security_review`** — Automatic diff analysis for dangerous patterns before auto-merge (see below)
 - **`review_verdict`** — Control formal APPROVE/REQUEST_CHANGES verdict submission (see below)
+- **`private_review_gate`** — Override the private `/fix`, `/implement`, and `/rebase` post-PR review/fix loop
 - **`authorized_users`** — GitHub users allowed to trigger via @mention
 - **`exploration`** — Enable/disable autonomous exploration
 
