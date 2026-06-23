@@ -1392,6 +1392,47 @@ class TestPrivateReviewGateConfig:
         }
 
 
+# --- review_memory ---
+
+
+class TestReviewMemoryConfig:
+    def test_disabled_by_default(self):
+        from app.config import get_review_memory_config
+
+        with _mock_config({}):
+            result = get_review_memory_config()
+
+        assert result == {"enabled": False, "max_entries": 8}
+
+    def test_enabled_with_custom_max_entries(self):
+        from app.config import get_review_memory_config
+
+        with _mock_config({
+            "review_memory": {"enabled": True, "max_entries": "5"}
+        }):
+            result = get_review_memory_config()
+
+        assert result == {"enabled": True, "max_entries": 5}
+
+    def test_malformed_values_fall_back(self):
+        from app.config import get_review_memory_config
+
+        with _mock_config({
+            "review_memory": {"enabled": "maybe", "max_entries": "lots"}
+        }):
+            result = get_review_memory_config()
+
+        assert result == {"enabled": False, "max_entries": 8}
+
+    def test_negative_max_entries_clamped(self):
+        from app.config import get_review_memory_config
+
+        with _mock_config({"review_memory": {"max_entries": -3}}):
+            result = get_review_memory_config()
+
+        assert result["max_entries"] == 0
+
+
 # --- backward compatibility ---
 
 

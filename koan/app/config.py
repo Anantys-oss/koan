@@ -1761,6 +1761,33 @@ def get_review_reflect_config() -> dict:
     return {"threshold": max(0, min(10, threshold))}
 
 
+def get_review_memory_config() -> dict:
+    """Get the review session-memory injection configuration from config.yaml.
+
+    When enabled, the review prompt also includes recent typed project memory
+    (decisions, observations — not learnings, which are already injected) from
+    the persistent FTS5 memory index, ranked against the PR content. Off by
+    default so the extra prompt tokens are opt-in.
+
+    Config key: review_memory
+      - enabled (bool): inject recent session memory into reviews.
+        Default: False.
+      - max_entries (int): maximum memory entries to include. Default: 8.
+
+    Returns:
+        Dict with keys: enabled (bool), max_entries (int >= 0).
+    """
+    config = _load_config()
+    mem_cfg = config.get("review_memory", {}) or {}
+    if not isinstance(mem_cfg, dict):
+        mem_cfg = {}
+    max_entries = _safe_int(mem_cfg.get("max_entries"), 8)
+    return {
+        "enabled": _safe_bool(mem_cfg.get("enabled"), False),
+        "max_entries": max(0, max_entries),
+    }
+
+
 def get_review_triage_config() -> dict:
     """Get review triage configuration from config.yaml.
 

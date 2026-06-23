@@ -39,6 +39,12 @@ run a backend-only challenge loop:
 - stop when clean, no fix is produced, a provider/push error occurs, or
   `private_review_gate.max_rounds` is reached.
 
+Because it reuses `build_review_prompt`, the gate's review sees the same project
+memory as `/review`: filtered learnings plus human-curated context/priorities
+(always), and optionally recent typed session memory when `review_memory` is
+enabled. The owning skill threads its known `project_name` through so memory is
+scoped to the right project rather than guessed from the directory name.
+
 The gate must not post GitHub review comments, issue comments, review verdicts,
 or PR-close decisions. Its configuration lives under
 `private_review_gate` in `config.yaml`, with per-project overrides in

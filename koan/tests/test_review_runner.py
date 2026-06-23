@@ -11,7 +11,6 @@ import pytest
 from app.review_runner import (
     build_review_prompt,
     fetch_repliable_comments,
-    load_project_learnings,
     run_review,
     run_private_review,
     _collapse_old_review,
@@ -65,7 +64,7 @@ def review_skill_dir(tmp_path):
     prompts_dir.mkdir()
     (prompts_dir / "review.md").write_text(
         "Review PR: {TITLE}\nAuthor: {AUTHOR}\nBranch: {BRANCH} -> {BASE}\n"
-        "Body: {BODY}\n{SKIPPED_FILES}Diff: {DIFF}\n"
+        "Body: {BODY}\n{PROJECT_MEMORY}\n{SKIPPED_FILES}Diff: {DIFF}\n"
         "Reviews: {REVIEWS}\nComments: {REVIEW_COMMENTS}\n"
         "Issue: {ISSUE_COMMENTS}\n"
         "Repliable: {REPLIABLE_COMMENTS}\n"
@@ -182,50 +181,93 @@ class TestBuildReviewPrompt:
 
 
 # ---------------------------------------------------------------------------
-# load_project_learnings
+# Project memory: project_name threading + opt-in session memory
 # ---------------------------------------------------------------------------
 
-class TestLoadProjectLearnings:
-    def test_returns_content_when_file_present(self, tmp_path, monkeypatch):
-        """Returns formatted section when learnings.md exists."""
-        instance_dir = tmp_path / "instance" / "memory" / "projects" / "my-project"
-        instance_dir.mkdir(parents=True)
-        (instance_dir / "learnings.md").write_text("Always use type hints.")
+class TestReviewProjectMemory:
+    def test_explicit_project_name_threaded_to_memory_lookup(
+        self, pr_context, review_skill_dir,
+    ):
+        """build_review_prompt forwards the known project_name to the memory
+        block builder instead of letting it fall back to basename guessing."""
+        with patch(
+            "app.skill_memory.build_memory_block_for_skill", return_value="",
+        ) as mock_build:
+            build_review_prompt(
+                pr_context, skill_dir=review_skill_dir,
+                project_path="/fake/proj", project_name="my-toolkit",
+            )
+        assert mock_build.call_args.kwargs.get("project_name") == "my-toolkit"
 
-        import app.review_runner as rr_mod
-        monkeypatch.setattr(rr_mod, "KOAN_ROOT", tmp_path)
+    def test_session_memory_disabled_by_default(
+        self, pr_context, review_skill_dir,
+    ):
+        """With review_memory disabled, no session-memory lookup or block."""
+        with patch(
+            "app.skill_memory.build_memory_block_for_skill", return_value="",
+        ), patch(
+            "app.memory_manager.read_memory_window",
+        ) as mock_read, patch(
+            "app.config.get_review_memory_config",
+            return_value={"enabled": False, "max_entries": 8},
+        ):
+            prompt = build_review_prompt(
+                pr_context, skill_dir=review_skill_dir,
+                project_path="/fake/proj", project_name="my-toolkit",
+            )
+        mock_read.assert_not_called()
+        assert "<session-memory>" not in prompt
 
-        result = load_project_learnings("my-project")
-        assert "Project best practices" in result
-        assert "Always use type hints." in result
+    def test_session_memory_enabled_injects_and_excludes_learnings(
+        self, pr_context, review_skill_dir,
+    ):
+        """When enabled, recent typed entries are injected; learnings (already
+        delivered via the project-memory block) are excluded."""
+        entries = [
+            {"ts": "2026-06-20T00:00:00Z", "type": "decision",
+             "content": "Deprecate the legacy adapter."},
+            {"ts": "2026-06-19T00:00:00Z", "type": "learning",
+             "content": "LEARNING-SHOULD-NOT-APPEAR"},
+            {"ts": "2026-06-18T00:00:00Z", "type": "observation",
+             "content": "Flaky test in payments."},
+        ]
+        with patch(
+            "app.skill_memory.build_memory_block_for_skill", return_value="",
+        ), patch(
+            "app.memory_manager.read_memory_window", return_value=entries,
+        ) as mock_read, patch(
+            "app.config.get_review_memory_config",
+            return_value={"enabled": True, "max_entries": 8},
+        ):
+            prompt = build_review_prompt(
+                pr_context, skill_dir=review_skill_dir,
+                project_path="/fake/proj", project_name="my-toolkit",
+            )
+        mock_read.assert_called_once()
+        assert "<session-memory>" in prompt
+        assert "Deprecate the legacy adapter." in prompt
+        assert "Flaky test in payments." in prompt
+        assert "LEARNING-SHOULD-NOT-APPEAR" not in prompt
 
-    def test_returns_empty_when_file_absent(self, tmp_path, monkeypatch):
-        """Returns empty string when learnings.md does not exist."""
-        import app.review_runner as rr_mod
-        monkeypatch.setattr(rr_mod, "KOAN_ROOT", tmp_path)
-
-        result = load_project_learnings("no-such-project")
-        assert result == ""
-
-    def test_returns_empty_when_project_name_none(self, tmp_path, monkeypatch):
-        """Returns empty string when project_name is None."""
-        import app.review_runner as rr_mod
-        monkeypatch.setattr(rr_mod, "KOAN_ROOT", tmp_path)
-
-        result = load_project_learnings(None)
-        assert result == ""
-
-    def test_returns_empty_when_file_empty(self, tmp_path, monkeypatch):
-        """Returns empty string when learnings.md is empty."""
-        instance_dir = tmp_path / "instance" / "memory" / "projects" / "proj"
-        instance_dir.mkdir(parents=True)
-        (instance_dir / "learnings.md").write_text("")
-
-        import app.review_runner as rr_mod
-        monkeypatch.setattr(rr_mod, "KOAN_ROOT", tmp_path)
-
-        result = load_project_learnings("proj")
-        assert result == ""
+    def test_session_memory_skipped_without_project_name(
+        self, pr_context, review_skill_dir,
+    ):
+        """Session memory requires a scoped project_name to avoid pulling
+        cross-project entries; absent it, the lookup is skipped."""
+        with patch(
+            "app.skill_memory.build_memory_block_for_skill", return_value="",
+        ), patch(
+            "app.memory_manager.read_memory_window",
+        ) as mock_read, patch(
+            "app.config.get_review_memory_config",
+            return_value={"enabled": True, "max_entries": 8},
+        ):
+            prompt = build_review_prompt(
+                pr_context, skill_dir=review_skill_dir,
+                project_path="/fake/proj",
+            )
+        mock_read.assert_not_called()
+        assert "<session-memory>" not in prompt
 
 
 # ---------------------------------------------------------------------------

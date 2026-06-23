@@ -815,6 +815,16 @@ auto_update:
 # review_reflect:
 #   threshold: 5            # Min score to keep a finding (0-10, default: 5)
 
+# Review session memory — opt-in injection of recent typed project memory
+# (decisions, observations) into the review prompt, ranked against the PR
+# content via the SQLite FTS5 memory index. Project learnings are always
+# injected separately and are excluded here to avoid duplication. Off by
+# default so the extra prompt tokens are opt-in. Applies to /review and the
+# backend private review gate alike.
+# review_memory:
+#   enabled: false          # Master switch (default: false)
+#   max_entries: 8          # Max recent memory entries to include (default: 8)
+
 # Review bot comment triage — triage inline comments from code-review bots
 # (CodeRabbit, GitHub Copilot Review, Sourcery) and post replies to actionable
 # findings. Off by default; enable globally here or per-review with --bot-comments.

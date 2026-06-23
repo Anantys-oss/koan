@@ -66,6 +66,11 @@ backend-only: it reuses `/review` analysis, fixes Blocking/Important findings
 on the same branch, and does not post review comments or verdicts. Configure it
 with `private_review_gate` in `config.yaml` or `projects.yaml`.
 
+`/review` (and the private gate) inject the project's filtered learnings and
+human-curated context/priorities into the review prompt, ranked against the PR
+content. Enable `review_memory` in `config.yaml` to also include recent typed
+project memory (decisions, observations) from the SQLite memory index.
+
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
 ## PR Management

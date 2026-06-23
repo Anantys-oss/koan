@@ -50,25 +50,6 @@ _ISSUE_URL_RE = re.compile(ISSUE_URL_PATTERN)
 _QUOTE_RE = re.compile(r'^>\s*@(\S+):\s*(.+)')
 
 
-def load_project_learnings(project_name: Optional[str]) -> str:
-    """Return learnings.md content for the given project as a formatted section.
-
-    Returns an empty string if project_name is None, the file is missing,
-    or the file is empty — so callers can pass the result directly into the
-    prompt template without extra checks.
-    """
-    if not project_name:
-        return ""
-    try:
-        learnings_path = KOAN_ROOT / "instance" / "memory" / "projects" / project_name / "learnings.md"
-        content = learnings_path.read_text().strip()
-        if not content:
-            return ""
-        return f"## Project best practices\n\n{content}\n\n---\n\n"
-    except (FileNotFoundError, OSError):
-        return ""
-
-
 def _resolve_bot_username() -> str:
     """Read the bot's GitHub nickname from config.yaml.
 
@@ -516,6 +497,57 @@ def _truncate_plan(plan_body: str) -> str:
     return plan_body[:5000] + "\n\n...(plan truncated)"
 
 
+def _build_review_session_memory(project_name: str, task_text: str) -> str:
+    """Return an opt-in block of recent typed project memory for reviews.
+
+    Pulls recent non-learning session entries (decisions, observations, etc.)
+    from the persistent FTS5 memory index, ranked against the PR content.
+    Learnings are excluded here because they are already injected via the
+    project-memory block (``build_memory_block_for_skill``). Returns "" when
+    the feature is disabled, the project is unscoped, or there is nothing to
+    show — so callers can append the result unconditionally.
+    """
+    if not project_name:
+        return ""
+    from app.config import get_review_memory_config
+
+    cfg = get_review_memory_config()
+    if not cfg["enabled"] or cfg["max_entries"] <= 0:
+        return ""
+
+    from app.memory_manager import read_memory_window
+
+    instance = str(KOAN_ROOT / "instance")
+    try:
+        entries = read_memory_window(
+            instance,
+            project_name,
+            max_entries=cfg["max_entries"],
+            query_text=task_text,
+            current_skill="review",
+        )
+    except Exception as exc:  # memory retrieval must never break a review
+        print(
+            f"[review_runner] session memory lookup failed: {exc}",
+            file=sys.stderr,
+        )
+        return ""
+
+    lines = [
+        f"[{e.get('ts', '')}] {e.get('type', '')}: {e.get('content', '')}"
+        for e in entries
+        if e.get("type") != "learning"
+    ]
+    if not lines:
+        return ""
+
+    body = "\n".join(lines)
+    return (
+        "\n\n<session-memory>\n# Recent project memory\n\n"
+        f"{body}\n</session-memory>\n"
+    )
+
+
 def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
@@ -525,6 +557,7 @@ def build_review_prompt(
     plan_body: Optional[str] = None,
     project_path: Optional[str] = None,
     triaged_files: Optional[list] = None,
+    project_name: str = "",
 ) -> str:
     """Build a prompt for Claude to review a PR.
 
@@ -568,7 +601,10 @@ def build_review_prompt(
             context.get("body", ""),
             diff[:2000],
         )))
-        project_memory = build_memory_block_for_skill(project_path, task_text)
+        project_memory = build_memory_block_for_skill(
+            project_path, task_text, project_name=project_name,
+        )
+        project_memory += _build_review_session_memory(project_name, task_text)
 
     raw_diff = context["diff"]
     skipped_note = ""
@@ -2140,6 +2176,7 @@ def run_private_review(
         plan_body=plan_body or None,
         project_path=project_path,
         triaged_files=triaged_files,
+        project_name=project_name or "",
     )
 
     notify_fn(f"Analyzing code changes on `{context['branch']}` privately...")
@@ -2347,7 +2384,7 @@ def run_review(
         context, skill_dir=skill_dir, architecture=architecture,
         comments=comments, repliable_comments=repliable_comments,
         plan_body=plan_body or None, project_path=project_path,
-        triaged_files=_triaged_files,
+        triaged_files=_triaged_files, project_name=project_name or "",
     )
 
     # Resolve provider/model for footer attribution
