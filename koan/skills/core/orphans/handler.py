@@ -62,7 +62,9 @@ def _find_orphans(
     from app.git_sync import GitSync
     from app.git_utils import run_git
 
-    run_git("fetch", "--prune", cwd=project_path, timeout=60)
+    rc, _, _ = run_git("fetch", "--prune", cwd=project_path, timeout=60)
+    if rc != 0:
+        log.warning("git fetch --prune failed for %s, results may be stale", project_name)
 
     sync = GitSync(instance_dir, project_name, project_path)
     try:
@@ -76,30 +78,33 @@ def _recover_orphans(
     orphans: List[str], project_path: str,
 ) -> List[Dict]:
     """Rebase each orphan branch onto main and create a draft PR."""
+    from app.git_prep import detect_remote_default_branch
     from app.git_utils import run_git
 
     rc, original_branch, _ = run_git(
         "rev-parse", "--abbrev-ref", "HEAD", cwd=project_path,
     )
     if rc != 0:
-        original_branch = "main"
+        original_branch = detect_remote_default_branch("origin", project_path)
+
+    default_branch = detect_remote_default_branch("origin", project_path)
 
     results = []
     for branch in orphans:
-        result = _recover_one(branch, project_path)
+        result = _recover_one(branch, project_path, default_branch)
         results.append(result)
 
-    run_git("checkout", original_branch, cwd=project_path)
+    rc, _, _ = run_git("checkout", original_branch, cwd=project_path)
+    if rc != 0:
+        log.warning("failed to restore branch %s — repo may be on wrong branch", original_branch)
     return results
 
 
-def _recover_one(branch: str, project_path: str) -> Dict:
+def _recover_one(branch: str, project_path: str, default_branch: str) -> Dict:
     """Rebase a single orphan branch and create a draft PR."""
-    from app.git_prep import detect_remote_default_branch
     from app.git_utils import run_git
-    from app.github import pr_create, run_gh
+    from app.github import pr_create
 
-    default_branch = detect_remote_default_branch("origin", project_path)
     result = {"branch": branch, "rebased": False, "pr_url": None, "error": None}
 
     rc, _, stderr = run_git("checkout", branch, cwd=project_path)
@@ -113,7 +118,10 @@ def _recover_one(branch: str, project_path: str) -> Dict:
     if rc == 0:
         result["rebased"] = True
     else:
-        run_git("rebase", "--abort", cwd=project_path)
+        abort_rc, _, _ = run_git("rebase", "--abort", cwd=project_path)
+        if abort_rc != 0:
+            result["error"] = "rebase failed and abort failed — repo may be in broken state"
+            return result
 
     push_args = ["push", "-u", "origin", branch]
     if result["rebased"]:
