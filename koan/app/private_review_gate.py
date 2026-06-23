@@ -303,6 +303,51 @@ def run_private_review_gate(
     )
 
 
+def run_gate_for_skill(
+    *,
+    project_path: str,
+    project_name: str,
+    pr_url: str,
+    skill_origin: str,
+    notify_fn: Optional[Callable[[str], None]] = None,
+    review_skill_dir: Optional[Path] = None,
+    plan_url: Optional[str] = None,
+) -> Optional[PrivateReviewGateResult]:
+    """Run the gate for a PR-producing skill, swallowing failures.
+
+    Shared entry point for /fix and /implement: returns ``None`` (gate did not
+    run) when there is no PR or the project path is missing, and never lets a
+    gate error fail the owning skill — it logs and notifies instead.
+    """
+    if not pr_url or not Path(project_path).is_dir():
+        return None
+    try:
+        return run_private_review_gate(
+            project_path=project_path,
+            project_name=project_name,
+            pr_url=pr_url,
+            notify_fn=notify_fn,
+            plan_url=plan_url,
+            skill_origin=skill_origin,
+            review_skill_dir=review_skill_dir,
+        )
+    except Exception as exc:
+        logger.warning("Private review gate failed after %s: %s", skill_origin, exc)
+        if notify_fn:
+            notify_fn(
+                f"⚠️ Private review gate failed after {skill_origin}: "
+                f"{str(exc)[:200]}"
+            )
+        return None
+
+
+def format_gate_note(gate_result: Optional[PrivateReviewGateResult]) -> str:
+    """One-line summary note for a gate result, or "" when it did not run."""
+    if gate_result is None or not getattr(gate_result, "ran", False):
+        return ""
+    return f"\nPrivate gate: {gate_result.summary}"
+
+
 def _run_private_review(
     *,
     owner: str,

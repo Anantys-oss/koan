@@ -34,6 +34,7 @@ from app.pr_submit import (
     submit_draft_pr,
 )
 from app.prompts import load_prompt_or_skill
+from app.private_review_gate import format_gate_note, run_gate_for_skill
 
 logger = logging.getLogger(__name__)
 
@@ -300,14 +301,16 @@ def run_implement(
     # Build notification and summary
     branch = get_current_branch(project_path)
     on_base_branch = branch in (effective_base_branch, "main", "master")
-    gate_result = _maybe_run_private_review_gate(
+    gate_result = run_gate_for_skill(
         project_path=project_path,
         project_name=project_name,
         pr_url=pr_url or "",
         notify_fn=notify_fn,
+        skill_origin="implement",
+        review_skill_dir=_REVIEW_SKILL_DIR,
         plan_url=issue_url,
     )
-    gate_note = _format_gate_note(gate_result)
+    gate_note = format_gate_note(gate_result)
     if pr_url:
         notify_fn(
             f"\u2705 Implementation complete for issue {label}"
@@ -344,45 +347,6 @@ def run_implement(
         )
 
     return True, summary
-
-
-def _maybe_run_private_review_gate(
-    *,
-    project_path: str,
-    project_name: str,
-    pr_url: str,
-    notify_fn,
-    plan_url: str,
-):
-    """Run the private post-implementation gate when a PR exists."""
-    if not pr_url or not Path(project_path).is_dir():
-        return None
-    try:
-        from app.private_review_gate import run_private_review_gate
-
-        return run_private_review_gate(
-            project_path=project_path,
-            project_name=project_name,
-            pr_url=pr_url,
-            notify_fn=notify_fn,
-            plan_url=plan_url,
-            skill_origin="implement",
-            review_skill_dir=_REVIEW_SKILL_DIR,
-        )
-    except Exception as exc:
-        logger.warning("Implementation review gate failed: %s", exc)
-        if notify_fn:
-            notify_fn(
-                "⚠️ Private review gate failed after implementation: "
-                f"{str(exc)[:200]}"
-            )
-        return None
-
-
-def _format_gate_note(gate_result) -> str:
-    if gate_result is None or not getattr(gate_result, "ran", False):
-        return ""
-    return f"\nPrivate gate: {gate_result.summary}"
 
 
 def _is_plan_content(text: str) -> bool:

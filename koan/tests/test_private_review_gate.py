@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+from types import SimpleNamespace
+
 from app.private_review_gate import (
     _actionable_findings,
     _budget_preflight,
@@ -9,6 +11,8 @@ from app.private_review_gate import (
     _dedup_precheck,
     _diffstat_from_diff,
     _maybe_record_clean,
+    format_gate_note,
+    run_gate_for_skill,
     run_private_review_gate,
 )
 
@@ -556,3 +560,67 @@ class TestBuildFixPrompt:
 
         assert "BODY_TAIL_MARKER" not in prompt
         assert "(truncated)" in prompt
+
+
+class TestFormatGateNote:
+    def test_none_result_is_empty(self):
+        assert format_gate_note(None) == ""
+
+    def test_not_run_is_empty(self):
+        result = SimpleNamespace(ran=False, summary="skipped: disabled")
+        assert format_gate_note(result) == ""
+
+    def test_ran_result_renders_summary(self):
+        result = SimpleNamespace(ran=True, summary="Private review gate passed")
+        assert format_gate_note(result) == "\nPrivate gate: Private review gate passed"
+
+
+class TestRunGateForSkill:
+    def test_no_pr_url_does_not_run(self, tmp_path):
+        with patch(
+            "app.private_review_gate.run_private_review_gate",
+        ) as mock_gate:
+            result = run_gate_for_skill(
+                project_path=str(tmp_path),
+                project_name="app",
+                pr_url="",
+                skill_origin="fix",
+            )
+        assert result is None
+        mock_gate.assert_not_called()
+
+    def test_forwards_kwargs_to_gate(self, tmp_path):
+        sentinel = SimpleNamespace(ran=True, summary="ok")
+        with patch(
+            "app.private_review_gate.run_private_review_gate",
+            return_value=sentinel,
+        ) as mock_gate:
+            result = run_gate_for_skill(
+                project_path=str(tmp_path),
+                project_name="app",
+                pr_url="https://github.com/o/r/pull/7",
+                skill_origin="implement",
+                plan_url="https://github.com/o/r/issues/3",
+            )
+        assert result is sentinel
+        kwargs = mock_gate.call_args.kwargs
+        assert kwargs["skill_origin"] == "implement"
+        assert kwargs["pr_url"] == "https://github.com/o/r/pull/7"
+        assert kwargs["plan_url"] == "https://github.com/o/r/issues/3"
+
+    def test_gate_exception_is_swallowed_and_notified(self, tmp_path):
+        notify = MagicMock()
+        with patch(
+            "app.private_review_gate.run_private_review_gate",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = run_gate_for_skill(
+                project_path=str(tmp_path),
+                project_name="app",
+                pr_url="https://github.com/o/r/pull/7",
+                skill_origin="fix",
+                notify_fn=notify,
+            )
+        assert result is None
+        assert notify.call_count == 1
+        assert "failed after fix" in notify.call_args.args[0]
