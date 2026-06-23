@@ -1245,6 +1245,50 @@ class TestRunCommandStreaming:
         assert payload["cache_read_input_tokens"] == 900
         assert payload["output_tokens"] == 80
 
+    def test_stream_usage_sidecar_accumulates_across_calls(self, tmp_path):
+        """Multiple provider calls in one subprocess sum into the sidecar.
+
+        A skill that makes a main provider call and then a backend review/fix
+        gate call must have BOTH counted — overwriting would drop all but the
+        last call from the mission's post-mission accounting.
+        """
+        import json
+        from app.provider import run_command_streaming
+
+        usage_file = tmp_path / "stream-usage.json"
+
+        def _events(inp, out):
+            return [
+                json.dumps({
+                    "type": "turn.completed",
+                    "model": "claude-sonnet-4-20250514",
+                    "usage": {"input_tokens": inp, "output_tokens": out},
+                }) + "\n",
+                json.dumps({
+                    "type": "result", "subtype": "success", "result": "ok",
+                }) + "\n",
+            ]
+
+        with patch.dict(os.environ, {"KOAN_STREAM_USAGE_FILE": str(usage_file)}), \
+             patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="claude"), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s):
+            with patch(
+                "app.cli_exec.popen_cli",
+                return_value=(self._make_proc(_events(1000, 200)), MagicMock()),
+            ):
+                run_command_streaming("main work", "/tmp", [])
+            with patch(
+                "app.cli_exec.popen_cli",
+                return_value=(self._make_proc(_events(300, 40)), MagicMock()),
+            ):
+                run_command_streaming("gate review", "/tmp", [])
+
+        payload = json.loads(usage_file.read_text())
+        assert payload["input_tokens"] == 1300
+        assert payload["output_tokens"] == 240
+
     def test_codex_turn_complete_returns_last_agent_message(self):
         import json
         from app.provider import run_command_streaming

@@ -1290,7 +1290,8 @@ class TestGetClaudeFlagsForRole:
 
 
 class TestPrivateReviewGateConfig:
-    def test_defaults_enabled(self):
+    def test_defaults_disabled(self):
+        # Opt-in during the testing phase: the gate is off unless enabled.
         from app.config import get_private_review_gate_config
 
         with _mock_config({}), \
@@ -1298,10 +1299,13 @@ class TestPrivateReviewGateConfig:
             result = get_private_review_gate_config("app", skill_origin="rebase")
 
         assert result == {
-            "enabled": True,
+            "enabled": False,
             "max_rounds": 3,
             "min_severity": "warning",
             "enabled_skills": ["fix", "implement", "rebase"],
+            "budget_aware": True,
+            "dedup": True,
+            "tracker_max_age_days": 30,
         }
 
     def test_global_config_overrides_defaults(self):
@@ -1348,6 +1352,9 @@ class TestPrivateReviewGateConfig:
             "max_rounds": 1,
             "min_severity": "warning",
             "enabled_skills": ["implement", "rebase"],
+            "budget_aware": True,
+            "dedup": True,
+            "tracker_max_age_days": 30,
         }
 
     def test_malformed_values_fall_back(self):
@@ -1364,10 +1371,13 @@ class TestPrivateReviewGateConfig:
             result = get_private_review_gate_config("app", skill_origin="fix")
 
         assert result == {
-            "enabled": True,
+            "enabled": False,
             "max_rounds": 3,
             "min_severity": "warning",
             "enabled_skills": ["fix", "implement", "rebase"],
+            "budget_aware": True,
+            "dedup": True,
+            "tracker_max_age_days": 30,
         }
 
     def test_legacy_key_is_ignored(self):
@@ -1385,11 +1395,31 @@ class TestPrivateReviewGateConfig:
             result = get_private_review_gate_config("app", skill_origin="rebase")
 
         assert result == {
-            "enabled": True,
+            "enabled": False,
             "max_rounds": 3,
             "min_severity": "warning",
             "enabled_skills": ["fix", "implement", "rebase"],
+            "budget_aware": True,
+            "dedup": True,
+            "tracker_max_age_days": 30,
         }
+
+    def test_new_subsystem_flags_parsed(self):
+        from app.config import get_private_review_gate_config
+
+        with _mock_config({
+            "private_review_gate": {
+                "enabled": True,
+                "budget_aware": "off",
+                "dedup": False,
+                "tracker_max_age_days": "7",
+            }
+        }), patch("app.config._load_project_overrides", return_value={}):
+            result = get_private_review_gate_config("app", skill_origin="fix")
+
+        assert result["budget_aware"] is False
+        assert result["dedup"] is False
+        assert result["tracker_max_age_days"] == 7
 
 
 # --- review_memory ---

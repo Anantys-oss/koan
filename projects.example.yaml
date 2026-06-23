@@ -61,10 +61,12 @@ defaults:
   # Private review gate — override the post-PR /fix, /implement, and
   # /rebase backend-only review/fix loop for this project.
   # private_review_gate:
-  #   enabled: true              # Default: true
+  #   enabled: true              # Default: false (opt-in during testing)
   #   enabled_skills: [fix, implement, rebase]
   #   max_rounds: 3              # Review/fix rounds before reporting leftovers
   #   min_severity: warning      # warning=Important+, critical=Blocking only
+  #   budget_aware: true         # Skip/limit rounds when quota is tight
+  #   dedup: true                # Skip re-reviewing the same clean PR head
 
   # CLI provider — which AI CLI to use ("claude", "codex", "copilot", "local")
   # Per-project overrides allow different providers for different repos.

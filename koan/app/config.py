@@ -1305,10 +1305,13 @@ def get_plan_review_config() -> dict:
 
 
 _PRIVATE_REVIEW_GATE_DEFAULTS = {
-    "enabled": True,
+    "enabled": False,
     "max_rounds": 3,
     "min_severity": "warning",
     "enabled_skills": ["fix", "implement", "rebase"],
+    "budget_aware": True,
+    "dedup": True,
+    "tracker_max_age_days": 30,
 }
 
 _PRIVATE_REVIEW_SEVERITY_ALIASES = {
@@ -1377,12 +1380,18 @@ def get_private_review_gate_config(
 
     Config key: private_review_gate.
 
-      - enabled (bool): run the backend-only PR review/fix loop. Default: True.
+      - enabled (bool): run the backend-only PR review/fix loop. Default:
+        False (opt-in during the testing phase; enable per-instance/project).
       - max_rounds (int): maximum review/fix rounds. Default: 3.
       - min_severity (str): lowest severity to auto-fix. Default: warning
         (aliases: important/high).
       - enabled_skills (list[str] or str): skills that use the gate.
         Default: fix, implement, rebase.
+      - budget_aware (bool): skip/limit rounds under quota pressure via the
+        usage governor. Default: True.
+      - dedup (bool): skip re-reviewing a PR head already reviewed clean.
+        Default: True.
+      - tracker_max_age_days (int): dedup tracker entry retention. Default: 30.
 
     Per-project overrides in projects.yaml use the same key and override
     global values one field at a time.
@@ -1420,6 +1429,18 @@ def get_private_review_gate_config(
             merged.get("min_severity"),
         ),
         "enabled_skills": enabled_skills,
+        "budget_aware": _safe_bool(
+            merged.get("budget_aware"),
+            _PRIVATE_REVIEW_GATE_DEFAULTS["budget_aware"],
+        ),
+        "dedup": _safe_bool(
+            merged.get("dedup"),
+            _PRIVATE_REVIEW_GATE_DEFAULTS["dedup"],
+        ),
+        "tracker_max_age_days": max(0, _safe_int(
+            merged.get("tracker_max_age_days"),
+            _PRIVATE_REVIEW_GATE_DEFAULTS["tracker_max_age_days"],
+        )),
     }
 
 

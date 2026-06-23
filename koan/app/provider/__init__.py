@@ -765,15 +765,49 @@ def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
     return None
 
 
+_STREAM_USAGE_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
 def _persist_stream_usage_snapshot(snapshot: Optional[Dict[str, Any]]) -> None:
-    """Persist usage snapshot for skill-dispatch post-mission accounting."""
+    """Accumulate a usage snapshot for skill-dispatch post-mission accounting.
+
+    A single skill subprocess may make several provider calls (e.g. the main
+    work plus a backend review/fix gate). The sidecar must hold the SUM of all
+    of them so the mission's post-mission accounting reflects real consumption
+    — overwriting would attribute only the last call (typically a small gate
+    review) and silently drop the rest.
+    """
     if not snapshot:
         return
     target = os.environ.get("KOAN_STREAM_USAGE_FILE", "").strip()
     if not target:
         return
     try:
-        Path(target).write_text(json.dumps(snapshot, separators=(",", ":")))
+        merged = dict(snapshot)
+        existing_raw = ""
+        try:
+            existing_raw = Path(target).read_text().strip()
+        except OSError:
+            existing_raw = ""
+        if existing_raw:
+            try:
+                prev = json.loads(existing_raw)
+            except (json.JSONDecodeError, ValueError):
+                prev = None
+            if isinstance(prev, dict):
+                for key in _STREAM_USAGE_TOKEN_KEYS:
+                    merged[key] = (
+                        int(prev.get(key, 0) or 0)
+                        + int(snapshot.get(key, 0) or 0)
+                    )
+                if prev.get("model") and not merged.get("model"):
+                    merged["model"] = prev["model"]
+        Path(target).write_text(json.dumps(merged, separators=(",", ":")))
     except OSError as exc:
         print(f"[provider] WARNING: stream usage sidecar write failed: {exc}", file=sys.stderr)
 

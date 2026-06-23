@@ -608,11 +608,15 @@ usage:
 # is updated, privately run the /review analysis path, fix Blocking/Important
 # findings on the same branch, push, and re-review. The gate does not post
 # review comments, verdicts, or issue comments.
+# Opt-in during the testing phase: disabled by default — set enabled: true.
 # private_review_gate:
-#   enabled: true          # Master switch (default: true)
+#   enabled: true          # Master switch (default: false — opt-in)
 #   enabled_skills: [fix, implement, rebase]
 #   max_rounds: 3          # Review/fix rounds before reporting remaining findings
 #   min_severity: warning  # warning=Important+, critical=Blocking only
+#   budget_aware: true     # Skip/limit rounds when quota is tight (default: true)
+#   dedup: true            # Skip re-reviewing the same clean PR head (default: true)
+#   tracker_max_age_days: 30  # Dedup tracker entry retention (default: 30)
 
 # Prompt injection guard — scans incoming missions for suspicious patterns
 # Detects instruction overrides, role confusion, secret extraction, shell injection.

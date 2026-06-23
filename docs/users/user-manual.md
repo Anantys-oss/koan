@@ -511,7 +511,7 @@ Use this before `/plan` when the idea is architecturally complex, when you want 
 
 > **Blocker handling:** When the plan is ambiguous or under-specified, `/implement` chooses the simplest interpretation consistent with existing code patterns, documents the assumption in a commit message, and delivers a draft PR. If the first pass produces no committed changes, an escalated retry pass runs automatically. Only a genuine hard impossibility (no repo access, no actionable plan) results in a soft failure notification.  
 
-After a draft PR is created, `/implement` runs the private review gate by default. The gate reuses the `/review` analysis path without posting review comments, fixes Blocking/Important findings on the same branch, pushes those fixes, and repeats up to the configured round limit.
+After a draft PR is created, `/implement` runs the private review gate when it is enabled (opt-in; disabled by default during the testing phase — set `private_review_gate.enabled: true`). The gate reuses the `/review` analysis path without posting review comments, fixes Blocking/Important findings on the same branch, pushes those fixes, and repeats up to the configured round limit.
 
 **`/fix`** — Fix a GitHub or Jira issue end-to-end: diagnose, understand, plan, test, implement, and submit a PR.
 
@@ -521,7 +521,7 @@ After a draft PR is created, `/implement` runs the private review gate by defaul
 
 Before attempting a fix, `/fix` runs a lightweight read-only diagnostic phase using a smaller model to form a hypothesis about the root cause. The fix session receives this analysis as context. If diagnostic confidence is LOW, a Telegram warning is sent but the fix still proceeds.
 
-After a draft PR is created, `/fix` also runs the private review gate by default. Findings and fix attempts stay backend-only: no review comment, verdict, or issue comment is posted by the gate.
+After a draft PR is created, `/fix` also runs the private review gate when it is enabled (opt-in; disabled by default during the testing phase). Findings and fix attempts stay backend-only: no review comment, verdict, or issue comment is posted by the gate.
 
 <details>
 <summary>Use cases</summary>
@@ -1314,12 +1314,15 @@ optimizations:
 #   regex:
 #     - '.*\.pb\.go$'  # protobuf-generated files (full path regex)
 
-# Private review gate for /fix, /implement, and /rebase
+# Private review gate for /fix, /implement, and /rebase (opt-in during testing)
 private_review_gate:
-  enabled: true              # Default: true
+  enabled: true              # Default: false — opt-in; set true to turn on
   enabled_skills: [fix, implement, rebase]
   max_rounds: 3              # Review/fix rounds before reporting remaining findings
   min_severity: warning      # warning = Important; critical = Blocking only
+  budget_aware: true         # Skip/limit rounds when quota is tight (default: true)
+  dedup: true                # Skip re-reviewing the same clean PR head (default: true)
+  tracker_max_age_days: 30   # Dedup tracker entry retention (default: 30)
 ```
 
 See `instance.example/config.yaml` for all available options.

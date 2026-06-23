@@ -63,7 +63,8 @@ override the base branch for that mission.
 
 The private post-PR review gate for `/fix`, `/implement`, and `/rebase` is
 backend-only: it reuses `/review` analysis, fixes Blocking/Important findings
-on the same branch, and does not post review comments or verdicts. Configure it
+on the same branch, and does not post review comments or verdicts. It is
+opt-in (disabled by default during the testing phase) — enable and configure it
 with `private_review_gate` in `config.yaml` or `projects.yaml`.
 
 `/review` (and the private gate) inject the project's filtered learnings and

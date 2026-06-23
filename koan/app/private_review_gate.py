@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -27,6 +28,7 @@ class PrivateReviewGateResult:
     remaining_findings: list = field(default_factory=list)
     skipped_reason: str = ""
     exhausted: bool = False
+    converged: bool = False
     error: str = ""
 
 
@@ -84,9 +86,33 @@ def run_private_review_gate(
             error=str(exc),
         )
 
+    instance_dir = _resolve_instance_dir()
+
+    # Dedup: skip when this PR head was already reviewed clean (e.g. a /rebase
+    # re-run or a no-op in-place /fix that left the head unchanged).
+    if cfg.get("dedup", True):
+        dedup_reason = _dedup_precheck(
+            instance_dir, owner, repo, pr_number, project_path, cfg,
+        )
+        if dedup_reason:
+            return _skipped(dedup_reason)
+
+    # Budget preflight: respect the quota governor — skip or reduce rounds when
+    # quota is tight, full rounds when idle quota is plentiful.
+    if cfg.get("budget_aware", True):
+        effective_rounds, budget_note = _budget_preflight(
+            instance_dir, max_rounds,
+        )
+        if effective_rounds <= 0:
+            return _skipped(budget_note or "budget too low")
+        if effective_rounds < max_rounds and budget_note:
+            notify(f"Private review gate: {budget_note}")
+        max_rounds = effective_rounds
+
     fixed_rounds = 0
     last_findings: list = []
     last_context: dict = {}
+    prev_fingerprints: Optional[frozenset] = None
 
     for round_num in range(1, max_rounds + 1):
         notify(
@@ -126,6 +152,15 @@ def run_private_review_gate(
                 )
             )
             notify(clean_summary + ".")
+            _maybe_record_clean(
+                cfg=cfg,
+                instance_dir=instance_dir,
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                project_path=project_path,
+                rounds=fixed_rounds,
+            )
             return PrivateReviewGateResult(
                 ran=True,
                 clean=True,
@@ -133,6 +168,33 @@ def run_private_review_gate(
                 rounds=round_num,
                 fixed_rounds=fixed_rounds,
             )
+
+        # Convergence bail: if this round's findings are identical to the
+        # previous round's, the prior fix made no progress. Stop instead of
+        # burning the remaining rounds (and the trailing review) re-fixing the
+        # same findings. Exact-set equality means any progress continues.
+        current_fingerprints = _finding_fingerprints(last_findings)
+        if (
+            round_num > 1
+            and current_fingerprints
+            and current_fingerprints == prev_fingerprints
+        ):
+            converged_summary = (
+                "Private review gate stopped: the previous fix made no "
+                f"progress on {len(last_findings)} {min_severity}+ "
+                f"finding(s) after {fixed_rounds} fix round(s)."
+            )
+            notify(converged_summary)
+            return PrivateReviewGateResult(
+                ran=True,
+                clean=False,
+                summary=converged_summary,
+                rounds=round_num,
+                fixed_rounds=fixed_rounds,
+                remaining_findings=last_findings,
+                converged=True,
+            )
+        prev_fingerprints = current_fingerprints
 
         notify(
             f"Private review gate found {len(last_findings)} "
@@ -181,31 +243,48 @@ def run_private_review_gate(
                 error=error,
             )
 
-    ok, summary, review_data, _context = _run_private_review(
-        owner=owner,
-        repo=repo,
-        pr_number=pr_number,
-        project_path=project_path,
-        notify_fn=notify,
-        review_skill_dir=review_skill_dir,
-        plan_url=plan_url,
-        project_name=project_name,
-    )
-    if ok:
-        last_findings = _actionable_findings(review_data, min_severity)
-        if not last_findings:
-            clean_summary = (
-                "Private review gate passed after "
-                f"{fixed_rounds} fix round(s)"
-            )
-            notify(clean_summary + ".")
-            return PrivateReviewGateResult(
-                ran=True,
-                clean=True,
-                summary=clean_summary,
-                rounds=max_rounds,
-                fixed_rounds=fixed_rounds,
-            )
+    # Trailing verification review: only needed when the final round applied a
+    # fix that no later review has re-checked. A convergence bail returns
+    # earlier, so this runs only for loops that genuinely ran every round with
+    # changing findings — exactly when verifying the last fix is worthwhile.
+    trailing_error = ""
+    if fixed_rounds:
+        ok, summary, review_data, _context = _run_private_review(
+            owner=owner,
+            repo=repo,
+            pr_number=pr_number,
+            project_path=project_path,
+            notify_fn=notify,
+            review_skill_dir=review_skill_dir,
+            plan_url=plan_url,
+            project_name=project_name,
+        )
+        if ok:
+            last_findings = _actionable_findings(review_data, min_severity)
+            if not last_findings:
+                clean_summary = (
+                    "Private review gate passed after "
+                    f"{fixed_rounds} fix round(s)"
+                )
+                notify(clean_summary + ".")
+                _maybe_record_clean(
+                    cfg=cfg,
+                    instance_dir=instance_dir,
+                    owner=owner,
+                    repo=repo,
+                    pr_number=pr_number,
+                    project_path=project_path,
+                    rounds=fixed_rounds,
+                )
+                return PrivateReviewGateResult(
+                    ran=True,
+                    clean=True,
+                    summary=clean_summary,
+                    rounds=max_rounds,
+                    fixed_rounds=fixed_rounds,
+                )
+        else:
+            trailing_error = summary
 
     exhausted_summary = (
         "Private review gate reached max rounds with "
@@ -220,7 +299,7 @@ def run_private_review_gate(
         fixed_rounds=fixed_rounds,
         remaining_findings=last_findings,
         exhausted=True,
-        error="" if ok else summary,
+        error=trailing_error,
     )
 
 
@@ -247,6 +326,26 @@ def _run_private_review(
         plan_url=plan_url,
         project_name=project_name,
     )
+
+
+def _finding_fingerprints(findings: list) -> frozenset:
+    """Stable identity for a finding set, ignoring line numbers.
+
+    Keys each finding on ``(file, normalized title, severity)`` so the same
+    issue matches across rounds even though line numbers shift after a fix.
+    Used by the convergence bail to detect a fix that made no progress
+    (round N's findings identical to round N-1's).
+    """
+    fingerprints = set()
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        fingerprints.add((
+            str(finding.get("file", "")),
+            str(finding.get("title", "")).strip().lower(),
+            str(finding.get("severity", "")),
+        ))
+    return frozenset(fingerprints)
 
 
 def _actionable_findings(review_data: Optional[dict], min_severity: str) -> list:
@@ -371,6 +470,218 @@ def _github_issue_plan_url(plan_url: Optional[str]) -> Optional[str]:
     except ValueError:
         return None
     return plan_url
+
+
+def _resolve_instance_dir() -> Optional[Path]:
+    """Return the instance directory if it exists, else None.
+
+    The budget governor and the dedup tracker live under ``KOAN_ROOT/instance``.
+    Returning None when it is unavailable lets the gate run as before (no
+    gating, no dedup) rather than fail.
+    """
+    try:
+        from app.utils import KOAN_ROOT
+
+        instance = Path(KOAN_ROOT) / "instance"
+        return instance if instance.is_dir() else None
+    except Exception as exc:
+        logger.debug("Private review gate instance dir resolution failed: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Budget-aware gating
+# ---------------------------------------------------------------------------
+
+
+def _budget_preflight(
+    instance_dir: Optional[Path], max_rounds: int,
+) -> tuple[int, str]:
+    """Scale review/fix rounds to the quota governor's current verdict.
+
+    Returns ``(effective_max_rounds, note)``. ``effective_max_rounds == 0``
+    means skip the gate entirely (note explains why). Falls back to the
+    configured ``max_rounds`` (no note) when quota is unlimited/disabled, no
+    usage data is available, or anything goes wrong — the gate must never crash
+    the owning skill.
+    """
+    if instance_dir is None:
+        return max_rounds, ""
+    try:
+        from app.config import is_unlimited_quota
+
+        if is_unlimited_quota():
+            return max_rounds, ""
+
+        from app.usage_tracker import (
+            UsageTracker,
+            _get_budget_mode,
+            _get_budget_thresholds,
+        )
+
+        budget_mode = _get_budget_mode()
+        if budget_mode == "disabled":
+            return max_rounds, ""
+
+        warn_pct, stop_pct = _get_budget_thresholds()
+        tracker = UsageTracker(
+            instance_dir / "usage.md",
+            0,
+            budget_mode=budget_mode,
+            warn_pct=warn_pct,
+            stop_pct=stop_pct,
+        )
+        mode = tracker.decide_mode()
+
+        # Near-exhaustion skip: a review pass is the gate's minimum incremental
+        # load, so estimate time-to-exhaustion at the review multiplier.
+        from app.burn_rate import BurnRateSnapshot
+        from app.constants import BURN_RATE_DOWNGRADE_THRESHOLD_MIN
+
+        tte = BurnRateSnapshot(instance_dir).time_to_exhaustion(
+            tracker.session_pct, mode="review",
+        )
+        if tte is not None and tte < BURN_RATE_DOWNGRADE_THRESHOLD_MIN:
+            return 0, (
+                f"budget near exhaustion (~{tte:.0f} min at current burn rate)"
+            )
+
+        rounds_by_mode = {
+            "wait": 0,
+            "review": 1,
+            "implement": 2,
+            "deep": max_rounds,
+        }
+        rounds = min(rounds_by_mode.get(mode, max_rounds), max_rounds)
+        if rounds <= 0:
+            return 0, f"budget too low (governor mode={mode})"
+        if rounds < max_rounds:
+            return rounds, (
+                f"governor mode={mode} — limiting to {rounds} round(s)"
+            )
+        return rounds, ""
+    except Exception as exc:
+        logger.warning("Private review gate budget preflight failed: %s", exc)
+        return max_rounds, ""
+
+
+# ---------------------------------------------------------------------------
+# Head-SHA dedup tracker (mirrors ci_dispatch.py)
+# ---------------------------------------------------------------------------
+
+
+def _tracker_path(instance_dir: Path) -> Path:
+    return Path(instance_dir) / ".private-review-gate-tracker.json"
+
+
+def _load_tracker(instance_dir: Path) -> dict:
+    path = _tracker_path(instance_dir)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_tracker(instance_dir: Path, data: dict) -> None:
+    from app.utils import atomic_write_json
+
+    atomic_write_json(_tracker_path(instance_dir), data)
+
+
+def _prune_tracker(data: dict, max_age_days: int = 30) -> int:
+    """Remove tracker entries older than *max_age_days*. Returns count removed."""
+    cutoff = time.time() - max_age_days * 86400
+    stale = [
+        k for k, v in data.items()
+        if not (isinstance(v, dict) and v.get("ts", 0) >= cutoff)
+    ]
+    for k in stale:
+        del data[k]
+    return len(stale)
+
+
+def _dedup_key(owner: str, repo: str, pr_number: str, head_sha: str) -> str:
+    return f"{owner}/{repo}#{pr_number}:{head_sha}"
+
+
+def _pr_head_sha(
+    owner: str, repo: str, pr_number: str, project_path: str,
+) -> str:
+    """Return the PR's current remote head SHA, or "" if unavailable."""
+    try:
+        from app.github import run_gh
+
+        raw = run_gh(
+            "pr", "view", str(pr_number),
+            "--repo", f"{owner}/{repo}",
+            "--json", "headRefOid",
+            "--jq", ".headRefOid",
+            cwd=project_path,
+            timeout=15,
+        )
+        return raw.strip()
+    except Exception as exc:
+        logger.debug("Private review gate head-SHA fetch failed: %s", exc)
+        return ""
+
+
+def _dedup_precheck(
+    instance_dir: Optional[Path],
+    owner: str,
+    repo: str,
+    pr_number: str,
+    project_path: str,
+    cfg: dict,
+) -> str:
+    """Return a skip reason when this PR head was already reviewed clean.
+
+    No-ops (returns "") when dedup state is unavailable or the tracker is
+    empty — the head-SHA fetch is only paid for when there is something to
+    dedup against.
+    """
+    if instance_dir is None:
+        return ""
+    tracker = _load_tracker(instance_dir)
+    if not tracker:
+        return ""
+    head_sha = _pr_head_sha(owner, repo, pr_number, project_path)
+    if not head_sha:
+        return ""
+    entry = tracker.get(_dedup_key(owner, repo, pr_number, head_sha))
+    if isinstance(entry, dict) and entry.get("clean"):
+        return f"already reviewed head {head_sha[:8]} (clean)"
+    return ""
+
+
+def _maybe_record_clean(
+    *,
+    cfg: dict,
+    instance_dir: Optional[Path],
+    owner: str,
+    repo: str,
+    pr_number: str,
+    project_path: str,
+    rounds: int,
+) -> None:
+    """Record the current PR head as reviewed-clean for future dedup."""
+    if not cfg.get("dedup", True) or instance_dir is None:
+        return
+    head_sha = _pr_head_sha(owner, repo, pr_number, project_path)
+    if not head_sha:
+        return
+    try:
+        tracker = _load_tracker(instance_dir)
+        _prune_tracker(tracker, cfg.get("tracker_max_age_days", 30))
+        tracker[_dedup_key(owner, repo, pr_number, head_sha)] = {
+            "clean": True,
+            "rounds": rounds,
+            "ts": time.time(),
+        }
+        _save_tracker(instance_dir, tracker)
+    except Exception as exc:
+        logger.debug("Private review gate dedup record failed: %s", exc)
 
 
 def _skipped(reason: str) -> PrivateReviewGateResult:

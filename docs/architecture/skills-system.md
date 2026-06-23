@@ -36,8 +36,10 @@ run a backend-only challenge loop:
   default);
 - run a write-capable fix step on the same branch, commit and push fixes with
   the caller's branch update strategy, then re-review;
-- stop when clean, no fix is produced, a provider/push error occurs, or
-  `private_review_gate.max_rounds` is reached.
+- stop when clean, no fix is produced, a provider/push error occurs,
+  `private_review_gate.max_rounds` is reached, or a fix round makes no progress
+  (the round's findings are identical to the previous round's — a convergence
+  bail that avoids burning the remaining rounds re-fixing the same findings).
 
 Because it reuses `build_review_prompt`, the gate's review sees the same project
 memory as `/review`: filtered learnings plus human-curated context/priorities
@@ -48,7 +50,28 @@ scoped to the right project rather than guessed from the directory name.
 The gate must not post GitHub review comments, issue comments, review verdicts,
 or PR-close decisions. Its configuration lives under
 `private_review_gate` in `config.yaml`, with per-project overrides in
-`projects.yaml`.
+`projects.yaml`. It is **opt-in** (disabled by default during the testing
+phase): set `private_review_gate.enabled: true` to turn it on.
+
+Two cost controls keep the gate quota-aware (both default on, toggled via
+`budget_aware` / `dedup`):
+
+- **Budget preflight** — before running, the gate consults the usage governor
+  (`usage_tracker.UsageTracker` / `burn_rate.BurnRateSnapshot`) and scales its
+  round budget to the current mode: `deep` → full `max_rounds`, `implement` → 2,
+  `review` → 1, `wait` or near-exhaustion (time-to-exhaustion below
+  `BURN_RATE_DOWNGRADE_THRESHOLD_MIN`) → skip entirely. Unlimited/disabled quota
+  bypasses the check.
+- **Head-SHA dedup** — a tracker (`instance/.private-review-gate-tracker.json`,
+  same pattern as `ci_dispatch`) records each PR head reviewed clean. A re-run
+  on an unchanged head (e.g. a repeated `/rebase`) is skipped rather than
+  re-reviewed.
+
+The gate's review/reflection calls run through `run_command_streaming`, whose
+per-call token usage is now **accumulated** into the skill-dispatch usage
+sidecar (`KOAN_STREAM_USAGE_FILE`) rather than overwritten. The mission's
+post-mission accounting therefore reflects the gate's review cost (and the main
+skill work), keeping the usage governor's view honest.
 
 ## Documentation Contract
 
