@@ -498,6 +498,7 @@ class GitSync:
         if orphans:
             parts.append(f"\nOrphan {label} branches ({len(orphans)}) — unmerged, no open PR:")
             parts.extend(f"  ⚠ {b}" for b in orphans)
+            parts.append(f"  💡 Run /orphans {self.project_name} to recover them")
 
         if unmerged:
             recent_branches, stale_branches = self._split_branches_by_recency(unmerged)
@@ -542,6 +543,7 @@ class GitSync:
             parts.append(
                 f"⚠️ {len(orphans)} orphan branch(es) (no PR): {', '.join(orphans)}"
             )
+            parts.append(f"💡 /orphans {self.project_name}")
         msg = " ".join(parts) + "\n"
         outbox_path = Path(self.instance_dir) / "outbox.md"
         append_to_outbox(outbox_path, msg)

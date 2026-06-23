@@ -747,6 +747,18 @@ After completion, Kōan posts a structured comment on the PR with these sections
 - `/branches koan` — Show branches for a specific project
 </details>
 
+**`/orphans`** — Recover orphan branches by rebasing onto the default branch and creating draft PRs.
+
+- **Usage:** `/orphans <project_name>`
+- **Aliases:** `/orphan`
+
+<details>
+<summary>Use cases</summary>
+
+- `/orphans koan` — Find orphan branches in the koan project, rebase each onto main, and create draft PRs
+- Orphan branches are automatically detected during git sync — use this to recover them in one step
+</details>
+
 **`/check`** — Run project health checks on a PR or issue (rebase, review, plan as needed).
 
 - **Usage:** `/check <pr-or-issue-url>`
@@ -2177,6 +2189,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
+| `/orphans <project>` | `/orphan` | B | Recover orphan branches — rebase + draft PR |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
 | `/check_need <url>` | `/need`, `/needs` | I | Analyze if a PR/issue is still needed |
 | `/ci_check <PR>` | — | I | Check and fix CI failures on a PR |

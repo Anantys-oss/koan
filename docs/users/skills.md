@@ -82,6 +82,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/reviewrebase <PR>` | `/rr` | Review then rebase a PR (combo: /review → /rebase) | Yes |
 | `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | Plan then implement an issue (combo: /plan → /implement) | Yes |
 | `/branches [project]` | `/br`, `/prs` | List koan branches + open PRs with merge order | — |
+| `/orphans <project>` | `/orphan` | Recover orphan branches — rebase onto main + draft PR | — |
 | `/done [project]` | `/merged` | List PRs merged in the last 24 hours | — |
 | `/diagnose [project]` | `/dx` | Find the last failed mission and queue a fix attempt | — |
 | `/gh_request <url> <text>` | — | Route a natural-language GitHub request to the right skill | Yes |
