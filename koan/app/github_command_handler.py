@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from app.bounded_set import BoundedSet
@@ -33,11 +34,13 @@ from app.github_config import (
     get_github_authorized_users,
     get_github_natural_language,
     get_github_nickname,
+    get_github_parallel_workers,
     get_github_reply_authorized_users,
     get_github_reply_enabled,
     get_github_reply_rate_limit,
     get_github_subscribe_enabled,
     get_github_subscribe_max_per_cycle,
+    get_review_scan_interval_minutes,
 )
 from app.github_notifications import (
     add_reaction,
@@ -458,6 +461,59 @@ def _resolve_project_from_url(url: str) -> Optional[str]:
         return None
 
     return project_name_for_path(project_path)
+
+
+def _normalize_repo_slug(value: str) -> str:
+    """Normalize a GitHub repo URL or slug to ``owner/repo``."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+
+    value = re.sub(r"^git@github\.com:", "", value)
+    value = re.sub(r"^https?://github\.com/", "", value)
+    value = re.sub(r"\.git$", "", value)
+    value = value.strip("/")
+
+    parts = value.split("/")
+    if len(parts) < 2:
+        return ""
+    return f"{parts[0].lower()}/{parts[1].lower()}"
+
+
+def _project_review_scan_repos(projects_config: Optional[dict]) -> List[Tuple[str, str]]:
+    """Return ``(project_name, owner/repo)`` pairs to scan for review requests."""
+    if not projects_config:
+        return []
+
+    projects = projects_config.get("projects") or {}
+    if not isinstance(projects, dict):
+        return []
+
+    result: List[Tuple[str, str]] = []
+    seen: set = set()
+    for project_name, project in projects.items():
+        if not isinstance(project_name, str) or not isinstance(project, dict):
+            continue
+
+        raw_urls = []
+        primary = project.get("github_url")
+        if isinstance(primary, str):
+            raw_urls.append(primary)
+        extra = project.get("github_urls")
+        if isinstance(extra, list):
+            raw_urls.extend(url for url in extra if isinstance(url, str))
+
+        for raw in raw_urls:
+            repo_slug = _normalize_repo_slug(raw)
+            if not repo_slug:
+                continue
+            key = (project_name, repo_slug)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(key)
+
+    return result
 
 
 def _extract_url_from_context(context: str) -> Optional[Tuple[str, str]]:
@@ -1144,7 +1200,6 @@ def _try_assignment_notification(
         log.error("GitHub assign: KOAN_ROOT not set")
         return False
 
-    from app.missions import list_pending, parse_sections
     from app.utils import insert_pending_mission
 
     missions_path = Path(koan_root) / "instance" / "missions.md"
@@ -1154,20 +1209,16 @@ def _try_assignment_notification(
     # review is still running (e.g., a rebase pushes new commits mid-review).
     try:
         content = missions_path.read_text() if missions_path.exists() else ""
-        sections = parse_sections(content)
-        active = list_pending(content) + sections.get("in_progress", [])
-        url_lower = web_url.lower()
-        for line in active:
-            if url_lower in line.lower():
-                log.debug(
-                    "GitHub assign: mission for %s already active, skipping",
-                    web_url,
-                )
-                mark_notification_read(notif_id)
-                if instance_dir and thread_key:
-                    track_thread(instance_dir, thread_key)
-                notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
-                return True  # Already handled — not an error
+        if _active_mission_targets_url(content, web_url):
+            log.debug(
+                "GitHub assign: mission for %s already active, skipping",
+                web_url,
+            )
+            mark_notification_read(notif_id)
+            if instance_dir and thread_key:
+                track_thread(instance_dir, thread_key)
+            notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+            return True  # Already handled — not an error
     except OSError:
         pass  # If we can't read, proceed with insertion (worst case: a dup)
 
@@ -1196,6 +1247,207 @@ def _try_assignment_notification(
         NOTIFICATION_OUTCOME_QUEUED if inserted else NOTIFICATION_OUTCOME_HANDLED_NOOP
     )
     return True
+
+
+def _active_mission_targets_url(content: str, web_url: str) -> bool:
+    """Return True when a pending/in-progress mission line targets this exact URL.
+
+    Matches on whole whitespace-delimited tokens (normalized for a trailing
+    ``/`` or ``)``), not substrings. PR URLs are prefixes of one another
+    (``…/pull/42`` is a substring of ``…/pull/421``), so a substring test would
+    falsely dedup distinct PRs and silently drop a review request.
+    """
+    if not web_url:
+        return False
+    from app.missions import list_pending, parse_sections
+
+    target = web_url.rstrip("/)").lower()
+    sections = parse_sections(content)
+    active = list_pending(content) + sections.get("in_progress", [])
+    return any(
+        tok.rstrip("/)").lower() == target
+        for line in active
+        for tok in line.split()
+    )
+
+
+def _active_mission_exists_for_url(missions_path: Path, web_url: str) -> bool:
+    """Return True when a pending or in-progress mission already targets URL."""
+    if not web_url:
+        return False
+    try:
+        content = missions_path.read_text() if missions_path.exists() else ""
+    except OSError:
+        return False
+    return _active_mission_targets_url(content, web_url)
+
+
+def _fetch_requested_review_prs(repo_slug: str, bot_username: str) -> Optional[List[dict]]:
+    """Fetch open PRs in ``repo_slug`` where ``bot_username`` is a reviewer.
+
+    Returns the list of matching PRs (possibly empty) on success, or ``None``
+    when the fetch failed (SSO, timeout, transport, or malformed JSON). The
+    ``None`` vs ``[]`` distinction lets the caller throttle only repos that
+    were actually scanned, so a transient failure retries on the next poll.
+    """
+    if not repo_slug or not bot_username:
+        return []
+
+    from app.github import SSOAuthRequired, run_gh
+    from app.github_notifications import _record_sso_failure
+
+    try:
+        raw = run_gh(
+            "pr", "list",
+            "--repo", repo_slug,
+            "--state", "open",
+            "--limit", "100",
+            "--json", "number,url,headRefOid,isDraft,reviewRequests,title",
+            timeout=30,
+        )
+    except SSOAuthRequired:
+        _record_sso_failure(f"requested_review_scan {repo_slug}")
+        return None
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+        log.debug("GitHub review scan: failed to list PRs for %s: %s", repo_slug, exc)
+        return None
+
+    try:
+        prs = json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        log.debug("GitHub review scan: invalid PR list JSON for %s", repo_slug)
+        return None
+
+    if not isinstance(prs, list):
+        return None
+
+    bot_lower = bot_username.lower()
+    result = []
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        if pr.get("isDraft"):
+            continue
+        reviewers = pr.get("reviewRequests") or []
+        if not isinstance(reviewers, list):
+            continue
+        if any(
+            str(r.get("login", "")).lower() == bot_lower
+            for r in reviewers
+            if isinstance(r, dict)
+        ):
+            result.append(pr)
+    return result
+
+
+def scan_requested_review_missions(
+    projects_config: Optional[dict],
+    config: dict,
+    registry: SkillRegistry,
+    instance_dir: str,
+) -> int:
+    """Queue /review missions for requested reviews missing from notifications."""
+    skill = validate_command("review", registry)
+    if not skill:
+        return 0
+
+    bot_username = get_github_nickname(config)
+    if not bot_username:
+        return 0
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        log.error("GitHub review scan: KOAN_ROOT not set")
+        return 0
+
+    missions_path = Path(koan_root) / "instance" / "missions.md"
+    tracker_dir = instance_dir or str(Path(koan_root) / "instance")
+
+    from app.github_notification_tracker import (
+        is_repo_scan_due,
+        is_thread_tracked,
+        mark_repo_scanned,
+        set_review_cooldown,
+        track_thread,
+    )
+    from app.utils import insert_pending_mission
+
+    # Throttle: only scan repos not scanned within the configured interval.
+    interval_seconds = get_review_scan_interval_minutes(config) * 60
+    due_repos = [
+        (project_name, repo_slug)
+        for project_name, repo_slug in _project_review_scan_repos(projects_config)
+        if is_repo_scan_due(tracker_dir, repo_slug, interval_seconds)
+    ]
+    if not due_repos:
+        return 0
+
+    # Phase 1 — fetch each due repo's PRs concurrently (the slow ``gh`` I/O).
+    def _fetch(entry: Tuple[str, str]) -> Tuple[str, str, Optional[List[dict]]]:
+        project_name, repo_slug = entry
+        return (
+            project_name,
+            repo_slug,
+            _fetch_requested_review_prs(repo_slug, bot_username),
+        )
+
+    workers = min(get_github_parallel_workers(config), len(due_repos))
+    if workers <= 1:
+        fetched = [_fetch(entry) for entry in due_repos]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="gh-review-scan",
+        ) as pool:
+            fetched = list(pool.map(_fetch, due_repos))
+
+    # Phase 2 — process results serially so missions.md writes stay ordered.
+    queued = 0
+    for project_name, repo_slug, prs in fetched:
+        if prs is None:
+            # Fetch failed — leave the repo un-marked so it retries next poll.
+            continue
+        mark_repo_scanned(tracker_dir, repo_slug)
+        if not prs:
+            continue
+
+        owner, repo = repo_slug.split("/", 1)
+        for pr in prs:
+            number = pr.get("number")
+            web_url = str(pr.get("url") or "")
+            head_sha = str(pr.get("headRefOid") or "")
+            if not number or not web_url or not head_sha:
+                continue
+
+            thread_key = f"review_scan:{repo_slug}#{number}:{head_sha}"
+            if is_thread_tracked(tracker_dir, thread_key):
+                continue
+
+            if _active_mission_exists_for_url(missions_path, web_url):
+                track_thread(tracker_dir, thread_key)
+                continue
+
+            mission_entry = f"- [project:{project_name}] /review {web_url} 📬"
+            try:
+                inserted = insert_pending_mission(missions_path, mission_entry)
+            except OSError as exc:
+                log.warning(
+                    "GitHub review scan: failed to insert mission for %s: %s",
+                    web_url, exc,
+                )
+                continue
+
+            track_thread(tracker_dir, thread_key)
+            if inserted:
+                set_review_cooldown(tracker_dir, owner, repo, str(number))
+                queued += 1
+                log.info(
+                    "GitHub review scan: queued /review for %s (head %s)",
+                    web_url, head_sha[:12],
+                )
+
+    return queued
 
 
 def _find_all_thread_mentions(
@@ -1923,7 +2175,12 @@ def _fetch_subject_info(notification: dict) -> dict:
             timeout=15,
         )
         data = json.loads(raw) if raw else {}
-    except (SSOAuthRequired, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
+    except SSOAuthRequired:
+        from app.github_notifications import _record_sso_failure
+
+        _record_sso_failure(f"fetch_subject_info {endpoint[:80]}")
+        return {}
+    except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired):
         # Can't determine state — don't block the notification
         return {}
 

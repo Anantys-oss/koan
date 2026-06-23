@@ -9,12 +9,15 @@ from app.github_notification_tracker import (
     _MAX_ENTRIES,
     _REVIEW_COOLDOWN_SECONDS,
     _TTL_SECONDS,
+    _review_scan_path,
     _threads_path,
     _tracker_path,
     clear_review_cooldown,
     is_comment_tracked,
+    is_repo_scan_due,
     is_review_on_cooldown,
     is_thread_tracked,
+    mark_repo_scanned,
     set_review_cooldown,
     track_comment,
     track_thread,
@@ -346,3 +349,49 @@ class TestTrackCommentDefensive:
         # Must not raise — the caller's loop (and mark_notification_read) must
         # never be aborted by a best-effort tracker write.
         track_comment(instance_dir, "999")
+
+
+class TestReviewScanThrottle:
+    """Per-repo review-scan throttle (is_repo_scan_due / mark_repo_scanned)."""
+
+    def test_unseen_repo_is_due(self, instance_dir):
+        assert is_repo_scan_due(instance_dir, "owner/repo", 900) is True
+
+    def test_marked_repo_not_due_within_interval(self, instance_dir):
+        mark_repo_scanned(instance_dir, "owner/repo")
+        assert is_repo_scan_due(instance_dir, "owner/repo", 900) is False
+
+    def test_due_again_after_interval(self, instance_dir):
+        mark_repo_scanned(instance_dir, "owner/repo")
+        # Backdate the recorded timestamp beyond the interval.
+        path = _review_scan_path(instance_dir)
+        data = json.loads(path.read_text())
+        data["owner/repo"] -= 1000
+        path.write_text(json.dumps(data))
+        assert is_repo_scan_due(instance_dir, "owner/repo", 900) is True
+
+    def test_zero_interval_always_due(self, instance_dir):
+        mark_repo_scanned(instance_dir, "owner/repo")
+        assert is_repo_scan_due(instance_dir, "owner/repo", 0) is True
+
+    def test_per_repo_isolation(self, instance_dir):
+        mark_repo_scanned(instance_dir, "owner/a")
+        assert is_repo_scan_due(instance_dir, "owner/a", 900) is False
+        assert is_repo_scan_due(instance_dir, "owner/b", 900) is True
+
+    def test_corrupt_tracker_fails_open(self, instance_dir):
+        _review_scan_path(instance_dir).write_text("{ not json")
+        assert is_repo_scan_due(instance_dir, "owner/repo", 900) is True
+
+    def test_mark_prunes_stale_entries(self, instance_dir):
+        path = _review_scan_path(instance_dir)
+        stale = time.time() - _TTL_SECONDS - 10
+        path.write_text(json.dumps({"owner/old": stale}))
+        mark_repo_scanned(instance_dir, "owner/new")
+        on_disk = json.loads(path.read_text())
+        assert "owner/old" not in on_disk
+        assert "owner/new" in on_disk
+
+    def test_empty_repo_slug_noop(self, instance_dir):
+        mark_repo_scanned(instance_dir, "")
+        assert not _review_scan_path(instance_dir).exists()

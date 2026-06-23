@@ -1043,6 +1043,34 @@ class TestGitHubNotificationBackoff:
     @patch("app.loop_manager._build_skill_registry")
     @patch("app.loop_manager._get_known_repos_from_projects")
     @patch("app.utils.load_config")
+    def test_requested_review_scan_counts_as_created_mission(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        import app.loop_manager as lm
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications
+
+        lm._consecutive_empty_checks = 3
+        mock_config.return_value = {"github": {"nickname": "koan-bot"}}
+        mock_gh_config.return_value = {"bot_username": "koan-bot", "max_age": 300}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = {"sukria/koan"}
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([], [])), \
+             patch("app.github_command_handler.scan_requested_review_missions",
+                   return_value=1) as mock_scan:
+            result = process_github_notifications(str(tmp_path), str(tmp_path))
+
+        assert result == 1
+        assert lm._consecutive_empty_checks == 0
+        mock_scan.assert_called_once()
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
     def test_found_notifications_resets_backoff(
         self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
     ):

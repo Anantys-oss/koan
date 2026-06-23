@@ -243,6 +243,10 @@ class NotificationTracker:
             if since:
                 endpoint = f"notifications?since={since}&all=true"
             raw = api(endpoint, extra_args=["--paginate"], timeout=30)
+        except SSOAuthRequired as e:
+            self.record_sso_failure("fetch_unread_notifications")
+            self.record_fetch_failure(str(e))
+            return FetchResult([], [])
         except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
             self.record_fetch_failure(str(e))
             return FetchResult([], [])

@@ -198,24 +198,24 @@ This is useful when the global config allows `["*"]` but a specific repo needs t
 The feature spans 6 modules in `koan/app/`:
 
 ```
-loop_manager.py          ← Polls during sleep cycle (throttled)
+loop_manager.py           ← Polls during sleep cycle (throttled)
   ↓
-github_notifications.py  ← Fetches & filters notifications, parses @mentions
+github_notifications.py   ← Fetches & filters notifications, parses @mentions
   ↓
-github_command_handler.py ← Validates commands, checks permissions, creates missions
+github_command_handler.py ← Validates commands, scans requested reviews, creates missions
   ↓
-github_config.py         ← Reads config.yaml / projects.yaml settings
+github_config.py          ← Reads config.yaml / projects.yaml settings
   ↓
-github_skill_helpers.py  ← Shared URL extraction, project resolution, mission queuing
+github_skill_helpers.py   ← Shared URL extraction, project resolution, mission queuing
   ↓
-skills.py                ← Skill flags: github_enabled, github_context_aware
+skills.py                 ← Skill flags: github_enabled, github_context_aware
 ```
 
 ### Notification processing flow
 
 ```
 1. Sleep cycle tick → process_github_notifications()
-2. Fetch unread notifications (reason: "mention", filtered to known repos)
+2. Fetch notifications (including recently read notifications in the configured lookback, filtered to known repos)
 3. For each notification:
    a. Skip if stale (> max_age_hours)
    b. Fetch triggering comment
@@ -227,6 +227,8 @@ skills.py                ← Skill flags: github_enabled, github_context_aware
    h. Insert mission into missions.md (BEFORE reacting — crash-safe)
    i. React with 👍 on comment (marks as processed)
    j. Mark notification thread as read
+4. Scan known repos for open non-draft PRs that still request the bot as reviewer
+5. Queue `/review <pr-url>` for requested reviews that do not already have an active mission
 ```
 
 ### Deduplication strategy
@@ -239,6 +241,24 @@ Two-tier approach to prevent duplicate missions:
 The mission is inserted **before** the reaction is added. If Kōan crashes between these two steps, the worst case is a duplicate mission — never a lost command.
 
 Because a single notification thread is rescanned for **all** unprocessed @mentions on every poll, *every* comment Kōan acts on — whether it queued a mission, posted an error, denied permission, or sent help — is also recorded in the persistent comment tracker (`instance/.koan-github-processed.json`). The reaction alone is volatile (it depends on the reactions API and a correctly-configured `bot_username`); the local tracker is the durable backstop that guarantees a comment is answered **at most once** and never re-discovered on a later poll. This is what prevents the same error/help reply from being re-posted on every cycle.
+
+Review-request notifications have an additional backstop: the agent scans
+configured `projects.yaml` repositories for open PRs whose requested reviewers
+include `github.nickname`. This catches GitHub cases where the PR timeline shows
+a review request but the notifications API returns no matching notification.
+Those scan results are deduplicated by `owner/repo#pr` plus the PR head SHA, so
+new commits can trigger a fresh review while repeated polls of the same commit
+do not. Dedup against existing missions matches the **exact** PR URL token, so
+PR #42 is never mistaken for PR #421.
+
+To bound the GitHub API cost, the scan is **throttled per repository**: each
+repo is polled with `gh pr list` at most once per
+`github.review_scan_interval_minutes` (default `15`; set `0` to scan every
+cycle). Across configured repos the per-repo `gh` calls run **concurrently**
+(bounded by `github.parallel_workers`, default `4`, ceiling `16`); the resulting
+missions are written serially so `missions.md` ordering stays deterministic. A
+repo whose fetch fails (SSO, timeout) is not marked scanned and is retried on
+the next poll.
 
 ### Polling & backoff
 

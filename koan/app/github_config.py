@@ -226,6 +226,27 @@ def get_github_parallel_workers(config: dict) -> int:
         return 4
 
 
+def get_review_scan_interval_minutes(config: dict) -> int:
+    """Minimum minutes between requested-review scans of the same repo.
+
+    The notification-independent review scan polls each configured repo with
+    ``gh pr list`` as a fallback for review requests GitHub omits from the
+    notifications API. Without throttling this runs on every poll cycle and,
+    across many repos, consumes the GitHub API rate budget. The scan is a
+    fallback (notifications are the primary path), so a per-repo interval
+    trades a bounded worst-case detection latency for a large API-load cut.
+
+    Default: 15 minutes. ``0`` disables throttling (scan every poll).
+    Floor: 0.
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("review_scan_interval_minutes", 15))
+        return max(0, val)
+    except (ValueError, TypeError):
+        return 15
+
+
 def get_github_ack_enabled(config: dict) -> bool:
     """Check if command acknowledgment replies are enabled.
 

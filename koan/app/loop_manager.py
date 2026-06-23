@@ -954,6 +954,22 @@ def process_github_notifications(
             workers=workers,
         )
 
+        # Fallback for review requests that GitHub does not expose through
+        # notifications: scan known repos for PRs still requesting the bot.
+        try:
+            from app.github_command_handler import scan_requested_review_missions
+
+            scanned_reviews = scan_requested_review_missions(
+                projects_config, config, registry, instance_dir,
+            )
+            if scanned_reviews > 0:
+                _github_log(
+                    f"Queued {scanned_reviews} requested-review mission(s)"
+                )
+                missions_created += scanned_reviews
+        except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as e:
+            log.warning("GitHub requested-review scan failed: %s", e, exc_info=True)
+
         # Drain non-actionable notifications (ci_activity, state_change,
         # etc.) to prevent accumulation that blocks future @mention detection.
         # When old notifications pile up on a thread, new @mentions may update
