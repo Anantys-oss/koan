@@ -36,7 +36,7 @@ memory, or integration changes:
 ## Directory Map
 
 - `users/` - user manual, onboarding, and command references.
-- `setup/` - installation and host runtime setup.
+- `setup/` - installation and host runtime setup (see [Deploy on Railway](setup/railway.md)).
 - `providers/` - CLI and local model provider setup and behavior.
 - `messaging/` - messaging and issue-tracker integration setup.
 - `operations/` - maintenance, troubleshooting, self-update, and optional operational tools (dashboard, REST API, auto-update, RTK).

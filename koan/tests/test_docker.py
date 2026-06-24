@@ -566,3 +566,19 @@ class TestDesignPrinciples:
         compose = (REPO_ROOT / "docker-compose.yml").read_text()
         assert "workspace" in compose
         assert "koan-repos" not in compose
+
+
+class TestRailwayBootstrap:
+    """Railway entrypoint logic must be flag-gated on KOAN_DEPLOY=railway."""
+
+    def test_railway_logic_is_flag_gated(self):
+        body = (REPO_ROOT / "docker-entrypoint.sh").read_text()
+        assert "railway_bootstrap()" in body
+        for fn in ("railway_bootstrap", "railway_provision"):
+            idx = body.index(f"{fn}()")
+            window = body[idx:idx + 200]
+            assert '[ "${KOAN_DEPLOY:-}" = "railway" ] || return 0' in window
+
+    def test_railway_bootstrap_wired_into_start(self):
+        body = (REPO_ROOT / "docker-entrypoint.sh").read_text()
+        assert body.count("railway_bootstrap") >= 3  # def + start + agent

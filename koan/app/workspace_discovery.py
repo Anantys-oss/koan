@@ -19,8 +19,12 @@ def discover_workspace_projects(koan_root: str) -> List[Tuple[str, str]]:
     Returns sorted list of (name, resolved_path) tuples.
     Skips hidden directories, broken symlinks, and non-directories.
     Returns empty list if workspace/ doesn't exist.
+
+    Prefers instance/workspace (persistent volume on hosted deploys),
+    falling back to <root>/workspace for local/dev installs.
     """
-    workspace_dir = Path(koan_root) / "workspace"
+    inst_ws = Path(koan_root) / "instance" / "workspace"
+    workspace_dir = inst_ws if inst_ws.is_dir() else Path(koan_root) / "workspace"
     if not workspace_dir.is_dir():
         return []
 

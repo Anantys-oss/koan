@@ -260,6 +260,61 @@ setup_workspace() {
 }
 
 
+# -------------------------------------------------------------------------
+# Railway (hosted single-container) bootstrap — idempotent, re-run each deploy
+# -------------------------------------------------------------------------
+railway_setup_git() {
+    [ "${KOAN_DEPLOY:-}" = "railway" ] || return 0
+    if [ -n "${GH_TOKEN:-}" ]; then
+        gh auth setup-git 2>/dev/null \
+            && success "git credential helper configured via gh" \
+            || warn "gh auth setup-git failed (continuing)"
+        git config --global url."https://github.com/".insteadOf "git@github.com:" || true
+        git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" || true
+    else
+        warn "GH_TOKEN unset — git push/clone over HTTPS may prompt"
+    fi
+}
+
+railway_bootstrap() {
+    [ "${KOAN_DEPLOY:-}" = "railway" ] || return 0
+    section "Railway bootstrap"
+
+    # 1. Normalize volume ownership to the *running* UID.
+    local uid gid
+    uid="$(id -u)"; gid="$(id -g)"
+    mkdir -p "$INSTANCE" 2>/dev/null || true
+    chown -R "${uid}:${gid}" "$INSTANCE" 2>/dev/null \
+        && success "volume owned by ${uid}:${gid}" \
+        || warn "could not chown $INSTANCE (continuing)"
+    mkdir -p "$INSTANCE/workspace" 2>/dev/null || true
+
+    # 2. Regenerate /app/.env as a mirror of the service env vars (#2076).
+    if (cd "$KOAN_ROOT/koan" && $PYTHON -c 'import sys; from app.railway import required_env_present; sys.exit(0 if required_env_present() else 1)'); then
+        (cd "$KOAN_ROOT/koan" && $PYTHON -c "from pathlib import Path; from app.railway import write_env_from_environment as w; w(Path('$KOAN_ROOT/.env'))")
+        success ".env mirrored from environment"
+    else
+        warn "Required env vars missing — .env mirror skipped"
+    fi
+
+    # 3. Drop any stale ephemeral onboarding checkpoint.
+    rm -f "$KOAN_ROOT/.koan-onboarding.json" 2>/dev/null || true
+
+    # 4. Token-only Git.
+    railway_setup_git
+}
+
+railway_provision() {
+    [ "${KOAN_DEPLOY:-}" = "railway" ] || return 0
+    # Seed instance/projects.yaml from template if absent (resolved with
+    # priority by load_projects_config — see Phase 2).
+    if [ ! -e "$INSTANCE/projects.yaml" ] && [ -f "$KOAN_ROOT/projects.example.yaml" ]; then
+        cp "$KOAN_ROOT/projects.example.yaml" "$INSTANCE/projects.yaml"
+        log "instance/projects.yaml seeded from template"
+    fi
+}
+
+
 # =========================================================================
 # Main
 # =========================================================================
@@ -268,10 +323,12 @@ COMMAND="${1:-start}"
 case "$COMMAND" in
     start)
         printf "${BOLD}${CYAN}Kōan Docker — initializing${RESET}\n"
+        railway_bootstrap                 # no-op unless KOAN_DEPLOY=railway
         verify_binaries || exit 1
         check_provider_auth || exit 1
         verify_auth
         setup_ssh
+        railway_provision                 # no-op unless KOAN_DEPLOY=railway
         setup_instance
         setup_workspace
 
@@ -284,10 +341,12 @@ case "$COMMAND" in
 
     agent)
         log "Kōan Docker — agent only"
+        railway_bootstrap                 # no-op unless KOAN_DEPLOY=railway
         verify_binaries || exit 1
         check_provider_auth || exit 1
         verify_auth
         setup_ssh
+        railway_provision                 # no-op unless KOAN_DEPLOY=railway
         setup_instance
         setup_workspace
 

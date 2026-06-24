@@ -3,6 +3,10 @@
 > Docker provides isolated environments and simplified deployment — ideal for
 > VPS/server hosting or keeping Koan sandboxed on your machine. For running
 > Koan directly (no container), see [INSTALL.md](../../INSTALL.md).
+>
+> **Railway (hosted):** for a click-and-play single-container deploy on Railway
+> (or a similar PaaS) behind `KOAN_DEPLOY=railway`, see
+> [Deploy on Railway](railway.md).
 
 ## Prerequisites
 

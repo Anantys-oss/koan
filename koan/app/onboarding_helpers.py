@@ -43,16 +43,23 @@ def create_instance_dir(koan_root: Path | None = None) -> bool:
 
 
 def create_env_file(koan_root: Path | None = None) -> bool:
-    """Copy env.example to .env if it does not already exist."""
+    """Ensure a .env exists. Prefer env.example; if absent (hosted image),
+    synthesize from the environment so env-var-only deploys never fail
+    (closes #2076)."""
     paths = paths_for_root(koan_root or KOAN_ROOT)
     env_file = paths["env_file"]
     if env_file.exists():
         return True
     env_example = paths["env_example"]
-    if not env_example.exists():
-        return False
-    shutil.copy(env_example, env_file)
-    return True
+    if env_example.exists():
+        shutil.copy(env_example, env_file)
+        return True
+    # No env.example: synthesize from environment when possible.
+    from app.railway import required_env_present, write_env_from_environment
+    if required_env_present():
+        write_env_from_environment(env_file)
+        return True
+    return False
 
 
 def update_env_var(key: str, value: str, env_file: Path | None = None) -> bool:
@@ -148,9 +155,13 @@ def get_chat_id_from_updates(token: str) -> Optional[str]:
 
 
 def has_instance(koan_root: Path) -> bool:
-    """Return True when the private instance and env file exist."""
+    """True when the instance dir + env file exist, OR when a hosted deploy
+    is fully configured via environment variables."""
     paths = paths_for_root(koan_root)
-    return paths["instance_dir"].is_dir() and paths["env_file"].is_file()
+    if paths["instance_dir"].is_dir() and paths["env_file"].is_file():
+        return True
+    from app.railway import env_configured
+    return paths["instance_dir"].is_dir() and env_configured()
 
 
 def onboarding_needed(koan_root: Path) -> bool:

@@ -51,9 +51,23 @@ def run(koan_root: Path) -> int:
         return 0
 
     _clear_screen()
-    from app.onboarding_helpers import onboarding_needed
+    from app.onboarding_helpers import onboarding_needed, paths_for_root
+    from app.railway import daemon_running, ensure_volume_writable, is_railway
+
+    # Hosted deploy with a live daemon: observe, don't re-onboard.
+    if is_railway() and daemon_running(koan_root):
+        print(f"  {mint('Attaching to running Kōan daemon')}")
+        return _attach(koan_root)
 
     if onboarding_needed(koan_root):
+        # In hosted mode, make sure the wizard can actually write first;
+        # surface a clear permission error instead of crashing mid-setup.
+        if is_railway():
+            ok, msg = ensure_volume_writable(paths_for_root(koan_root)["instance_dir"])
+            if not ok:
+                print(f"  {amber('Cannot write to the instance volume')}")
+                print(f"  {muted(msg)}")
+                return 1
         from app.onboarding import run_onboarding
 
         print(f"  {mint('First-run setup')}")
@@ -97,6 +111,19 @@ def run(koan_root: Path) -> int:
         # Quitting (q) ends the session and stops Kōan.
         _stop_stack(koan_root)
     return 0
+
+
+def _attach(koan_root: Path) -> int:
+    """Observe an already-running daemon instead of re-onboarding."""
+    try:
+        from app.tui_dashboard import run as run_tui
+        run_tui(koan_root)
+        return 0
+    except ImportError:
+        from app.banners import print_hero_banner
+        print_hero_banner()
+        print(f"  {mint('Kōan is running.')} {muted('make logs / make status')}")
+        return 0
 
 
 def main(argv=None) -> int:

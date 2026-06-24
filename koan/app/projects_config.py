@@ -32,8 +32,19 @@ _cache_lock = threading.Lock()
 _cache: dict = {}  # (koan_root, yaml_path) -> (mtime, result)
 
 
+def _resolve_projects_path(koan_root: str) -> Path:
+    """instance/projects.yaml wins over repo-root projects.yaml (#2074)."""
+    inst = Path(koan_root) / "instance" / "projects.yaml"
+    if inst.exists():
+        return inst
+    return Path(koan_root) / "projects.yaml"
+
+
 def load_projects_config(koan_root: str) -> Optional[dict]:
     """Load projects.yaml from KOAN_ROOT.
+
+    Resolves instance/projects.yaml with priority over the repo-root file,
+    so hosted deploys keep config on the persistent volume (#2074).
 
     Returns the parsed config dict, or None if file doesn't exist.
     Raises ValueError on invalid YAML or schema violations.
@@ -41,7 +52,7 @@ def load_projects_config(koan_root: str) -> Optional[dict]:
     Results are cached by file mtime — repeated calls with an unchanged
     file return the cached dict without re-reading the YAML.
     """
-    config_path = Path(koan_root) / "projects.yaml"
+    config_path = _resolve_projects_path(koan_root)
     if not config_path.exists():
         return None
 

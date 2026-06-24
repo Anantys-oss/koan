@@ -123,3 +123,39 @@ def test_paint_emits_ansi_when_tty(monkeypatch):
     monkeypatch.setenv("COLORTERM", "truecolor")
     out = theme.mint("hi")
     assert "\033[" in out and "hi" in out
+
+
+# --- railway attach / permission-aware wizard -------------------------------
+
+def test_run_attaches_when_daemon_running(monkeypatch):
+    _tty(monkeypatch, True)
+    monkeypatch.setenv("KOAN_DEPLOY", "railway")
+    monkeypatch.setattr(koan_cli, "_clear_screen", lambda: None)
+    monkeypatch.setattr("app.railway.daemon_running", lambda root: True)
+    called = {"onboard": False, "attach": False}
+    monkeypatch.setattr("app.onboarding.run_onboarding",
+                        lambda: called.__setitem__("onboard", True))
+    monkeypatch.setattr(koan_cli, "_attach",
+                        lambda root: called.__setitem__("attach", True) or 0)
+    koan_cli.run(Path("/tmp/test-koan"))
+    assert called["attach"] is True
+    assert called["onboard"] is False
+
+
+def test_run_surfaces_permission_error(monkeypatch, capsys):
+    _tty(monkeypatch, True)
+    monkeypatch.setenv("KOAN_DEPLOY", "railway")
+    monkeypatch.setattr(koan_cli, "_clear_screen", lambda: None)
+    monkeypatch.setattr("app.railway.daemon_running", lambda root: False)
+    monkeypatch.setattr("app.onboarding_helpers.onboarding_needed",
+                        lambda root: True)
+    monkeypatch.setattr("app.railway.ensure_volume_writable",
+                        lambda d: (False, "Permission denied writing to /app/instance"))
+    onboard = {"called": False}
+    monkeypatch.setattr("app.onboarding.run_onboarding",
+                        lambda: onboard.__setitem__("called", True))
+    rc = koan_cli.run(Path("/tmp/test-koan"))
+    out = capsys.readouterr().out
+    assert "Permission denied" in out
+    assert onboard["called"] is False
+    assert rc != 0
