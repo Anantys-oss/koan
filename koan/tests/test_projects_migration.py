@@ -249,9 +249,11 @@ class TestRunMigration:
         with patch.dict(os.environ, {"KOAN_PROJECTS": "foo:/a;bar:/b"}, clear=False):
             msgs = run_migration(str(tmp_koan_root))
             assert len(msgs) >= 1
-            assert (tmp_koan_root / "projects.yaml").exists()
+            # instance/ exists in the fixture, so migration writes there.
+            written = tmp_koan_root / "instance" / "projects.yaml"
+            assert written.exists()
 
-            data = yaml.safe_load((tmp_koan_root / "projects.yaml").read_text().split("\n\n", 1)[1])
+            data = yaml.safe_load(written.read_text().split("\n\n", 1)[1])
             assert "foo" in data["projects"]
             assert "bar" in data["projects"]
 
@@ -270,7 +272,7 @@ class TestRunMigration:
             os.environ.pop("KOAN_PROJECTS", None)
             msgs = run_migration(str(tmp_koan_root))
             assert any("KOAN_PROJECT_PATH" in m for m in msgs)
-            assert (tmp_koan_root / "projects.yaml").exists()
+            assert (tmp_koan_root / "instance" / "projects.yaml").exists()
 
     def test_skips_when_projects_yaml_exists(self, tmp_koan_root):
         (tmp_koan_root / "projects.yaml").write_text("existing: true")
@@ -305,7 +307,9 @@ class TestRunMigration:
             assert any("git_auto_merge" in m for m in msgs)
 
             data = yaml.safe_load(
-                (tmp_koan_root / "projects.yaml").read_text().split("\n\n", 1)[1]
+                (tmp_koan_root / "instance" / "projects.yaml")
+                .read_text()
+                .split("\n\n", 1)[1]
             )
             assert data["projects"]["foo"]["git_auto_merge"]["enabled"] is True
             assert "git_auto_merge" not in data["projects"]["bar"]
@@ -313,12 +317,13 @@ class TestRunMigration:
     def test_idempotent(self, tmp_koan_root):
         """Running migration twice doesn't modify the file."""
         with patch.dict(os.environ, {"KOAN_PROJECTS": "foo:/a"}, clear=False):
+            written = tmp_koan_root / "instance" / "projects.yaml"
             run_migration(str(tmp_koan_root))
-            content1 = (tmp_koan_root / "projects.yaml").read_text()
+            content1 = written.read_text()
 
             msgs = run_migration(str(tmp_koan_root))
             assert msgs == []  # Second run does nothing
-            content2 = (tmp_koan_root / "projects.yaml").read_text()
+            content2 = written.read_text()
             assert content1 == content2
 
     def test_deprecation_message(self, tmp_koan_root):

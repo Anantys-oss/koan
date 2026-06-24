@@ -52,7 +52,8 @@ def get_all_projects(koan_root: str) -> List[Tuple[str, str]]:
 def _get_yaml_mtime(koan_root: str) -> Optional[float]:
     """Get projects.yaml mtime, or None if missing."""
     try:
-        return (Path(koan_root) / "projects.yaml").stat().st_mtime
+        from app.projects_config import resolve_projects_config_path
+        return resolve_projects_config_path(koan_root).stat().st_mtime
     except OSError:
         return None
 

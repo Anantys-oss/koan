@@ -1890,8 +1890,10 @@ def api_agent_skills():
 @app.route("/api/agent/config")
 def api_agent_config():
     """Return config.yaml and projects.yaml contents (sensitive values masked)."""
+    from app.projects_config import resolve_projects_config_path
+
     config_path = KOAN_ROOT / "instance" / "config.yaml"
-    projects_path = KOAN_ROOT / "projects.yaml"
+    projects_path = resolve_projects_config_path(str(KOAN_ROOT))
 
     def read_yaml(path: Path):
         if not path.exists():
@@ -1927,11 +1929,12 @@ def _validate_yaml(text: str) -> str | None:
 @app.route("/api/config/<target>", methods=["PUT"])
 def api_config_save(target: str):
     """Validate and save config.yaml or projects.yaml."""
+    from app.projects_config import resolve_projects_config_write_path
     from app.utils import atomic_write
 
     paths = {
         "config": KOAN_ROOT / "instance" / "config.yaml",
-        "projects": KOAN_ROOT / "projects.yaml",
+        "projects": resolve_projects_config_write_path(str(KOAN_ROOT)),
     }
     if target not in paths:
         return jsonify({"ok": False, "error": f"Unknown config target: {target}"}), 404

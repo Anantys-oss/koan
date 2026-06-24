@@ -30,8 +30,10 @@ def handle(ctx):
 
     old_name, new_name = parts
 
+    from app.projects_config import resolve_projects_config_path
+
     koan_root = ctx.koan_root
-    yaml_path = koan_root / "projects.yaml"
+    yaml_path = resolve_projects_config_path(str(koan_root))
     instance_dir = ctx.instance_dir
 
     # Validate
