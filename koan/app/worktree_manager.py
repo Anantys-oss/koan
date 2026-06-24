@@ -281,6 +281,74 @@ def remove_worktree(
             )
 
 
+def push_worktree_branch_or_preserve(
+    worktree_path: str,
+    initial_commit: str = "",
+    timeout: int = 60,
+) -> tuple:
+    """Push any new branch/commits from a worktree before it is removed.
+
+    Shared fail-safe used by both the per-mission cleanup (run.py) and the
+    startup orphan recovery (startup_manager.py) so the two paths cannot drift
+    out of sync on data-loss behavior.
+
+    Args:
+        worktree_path: Path to the worktree working directory.
+        initial_commit: The commit the worktree was created at, if known.
+            Used to detect whether HEAD moved. When empty, commit count
+            against the upstream (``@{u}..HEAD``) is used instead.
+        timeout: Timeout (seconds) for the push.
+
+    Returns:
+        ``(safe_to_remove, detail)`` — ``safe_to_remove`` is True when the
+        worktree can be removed without losing work (push succeeded, or there
+        were no new commits). It is False when commits exist that could not be
+        pushed (push failed, or detached HEAD with no resolvable branch); the
+        caller MUST preserve the worktree to avoid data loss. ``detail`` is a
+        short human-readable explanation for logging.
+    """
+    def _run_git(args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=worktree_path,
+            capture_output=True, text=True, timeout=timeout,
+        )
+
+    try:
+        branch_result = _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+        current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
+
+        # Determine whether the worktree HEAD advanced past its starting point.
+        has_commits = False
+        if initial_commit:
+            head = _run_git(["rev-parse", "HEAD"])
+            # On any error, assume commits exist (fail-safe toward preserving).
+            has_commits = head.returncode != 0 or head.stdout.strip() != initial_commit
+        else:
+            ahead = _run_git(["rev-list", "--count", "@{u}..HEAD"])
+            has_commits = ahead.returncode != 0 or int(ahead.stdout.strip() or "0") > 0
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
+        # Could not determine state — preserve to be safe.
+        return False, f"branch/commit check failed: {e}"
+
+    if not has_commits:
+        return True, "no new commits"
+
+    # Commits exist but the branch is unresolvable (e.g. detached HEAD) —
+    # we cannot push them safely, so preserve the worktree.
+    if not current_branch or current_branch == "HEAD":
+        return False, f"commits present but branch unresolvable (got '{current_branch}')"
+
+    try:
+        push = _run_git(["push", "-u", "origin", current_branch])
+    except (subprocess.SubprocessError, OSError) as e:
+        return False, f"push error: {e}"
+
+    if push.returncode != 0:
+        return False, f"push failed: {(push.stderr or '').strip()}"
+    return True, f"pushed {current_branch}"
+
+
 def list_worktrees(project_path: str) -> List[WorktreeInfo]:
     """List all git worktrees for a project.
 

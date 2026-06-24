@@ -1195,9 +1195,11 @@ def _run_iteration(
         # Capture git HEAD before execution for retry safety check
         pre_head = _run._get_git_head(execution_cwd)
 
-        # Snapshot core files before execution for integrity check
+        # Snapshot core files before execution for integrity check.
+        # Use execution_cwd so the check covers where the agent actually works
+        # (the worktree when isolation is on; identical to project_path otherwise).
         from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
-        core_snapshot = snapshot_core_files(koan_root, project_path)
+        core_snapshot = snapshot_core_files(koan_root, execution_cwd)
 
         claude_exit = _run.run_claude_task(
             cmd, stdout_file, stderr_file, cwd=execution_cwd,
@@ -1217,7 +1219,9 @@ def _run_iteration(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 cmd=cmd,
-                project_path=project_path,
+                # Retry runs where the mission ran (worktree when isolated) so
+                # the pre_head/post_head safety check and retry cwd stay consistent.
+                project_path=execution_cwd,
                 pre_head=pre_head,
                 instance=instance,
                 project_name=project_name,
@@ -1241,11 +1245,11 @@ def _run_iteration(
 
         # Verify core files survived the mission (after retry, so result is final)
         log("koan", "Running core file integrity check...")
-        integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
+        integrity_warnings = check_core_files(koan_root, core_snapshot, execution_cwd)
         if integrity_warnings:
             from app.core_files import recover_project_files
-            missing = core_snapshot - snapshot_core_files(koan_root, project_path)
-            recovered, unrecoverable = recover_project_files(missing, project_path)
+            missing = core_snapshot - snapshot_core_files(koan_root, execution_cwd)
+            recovered, unrecoverable = recover_project_files(missing, execution_cwd)
             if recovered:
                 log("core_files", f"Auto-recovered {len(recovered)} file(s): {', '.join(recovered)}")
             if unrecoverable:
@@ -1276,7 +1280,7 @@ def _run_iteration(
                     update_checkpoint, update_from_pending, update_from_stdout,
                 )
                 from app.git_sync import run_git as _cp_run_git
-                _cp_branch = _cp_run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
+                _cp_branch = _cp_run_git(execution_cwd, "rev-parse", "--abbrev-ref", "HEAD")
                 if _cp_branch:
                     update_checkpoint(instance, original_mission_title, branch=_cp_branch)
                 update_from_pending(instance, original_mission_title)
@@ -1357,7 +1361,9 @@ def _run_iteration(
             post_result = run_post_mission(
                 instance_dir=instance,
                 project_name=project_name,
-                project_path=project_path,
+                # Post-mission git work (pending archival, reflection, auto-merge)
+                # runs where the mission ran — the worktree when isolation is on.
+                project_path=execution_cwd,
                 run_num=run_num,
                 exit_code=claude_exit,
                 stdout_file=stdout_file,
