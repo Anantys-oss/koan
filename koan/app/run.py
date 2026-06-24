@@ -2197,12 +2197,23 @@ def _start_mission_in_file(instance: str, mission_title: str, project_name: str 
 
         after = modify_missions_file(missions_path, _transform)
         in_progress = parse_sections(after).get("in_progress", [])
-        # Normalise for comparison: strip leading "- ", collapse whitespace
+        # Confirm the transition using the SAME canonical identity that the
+        # removal step (_remove_item_by_text) uses, not a raw substring. The
+        # complexity classifier rewrites the on-disk Pending line by injecting
+        # ``[complexity:X]`` *between* the mission body and the ⏳ timestamp
+        # (tag_complexity_in_pending) AFTER ``mission_title`` was captured. A
+        # naive ``mission_title in entry`` check then fails because the in-memory
+        # title (``… 📬 ⏳(…)``) is no longer a contiguous substring of the stored
+        # line (``… 📬 [complexity:X] ⏳(…)``), even though the move succeeded —
+        # leaving an orphaned "zombie" In Progress entry. canonical_mission_key()
+        # strips the complexity tag and lifecycle timestamps from both sides, so
+        # the same logical mission matches regardless of when the tag was added.
         import re
-        clean_title = re.sub(r"\s+", " ", mission_title.strip())
+        from app.missions import canonical_mission_key
+        clean_title = re.sub(r"\s+", " ", canonical_mission_key(mission_title))
         for entry in in_progress:
-            entry_text = re.sub(r"\s+", " ", entry.strip().removeprefix("- "))
-            if clean_title in entry_text:
+            entry_text = re.sub(r"\s+", " ", canonical_mission_key(entry))
+            if clean_title and clean_title in entry_text:
                 # Clear counter only if a cap was previously hit (human deliberate
                 # retry) — stagnation-retry requeus must keep their count intact
                 # so the stagnation cap check in _finalize_mission still fires.

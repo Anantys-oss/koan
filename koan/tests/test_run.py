@@ -6408,6 +6408,43 @@ class TestStartMissionSanityFlushLog:
         assert "leftover stale" not in "\n".join(sections.get("failed", []))
 
 
+class TestStartMissionComplexityTagTOCTOU:
+    """Regression for #2087: a [complexity:X] tag injected into the Pending
+    line *after* the mission title was captured must not break the transition
+    confirmation. Before the fix, the raw-substring check failed because the
+    captured title (``… 📬 ⏳(…)``) was no longer a contiguous substring of the
+    stored line (``… 📬 [complexity:medium] ⏳(…)``), leaving a zombie entry.
+    """
+
+    def test_transition_confirmed_when_complexity_tag_injected_midline(self, tmp_path):
+        from app.run import _start_mission_in_file
+        from app.missions import parse_sections
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        # The on-disk Pending line already carries the mid-line [complexity:X]
+        # tag (injected by the classifier), but the title we pass in is the
+        # pre-tag value the picker captured — exactly the production TOCTOU.
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- [project:koan] /implement \U0001F4EC [complexity:medium] "
+            "⏳(2026-06-24T15:15)\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+
+        # Captured title: no project tag, no complexity tag, with queued stamp.
+        captured_title = "/implement \U0001F4EC ⏳(2026-06-24T15:15)"
+        with patch("app.run.log"):
+            assert _start_mission_in_file(
+                str(missions.parent), captured_title, "koan"
+            ) is True
+
+        sections = parse_sections(missions.read_text())
+        # The mission really moved to In Progress — no zombie left in Pending.
+        assert "/implement" in "\n".join(sections["in_progress"])
+        assert "/implement" not in "\n".join(sections["pending"])
+
+
 class TestPruneDecoupledFromFinalization:
     """History pruning is a standalone step, not a finalization side effect."""
 
@@ -7484,6 +7521,11 @@ class TestRunIterationPaths:
             mocks["run_claude_task"].assert_not_called()
             mocks["_finalize_mission"].assert_not_called()
             assert result is False
+            # Regression #2087: the abort must NOT be silent — the operator
+            # gets a Telegram message naming the mission and the reason.
+            notify_calls = [str(c) for c in mocks["_notify"].call_args_list]
+            assert any("not started" in c.lower() for c in notify_calls)
+            assert any("implement feature X" in c for c in notify_calls)
 
     # --- Mission failure still finalizes ---
 

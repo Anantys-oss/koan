@@ -918,8 +918,22 @@ def _run_iteration(
     original_mission_title = mission_title
     if mission_title:
         if not _run._start_mission_in_file(instance, mission_title, project_name):
+            reason = (
+                "could not confirm the Pending→In Progress transition "
+                "(mission not found in In Progress after start_mission)"
+            )
             log("warning", f"start_mission transition failed for '{mission_title[:60]}' — "
-                "mission may still be in Pending; aborting this run to avoid duplicate execution.")
+                f"{reason}; aborting this run to avoid duplicate execution.")
+            # Never fail silently: surface the abort on Telegram with the reason
+            # so the operator knows the mission did not run (see issue #2087).
+            try:
+                _run._notify(
+                    instance,
+                    f"❌ [{project_name}] Mission not started: {mission_title}\n"
+                    f"Reason: {reason}.",
+                )
+            except Exception as notify_err:  # notification must never mask the abort
+                log("error", f"Failed to notify start_mission abort: {notify_err}")
             return False
 
     # --- Create structured checkpoint for recovery ---
