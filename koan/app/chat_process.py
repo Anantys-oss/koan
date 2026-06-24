@@ -18,6 +18,7 @@ Architecture:
 See issue #1084 for motivation.
 """
 
+import contextlib
 import fcntl
 import json
 import os
@@ -97,10 +98,8 @@ def read_and_clear_inbox() -> list:
                 for line in f:
                     line = line.strip()
                     if line:
-                        try:
+                        with contextlib.suppress(json.JSONDecodeError):
                             entries.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            pass
                 # Always truncate after reading — even if no valid entries
                 # were parsed — to prevent malformed lines from accumulating.
                 f.seek(0)
