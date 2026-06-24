@@ -886,12 +886,19 @@ def _compute_finding_outcomes(
     results = []
     for f in findings:
         file_path = f.get("file", "")
+        if not file_path:
+            print(
+                "[pr_review_learning] finding has no file path; "
+                "skipping outcome to avoid skewing calibration",
+                file=sys.stderr,
+            )
+            continue
         line_start = f.get("line_start", 0)
         line_end = f.get("line_end", line_start)
         low = line_start - _FINDING_WINDOW
         high = line_end + _FINDING_WINDOW
 
-        if file_path and file_path not in touched:
+        if file_path not in touched:
             print(
                 f"[pr_review_learning] finding file {file_path!r} absent from diff; "
                 f"recording as not addressed",
@@ -955,8 +962,8 @@ def _trim_outcomes_file(outcomes_path: Path) -> None:
         return
     try:
         marker = json.loads(marker_path.read_text())
-        last = marker.get("last_processed_lines", 0)
-    except (json.JSONDecodeError, OSError):
+        last = int(marker.get("last_processed_lines", 0))
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
         return
     new_last = max(0, last - dropped)
     if new_last != last:
@@ -1068,17 +1075,24 @@ def _process_review_findings_sidecars(
             )
             outcomes_path.parent.mkdir(parents=True, exist_ok=True)
             ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
-            with open(outcomes_path, "a") as f:
-                for fc in file_comments:
-                    f.write(json.dumps({
-                        "severity": fc.get("severity", ""),
-                        "title": fc.get("title", ""),
-                        "file": fc.get("file", ""),
-                        "line_start": fc.get("line_start", 0),
-                        "addressed": False,
-                        "pr_key": pr_key,
-                        "timestamp": ts,
-                    }) + "\n")
+            try:
+                with open(outcomes_path, "a") as f:
+                    for fc in file_comments:
+                        f.write(json.dumps({
+                            "severity": fc.get("severity", ""),
+                            "title": fc.get("title", ""),
+                            "file": fc.get("file", ""),
+                            "line_start": fc.get("line_start", 0),
+                            "addressed": False,
+                            "pr_key": pr_key,
+                            "timestamp": ts,
+                        }) + "\n")
+            except OSError as exc:
+                print(
+                    f"[pr_review_learning] failed to write outcomes for {pr_key}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
             sidecar_path.unlink(missing_ok=True)
             processed += 1
             continue
@@ -1115,11 +1129,18 @@ def _process_review_findings_sidecars(
         )
         outcomes_path.parent.mkdir(parents=True, exist_ok=True)
         ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
-        with open(outcomes_path, "a") as f:
-            for outcome in outcomes:
-                outcome["pr_key"] = pr_key
-                outcome["timestamp"] = ts
-                f.write(json.dumps(outcome) + "\n")
+        try:
+            with open(outcomes_path, "a") as f:
+                for outcome in outcomes:
+                    outcome["pr_key"] = pr_key
+                    outcome["timestamp"] = ts
+                    f.write(json.dumps(outcome) + "\n")
+        except OSError as exc:
+            print(
+                f"[pr_review_learning] failed to write outcomes for {pr_key}: {exc}",
+                file=sys.stderr,
+            )
+            continue
 
         sidecar_path.unlink(missing_ok=True)
         processed += 1
@@ -1181,8 +1202,8 @@ def _maybe_run_calibration_pass(
     if marker_path.is_file():
         try:
             marker = json.loads(marker_path.read_text())
-            last_processed = marker.get("last_processed_lines", 0)
-        except (json.JSONDecodeError, OSError) as exc:
+            last_processed = int(marker.get("last_processed_lines", 0))
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
             print(
                 f"[pr_review_learning] corrupt calibration marker for {project_name}, "
                 f"recalibrating: {exc}",
