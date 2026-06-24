@@ -1043,12 +1043,16 @@ def _remove_item_by_text(
         (ln.strip() for ln in needle.splitlines() if ln.strip()),
         needle,
     )
-    # Collapse internal whitespace runs in the needle so it matches the
-    # collapsed `comparable` below. Without this, a mission whose text
-    # contains double spaces (e.g. inline /plan context) can never match —
-    # the runner succeeds but the mission is never moved out of Pending,
-    # so it re-dispatches on every loop iteration forever.
-    line_needle = re.sub(r"\s+", " ", line_needle)
+    # Normalise the needle the SAME way `comparable` is normalised below:
+    # strip any [complexity:X] tag, then collapse whitespace runs. The picker
+    # may hand us a title that still carries the `[complexity:simple]` tag
+    # while the stored line has had it stripped (or vice-versa); without
+    # normalising both sides identically the substring check never matches,
+    # the runner succeeds but the mission is never moved out of Pending, and
+    # it re-dispatches on every loop iteration forever (the infinite re-pick
+    # loop). The same hazard exists for missions whose text contains double
+    # spaces (e.g. inline /plan context).
+    line_needle = re.sub(r"\s+", " ", _COMPLEXITY_TAG_RE.sub("", line_needle))
 
     lines = content.splitlines()
     boundaries = find_section_boundaries(lines)

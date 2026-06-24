@@ -1970,6 +1970,55 @@ class TestStartMission:
         assert "Already running task" in failed_text
         assert "[flushed]" in failed_text
 
+    def test_picked_title_with_complexity_tag_matches(self):
+        """Regression: infinite re-pick loop (issue #2082).
+
+        The picker can hand start_mission a title that still carries a
+        ``[complexity:X]`` tag while the stored Pending line has had its tag
+        position/spacing normalised. The needle and candidate must be
+        normalised identically, otherwise the mission is never moved out of
+        Pending and the agent loop re-dispatches it forever.
+        """
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] /plan https://example.com/issues/1 \U0001f4ec "
+            "[complexity:simple] ⏳(2026-06-24T12:23)\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        # Title as returned by the picker — retains the complexity tag.
+        title = (
+            "[project:koan] /plan https://example.com/issues/1 \U0001f4ec "
+            "[complexity:simple] ⏳(2026-06-24T12:23)"
+        )
+        result = start_mission(content, title)
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 0
+        assert len(sections["in_progress"]) == 1
+        assert "/plan https://example.com/issues/1" in sections["in_progress"][0]
+
+    def test_pending_line_with_stale_started_marker_self_heals(self):
+        """Regression: a Pending line left with a stale ``▶`` started marker
+        (from a prior crash mid-transition) must still be movable, so the loop
+        self-heals instead of spinning on it forever (issue #2082)."""
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- [project:koan] /implement https://example.com/issues/1 \U0001f4ec "
+            "[complexity:simple] ⏳(2026-06-24T12:23) ▶(2026-06-24T12:24)\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+        )
+        title = (
+            "[project:koan] /implement https://example.com/issues/1 \U0001f4ec "
+            "[complexity:simple] ⏳(2026-06-24T12:23) ▶(2026-06-24T12:24)"
+        )
+        result = start_mission(content, title)
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 0
+        assert len(sections["in_progress"]) == 1
+
 
 # ---------------------------------------------------------------------------
 # complete_mission / fail_mission — from In Progress (Bug fix)
