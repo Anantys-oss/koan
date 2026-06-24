@@ -944,7 +944,9 @@ class TestRunOnboarding:
 
         with patch.object(onb, "KOAN_ROOT", root), patch(
             "app.onboarding.ask_yes_no"
-        ) as ask_yes_no:
+        ) as ask_yes_no, patch.object(
+            onb, "_provider_ready", return_value=(True, "ollama-launch provider ready")
+        ):
             result = onb.step_final(onb.OnboardingState(data={"cli_provider": "ollama-launch"}))
 
         out = capsys.readouterr().out
