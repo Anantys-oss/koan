@@ -5,6 +5,7 @@ the same prompts without importing the full bridge module.
 """
 
 import re
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -70,8 +71,8 @@ def build_chat_prompt(
                 pending_context = "Live progress (pending.md, last entries):\n...\n" + pending_content[-1500:]
             else:
                 pending_context = "Live progress (pending.md):\n" + pending_content
-        except OSError:
-            pass
+        except OSError as e:
+            print(f"[chat] Failed to read pending.md: {e}", file=sys.stderr)
 
     # Load current mission state (live sync with run loop)
     missions_context = ""
@@ -81,7 +82,8 @@ def build_chat_prompt(
         from app.missions import parse_sections
         try:
             sections = parse_sections(missions_file.read_text())
-        except OSError:
+        except OSError as e:
+            print(f"[chat] Failed to read missions.md: {e}", file=sys.stderr)
             sections = {}
         in_progress = sections.get("in_progress", [])
         pending = sections.get("pending", [])

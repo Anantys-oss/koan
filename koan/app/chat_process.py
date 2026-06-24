@@ -114,10 +114,11 @@ def read_and_clear_inbox() -> list:
     return entries
 
 
-def write_to_inbox(text: str) -> None:
+def write_to_inbox(text: str) -> bool:
     """Append a chat request to the inbox file (called from awake.py).
 
-    Uses file locking for safe concurrent access.
+    Uses file locking for safe concurrent access. Returns True on success,
+    False on OSError so callers can fall back to inline chat handling.
     """
     entry = json.dumps({
         "text": text,
@@ -131,8 +132,10 @@ def write_to_inbox(text: str) -> None:
                 f.flush()
             finally:
                 fcntl.flock(f, fcntl.LOCK_UN)
+        return True
     except OSError as e:
         print(f"[chat] Failed to write to inbox: {e}", file=sys.stderr)
+        return False
 
 
 def has_pending_requests() -> bool:
