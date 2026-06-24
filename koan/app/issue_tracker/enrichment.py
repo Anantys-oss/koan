@@ -34,12 +34,14 @@ _GITHUB_REF_RE = re.compile(
 MAX_EXCERPT_CHARS = 500
 MAX_TOTAL_CHARS = 1000
 # Upper bound on the number of tracker references fetched per review. Each ref
-# costs one network/subprocess round-trip (up to *_TIMEOUT_SECONDS each), so an
-# uncapped PR body (a changelog listing dozens of tickets, or an adversarial
+# costs one bounded network/subprocess round-trip (up to *_TIMEOUT_SECONDS each),
+# so an uncapped PR body (a changelog listing dozens of tickets, or an adversarial
 # author seeding ``a/b#1 a/b#2 …``) could otherwise add N×5s of latency and burn
 # API quota / spawn dozens of ``gh`` subprocesses. Bounding the *fetch count*
-# (not just the output size) keeps worst-case review latency constant regardless
-# of PR body content.
+# (not just the output size) keeps worst-case review latency bounded at roughly
+# MAX_REFS × *_TIMEOUT_SECONDS regardless of PR body content. This bound only
+# holds because each ref is one bounded request: the Jira path uses the
+# title/body-only fetch (no comment pagination) with a JIRA_TIMEOUT_SECONDS cap.
 MAX_REFS = 5
 JIRA_TIMEOUT_SECONDS = 5
 GH_TIMEOUT_SECONDS = 5
@@ -112,12 +114,16 @@ def fetch_jira_issues(ticket_ids: List[str]) -> str:
             len(ticket_ids), MAX_REFS,
         )
         ticket_ids = ticket_ids[:MAX_REFS]
-    from app.jira_notifications import fetch_jira_issue
+    # Use the title/body-only fetch: enrichment never reads comments, so the
+    # heavyweight fetch_jira_issue() (which paginates every comment) would waste
+    # several round-trips per busy ticket. The lighter call makes exactly one
+    # bounded request per ticket, honoring JIRA_TIMEOUT_SECONDS.
+    from app.jira_notifications import fetch_jira_issue_summary
 
     lines: List[str] = []
     for ticket in ticket_ids:
         try:
-            title, body, _comments = fetch_jira_issue(ticket)
+            title, body = fetch_jira_issue_summary(ticket, timeout=JIRA_TIMEOUT_SECONDS)
         except (RuntimeError, OSError, ValueError) as e:
             logger.debug("[enrichment] Jira fetch failed for %s: %s", ticket, e)
             continue

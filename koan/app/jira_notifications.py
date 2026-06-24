@@ -46,7 +46,13 @@ def _make_auth_header(email: str, api_token: str) -> str:
     return f"Basic {encoded}"
 
 
-def _jira_get(base_url: str, auth_header: str, path: str, params: Optional[Dict[str, Any]] = None) -> Optional[dict]:
+def _jira_get(
+    base_url: str,
+    auth_header: str,
+    path: str,
+    params: Optional[Dict[str, Any]] = None,
+    timeout: int = 30,
+) -> Optional[dict]:
     """Make a GET request to the Jira REST API.
 
     Args:
@@ -54,6 +60,7 @@ def _jira_get(base_url: str, auth_header: str, path: str, params: Optional[Dict[
         auth_header: Basic auth header value.
         path: API path (e.g. /rest/api/3/issue/{key}/comment).
         params: Optional query parameters.
+        timeout: Per-request socket timeout in seconds.
 
     Returns:
         Parsed JSON dict/list, or None on error.
@@ -71,7 +78,7 @@ def _jira_get(base_url: str, auth_header: str, path: str, params: Optional[Dict[
         req.add_header("Accept", "application/json")
         req.add_header("Content-Type", "application/json")
 
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else None
     except Exception as e:
@@ -682,6 +689,45 @@ def fetch_jira_issue(
             break
 
     return title, body, all_comments
+
+
+def fetch_jira_issue_summary(
+    issue_key: str,
+    timeout: int = 30,
+) -> Tuple[str, str]:
+    """Fetch only a Jira issue's title and description (no comments).
+
+    A lightweight counterpart to :func:`fetch_jira_issue` for callers that
+    need just the summary/description. It issues a single GET scoped to the
+    ``summary,description`` fields, so it never paginates comments and makes
+    exactly one bounded round-trip.
+
+    Args:
+        issue_key: Jira issue key (e.g. "PROJ-52372").
+        timeout: Per-request socket timeout in seconds.
+
+    Returns:
+        Tuple of (title, body).
+
+    Raises:
+        RuntimeError: If Jira is not configured or the API call fails.
+    """
+    base_url, auth_header = _jira_auth_from_config()
+    data = _jira_get(
+        base_url,
+        auth_header,
+        f"/rest/api/3/issue/{issue_key}",
+        {"fields": "summary,description"},
+        timeout=timeout,
+    )
+    if not data or not isinstance(data, dict):
+        raise RuntimeError(f"Failed to fetch Jira issue {issue_key}")
+
+    fields = data.get("fields", {})
+    title = fields.get("summary", "")
+    desc_node = fields.get("description")
+    body = _adf_to_text(desc_node) if desc_node else ""
+    return title, body
 
 
 def _jira_auth_from_config() -> Tuple[str, str]:
