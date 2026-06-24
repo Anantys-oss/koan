@@ -1677,8 +1677,7 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **Cline** | Multi-backend (OpenRouter, Anthropic, OpenAI) | [cline.md](../providers/cline.md) |
 | **OpenAI Codex** | ChatGPT users who want Codex models | [codex.md](../providers/codex.md) |
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
-| **Local LLM** | Offline, privacy, zero API cost | [local.md](../providers/local.md) |
-| **Ollama Launch** | Claude CLI via Ollama-managed server | [ollama-launch.md](../providers/ollama-launch.md) |
+| **Ollama Launch** | Local/offline models behind the Claude CLI harness | [ollama-launch.md](../providers/ollama-launch.md) |
 | **OpenRouter** (via Claude CLI) | Claude CLI behavior with OpenRouter's model catalog/billing | [openrouter.md](../providers/openrouter.md) |
 
 #### Provider-specific model config

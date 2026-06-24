@@ -786,10 +786,11 @@ class TestHandleUsage:
 class TestNeedsOllama:
     """Test the _needs_ollama() provider detection helper."""
 
-    def test_local_provider_needs_ollama(self):
+    def test_removed_local_provider_does_not_need_ollama(self):
+        """The removed 'local' provider name no longer triggers ollama."""
         from skills.core.status.handler import _needs_ollama
         with patch("app.provider.get_provider_name", return_value="local"):
-            assert _needs_ollama() is True
+            assert _needs_ollama() is False
 
     def test_ollama_provider_needs_ollama(self):
         from skills.core.status.handler import _needs_ollama
@@ -829,7 +830,7 @@ class TestHandlePingOllama:
             return {"run": 1234, "awake": 5678, "ollama": 9999}.get(name)
 
         with patch("app.pid_manager.check_pidfile", side_effect=mock_check), \
-             patch("app.provider.get_provider_name", return_value="local"):
+             patch("app.provider.get_provider_name", return_value="ollama"):
             result = _handle_ping(ctx)
 
         assert "Ollama: alive (PID 9999)" in result
@@ -845,7 +846,7 @@ class TestHandlePingOllama:
             return {"run": 1234, "awake": 5678}.get(name)
 
         with patch("app.pid_manager.check_pidfile", side_effect=mock_check), \
-             patch("app.provider.get_provider_name", return_value="local"):
+             patch("app.provider.get_provider_name", return_value="ollama"):
             result = _handle_ping(ctx)
 
         assert "Ollama: not running" in result
@@ -882,7 +883,7 @@ class TestHandlePingOllama:
             return {"run": 100, "awake": 200, "ollama": 300}.get(name)
 
         with patch("app.pid_manager.check_pidfile", side_effect=mock_check), \
-             patch("app.provider.get_provider_name", return_value="local"):
+             patch("app.provider.get_provider_name", return_value="ollama"):
             result = _handle_ping(ctx)
 
         assert result.count("✅") == 3
@@ -896,7 +897,7 @@ class TestHandlePingOllama:
         ctx = _make_ctx("ping", tmp_path, tmp_path)
 
         with patch("app.pid_manager.check_pidfile", return_value=None), \
-             patch("app.provider.get_provider_name", return_value="local"):
+             patch("app.provider.get_provider_name", return_value="ollama"):
             result = _handle_ping(ctx)
 
         assert result.count("❌") == 3
@@ -917,7 +918,7 @@ class TestHandleStatusOllama:
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
 
-        with patch("app.provider.get_provider_name", return_value="local"), \
+        with patch("app.provider.get_provider_name", return_value="ollama"), \
              patch("app.pid_manager.check_pidfile", return_value=4242):
             result = _handle_status(ctx)
 
@@ -930,7 +931,7 @@ class TestHandleStatusOllama:
         from skills.core.status.handler import _handle_status
         ctx = _make_ctx("status", instance, tmp_path)
 
-        with patch("app.provider.get_provider_name", return_value="local"), \
+        with patch("app.provider.get_provider_name", return_value="ollama"), \
              patch("app.pid_manager.check_pidfile", return_value=None):
             result = _handle_status(ctx)
 

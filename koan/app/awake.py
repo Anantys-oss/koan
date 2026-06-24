@@ -881,8 +881,8 @@ def _bridge_loop():
     check_config()
 
     # Ensure PYTHONPATH includes the koan/ package directory so that
-    # subprocess calls (e.g. local LLM runner via python -m app.local_llm_runner)
-    # can resolve app.* modules regardless of the subprocess CWD.
+    # subprocess calls (e.g. python -m app.issue_cli) can resolve app.*
+    # modules regardless of the subprocess CWD.
     koan_pkg_dir = str(KOAN_ROOT / "koan")
     current = os.environ.get("PYTHONPATH", "")
     if koan_pkg_dir not in current.split(os.pathsep):

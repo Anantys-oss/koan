@@ -836,8 +836,8 @@ class TestFormatStatusAll:
         output = "\n".join(lines)
         assert f"awake: running (PID {os.getpid()})" in output
 
-    def test_ollama_shown_for_local_provider(self, tmp_path):
-        with patch("app.pid_manager._detect_provider", return_value="local"):
+    def test_ollama_shown_for_ollama_provider(self, tmp_path):
+        with patch("app.pid_manager._detect_provider", return_value="ollama"):
             lines = format_status_all(tmp_path)
         output = "\n".join(lines)
         assert "ollama: not running" in output
@@ -1174,14 +1174,14 @@ class TestDetectProvider:
                 sys.modules.pop("app.provider", None)
         assert result == "claude"
 
-    def test_returns_local_when_configured(self, tmp_path):
-        with patch("app.provider.get_provider_name", return_value="local"):
-            assert _detect_provider(tmp_path) == "local"
+    def test_returns_ollama_launch_when_configured(self, tmp_path):
+        with patch("app.provider.get_provider_name", return_value="ollama-launch"):
+            assert _detect_provider(tmp_path) == "ollama-launch"
 
 
 class TestNeedsOllama:
-    def test_local_needs_ollama(self):
-        assert _needs_ollama("local") is True
+    def test_removed_local_does_not_need_ollama(self):
+        assert _needs_ollama("local") is False
 
     def test_ollama_needs_ollama(self):
         assert _needs_ollama("ollama") is True
@@ -1211,8 +1211,8 @@ class TestGetStatusProcesses:
             result = get_status_processes(tmp_path)
         assert "ollama" not in result
 
-    def test_includes_ollama_for_local(self, tmp_path):
-        with patch("app.pid_manager._detect_provider", return_value="local"):
+    def test_includes_ollama_for_ollama(self, tmp_path):
+        with patch("app.pid_manager._detect_provider", return_value="ollama"):
             result = get_status_processes(tmp_path)
         assert "ollama" in result
         assert "run" in result
@@ -1259,12 +1259,12 @@ class TestStartAll:
         assert "ollama" not in results
         mock_ollama.assert_not_called()
 
-    def test_local_starts_all_three(self, tmp_path):
-        """Local provider should start ollama + awake + run."""
+    def test_ollama_starts_all_three(self, tmp_path):
+        """Ollama sentinel should start ollama + awake + run."""
         with patch("app.pid_manager.start_ollama", return_value=(True, "ollama started (PID 5)")) as mock_ollama, \
              patch("app.pid_manager.start_awake", return_value=(True, "Bridge started (PID 10)")), \
              patch("app.pid_manager.start_runner", return_value=(True, "Agent loop started (PID 20)")):
-            results = start_all(tmp_path, provider="local")
+            results = start_all(tmp_path, provider="ollama")
 
         assert "ollama" in results
         assert "awake" in results
@@ -1281,9 +1281,9 @@ class TestStartAll:
         mock_detect.assert_called_once_with(tmp_path)
         assert "ollama" not in results
 
-    def test_auto_detects_local_starts_ollama(self, tmp_path):
-        """Auto-detect local provider should start ollama."""
-        with patch("app.pid_manager._detect_provider", return_value="local"), \
+    def test_auto_detects_ollama_starts_ollama(self, tmp_path):
+        """Auto-detect ollama provider should start ollama."""
+        with patch("app.pid_manager._detect_provider", return_value="ollama"), \
              patch("app.pid_manager.start_ollama", return_value=(True, "ok")), \
              patch("app.pid_manager.start_awake", return_value=(True, "ok")), \
              patch("app.pid_manager.start_runner", return_value=(True, "ok")):
@@ -1307,7 +1307,7 @@ class TestStartAll:
         with patch("app.pid_manager.start_ollama", return_value=(False, "not found")), \
              patch("app.pid_manager.start_awake", return_value=(True, "ok")), \
              patch("app.pid_manager.start_runner", return_value=(True, "ok")):
-            results = start_all(tmp_path, provider="local")
+            results = start_all(tmp_path, provider="ollama")
 
         ok_ollama, _ = results["ollama"]
         assert ok_ollama is False
@@ -1319,7 +1319,7 @@ class TestStartAll:
         with patch("app.pid_manager.start_ollama", return_value=(False, "already running (PID 1)")), \
              patch("app.pid_manager.start_awake", return_value=(False, "Bridge already running (PID 2)")), \
              patch("app.pid_manager.start_runner", return_value=(False, "Agent loop already running (PID 3)")):
-            results = start_all(tmp_path, provider="local")
+            results = start_all(tmp_path, provider="ollama")
 
         for name in ("ollama", "awake", "run"):
             ok, msg = results[name]
@@ -1373,12 +1373,12 @@ class TestShowStartupBanner:
 
 
 class TestStartStack:
-    def test_delegates_to_start_all_with_local_provider(self, tmp_path):
-        """start_stack should call start_all with provider='local'."""
+    def test_delegates_to_start_all_with_ollama_sentinel(self, tmp_path):
+        """start_stack should call start_all with provider='ollama'."""
         with patch("app.pid_manager.start_all", return_value={"ollama": (True, "ok"), "awake": (True, "ok"), "run": (True, "ok")}) as mock:
             results = start_stack(tmp_path)
 
-        mock.assert_called_once_with(tmp_path, provider="local")
+        mock.assert_called_once_with(tmp_path, provider="ollama")
         assert "ollama" in results
 
     def test_returns_all_three_components(self, tmp_path):
@@ -1413,9 +1413,9 @@ class TestCLIStartAll:
         # Should NOT have ollama
         assert "ollama:" not in result.stdout
 
-    def test_start_all_with_local_provider(self, tmp_path):
-        """start-all local should show ollama, awake, and run."""
-        result = self._run_cli("start-all", str(tmp_path), "local")
+    def test_start_all_with_ollama_sentinel(self, tmp_path):
+        """start-all ollama should show ollama, awake, and run."""
+        result = self._run_cli("start-all", str(tmp_path), "ollama")
         assert "ollama:" in result.stdout
         assert "awake:" in result.stdout or "run:" in result.stdout
 
@@ -1457,16 +1457,6 @@ class TestCLIOllama:
         assert result.returncode == 0
         assert "not running" in result.stdout
         assert "ollama" not in result.stdout
-
-    def test_status_all_shows_ollama_for_local_provider(self, tmp_path):
-        """status-all should show ollama when provider is local."""
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(Path(__file__).parent.parent)
-        env["KOAN_CLI_PROVIDER"] = "local"
-        cmd = [sys.executable, "-m", "app.pid_manager", "status-all", str(tmp_path)]
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-        assert result.returncode == 0
-        assert "ollama: not running" in result.stdout
 
     def test_stop_all_includes_ollama(self, tmp_path):
         result = self._run_cli("stop-all", str(tmp_path))

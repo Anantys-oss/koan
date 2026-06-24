@@ -23,8 +23,8 @@ class TestGetProvider:
 
     def test_falls_back_to_cli_provider(self, monkeypatch):
         monkeypatch.delenv("KOAN_CLI_PROVIDER", raising=False)
-        monkeypatch.setenv("CLI_PROVIDER", "local")
-        assert _get_provider(Path("/tmp")) == "local"
+        monkeypatch.setenv("CLI_PROVIDER", "codex")
+        assert _get_provider(Path("/tmp")) == "codex"
 
     def test_falls_back_to_config(self, monkeypatch):
         monkeypatch.delenv("KOAN_CLI_PROVIDER", raising=False)

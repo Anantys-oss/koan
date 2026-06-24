@@ -203,7 +203,7 @@ def _current_provider(config: dict) -> str:
 def _maybe_reset_provider(state: dict, current_provider: str) -> dict:
     """Reset counters when the CLI provider has changed.
 
-    Local providers (ollama-launch, local) do not share API quota with
+    Local providers (ollama-launch) do not share API quota with
     metered providers (claude, copilot, codex), so stale usage from a
     previous provider must not gate the current one.
     """

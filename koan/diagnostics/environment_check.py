@@ -39,7 +39,7 @@ def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
         provider = get_cli_provider_env()
         if provider == "copilot":
             cli_binary = "gh"  # Copilot uses gh CLI
-        elif provider in ("local", "ollama-launch"):
+        elif provider == "ollama-launch":
             cli_binary = "ollama"
     except Exception:
         pass

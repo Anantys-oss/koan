@@ -335,6 +335,16 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
     if not isinstance(config, dict):
         return [("", "config.yaml root is not a mapping")]
 
+    # The 'local' CLI provider has been removed; warn instead of silently
+    # falling back to 'claude'.
+    if str(config.get("cli_provider", "")).strip().lower() == "local":
+        warnings.append((
+            "cli_provider",
+            "cli_provider: 'local' has been removed and is now ignored "
+            "(falling back to 'claude'). To run local models use "
+            "'ollama-launch'. See docs/providers/ollama-launch.md.",
+        ))
+
     known_top = list(CONFIG_SCHEMA.keys())
 
     for deprecated_key, hint in _DEPRECATED_TOP_LEVEL_KEYS.items():

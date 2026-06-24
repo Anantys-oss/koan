@@ -90,6 +90,19 @@ class TestSchemaCompleteness:
 # validate_config — valid configs
 # ---------------------------------------------------------------------------
 
+class TestDeprecatedLocalProvider:
+    def test_cli_provider_local_triggers_deprecation_warning(self):
+        warnings = validate_config({"cli_provider": "local"})
+        joined = " ".join(msg for _path, msg in warnings).lower()
+        assert "removed" in joined
+        assert "ollama-launch" in joined
+
+    def test_cli_provider_claude_has_no_local_warning(self):
+        warnings = validate_config({"cli_provider": "claude"})
+        joined = " ".join(msg for _path, msg in warnings).lower()
+        assert "ollama-launch" not in joined
+
+
 class TestValidConfigProducesNoWarnings:
     def test_empty_config(self):
         assert validate_config({}) == []

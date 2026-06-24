@@ -563,7 +563,7 @@ def _detect_provider(koan_root: Path) -> str:
     """Detect the configured CLI provider.
 
     Uses the provider package resolution (env var > config.yaml > default).
-    Returns provider name: "claude", "cline", "copilot", "local", "ollama",
+    Returns provider name: "claude", "cline", "copilot", "ollama",
     or "ollama-launch".
     """
     try:
@@ -576,7 +576,7 @@ def _detect_provider(koan_root: Path) -> str:
 
 def _needs_ollama(provider: str) -> bool:
     """Return True if the provider requires ollama serve."""
-    return provider in ("local", "ollama")
+    return provider == "ollama"
 
 
 def _show_startup_banner(koan_root: Path, provider: str) -> None:
@@ -601,7 +601,7 @@ def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -
 
     Auto-detects the provider if not specified.
     - claude/copilot/ollama-launch: starts awake + run (2 processes)
-    - local/ollama: starts ollama + awake + run (3 processes)
+    - ollama: starts ollama + awake + run (3 processes)
 
     Note: ollama-launch does not need a separate ollama serve process
     because ``ollama launch claude`` handles server lifecycle internally.
@@ -652,9 +652,16 @@ def start_stack(koan_root: Path) -> dict:
     """Start the full ollama stack: ollama serve + awake + run.
 
     Kept for backward compatibility with `make ollama`.
-    Delegates to start_all() with provider="local".
+    Delegates to start_all() with the "ollama" sentinel so ollama serve starts.
+
+    Note: with the `local` provider removed, no built-in provider talks to this
+    standalone `ollama serve` (`ollama-launch` manages its own server via
+    ``ollama launch claude``). `make ollama` is now only useful when you point a
+    custom Claude-CLI endpoint at the bare Ollama server yourself; otherwise the
+    agent resolves its provider independently. The path is preserved
+    intentionally and may be deprecated in a follow-up.
     """
-    return start_all(koan_root, provider="local")
+    return start_all(koan_root, provider="ollama")
 
 
 def _wait_for_exit(pid: int, timeout: float) -> bool:

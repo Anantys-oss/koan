@@ -8,7 +8,6 @@ import pytest
 from app.provider.base import CLIProvider
 from app.provider.claude import ClaudeProvider
 from app.provider.copilot import CopilotProvider
-from app.provider.local import LocalLLMProvider
 
 
 class TestBaseProviderQuota:
@@ -108,20 +107,16 @@ class TestClaudeProviderQuota:
         ) is False
 
 
-class TestLocalProviderQuota:
-    """Local/Ollama providers have no quota concept."""
+class TestRemovedProviderDegradation:
+    """Quota detection must degrade gracefully for a removed provider name."""
 
-    def test_local_always_available(self):
-        """LocalLLMProvider inherits base (True, '')."""
-        provider = LocalLLMProvider()
-        ok, detail = provider.check_quota_available("/tmp")
-        assert ok is True
-        assert detail == ""
-
-    def test_local_has_api_quota_false(self):
-        """LocalLLMProvider runs on self-hosted infra — no metered quota."""
-        provider = LocalLLMProvider()
-        assert provider.has_api_quota() is False
+    def test_quota_detection_unknown_provider_falls_back(self):
+        from app import quota_handler
+        # _detect_quota_for_provider must not raise on a removed provider name.
+        result = quota_handler._detect_quota_for_provider(
+            stdout_text="", stderr_text="", exit_code=0, provider_name="local",
+        )
+        assert result in (True, False)  # returned a verdict, did not raise
 
 
 class TestOllamaLaunchProviderQuota:

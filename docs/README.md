@@ -13,7 +13,7 @@ update the relevant docs in the same change.
 - [User Manual](users/user-manual.md) - daily use, workflows, and command guide.
 - [Onboarding](users/onboarding.md) - first-run setup and configuration flow.
 - [Skills Reference](users/skills.md) - built-in command reference.
-- [Provider Setup](providers/) - Claude, Cline, Codex, Copilot, local, and Ollama Launch providers; plus [OpenRouter via the Claude CLI](providers/openrouter.md).
+- [Provider Setup](providers/) - Claude, Cline, Codex, Copilot, and Ollama Launch (local models) providers; plus [OpenRouter via the Claude CLI](providers/openrouter.md).
 - [Messaging Setup](messaging/) - Telegram, Slack, Matrix, Discord, GitHub, and Jira.
 - [Troubleshooting](operations/troubleshooting.md) - common issues and how to fix them.
 

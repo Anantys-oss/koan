@@ -392,7 +392,7 @@ def resolve_base_branch(
 def get_project_cli_provider(config: dict, project_name: str) -> str:
     """Get CLI provider for a project from projects.yaml.
 
-    Returns the provider name ("claude", "copilot", "local") or empty string
+    Returns the provider name ("claude", "copilot", "ollama-launch") or empty string
     if not configured (meaning: use the global provider).
 
     Note: Data accessor only — the provider resolution in cli_provider.py

@@ -530,7 +530,6 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
         "codex": "codex",
         "copilot": "gh",
         "ollama-launch": "ollama",
-        "local": None,
     }
     for provider, tool in provider_tools.items():
         if tool is not None:
@@ -578,7 +577,6 @@ PROVIDERS = [
     ("codex", "OpenAI Codex CLI"),
     ("copilot", "GitHub Copilot CLI"),
     ("ollama-launch", "Ollama Launch (local models via ollama)"),
-    ("local", "Local provider"),
 ]
 
 
@@ -589,13 +587,12 @@ def _provider_ready(provider: str) -> tuple[bool, str]:
         "codex": "codex",
         "copilot": "gh",
         "ollama-launch": "ollama",
-        "local": None,
     }
     tool = tool_by_provider.get(provider)
-    if provider in ("local", "ollama-launch"):
-        if provider == "ollama-launch" and not tool:
+    if provider == "ollama-launch":
+        if not tool:
             return False, f"Unknown CLI provider: {provider}"
-        if provider == "ollama-launch" and not _check_tool(tool):
+        if not _check_tool(tool):
             return False, f"{provider} provider selected but `{tool}` is not installed"
         return True, f"{provider} provider selected"
     if not tool:
@@ -613,9 +610,8 @@ def _detect_installed_providers() -> list[str]:
         "codex": "codex",
         "copilot": "gh",
         "ollama-launch": "ollama",
-        "local": None,
     }
-    return [p for p, t in provider_tools.items() if t is None or _check_tool(t)]
+    return [p for p, t in provider_tools.items() if _check_tool(t)]
 
 
 def _get_config_cli_provider() -> str:
@@ -711,14 +707,6 @@ _PROVIDER_MODEL_DEFAULTS: dict[str, dict[str, str]] = {
         "chat": "",
         "lightweight": "haiku",
         "fallback": "sonnet",
-        "review_mode": "",
-        "reflect": "",
-    },
-    "local": {
-        "mission": "",
-        "chat": "",
-        "lightweight": "",
-        "fallback": "",
         "review_mode": "",
         "reflect": "",
     },

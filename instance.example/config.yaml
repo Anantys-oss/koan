@@ -411,17 +411,10 @@ cli_provider: "claude"
 # mcp:
 #   - "/path/to/mcp-servers.json"
 
-# Local LLM configuration (used when cli_provider: "local")
-# Connects to any OpenAI-compatible API server:
-#   - Ollama:     http://localhost:11434/v1
-#   - llama.cpp:  http://localhost:8080/v1
-#   - LM Studio:  http://localhost:1234/v1
-#   - vLLM:       http://localhost:8000/v1
-# Can also be set via KOAN_LOCAL_LLM_* env vars (override config values)
-# local_llm:
-#   base_url: "http://localhost:11434/v1"
-#   model: "glm4"
-#   api_key: ""   # Usually empty for local servers
+# NOTE: The 'local' CLI provider has been removed. To run local models use
+# 'ollama-launch' (see below) — the Claude CLI driven by ``ollama launch claude``.
+# A leftover 'local_llm:' block is tolerated for backward compatibility but is
+# unused. See docs/providers/ollama-launch.md.
 
 # Ollama Launch configuration (used when cli_provider: "ollama-launch")
 # Uses Ollama v0.16.0+ ``ollama launch claude`` to run the Claude Code CLI
@@ -561,7 +554,7 @@ usage:
 # Per-project overrides are now configured in projects.yaml.
 # Supported per-project settings:
 #   - git_auto_merge: per-project merge rules
-#   - cli_provider: override AI provider ("claude", "codex", "copilot", "local")
+#   - cli_provider: override AI provider ("claude", "codex", "copilot", "ollama-launch")
 #   - models: override model selection (mission, chat, lightweight, etc.)
 #   - tools: restrict available tools (mission, chat tool lists)
 #   - github: override authorized_users for GitHub @mention commands
