@@ -12,9 +12,11 @@ def handle(ctx):
     Usage:
         /rebase https://github.com/owner/repo/pull/123
         /rebase --now https://github.com/owner/repo/pull/123
+        /rebase https://github.com/owner/repo/pull/123 <focus area>
 
     Queues a mission that rebases the PR branch onto its target,
-    reads all comments for context, and pushes the result.
+    reads all comments for context, and pushes the result. Any text
+    after the URL is threaded into the mission as extra focus context.
     Use --now to queue at the top of the mission queue.
     """
     args = ctx.args.strip()
@@ -24,9 +26,10 @@ def handle(ctx):
 
     if not args:
         return (
-            "Usage: /rebase [--now] <github-pr-url>\n"
+            "Usage: /rebase [--now] <github-pr-url> [focus area]\n"
             "Ex: /rebase https://github.com/sukria/koan/pull/42\n"
-            "Ex: /rebase --now https://github.com/sukria/koan/pull/42\n\n"
+            "Ex: /rebase --now https://github.com/sukria/koan/pull/42\n"
+            "Ex: /rebase https://github.com/sukria/koan/pull/42 address the security concern\n\n"
             "Queues a mission that rebases the PR branch onto its target, "
             "reads comments for context, and force-pushes the result.\n"
             "Use --now to queue at the top of the mission queue."
