@@ -52,17 +52,29 @@ class TestParseGithubIssueRefs:
 class TestFetchJiraIssues:
     def test_formats_summary_and_excerpt(self):
         with patch(
-            "app.jira_notifications.fetch_jira_issue",
-            return_value=("Fix login timeout", "Users reported timeouts.", []),
+            "app.jira_notifications.fetch_jira_issue_summary",
+            return_value=("Fix login timeout", "Users reported timeouts."),
         ):
             out = fetch_jira_issues(["PROJ-42"])
         assert "## Issue Tracker Context" in out
         assert "- PROJ-42: Fix login timeout" in out
         assert "> Users reported timeouts." in out
 
+    def test_uses_lightweight_fetch_with_timeout(self):
+        # Enrichment must use the title/body-only fetch (no comment pagination)
+        # and pass the module's bounded timeout, not the heavyweight 30s fetch.
+        from app.issue_tracker.enrichment import JIRA_TIMEOUT_SECONDS
+
+        with patch(
+            "app.jira_notifications.fetch_jira_issue_summary",
+            return_value=("T", "b"),
+        ) as mock:
+            fetch_jira_issues(["PROJ-7"])
+        mock.assert_called_once_with("PROJ-7", timeout=JIRA_TIMEOUT_SECONDS)
+
     def test_returns_empty_on_failure(self):
         with patch(
-            "app.jira_notifications.fetch_jira_issue",
+            "app.jira_notifications.fetch_jira_issue_summary",
             side_effect=RuntimeError("404"),
         ):
             assert fetch_jira_issues(["PROJ-42"]) == ""
@@ -70,8 +82,8 @@ class TestFetchJiraIssues:
     def test_excerpt_capped(self):
         long_body = "x" * 5000
         with patch(
-            "app.jira_notifications.fetch_jira_issue",
-            return_value=("T", long_body, []),
+            "app.jira_notifications.fetch_jira_issue_summary",
+            return_value=("T", long_body),
         ):
             out = fetch_jira_issues(["PROJ-1"])
         # excerpt capped at MAX_EXCERPT_CHARS (+ ellipsis), total at MAX_TOTAL
@@ -81,8 +93,8 @@ class TestFetchJiraIssues:
     def test_total_capped_across_tickets(self):
         body = "y" * 400
         with patch(
-            "app.jira_notifications.fetch_jira_issue",
-            return_value=("Title", body, []),
+            "app.jira_notifications.fetch_jira_issue_summary",
+            return_value=("Title", body),
         ):
             out = fetch_jira_issues([f"PROJ-{i}" for i in range(20)])
         # The formatted block body must be capped at MAX_TOTAL_CHARS.
@@ -93,8 +105,8 @@ class TestFetchJiraIssues:
 
     def test_fetch_count_capped_at_max_refs(self):
         with patch(
-            "app.jira_notifications.fetch_jira_issue",
-            return_value=("T", "b", []),
+            "app.jira_notifications.fetch_jira_issue_summary",
+            return_value=("T", "b"),
         ) as mock:
             fetch_jira_issues([f"PROJ-{i}" for i in range(MAX_REFS + 10)])
         # Only MAX_REFS network round-trips, regardless of how many were parsed.
