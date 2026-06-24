@@ -28,8 +28,11 @@ On every boot, `KOAN_DEPLOY=railway` makes the entrypoint:
 - **Regenerate `/app/.env` as a mirror** of the service variables. No symlinks
   and no `.env` on the volume — Railway service variables are the persistent
   source of truth. Operator-added keys in any on-disk `.env` are preserved.
-- **Resolve `projects.yaml` and `workspace/` from `/app/instance` first**, so
-  project config and clones survive re-deploys (folds in #2074).
+- Rely on Kōan resolving `projects.yaml` and `workspace/` from `instance/`
+  first, so project config and clones survive re-deploys (folds in #2074).
+  This `instance/`-first resolution is a global default (all installs), not
+  gated on `KOAN_DEPLOY` — it is backward compatible because existing installs
+  without an `instance/projects.yaml` keep using the repo-root file.
 - **Auto-register** every `instance/workspace/<dir>` clone as a project (keyed
   by directory name) via the existing merged registry.
 - Configure **token-only Git**: all `git`/`gh` operations authenticate over
@@ -56,6 +59,8 @@ service variables are set.
 
 ## Local / dev installs
 
-With `KOAN_DEPLOY` unset, every Railway helper early-returns and behavior is
-exactly as today — no chown, no `.env` regeneration, repo-root `projects.yaml`
-and `workspace/` resolution.
+With `KOAN_DEPLOY` unset, every Railway-specific helper early-returns — no
+chown and no `.env` regeneration. The only globally-active change is that
+`instance/projects.yaml` and `instance/workspace/` now take precedence when
+they exist; installs without those files keep resolving the repo-root
+`projects.yaml` and `workspace/` exactly as before.

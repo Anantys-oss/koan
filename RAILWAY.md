@@ -157,6 +157,8 @@ Push a commit (or hit Redeploy). After the rebuild:
 
 ## Notes for local / dev installs
 
-With `KOAN_DEPLOY` **unset**, every Railway helper early-returns: no chown, no
-`.env` regeneration, and `projects.yaml` / `workspace/` resolve from the repo root
-exactly as before. This file applies only to hosted Railway deploys.
+With `KOAN_DEPLOY` **unset**, every Railway-specific helper early-returns: no
+chown and no `.env` regeneration. The one globally-active change is that
+`instance/projects.yaml` and `instance/workspace/` take precedence when they
+exist; installs without those files resolve the repo-root `projects.yaml` /
+`workspace/` exactly as before. This file applies only to hosted Railway deploys.

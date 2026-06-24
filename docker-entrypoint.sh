@@ -291,8 +291,11 @@ railway_bootstrap() {
 
     # 2. Regenerate /app/.env as a mirror of the service env vars (#2076).
     if (cd "$KOAN_ROOT/koan" && $PYTHON -c 'import sys; from app.railway import required_env_present; sys.exit(0 if required_env_present() else 1)'); then
-        (cd "$KOAN_ROOT/koan" && $PYTHON -c "from pathlib import Path; from app.railway import write_env_from_environment as w; w(Path('$KOAN_ROOT/.env'))")
-        success ".env mirrored from environment"
+        if (cd "$KOAN_ROOT/koan" && $PYTHON -c "from pathlib import Path; from app.railway import write_env_from_environment as w; w(Path('$KOAN_ROOT/.env'))"); then
+            success ".env mirrored from environment"
+        else
+            warn ".env mirror failed — container may lack credentials"
+        fi
     else
         warn "Required env vars missing — .env mirror skipped"
     fi
