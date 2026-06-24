@@ -49,3 +49,19 @@ def test_logs_ok(client):
 
 def test_logs_requires_token(client):
     assert client.get("/v1/logs").status_code == 401
+
+
+def test_usage_bad_days_returns_422(client):
+    r = client.get("/v1/usage?days=abc", headers=_auth())
+    assert r.status_code == 422
+    assert r.get_json()["error"]["code"] == "invalid_request"
+
+
+def test_metrics_bad_days_returns_422(client):
+    r = client.get("/v1/metrics?days=oops", headers=_auth())
+    assert r.status_code == 422
+
+
+def test_logs_bad_limit_returns_422(client):
+    r = client.get("/v1/logs?limit=xyz", headers=_auth())
+    assert r.status_code == 422

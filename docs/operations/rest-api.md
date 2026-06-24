@@ -255,6 +255,8 @@ Response:
 {"lines": [{"n": 1, "text": "...", "source": "run"}], "total": 1}
 ```
 
+Malformed integer params (`days`, `offset`, `limit`) return `422` with an `invalid_request` error rather than silently substituting the default.
+
 ---
 
 ## Security
