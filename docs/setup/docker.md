@@ -72,10 +72,10 @@ make docker-pull-up
 >
 > ```bash
 > make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:stable
-> make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:v1.0   # major.minor
+> make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:1.0   # major.minor
 > ```
 >
-> Available tags: `latest`, `stable`, and per-version (`vX.Y` / `X.Y.Z`).
+> Available tags: `latest`, `stable`, and per-version (`X.Y` / `X.Y.Z`).
 
 > **UID/GID on the prebuilt image.** The published image runs as UID/GID
 > **1000**. On Linux hosts whose user isn't 1000, bind-mounted `instance/` and
