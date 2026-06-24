@@ -663,8 +663,8 @@ class TestBuildSimplifyPrompt:
         assert "/tmp/project" in prompt
 
     def test_includes_skill_name_with_simplify_flag(self):
-        prompt = build_simplify_prompt("/tmp/project", "atoomic.refactor", skill_dir=PR_SKILL_DIR)
-        assert "atoomic.refactor" in prompt
+        prompt = build_simplify_prompt("/tmp/project", "team.refactor", skill_dir=PR_SKILL_DIR)
+        assert "team.refactor" in prompt
         assert "--simplify" in prompt
 
     def test_empty_skill_name_no_invocation(self):
@@ -842,7 +842,7 @@ class TestRunPrReview:
         assert "fixed" in summary.lower() or "passing" in summary.lower()
 
     @patch("app.pr_review.subprocess")
-    @patch("app.pr_review.detect_skills", return_value=("atoomic.refactor", None))
+    @patch("app.pr_review.detect_skills", return_value=("team.refactor", None))
     @patch("app.pr_review.detect_test_command", return_value=None)
     @patch("app.pr_review.run_gh")
     @patch("app.pr_review._run_git")
