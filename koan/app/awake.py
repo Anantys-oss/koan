@@ -635,14 +635,17 @@ def _route_to_chat_process(text: str) -> bool:
     """Try to route a chat message to the dedicated chat process.
 
     Returns True if the message was successfully queued, False if the
-    chat process is not running (caller should fall back to worker thread).
+    chat process is not running or the inbox write fails (caller should
+    fall back to worker thread).
     """
     if not _is_chat_process_running():
         return False
 
     from app.chat_process import write_to_inbox
 
-    write_to_inbox(text)
+    if not write_to_inbox(text):
+        log("error", "Chat inbox write failed — falling back to worker thread")
+        return False
     log("chat", "Chat routed to dedicated chat process")
     return True
 
