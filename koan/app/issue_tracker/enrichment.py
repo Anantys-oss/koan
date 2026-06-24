@@ -33,6 +33,14 @@ _GITHUB_REF_RE = re.compile(
 # Per-ticket description excerpt cap and total injected-context cap (chars).
 MAX_EXCERPT_CHARS = 500
 MAX_TOTAL_CHARS = 1000
+# Upper bound on the number of tracker references fetched per review. Each ref
+# costs one network/subprocess round-trip (up to *_TIMEOUT_SECONDS each), so an
+# uncapped PR body (a changelog listing dozens of tickets, or an adversarial
+# author seeding ``a/b#1 a/b#2 …``) could otherwise add N×5s of latency and burn
+# API quota / spawn dozens of ``gh`` subprocesses. Bounding the *fetch count*
+# (not just the output size) keeps worst-case review latency constant regardless
+# of PR body content.
+MAX_REFS = 5
 JIRA_TIMEOUT_SECONDS = 5
 GH_TIMEOUT_SECONDS = 5
 
@@ -98,6 +106,12 @@ def fetch_jira_issues(ticket_ids: List[str]) -> str:
     """Fetch and format Jira issue summaries. Returns ``""`` on any failure."""
     if not ticket_ids:
         return ""
+    if len(ticket_ids) > MAX_REFS:
+        logger.info(
+            "[enrichment] capping Jira fetch from %d to %d references",
+            len(ticket_ids), MAX_REFS,
+        )
+        ticket_ids = ticket_ids[:MAX_REFS]
     from app.jira_notifications import fetch_jira_issue
 
     lines: List[str] = []
@@ -122,6 +136,12 @@ def fetch_github_issues(refs: List[Tuple[str, str, int]]) -> str:
     """
     if not refs:
         return ""
+    if len(refs) > MAX_REFS:
+        logger.info(
+            "[enrichment] capping GitHub fetch from %d to %d references",
+            len(refs), MAX_REFS,
+        )
+        refs = refs[:MAX_REFS]
     import json
 
     lines: List[str] = []
@@ -178,15 +198,34 @@ def fetch_issue_context(
 
         tracker = get_tracker_for_project(project_name)
         provider = (tracker or {}).get("provider", "")
+        block = ""
         if provider == "jira":
             # Only enrich when a Jira project is actually mapped — otherwise the
             # default-github fallback would mis-route and ALLCAPS branch tokens
             # would hammer Jira pointlessly.
             if not tracker.get("jira_project"):
                 return ""
-            return fetch_jira_issues(parse_jira_ticket_ids(pr_body))
-        if provider == "github":
-            return fetch_github_issues(parse_github_issue_refs(pr_body))
+            block = fetch_jira_issues(parse_jira_ticket_ids(pr_body))
+        elif provider == "github":
+            block = fetch_github_issues(parse_github_issue_refs(pr_body))
+        return _fence(block)
     except Exception as e:  # never let enrichment abort a review
         logger.warning("[enrichment] issue context fetch failed: %s", e)
     return ""
+
+
+def _fence(block: str) -> str:
+    """Wrap the fetched tracker block as untrusted external data.
+
+    The titles/excerpts come from issues that may live in repos not under
+    review (GitHub cross-repo refs) or from arbitrary Jira tickets named by the
+    PR author, so the content is third-party text. Fencing it (with injection
+    scanning) keeps the reviewer agent from treating an embedded prompt-injection
+    payload with the same trust as the diff. Empty input passes through as ``""``
+    so the ``{ISSUE_CONTEXT}`` placeholder stays blank when nothing was fetched.
+    """
+    if not block:
+        return ""
+    from app.prompt_guard import fence_external_data
+
+    return "\n" + fence_external_data(block.strip(), "tracker issue context") + "\n"

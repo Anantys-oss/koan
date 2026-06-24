@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from app.issue_tracker.enrichment import (
     MAX_EXCERPT_CHARS,
+    MAX_REFS,
     MAX_TOTAL_CHARS,
     fetch_github_issues,
     fetch_issue_context,
@@ -90,6 +91,15 @@ class TestFetchJiraIssues:
     def test_empty_list(self):
         assert fetch_jira_issues([]) == ""
 
+    def test_fetch_count_capped_at_max_refs(self):
+        with patch(
+            "app.jira_notifications.fetch_jira_issue",
+            return_value=("T", "b", []),
+        ) as mock:
+            fetch_jira_issues([f"PROJ-{i}" for i in range(MAX_REFS + 10)])
+        # Only MAX_REFS network round-trips, regardless of how many were parsed.
+        assert mock.call_count == MAX_REFS
+
 
 def _gh_result(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(
@@ -132,6 +142,16 @@ class TestFetchGithubIssues:
     def test_empty_list(self):
         assert fetch_github_issues([]) == ""
 
+    def test_fetch_count_capped_at_max_refs(self):
+        payload = json.dumps({"title": "T", "body": "b"})
+        with patch(
+            "app.issue_tracker.enrichment.subprocess.run",
+            return_value=_gh_result(stdout=payload),
+        ) as mock:
+            fetch_github_issues([("o", "r", i) for i in range(MAX_REFS + 10)])
+        # Only MAX_REFS gh subprocesses are spawned, regardless of ref count.
+        assert mock.call_count == MAX_REFS
+
 
 class TestFetchIssueContext:
     def test_empty_body_no_fetch(self):
@@ -149,7 +169,10 @@ class TestFetchIssueContext:
             "app.issue_tracker.enrichment.fetch_github_issues",
         ) as gh_mock:
             out = fetch_issue_context("Fixes PROJ-1", project_name="p")
-        assert out == "JIRA_BLOCK"
+        # Fetched tracker text is third-party data; it must be fenced.
+        assert "JIRA_BLOCK" in out
+        assert "BEGIN EXTERNAL DATA (tracker issue context)" in out
+        assert "END EXTERNAL DATA (tracker issue context)" in out
         jira_mock.assert_called_once_with(["PROJ-1"])
         gh_mock.assert_not_called()
 
@@ -177,9 +200,22 @@ class TestFetchIssueContext:
             "app.issue_tracker.enrichment.fetch_jira_issues",
         ) as jira_mock:
             out = fetch_issue_context("see o/r#9", project_name="p")
-        assert out == "GH_BLOCK"
+        assert "GH_BLOCK" in out
+        assert "BEGIN EXTERNAL DATA (tracker issue context)" in out
         gh_mock.assert_called_once_with([("o", "r", 9)])
         jira_mock.assert_not_called()
+
+    def test_empty_block_is_not_fenced(self):
+        tracker = {"provider": "github"}
+        with patch(
+            "app.issue_tracker.config.get_tracker_for_project",
+            return_value=tracker,
+        ), patch(
+            "app.issue_tracker.enrichment.fetch_github_issues",
+            return_value="",
+        ):
+            out = fetch_issue_context("see o/r#9", project_name="p")
+        assert out == ""
 
     def test_never_raises_on_config_error(self):
         with patch(
