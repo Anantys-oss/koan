@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/github-script@v9
         with:
-          github-token: ${{ secrets.BOT_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const bot = 'Koan-Bot';
             const fallbackBot = 'Father-Koan';
