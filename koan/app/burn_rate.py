@@ -262,9 +262,19 @@ class BurnRateSnapshot:
 
 
 # --- Convenience free functions (backward-compatible, single-use wrappers) ---
+#
+# NOTE: each of these constructs a fresh BurnRateSnapshot and so reloads and
+# JSON-parses .burn-rate.json on every call. They are intended only for call
+# sites that need exactly one metric. A site that reads more than one metric
+# in the same context MUST build a single ``BurnRateSnapshot(instance_dir)``
+# and call its methods instead, to avoid redundant file I/O.
 
 def get_samples(instance_dir: Path) -> List[Sample]:
-    """Return the rolling sample buffer (oldest → newest)."""
+    """Return the rolling sample buffer (oldest → newest).
+
+    Reloads the state file. For multiple metrics in one context, use
+    ``BurnRateSnapshot`` directly (see module note above).
+    """
     return BurnRateSnapshot(instance_dir).samples
 
 
@@ -276,6 +286,9 @@ def burn_rate_pct_per_minute(instance_dir: Path) -> Optional[float]:
     cost avoids the 1/N under-count that happened when it was treated as a
     zero-cost "window start" marker.
 
+    Reloads the state file on every call; for multiple metrics in one
+    context, use ``BurnRateSnapshot`` directly (see module note above).
+
     Returns:
         Burn rate in percentage points per minute, or ``None`` if there is
         not enough history (< 5 samples) or zero elapsed time.
@@ -286,6 +299,9 @@ def burn_rate_pct_per_minute(instance_dir: Path) -> Optional[float]:
 def time_to_exhaustion(instance_dir: Path, session_pct: float,
                        mode: Optional[str] = None) -> Optional[float]:
     """Estimate minutes until session quota is exhausted at current burn rate.
+
+    Reloads the state file on every call; for multiple metrics in one
+    context, use ``BurnRateSnapshot`` directly (see module note above).
 
     Args:
         instance_dir: Instance directory.
@@ -302,7 +318,11 @@ def time_to_exhaustion(instance_dir: Path, session_pct: float,
 
 
 def get_last_warned_at(instance_dir: Path) -> Optional[datetime]:
-    """Return the timestamp of the most recent exhaustion warning, if any."""
+    """Return the timestamp of the most recent exhaustion warning, if any.
+
+    Reloads the state file. For multiple metrics in one context, use
+    ``BurnRateSnapshot`` directly (see module note above).
+    """
     return BurnRateSnapshot(instance_dir).last_warned_at
 
 
