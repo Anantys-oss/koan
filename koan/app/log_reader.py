@@ -5,7 +5,10 @@ dashboard process and the API process produce identical payloads.
 """
 
 import collections
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 LOG_MAX_LINE_LENGTH = 2000
 LOG_DEFAULT_LIMIT = 200
@@ -25,8 +28,8 @@ def tail_log(log_path: Path, limit: int) -> list[dict]:
         with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
             for n, line in enumerate(fh, start=1):
                 buf.append((n, line.rstrip("\n")))
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.warning("Failed to read log %s: %s", log_path, exc)
     return [{"n": n, "text": text[:LOG_MAX_LINE_LENGTH]} for n, text in buf]
 
 
@@ -53,17 +56,16 @@ def read_logs(koan_root: Path, source: str = "all", limit: int = LOG_DEFAULT_LIM
     else:
         sources_to_read = ["run", "awake"]
 
+    # Tail each source independently so a busy source can never starve the
+    # others: each contributes up to `limit` lines (its own tail), and the
+    # final result is grouped by source rather than globally truncated.
     lines: list[dict] = []
     for src in sources_to_read:
-        for entry in tail_log(logs_dir / f"{src}.log", limit):
+        src_lines = tail_log(logs_dir / f"{src}.log", limit)
+        for entry in src_lines:
             entry["source"] = src
-            lines.append(entry)
+        if q:
+            src_lines = [e for e in src_lines if q in e["text"].lower()]
+        lines.extend(src_lines[-limit:])
 
-    if len(sources_to_read) > 1:
-        lines.sort(key=lambda e: (e["source"], e["n"]))
-
-    if q:
-        lines = [e for e in lines if q in e["text"].lower()]
-
-    lines = lines[-limit:]
     return {"lines": lines, "total": len(lines)}
