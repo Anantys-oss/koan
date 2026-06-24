@@ -7,15 +7,26 @@
 # Run ./setup-docker.sh first — it generates docker-compose.override.yml
 # with workspace mounts and GitHub CLI auth for your system.
 #
+# Two ways to get the image:
+#   - Prebuilt (recommended): set KOAN_IMAGE to the published GHCR ref and pull it.
+#       KOAN_IMAGE=ghcr.io/anantys-oss/koan:latest docker compose pull
+#       KOAN_IMAGE=ghcr.io/anantys-oss/koan:latest docker compose up -d --no-build
+#       (or just: make docker-pull-up)
+#   - Build from source (fallback): docker compose up --build  (tags koan:local)
+#
 # Usage:
 #   ./setup-docker.sh                        # Auto-detect host setup
 #   make docker-auth                         # Generate OAuth token from host CLI
-#   docker compose up --build                # Full stack (agent + bridge)
+#   make docker-pull-up                      # Pull prebuilt image + start (recommended)
+#   docker compose up --build                # Build from source (agent + bridge)
 #   docker compose run --rm koan test        # Run test suite
 #   docker compose run --rm koan shell       # Interactive shell
 
 services:
   koan:
+    # Defaults to a locally-built tag (koan:local). Override with the published
+    # GHCR ref to run the prebuilt image: KOAN_IMAGE=ghcr.io/anantys-oss/koan:latest
+    image: ${KOAN_IMAGE:-koan:local}
     build:
       context: .
       args:

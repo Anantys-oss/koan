@@ -44,7 +44,22 @@ continue below.
 
 ## Docker
 
-To run Koan in a Docker container (for server deployment or local isolation), see the [Docker Setup Guide](docs/docker.md).
+Prefer to run Koan in a container (server deployment or local isolation)? The
+easiest path is the **prebuilt image** on GitHub Container Registry — no local build:
+
+```bash
+git clone https://github.com/Anantys-oss/koan.git && cd koan
+cp -r instance.example instance && cp env.example .env   # fill in messaging + auth creds
+./setup-docker.sh        # detect host paths, generate volume mounts
+make docker-auth         # subscription users: extract a Claude OAuth token from the host
+make docker-gh-auth      # inject your gh token for the container
+make docker-pull-up      # pull ghcr.io/anantys-oss/koan and start (or: make docker-up to build)
+```
+
+The image lives at [`ghcr.io/anantys-oss/koan`](https://github.com/Anantys-oss/koan/pkgs/container/koan)
+with `latest`, `stable`, and per-version tags. Building from source remains a
+first-class fallback. See the [Docker Setup Guide](docs/setup/docker.md) for the
+full walkthrough — authentication, GHCR access, image pinning, and troubleshooting.
 
 ## Prerequisites
 

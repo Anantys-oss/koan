@@ -51,6 +51,10 @@ This isn't a chatbot wrapper. It's a collaborator with memory, personality, and 
 
 ## Quick Start
 
+Run Kōan natively on your machine, or in a container — both are fully supported.
+
+### Native
+
 ```bash
 git clone https://github.com/Anantys-oss/koan.git
 cd koan
@@ -73,6 +77,23 @@ On macOS, keep your machine awake while Koan runs:
 ```bash
 caffeinate -s &
 ```
+
+### Docker
+
+Prefer containers (VPS/server hosting or a sandboxed local run)? Pull the
+prebuilt image from GitHub Container Registry — no local build:
+
+```bash
+git clone https://github.com/Anantys-oss/koan.git && cd koan
+cp -r instance.example instance && cp env.example .env   # then fill in messaging + auth creds
+./setup-docker.sh        # detect host paths, generate mounts
+make docker-pull-up      # pull & run prebuilt image (or: make docker-up to build from source)
+make docker-logs         # watch it work
+```
+
+The image lives at [`ghcr.io/anantys-oss/koan`](https://github.com/Anantys-oss/koan/pkgs/container/koan)
+(`latest`, `stable`, and per-version tags). Full guide — auth, GHCR access, pinning,
+and troubleshooting: [docs/setup/docker.md](docs/setup/docker.md).
 
 That's it. Send it a mission via Telegram: *"audit the auth module for security issues"* — and go live your life.
 
@@ -398,6 +419,8 @@ instance/                 # Your private data (gitignored)
 | `make dashboard` | Web UI (default: http://127.0.0.1:5001) |
 | `make test` | Run test suite |
 | `make say m="..."` | Send a test message |
+| `make docker-pull-up` | Pull the prebuilt GHCR image and run in Docker (recommended) |
+| `make docker-up` | Build the image from source and run in Docker |
 | `make rename-project old=X new=Y` | Rename a project everywhere (dry-run by default, add `apply=1` to execute) |
 | `make clean` | Remove virtualenv |
 

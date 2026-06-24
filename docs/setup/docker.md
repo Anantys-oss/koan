@@ -17,10 +17,12 @@
 - **GitHub CLI (`gh`)** authenticated on the host (for PR/issue operations)
 - A messaging platform configured (**Telegram** or **Slack** — see [INSTALL.md](../../INSTALL.md#2-set-up-a-messaging-platform))
 
-## Quick Start
+## Quick Start (prebuilt image — recommended)
+
+Pull the published image from GitHub Container Registry — no local build needed.
 
 ```bash
-# 1. Clone and enter the repo
+# 1. Clone and enter the repo (needed for compose, setup-docker.sh, env template)
 git clone https://github.com/Anantys-oss/koan.git
 cd koan
 
@@ -51,12 +53,36 @@ make docker-gh-auth
 # Extracts your host's gh token and saves it to .env as GH_TOKEN.
 # Required because macOS Keychain tokens aren't accessible inside Docker.
 
-# 8. Build and start (runs setup-docker.sh first, then starts detached)
-make docker-up
-
-# Or start in the foreground to watch logs directly:
-# docker compose up --build
+# 8. Pull the prebuilt image and start (detached)
+make docker-pull-up
 ```
+
+> **GHCR access.** If `make docker-pull-up` fails with `denied` / `unauthorized`,
+> the package is private. Either ask an org owner to make it public
+> (`github.com/orgs/Anantys-oss → Packages → koan → Package settings →
+> Change visibility → Public`), or log in first with a Personal Access Token that
+> has the `read:packages` scope:
+>
+> ```bash
+> echo "$GH_PAT" | docker login ghcr.io -u YOUR_GH_USERNAME --password-stdin
+> ```
+
+> **Image tags & pinning.** `make docker-pull-up` defaults to
+> `ghcr.io/anantys-oss/koan:latest`. Pin a release with `KOAN_IMAGE`:
+>
+> ```bash
+> make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:stable
+> make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:1.0   # major.minor
+> ```
+>
+> Available tags: `latest`, `stable`, and per-version (`X.Y` / `X.Y.Z`).
+
+> **UID/GID on the prebuilt image.** The published image runs as UID/GID
+> **1000**. On Linux hosts whose user isn't 1000, bind-mounted `instance/` and
+> `logs/` can hit permission errors. If so, either build from source (below —
+> `setup-docker.sh` matches your host UID/GID) or run
+> `chown -R 1000:1000 instance logs`. macOS (Docker Desktop) maps UIDs
+> automatically, so this rarely bites there.
 
 Verify it's running:
 
@@ -66,6 +92,19 @@ docker compose logs -f
 
 # Send a test message (requires messaging to be configured)
 make say m="hello"
+```
+
+## Build from source (fallback)
+
+Build the image locally instead of pulling — useful for contributors, offline
+use, or to match a non-1000 host UID/GID exactly. Follow steps 1–7 above, then:
+
+```bash
+# 8. Build and start (runs setup-docker.sh first, then starts detached)
+make docker-up
+
+# Or start in the foreground to watch logs directly:
+# docker compose up --build
 ```
 
 ## Workspace Setup
@@ -249,19 +288,27 @@ regenerate them after changing your workspace layout.
 ### Make targets
 
 ```bash
-make docker-setup   # Run setup-docker.sh
-make docker-up      # Build and start (detached)
-make docker-down    # Stop the container
-make docker-logs    # Tail container logs
-make docker-test    # Run the test suite inside the container
-make docker-auth    # Extract Claude OAuth token from host CLI → .env
-make docker-gh-auth # Extract GitHub token from host gh CLI → .env
+make docker-setup    # Run setup-docker.sh
+make docker-pull-up  # Pull the prebuilt GHCR image and start (recommended)
+make docker-up       # Build from source and start (detached)
+make docker-down     # Stop the container
+make docker-logs     # Tail container logs
+make docker-test     # Run the test suite inside the container
+make docker-auth     # Extract Claude OAuth token from host CLI → .env
+make docker-gh-auth  # Extract GitHub token from host gh CLI → .env
+
+# Pin a specific published version (defaults to :latest):
+make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:stable
 ```
 
 ### Docker Compose commands
 
 ```bash
-# Start in foreground (see logs directly)
+# Pull the prebuilt image and start (what `make docker-pull-up` runs)
+KOAN_IMAGE=ghcr.io/anantys-oss/koan:latest docker compose pull
+KOAN_IMAGE=ghcr.io/anantys-oss/koan:latest docker compose up -d --no-build
+
+# Build from source and start in foreground (see logs directly)
 docker compose up --build
 
 # Generate OAuth token from host CLI (one-time, for subscription users)
