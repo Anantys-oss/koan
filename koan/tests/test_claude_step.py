@@ -795,7 +795,10 @@ class TestCommitIfChanges:
         Distinct from a timeout (hook hung): here the hook ran, evaluated
         quickly, and objected, so the commit must NOT be bypassed.
         """
-        mock_run.return_value = MagicMock(stdout=" M file.py\n", returncode=0)
+        mock_run.side_effect = [
+            MagicMock(stdout=" M file.py\n", returncode=0),
+            MagicMock(stdout="M  file.py\n", returncode=0),
+        ]
         mock_git.side_effect = [
             "",
             GitCommandError("git commit", 1, "lint failed"),
@@ -805,6 +808,115 @@ class TestCommitIfChanges:
         # The --no-verify retry must NOT have been attempted.
         for c in mock_git.call_args_list:
             assert "--no-verify" not in c.args[0]
+
+    @patch("app.claude_step._precommit_hook_path", return_value="/project/.git/hooks/pre-commit")
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_commit_retries_once_when_hook_modifies_files(
+        self, mock_run, mock_git, _hook,
+    ):
+        """Formatter hooks that mutate files should be staged and retried once."""
+        mock_run.side_effect = [
+            MagicMock(stdout=" M file.py\n", returncode=0),
+            MagicMock(stdout="MM file.py\n", returncode=0),
+        ]
+        mock_git.side_effect = [
+            "",
+            GitCommandError("git commit", 1, "trim trailing whitespace"),
+            "",
+            "",
+        ]
+
+        result = commit_if_changes("/project", "test msg")
+
+        assert result is True
+        assert mock_git.call_args_list == [
+            call(["git", "add", "-A"], cwd="/project"),
+            call(["git", "commit", "-m", "test msg"], cwd="/project", timeout=180),
+            call(["git", "add", "-A"], cwd="/project"),
+            call(["git", "commit", "-m", "test msg"], cwd="/project", timeout=180),
+        ]
+
+    @patch("app.claude_step._precommit_hook_path", return_value="/project/.git/hooks/pre-commit")
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_commit_retry_failure_still_raises(self, mock_run, mock_git, _hook):
+        """A formatter retry is not an excuse to bypass a real hook failure."""
+        mock_run.side_effect = [
+            MagicMock(stdout=" M file.py\n", returncode=0),
+            MagicMock(stdout="MM file.py\n", returncode=0),
+        ]
+        mock_git.side_effect = [
+            "",
+            GitCommandError("git commit", 1, "format changed files"),
+            "",
+            GitCommandError("git commit", 1, "lint still failed"),
+        ]
+
+        with pytest.raises(GitCommandError, match="lint still failed"):
+            commit_if_changes("/project", "test msg")
+
+        for c in mock_git.call_args_list:
+            assert "--no-verify" not in c.args[0]
+
+    @patch("app.claude_step._precommit_hook_path", return_value="/project/.git/hooks/pre-commit")
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_commit_can_bypass_opted_in_hook_rejection(
+        self, mock_run, mock_git, _hook,
+    ):
+        """Rebase feedback can preserve edits when local hooks fail broadly."""
+        mock_run.side_effect = [
+            MagicMock(stdout=" M file.py\n", returncode=0),
+            MagicMock(stdout="M  file.py\n", returncode=0),
+        ]
+        mock_git.side_effect = [
+            "",
+            GitCommandError("git commit", 1, "frontend playwright failed"),
+            "",
+        ]
+
+        result = commit_if_changes(
+            "/project",
+            "test msg",
+            bypass_hook_failures=True,
+        )
+
+        assert result is True
+        assert mock_git.call_args_list == [
+            call(["git", "add", "-A"], cwd="/project"),
+            call(["git", "commit", "-m", "test msg"], cwd="/project", timeout=180),
+            call(["git", "commit", "--no-verify", "-m", "test msg"], cwd="/project"),
+        ]
+
+    @patch("app.claude_step._precommit_hook_path", return_value="/project/.git/hooks/pre-commit")
+    @patch("app.claude_step._run_git")
+    @patch("app.cli_exec.subprocess.run")
+    def test_commit_can_bypass_after_formatter_retry_failure(
+        self, mock_run, mock_git, _hook,
+    ):
+        mock_run.side_effect = [
+            MagicMock(stdout=" M file.py\n", returncode=0),
+            MagicMock(stdout="MM file.py\n", returncode=0),
+        ]
+        mock_git.side_effect = [
+            "",
+            GitCommandError("git commit", 1, "format changed files"),
+            "",
+            GitCommandError("git commit", 1, "frontend playwright failed"),
+            "",
+        ]
+
+        result = commit_if_changes(
+            "/project",
+            "test msg",
+            bypass_hook_failures=True,
+        )
+
+        assert result is True
+        assert mock_git.call_args_list[-1] == call(
+            ["git", "commit", "--no-verify", "-m", "test msg"], cwd="/project",
+        )
 
 
 class TestIsHookRejection:

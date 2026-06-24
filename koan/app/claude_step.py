@@ -500,7 +500,30 @@ def _sanitize_commit_args(commit_args: list) -> list:
     return sanitized
 
 
-def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> None:
+def _has_hook_created_worktree_changes(cwd: str) -> bool:
+    """Return True when a hook left unstaged or untracked changes behind."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, cwd=cwd, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    for line in result.stdout.splitlines():
+        if line.startswith("??"):
+            return True
+        if len(line) >= 2 and line[1] != " ":
+            return True
+    return False
+
+
+def _commit_with_hook_fallback(
+    commit_args: list,
+    cwd: str,
+    run_git=None,
+    bypass_hook_failures: bool = False,
+) -> None:
     """Commit, attempting target-repo pre-commit hooks first.
 
     Project pre-commit hooks (lint/format/test) can exceed the git timeout on
@@ -514,9 +537,11 @@ def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> Non
       watch-mode test runner, or a cold env install). Retry with ``--no-verify``
       so the pipeline makes progress; CI remains the real gate.
     * **Fast non-zero exit** (:class:`GitCommandError`) — when this is a hook
-      *rejection* (see :func:`is_hook_rejection`), the hook evaluated quickly and
-      objected. Surface its output and re-raise — do *not* bypass it. Genuine
-      git errors (exit 128, etc.) also re-raise unchanged.
+      *rejection* (see :func:`is_hook_rejection`), retry once if the hook left
+      formatter changes in the worktree. If ``bypass_hook_failures`` is set,
+      a remaining hook rejection is committed with ``--no-verify``; otherwise
+      surface its output and re-raise. Genuine git errors (exit 128, etc.) also
+      re-raise unchanged.
 
     ``run_git`` defaults to :func:`_run_git`; callers may pass their own
     module-level reference so patches in tests resolve correctly.
@@ -530,7 +555,32 @@ def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> Non
         runner(["git", "commit", "--no-verify", *commit_args], cwd=cwd)
     except GitCommandError as exc:
         if is_hook_rejection(exc, cwd):
-            # Hook ran, evaluated quickly, and objected — respect it.
+            if _has_hook_created_worktree_changes(cwd):
+                log_safe(
+                    "git",
+                    "pre-commit hook modified files; staging and retrying commit once",
+                )
+                runner(["git", "add", "-A"], cwd=cwd)
+                try:
+                    runner(["git", "commit", *commit_args], cwd=cwd, timeout=180)
+                    return
+                except GitCommandError as retry_exc:
+                    if not bypass_hook_failures or not is_hook_rejection(retry_exc, cwd):
+                        raise
+                    log_safe(
+                        "git",
+                        "pre-commit hook still rejected after retry; committing with --no-verify",
+                    )
+                    runner(["git", "commit", "--no-verify", *commit_args], cwd=cwd)
+                    return
+            if bypass_hook_failures:
+                log_safe(
+                    "git",
+                    "pre-commit hook rejected commit; committing with --no-verify",
+                )
+                runner(["git", "commit", "--no-verify", *commit_args], cwd=cwd)
+                return
+            # Hook ran, evaluated quickly, and objected without auto-fixing.
             log_safe(
                 "git",
                 f"pre-commit hook rejected the commit (exit {exc.returncode}): "
@@ -546,7 +596,12 @@ def _commit_with_hook_fallback(commit_args: list, cwd: str, run_git=None) -> Non
         raise
 
 
-def commit_if_changes(project_path: str, message: str) -> bool:
+def commit_if_changes(
+    project_path: str,
+    message: str,
+    *,
+    bypass_hook_failures: bool = False,
+) -> bool:
     """Stage all changes and commit if there are any.
 
     Returns True if a commit was created.
@@ -560,7 +615,12 @@ def commit_if_changes(project_path: str, message: str) -> bool:
         return False
 
     _run_git(["git", "add", "-A"], cwd=project_path)
-    _commit_with_hook_fallback(["-m", message], project_path, _run_git)
+    _commit_with_hook_fallback(
+        ["-m", message],
+        project_path,
+        _run_git,
+        bypass_hook_failures=bypass_hook_failures,
+    )
     return True
 
 
@@ -577,6 +637,7 @@ def run_claude_step(
     max_duration: Optional[int] = None,
     use_skill: bool = False,
     use_convention_subject: bool = False,
+    bypass_hook_failures: bool = False,
 ) -> StepResult:
     """Run a Claude Code step: invoke CLI, commit changes, log result.
 
@@ -632,7 +693,11 @@ def run_claude_step(
             parsed = parse_commit_subject(cleaned_output)
             if parsed:
                 effective_msg = _sanitize_commit_subject(parsed)
-        committed = commit_if_changes(project_path, effective_msg)
+        committed = commit_if_changes(
+            project_path,
+            effective_msg,
+            bypass_hook_failures=bypass_hook_failures,
+        )
         if committed and success_label:
             actions_log.append(success_label)
         return StepResult(committed=committed, output=cleaned_output)

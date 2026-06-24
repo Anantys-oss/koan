@@ -663,6 +663,14 @@ reported in the rebase summary but do not fail an otherwise successful rebase.
 
 When `/rebase` runs long, Kōan uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout), Kōan now restores the clean rebased checkpoint and still pushes the rebase (without partial feedback edits), so timeout noise does not discard a valid rebase. If the feedback step hits a *provider quota limit*, the rebase still stops so you can retry after quota reset. Any other transient feedback error remains best-effort and does not block pushing the rebase.
 
+When a target repository pre-commit hook formats files during the feedback
+commit, Kōan stages the hook-created edits and retries the commit once. If local
+hooks still reject the feedback commit, Kōan commits the feedback with
+`--no-verify` so valid review edits are not discarded by broad local gates; CI
+remains the final validation. If the feedback step itself still fails, Kōan
+pushes the clean rebase and reports that review feedback was not applied instead
+of labeling the result as a simple rebase.
+
 After completion, Kōan posts a structured comment on the PR with these sections:
 
 1. **Summary** — Classifies the rebase (simple / with adjustments / with conflict resolution)
