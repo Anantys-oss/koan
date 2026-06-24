@@ -15,7 +15,8 @@ Provides:
 - get_project_github_authorized_users(config, name) -> list: Get GitHub authorized users
 - get_project_issue_tracker(config, name) -> dict: Get issue tracker routing config
 
-File location: projects.yaml at KOAN_ROOT (next to .env).
+File location: resolved by resolve_projects_config_path() — instance/projects.yaml
+(persistent volume) takes priority, then projects.yaml at KOAN_ROOT (next to .env).
 """
 
 import sys
@@ -32,8 +33,47 @@ _cache_lock = threading.Lock()
 _cache: dict = {}  # (koan_root, yaml_path) -> (mtime, result)
 
 
+def resolve_projects_config_path(koan_root: str) -> Path:
+    """Resolve the projects.yaml path with priority order.
+
+    1. ``instance/projects.yaml`` (highest priority — persistent on a
+       managed/hosted deployment's volume, decoupled from the public repo).
+    2. ``projects.yaml`` at KOAN_ROOT (repo-root fallback for local/dev).
+
+    Returns the first existing path. If neither exists, returns the repo-root
+    path (backward-compatible default for local installs).
+    """
+    instance_path = Path(koan_root) / "instance" / "projects.yaml"
+    if instance_path.exists():
+        return instance_path
+    return Path(koan_root) / "projects.yaml"
+
+
+def resolve_projects_config_write_path(koan_root: str) -> Path:
+    """Resolve the projects.yaml path to write/create.
+
+    Mirrors :func:`resolve_projects_config_path` for reads, but for first-time
+    creation (neither file exists) prefers ``instance/projects.yaml`` when an
+    ``instance/`` directory is present — so config persists on a managed
+    deployment's volume instead of the ephemeral repo root.
+    """
+    instance_path = Path(koan_root) / "instance" / "projects.yaml"
+    if instance_path.exists():
+        return instance_path
+    root_path = Path(koan_root) / "projects.yaml"
+    if root_path.exists():
+        return root_path
+    # Neither exists: prefer instance/ when the volume directory is present.
+    if (Path(koan_root) / "instance").is_dir():
+        return instance_path
+    return root_path
+
+
 def load_projects_config(koan_root: str) -> Optional[dict]:
     """Load projects.yaml from KOAN_ROOT.
+
+    Resolves the file via :func:`resolve_projects_config_path` —
+    ``instance/projects.yaml`` wins over the repo-root file when present.
 
     Returns the parsed config dict, or None if file doesn't exist.
     Raises ValueError on invalid YAML or schema violations.
@@ -41,7 +81,7 @@ def load_projects_config(koan_root: str) -> Optional[dict]:
     Results are cached by file mtime — repeated calls with an unchanged
     file return the cached dict without re-reading the YAML.
     """
-    config_path = Path(koan_root) / "projects.yaml"
+    config_path = resolve_projects_config_path(koan_root)
     if not config_path.exists():
         return None
 
@@ -738,7 +778,10 @@ def save_projects_config(koan_root: str, config: dict) -> None:
     """
     from app.utils import atomic_write
 
-    config_path = Path(koan_root) / "projects.yaml"
+    # Write to the resolved target (instance/ wins when present; first-time
+    # creation prefers instance/ when the volume exists), so updates persist
+    # on the deployment's persistent volume.
+    config_path = resolve_projects_config_write_path(koan_root)
 
     try:
         from ruamel.yaml import YAML

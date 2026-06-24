@@ -123,7 +123,9 @@ def rename_journal_files(instance_dir: Path, old_name: str, new_name: str, dry_r
 
 def run_rename(koan_root: Path, old_name: str, new_name: str, dry_run: bool = True):
     """Execute the full rename operation."""
-    yaml_path = koan_root / "projects.yaml"
+    from app.projects_config import resolve_projects_config_path
+
+    yaml_path = resolve_projects_config_path(str(koan_root))
     instance_dir = koan_root / "instance"
 
     if not yaml_path.exists():

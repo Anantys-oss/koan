@@ -191,6 +191,13 @@ Dockerfile and rebuild (`docker compose up --build`).
 | `projects.docker.yaml` | `/app/projects.docker.yaml` | Project config template (copied to `projects.yaml` on startup) |
 | `~/.config/gh` | `/home/koan/.config/gh` | GitHub CLI auth (read-only) |
 
+> **Persistent project config on managed deployments.** Koan resolves
+> `projects.yaml` with priority: **`instance/projects.yaml` first**, then the
+> repo-root `projects.yaml`. On hosted/containerized deployments (e.g. Railway)
+> only the `instance/` volume persists across re-deploys — placing your config
+> at `instance/projects.yaml` keeps it from being wiped when the ephemeral repo
+> root is reset. Startup logs print the resolved path and its origin.
+
 > **Workspace mounts are per-project and dynamic.** The base `docker-compose.yml`
 > contains no workspace mounts. `setup-docker.sh` resolves each `workspace/<name>`
 > symlink to its real host path and writes individual bind mounts into
