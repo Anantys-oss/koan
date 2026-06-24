@@ -1670,6 +1670,19 @@ class TestBuildRebasePrompt:
         assert "fix this" in prompt
         assert "Please fix" in prompt
 
+    def test_includes_review_protocol(self):
+        """The receiving-code-review {@include} fragment resolves in the prompt."""
+        context = {
+            "title": "T", "body": "", "branch": "br", "base": "main",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        prompt = _build_rebase_prompt(context, skill_dir=REBASE_SKILL_DIR)
+        # Protocol markers — present means the {@include} fragment resolved
+        # rather than leaking the literal directive into the agent prompt.
+        assert "VERIFY" in prompt
+        assert "EVALUATE" in prompt
+        assert "{@include" not in prompt
+
     def test_prompt_without_skill_dir_falls_back(self):
         """Without skill_dir, falls back to system-prompts directory."""
         context = {

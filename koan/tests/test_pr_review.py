@@ -627,6 +627,26 @@ class TestBuildPrPrompt:
         assert "fix this" in prompt
         assert "needs work" in prompt
 
+    def test_includes_review_protocol(self):
+        """The receiving-code-review protocol fragment is injected into the prompt."""
+        ctx = {
+            "title": "Test PR",
+            "body": "Description",
+            "branch": "fix-branch",
+            "base": "main",
+            "diff": "+some code",
+            "review_comments": "fix this",
+            "reviews": "needs work",
+            "issue_comments": "thread",
+        }
+        prompt = build_pr_prompt(ctx, skill_dir=PR_SKILL_DIR)
+        # Protocol markers — present means the {@include} fragment resolved.
+        assert "VERIFY" in prompt
+        assert "EVALUATE" in prompt
+        assert "YAGNI" in prompt
+        # The contradicting "still implement it" instruction must be gone.
+        assert "note it but still implement it" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # build_refactor_prompt / build_quality_review_prompt

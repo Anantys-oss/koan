@@ -132,6 +132,15 @@ class TestBuildRecreatePrompt:
         prompt = _build_recreate_prompt(pr_context, skill_dir=skill_dir)
         assert "looks good" in prompt
 
+    def test_includes_review_protocol(self, pr_context, skill_dir):
+        """The receiving-code-review {@include} fragment resolves in the prompt."""
+        prompt = _build_recreate_prompt(pr_context, skill_dir=skill_dir)
+        # Protocol markers — present means the {@include} fragment resolved
+        # rather than leaking the literal directive into the agent prompt.
+        assert "VERIFY" in prompt
+        assert "EVALUATE" in prompt
+        assert "{@include" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # _build_recreate_comment
