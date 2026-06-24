@@ -136,6 +136,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`issue_tracker/github.py`** — `GitHubIssueTracker` — GitHub Issues/PRs backend via `gh` CLI
 - **`issue_tracker/jira.py`** — `JiraIssueTracker` — Jira backend via REST API
 - **`issue_tracker/types.py`** — Shared data types (`IssueRef`, `IssueContent`)
+- **`issue_tracker/enrichment.py`** — PR-review issue context enrichment. Parses tracker references (`PROJ-123` Jira keys / `owner/repo#123` cross-repo GitHub refs) out of a PR body, fetches a short summary via the project's configured provider, and returns a capped `{ISSUE_CONTEXT}` block for the review prompt. Best-effort: every path returns `""` on failure. Gated by `review_issue_context.enabled` (default on) and wired into `review_runner.build_review_prompt()`.
 - **`issue_tracker/__init__.py`** — Service layer: `fetch_issue()`, `add_comment()`, `create_issue()`, `find_existing_plan_issue()`. Callers use these instead of branching on GitHub vs Jira.
 - **`issue_cli.py`** — CLI entry point for issue tracker operations (fetch, comment, create) — used by prompts and subprocesses
 - **`notification_config.py`** — Shared notification polling configuration helpers (interval resolution across GitHub/Jira providers)

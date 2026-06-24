@@ -31,6 +31,26 @@ Controlled PR creation paths append a shared Kōan footer to PR bodies and
 review comments. The footer includes best-effort provider/model attribution,
 the submitted HEAD SHA, and elapsed runtime when that metadata is available.
 
+## Review Issue-Tracker Enrichment
+
+When `/review` builds a PR review prompt, it can enrich the prompt with the
+referenced tracker issue so Claude reviews the change against its stated intent.
+References are parsed out of the PR body:
+
+- **Jira** — keys like `PROJ-123`. Fetched via the existing Jira credentials in
+  `config.yaml` (`jira:` section). Only runs for projects whose `issue_tracker`
+  in `projects.yaml` maps a `jira_project`.
+- **GitHub** — cross-repo refs like `owner/repo#123`, fetched via the existing
+  `gh` CLI auth. In-repo `#123` refs are intentionally ignored (ambiguous
+  without the current repo).
+
+The backend is selected by the project's `issue_tracker.provider`. Output is
+best-effort (any failure is silently skipped), with per-ticket excerpts capped
+at 500 chars and the whole injected block at 1000 chars. Disable globally with
+`review_issue_context.enabled: false` in `config.yaml` (default enabled). The
+fetched block is injected into the standard `review` prompt as `{ISSUE_CONTEXT}`.
+Implemented in `koan/app/issue_tracker/enrichment.py`.
+
 ## Trackers
 
 Tracker files in `instance/` prevent duplicate work across daemon iterations.

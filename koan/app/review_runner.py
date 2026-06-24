@@ -584,6 +584,36 @@ def _format_prior_review(prior_review: Optional[str], max_chars: int) -> str:
     return text
 
 
+def _resolve_issue_context(
+    context: dict,
+    project_name: str = "",
+    project_path: str = "",
+) -> str:
+    """Fetch tracker issue context for the review prompt.
+
+    Best-effort: returns "" when enrichment is disabled, no project is known,
+    or any fetch fails. Never raises — a tracker problem must not abort a
+    review.
+    """
+    if not project_name:
+        return ""
+    try:
+        from app.config import get_review_issue_context_config
+
+        if not get_review_issue_context_config()["enabled"]:
+            return ""
+        from app.issue_tracker.enrichment import fetch_issue_context
+
+        return fetch_issue_context(
+            context.get("body") or "",
+            project_name=project_name,
+            project_path=project_path or "",
+        )
+    except Exception as e:
+        log("review", f"issue context enrichment skipped: {e}")
+        return ""
+
+
 def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
@@ -595,6 +625,7 @@ def build_review_prompt(
     triaged_files: Optional[list] = None,
     project_name: str = "",
     prior_review: Optional[str] = None,
+    issue_context: Optional[str] = None,
 ) -> str:
     """Build a prompt for Claude to review a PR.
 
@@ -685,6 +716,9 @@ def build_review_prompt(
         )
         skipped_note = skipped_note + triage_note
 
+    if issue_context is None:
+        issue_context = _resolve_issue_context(context, project_name, project_path)
+
     kwargs: dict = dict(
         TITLE=context["title"],
         AUTHOR=context["author"],
@@ -699,6 +733,7 @@ def build_review_prompt(
         PRIOR_REVIEW=prior_review_block,
         PROJECT_MEMORY=project_memory,
         SKIPPED_FILES=skipped_note,
+        ISSUE_CONTEXT=issue_context or "",
     )
 
     if plan_body:
