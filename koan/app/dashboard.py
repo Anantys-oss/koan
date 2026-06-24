@@ -30,6 +30,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
 from app.cli_provider import build_full_command
 from app.log_reader import LOG_DEFAULT_LIMIT, read_logs
+from app.usage_service import build_usage_payload
 from app.config import (
     get_allowed_tools,
     get_tools_description,
@@ -787,250 +788,26 @@ def usage_page():
     return render_template("usage.html")
 
 
-def _empty_project_bucket() -> dict:
-    return {
-        "total_input": 0,
-        "total_output": 0,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "count": 0,
-    }
-
-
-def _recompute_cache_hit_rates(buckets: dict) -> None:
-    from app.token_parser import compute_cache_hit_rate
-
-    for b in buckets.values():
-        b["cache_hit_rate"] = compute_cache_hit_rate(
-            b["total_input"],
-            b["cache_read_input_tokens"],
-            b["cache_creation_input_tokens"],
-        )
-        if "by_project" in b:
-            for bp in b["by_project"].values():
-                bp["cache_hit_rate"] = compute_cache_hit_rate(
-                    bp["total_input"],
-                    bp["cache_read_input_tokens"],
-                    bp["cache_creation_input_tokens"],
-                )
-
-
-def _bucket_by_week(series: list) -> list:
-    """Aggregate daily series into ISO-week buckets."""
-    buckets: dict = {}
-    for entry in series:
-        d = date.fromisoformat(entry["date"])
-        iso_year, iso_week, _ = d.isocalendar()
-        key = (iso_year, iso_week)
-        if key not in buckets:
-            monday = d - timedelta(days=d.weekday())
-            sunday = monday + timedelta(days=6)
-            bucket: dict = {
-                "week": f"{iso_year}-W{iso_week:02d}",
-                "date": monday.isoformat(),
-                "start": monday.isoformat(),
-                "end": sunday.isoformat(),
-                "total_input": 0,
-                "total_output": 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-                "count": 0,
-                "cost": None,
-            }
-            if "by_project" in entry:
-                bucket["by_project"] = {}
-            buckets[key] = bucket
-        b = buckets[key]
-        b["total_input"] += entry.get("total_input", 0)
-        b["total_output"] += entry.get("total_output", 0)
-        b["cache_creation_input_tokens"] += entry.get("cache_creation_input_tokens", 0)
-        b["cache_read_input_tokens"] += entry.get("cache_read_input_tokens", 0)
-        b["count"] += entry.get("count", 0)
-        entry_cost = entry.get("cost")
-        if entry_cost is not None:
-            b["cost"] = (b["cost"] or 0.0) + entry_cost
-        if "by_project" in entry and "by_project" in b:
-            for proj, pdata in entry["by_project"].items():
-                if proj not in b["by_project"]:
-                    b["by_project"][proj] = _empty_project_bucket()
-                bp = b["by_project"][proj]
-                bp["total_input"] += pdata.get("total_input", 0)
-                bp["total_output"] += pdata.get("total_output", 0)
-                bp["cache_creation_input_tokens"] += pdata.get("cache_creation_input_tokens", 0)
-                bp["cache_read_input_tokens"] += pdata.get("cache_read_input_tokens", 0)
-                bp["count"] += pdata.get("count", 0)
-
-    _recompute_cache_hit_rates(buckets)
-    return [buckets[k] for k in sorted(buckets.keys())]
-
-
-def _bucket_by_month(series: list) -> list:
-    """Aggregate daily series into calendar-month buckets."""
-    buckets: dict = {}
-    for entry in series:
-        d = date.fromisoformat(entry["date"])
-        key = (d.year, d.month)
-        if key not in buckets:
-            bucket: dict = {
-                "month": f"{d.year}-{d.month:02d}",
-                "date": f"{d.year}-{d.month:02d}-01",
-                "total_input": 0,
-                "total_output": 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-                "count": 0,
-                "cost": None,
-            }
-            if "by_project" in entry:
-                bucket["by_project"] = {}
-            buckets[key] = bucket
-        b = buckets[key]
-        b["total_input"] += entry.get("total_input", 0)
-        b["total_output"] += entry.get("total_output", 0)
-        b["cache_creation_input_tokens"] += entry.get("cache_creation_input_tokens", 0)
-        b["cache_read_input_tokens"] += entry.get("cache_read_input_tokens", 0)
-        b["count"] += entry.get("count", 0)
-        entry_cost = entry.get("cost")
-        if entry_cost is not None:
-            b["cost"] = (b["cost"] or 0.0) + entry_cost
-        if "by_project" in entry and "by_project" in b:
-            for proj, pdata in entry["by_project"].items():
-                if proj not in b["by_project"]:
-                    b["by_project"][proj] = _empty_project_bucket()
-                bp = b["by_project"][proj]
-                bp["total_input"] += pdata.get("total_input", 0)
-                bp["total_output"] += pdata.get("total_output", 0)
-                bp["cache_creation_input_tokens"] += pdata.get("cache_creation_input_tokens", 0)
-                bp["cache_read_input_tokens"] += pdata.get("cache_read_input_tokens", 0)
-                bp["count"] += pdata.get("count", 0)
-
-    _recompute_cache_hit_rates(buckets)
-    return [buckets[k] for k in sorted(buckets.keys())]
-
-
 @app.route("/api/usage")
 def api_usage():
     """JSON usage data for the specified time range."""
-    from app.cost_tracker import (
-        summarize_range,
-        get_pricing_config,
-        estimate_cost,
-        estimate_cache_savings,
-        daily_series,
-    )
-    import calendar as _calendar
-
-    days = request.args.get("days", "7", type=str)
-    selected_project = request.args.get("project", "")
-    granularity = request.args.get("granularity", "day")
-    if granularity not in ("day", "week", "month"):
-        granularity = "day"
-    stacked = request.args.get("stacked", "false").lower() in ("true", "1", "yes")
-    offset_raw = request.args.get("offset", "0", type=str)
-
     try:
-        days = int(days)
-        days = max(1, min(days, 100))
+        days = int(request.args.get("days", "7"))
     except (ValueError, TypeError):
         days = 7
-
     try:
-        offset = int(offset_raw)
-        offset = max(0, offset)
+        offset = int(request.args.get("offset", "0"))
     except (ValueError, TypeError):
         offset = 0
-
-    today = date.today()
-    if granularity == "week":
-        # Shift by offset ISO weeks (7 days each)
-        end = today - timedelta(weeks=offset)
-        start = end - timedelta(days=days - 1)
-    elif granularity == "month":
-        # Shift end date back by offset calendar months
-        year, month = today.year, today.month
-        month -= offset
-        while month <= 0:
-            month += 12
-            year -= 1
-        last_day = _calendar.monthrange(year, month)[1]
-        end = date(year, month, min(today.day, last_day))
-        start = end - timedelta(days=days - 1)
-    else:
-        # day: shift by offset * days
-        end = today - timedelta(days=offset * days)
-        start = end - timedelta(days=days - 1)
-
-    summary = summarize_range(INSTANCE_DIR, start, end)
-
-    by_project = summary["by_project"]
-    if selected_project and by_project:
-        by_project = {k: v for k, v in by_project.items() if k == selected_project}
-
-    pricing = get_pricing_config()
-
-    # Compute aggregate estimated cost across all models
-    estimated_cost = None
-    if pricing and summary["by_model"]:
-        total_cost = 0.0
-        for model_id, model_data in summary["by_model"].items():
-            model_tokens = {
-                "model": model_id,
-                "input_tokens": model_data["input_tokens"],
-                "output_tokens": model_data["output_tokens"],
-            }
-            c = estimate_cost(model_tokens, pricing)
-            if c is not None:
-                total_cost += c
-                model_data["cost_usd"] = c
-        estimated_cost = total_cost
-
-    # Per-day time series, optionally with per-project breakdown
-    series = daily_series(
-        INSTANCE_DIR, start, end,
-        project=selected_project or None,
-        include_by_project=stacked,
-    )
-
-    # Bucket into weeks or months if requested
-    if granularity == "week":
-        series = _bucket_by_week(series)
-    elif granularity == "month":
-        series = _bucket_by_month(series)
-
-    estimated_cache_savings = estimate_cache_savings(summary, pricing)
-
-    response_data: dict = {
-        "days": days,
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "total_input": summary["total_input"],
-        "total_output": summary["total_output"],
-        "cache_creation_input_tokens": summary["cache_creation_input_tokens"],
-        "cache_read_input_tokens": summary["cache_read_input_tokens"],
-        "cache_hit_rate": summary["cache_hit_rate"],
-        "count": summary["count"],
-        "by_project": by_project,
-        "by_model": summary["by_model"],
-        "has_pricing": pricing is not None,
-        "estimated_cost": estimated_cost,
-        "estimated_cache_savings": estimated_cache_savings,
-        "series": series,
-        "granularity": granularity,
-        "offset": offset,
-    }
-
-    if selected_project:
-        proj_and_type = summary.get("by_project_and_type", {})
-        response_data["by_type"] = proj_and_type.get(selected_project, {})
-        proj_and_mode = summary.get("by_project_and_mode", {})
-        response_data["by_mode"] = proj_and_mode.get(selected_project, {})
-    else:
-        response_data["by_type"] = summary.get("by_type", {})
-        response_data["by_mode"] = summary.get("by_mode", {})
-    response_data["by_project_and_type"] = summary.get("by_project_and_type", {})
-    response_data["by_project_and_mode"] = summary.get("by_project_and_mode", {})
-
-    return jsonify(response_data)
+    stacked = request.args.get("stacked", "false").lower() in ("true", "1", "yes")
+    return jsonify(build_usage_payload(
+        INSTANCE_DIR,
+        days=days,
+        project=request.args.get("project", ""),
+        granularity=request.args.get("granularity", "day"),
+        stacked=stacked,
+        offset=offset,
+    ))
 
 
 @app.route("/api/usage/missions")
