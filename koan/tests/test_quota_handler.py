@@ -1592,3 +1592,38 @@ class TestCLI:
             env={**os.environ, "PYTHONPATH": os.path.join(os.path.dirname(__file__), "..")}
         )
         assert result.returncode == 1
+
+
+class TestFormatBurnRateSingleLoad:
+    """_format_burn_rate must share one snapshot across both metrics."""
+
+    def _seed(self, instance_dir):
+        # Five samples one minute apart, 1.0% each → enough for an estimate.
+        from datetime import datetime, timedelta, timezone
+        from app import burn_rate
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for i in range(5):
+            burn_rate.record_run(
+                instance_dir, 1.0, timestamp=base + timedelta(minutes=i),
+            )
+
+    def test_loads_state_once(self, tmp_path):
+        from app import burn_rate
+        from skills.core.quota.handler import _format_burn_rate
+        self._seed(tmp_path)
+
+        real_load = burn_rate._load_state
+        with patch(
+            "app.burn_rate._load_state", side_effect=real_load
+        ) as spy:
+            lines = _format_burn_rate(tmp_path, session_pct=40.0)
+
+        assert spy.call_count == 1
+        assert len(lines) == 1
+        assert "%/h" in lines[0]
+        assert "left" in lines[0]
+
+    def test_returns_empty_without_enough_history(self, tmp_path):
+        from skills.core.quota.handler import _format_burn_rate
+        # No samples → rate is None → no line.
+        assert _format_burn_rate(tmp_path, session_pct=40.0) == []
