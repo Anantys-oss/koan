@@ -1866,3 +1866,53 @@ projects:
 """)
         config = load_projects_config(koan_root)
         assert get_project_devcontainer_enabled(config, "myapp") is True
+
+
+# ---------------------------------------------------------------------------
+# Projects.yaml path resolution (instance/ priority — issue #2074)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProjectsConfigPath:
+    """instance/projects.yaml must win over repo-root projects.yaml."""
+
+    YAML_ROOT = "projects:\n  rootapp:\n    path: /tmp/rootapp\n"
+    YAML_INSTANCE = "projects:\n  instanceapp:\n    path: /tmp/instanceapp\n"
+
+    def test_instance_takes_priority(self, tmp_path):
+        from app.projects_config import resolve_projects_config_path
+        (tmp_path / "projects.yaml").write_text(self.YAML_ROOT)
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "projects.yaml").write_text(self.YAML_INSTANCE)
+
+        resolved = resolve_projects_config_path(str(tmp_path))
+        assert resolved == tmp_path / "instance" / "projects.yaml"
+
+    def test_root_fallback_when_no_instance(self, tmp_path):
+        from app.projects_config import resolve_projects_config_path
+        (tmp_path / "projects.yaml").write_text(self.YAML_ROOT)
+
+        resolved = resolve_projects_config_path(str(tmp_path))
+        assert resolved == tmp_path / "projects.yaml"
+
+    def test_returns_root_path_when_neither_exists(self, tmp_path):
+        from app.projects_config import resolve_projects_config_path
+        resolved = resolve_projects_config_path(str(tmp_path))
+        assert resolved == tmp_path / "projects.yaml"
+
+    def test_load_prefers_instance_config(self, tmp_path):
+        (tmp_path / "projects.yaml").write_text(self.YAML_ROOT)
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "projects.yaml").write_text(self.YAML_INSTANCE)
+
+        config = load_projects_config(str(tmp_path))
+        assert config is not None
+        assert "instanceapp" in config["projects"]
+        assert "rootapp" not in config["projects"]
+
+    def test_load_falls_back_to_root(self, tmp_path):
+        (tmp_path / "projects.yaml").write_text(self.YAML_ROOT)
+
+        config = load_projects_config(str(tmp_path))
+        assert config is not None
+        assert "rootapp" in config["projects"]

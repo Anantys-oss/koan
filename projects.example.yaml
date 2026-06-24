@@ -3,6 +3,12 @@
 # Place this file at your KOAN_ROOT (next to .env).
 # Not versioned — copy from projects.example.yaml and customize.
 #
+# RESOLUTION PRIORITY:
+#   1. instance/projects.yaml  (highest — lives on the persistent volume;
+#      use this on managed/hosted deployments e.g. Railway, where the repo
+#      root is ephemeral and wiped on every re-deploy)
+#   2. projects.yaml at KOAN_ROOT (repo-root fallback for local/dev usage)
+#
 # THREE WAYS TO CONFIGURE PROJECTS:
 #
 # 1. Workspace only (zero config):

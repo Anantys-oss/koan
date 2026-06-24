@@ -72,11 +72,16 @@ def ensure_projects_yaml(koan_root: str) -> list[str]:
     """
     import yaml
 
+    from app.projects_config import resolve_projects_config_path
     from app.utils import atomic_write
 
-    projects_yaml = Path(koan_root) / "projects.yaml"
-    if projects_yaml.exists():
+    # If a config already exists at either location (instance/ or repo root),
+    # do nothing — never clobber or shadow the operator's persistent config.
+    resolved = resolve_projects_config_path(koan_root)
+    if resolved.exists():
         return []
+
+    projects_yaml = Path(koan_root) / "projects.yaml"
 
     data = {
         "defaults": {
@@ -565,6 +570,16 @@ def run_startup(koan_root: str, instance: str, projects: list):
         if msgs:
             for msg in msgs:
                 log("init", f"[projects] {msg}")
+        try:
+            from app.projects_config import resolve_projects_config_path
+            resolved = resolve_projects_config_path(koan_root)
+            origin = "instance volume" if "instance" in resolved.parts else "repo root"
+            if resolved.exists():
+                log("init", f"[projects] Loaded projects.yaml from {origin}: {resolved}")
+            else:
+                log("init", f"[projects] No projects.yaml found (looked in instance/ then repo root: {resolved})")
+        except Exception as exc:
+            log("warn", f"Failed to resolve projects.yaml path: {exc}")
         _safe_run("Memory JSONL migration", migrate_memory_to_jsonl, instance)
         _safe_run("Memory SQLite indexing", index_memory_sqlite, instance)
         _safe_run("GitHub URL population", populate_github_urls, koan_root)
