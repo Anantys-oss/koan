@@ -9,8 +9,10 @@ from app.github_skill_helpers import (
     parse_limit,
     parse_repo_url,
     resolve_project_for_repo,
+    resolve_project_via_pr,
     format_project_not_found_error,
     queue_github_mission,
+    split_review_targets as _split_review_targets,
 )
 
 
@@ -56,6 +58,10 @@ def handle(ctx):
     if repo_match:
         return _handle_batch(ctx, args, repo_match)
 
+    multi_result = _handle_multi_target(ctx, args, urgent=urgent)
+    if multi_result:
+        return multi_result
+
     # Single PR/issue mode: delegate to unified handler
     return handle_github_skill(
         ctx,
@@ -97,3 +103,43 @@ def _handle_batch(ctx, args: str, repo_match: Tuple[str, str, str]) -> str:
     if queued == 0:
         return f"All PRs from {owner}/{repo} already queued or running{limit_note}."
     return f"Queued {queued} /review missions for {owner}/{repo}{limit_note}."
+
+
+def _handle_multi_target(ctx, args: str, *, urgent: bool = False) -> Optional[str]:
+    """Queue one review mission per PR/issue URL when multiple targets are supplied."""
+    urls, context = _split_review_targets(args)
+    if len(urls) <= 1:
+        return None
+
+    queued = 0
+    duplicates = 0
+    errors = []
+
+    for url in urls:
+        try:
+            owner, repo, target_type, number = parse_github_url(url)
+        except ValueError as e:
+            errors.append(str(e))
+            continue
+
+        project_path, project_name = resolve_project_for_repo(repo, owner=owner)
+        if not project_path and target_type == "pull":
+            project_path, project_name = resolve_project_via_pr(owner, repo, number)
+        if not project_path:
+            errors.append(f"Could not find local project for {owner}/{repo} #{number}.")
+            continue
+
+        if queue_github_mission(ctx, "review", url, project_name, context, urgent=urgent):
+            queued += 1
+        else:
+            duplicates += 1
+
+    priority = " priority" if urgent else ""
+    parts = []
+    if queued:
+        parts.append(f"Queued {queued}{priority} /review missions.")
+    if duplicates:
+        parts.append(f"{duplicates} duplicate already queued or running.")
+    if errors:
+        parts.extend(f"\u274c {error}" for error in errors)
+    return "\n".join(parts) if parts else "No review missions queued."

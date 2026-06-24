@@ -247,6 +247,23 @@ def get_review_scan_interval_minutes(config: dict) -> int:
         return 15
 
 
+def get_mention_scan_interval_minutes(config: dict) -> int:
+    """Minimum minutes between fallback @mention scans of the same repo.
+
+    Notifications are still the primary GitHub command path. This scan is a
+    bounded fallback for cases where GitHub records a mention in the timeline
+    but does not return a notification thread to the bot account.
+
+    Default: 5 minutes. ``0`` disables throttling (scan every poll). Floor: 0.
+    """
+    github = config.get("github") or {}
+    try:
+        val = int(github.get("mention_scan_interval_minutes", 5))
+        return max(0, val)
+    except (ValueError, TypeError):
+        return 5
+
+
 def get_github_ack_enabled(config: dict) -> bool:
     """Check if command acknowledgment replies are enabled.
 

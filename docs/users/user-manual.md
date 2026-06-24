@@ -554,9 +554,10 @@ The debug loop enforces four steps:
 
 **`/review`** — Queue a code review for a pull request or issue.
 
-- **Usage:** `/review <github-pr-or-issue-url> [--architecture] [--errors] [--comments] [--bot-comments] [--plan-url <issue-url>]`
+- **Usage:** `/review <github-pr-or-issue-url> [additional-pr-or-issue-url ...] [--architecture] [--errors] [--comments] [--bot-comments] [--plan-url <issue-url>]`
 - **Aliases:** `/rv`
 - **GitHub @mention:** `@koan-bot /review` on a PR
+- **Multiple URLs:** Queues one independent review mission per PR/issue URL. Shared flags such as `--errors` and `--plan-url <issue-url>` are applied to each queued review.
 - **Flags:**
   - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
@@ -576,6 +577,7 @@ The debug loop enforces four steps:
 - `/review https://github.com/org/repo/pull/55 --comments` — Comment quality review
 - `/review https://github.com/org/repo/pull/55 --bot-comments` — Triage and reply to bot review comments
 - `/review https://github.com/org/repo/pull/55 --architecture --errors` — Both passes
+- `/review https://github.com/org/repo/pull/55 https://github.com/org/repo/pull/56 --errors` — Queue separate error-focused reviews for both PRs
 </details>
 
 **`/ultrareview`** — Queue the most thorough review Kōan can run for a PR.
@@ -2186,7 +2188,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
 | `/debug <issue>` | `/dbg` | I | Structured 4-step debug loop (reproduce → hypothesize → fix → verify) |
-| `/review <PR> [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review a pull request |
+| `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review one or more pull requests |
 | `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |

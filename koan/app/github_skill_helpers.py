@@ -12,7 +12,11 @@ Common utilities for skills that interact with GitHub PRs and issues:
 import re
 from typing import Callable, Optional, Tuple
 
-from app.github_url_parser import JIRA_ISSUE_URL_PATTERN, is_jira_url
+from app.github_url_parser import (
+    JIRA_ISSUE_URL_PATTERN,
+    PR_OR_ISSUE_PATTERN,
+    is_jira_url,
+)
 
 
 _LIMIT_PATTERN = re.compile(r'--limit[=\s]+(\d+)', re.IGNORECASE)
@@ -119,6 +123,49 @@ def extract_github_url(args: str, url_type: str = "pr-or-issue") -> Optional[Tup
     url = match.group(0).split("#")[0]  # Remove fragment
     context = args[match.end():].strip()
     return url, context if context else None
+
+
+def split_review_targets(args: str) -> Tuple[list[str], Optional[str]]:
+    """Split /review args into review target URLs and shared trailing context.
+
+    The ``--plan-url`` flag accepts a GitHub issue URL, but that URL is
+    supporting context for every review target rather than a target itself.
+    """
+    urls = []
+    context_tokens = []
+    consume_plan_value = False
+
+    for token in args.split():
+        if consume_plan_value:
+            context_tokens.append(token)
+            consume_plan_value = False
+            continue
+
+        if token == "--plan-url":
+            context_tokens.append(token)
+            consume_plan_value = True
+            continue
+
+        if token.startswith("--plan-url="):
+            context_tokens.append(token)
+            continue
+
+        url = _extract_review_target_url(token)
+        if url:
+            urls.append(url)
+        else:
+            context_tokens.append(token)
+
+    context = " ".join(context_tokens).strip()
+    return urls, context or None
+
+
+def _extract_review_target_url(token: str) -> Optional[str]:
+    """Return the PR/issue URL prefix from a single whitespace-delimited token."""
+    match = re.match(PR_OR_ISSUE_PATTERN, token)
+    if not match:
+        return None
+    return match.group(0).split("#")[0]
 
 
 def extract_issue_tracker_url(

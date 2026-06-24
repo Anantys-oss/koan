@@ -14,6 +14,12 @@ Instead of switching to Telegram to tell Kōan to rebase a PR or review an issue
 
 Kōan polls GitHub notifications, detects the `@mention`, validates the command and the user's permissions, reacts with 👍 to acknowledge, and queues a mission — all without webhooks or external services.
 
+GitHub can occasionally record a mention in a PR timeline without returning a
+matching notification thread to the bot account. To cover that gap, Kōan also
+runs a bounded fallback scan over recent comments in configured repositories.
+The fallback uses the same permission checks, mission creation, reaction
+acknowledgement, and deduplication tracker as the notification path.
+
 ## Quick Start
 
 ### 1. Enable the feature
@@ -30,6 +36,7 @@ github:
   commands_enabled: true         # Master switch
   authorized_users: ["*"]        # "*" = anyone with write access, or ["alice", "bob"]
   max_age_hours: 24              # Ignore notifications older than this (default: 24)
+  mention_scan_interval_minutes: 5  # Fallback scan for mentions missing from notifications
 ```
 
 ### 2. Make sure `gh` is authenticated
@@ -105,12 +112,14 @@ github:
   commands_enabled: false        # Master switch (default: false)
   authorized_users: ["*"]        # Allowlist: "*" for all with write access, or explicit usernames
   max_age_hours: 24              # Stale notification threshold (default: 24 hours)
+  mention_scan_interval_minutes: 5  # Fallback scan interval for configured repos
 ```
 
 - **`nickname`**: The GitHub username Kōan uses. Must match the account behind `GH_TOKEN`. This is the `@name` users will mention.
 - **`commands_enabled`**: Feature toggle. When `false`, notification polling is completely skipped.
 - **`authorized_users`**: Controls who can trigger commands. Even with `["*"]`, Kōan always verifies the user has **write access** to the repository via the GitHub API. This prevents drive-by command injection from random commenters.
-- **`max_age_hours`**: Notifications older than this are silently discarded. Protects against processing a backlog of stale mentions after downtime.
+- **`max_age_hours`**: Notifications and fallback-scanned comments older than this are silently discarded. Protects against processing a backlog of stale mentions after downtime.
+- **`mention_scan_interval_minutes`**: Minimum interval between fallback comment scans for the same configured repo. Defaults to 5 minutes; set `0` to scan on every GitHub poll.
 
 #### AI reply settings
 
@@ -227,8 +236,9 @@ skills.py                 ← Skill flags: github_enabled, github_context_aware
    h. Insert mission into missions.md (BEFORE reacting — crash-safe)
    i. React with 👍 on comment (marks as processed)
    j. Mark notification thread as read
-4. Scan known repos for open non-draft PRs that still request the bot as reviewer
-5. Queue `/review <pr-url>` for requested reviews that do not already have an active mission
+4. Independently scan recent comments in configured repos for unprocessed `@nickname` mentions that GitHub did not expose via notifications
+5. Scan known repos for open non-draft PRs that still request the bot as reviewer
+6. Queue `/review <pr-url>` for requested reviews that do not already have an active mission
 ```
 
 ### Deduplication strategy

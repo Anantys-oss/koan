@@ -171,6 +171,23 @@ class TestValidConfigProducesNoWarnings:
         config = {"tools": {"chat": "Read,Glob,Grep"}}
         assert validate_config(config) == []
 
+    def test_github_multi_instance_and_scan_keys_are_known(self):
+        config = {
+            "enable_multiple_instances": True,
+            "github": {
+                "mention_scan_interval_minutes": 5,
+                "review_scan_interval_minutes": 15,
+                "parallel_workers": 4,
+                "ack_enabled": False,
+                "stale_drain_hours": 48,
+            },
+        }
+        assert validate_config(config) == []
+
+    def test_unlimited_quota_is_known_under_usage(self):
+        # The code reads usage.unlimited_quota — not a top-level key.
+        assert validate_config({"usage": {"unlimited_quota": True}}) == []
+
 
 # ---------------------------------------------------------------------------
 # validate_config — unrecognized keys
@@ -200,6 +217,13 @@ class TestUnrecognizedKeys:
     def test_multiple_unknowns(self):
         warnings = validate_config({"foo": 1, "bar": 2})
         assert len(warnings) == 2
+
+    def test_top_level_unlimited_quota_is_rejected(self):
+        # unlimited_quota lives under the usage section; a top-level placement
+        # is a silent no-op and must be flagged, not blessed.
+        warnings = validate_config({"unlimited_quota": True})
+        assert len(warnings) == 1
+        assert "unrecognized key 'unlimited_quota'" in warnings[0][1]
 
 
 # ---------------------------------------------------------------------------
