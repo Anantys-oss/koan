@@ -19,8 +19,9 @@ def should_migrate(koan_root: str) -> bool:
 
     Returns True if projects.yaml doesn't exist AND env vars are configured.
     """
-    projects_yaml = Path(koan_root) / "projects.yaml"
-    if projects_yaml.exists():
+    from app.projects_config import resolve_projects_config_path
+
+    if resolve_projects_config_path(koan_root).exists():
         return False
 
     return bool(
@@ -146,8 +147,10 @@ def run_migration(koan_root: str) -> List[str]:
 
     # Build and write projects.yaml
     content = build_projects_yaml(projects, overrides)
+    from app.projects_config import resolve_projects_config_write_path
     from app.utils import atomic_write
-    projects_yaml_path = Path(koan_root) / "projects.yaml"
+    projects_yaml_path = resolve_projects_config_write_path(koan_root)
+    projects_yaml_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(projects_yaml_path, content)
 
     source = "KOAN_PROJECTS" if os.environ.get("KOAN_PROJECTS") else "KOAN_PROJECT_PATH"
