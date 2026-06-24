@@ -46,10 +46,15 @@ References are parsed out of the PR body:
 
 The backend is selected by the project's `issue_tracker.provider`. Output is
 best-effort (any failure is silently skipped), with per-ticket excerpts capped
-at 500 chars and the whole injected block at 1000 chars. Disable globally with
-`review_issue_context.enabled: false` in `config.yaml` (default enabled). The
-fetched block is injected into the standard `review` prompt as `{ISSUE_CONTEXT}`.
-Implemented in `koan/app/issue_tracker/enrichment.py`.
+at 500 chars and the whole injected block at 1000 chars. At most the first 5
+references are fetched (each costs a network/subprocess round-trip), so a PR
+body listing dozens of tickets cannot balloon review latency or burn API quota.
+Disable globally with `review_issue_context.enabled: false` in `config.yaml`
+(default enabled). The fetched block — third-party text from possibly unrelated
+repos/tickets — is wrapped with `fence_external_data()` (injection scanning on)
+before being injected into the standard `review` prompt as `{ISSUE_CONTEXT}`, so
+the reviewer agent treats it as data, not instructions. Implemented in
+`koan/app/issue_tracker/enrichment.py`.
 
 ## Trackers
 
