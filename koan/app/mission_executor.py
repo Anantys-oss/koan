@@ -70,7 +70,9 @@ def _handle_skill_dispatch(
         log("mission", f"Project: {project_name}")
         log("mission", f"Runner: {' '.join(skill_cmd[:4])}...")
         _run.set_status(koan_root, f"Run {run_num}/{max_runs} — skill dispatch on {project_name}")
-        _run._notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Skill: {mission_title}")
+        from app.messaging_level import debug_only
+        _start_msg = f"🚀 [{project_name}] Run {run_num}/{max_runs} — Skill: {mission_title}"
+        debug_only(_start_msg, lambda: _run._notify(instance, _start_msg), log_category="mission")
 
         # Create pending.md so /live can show progress during skill dispatch
         from app.loop_manager import create_pending_file
@@ -959,14 +961,18 @@ def _run_iteration(
         log("mission", "Decision: MISSION mode (assigned)")
         log("mission", f"  Mission: {mission_title}")
         log("mission", f"  Project: {project_name}")
-        _run._notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Starting: {mission_title}")
+        from app.messaging_level import debug_only
+        _start_msg = f"🚀 [{project_name}] Run {run_num}/{max_runs} — Starting: {mission_title}"
+        debug_only(_start_msg, lambda: _run._notify(instance, _start_msg), log_category="mission")
     else:
         mode_upper = autonomous_mode.upper()
         log("mission", f"Decision: {mode_upper} mode (estimated cost: 5.0% session)")
         log("mission", f"  Reason: {plan['decision_reason']}")
         log("mission", f"  Project: {project_name}")
         log("mission", f"  Focus: {focus_area}")
-        _run._notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Autonomous: {autonomous_mode} mode")
+        from app.messaging_level import debug_only
+        _start_msg = f"🚀 [{project_name}] Run {run_num}/{max_runs} — Autonomous: {autonomous_mode} mode"
+        debug_only(_start_msg, lambda: _run._notify(instance, _start_msg), log_category="mission")
 
     # --- Fire pre-mission hook ---
     try:

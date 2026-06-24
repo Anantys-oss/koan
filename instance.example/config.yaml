@@ -336,6 +336,18 @@ contemplative_chance: 10
 # notifications:
 #   min_priority: action
 
+# Bridge verbosity level (debug / normal). Distinct from notifications.min_priority
+# (per-message severity): this is a global verbosity tier for lifecycle chatter.
+#   normal (default) — quiet, operator-focused. Failures, command replies, and
+#                      one-line PR results still come through; per-mention and
+#                      mission-start lines are collapsed/suppressed (still logged).
+#   debug            — full lifecycle narration (legacy firehose).
+# Precedence: KOAN_MESSAGING_LEVEL env > .koan-messaging-level state file
+#             (set by /messaging_level) > this key > "normal".
+# See docs/messaging/messaging-level.md.
+# messaging:
+#   level: normal
+
 # Telegram
 # NOTE: Prefer setting these in .env (KOAN_TELEGRAM_TOKEN, KOAN_TELEGRAM_CHAT_ID)
 # These config values are only used if the env vars are not set.

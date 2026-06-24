@@ -69,6 +69,7 @@ from app.signals import (
     STOP_FILE,
 )
 from app.config import get_recovery_config
+from app.messaging_level import is_debug
 from app.subprocess_runner import kill_process_group
 from app.utils import atomic_write, koan_tmp_dir
 
@@ -542,6 +543,32 @@ def _is_ci_check_mission(mission_title: str) -> bool:
     return False
 
 
+_SKILL_COMPLETION = {
+    "review": ("🔍", "Reviewed"),
+    "fix": ("🐞", "Fixed"),
+    "rebase": ("🔄", "Rebased"),
+    "plan": ("🧠", "Planned"),
+    "implement": ("🔨", "Implemented"),
+}
+
+
+def _tracked_skill(mission_title: str):
+    """Return (emoji, past_tense) if the mission is a tracked skill, else None."""
+    t = (mission_title or "").strip()
+    if not t.startswith("/"):
+        return None
+    cmd = t[1:].split(None, 1)[0].lower()
+    return _SKILL_COMPLETION.get(cmd)
+
+
+def _completion_pr_url(instance, project_name):
+    try:
+        from app.mission_runner import get_last_pr_url
+        return get_last_pr_url(instance, project_name)
+    except (ImportError, OSError, ValueError):
+        return ""
+
+
 def _notify_mission_end(
     instance: str,
     project_name: str,
@@ -552,11 +579,36 @@ def _notify_mission_end(
 ):
     """Send a notification when a mission or autonomous run completes.
 
-    Always sends — both on success and failure — so the human always
-    gets a status update. Uses unicode prefix: ✅ for success, ❌ for failure
-    (🚦 for CI check missions to reduce alarm noise).
-    On success, appends a brief journal summary when available.
+    Honors messaging.level:
+    - normal (default): one short line for tracked skill missions
+      (✅ [project] 🔍 Reviewed <pr-url>); autonomous-run successes are
+      logged only (no bridge push); failures always surface (short form).
+    - debug: full lifecycle line + journal summary (legacy behavior).
     """
+    if not is_debug():
+        skill = _tracked_skill(mission_title)
+        if exit_code == 0:
+            if skill is None:
+                from app.run_log import log_safe
+                log_safe(
+                    "mission",
+                    f"[{project_name}] Run {run_num}/{max_runs} done "
+                    "(normal mode, suppressed)",
+                )
+                return
+            emoji, verb = skill
+            url = _completion_pr_url(instance, project_name)
+            line = f"✅ [{project_name}] {emoji} {verb}"
+            _notify(instance, f"{line} {url}".rstrip())
+            return
+        # Failures stay visible (short form).
+        emoji = (skill[0] + " ") if skill else ""
+        prefix = "🚦" if _is_ci_check_mission(mission_title) else "❌"
+        label = mission_title or "Run"
+        _notify(instance, f"{prefix} [{project_name}] {emoji}Failed: {label}")
+        return
+
+    # ---- debug mode: legacy verbose behavior ----
     if exit_code == 0:
         prefix = "✅"
         label = mission_title if mission_title else "Autonomous run"

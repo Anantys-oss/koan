@@ -1407,6 +1407,19 @@ def _extract_pr_url(content: str) -> str:
     return match.group(0) if match else ""
 
 
+def get_last_pr_url(instance_dir: str, project_name: str = "") -> str:
+    """Best-effort PR URL for the just-finished mission (from pending.md).
+
+    Used by the concise normal-mode completion line. project_name is accepted
+    for caller symmetry but pending.md is per-instance.
+    """
+    try:
+        pending = _read_pending_content(instance_dir)
+        return _extract_pr_url(pending or "")
+    except (OSError, ValueError):
+        return ""
+
+
 def _read_full_stdout_text(stdout_file: str) -> str:
     """Read and parse the full Claude stdout for PR detection.
 

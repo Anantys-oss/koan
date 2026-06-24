@@ -3911,7 +3911,15 @@ class TestRecoveryHelpers:
 # ---------------------------------------------------------------------------
 
 class TestNotifyMissionEnd:
-    """Tests for _notify_mission_end() — end-of-mission notifications."""
+    """Tests for _notify_mission_end() — end-of-mission notifications.
+
+    These cover the verbose (debug) lifecycle path; normal-mode behavior is
+    covered separately in test_notify_verbosity.py.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_debug(self, monkeypatch):
+        monkeypatch.setattr("app.run.is_debug", lambda: True)
 
     @patch("app.run._notify")
     def test_success_with_mission_title(self, mock_notify):

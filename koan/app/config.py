@@ -583,6 +583,28 @@ def is_debug_on_fix_failure() -> bool:
     return False
 
 
+def get_configured_messaging_level() -> str:
+    """Return the persistent bridge verbosity level (default: 'normal').
+
+    Config key: messaging.level  (one of: debug, normal)
+    """
+    config = _load_config()
+    messaging_cfg = config.get("messaging", {})
+    if isinstance(messaging_cfg, dict):
+        level = str(messaging_cfg.get("level", "normal")).strip().lower()
+        return level if level in ("debug", "normal") else "normal"
+    return "normal"
+
+
+def get_configured_messaging_level_explicit():
+    """Return messaging.level only if explicitly set in config.yaml, else None."""
+    config = _load_config()
+    messaging_cfg = config.get("messaging", {})
+    if isinstance(messaging_cfg, dict) and "level" in messaging_cfg:
+        return str(messaging_cfg["level"]).strip().lower()
+    return None
+
+
 def get_api_host() -> str:
     """Return the API bind host (default: 127.0.0.1).
 

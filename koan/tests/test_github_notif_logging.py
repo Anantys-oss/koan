@@ -310,7 +310,15 @@ class TestLogNotification:
 
 
 class TestNotifyMissionFromMention:
-    """Verify send_telegram is called when a mission is created from a mention."""
+    """Verify send_telegram is called when a mission is created from a mention.
+
+    Per-mention sends are gated to debug mode; force it so these legacy
+    message-shape assertions exercise the send path.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_debug(self, monkeypatch):
+        monkeypatch.setattr("app.loop_manager.is_debug", lambda: True)
 
     @patch("app.notify.send_telegram")
     def test_sends_telegram_on_mission(self, mock_send):

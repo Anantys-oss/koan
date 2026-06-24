@@ -11,7 +11,40 @@ import os
 import time
 from pathlib import Path
 
+from app.config import get_configured_messaging_level_explicit
 from app.run_log import log
+
+
+def _messaging_notice_sentinel(instance: str) -> Path:
+    return Path(instance) / ".messaging-level-notice-sent"
+
+
+def _notify_raw(instance, msg):
+    from app.notify import format_and_send
+    format_and_send(msg, instance_dir=instance)
+
+
+def maybe_send_messaging_level_notice(instance: str) -> None:
+    """One-time advisory that the bridge now defaults to 'normal'.
+
+    Fires once (sentinel-gated). Skipped — and the sentinel marked — when the
+    operator has explicitly set messaging.level in config.yaml. The sentinel is
+    written only after a successful send so a crash mid-send retries next boot.
+    """
+    sentinel = _messaging_notice_sentinel(instance)
+    if sentinel.exists():
+        return
+    if get_configured_messaging_level_explicit() is not None:
+        sentinel.write_text("skipped: explicitly configured\n")  # don't nag later
+        return
+    _notify_raw(
+        instance,
+        "🔉 Heads up: the bridge is now quieter by default (messaging.level = "
+        "normal). You'll still get failures, command replies, and one-line "
+        "PR results. To restore the full firehose, run /messaging_level debug "
+        "or set messaging.level: debug in config.yaml.",
+    )
+    sentinel.write_text("sent\n")  # only after successful send
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +642,9 @@ def run_startup(koan_root: str, instance: str, projects: list):
     # Start on pause / passive
     _safe_run("Start on pause", handle_start_on_pause, koan_root)
     _safe_run("Start passive", handle_start_passive, koan_root)
+
+    # One-time advisory that the bridge now defaults to quiet (normal) mode.
+    _safe_run("Messaging-level notice", maybe_send_messaging_level_notice, instance)
 
     # Load .env before git identity so KOAN_EMAIL is available.
     # run.py does not source .env itself; without this, GIT_AUTHOR_EMAIL is

@@ -148,6 +148,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/version` | `/ver`, `/v` | Show Kōan version (tag, commit, commits ahead) |
 | `/verbose` | — | Enable real-time progress updates |
 | `/silent` | — | Disable real-time progress updates |
+| `/messaging_level` | `/msglevel` | Show or set bridge verbosity (`debug` / `normal`) |
 
 ## Configuration
 
