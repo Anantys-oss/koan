@@ -3561,68 +3561,21 @@ def _cleanup_worktree(worktree_info, project_path: str, instance: str = ""):
             log("error", f"Worktree ref cleanup failed: {e}")
         return
 
-    push_failed = False
-
-    # Push any branches the agent created in the worktree
-    try:
-        branch_result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=wt_path,
-            capture_output=True, text=True, timeout=5,
-        )
-        current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
-
-        # Check if worktree HEAD moved from its initial commit
-        has_commits = False
-        if worktree_info.commit:
-            try:
-                head = subprocess.run(
-                    ["git", "rev-parse", "HEAD"],
-                    cwd=wt_path,
-                    capture_output=True, text=True, timeout=5,
-                )
-                if head.returncode != 0:
-                    has_commits = True
-                else:
-                    has_commits = head.stdout.strip() != worktree_info.commit
-            except (subprocess.SubprocessError, ValueError):
-                has_commits = True
-        else:
-            try:
-                ahead = subprocess.run(
-                    ["git", "rev-list", "--count", "@{u}..HEAD"],
-                    cwd=wt_path,
-                    capture_output=True, text=True, timeout=5,
-                )
-                if ahead.returncode != 0:
-                    has_commits = True
-                else:
-                    has_commits = int(ahead.stdout.strip() or "0") > 0
-            except (subprocess.SubprocessError, ValueError):
-                has_commits = True
-
-        if has_commits and current_branch and current_branch != "HEAD":
-            log("worktree", f"Pushing branch {current_branch} from worktree...")
-            push_result = subprocess.run(
-                ["git", "push", "-u", "origin", current_branch],
-                cwd=wt_path,
-                capture_output=True, text=True, timeout=60,
-            )
-            if push_result.returncode != 0:
-                log("error", f"Worktree push failed: {push_result.stderr.strip()}")
-                push_failed = True
-        elif has_commits:
-            log("error", f"Worktree has commits but branch unresolvable (got '{current_branch}')")
-            push_failed = True
-    except (subprocess.SubprocessError, OSError) as e:
-        log("error", f"Worktree branch push error: {e}")
-        push_failed = True
+    # Push any branches the agent created in the worktree, using the shared
+    # fail-safe helper (also used by startup orphan recovery) so both paths
+    # apply the same data-loss protection.
+    from app.worktree_manager import push_worktree_branch_or_preserve
+    log("worktree", "Pushing any worktree branch before cleanup...")
+    safe_to_remove, detail = push_worktree_branch_or_preserve(
+        wt_path, initial_commit=worktree_info.commit,
+    )
+    log("worktree", f"Worktree push check: {detail}")
 
     # Remove the worktree — but preserve it if push failed to avoid data loss
-    if push_failed:
-        log("error", f"Worktree preserved at {wt_path} — push failed, manual intervention needed")
+    if not safe_to_remove:
+        log("error", f"Worktree preserved at {wt_path} — {detail}, manual intervention needed")
         if instance:
-            _notify(instance, f"⚠️ Worktree push failed — preserved at {wt_path}. Manual intervention needed.")
+            _notify(instance, f"⚠️ Worktree push failed ({detail}) — preserved at {wt_path}. Manual intervention needed.")
         return
 
     try:

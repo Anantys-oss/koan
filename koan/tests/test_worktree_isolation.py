@@ -63,9 +63,12 @@ class TestRecoverOrphanedWorktrees:
         wt_dir = proj / ".worktrees" / "stale-session"
         wt_dir.mkdir(parents=True)
 
-        with patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup:
+        with patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup, \
+             patch("app.worktree_manager.push_worktree_branch_or_preserve",
+                   return_value=(True, "no new commits")):
             recover_orphaned_worktrees(str(tmp_path), [("proj", str(proj))])
 
+        # Safe-to-remove worktrees are not preserved, so none are passed as active.
         mock_cleanup.assert_called_once_with(str(proj), active_session_ids=[])
 
     def test_cleans_orphaned_worktrees(self, tmp_path):
@@ -76,10 +79,30 @@ class TestRecoverOrphanedWorktrees:
         wt_dir = proj / ".worktrees" / "stale-session"
         wt_dir.mkdir(parents=True)
 
-        with patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup:
+        with patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup, \
+             patch("app.worktree_manager.push_worktree_branch_or_preserve",
+                   return_value=(True, "pushed")):
             recover_orphaned_worktrees(str(tmp_path), [("proj", str(proj))])
 
         mock_cleanup.assert_called_once_with(str(proj), active_session_ids=[])
+
+    def test_preserves_orphaned_worktree_on_push_failure(self, tmp_path):
+        """Worktrees that fail to push are preserved (passed as active), not pruned."""
+        from app.startup_manager import recover_orphaned_worktrees
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        wt_dir = proj / ".worktrees" / "stale-session"
+        wt_dir.mkdir(parents=True)
+
+        with patch("app.worktree_manager.cleanup_stale_worktrees") as mock_cleanup, \
+             patch("app.worktree_manager.push_worktree_branch_or_preserve",
+                   return_value=(False, "push failed")):
+            recover_orphaned_worktrees(str(tmp_path), [("proj", str(proj))])
+
+        # The unpushable worktree is preserved by being marked active.
+        mock_cleanup.assert_called_once_with(
+            str(proj), active_session_ids=["stale-session"]
+        )
 
     def test_skips_projects_without_worktrees_dir(self, tmp_path):
         """Projects without .worktrees/ are silently skipped."""
@@ -264,3 +287,62 @@ class TestWorktreeConfigSchema:
         from app.config_validator import CONFIG_SCHEMA
         assert "worktree_isolation" in CONFIG_SCHEMA
         assert CONFIG_SCHEMA["worktree_isolation"] == "bool"
+
+
+# ---------------------------------------------------------------------------
+# Shared push-or-preserve helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestPushWorktreeBranchOrPreserve:
+    """Tests for worktree_manager.push_worktree_branch_or_preserve()."""
+
+    def test_no_new_commits_is_safe_to_remove(self, git_repo):
+        from app.worktree_manager import create_worktree, push_worktree_branch_or_preserve
+
+        wt = create_worktree(git_repo)
+        safe, detail = push_worktree_branch_or_preserve(
+            wt.path, initial_commit=wt.commit
+        )
+        assert safe is True
+        assert "no new commits" in detail
+
+    def test_push_failure_preserves(self, git_repo):
+        from app.worktree_manager import create_worktree, push_worktree_branch_or_preserve
+
+        wt = create_worktree(git_repo)
+        (Path(wt.path) / "f.txt").write_text("x\n")
+        subprocess.run(["git", "add", "."], cwd=wt.path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "c"], cwd=wt.path, capture_output=True, check=True
+        )
+
+        # No remote configured — push must fail and the worktree be preserved.
+        safe, detail = push_worktree_branch_or_preserve(
+            wt.path, initial_commit=wt.commit
+        )
+        assert safe is False
+        assert "push failed" in detail or "push error" in detail
+
+    def test_detached_head_with_commits_preserves(self, git_repo):
+        from app.worktree_manager import create_worktree, push_worktree_branch_or_preserve
+
+        wt = create_worktree(git_repo)
+        (Path(wt.path) / "f.txt").write_text("x\n")
+        subprocess.run(["git", "add", "."], cwd=wt.path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "c"], cwd=wt.path, capture_output=True, check=True
+        )
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=wt.path, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "checkout", sha], cwd=wt.path, capture_output=True, check=True
+        )
+
+        safe, detail = push_worktree_branch_or_preserve(
+            wt.path, initial_commit=wt.commit
+        )
+        assert safe is False
+        assert "unresolvable" in detail
