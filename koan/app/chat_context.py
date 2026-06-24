@@ -174,8 +174,8 @@ def build_chat_prompt(
             Path(__file__).resolve().parent.parent / "skills" / "core" / "chat"
         )
         prompt = append_caveman(prompt, skill_name="chat", skill_dir=chat_skill_dir)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[chat] caveman injection failed: {e}", file=sys.stderr)
 
     # Inject emotional memory before the user message (if available)
     if emotional_context:
