@@ -10,7 +10,7 @@ survives every re-deploy.
 2. Add a **Volume** mounted at `/app/instance`.
 3. Set the service variables:
    - `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`)
-   - `GH_TOKEN`
+   - `KOAN_GH_TOKEN` (the bot's GitHub token — see the caveat below)
    - `KOAN_TELEGRAM_TOKEN`
    - `KOAN_TELEGRAM_CHAT_ID`
    - `KOAN_DEPLOY=railway`
@@ -19,12 +19,31 @@ survives every re-deploy.
 When all five variables are present the container provisions itself
 non-interactively — no shell steps required.
 
+### GitHub token: use `KOAN_GH_TOKEN`, not `GH_TOKEN`
+
+Railway's GitHub integration **injects its own `GH_TOKEN`** at runtime — a
+user-to-server token (`ghu_*`) for the operator account that connected the
+repo — and it **overwrites any `GH_TOKEN` you set** in the service variables.
+Left as-is, Kōan would push, comment, and open PRs as the operator rather than
+as its own bot identity.
+
+To keep Kōan on its own identity, set **`KOAN_GH_TOKEN`** (a bot PAT or
+fine-grained token) instead. Kōan resolves `KOAN_GH_TOKEN` with priority over
+`GH_TOKEN` and exports it as `GH_TOKEN` for all `git`/`gh` operations, so the
+platform-injected value is ignored. `GH_TOKEN` alone still works on platforms
+that don't hijack it — `KOAN_GH_TOKEN` is only needed where the environment
+overwrites `GH_TOKEN`.
+
 ## What the flag does
 
 On every boot, `KOAN_DEPLOY=railway` makes the entrypoint:
 
-- **Normalize volume ownership** to the running UID, so the instance volume is
-  always writable.
+- **Normalize volume ownership.** PaaS volumes mount as `root:root`, so the
+  image boots as root, `chown`s the `/app/instance` volume to the `koan` user,
+  then **drops privileges via `gosu`** and re-execs as `koan` — every
+  long-running process (agent, bridge, supervisord) stays non-root. This is
+  what makes a volume mounted at `/app/instance` writable on the first boot
+  and across re-deploys.
 - **Regenerate `/app/.env` as a mirror** of the service variables. No symlinks
   and no `.env` on the volume — Railway service variables are the persistent
   source of truth. Operator-added keys in any on-disk `.env` are preserved.
@@ -36,11 +55,14 @@ On every boot, `KOAN_DEPLOY=railway` makes the entrypoint:
 - **Auto-register** every `instance/workspace/<dir>` clone as a project (keyed
   by directory name) via the existing merged registry.
 - Configure **token-only Git**: all `git`/`gh` operations authenticate over
-  HTTPS with `GH_TOKEN` — no SSH key.
+  HTTPS with the resolved token (`KOAN_GH_TOKEN` if set, else `GH_TOKEN`) —
+  no SSH key.
 
 `make koan` either **attaches** to the already-running daemon (status/logs/
-dashboard), or runs the onboarding **wizard** on an empty volume — surfacing a
-clear permission error if the volume is not writable.
+dashboard), or runs the onboarding **wizard** on an empty volume. Because the
+volume is made writable at boot, config edits (`instance/config.yaml`,
+`instance/projects.yaml`, …) are saved on the volume and persist across
+re-deploys.
 
 ## Re-deploys
 
@@ -52,9 +74,10 @@ service variables are set.
 
 | Symptom | Cause / fix |
 |---|---|
-| Permission denied on `/app/instance` | Volume not mounted at `/app/instance`, or `KOAN_DEPLOY` unset (the bootstrap chowns it). |
+| Permission denied on `/app/instance` | Volume not mounted at `/app/instance`, or `KOAN_DEPLOY` unset (the bootstrap chowns it as root, then drops to `koan`). |
 | Wizard reappears | A required service variable is missing. |
-| Git prompts for a username | `GH_TOKEN` unset. |
+| Git prompts for a username | No token set — set `KOAN_GH_TOKEN` (or `GH_TOKEN`). |
+| PRs/commits authored by the operator, not the bot | Railway injected its own `GH_TOKEN`; set `KOAN_GH_TOKEN` to the bot token (it overrides `GH_TOKEN`). |
 | No projects after a redeploy | Put config in `instance/projects.yaml`, not the repo root. |
 
 ## Local / dev installs

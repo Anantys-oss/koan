@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     openssh-client \
     bubblewrap \
+    gosu \
     make \
     nodejs \
     npm \
@@ -93,13 +94,18 @@ RUN mkdir -p /app/workspace /app/instance /app/logs /home/koan/.claude \
     && echo '{"hasCompletedOnboarding": true}' > /home/koan/.claude.json \
     && chown -R ${HOST_UID}:${HOST_GID} /app /home/koan/.claude /home/koan/.claude.json
 
-# Switch to non-root user
+# Git config for the koan user (can be overridden by mounting ~/.gitconfig).
+# Written as the koan user so it lands in /home/koan/.gitconfig.
 USER ${HOST_UID}
-
-# Git config for the koan user (can be overridden by mounting ~/.gitconfig)
 RUN git config --global user.name "Kōan" \
     && git config --global user.email "koan@noreply.github.com" \
     && git config --global init.defaultBranch main
+
+# Back to root for the entrypoint: it must normalize the ownership of a
+# volume mounted at /app/instance (PaaS volumes mount as root:root), then
+# drop to the unprivileged koan user via gosu before launching any process.
+# See docker-entrypoint.sh::maybe_drop_privileges.
+USER root
 
 # Health check: verify heartbeat file is fresh (< 120s old)
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

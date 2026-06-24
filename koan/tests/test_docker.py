@@ -51,9 +51,15 @@ class TestDockerfile:
         assert "ARG HOST_GID" in self.dockerfile
 
     def test_creates_nonroot_user(self):
-        """Security: must not run as root."""
+        """Security: an unprivileged user must exist and be used.
+
+        The image boots as root only so the entrypoint can normalize the
+        ownership of a root-owned volume mount, then drops to the koan user
+        via gosu (see test_entrypoint_drops_privileges). The transient
+        ``USER ${HOST_UID}`` layer still exists for the git-config step."""
         assert "useradd" in self.dockerfile
         assert "USER ${HOST_UID}" in self.dockerfile
+        assert "gosu" in self.dockerfile
 
     def test_sets_koan_root(self):
         assert "KOAN_ROOT=/app" in self.dockerfile
@@ -138,6 +144,17 @@ class TestEntrypoint:
 
     def test_uses_strict_mode(self):
         assert "set -euo pipefail" in self.entrypoint
+
+    def test_entrypoint_drops_privileges(self):
+        """Entrypoint normalizes the volume as root then drops to koan via gosu."""
+        assert "maybe_drop_privileges" in self.entrypoint
+        assert "gosu" in self.entrypoint
+        assert 'chown -R "${uid}:${gid}" "$INSTANCE"' in self.entrypoint
+
+    def test_entrypoint_forces_koan_gh_token(self):
+        """KOAN_GH_TOKEN must override a platform-injected GH_TOKEN."""
+        assert "KOAN_GH_TOKEN" in self.entrypoint
+        assert 'export GH_TOKEN="${KOAN_GH_TOKEN}"' in self.entrypoint
 
     def test_supports_start_command(self):
         assert "start)" in self.entrypoint

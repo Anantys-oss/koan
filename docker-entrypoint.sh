@@ -318,10 +318,46 @@ railway_provision() {
 }
 
 
+# -------------------------------------------------------------------------
+# Privilege model
+# -------------------------------------------------------------------------
+# A volume mounted at /app/instance (Railway and similar PaaS) mounts as
+# root:root, so the unprivileged koan user cannot write to it. The image now
+# boots as root: we normalize the volume ownership here, then drop privileges
+# and re-exec the whole entrypoint as the koan user so every long-running
+# process (agent, bridge, supervisord) stays non-root.
+KOAN_USER="${KOAN_USER:-koan}"
+
+maybe_drop_privileges() {
+    [ "$(id -u)" = "0" ] || return 0   # already unprivileged — nothing to do
+    local uid gid
+    uid="$(id -u "$KOAN_USER" 2>/dev/null || echo "${KOAN_UID:-1000}")"
+    gid="$(id -g "$KOAN_USER" 2>/dev/null || echo "${KOAN_GID:-1000}")"
+    mkdir -p "$INSTANCE" 2>/dev/null || true
+    if chown -R "${uid}:${gid}" "$INSTANCE" 2>/dev/null; then
+        success "instance volume owned by ${KOAN_USER} (${uid}:${gid})"
+    else
+        warn "could not chown $INSTANCE (continuing)"
+    fi
+    export HOME="/home/${KOAN_USER}"
+    exec gosu "$KOAN_USER" "$0" "$@"
+}
+
+# Bot GitHub identity: a Kōan-specific token always wins over a
+# platform-injected GH_TOKEN (e.g. Railway's GitHub App ghu_* token for the
+# logged-in operator). Exported here so the whole process tree inherits it.
+if [ -n "${KOAN_GH_TOKEN:-}" ]; then
+    export GH_TOKEN="${KOAN_GH_TOKEN}"
+fi
+
 # =========================================================================
 # Main
 # =========================================================================
 COMMAND="${1:-start}"
+
+# Normalize the instance volume as root, then re-exec as koan (no-op if
+# already unprivileged). Everything below this line runs as the koan user.
+maybe_drop_privileges "$@"
 
 case "$COMMAND" in
     start)

@@ -36,7 +36,47 @@ def test_required_env_missing(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("KOAN_GH_TOKEN", raising=False)
     assert railway.required_env_present() is False
+
+
+# --- GitHub token precedence (KOAN_GH_TOKEN > GH_TOKEN) ---------------------
+
+def test_resolve_gh_token_prefers_koan_gh_token(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "platform")
+    monkeypatch.setenv("KOAN_GH_TOKEN", "bot")
+    assert railway.resolve_gh_token() == "bot"
+
+
+def test_resolve_gh_token_falls_back_to_gh_token(monkeypatch):
+    monkeypatch.delenv("KOAN_GH_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "platform")
+    assert railway.resolve_gh_token() == "platform"
+
+
+def test_resolve_gh_token_empty_when_unset(monkeypatch):
+    monkeypatch.delenv("KOAN_GH_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    assert railway.resolve_gh_token() == ""
+
+
+def test_required_env_present_via_koan_gh_token(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("KOAN_GH_TOKEN", "bot")
+    monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "tg")
+    monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "42")
+    assert railway.required_env_present() is True
+
+
+def test_write_env_mirrors_bot_token(tmp_path, monkeypatch):
+    """The .env mirror writes the effective (bot) token to GH_TOKEN."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("# seed\n")
+    monkeypatch.setenv("GH_TOKEN", "platform")
+    monkeypatch.setenv("KOAN_GH_TOKEN", "bot")
+    railway.write_env_from_environment(env_file)
+    assert "GH_TOKEN=bot" in env_file.read_text()
 
 
 def test_is_railway(monkeypatch):
