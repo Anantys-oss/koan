@@ -1916,6 +1916,33 @@ def get_review_bot_triage_config() -> dict:
     return {"enabled": enabled, "bot_usernames": usernames}
 
 
+def get_review_issue_context_config() -> dict:
+    """Get PR-review issue tracker enrichment configuration from config.yaml.
+
+    When enabled, ``/review`` parses tracker references (Jira keys like
+    ``PROJ-123`` or cross-repo GitHub refs like ``owner/repo#123``) out of the
+    PR body and injects a short ticket summary into the review prompt. The
+    backend is the project's configured ``issue_tracker`` provider in
+    ``projects.yaml``; projects without a Jira mapping see no Jira fetches.
+
+    Config key: review_issue_context::
+
+        review_issue_context:
+          enabled: true
+
+    Returns:
+        Dict with key: enabled (bool). Defaults to enabled — the fetch is
+        gated on references actually appearing in the PR body and is
+        best-effort, so projects without references see no behavioral change.
+    """
+    config = _load_config()
+    section = config.get("review_issue_context", {}) or {}
+    if not isinstance(section, dict):
+        section = {}
+    enabled = _safe_bool(section.get("enabled"), True)
+    return {"enabled": enabled}
+
+
 def get_review_verdict_config() -> dict:
     """Get review verdict configuration from config.yaml.
 
