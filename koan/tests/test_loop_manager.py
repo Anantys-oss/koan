@@ -2225,7 +2225,15 @@ class TestCLI:
 
 
 class TestNotifyMissionFromMention:
-    """Tests for _notify_mission_from_mention Telegram notification."""
+    """Tests for _notify_mission_from_mention Telegram notification.
+
+    Per-mention sends are gated to debug mode; force it so these legacy
+    message-shape assertions exercise the send path.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_debug(self, monkeypatch):
+        monkeypatch.setattr("app.loop_manager.is_debug", lambda: True)
 
     @patch("app.notify.send_telegram", return_value=True)
     def test_uses_mailbox_emoji(self, mock_send):

@@ -258,6 +258,12 @@ every cycle).
 - `/silent` — Turn off updates when you're busy (default)
 </details>
 
+**`/messaging_level [debug|normal]`** (alias `/msglevel`) — Show or set the bridge verbosity tier. `normal` (the default) is quiet: failures, command replies, and one-line PR results still come through, but per-mention queue lines and mission-start chatter are collapsed or suppressed. `debug` restores the full lifecycle firehose. Distinct from `/verbose` (which toggles in-mission progress). Every suppressed message is still written to the logs. See [Quieter bridge](#quieter-bridge) and `docs/messaging/messaging-level.md`.
+
+#### Quieter bridge
+
+By default Kōan's bridge runs in `normal` mode — quiet and operator-focused. Set `messaging.level: debug` in `config.yaml`, run `/messaging_level debug`, or export `KOAN_MESSAGING_LEVEL=debug` to restore the legacy chatty behavior. Precedence: env var > `/messaging_level` runtime override > `config.yaml` > `normal`.
+
 ### Branch Isolation & Reviewing Work
 
 Kōan **never commits to `main`**. All work happens in `koan/*` branches (the prefix is configurable). After completing a mission, Kōan typically:
@@ -2187,6 +2193,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/version` | `/ver`, `/v` | B | Show Kōan version |
 | `/verbose` | — | B | Enable real-time progress updates |
 | `/silent` | — | B | Disable real-time progress updates |
+| `/messaging_level [debug\|normal]` | `/msglevel` | B | Show or set bridge verbosity (debug / normal) |
 | `/projects` | `/proj` | B | List configured projects |
 | `/tracker` | — | B | Show or set issue tracker routing |
 | `/alias <proj> <short>` | — | B | Create project shortcut (e.g. /alias Template2 tt) |

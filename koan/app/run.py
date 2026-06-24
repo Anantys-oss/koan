@@ -69,6 +69,7 @@ from app.signals import (
     STOP_FILE,
 )
 from app.config import get_recovery_config
+from app.messaging_level import is_debug
 from app.subprocess_runner import kill_process_group
 from app.utils import atomic_write, koan_tmp_dir
 
@@ -542,6 +543,77 @@ def _is_ci_check_mission(mission_title: str) -> bool:
     return False
 
 
+_SKILL_COMPLETION = {
+    "review": ("🔍", "Reviewed"),
+    "fix": ("🐞", "Fixed"),
+    "rebase": ("🔄", "Rebased"),
+    "plan": ("🧠", "Planned"),
+    "implement": ("🔨", "Implemented"),
+}
+
+
+def _tracked_skill(mission_title: str):
+    """Return (emoji, past_tense) if the mission is a tracked skill, else None."""
+    t = (mission_title or "").strip()
+    if not t.startswith("/"):
+        return None
+    cmd = t[1:].split(None, 1)[0].lower()
+    return _SKILL_COMPLETION.get(cmd)
+
+
+def _completion_pr_url(instance, project_name):
+    try:
+        from app.mission_runner import get_last_pr_url
+        return get_last_pr_url(instance, project_name)
+    except (ImportError, OSError, ValueError):
+        return ""
+
+
+def _notify_mission_normal(
+    instance: str,
+    project_name: str,
+    run_num: int,
+    max_runs: int,
+    exit_code: int,
+    mission_title: str,
+    pr_url: str,
+):
+    """Normal-mode (quiet) end-of-mission emit. See _notify_mission_end."""
+    skill = _tracked_skill(mission_title)
+
+    # Failures always surface (short form).
+    if exit_code != 0:
+        emoji = (skill[0] + " ") if skill else ""
+        prefix = "🚦" if _is_ci_check_mission(mission_title) else "❌"
+        label = mission_title or "Run"
+        _notify(instance, f"{prefix} [{project_name}] {emoji}Failed: {label}")
+        return
+
+    # Tracked skill success → concise "✅ [project] 🔍 Reviewed <pr-url>". Prefer
+    # the URL captured during post-mission processing (before pending.md was
+    # deleted); fall back to a best-effort re-read.
+    if skill is not None:
+        emoji, verb = skill
+        url = pr_url or _completion_pr_url(instance, project_name)
+        _notify(instance, f"✅ [{project_name}] {emoji} {verb} {url}".rstrip())
+        return
+
+    # Genuinely autonomous background runs carry no mission title — suppress
+    # those (log only). An operator-initiated mission (a user/Telegram-queued
+    # task with a real title) still gets a minimal completion signal so
+    # explicitly-requested work isn't silently dropped.
+    title = (mission_title or "").strip()
+    if not title:
+        from app.run_log import log_safe
+        log_safe(
+            "mission",
+            f"[{project_name}] Run {run_num}/{max_runs} done "
+            "(normal mode, autonomous run suppressed)",
+        )
+        return
+    _notify(instance, f"✅ [{project_name}] Done: {title}")
+
+
 def _notify_mission_end(
     instance: str,
     project_name: str,
@@ -549,14 +621,26 @@ def _notify_mission_end(
     max_runs: int,
     exit_code: int,
     mission_title: str = "",
+    pr_url: str = "",
 ):
     """Send a notification when a mission or autonomous run completes.
 
-    Always sends — both on success and failure — so the human always
-    gets a status update. Uses unicode prefix: ✅ for success, ❌ for failure
-    (🚦 for CI check missions to reduce alarm noise).
-    On success, appends a brief journal summary when available.
+    Honors messaging.level:
+    - normal (default): one short line for tracked skill missions
+      (✅ [project] 🔍 Reviewed <pr-url>); operator-initiated missions get a
+      minimal one-line success (✅ [project] Done: <title>); genuinely
+      autonomous background runs (no mission title) are logged only (no bridge
+      push); failures always surface (short form).
+    - debug: full lifecycle line + journal summary (legacy behavior).
     """
+    if not is_debug():
+        _notify_mission_normal(
+            instance, project_name, run_num, max_runs,
+            exit_code, mission_title, pr_url,
+        )
+        return
+
+    # ---- debug mode: legacy verbose behavior ----
     if exit_code == 0:
         prefix = "✅"
         label = mission_title if mission_title else "Autonomous run"
@@ -1517,6 +1601,7 @@ def _parallel_reap_sessions(
             _notify_mission_end(
                 instance, session.project_name, run_num, max_runs,
                 result.exit_code, session.mission_text,
+                pr_url=post.get("pr_url", ""),
             )
         except Exception as e:
             log("error", f"[parallel] notification failed for {session.id}: {e}")
