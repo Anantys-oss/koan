@@ -222,6 +222,32 @@ def test_pilot_logs_with_ansi_and_brackets_do_not_crash(tmp_path):
     asyncio.run(scenario())
 
 
+def test_refresh_dynamic_isolates_render_failures(tmp_path):
+    """One failing panel must not block the remaining renders."""
+    _write_config(tmp_path, "x: 1\n")
+
+    called = []
+
+    def _boom():
+        raise RuntimeError("transient lock")
+
+    async def scenario():
+        app = tui.KoanDashboard(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._render_status = _boom
+            app._render_logs = lambda: called.append("logs")
+            app._render_usage = lambda: called.append("usage")
+            app._render_config_status = lambda: called.append("config")
+            app._update_subtitle = lambda: called.append("subtitle")
+            # Must not raise despite _render_status blowing up.
+            app.refresh_dynamic()
+
+    asyncio.run(scenario())
+
+    assert called == ["logs", "usage", "config", "subtitle"]
+
+
 def test_pilot_logs_tab_arrows_scroll_without_focus_trap(tmp_path):
     _write_config(tmp_path, "x: 1\n")
     logs = tmp_path / "logs"
