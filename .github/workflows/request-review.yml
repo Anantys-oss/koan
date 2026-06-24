@@ -15,7 +15,7 @@ jobs:
           github-token: ${{ secrets.BOT_TOKEN }}
           script: |
             const bot = 'Koan-Bot';
-            const fallbackBot = 'Koanex';
+            const fallbackBot = 'Father-Koan';
             const author = context.payload.pull_request.user.login;
             let commented = false;
 
