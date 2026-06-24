@@ -156,6 +156,8 @@ Communication between processes happens through shared files in `instance/` with
 - **`ci_dispatch.py`** — Auto-dispatch fix missions when CI fails on Koan-authored PRs. Checks open PRs by branch prefix, fetches check-run status via GitHub API, inserts fix missions with log snippets. Dedup via `.ci-dispatch-tracker.json` keyed by PR+SHA+job. Configurable via `ci_dispatch` section in `config.yaml` (`enabled`, `cooldown_minutes`, `log_snippet_bytes`).
 - **`security_review.py`** — Differential security review on mission diffs: blast radius analysis, risk classification, journal logging. Runs before auto-merge decisions.
 - **`rename_project.py`** — CLI tool to rename a project across `projects.yaml` and all `instance/` files (missions, memory dir, journal files, JSON references). Dry-run by default, `--apply` to execute. Invoked via `make rename-project old=X new=Y [apply=1]`.
+- **`usage_service.py`** — Shared usage-payload builder (`build_usage_payload()` + week/month bucketing) used by both the dashboard and the REST API (`GET /v1/usage`).
+- **`log_reader.py`** — Shared log-tailing helpers (`tail_log()`, `read_logs()`) used by both the dashboard and the REST API (`GET /v1/logs`).
 
 **REST API** (`koan/app/api/`):
 
@@ -166,6 +168,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`api/routes_projects.py`** — `GET /v1/projects`, `POST /v1/projects`, `DELETE /v1/projects/{name}`.
 - **`api/routes_status.py`** — `GET /v1/status` (agent state + mission counts from signal files).
 - **`api/routes_admin.py`** — `POST /v1/pause`, `POST /v1/resume`, `GET /v1/config` (secrets masked), `POST /v1/restart`, `POST /v1/shutdown`, `POST /v1/update`.
+- **`api/routes_observability.py`** — `GET /v1/usage`, `GET /v1/metrics`, `GET /v1/logs` (token-gated; delegate to usage_service / mission_metrics / log_reader).
 - **`api/server.py`** — Runnable entrypoint (`make api`); validates token at startup (fail-closed), warns on non-loopback bind, calls `waitress.serve(create_app(), ...)`.
 
 Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `127.0.0.1`), `get_api_port()` (default `8420`), `get_api_token()` (env `KOAN_API_TOKEN` → `api.token` → `""`), `get_api_threads()` (default `8`). `pid_manager.py` adds `"api"` to `PROCESS_NAMES` and provides `start_api()` / `_is_api_enabled()`. See `docs/operations/rest-api.md`.

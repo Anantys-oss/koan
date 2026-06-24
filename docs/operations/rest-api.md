@@ -217,6 +217,46 @@ Secret fields (keys containing `token`, `password`, `secret`, `api_key`) are rep
 | `POST` | `/v1/update` | yes | Pull latest commit on main + signal restart |
 | `POST` | `/v1/update_release` | yes | Checkout most recent release tag + signal restart |
 
+### Observability
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/v1/usage` | yes | Token usage payload (mirrors the dashboard `/api/usage`) |
+| `GET` | `/v1/metrics` | yes | Mission metrics, global or per-project |
+| `GET` | `/v1/logs` | yes | Recent `run.log` / `awake.log` lines |
+
+**GET /v1/usage** query params:
+
+| Param | Default | Description |
+|---|---|---|
+| `days` | `7` | Window length, clamped to `[1, 100]` |
+| `offset` | `0` | Shift the window back by this many `granularity` units |
+| `granularity` | `day` | `day`, `week`, or `month` bucketing |
+| `stacked` | `false` | Include per-project breakdown in the series |
+| `project` | _(all)_ | Restrict totals/series to a single project |
+
+**GET /v1/metrics** query params:
+
+| Param | Default | Description |
+|---|---|---|
+| `days` | `30` | Lookback window, clamped to `[0, 365]` |
+| `project` | _(all)_ | Per-project metrics + trend; omit for global metrics with per-project trends |
+
+**GET /v1/logs** query params:
+
+| Param | Default | Description |
+|---|---|---|
+| `source` | `all` | `run`, `awake`, or `all` |
+| `limit` | `200` | Max lines per source, clamped to `[1, 2000]` |
+| `q` | _(none)_ | Case-insensitive substring filter |
+
+Response:
+```json
+{"lines": [{"n": 1, "text": "...", "source": "run"}], "total": 1}
+```
+
+Malformed integer params (`days`, `offset`, `limit`) return `422` with an `invalid_request` error rather than silently substituting the default.
+
 ---
 
 ## Security
