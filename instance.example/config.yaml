@@ -877,6 +877,14 @@ auto_update:
 #   include_blockers: true      # When REQUEST_CHANGES, list blocking finding titles
 #                               # in the verdict body (default: true)
 
+# Review inline comments — in addition to the single bucketed summary comment,
+# post each finding as an inline PR comment anchored to its code location, so a
+# reviewer can react/resolve/discuss each one in place. Additive: never
+# replaces the summary comment. Opt-in (default: disabled).
+# review_inline_comments:
+#   enabled: false        # Master switch (default: false)
+#   max_comments: 25      # Cap inline threads posted per review (default: 25)
+
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention
 # notifications (reason: mention or review_requested). Requires github_url

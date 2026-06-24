@@ -72,6 +72,15 @@ human-curated context/priorities into the review prompt, ranked against the PR
 content. Enable `review_memory` in `config.yaml` to also include recent typed
 project memory (decisions, observations) from the SQLite memory index.
 
+**Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in
+`config.yaml` to also post each finding as an inline PR comment anchored to its
+code location, in addition to the bucketed summary comment (which is unchanged).
+Each inline thread shows the same severity marker (🔴/🟡/🟢) and the full finding
+detail, so reviewers can react or resolve in place. Cap the volume with
+`review_inline_comments.max_comments` (default 25). Re-running `/review` is
+idempotent (already-anchored findings are skipped); multi-line findings anchor
+to their full range; if all posts fail, you are notified. Disabled by default.
+
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
 ## PR Management

@@ -5823,3 +5823,144 @@ class TestRunReviewBotCommentTriage:
         assert success is True
         mock_fetch_bot.assert_not_called()
         mock_triage.assert_not_called()
+
+
+class TestInlineFindingBody:
+    def test_marker_title_and_detail(self):
+        from app.review_runner import _format_inline_finding_body
+        item = {
+            "severity": "warning",
+            "title": "Unchecked return value",
+            "comment": "The return of `foo()` is ignored.",
+            "code_snippet": "x = foo()",
+        }
+        body = _format_inline_finding_body(item)
+        assert body.startswith("🟡 Important: Unchecked return value")
+        assert "The return of `foo()` is ignored." in body
+        assert "x = foo()" in body
+
+    def test_unknown_severity_defaults_suggestion(self):
+        from app.review_runner import _format_inline_finding_body
+        item = {"severity": "bogus", "title": "T", "comment": "C", "code_snippet": ""}
+        body = _format_inline_finding_body(item)
+        assert body.startswith("🟢 Suggestions: T")
+
+
+def _inline_finding(line=10, sev="critical"):
+    return {"file": "a.py", "line_start": line, "line_end": line,
+            "severity": sev, "title": "T", "comment": "C", "code_snippet": ""}
+
+
+class TestInlinePoster:
+    def test_posts_with_commit_path_line_side(self):
+        from app.review_runner import _post_inline_finding_comments
+        with patch("app.review_runner._fetch_existing_inline_anchors", return_value=set()), \
+             patch("app.review_runner.run_gh") as mock_gh:
+            posted, attempted = _post_inline_finding_comments(
+                "o", "r", "42", [_inline_finding(line=10)], head_sha="abc123", max_comments=25)
+        assert (posted, attempted) == (1, 1)
+        args = mock_gh.call_args[0]
+        assert args[0] == "api"
+        assert args[1] == "repos/o/r/pulls/42/comments"
+        flat = " ".join(str(a) for a in args)
+        assert "commit_id=abc123" in flat
+        assert "path=a.py" in flat
+        assert "line=10" in flat
+        assert "side=RIGHT" in flat
+
+    def test_multi_line_finding_anchors_range(self):
+        from app.review_runner import _post_inline_finding_comments
+        finding = _inline_finding(line=40)
+        finding["line_end"] = 55
+        with patch("app.review_runner._fetch_existing_inline_anchors", return_value=set()), \
+             patch("app.review_runner.run_gh") as mock_gh:
+            _post_inline_finding_comments(
+                "o", "r", "42", [finding], head_sha="abc123", max_comments=25)
+        flat = " ".join(str(a) for a in mock_gh.call_args[0])
+        assert "line=55" in flat
+        assert "start_line=40" in flat
+        assert "start_side=RIGHT" in flat
+
+    def test_skips_findings_without_line(self):
+        from app.review_runner import _post_inline_finding_comments
+        no_line = _inline_finding()
+        no_line["line_start"] = 0
+        with patch("app.review_runner._fetch_existing_inline_anchors", return_value=set()), \
+             patch("app.review_runner.run_gh") as mock_gh:
+            posted, attempted = _post_inline_finding_comments(
+                "o", "r", "42", [no_line], head_sha="abc123", max_comments=25)
+        assert (posted, attempted) == (0, 0)
+        mock_gh.assert_not_called()
+
+    def test_skips_duplicate_already_anchored(self):
+        from app.review_runner import _format_inline_finding_body, _post_inline_finding_comments
+        from app.github import sanitize_github_comment
+        finding = _inline_finding(line=10)
+        body = sanitize_github_comment(_format_inline_finding_body(finding))
+        first_line = body.split("\n", 1)[0]
+        existing = {("a.py", 10, first_line)}
+        with patch("app.review_runner._fetch_existing_inline_anchors", return_value=existing), \
+             patch("app.review_runner.run_gh") as mock_gh:
+            posted, attempted = _post_inline_finding_comments(
+                "o", "r", "42", [finding], head_sha="abc123", max_comments=25)
+        assert (posted, attempted) == (0, 0)
+        mock_gh.assert_not_called()
+
+    def test_respects_max_comments(self):
+        from app.review_runner import _post_inline_finding_comments
+        findings = [_inline_finding(line=i) for i in range(1, 11)]
+        with patch("app.review_runner._fetch_existing_inline_anchors", return_value=set()), \
+             patch("app.review_runner.run_gh") as mock_gh:
+            posted, attempted = _post_inline_finding_comments(
+                "o", "r", "42", findings, head_sha="abc123", max_comments=3)
+        assert posted == 3
+        assert mock_gh.call_count == 3
+
+    def test_continues_after_api_error(self):
+        from app.review_runner import _post_inline_finding_comments
+        findings = [_inline_finding(line=10), _inline_finding(line=20)]
+        with patch("app.review_runner._fetch_existing_inline_anchors", return_value=set()), \
+             patch("app.review_runner.run_gh", side_effect=[RuntimeError("422"), "ok"]) as mock_gh:
+            posted, attempted = _post_inline_finding_comments(
+                "o", "r", "42", findings, head_sha="abc123", max_comments=25)
+        assert (posted, attempted) == (1, 2)
+        assert mock_gh.call_count == 2
+
+    def test_no_op_without_head_sha(self):
+        from app.review_runner import _post_inline_finding_comments
+        with patch("app.review_runner.run_gh") as mock_gh:
+            posted, attempted = _post_inline_finding_comments(
+                "o", "r", "42", [_inline_finding()], head_sha="", max_comments=25)
+        assert (posted, attempted) == (0, 0)
+        mock_gh.assert_not_called()
+
+
+class TestMaybePostInlineComments:
+    def test_noop_when_disabled(self):
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": False, "max_comments": 25}
+        with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
+             patch("app.review_runner._post_inline_finding_comments") as mock_post:
+            assert _maybe_post_inline_comments("o", "r", "42", review_data, "abc123") == (0, 0)
+        mock_post.assert_not_called()
+
+    def test_invokes_poster_when_enabled(self):
+        from app.review_runner import _maybe_post_inline_comments
+        review_data = {"file_comments": [_inline_finding(line=3)]}
+        cfg = {"enabled": True, "max_comments": 25}
+        with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
+             patch("app.review_runner._post_inline_finding_comments", return_value=(1, 1)) as mock_post:
+            assert _maybe_post_inline_comments("o", "r", "42", review_data, "abc123") == (1, 1)
+        mock_post.assert_called_once()
+        assert mock_post.call_args[0][4] == "abc123"
+
+    def test_noop_when_no_findings(self):
+        from app.review_runner import _maybe_post_inline_comments
+        cfg = {"enabled": True, "max_comments": 25}
+        with patch("app.review_runner.get_review_inline_comments_config", return_value=cfg), \
+             patch("app.review_runner._post_inline_finding_comments") as mock_post:
+            assert _maybe_post_inline_comments("o", "r", "42", None, "abc123") == (0, 0)
+            assert _maybe_post_inline_comments(
+                "o", "r", "42", {"file_comments": []}, "abc123") == (0, 0)
+        mock_post.assert_not_called()

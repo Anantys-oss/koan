@@ -1984,6 +1984,38 @@ def get_review_verdict_config() -> dict:
     return result
 
 
+def get_review_inline_comments_config() -> dict:
+    """Get inline-comment posting configuration for /review.
+
+    When enabled, each structured finding is ALSO posted as an inline PR
+    comment anchored to its code location, in addition to the single bucketed
+    summary comment. Disabled by default (opt-in).
+
+    Config key: review_inline_comments::
+
+        review_inline_comments:
+          enabled: false
+          max_comments: 25
+
+    Returns:
+        Dict with keys: enabled (bool), max_comments (int, >= 0).
+    """
+    config = _load_config()
+    section = config.get("review_inline_comments", {})
+    if not isinstance(section, dict):
+        section = {}
+
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        enabled = False
+
+    max_comments = section.get("max_comments", 25)
+    if not isinstance(max_comments, int) or isinstance(max_comments, bool) or max_comments < 0:
+        max_comments = 25
+
+    return {"enabled": enabled, "max_comments": max_comments}
+
+
 def is_caveman_mode() -> bool:
     """Check if caveman output optimization is enabled.
 
