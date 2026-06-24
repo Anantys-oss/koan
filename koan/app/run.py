@@ -569,6 +569,51 @@ def _completion_pr_url(instance, project_name):
         return ""
 
 
+def _notify_mission_normal(
+    instance: str,
+    project_name: str,
+    run_num: int,
+    max_runs: int,
+    exit_code: int,
+    mission_title: str,
+    pr_url: str,
+):
+    """Normal-mode (quiet) end-of-mission emit. See _notify_mission_end."""
+    skill = _tracked_skill(mission_title)
+
+    # Failures always surface (short form).
+    if exit_code != 0:
+        emoji = (skill[0] + " ") if skill else ""
+        prefix = "🚦" if _is_ci_check_mission(mission_title) else "❌"
+        label = mission_title or "Run"
+        _notify(instance, f"{prefix} [{project_name}] {emoji}Failed: {label}")
+        return
+
+    # Tracked skill success → concise "✅ [project] 🔍 Reviewed <pr-url>". Prefer
+    # the URL captured during post-mission processing (before pending.md was
+    # deleted); fall back to a best-effort re-read.
+    if skill is not None:
+        emoji, verb = skill
+        url = pr_url or _completion_pr_url(instance, project_name)
+        _notify(instance, f"✅ [{project_name}] {emoji} {verb} {url}".rstrip())
+        return
+
+    # Genuinely autonomous background runs carry no mission title — suppress
+    # those (log only). An operator-initiated mission (a user/Telegram-queued
+    # task with a real title) still gets a minimal completion signal so
+    # explicitly-requested work isn't silently dropped.
+    title = (mission_title or "").strip()
+    if not title:
+        from app.run_log import log_safe
+        log_safe(
+            "mission",
+            f"[{project_name}] Run {run_num}/{max_runs} done "
+            "(normal mode, autonomous run suppressed)",
+        )
+        return
+    _notify(instance, f"✅ [{project_name}] Done: {title}")
+
+
 def _notify_mission_end(
     instance: str,
     project_name: str,
@@ -589,36 +634,10 @@ def _notify_mission_end(
     - debug: full lifecycle line + journal summary (legacy behavior).
     """
     if not is_debug():
-        skill = _tracked_skill(mission_title)
-        if exit_code == 0:
-            if skill is None:
-                # Genuinely autonomous background runs carry no mission title —
-                # suppress those (log only). An operator-initiated mission (a
-                # user/Telegram-queued task with a real title) still gets a
-                # minimal completion signal so explicitly-requested work isn't
-                # silently dropped.
-                if not (mission_title or "").strip():
-                    from app.run_log import log_safe
-                    log_safe(
-                        "mission",
-                        f"[{project_name}] Run {run_num}/{max_runs} done "
-                        "(normal mode, autonomous run suppressed)",
-                    )
-                    return
-                _notify(instance, f"✅ [{project_name}] Done: {mission_title.strip()}")
-                return
-            emoji, verb = skill
-            # Prefer the URL captured during post-mission processing (before
-            # pending.md was deleted); fall back to a best-effort re-read.
-            url = pr_url or _completion_pr_url(instance, project_name)
-            line = f"✅ [{project_name}] {emoji} {verb}"
-            _notify(instance, f"{line} {url}".rstrip())
-            return
-        # Failures stay visible (short form).
-        emoji = (skill[0] + " ") if skill else ""
-        prefix = "🚦" if _is_ci_check_mission(mission_title) else "❌"
-        label = mission_title or "Run"
-        _notify(instance, f"{prefix} [{project_name}] {emoji}Failed: {label}")
+        _notify_mission_normal(
+            instance, project_name, run_num, max_runs,
+            exit_code, mission_title, pr_url,
+        )
         return
 
     # ---- debug mode: legacy verbose behavior ----

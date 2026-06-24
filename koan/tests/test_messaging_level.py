@@ -1,6 +1,20 @@
 import types
 
+import pytest
+
 from app import messaging_level as ml
+
+
+@pytest.fixture(autouse=True)
+def _reset_messaging_cache():
+    """Reset the shared resolved-level memoization cache around each test.
+
+    get_messaging_level() memoizes with a 5s TTL, so without this the resolved
+    level bleeds between tests and makes the precedence assertions order-dependent.
+    """
+    ml._invalidate_cache()
+    yield
+    ml._invalidate_cache()
 
 
 def test_default_is_normal(tmp_path, monkeypatch):
