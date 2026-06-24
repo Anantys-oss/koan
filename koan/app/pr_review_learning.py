@@ -1104,6 +1104,43 @@ def _process_review_findings_sidecars(
         finding_files = sorted({
             fc.get("file", "") for fc in file_comments if fc.get("file")
         })
+        # `final_head` (the merged headRefOid from GitHub) is only guaranteed to
+        # be in the local object store if something fetched it. After branch
+        # cleanup + git gc the SHA can be pruned, which would make `git diff`
+        # exit non-zero and silently drop this PR — precisely the post-review
+        # PRs most useful for calibration. Ensure the commit is present (with a
+        # targeted fetch) before diffing, and surface an unresolvable SHA
+        # distinctly from a transient diff failure.
+        try:
+            present = subprocess.run(
+                ["git", "cat-file", "-e", final_head],
+                capture_output=True, text=True, cwd=project_path, timeout=30,
+            )
+            if present.returncode != 0:
+                subprocess.run(
+                    ["git", "fetch", "origin", final_head],
+                    capture_output=True, text=True, cwd=project_path, timeout=30,
+                )
+                present = subprocess.run(
+                    ["git", "cat-file", "-e", final_head],
+                    capture_output=True, text=True, cwd=project_path, timeout=30,
+                )
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(
+                f"[pr_review_learning] resolving final_head failed for {pr_key}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        if present.returncode != 0:
+            print(
+                f"[pr_review_learning] final_head {final_head[:12]} unresolvable "
+                f"for {pr_key} (pruned locally and not fetchable); dropping sidecar "
+                f"so it is not retried every cycle",
+                file=sys.stderr,
+            )
+            sidecar_path.unlink(missing_ok=True)
+            processed += 1
+            continue
         try:
             result = subprocess.run(
                 ["git", "diff", f"{review_head}..{final_head}", "--", *finding_files],

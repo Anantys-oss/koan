@@ -1336,9 +1336,14 @@ class TestProcessReviewFindingsSidecars:
             "@@ -9,4 +9,5 @@\n"
             "+fixed\n"
         )
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout=diff_output, stderr="",
-        )
+
+        def _run(cmd, *args, **kwargs):
+            # final_head already present locally → cat-file succeeds, then diff.
+            if cmd[:2] == ["git", "cat-file"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout=diff_output, stderr="")
+
+        mock_run.side_effect = _run
         result = _process_review_findings_sidecars(
             str(instance_dir), "proj", "/repo",
         )
@@ -1351,9 +1356,11 @@ class TestProcessReviewFindingsSidecars:
         assert entry["title"] == "Mutable default"
         assert entry["addressed"] is True
         assert not (instance_dir / ".review-findings" / "owner_repo_1.json").exists()
-        mock_run.assert_called_once()
-        diff_cmd = mock_run.call_args[0][0]
-        assert "abc123..final456" in diff_cmd[2]
+        diff_cmds = [
+            c.args[0] for c in mock_run.call_args_list if c.args[0][:2] == ["git", "diff"]
+        ]
+        assert len(diff_cmds) == 1
+        assert "abc123..final456" in diff_cmds[0][2]
 
     @patch("subprocess.run")
     @patch("app.github.run_gh")
@@ -1374,14 +1381,55 @@ class TestProcessReviewFindingsSidecars:
             '{"mergedAt": "2026-06-10T12:00:00Z",'
             ' "headRefOid": "final789"}'
         )
-        mock_run.return_value = MagicMock(
-            returncode=128, stdout="", stderr="fatal: bad object",
-        )
+
+        def _run(cmd, *args, **kwargs):
+            # final_head resolves, but the diff itself fails transiently.
+            if cmd[:2] == ["git", "cat-file"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=128, stdout="", stderr="fatal: bad object")
+
+        mock_run.side_effect = _run
         result = _process_review_findings_sidecars(
             str(instance_dir), "proj", "/repo",
         )
         assert result == 0
         assert (instance_dir / ".review-findings" / "owner_repo_2.json").exists()
+
+    @patch("subprocess.run")
+    @patch("app.github.run_gh")
+    def test_drops_sidecar_when_final_head_unresolvable(self, mock_gh, mock_run, tmp_path):
+        """When final_head is pruned locally and unfetchable, the sidecar is
+        dropped (not retried forever) and counted as processed."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        self._make_sidecar(instance_dir, "owner_repo_3.json", {
+            "pr_key": "owner/repo#3",
+            "project_name": "proj",
+            "base_ref": "main",
+            "head_sha": "rev111",
+            "file_comments": [{"file": "y.py", "line_start": 1,
+                               "line_end": 1, "severity": "warning",
+                               "title": "T"}],
+        })
+        mock_gh.return_value = (
+            '{"mergedAt": "2026-06-10T12:00:00Z",'
+            ' "headRefOid": "gone222"}'
+        )
+
+        def _run(cmd, *args, **kwargs):
+            # cat-file always fails (SHA pruned); fetch can't recover it.
+            if cmd[:2] == ["git", "cat-file"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if cmd[:2] == ["git", "fetch"]:
+                return MagicMock(returncode=1, stdout="", stderr="not found")
+            raise AssertionError(f"git diff must not run for unresolvable SHA: {cmd}")
+
+        mock_run.side_effect = _run
+        result = _process_review_findings_sidecars(
+            str(instance_dir), "proj", "/repo",
+        )
+        assert result == 1
+        assert not (instance_dir / ".review-findings" / "owner_repo_3.json").exists()
 
 
 # ─── _trim_outcomes_file ──────────────────────────────────────────────
