@@ -645,6 +645,18 @@ class TestIsUnlimitedQuota:
         with _mock_config({"usage": {"unlimited_quota": False}}):
             assert is_unlimited_quota() is False
 
+    def test_true_from_legacy_top_level(self):
+        from app.config import is_unlimited_quota
+
+        with _mock_config({"unlimited_quota": True, "usage": {}}):
+            assert is_unlimited_quota() is True
+
+    def test_nested_false_overrides_legacy_top_level_true(self):
+        from app.config import is_unlimited_quota
+
+        with _mock_config({"unlimited_quota": True, "usage": {"unlimited_quota": False}}):
+            assert is_unlimited_quota() is False
+
     def test_truthy_string_coerced(self):
         from app.config import is_unlimited_quota
 

@@ -218,12 +218,14 @@ class TestUnrecognizedKeys:
         warnings = validate_config({"foo": 1, "bar": 2})
         assert len(warnings) == 2
 
-    def test_top_level_unlimited_quota_is_rejected(self):
-        # unlimited_quota lives under the usage section; a top-level placement
-        # is a silent no-op and must be flagged, not blessed.
+    def test_top_level_unlimited_quota_is_deprecated_not_unrecognized(self):
+        # unlimited_quota's canonical home is usage.unlimited_quota. A legacy
+        # top-level placement is honored but must be flagged with a single
+        # migration hint — never as a contradictory "unrecognized key".
         warnings = validate_config({"unlimited_quota": True})
         assert len(warnings) == 1
-        assert "unrecognized key 'unlimited_quota'" in warnings[0][1]
+        assert "moved to 'usage.unlimited_quota'" in warnings[0][1]
+        assert not any("unrecognized key 'unlimited_quota'" in m for _, m in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +302,15 @@ class TestEdgeCases:
         assert "unknown_key" in paths
         assert "debug" in paths
         assert "budget.fake_key" in paths
+
+    def test_top_level_unlimited_quota_warns_to_move_under_usage(self):
+        warnings = validate_config({"unlimited_quota": True, "usage": {}})
+
+        assert (
+            "unlimited_quota",
+            "'unlimited_quota' moved to 'usage.unlimited_quota'; "
+            "the top-level form is deprecated",
+        ) in warnings
 
 
 # ---------------------------------------------------------------------------

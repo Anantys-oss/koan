@@ -92,6 +92,16 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "optimizations": _NESTED,
 }
 
+# Top-level keys that are recognized but deprecated: they still work (honored
+# elsewhere for backward compatibility) but should migrate to a new location.
+# These must NOT be reported as "unrecognized" — only with their migration hint.
+_DEPRECATED_TOP_LEVEL_KEYS: Dict[str, str] = {
+    "unlimited_quota": (
+        "'unlimited_quota' moved to 'usage.unlimited_quota'; "
+        "the top-level form is deprecated"
+    ),
+}
+
 # Sub-schemas for nested sections
 SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "telegram": {
@@ -327,7 +337,15 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
 
     known_top = list(CONFIG_SCHEMA.keys())
 
+    for deprecated_key, hint in _DEPRECATED_TOP_LEVEL_KEYS.items():
+        if deprecated_key in config:
+            warnings.append((deprecated_key, hint))
+
     for key, value in config.items():
+        if key in _DEPRECATED_TOP_LEVEL_KEYS:
+            # Recognized-but-deprecated: already warned above; do not also
+            # flag as unrecognized.
+            continue
         if key not in CONFIG_SCHEMA:
             suggestion = _suggest_typo(key, known_top)
             msg = f"unrecognized key '{key}'"

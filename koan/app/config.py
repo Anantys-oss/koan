@@ -692,7 +692,9 @@ def is_unlimited_quota() -> bool:
         usage = config.get("usage", {})
         if not isinstance(usage, dict):
             return False
-        return bool(usage.get("unlimited_quota", False))
+        if "unlimited_quota" in usage:
+            return bool(usage.get("unlimited_quota", False))
+        return bool(config.get("unlimited_quota", False))
     except Exception as e:
         print(f"[config] is_unlimited_quota error: {e}", file=sys.stderr)
         return False
