@@ -653,6 +653,13 @@ def start_stack(koan_root: Path) -> dict:
 
     Kept for backward compatibility with `make ollama`.
     Delegates to start_all() with the "ollama" sentinel so ollama serve starts.
+
+    Note: with the `local` provider removed, no built-in provider talks to this
+    standalone `ollama serve` (`ollama-launch` manages its own server via
+    ``ollama launch claude``). `make ollama` is now only useful when you point a
+    custom Claude-CLI endpoint at the bare Ollama server yourself; otherwise the
+    agent resolves its provider independently. The path is preserved
+    intentionally and may be deprecated in a follow-up.
     """
     return start_all(koan_root, provider="ollama")
 
