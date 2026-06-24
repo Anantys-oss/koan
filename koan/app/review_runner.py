@@ -1884,6 +1884,34 @@ def _format_inline_finding_body(item: dict) -> str:
     return "\n".join(lines).strip()
 
 
+def _fetch_existing_inline_anchors(owner: str, repo: str, pr_number: str) -> set:
+    """Return {(path, line, first_body_line)} of existing PR inline comments.
+
+    Used to make re-runs idempotent: a finding whose anchor + first body line
+    already exists is skipped instead of posting a duplicate. Best-effort —
+    returns an empty set on any failure (treats every finding as new).
+    """
+    try:
+        raw = run_gh(
+            "api", f"repos/{owner}/{repo}/pulls/{pr_number}/comments",
+            "--paginate",
+        )
+        data = json.loads(raw) if raw else []
+    except Exception as e:
+        log("review", f"Could not fetch existing inline comments on PR #{pr_number}: {e}")
+        return set()
+
+    anchors = set()
+    for c in data if isinstance(data, list) else []:
+        path = c.get("path")
+        line = c.get("line") or c.get("original_line")
+        body = (c.get("body") or "").strip()
+        first_line = body.split("\n", 1)[0] if body else ""
+        if path and line:
+            anchors.add((path, int(line), first_line))
+    return anchors
+
+
 def _post_inline_finding_comments(
     owner: str,
     repo: str,
@@ -1891,18 +1919,22 @@ def _post_inline_finding_comments(
     comments: list,
     head_sha: str,
     max_comments: int,
-) -> int:
+) -> tuple:
     """Post each resolvable finding as a new inline PR review comment.
 
     Additive to the main summary comment. Best-effort: a finding whose line
     is not part of the diff (GitHub 422) is skipped without aborting the rest.
-    Returns the number of inline comments successfully posted.
+    Re-run idempotent: findings already anchored on the PR are skipped.
+    Returns (posted, attempted) where attempted counts the new, resolvable
+    findings we tried to POST (skipped/duplicate findings are not counted).
     """
     if not comments or not head_sha or max_comments <= 0:
-        return 0
+        return (0, 0)
 
     full_repo = f"{owner}/{repo}"
+    existing = _fetch_existing_inline_anchors(owner, repo, pr_number)
     posted = 0
+    attempted = 0
     for item in comments:
         if posted >= max_comments:
             break
@@ -1911,39 +1943,51 @@ def _post_inline_finding_comments(
             continue
         line = item.get("line_end") or line_start
         body = sanitize_github_comment(_format_inline_finding_body(item))
+        first_line = body.split("\n", 1)[0] if body else ""
+        if (item["file"], int(line), first_line) in existing:
+            continue
+        attempted += 1
+        args = [
+            "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
+            "-X", "POST",
+            "-f", f"body={body}",
+            "-f", f"commit_id={head_sha}",
+            "-f", f"path={item['file']}",
+            "-F", f"line={line}",
+            "-f", "side=RIGHT",
+        ]
+        # Anchor multi-line findings to their full range instead of collapsing
+        # to a single line at line_end.
+        if line_start < line:
+            args += ["-F", f"start_line={line_start}", "-f", "start_side=RIGHT"]
         try:
-            run_gh(
-                "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
-                "-X", "POST",
-                "-f", f"body={body}",
-                "-f", f"commit_id={head_sha}",
-                "-f", f"path={item['file']}",
-                "-F", f"line={line}",
-                "-f", "side=RIGHT",
-            )
+            run_gh(*args)
             posted += 1
         except Exception as e:
-            print(
-                f"[review_runner] failed to post inline comment on "
-                f"{item.get('file')}:{line}: {e}",
-                file=sys.stderr,
+            log(
+                "review",
+                f"Failed to post inline comment on {item.get('file')}:{line} "
+                f"on PR #{pr_number}: {e}",
             )
-    return posted
+    return (posted, attempted)
 
 
 def _maybe_post_inline_comments(
     owner: str, repo: str, pr_number: str,
     review_data: Optional[dict], head_sha: str,
-) -> int:
-    """Config-gated inline posting of structured findings (additive)."""
+) -> tuple:
+    """Config-gated inline posting of structured findings (additive).
+
+    Returns (posted, attempted) — see _post_inline_finding_comments.
+    """
     cfg = get_review_inline_comments_config()
     if not cfg["enabled"]:
-        return 0
+        return (0, 0)
     if not isinstance(review_data, dict):
-        return 0
+        return (0, 0)
     findings = review_data.get("file_comments") or []
     if not findings:
-        return 0
+        return (0, 0)
     return _post_inline_finding_comments(
         owner, repo, pr_number, findings, head_sha, cfg["max_comments"],
     )
@@ -2706,12 +2750,17 @@ def run_review(
     # Additive to the summary comment above and independently failable, so an
     # inline-posting error never affects the already-posted summary.
     if posted:
-        inline_count = _maybe_post_inline_comments(
+        inline_posted, inline_attempted = _maybe_post_inline_comments(
             owner, repo, pr_number, review_data,
             current_shas[-1] if current_shas else "",
         )
-        if inline_count:
-            notify_fn(f"Posted {inline_count} inline comment(s) on PR #{pr_number}.")
+        if inline_posted:
+            notify_fn(f"Posted {inline_posted} inline comment(s) on PR #{pr_number}.")
+        elif inline_attempted:
+            notify_fn(
+                f"Inline posting failed: 0 of {inline_attempted} comment(s) "
+                f"posted on PR #{pr_number}."
+            )
 
     # Step 7b: Submit formal review verdict (APPROVE / REQUEST_CHANGES)
     # so the bot's decision shows in GitHub's Reviewers panel.  Only

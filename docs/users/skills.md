@@ -77,7 +77,9 @@ project memory (decisions, observations) from the SQLite memory index.
 code location, in addition to the bucketed summary comment (which is unchanged).
 Each inline thread shows the same severity marker (🔴/🟡/🟢) and the full finding
 detail, so reviewers can react or resolve in place. Cap the volume with
-`review_inline_comments.max_comments` (default 25). Disabled by default.
+`review_inline_comments.max_comments` (default 25). Re-running `/review` is
+idempotent (already-anchored findings are skipped); multi-line findings anchor
+to their full range; if all posts fail, you are notified. Disabled by default.
 
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
