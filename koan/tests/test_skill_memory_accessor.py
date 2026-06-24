@@ -77,6 +77,28 @@ class TestReadBlock:
             assert result == "<memory-context>block</memory-context>"
 
 
+class TestReadBlockEndToEnd:
+    """End-to-end: read_block over real on-disk memory files (Phase 3 validation).
+
+    Proves the accessor produces a usable, fenced memory block from real
+    learnings/context — the same path a skill handler would exercise via
+    ``ctx.memory.read_block(...)``.
+    """
+
+    def test_block_contains_context_and_learnings(self, instance_dir):
+        proj = instance_dir / "memory" / "projects" / "test-proj"
+        (proj / "context.md").write_text("Architecture: monolith\n")
+        (proj / "learnings.md").write_text("- Use ruff for linting\n")
+        acc = MemoryAccessor(instance_dir)
+        block = acc.read_block("test-proj", task_text="linting")
+        assert "monolith" in block
+        assert "<memory-context>" in block
+
+    def test_block_empty_when_no_memory(self, instance_dir):
+        acc = MemoryAccessor(instance_dir)
+        assert acc.read_block("test-proj") == ""
+
+
 class TestAppend:
     def test_delegates_to_memory_manager(self, instance_dir):
         acc = MemoryAccessor(instance_dir)
