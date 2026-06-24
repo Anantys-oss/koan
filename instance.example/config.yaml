@@ -839,6 +839,21 @@ auto_update:
 #                                 # falls back to rebase_include_bot_feedback (true)
 #   prior_review_max_chars: 10000 # Cap for the prior-review slot (head-kept)
 
+# Review issue-tracker enrichment — when a PR body references a tracker issue,
+# inject a short ticket summary into the review prompt so Claude reviews the
+# change against its stated intent. The backend is the project's configured
+# issue_tracker provider in projects.yaml:
+#   - jira:   parses Jira keys (PROJ-123); fetched via the config.yaml Jira
+#             credentials (jira: section). Only runs for projects whose
+#             issue_tracker maps a jira_project.
+#   - github: parses cross-repo refs (owner/repo#123) and fetches via the
+#             existing `gh` CLI auth — no extra credentials needed. In-repo
+#             "#123" refs are intentionally ignored (ambiguous).
+# Best-effort: any fetch failure is silently skipped. Per-ticket excerpts are
+# capped at 500 chars and the whole block at 1000 chars.
+# review_issue_context:
+#   enabled: true                 # Master switch (default: true)
+
 # Review bot comment triage — triage inline comments from code-review bots
 # (CodeRabbit, GitHub Copilot Review, Sourcery) and post replies to actionable
 # findings. Off by default; enable globally here or per-review with --bot-comments.

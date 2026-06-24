@@ -147,6 +147,60 @@ class TestBuildReviewPrompt:
         prompt = build_review_prompt(pr_context, skill_dir=review_skill_dir)
         assert "omitted due to size" not in prompt
 
+    def test_explicit_issue_context_injected(self, pr_context, tmp_path):
+        """An explicit issue_context lands in the {ISSUE_CONTEXT} slot."""
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review.md").write_text("Body: {BODY}{ISSUE_CONTEXT}\nDiff: {DIFF}\n")
+        prompt = build_review_prompt(
+            pr_context, skill_dir=tmp_path,
+            issue_context="\n## Issue Tracker Context\n\n- PROJ-1: Fix it\n",
+        )
+        assert "## Issue Tracker Context" in prompt
+        assert "PROJ-1: Fix it" in prompt
+
+    def test_no_project_name_skips_enrichment(self, pr_context, review_skill_dir):
+        """Without a project name, no enrichment fetch is attempted."""
+        with patch("app.issue_tracker.enrichment.fetch_issue_context") as fetch_mock:
+            build_review_prompt(pr_context, skill_dir=review_skill_dir)
+        fetch_mock.assert_not_called()
+
+    def test_enrichment_fetched_when_project_known(self, pr_context, tmp_path):
+        """With a project name and enrichment enabled, fetched context is injected."""
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review.md").write_text("Body: {BODY}{ISSUE_CONTEXT}\nDiff: {DIFF}\n")
+        with patch(
+            "app.config.get_review_issue_context_config",
+            return_value={"enabled": True},
+        ), patch(
+            "app.issue_tracker.enrichment.fetch_issue_context",
+            return_value="\n## Issue Tracker Context\n\n- PROJ-9: Title\n",
+        ) as fetch_mock:
+            prompt = build_review_prompt(
+                pr_context, skill_dir=tmp_path,
+                project_name="myproj", project_path="/tmp/myproj",
+            )
+        fetch_mock.assert_called_once()
+        assert "PROJ-9: Title" in prompt
+
+    def test_enrichment_disabled_yields_empty(self, pr_context, tmp_path):
+        """When disabled in config, no fetch runs and the slot is empty."""
+        prompts_dir = tmp_path / "prompts"
+        prompts_dir.mkdir()
+        (prompts_dir / "review.md").write_text("Body: {BODY}{ISSUE_CONTEXT}\nDiff: {DIFF}\n")
+        with patch(
+            "app.config.get_review_issue_context_config",
+            return_value={"enabled": False},
+        ), patch(
+            "app.issue_tracker.enrichment.fetch_issue_context",
+        ) as fetch_mock:
+            prompt = build_review_prompt(
+                pr_context, skill_dir=tmp_path, project_name="myproj",
+            )
+        fetch_mock.assert_not_called()
+        assert "Issue Tracker Context" not in prompt
+
     def test_memory_task_text_includes_title_body_diff_slice(
         self, pr_context, review_skill_dir,
     ):

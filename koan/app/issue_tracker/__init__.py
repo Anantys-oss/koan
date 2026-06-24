@@ -13,6 +13,11 @@ from app.issue_tracker.config import (
     get_tracker_for_project,
     resolve_code_repository,
 )
+from app.issue_tracker.enrichment import (
+    fetch_issue_context,
+    parse_github_issue_refs,
+    parse_jira_ticket_ids,
+)
 from app.issue_tracker.github import GitHubIssueTracker
 from app.issue_tracker.jira import JiraIssueTracker
 from app.issue_tracker.types import IssueContent, IssueRef
