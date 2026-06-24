@@ -1436,27 +1436,46 @@ def _fetch_recent_repo_comments(
         f"repos/{repo_slug}/pulls/comments?since={since_iso}&per_page=100",
     ]
     comments: List[dict] = []
+    any_ok = False
     for endpoint in endpoints:
         try:
             raw = run_gh("api", endpoint, "--paginate", timeout=30)
         except SSOAuthRequired:
+            # Auth is broken for the whole repo — the other endpoint will fail
+            # identically, so abort the repo rather than retry it.
             _record_sso_failure(f"mention_scan {repo_slug}")
             return None
         except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
-            log.debug("GitHub mention scan: failed to list comments for %s: %s", repo_slug, exc)
-            return None
+            # Best-effort per endpoint: a transient failure on one endpoint
+            # must not discard comments already gathered from the other. Log
+            # at warning so a consistently-failing fallback scan is visible.
+            log.warning(
+                "GitHub mention scan: failed to list %s for %s: %s",
+                endpoint, repo_slug, exc,
+            )
+            continue
 
         try:
             parsed = json.loads(raw) if raw else []
         except json.JSONDecodeError:
-            log.debug("GitHub mention scan: invalid comment JSON for %s", repo_slug)
-            return None
+            log.warning(
+                "GitHub mention scan: invalid comment JSON for %s (%s)",
+                repo_slug, endpoint,
+            )
+            continue
 
         if not isinstance(parsed, list):
-            return None
+            log.warning(
+                "GitHub mention scan: unexpected comment shape for %s (%s)",
+                repo_slug, endpoint,
+            )
+            continue
+        any_ok = True
         comments.extend(c for c in parsed if isinstance(c, dict))
 
-    return comments
+    # Return whatever was gathered; signal total failure (None) only when no
+    # endpoint produced usable data, so the caller can throttle accordingly.
+    return comments if any_ok else None
 
 
 def _recent_unprocessed_mentions(
@@ -1588,9 +1607,13 @@ def scan_recent_mention_missions(
     queued = 0
     for project_name, repo_slug in due_repos:
         comments = _fetch_recent_repo_comments(repo_slug, since_iso)
+        # Throttle even on fetch failure: a persistently-slow/failing repo must
+        # back off to the full interval rather than be re-scanned every poll.
+        # Losing one cycle of fallback coverage is acceptable; an unthrottled
+        # retry loop that hammers the API is not.
+        mark_repo_mention_scanned(tracker_dir, repo_slug)
         if comments is None:
             continue
-        mark_repo_mention_scanned(tracker_dir, repo_slug)
 
         owner, repo = repo_slug.split("/", 1)
         mentions = _recent_unprocessed_mentions(

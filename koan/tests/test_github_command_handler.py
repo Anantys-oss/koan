@@ -4519,6 +4519,61 @@ class TestRecentMentionScan:
 
         assert queued == 1
 
+    def test_failed_fetch_still_throttles_repo(
+        self, projects_config, review_registry, tmp_path, monkeypatch,
+    ):
+        # A repo whose fetch fails must still be marked scanned, so it backs off
+        # to the full interval instead of being re-scanned on every poll.
+        instance_dir = self._setup_instance(tmp_path, monkeypatch)
+        config = {
+            "github": {
+                "nickname": "koan-bot",
+                "authorized_users": ["*"],
+                "mention_scan_interval_minutes": 5,
+                "max_age_hours": 24,
+            },
+        }
+        with patch("app.github_command_handler._fetch_recent_repo_comments",
+                   return_value=None):
+            queued = scan_recent_mention_missions(
+                projects_config, config, review_registry, str(instance_dir),
+            )
+
+        assert queued == 0
+        from app.github_notification_tracker import is_repo_mention_scan_due
+        # Marked scanned despite the failure → no longer due within the interval.
+        assert is_repo_mention_scan_due(
+            str(instance_dir), "sukria/koan", 5 * 60,
+        ) is False
+
+    def test_fetch_partial_failure_keeps_succeeded_endpoint(self):
+        # One endpoint failing must not discard comments already fetched from
+        # the other; the gathered comments are returned (not None).
+        from app.github_command_handler import _fetch_recent_repo_comments
+
+        def fake_run_gh(*args, **kwargs):
+            endpoint = args[1]
+            if "issues/comments" in endpoint:
+                return json.dumps([{"id": 7, "body": "@koan-bot review"}])
+            raise RuntimeError("pulls/comments timed out")
+
+        with patch("app.github.run_gh", side_effect=fake_run_gh):
+            result = _fetch_recent_repo_comments(
+                "sukria/koan", "2026-06-23T00:00:00Z",
+            )
+
+        assert result == [{"id": 7, "body": "@koan-bot review"}]
+
+    def test_fetch_total_failure_returns_none(self):
+        # When no endpoint yields usable data, signal total failure with None
+        # so the caller can throttle the repo.
+        from app.github_command_handler import _fetch_recent_repo_comments
+
+        with patch("app.github.run_gh", side_effect=RuntimeError("boom")):
+            assert _fetch_recent_repo_comments(
+                "sukria/koan", "2026-06-23T00:00:00Z",
+            ) is None
+
 
 class TestActiveMissionTargetsUrl:
     """Exact URL-token matching for mission dedup (no substring collisions)."""

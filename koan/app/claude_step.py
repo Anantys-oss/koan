@@ -508,7 +508,17 @@ def _has_hook_created_worktree_changes(cwd: str) -> bool:
             stdin=subprocess.DEVNULL,
             capture_output=True, text=True, cwd=cwd, timeout=30,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # Could not inspect the worktree — surface it instead of silently
+        # treating a hook rejection as a hard rejection (no formatter retry).
+        log_safe("git", f"could not inspect worktree after hook rejection: {exc}")
+        return False
+    if result.returncode != 0:
+        log_safe(
+            "git",
+            f"git status failed (exit {result.returncode}) inspecting worktree "
+            f"after hook rejection; treating as no hook edits",
+        )
         return False
     for line in result.stdout.splitlines():
         if line.startswith("??"):
@@ -563,6 +573,11 @@ def _commit_with_hook_fallback(
                 runner(["git", "add", "-A"], cwd=cwd)
                 try:
                     runner(["git", "commit", *commit_args], cwd=cwd, timeout=180)
+                    return
+                except subprocess.TimeoutExpired:
+                    # Hook hung on the retry — same as the first attempt, a
+                    # hung hook is always bypassed so the pipeline proceeds.
+                    runner(["git", "commit", "--no-verify", *commit_args], cwd=cwd)
                     return
                 except GitCommandError as retry_exc:
                     if not bypass_hook_failures or not is_hook_rejection(retry_exc, cwd):
