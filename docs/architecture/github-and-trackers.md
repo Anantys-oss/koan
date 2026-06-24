@@ -31,6 +31,18 @@ Controlled PR creation paths append a shared Kōan footer to PR bodies and
 review comments. The footer includes best-effort provider/model attribution,
 the submitted HEAD SHA, and elapsed runtime when that metadata is available.
 
+When applying reviewer feedback (`/pr`, `/rebase`, `/recreate`), the prompts inject
+a shared **receiving-code-review** protocol fragment
+(`koan/system-prompts/_partials/receiving-code-review.md`, pulled in via
+`{@include receiving-code-review}`). It directs the agent to evaluate each
+substantive comment (READ→UNDERSTAND→VERIFY→EVALUATE→RESPOND→IMPLEMENT) instead of
+blindly implementing it: verify the suggestion against the current codebase, apply a
+YAGNI check, and push back with technical reasoning (surfaced in the summary) when a
+request is incorrect — while complying when the human insists. Trivial/mechanical
+feedback takes a fast-path. The review-learning extraction additionally records
+pushback outcomes (validated vs. overridden) so the agent learns which pushbacks to
+trust.
+
 ## Review Issue-Tracker Enrichment
 
 When `/review` builds a PR review prompt, it can enrich the prompt with the
