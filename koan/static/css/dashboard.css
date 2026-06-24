@@ -40,6 +40,15 @@
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
 }
+.sidebar-github {
+    display: flex;
+    align-items: center;
+    color: var(--text-secondary);
+    margin-right: var(--space-2);
+    transition: color 0.15s;
+}
+.sidebar-github:hover { color: var(--text-primary); }
+.sidebar-github svg { width: 20px; height: 20px; }
 .sidebar-brand .logo {
     font-family: var(--font-display);
     font-size: var(--fs-heading-sm);
