@@ -818,9 +818,9 @@ class TestHandleChat:
         assert cwd != project_path
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.conversation_history.load_recent_history", return_value=[])
+    @patch("app.conversation_history.format_conversation_history", return_value="")
+    @patch("app.config.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
