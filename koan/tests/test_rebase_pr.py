@@ -595,7 +595,7 @@ class TestBuildRebaseComment:
         assert "## Rebase with requested adjustments" in result
         assert "review feedback was applied" in result
 
-    def test_feedback_timeout_note_does_not_count_as_adjustments(self):
+    def test_feedback_failed_flag_reports_not_applied(self):
         result = _build_rebase_comment(
             "42", "koan/fix", "main",
             [
@@ -603,7 +603,26 @@ class TestBuildRebaseComment:
                 "Review feedback timed out; restored clean rebased state and continuing with rebase-only push",
             ],
             {"title": "Fix bug", "review_comments": "please fix the typo"},
+            feedback_failed=True,
         )
+        assert "## Rebase completed; review feedback not applied" in result
+        assert "review feedback could not be applied automatically" in result
+        assert "## Rebase with requested adjustments" not in result
+
+    def test_feedback_failure_label_drives_summary_not_log_prose(self):
+        # Detection comes from the structured status the caller passes, not
+        # from substring-matching log lines.  A failure marker left in the
+        # log must NOT, on its own, flip the summary to "not applied".
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            [
+                "Rebased onto origin/main",
+                "Review feedback step crashed; continuing with rebase-only push",
+            ],
+            {"title": "Fix bug", "review_comments": "please fix the typo"},
+            feedback_failed=False,
+        )
+        assert "## Rebase completed; review feedback not applied" not in result
         assert "## Simple rebase" in result
 
     def test_conflict_resolution_noted(self):
@@ -1719,6 +1738,7 @@ class TestApplyReviewFeedback:
         call_kwargs = mock_step.call_args.kwargs
         assert call_kwargs["commit_msg"] == "rebase: apply review feedback on #42"
         assert call_kwargs["success_label"] == "Applied review feedback"
+        assert call_kwargs["bypass_hook_failures"] is True
         assert summary == "Changed things."
 
     @patch("app.rebase_pr.get_rebase_review_max_duration", return_value=10800)

@@ -1308,9 +1308,9 @@ def _handle_wait_pause(
     instance: str,
 ):
     """Enter pause mode when budget is exhausted (WAIT action)."""
-    from app.config import is_unlimited_quota
-    if is_unlimited_quota():
-        log("quota", "WAIT pause suppressed — unlimited_quota is active")
+    from app.usage_tracker import _get_budget_mode
+    if _get_budget_mode() == "disabled":
+        log("quota", "WAIT pause suppressed — budget gating is disabled")
         return
 
     project_name = plan["project_name"]

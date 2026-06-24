@@ -29,6 +29,7 @@ from app.github_command_handler import (
     _post_help_reply,
     _active_mission_targets_url,
     _fetch_requested_review_prs,
+    _expand_multi_target_review_mission,
     _save_reply_timestamps,
     _try_assignment_notification,
     _try_nlp_classification,
@@ -44,6 +45,7 @@ from app.github_command_handler import (
     post_error_reply,
     process_single_notification,
     resolve_project_from_notification,
+    scan_recent_mention_missions,
     scan_requested_review_missions,
     validate_command,
 )
@@ -356,6 +358,37 @@ class TestBuildMissionFromCommand:
             mock_skill, "rebase", "", notif, "myproject"
         )
         assert mission == "- [project:myproject] /rebase 📬"
+
+
+class TestExpandMultiTargetReviewMission:
+    def test_splits_review_mission_into_individual_targets(self):
+        mission = (
+            "- [project:koan] /review https://github.com/sukria/koan/pull/76 "
+            "https://github.com/sukria/koan/pull/77 --errors 📬"
+        )
+
+        result = _expand_multi_target_review_mission("review", mission, "koan")
+
+        assert result == [
+            "- [project:koan] /review https://github.com/sukria/koan/pull/76 --errors 📬",
+            "- [project:koan] /review https://github.com/sukria/koan/pull/77 --errors 📬",
+        ]
+
+    def test_keeps_plan_url_as_shared_context(self):
+        mission = (
+            "- [project:koan] /review https://github.com/sukria/koan/pull/76 "
+            "https://github.com/sukria/koan/pull/77 --plan-url "
+            "https://github.com/sukria/koan/issues/9 📬"
+        )
+
+        result = _expand_multi_target_review_mission("review", mission, "koan")
+
+        assert result == [
+            "- [project:koan] /review https://github.com/sukria/koan/pull/76 "
+            "--plan-url https://github.com/sukria/koan/issues/9 📬",
+            "- [project:koan] /review https://github.com/sukria/koan/pull/77 "
+            "--plan-url https://github.com/sukria/koan/issues/9 📬",
+        ]
 
 
 class TestResolveProjectFromNotification:
@@ -2021,6 +2054,51 @@ class TestProcessNotificationEdgeCases:
         mission_arg = mock_insert.call_args[0][1]
         assert "focus on API layer" in mission_arg
         assert "/implement" in mission_arg
+
+    @patch("app.github_command_handler.mark_notification_read")
+    @patch("app.github_command_handler.add_reaction", return_value=True)
+    @patch("app.github_command_handler.check_user_permission", return_value=True)
+    @patch("app.github_command_handler.check_already_processed", return_value=False)
+    @patch("app.github_command_handler._find_all_thread_mentions")
+    @patch("app.github_command_handler.resolve_project_from_notification")
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    def test_review_command_with_multiple_urls_inserts_individual_missions(
+        self, mock_insert, mock_resolve, mock_mentions,
+        mock_processed, mock_perm,
+        mock_react, mock_read, sample_notification, tmp_path,
+    ):
+        review_registry = SkillRegistry()
+        review_registry._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="review", aliases=["rv"])],
+        ))
+        mock_resolve.return_value = ("koan", "sukria", "koan")
+        mock_mentions.return_value = [{
+            "id": 99,
+            "body": (
+                "@testbot review https://github.com/sukria/koan/pull/76 "
+                "https://github.com/sukria/koan/pull/77"
+            ),
+            "user": {"login": "alice"},
+        }]
+        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+
+        with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
+            success, error = process_single_notification(
+                sample_notification, review_registry, config, None, "testbot",
+            )
+
+        assert success is True
+        assert error is None
+        inserted = [args[0][1] for args in mock_insert.call_args_list]
+        assert inserted == [
+            "- [project:koan] /review https://github.com/sukria/koan/pull/76 📬",
+            "- [project:koan] /review https://github.com/sukria/koan/pull/77 📬",
+        ]
 
     @patch("app.github_command_handler.mark_notification_read")
     @patch("app.github_command_handler.add_reaction", return_value=True)
@@ -4263,6 +4341,238 @@ class TestRequestedReviewScan:
     def test_transport_error_returns_none(self):
         with patch("app.github.run_gh", side_effect=RuntimeError("boom")):
             assert _fetch_requested_review_prs("sukria/koan", "koan-bot") is None
+
+
+class TestRecentMentionScan:
+    """Tests for notification-independent @mention scanning."""
+
+    @pytest.fixture
+    def review_registry(self):
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="review", aliases=["rv"])],
+        ))
+        return reg
+
+    @pytest.fixture
+    def projects_config(self):
+        return {
+            "projects": {
+                "koan": {
+                    "path": "/workspace/koan",
+                    "github_url": "sukria/koan",
+                },
+            },
+        }
+
+    @pytest.fixture
+    def scan_config(self):
+        return {
+            "github": {
+                "nickname": "koan-bot",
+                "authorized_users": ["*"],
+                "mention_scan_interval_minutes": 0,
+                "max_age_hours": 24,
+            },
+        }
+
+    def _comment(self, comment_id=1234):
+        return {
+            "id": comment_id,
+            "body": "@koan-bot review",
+            "created_at": "2026-06-23T23:05:06Z",
+            "updated_at": "2026-06-23T23:05:06Z",
+            "url": f"https://api.github.com/repos/sukria/koan/issues/comments/{comment_id}",
+            "html_url": (
+                f"https://github.com/sukria/koan/pull/42#issuecomment-{comment_id}"
+            ),
+            "issue_url": "https://api.github.com/repos/sukria/koan/issues/42",
+            "user": {"login": "alice"},
+        }
+
+    def _setup_instance(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n",
+        )
+        return instance_dir
+
+    def test_queues_review_from_comment_when_notification_is_missing(
+        self, projects_config, scan_config, review_registry, tmp_path, monkeypatch,
+    ):
+        instance_dir = self._setup_instance(tmp_path, monkeypatch)
+
+        with patch("app.github_command_handler._fetch_recent_repo_comments",
+                   return_value=[self._comment()]), \
+             patch("app.github_command_handler.check_user_permission",
+                   return_value=True), \
+             patch("app.github_command_handler.check_already_processed",
+                   return_value=False), \
+             patch("app.github_command_handler.add_reaction") as mock_react:
+            queued = scan_recent_mention_missions(
+                projects_config, scan_config, review_registry, str(instance_dir),
+            )
+
+        assert queued == 1
+        content = (instance_dir / "missions.md").read_text()
+        assert "[project:koan] /review https://github.com/sukria/koan/pull/42 📬" in content
+        mock_react.assert_called_once()
+
+        from app.github_notification_tracker import is_comment_tracked
+        assert is_comment_tracked(str(instance_dir), "1234") is True
+
+    def test_tracked_comment_is_not_processed_again(
+        self, projects_config, scan_config, review_registry, tmp_path, monkeypatch,
+    ):
+        instance_dir = self._setup_instance(tmp_path, monkeypatch)
+
+        from app.github_notification_tracker import track_comment
+        track_comment(str(instance_dir), "1234")
+
+        with patch("app.github_command_handler._fetch_recent_repo_comments",
+                   return_value=[self._comment()]), \
+             patch("app.github_command_handler._process_scanned_mention") as mock_process:
+            queued = scan_recent_mention_missions(
+                projects_config, scan_config, review_registry, str(instance_dir),
+            )
+
+        assert queued == 0
+        mock_process.assert_not_called()
+
+    def test_permission_denied_is_tracked_without_queueing(
+        self, projects_config, scan_config, review_registry, tmp_path, monkeypatch,
+    ):
+        instance_dir = self._setup_instance(tmp_path, monkeypatch)
+
+        with patch("app.github_command_handler._fetch_recent_repo_comments",
+                   return_value=[self._comment()]), \
+             patch("app.github_command_handler.check_user_permission",
+                   return_value=False), \
+             patch("app.github_command_handler.check_already_processed",
+                   return_value=False), \
+             patch("app.github_command_handler.post_error_reply") as mock_error:
+            queued = scan_recent_mention_missions(
+                projects_config, scan_config, review_registry, str(instance_dir),
+            )
+
+        assert queued == 0
+        assert "/review https://github.com/sukria/koan/pull/42" not in (
+            instance_dir / "missions.md"
+        ).read_text()
+        mock_error.assert_called_once()
+
+        from app.github_notification_tracker import is_comment_tracked
+        assert is_comment_tracked(str(instance_dir), "1234") is True
+
+    def test_comment_with_null_user_does_not_raise(
+        self, projects_config, scan_config, review_registry, tmp_path, monkeypatch,
+    ):
+        # GitHub returns "user": null for comments by deleted/ghost accounts.
+        instance_dir = self._setup_instance(tmp_path, monkeypatch)
+        ghost = self._comment()
+        ghost["user"] = None
+
+        with patch("app.github_command_handler._fetch_recent_repo_comments",
+                   return_value=[ghost]), \
+             patch("app.github_command_handler.check_user_permission",
+                   return_value=True), \
+             patch("app.github_command_handler.check_already_processed",
+                   return_value=False), \
+             patch("app.github_command_handler.add_reaction"):
+            queued = scan_recent_mention_missions(
+                projects_config, scan_config, review_registry, str(instance_dir),
+            )
+
+        # A null author is not the bot, so the mention is still processed.
+        assert queued == 1
+
+    def test_one_malformed_comment_does_not_abort_scan(
+        self, projects_config, scan_config, review_registry, tmp_path, monkeypatch,
+    ):
+        # A single comment that blows up during processing must be skipped,
+        # not abort the whole scan — the remaining comments still queue.
+        instance_dir = self._setup_instance(tmp_path, monkeypatch)
+        bad = self._comment(comment_id=1)
+        good = self._comment(comment_id=2)
+
+        def _process(notification, comment, *args, **kwargs):
+            if str(comment.get("id")) == "1":
+                raise ValueError("boom")
+            return True
+
+        with patch("app.github_command_handler._fetch_recent_repo_comments",
+                   return_value=[bad, good]), \
+             patch("app.github_command_handler._recent_unprocessed_mentions",
+                   return_value=[({}, bad), ({}, good)]), \
+             patch("app.github_command_handler._process_scanned_mention",
+                   side_effect=_process):
+            queued = scan_recent_mention_missions(
+                projects_config, scan_config, review_registry, str(instance_dir),
+            )
+
+        assert queued == 1
+
+    def test_failed_fetch_still_throttles_repo(
+        self, projects_config, review_registry, tmp_path, monkeypatch,
+    ):
+        # A repo whose fetch fails must still be marked scanned, so it backs off
+        # to the full interval instead of being re-scanned on every poll.
+        instance_dir = self._setup_instance(tmp_path, monkeypatch)
+        config = {
+            "github": {
+                "nickname": "koan-bot",
+                "authorized_users": ["*"],
+                "mention_scan_interval_minutes": 5,
+                "max_age_hours": 24,
+            },
+        }
+        with patch("app.github_command_handler._fetch_recent_repo_comments",
+                   return_value=None):
+            queued = scan_recent_mention_missions(
+                projects_config, config, review_registry, str(instance_dir),
+            )
+
+        assert queued == 0
+        from app.github_notification_tracker import is_repo_mention_scan_due
+        # Marked scanned despite the failure → no longer due within the interval.
+        assert is_repo_mention_scan_due(
+            str(instance_dir), "sukria/koan", 5 * 60,
+        ) is False
+
+    def test_fetch_partial_failure_keeps_succeeded_endpoint(self):
+        # One endpoint failing must not discard comments already fetched from
+        # the other; the gathered comments are returned (not None).
+        from app.github_command_handler import _fetch_recent_repo_comments
+
+        def fake_run_gh(*args, **kwargs):
+            endpoint = args[1]
+            if "issues/comments" in endpoint:
+                return json.dumps([{"id": 7, "body": "@koan-bot review"}])
+            raise RuntimeError("pulls/comments timed out")
+
+        with patch("app.github.run_gh", side_effect=fake_run_gh):
+            result = _fetch_recent_repo_comments(
+                "sukria/koan", "2026-06-23T00:00:00Z",
+            )
+
+        assert result == [{"id": 7, "body": "@koan-bot review"}]
+
+    def test_fetch_total_failure_returns_none(self):
+        # When no endpoint yields usable data, signal total failure with None
+        # so the caller can throttle the repo.
+        from app.github_command_handler import _fetch_recent_repo_comments
+
+        with patch("app.github.run_gh", side_effect=RuntimeError("boom")):
+            assert _fetch_recent_repo_comments(
+                "sukria/koan", "2026-06-23T00:00:00Z",
+            ) is None
 
 
 class TestActiveMissionTargetsUrl:

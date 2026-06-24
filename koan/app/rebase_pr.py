@@ -790,6 +790,7 @@ def run_rebase(
 
     # ── Step 4: Analyze review comments and apply changes ──────────────
     change_summary = ""
+    feedback_status = ""
     if _has_review_feedback(context):
         severity_hint = ""
         if min_severity and min_severity != "suggestion":
@@ -950,6 +951,7 @@ def run_rebase(
         diffstat=diffstat,
         ci_section=ci_section,
         change_summary=change_summary,
+        feedback_failed=feedback_status in ("feedback_timeout", "feedback_failed"),
     )
 
     try:
@@ -1757,6 +1759,7 @@ def _run_claude_step_with_heartbeat(
     use_convention_subject: bool,
     idle_timeout: Optional[int] = None,
     max_duration: Optional[int] = None,
+    bypass_hook_failures: bool = False,
 ):
     """Run ``run_claude_step`` while emitting periodic heartbeat lines."""
     stop_heartbeat = threading.Event()
@@ -1779,6 +1782,7 @@ def _run_claude_step_with_heartbeat(
             idle_timeout=idle_timeout,
             max_duration=max_duration,
             use_convention_subject=use_convention_subject,
+            bypass_hook_failures=bypass_hook_failures,
         )
     finally:
         stop_heartbeat.set()
@@ -1929,6 +1933,7 @@ def _apply_review_feedback(
             idle_timeout=get_rebase_review_idle_timeout(),
             max_duration=get_rebase_review_max_duration(),
             use_convention_subject=bool(commit_conventions),
+            bypass_hook_failures=True,
         )
     except Exception as exc:
         # The git rebase already succeeded by this point. A crash while
@@ -2162,8 +2167,14 @@ def _build_rebase_comment(
     diffstat: str = "",
     ci_section: str = "",
     change_summary: str = "",
+    feedback_failed: bool = False,
 ) -> str:
     """Build a structured markdown comment summarizing the rebase.
+
+    ``feedback_failed`` is supplied by the caller from the structured
+    feedback status (``feedback_timeout`` / ``feedback_failed``) rather than
+    inferred from log prose, so a reworded log line cannot silently revert
+    the summary to "Simple rebase".
 
     Sections:
     1. Summary — rebase type (simple vs. with adjustments) + one-liner
@@ -2183,6 +2194,12 @@ def _build_rebase_comment(
         summary_line = (
             f"Branch `{branch}` was rebased onto `{base}` and review "
             f"feedback was applied."
+        )
+    elif feedback_failed:
+        rebase_type = "Rebase completed; review feedback not applied"
+        summary_line = (
+            f"Branch `{branch}` was rebased onto `{base}`, but review "
+            f"feedback could not be applied automatically."
         )
     elif has_conflicts:
         rebase_type = "Rebase with conflict resolution"

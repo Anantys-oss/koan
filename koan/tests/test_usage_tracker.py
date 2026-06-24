@@ -574,6 +574,13 @@ class TestGetBudgetMode:
         with patch("app.utils.load_config", side_effect=OSError("nope")):
             assert _get_budget_mode() == "session_only"
 
+    def test_unexpected_error_never_raises(self):
+        """Any error type (not just ImportError/OSError/ValueError) is
+        swallowed — _get_budget_mode is a never-raises helper so unguarded
+        callers like run.py's wait-pause handler stay safe."""
+        with patch("app.utils.load_config", side_effect=TypeError("boom")):
+            assert _get_budget_mode() == "session_only"
+
     def test_no_quota_provider_returns_disabled(self):
         """When provider has no API quota, budget_mode is forced to disabled."""
         with patch("app.utils.load_config", return_value={

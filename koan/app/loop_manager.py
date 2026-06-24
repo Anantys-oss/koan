@@ -954,6 +954,23 @@ def process_github_notifications(
             workers=workers,
         )
 
+        # Fallback for @mentions that appear in GitHub's issue timeline but
+        # are omitted from the notifications API. This scans only configured
+        # repos and reuses the same command-processing path as notifications.
+        try:
+            from app.github_command_handler import scan_recent_mention_missions
+
+            scanned_mentions = scan_recent_mention_missions(
+                projects_config, config, registry, instance_dir,
+            )
+            if scanned_mentions > 0:
+                _github_log(
+                    f"Queued {scanned_mentions} mention-triggered mission(s)"
+                )
+                missions_created += scanned_mentions
+        except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as e:
+            log.warning("GitHub mention scan failed: %s", e, exc_info=True)
+
         # Fallback for review requests that GitHub does not expose through
         # notifications: scan known repos for PRs still requesting the bot.
         try:

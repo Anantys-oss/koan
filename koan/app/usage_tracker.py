@@ -300,8 +300,8 @@ def _get_budget_mode() -> str:
                 except Exception as exc:
                     logger.warning("Provider quota check failed: %s", exc)
             return mode
-    except (ImportError, OSError, ValueError):
-        pass
+    except Exception as exc:  # noqa: BLE001 — never-raises helper, safe default
+        logger.warning("budget_mode resolution failed, defaulting: %s", exc)
     return "session_only"
 
 

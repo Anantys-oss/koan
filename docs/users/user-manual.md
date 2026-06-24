@@ -554,9 +554,10 @@ The debug loop enforces four steps:
 
 **`/review`** — Queue a code review for a pull request or issue.
 
-- **Usage:** `/review <github-pr-or-issue-url> [--architecture] [--errors] [--comments] [--bot-comments] [--plan-url <issue-url>]`
+- **Usage:** `/review <github-pr-or-issue-url> [additional-pr-or-issue-url ...] [--architecture] [--errors] [--comments] [--bot-comments] [--plan-url <issue-url>]`
 - **Aliases:** `/rv`
 - **GitHub @mention:** `@koan-bot /review` on a PR
+- **Multiple URLs:** Queues one independent review mission per PR/issue URL. Shared flags such as `--errors` and `--plan-url <issue-url>` are applied to each queued review.
 - **Flags:**
   - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
@@ -576,6 +577,7 @@ The debug loop enforces four steps:
 - `/review https://github.com/org/repo/pull/55 --comments` — Comment quality review
 - `/review https://github.com/org/repo/pull/55 --bot-comments` — Triage and reply to bot review comments
 - `/review https://github.com/org/repo/pull/55 --architecture --errors` — Both passes
+- `/review https://github.com/org/repo/pull/55 https://github.com/org/repo/pull/56 --errors` — Queue separate error-focused reviews for both PRs
 </details>
 
 **`/ultrareview`** — Queue the most thorough review Kōan can run for a PR.
@@ -660,6 +662,14 @@ strategy, and re-reviews up to the configured round limit. Gate failures are
 reported in the rebase summary but do not fail an otherwise successful rebase.
 
 When `/rebase` runs long, Kōan uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout), Kōan now restores the clean rebased checkpoint and still pushes the rebase (without partial feedback edits), so timeout noise does not discard a valid rebase. If the feedback step hits a *provider quota limit*, the rebase still stops so you can retry after quota reset. Any other transient feedback error remains best-effort and does not block pushing the rebase.
+
+When a target repository pre-commit hook formats files during the feedback
+commit, Kōan stages the hook-created edits and retries the commit once. If local
+hooks still reject the feedback commit, Kōan commits the feedback with
+`--no-verify` so valid review edits are not discarded by broad local gates; CI
+remains the final validation. If the feedback step itself still fails, Kōan
+pushes the clean rebase and reports that review feedback was not applied instead
+of labeling the result as a simple rebase.
 
 After completion, Kōan posts a structured comment on the PR with these sections:
 
@@ -2186,7 +2196,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
 | `/debug <issue>` | `/dbg` | I | Structured 4-step debug loop (reproduce → hypothesize → fix → verify) |
-| `/review <PR> [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review a pull request |
+| `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review one or more pull requests |
 | `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |

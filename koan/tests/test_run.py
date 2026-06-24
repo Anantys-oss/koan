@@ -7300,10 +7300,10 @@ class TestHandleWaitPauseCommit:
         assert "retro failed" in error_msg
         assert "Traceback" in error_msg
 
-    @patch("app.config.is_unlimited_quota", return_value=True)
+    @patch("app.usage_tracker._get_budget_mode", return_value="disabled")
     @patch("app.run.log")
-    def test_unlimited_quota_skips_pause(self, mock_log, mock_unlimited):
-        """unlimited_quota: true suppresses the wait pause entirely."""
+    def test_disabled_budget_skips_pause(self, mock_log, mock_budget):
+        """Disabled budget mode suppresses the wait pause entirely."""
         from app.run import _handle_wait_pause
 
         plan = {
@@ -7315,6 +7315,30 @@ class TestHandleWaitPauseCommit:
 
         log_calls = [c[0] for c in mock_log.call_args_list]
         assert any("suppressed" in msg for _, msg in log_calls)
+
+    @patch("app.run._notify")
+    @patch("app.run._commit_instance")
+    @patch("app.pause_manager.create_pause")
+    @patch("app.run._compute_quota_reset_ts", return_value=(9999, "soon"))
+    @patch("app.usage_tracker._get_budget_mode", return_value="disabled")
+    @patch("app.run.log")
+    def test_disabled_budget_does_not_create_wait_pause(
+        self, mock_log, mock_budget, mock_reset, mock_pause, mock_commit,
+        mock_notify,
+    ):
+        """A stale wait_pause plan is a no-op when budget gating is disabled."""
+        from app.run import _handle_wait_pause
+
+        plan = {
+            "project_name": "test-proj",
+            "decision_reason": "Budget exhausted",
+            "display_lines": [],
+        }
+        _handle_wait_pause(plan, 42, "/tmp/koan", "/tmp/koan/instance")
+
+        mock_pause.assert_not_called()
+        mock_commit.assert_not_called()
+        mock_notify.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

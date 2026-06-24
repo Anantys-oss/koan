@@ -1447,15 +1447,16 @@ def plan_iteration(
     cost_today = decision.get("cost_today", 0.0)
     _log_iteration("koan", f"Usage decision: mode={autonomous_mode}, available={available_pct}%")
 
-    # Guard: unlimited_quota must never produce WAIT mode.
-    # The budget tracker should already return "deep" when disabled, but
-    # this guard catches any edge case where the mode leaks through
-    # (e.g. stale usage.md, tracker error fallback, config load race).
+    # Guard: disabled budget mode must never produce WAIT mode.  Budget mode
+    # is "disabled" when unlimited_quota is set or the provider has no API
+    # quota (ollama, local).  The budget tracker should already return "deep"
+    # when disabled, but this guard catches any edge case where the mode leaks
+    # through (e.g. stale usage.md, tracker error fallback, config load race).
     if autonomous_mode == "wait" and _budget_mode == "disabled":
         _log_iteration("koan",
-            "unlimited_quota override: WAIT → DEEP (budget gating disabled)")
+            "budget gating disabled: WAIT → DEEP")
         autonomous_mode = "deep"
-        decision_reason = "unlimited_quota active — budget gating disabled"
+        decision_reason = "budget gating disabled (no quota limit)"
 
     # Step 2a: Cap mode at implement when focus mode is active.
     # DEEP mode encourages autonomous GitHub issue pickup, which focus
@@ -1578,7 +1579,11 @@ def plan_iteration(
         # Tier-based model upgrades (e.g. complex → opus) can increase
         # cost 2-3x.  The initial budget guard (Step 2) ran before tier
         # classification, so it used the base mode multiplier only.
-        if mission_tier and usage_tracker is not None:
+        if (
+            mission_tier
+            and usage_tracker is not None
+            and _budget_mode != "disabled"
+        ):
             tier_mult = _get_tier_cost_multiplier(mission_tier, project_name)
             if tier_mult > 1.0:
                 prev_mode = autonomous_mode

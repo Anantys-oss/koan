@@ -171,6 +171,23 @@ class TestValidConfigProducesNoWarnings:
         config = {"tools": {"chat": "Read,Glob,Grep"}}
         assert validate_config(config) == []
 
+    def test_github_multi_instance_and_scan_keys_are_known(self):
+        config = {
+            "enable_multiple_instances": True,
+            "github": {
+                "mention_scan_interval_minutes": 5,
+                "review_scan_interval_minutes": 15,
+                "parallel_workers": 4,
+                "ack_enabled": False,
+                "stale_drain_hours": 48,
+            },
+        }
+        assert validate_config(config) == []
+
+    def test_unlimited_quota_is_known_under_usage(self):
+        # The code reads usage.unlimited_quota — not a top-level key.
+        assert validate_config({"usage": {"unlimited_quota": True}}) == []
+
 
 # ---------------------------------------------------------------------------
 # validate_config — unrecognized keys
@@ -200,6 +217,15 @@ class TestUnrecognizedKeys:
     def test_multiple_unknowns(self):
         warnings = validate_config({"foo": 1, "bar": 2})
         assert len(warnings) == 2
+
+    def test_top_level_unlimited_quota_is_deprecated_not_unrecognized(self):
+        # unlimited_quota's canonical home is usage.unlimited_quota. A legacy
+        # top-level placement is honored but must be flagged with a single
+        # migration hint — never as a contradictory "unrecognized key".
+        warnings = validate_config({"unlimited_quota": True})
+        assert len(warnings) == 1
+        assert "moved to 'usage.unlimited_quota'" in warnings[0][1]
+        assert not any("unrecognized key 'unlimited_quota'" in m for _, m in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +302,15 @@ class TestEdgeCases:
         assert "unknown_key" in paths
         assert "debug" in paths
         assert "budget.fake_key" in paths
+
+    def test_top_level_unlimited_quota_warns_to_move_under_usage(self):
+        warnings = validate_config({"unlimited_quota": True, "usage": {}})
+
+        assert (
+            "unlimited_quota",
+            "'unlimited_quota' moved to 'usage.unlimited_quota'; "
+            "the top-level form is deprecated",
+        ) in warnings
 
 
 # ---------------------------------------------------------------------------

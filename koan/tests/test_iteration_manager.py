@@ -1077,6 +1077,37 @@ class TestPlanIteration:
         assert result["action"] != "wait_pause"
         assert result["autonomous_mode"] != "wait"
 
+    @patch("app.iteration_manager._downgrade_if_unaffordable")
+    @patch("app.iteration_manager._get_tier_cost_multiplier", return_value=2.0)
+    @patch("app.iteration_manager._classify_mission", return_value="complex")
+    @patch("app.usage_tracker._get_budget_mode", return_value="disabled")
+    @patch("app.pick_mission.pick_mission", return_value="koan:Fix expensive bug")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_disabled_budget_skips_tier_affordability_recheck(
+        self, mock_refresh, mock_pick, mock_budget, mock_classify,
+        mock_tier_mult, mock_downgrade, instance_dir, koan_root, usage_state,
+    ):
+        """Disabled budget mode must not downgrade mission mode on tier recheck."""
+        usage_md = instance_dir / "usage.md"
+        usage_md.write_text(
+            "Session (5hr) : 99% (reset in 1h)\n"
+            "Weekly (7 day) : 99% (Resets in 3d)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=5,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "mission"
+        assert result["autonomous_mode"] == "deep"
+        mock_downgrade.assert_not_called()
+
     @patch("app.pick_mission.pick_mission", return_value="unknown_project:Fix thing")
     @patch("app.usage_estimator.cmd_refresh")
     def test_unknown_project_error(self, mock_refresh, mock_pick,
