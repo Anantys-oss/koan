@@ -9,6 +9,7 @@ Environment variables:
     KOAN_SLACK_CHANNEL_ID   — Channel ID to operate in (C...)
 """
 
+import contextlib
 import itertools
 import os
 import queue
@@ -323,17 +324,30 @@ class SlackProvider(MessagingProvider):
                 print("[slack] Socket Mode connection lost — reconnecting.",
                       file=sys.stderr)
                 self._connected = False
+                # Tear down the dead client first: SocketModeClient runs its
+                # WebSocket on a background thread, so re-dialing without
+                # disconnecting can leak the old monitor/receiver threads (or
+                # raise on SDKs that reject connect() while still "connected").
+                with contextlib.suppress(Exception):
+                    self._socket_client.disconnect()
                 self._start_socket_mode()
 
     def _is_socket_alive(self) -> bool:
-        """Best-effort liveness probe; assume alive when we cannot tell."""
+        """Best-effort liveness probe; treat an unknown or raising probe.
+
+        Returns True (assume alive) only when the SDK exposes no usable probe.
+        A probe that raises is treated as dead so a persistently-failing socket
+        biases toward reconnection rather than silently going deaf forever.
+        """
         probe = getattr(self._socket_client, "is_connected", None)
         if not callable(probe):
             return True
         try:
             return bool(probe())
-        except Exception:
-            return True
+        except Exception as e:
+            print(f"[slack] Socket liveness probe raised, treating as dead: {e}",
+                  file=sys.stderr)
+            return False
 
     def _start_socket_mode(self):
         """Start Socket Mode connection in a background thread."""

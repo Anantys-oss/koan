@@ -148,6 +148,25 @@ class TestPollUpdates:
         provider._socket_client.connect.assert_called_once()
         assert provider._connected is True
 
+    def test_reconnect_disconnects_dead_socket_first(self, provider):
+        """Reconnect tears down the dead client before re-dialing.
+
+        Re-calling connect() without disconnect() can leak the old WebSocket
+        monitor/receiver threads over long uptime.
+        """
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider.poll_updates()
+        provider._socket_client.disconnect.assert_called_once()
+        provider._socket_client.connect.assert_called_once()
+
+    def test_reconnects_when_liveness_probe_raises(self, provider):
+        """A probe that raises is treated as dead, biasing toward reconnect."""
+        provider._connected = True
+        provider._socket_client.is_connected.side_effect = Exception("boom")
+        provider.poll_updates()
+        provider._socket_client.connect.assert_called_once()
+
     def test_no_reconnect_when_socket_alive(self, provider):
         provider._connected = True
         provider._socket_client.is_connected.return_value = True
