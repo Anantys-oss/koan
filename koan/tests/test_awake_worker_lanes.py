@@ -92,3 +92,40 @@ def test_worker_skill_dispatches_on_bg_lane():
     assert mock_worker.called
     # lane must be the background lane, not chat
     assert mock_worker.call_args.kwargs.get("lane") == "bg"
+
+
+def test_busy_bg_lane_notifies_user_initiated_worker_skill():
+    """A typed worker skill dropped by a busy bg lane must not be silent.
+
+    The bg lane stays silent for autonomous background work, but a
+    user-initiated command (e.g. ``/review`` typed in chat) that lands on a
+    busy lane should tell the user instead of vanishing.
+    """
+    skill = MagicMock()
+    skill.cli_skill = False
+    skill.worker = True
+    skill.audience = "human"
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow():
+        started.set()
+        release.wait(timeout=2)
+
+    # Occupy the real bg lane so the next dispatch is dropped.
+    with patch("app.notify.send_telegram"):
+        assert awake._run_in_worker(slow, lane="bg") is True
+        assert started.wait(timeout=2)
+
+    # Dispatch a user-initiated worker skill through the real lane callback.
+    with patch.object(ch, "_run_in_worker_cb", awake._run_in_worker), \
+         patch.object(ch, "send_telegram") as mock_send, \
+         patch.object(ch, "record_usage", create=True):
+        ch._dispatch_skill(skill, "review", "some args")
+
+    release.set()
+
+    assert mock_send.called, "dropped user-initiated worker skill must notify the user"
+    sent = " ".join(str(c.args[0]) for c in mock_send.call_args_list if c.args)
+    assert "review" in sent

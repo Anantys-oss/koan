@@ -649,7 +649,7 @@ _LANE_BUSY_MSG: Dict[str, Optional[str]] = {
 }
 
 
-def _run_in_worker(fn, *args, lane: str = "chat"):
+def _run_in_worker(fn, *args, lane: str = "chat") -> bool:
     """Run fn(*args) in a background thread on a named lane.
 
     Two lanes exist: ``"chat"`` (interactive replies) and ``"bg"``
@@ -660,6 +660,13 @@ def _run_in_worker(fn, *args, lane: str = "chat"):
 
     Captures the current reply context so that send_telegram() calls inside
     the worker thread reply to the correct message in groups.
+
+    Returns ``True`` when the task was started and ``False`` when the lane
+    was already busy and the task was dropped.  The chat lane notifies the
+    user on its own when busy; the bg lane stays silent, so callers that
+    dispatch *user-initiated* work on the bg lane (e.g. worker skills typed
+    in chat) should inspect this return value and surface their own
+    feedback rather than dropping the command silently.
     """
     from app.notify import (
         clear_reply_context,
@@ -686,10 +693,11 @@ def _run_in_worker(fn, *args, lane: str = "chat"):
             busy_msg = _LANE_BUSY_MSG.get(lane)
             if busy_msg:
                 send_telegram(busy_msg)
-            return
+            return False
         thread = threading.Thread(target=_wrapper, daemon=True)
         _worker_threads[lane] = thread
         thread.start()
+        return True
 
 
 # ---------------------------------------------------------------------------

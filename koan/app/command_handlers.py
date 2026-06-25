@@ -278,7 +278,17 @@ def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
                     send_telegram(f"/{command_name} failed: {type(e).__name__}: {e}")
                 except Exception as notify_err:
                     log("error", f"Failed to notify user about '{command_name}' error: {notify_err}")
-        _run_in_worker_cb(_run_skill, lane="bg")
+        # Worker skills are user-initiated, so dispatch them on the bg lane
+        # (keeping the chat lane free for interactive replies) but notify the
+        # user if the lane is busy.  The bg lane is silent by design for
+        # autonomous background work; a typed command dropping with zero
+        # feedback would read as the bot ignoring the user.
+        started = _run_in_worker_cb(_run_skill, lane="bg")
+        if started is False:
+            send_telegram(
+                f"⏳ Busy with a previous task — /{command_name} will have to "
+                "wait. Try again in a moment."
+            )
         return
 
     # Standard skill execution

@@ -41,7 +41,12 @@ daemon-thread lanes (`awake._run_in_worker(fn, lane=...)`):
   message is answered with "⏳ Busy with a previous message."
 - **bg** — background tasks: worker skills (Claude/API calls), GitHub
   notification processing. When busy, additional bg tasks are dropped
-  silently (no chat spam).
+  silently (no chat spam). `_run_in_worker` returns `True`/`False`
+  (started vs dropped) so callers can tell. Autonomous background work
+  ignores the result and stays silent; **user-initiated** worker skills
+  (a `/review`, `/implement`, etc. typed in chat) dispatch on the bg lane
+  but surface a "⏳ Busy with a previous task" reply when the lane was full,
+  so a typed command never vanishes without feedback.
 
 Because the lanes run concurrently, a long-running background task never
 blocks an interactive chat reply, and neither blocks the poll loop. One
