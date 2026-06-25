@@ -191,10 +191,7 @@ class SlackProvider(MessagingProvider):
         Socket Mode receives events asynchronously in a background thread.
         This method drains the queue and returns all buffered updates.
         """
-        if not self._connected and self._socket_client:
-            with self._connect_lock:
-                if not self._connected:
-                    self._start_socket_mode()
+        self._ensure_connected()
 
         updates: List[Update] = []
         while not self._message_queue.empty():
@@ -305,6 +302,38 @@ class SlackProvider(MessagingProvider):
         elapsed = time.time() - self._last_send_time
         if elapsed < SLACK_RATE_LIMIT_SECONDS:
             time.sleep(SLACK_RATE_LIMIT_SECONDS - elapsed)
+
+    def _ensure_connected(self):
+        """Connect on first use, and re-dial if the socket has gone dead.
+
+        Socket Mode keeps a persistent WebSocket in a background thread. During
+        long idle periods that connection can drop; slack_sdk's monitor usually
+        reconnects, but if it dies silently the bridge goes deaf with no
+        recovery — inbound messages are simply never queued. We poll liveness
+        on every drain (cheap) so the next 3s bridge cycle re-establishes the
+        link. Telegram has no equivalent failure mode: it re-polls over a fresh
+        HTTP request each cycle, so it is self-healing by construction.
+        """
+        if not self._socket_client:
+            return
+        with self._connect_lock:
+            if not self._connected:
+                self._start_socket_mode()
+            elif not self._is_socket_alive():
+                print("[slack] Socket Mode connection lost — reconnecting.",
+                      file=sys.stderr)
+                self._connected = False
+                self._start_socket_mode()
+
+    def _is_socket_alive(self) -> bool:
+        """Best-effort liveness probe; assume alive when we cannot tell."""
+        probe = getattr(self._socket_client, "is_connected", None)
+        if not callable(probe):
+            return True
+        try:
+            return bool(probe())
+        except Exception:
+            return True
 
     def _start_socket_mode(self):
         """Start Socket Mode connection in a background thread."""

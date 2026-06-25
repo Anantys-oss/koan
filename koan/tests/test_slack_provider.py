@@ -135,6 +135,25 @@ class TestPollUpdates:
         updates = provider.poll_updates()
         assert updates == []
 
+    def test_reconnects_when_socket_died(self, provider):
+        """A dropped socket (is_connected→False) is re-dialed on next poll.
+
+        Reproduces the 'Slack goes deaf during idle' symptom: the connection
+        drops mid-session, slack_sdk's monitor fails to recover, and without a
+        liveness check the bridge never reconnects.
+        """
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider.poll_updates()
+        provider._socket_client.connect.assert_called_once()
+        assert provider._connected is True
+
+    def test_no_reconnect_when_socket_alive(self, provider):
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = True
+        provider.poll_updates()
+        provider._socket_client.connect.assert_not_called()
+
 
 class TestHandleSocketEvent:
     """Test Socket Mode event handling and filtering logic."""
