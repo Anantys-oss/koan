@@ -274,6 +274,43 @@ class TestCleanupWorktree:
         # Worktree preserved because push couldn't be done (detached HEAD)
         assert Path(wt.path).exists()
 
+    def test_merged_branch_skips_push_and_deletes_local_branch(self, git_repo):
+        """When auto-merge already landed the branch, cleanup must NOT re-push
+        (which would resurrect a remote branch delete_after_merge just removed),
+        and must delete the stale local branch the merge could not remove while
+        it was checked out in the worktree."""
+        from app.worktree_manager import create_worktree
+        from app.run import _cleanup_worktree
+
+        wt = create_worktree(git_repo)
+
+        # Simulate the agent's feature branch with a commit on it.
+        feature = "koan/feature-merged"
+        subprocess.run(["git", "checkout", "-b", feature], cwd=wt.path,
+                       capture_output=True, check=True)
+        (Path(wt.path) / "work.txt").write_text("work\n")
+        subprocess.run(["git", "add", "."], cwd=wt.path, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "feature work"], cwd=wt.path,
+                       capture_output=True, check=True)
+        assert _branch_exists(git_repo, feature)
+
+        with patch("app.worktree_manager.push_worktree_branch_or_preserve") as mock_push:
+            _cleanup_worktree(wt, git_repo, merged_branch=feature)
+
+        # No push attempted → cannot resurrect the deleted remote branch.
+        mock_push.assert_not_called()
+        # Worktree gone and the stale local feature branch removed.
+        assert not Path(wt.path).exists()
+        assert not _branch_exists(git_repo, feature)
+
+
+def _branch_exists(repo: str, branch: str) -> bool:
+    result = subprocess.run(
+        ["git", "branch", "--list", branch],
+        cwd=repo, capture_output=True, text=True,
+    )
+    return bool(result.stdout.strip())
+
 
 # ---------------------------------------------------------------------------
 # Config validator schema tests

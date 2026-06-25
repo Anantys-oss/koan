@@ -1095,6 +1095,7 @@ def _run_iteration(
     cmd_cleanup_paths: List[str] = []  # temp files created by build_mission_command
     _dc_container_id = ""  # set inside try if devcontainer is used; referenced in finally
     _worktree_info = None  # set inside try if worktree isolation is used; cleaned up in finally
+    _auto_merged_branch = ""  # branch auto-merge landed; cleanup must not re-push it
     try:
         provider_name, provider_label = _run._provider_identity()
         # Build CLI command (provider-agnostic with per-project overrides)
@@ -1411,7 +1412,8 @@ def _run_iteration(
             if post_result.get("pending_archived"):
                 log("health", f"pending.md archived to journal ({provider_label} didn't clean up)")
             if post_result.get("auto_merge_branch"):
-                log("git", f"Auto-merge checked for {post_result['auto_merge_branch']}")
+                _auto_merged_branch = post_result["auto_merge_branch"]
+                log("git", f"Auto-merge checked for {_auto_merged_branch}")
 
             if post_result.get("quota_exhausted"):
                 _run._handle_pipeline_quota_flag(
@@ -1443,7 +1445,10 @@ def _run_iteration(
                 log("error", f"Checkpoint cleanup failed (non-blocking): {e}")
     finally:
         if _worktree_info:
-            _run._cleanup_worktree(_worktree_info, project_path, instance=instance)
+            _run._cleanup_worktree(
+                _worktree_info, project_path, instance=instance,
+                merged_branch=_auto_merged_branch,
+            )
         if _dc_container_id:
             log("devcontainer", f"Stopping container {_dc_container_id[:12]} after mission")
             _dc.stop_container(_dc_container_id)

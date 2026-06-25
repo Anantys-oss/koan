@@ -361,13 +361,26 @@ def push_worktree_branch_or_preserve(
 def _head_ahead_of_base(_run_git) -> bool:
     """Return True if the worktree HEAD has commits beyond the repo base branch.
 
-    Resolves the base branch (origin/main, main, origin/master, master) and
+    Resolves the repo's actual default branch first (``origin/HEAD``, e.g.
+    ``develop``), then falls back to the common ``main``/``master`` names, and
     counts commits in ``base..HEAD``. An unmodified session branch sits exactly
-    at base, so the count is 0 and the worktree is genuinely empty. When no base
-    branch can be resolved, conservatively reports True so unpushed work is never
-    silently dropped.
+    at its base, so the count is 0 and the worktree is genuinely empty. Resolving
+    the real default branch lets recovery converge on repos whose base is neither
+    main nor master — otherwise an empty session worktree branched from
+    ``develop`` would report commits forever and be preserved on every startup.
+    When no base branch can be resolved, conservatively reports True so unpushed
+    work is never silently dropped.
     """
-    for base in ("origin/main", "main", "origin/master", "master"):
+    candidates = []
+    # origin's default branch, e.g. "refs/remotes/origin/develop" -> "origin/develop"
+    head_ref = _run_git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+    if head_ref.returncode == 0:
+        default = head_ref.stdout.strip().removeprefix("refs/remotes/")
+        if default:
+            candidates.append(default)
+    candidates.extend(("origin/main", "main", "origin/master", "master"))
+
+    for base in candidates:
         verify = _run_git(["rev-parse", "--verify", "--quiet", base])
         if verify.returncode != 0:
             continue
