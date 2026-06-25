@@ -10,7 +10,11 @@ Input-side defense against prompt injection in missions and external data.
 - **Instruction overrides** — "ignore previous instructions", "new system prompt"
 - **Role confusion** — "you are now", "act as"
 - **Secret extraction** — requests for API keys, tokens, env vars
-- **Shell injection** — attempts to inject shell commands
+- **Shell injection** — dangerous commands (`curl`/`wget`/`nc`/`rm -rf`)
+  inside backticks/subshells, or pipes into an interpreter. Tool names match
+  as whole words only, and a bare interpreter mention in inline code
+  (`` `python run.py` ``) is not flagged — that kept legitimate notes and
+  memory entries from being blanked as false positives.
 - **Jailbreak markers** — DAN-style prompts, base64-encoded payloads
 
 It also provides `fence_external_data()` to wrap untrusted content (PR
