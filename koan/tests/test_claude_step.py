@@ -1657,6 +1657,83 @@ class TestBuildPrPrompt:
         assert "BEGIN EXTERNAL DATA" in kwargs["DIFF"]
 
 
+# ---------- _force_push / _owner_token_push ----------
+
+
+class TestOwnerTokenPush:
+    """Force-push falls back to the owning gh account's token on a 403.
+
+    Reproduces the rebase failure on PR #2105: the PR branch lived on a fork
+    owned by a *different* logged-in gh account than the active one, so git's
+    credential helper served the wrong token and every remote 403'd.
+    """
+
+    def test_force_push_lease_success_skips_fallback(self):
+        from app.claude_step import _force_push
+        with patch("app.claude_step._run_git", return_value="") as mock_git, \
+             patch("app.claude_step._owner_token_push") as mock_fallback:
+            _force_push("origin", "koan/fix", "/project")
+        assert mock_git.call_count == 1  # only --force-with-lease ran
+        mock_fallback.assert_not_called()
+
+    def test_force_push_retries_with_owner_token_on_permission_failure(self):
+        """Both plain pushes 403; owner-token push rescues it (no raise)."""
+        from app.claude_step import _force_push
+        with patch("app.claude_step._run_git",
+                   side_effect=RuntimeError("Permission to Koan-Bot/koan.git denied to Master-Koan")), \
+             patch("app.claude_step._owner_token_push", return_value=True) as mock_fallback:
+            _force_push("origin", "koan/fix", "/project")  # must not raise
+        mock_fallback.assert_called_once_with("origin", "koan/fix", "/project")
+
+    def test_force_push_raises_when_owner_token_fallback_also_fails(self):
+        from app.claude_step import _force_push
+        with patch("app.claude_step._run_git",
+                   side_effect=RuntimeError("403 denied")), \
+             patch("app.claude_step._owner_token_push", return_value=False):
+            with pytest.raises(RuntimeError, match="403 denied"):
+                _force_push("origin", "koan/fix", "/project")
+
+    def test_owner_token_push_uses_owning_accounts_token(self):
+        """Resolves the remote owner and pushes with `gh auth token --user`."""
+        from app.claude_step import _owner_token_push
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("app.github._get_remote_url",
+                   return_value="https://github.com/Koan-Bot/koan.git"), \
+             patch("app.github._parse_remote_url", return_value="Koan-Bot/koan"), \
+             patch("app.claude_step.run_gh", return_value="ght_secret123") as mock_gh, \
+             patch("app.claude_step.subprocess.run", side_effect=fake_run):
+            ok = _owner_token_push("origin", "koan/fix", "/project")
+
+        assert ok is True
+        assert mock_gh.call_args.args == ("auth", "token", "--user", "Koan-Bot")
+        # Pushes to the owner's repo with the embedded token.
+        assert "https://x-access-token:ght_secret123@github.com/Koan-Bot/koan.git" in captured["cmd"]
+
+    def test_owner_token_push_skips_ssh_remote(self):
+        """SSH remotes have no token URL to build — bail out, do not call gh."""
+        from app.claude_step import _owner_token_push
+        with patch("app.github._get_remote_url",
+                   return_value="git@github.com:Anantys-oss/koan.git"), \
+             patch("app.claude_step.run_gh") as mock_gh:
+            assert _owner_token_push("upstream", "koan/fix", "/project") is False
+        mock_gh.assert_not_called()
+
+    def test_owner_token_push_returns_false_when_no_token(self):
+        from app.claude_step import _owner_token_push
+        with patch("app.github._get_remote_url",
+                   return_value="https://github.com/Koan-Bot/koan.git"), \
+             patch("app.github._parse_remote_url", return_value="Koan-Bot/koan"), \
+             patch("app.claude_step.run_gh", return_value=""), \
+             patch("app.claude_step.subprocess.run") as mock_run:
+            assert _owner_token_push("origin", "koan/fix", "/project") is False
+        mock_run.assert_not_called()  # no token → never attempts the push
+
+
 # ---------- _push_with_pr_fallback ----------
 
 

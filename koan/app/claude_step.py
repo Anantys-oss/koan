@@ -1111,8 +1111,55 @@ def check_existing_ci(
     return (status, run_id, "")
 
 
+def _owner_token_push(remote: str, branch: str, project_path: str) -> bool:
+    """Retry a force-push using the gh token of the account that owns *remote*.
+
+    With several gh accounts logged in, git's credential helper serves only the
+    *active* account's token. When a PR branch lives on a fork owned by a
+    different logged-in account, the active token gets a 403. Resolve the
+    remote's owner and push via an HTTPS URL embedding
+    ``gh auth token --user <owner>``. Returns ``True`` on success. The token is
+    never written to logs (stderr is redacted).
+    """
+    from app.github import _get_remote_url, _parse_remote_url
+
+    url = _get_remote_url(project_path, remote)
+    if not url or not url.startswith("https://github.com/"):
+        return False  # SSH / non-GitHub remote — no token URL to build
+    slug = _parse_remote_url(url)
+    if not slug or "/" not in slug:
+        return False
+    owner, repo = slug.split("/", 1)
+    try:
+        token = run_gh("auth", "token", "--user", owner, timeout=15).strip()
+    except (RuntimeError, OSError):
+        token = ""
+    if not token:
+        return False
+
+    push_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
+    try:
+        result = subprocess.run(
+            ["git", "push", push_url, branch, "--force"],
+            cwd=project_path, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=120,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"[claude_step] owner-token push to {owner}/{repo} errored: {e}", file=sys.stderr)
+        return False
+    if result.returncode == 0:
+        print(f"[claude_step] owner-token push to {owner}/{repo} succeeded", file=sys.stderr)
+        return True
+    stderr = (result.stderr or "").replace(token, "***")
+    print(f"[claude_step] owner-token push to {owner}/{repo} failed: {stderr[:200]}", file=sys.stderr)
+    return False
+
+
 def _force_push(remote: str, branch: str, project_path: str) -> None:
     """Force-push branch, trying --force-with-lease first then --force.
+
+    On a permission failure (e.g. the PR branch lives on another logged-in gh
+    account's fork) it retries once with that account's token before giving up.
 
     Raises on total failure.
     """
@@ -1121,12 +1168,18 @@ def _force_push(remote: str, branch: str, project_path: str) -> None:
             ["git", "push", remote, branch, "--force-with-lease"],
             cwd=project_path,
         )
+        return
     except Exception as e:
         print(f"[claude_step] --force-with-lease failed, falling back to --force: {e}", file=sys.stderr)
+    try:
         _run_git(
             ["git", "push", remote, branch, "--force"],
             cwd=project_path,
         )
+    except Exception:
+        if _owner_token_push(remote, branch, project_path):
+            return
+        raise
 
 
 def _default_ci_fix_step_runner(
