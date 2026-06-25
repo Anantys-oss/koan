@@ -41,6 +41,12 @@ The wizard runs through 12 steps:
 Kōan is added as the default workspace project automatically. Add your own
 repositories after setup with `/add_project <github-url>`.
 
+> **Placeholder paths:** the example `myapp` entry in `projects.example.yaml` is
+> commented out by default. If you copy `projects.example.yaml`, either point
+> `path` at a real checkout or leave it commented and use zero-config workspace
+> discovery. A configured path that does not exist on disk is skipped at runtime
+> and shown as a warning in `/projects` — it never becomes a working project.
+
 ## Resumable
 
 Progress is saved to `.koan-onboarding.json` after each step. If the wizard is interrupted (Ctrl-C, error, network failure), re-run `make onboard` to continue from where you left off.

@@ -108,7 +108,15 @@ def refresh_projects(koan_root: str) -> List[Tuple[str, str]]:
     # 4. Sort and enforce limit
     result = _apply_project_limit(merged_projects, warnings)
 
-    # 5. Update cache
+    # 5. Surface (do not drop) projects whose path is missing, so operators
+    # notice phantom entries like the example 'myapp' placeholder. Runtime
+    # safety is handled by the crash-guards in review_comment_dispatch; this
+    # only makes the misconfiguration visible via /projects.
+    for name, path in result:
+        if not Path(path).expanduser().is_dir():
+            warnings.append(f"⚠️ Project '{name}' path does not exist: {path}")
+
+    # 6. Update cache
     _update_cache(koan_root, result, warnings)
 
     return result

@@ -199,17 +199,21 @@ defaults:
   #   pvrs_threshold: high
 
 projects:
-  # Example: your main project (minimal config — inherits all defaults)
-  myapp:
-    path: "/Users/yourname/workspace/myapp"
-    # github_url: "yourname/myapp"  # Auto-detected from git remote; override if needed
-    # issue_tracker:
-    #   provider: github             # github | jira
-    #   repo: "yourname/myapp"       # Optional; defaults to github_url / git remote
-    #   default_branch: "main"       # Optional tracker-specific target branch
-    # git_auto_merge:
-    #   enabled: true
-    #   strategy: "merge"
+  # Example: your main project (minimal config — inherits all defaults).
+  # Uncomment and point `path` at a real local checkout, OR drop a project
+  # into workspace/ for zero-config auto-discovery (see header, option 1).
+  # NOTE: a path that does not exist on disk is skipped at runtime and
+  # surfaced as a warning via /projects — it will not create a usable project.
+  # myapp:
+  #   path: "/Users/yourname/workspace/myapp"
+  #   # github_url: "yourname/myapp"  # Auto-detected from git remote; override if needed
+  #   # issue_tracker:
+  #   #   provider: github             # github | jira
+  #   #   repo: "yourname/myapp"       # Optional; defaults to github_url / git remote
+  #   #   default_branch: "main"       # Optional tracker-specific target branch
+  #   # git_auto_merge:
+  #   #   enabled: true
+  #   #   strategy: "merge"
 
   # Example: a project whose issues live in Jira but whose PRs go to GitHub
   # jira-backed-app:

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -264,7 +265,9 @@ def _resolve_full_repo(project_path: str) -> Optional[str]:
             timeout=10,
         )
         return raw.strip() or None
-    except RuntimeError:
+    except (RuntimeError, OSError):
+        # RuntimeError: gh non-zero exit. OSError/FileNotFoundError:
+        # project_path no longer exists on disk (stale config / unmounted volume).
         return None
 
 
@@ -325,6 +328,13 @@ def check_and_dispatch_review_comments(
     tracker_changed = pruned > 0
 
     for project_name, project_path in projects:
+        if not os.path.isdir(project_path):
+            log.debug(
+                "Skipping project '%s': path does not exist: %s",
+                project_name, project_path,
+            )
+            continue
+
         project_key = f"cooldown:{project_name}"
         last_check = tracker.get(project_key, 0)
         if now - last_check < cooldown_secs:
