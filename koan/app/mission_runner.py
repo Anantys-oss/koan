@@ -1119,21 +1119,32 @@ def check_auto_merge(
     lint_blocked: bool = False,
     verify_blocked: bool = False,
     projects_config: Optional[dict] = None,
+    merge_path: Optional[str] = None,
 ) -> Optional[str]:
     """Check if current branch should be auto-merged.
 
     Args:
         instance_dir: Path to instance directory.
         project_name: Current project name.
-        project_path: Path to project directory.
+        project_path: Path to project directory — where the feature branch is
+            checked out (the worktree under isolation). Used to resolve the
+            branch name and post quality comments.
         quality_report: Optional quality pipeline results for gating.
         lint_blocked: Whether lint gate is blocking auto-merge.
         verify_blocked: Whether verification failure is blocking auto-merge.
         projects_config: Pre-loaded projects config dict to avoid redundant I/O.
+        merge_path: Repository in which to perform the base-branch checkout +
+            merge. Defaults to project_path. Under worktree isolation the caller
+            passes the MAIN repo so checking out base_branch does not collide
+            with the worktree holding it (git forbids the same branch in two
+            worktrees). The feature branch ref is shared between worktree and
+            main repo, so the merge resolves it there.
 
     Returns:
         Branch name if auto-merge was attempted, None otherwise.
     """
+    if merge_path is None:
+        merge_path = project_path
     try:
         from app.git_sync import run_git
         branch = run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
@@ -1180,7 +1191,7 @@ def check_auto_merge(
                     _log_runner("error", f"Quality comment failed: {e}")
                 return None
 
-        merge_rc = auto_merge_branch(instance_dir, project_name, project_path, branch)
+        merge_rc = auto_merge_branch(instance_dir, project_name, merge_path, branch)
         if merge_rc == 0 and auto_merge_enabled:
             from app.git_auto_merge import should_auto_merge
             should_merge, _, _ = should_auto_merge(auto_merge_cfg, branch)
@@ -1677,6 +1688,7 @@ def run_post_mission(
     mission_tier: Optional[str] = None,
     provider_name: str = "",
     is_skill_dispatch: bool = False,
+    merge_path: Optional[str] = None,
 ) -> dict:
     """Run the complete post-mission processing pipeline.
 
@@ -1700,6 +1712,11 @@ def run_post_mission(
         is_skill_dispatch: When True, stdout_file contains skill runner text
             (not Claude CLI JSON). Skips token extraction warnings and
             quota detection (the caller handles quota independently).
+        merge_path: Repository in which to run the auto-merge base-branch
+            checkout. Defaults to project_path. When the mission ran in an
+            isolated worktree, the caller passes the MAIN repo here so the
+            base-branch checkout does not collide with the worktree (git
+            forbids the same branch checked out in two worktrees).
 
     Returns:
         Dict with keys:
@@ -2049,6 +2066,7 @@ def run_post_mission(
                     lint_blocked=lint_blocking,
                     verify_blocked=verify_blocking,
                     projects_config=_projects_config,
+                    merge_path=merge_path,
                     pipeline_expired=_pipeline_expired,
                 )
                 result["auto_merge_branch"] = merge_result
