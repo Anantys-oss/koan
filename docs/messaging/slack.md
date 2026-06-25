@@ -163,7 +163,9 @@ You should see in the logs:
   thread without re-mentioning. (Messages beginning with `/` followed by a
   letter — e.g. `/help` — are an exception: they are treated as commands and
   answered without a mention. A leading slash before a non-letter, like a
-  pasted `/etc/hosts` path, stays ignored.)
+  `//` comment or a `/.bashrc` dotfile path, stays ignored — but a
+  letter-initial path such as `/Users/foo/log.txt` looks like a command and
+  is answered.)
 
 ### Bot not receiving messages
 
@@ -185,8 +187,11 @@ You should see in the logs:
 - **Commands need no mention**: A message beginning with `/` followed by a
   letter (e.g. `/help`, `/status`) is treated as a command addressed to Kōan —
   exactly like `@Koan /help`. It replies in a thread under the command, no
-  @mention required. A leading slash before a non-letter (file paths like
-  `/etc/hosts`, `//` comments) is ignored.
+  @mention required. A leading slash before a non-letter (`//` comments,
+  dotfile paths like `/.bashrc`, numeric/symbol prefixes) is ignored. This
+  heuristic cannot tell a command from a letter-initial path, so a pasted
+  path like `/Users/foo/log.txt` at the start of a message *is* treated as a
+  command and gets an (unrecognized-command) help reply.
 - **Replies go in a thread**: When you @mention Kōan on a channel-root message,
   it replies in a **thread** under your message rather than cluttering the
   channel.

@@ -213,11 +213,22 @@ class TestHandleSocketEvent:
         provider._handle_socket_event(MagicMock(), req)
         assert provider._message_queue.empty()
 
-    def test_leading_slash_path_not_command(self, provider):
-        # A leading slash followed by a non-letter (a pasted path) is ignored.
-        req = self._make_request("message", "C123", "/etc/hosts is the culprit")
+    def test_leading_slash_non_letter_not_command(self, provider):
+        # A leading slash followed by a non-letter (// comment, dotfile path) is
+        # ignored. Note: letter-initial paths like /etc/hosts DO match /[a-zA-Z]
+        # and are treated as commands, so they are not valid examples here.
+        for text in ("//deploy note: ship it", "/.config/app.toml is the culprit"):
+            req = self._make_request("message", "C123", text)
+            provider._handle_socket_event(MagicMock(), req)
+            assert provider._message_queue.empty()
+
+    def test_leading_slash_letter_path_is_command(self, provider):
+        # Documents the real limitation: a letter-initial path at message start
+        # cannot be distinguished from a command, so it IS treated as one.
+        req = self._make_request("message", "C123", "/Users/foo/log.txt")
         provider._handle_socket_event(MagicMock(), req)
-        assert provider._message_queue.empty()
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "/Users/foo/log.txt"
 
     def test_inline_mention_in_message_processed(self, provider):
         req = self._make_request("message", "C123", "hey <@U999> ship it")

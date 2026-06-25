@@ -328,8 +328,11 @@ class SlackProvider(MessagingProvider):
         A message whose text begins with ``/`` followed by a letter (e.g.
         ``/help``) is treated as a command addressed to the bot, just like an
         explicit ``@bot /help`` — no mention required. A leading slash followed
-        by a non-letter (file paths like ``/etc/hosts``, ``//`` comments) is
-        ignored so pasted paths don't trip the bot.
+        by a non-letter (``//`` comments, dotfile paths like ``/.bashrc``,
+        numeric/symbol prefixes) is ignored. Note that this heuristic cannot
+        distinguish a command from a letter-initial path: a pasted path like
+        ``/Users/foo/log.txt`` at message start *is* treated as a command and
+        falls through to an (unrecognized-command) help reply.
 
         Side effect: when the bot is addressed, the conversation's thread root is
         marked engaged so subsequent replies in that thread are handled too.
