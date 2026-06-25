@@ -21,6 +21,10 @@ from app.plan_runner import (
     _PLAN_LABEL,
     main,
     review_plan,
+    review_plan_assumptions,
+    ASSUMPTIONS_OK,
+    ASSUMPTIONS_CRITICAL,
+    ASSUMPTIONS_REVIEWER_ERROR,
     _review_loop,
     _critic_loop,
     is_simple_plan,
@@ -1429,3 +1433,63 @@ class TestMainIterationsArgparseValidation:
     def test_iterations_zero_rejected_by_argparse(self):
         with pytest.raises(SystemExit):
             main(["--project-path", "/tmp", "--idea", "test", "--iterations", "0"])
+
+
+# ---------------------------------------------------------------------------
+# review_plan_assumptions
+# ---------------------------------------------------------------------------
+
+class TestReviewPlanAssumptions:
+    """Tests for the assumptions pressure-test subagent."""
+
+    _PLAN_DIR = Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
+
+    def test_assumptions_ok(self):
+        output = "ASSUMPTIONS_OK\n1. [VERIFIED] Function exists in module"
+        with patch("app.cli_provider.run_command", return_value=output):
+            status, reason = review_plan_assumptions("plan text", "/project", self._PLAN_DIR)
+            assert status == ASSUMPTIONS_OK
+            assert reason == ""
+
+    def test_critical_assumption_unverified(self):
+        output = (
+            "CRITICAL_ASSUMPTION_UNVERIFIED\n"
+            "1. [UNVERIFIED/CRITICAL] The API endpoint /v2/users does not exist\n"
+            "The plan must verify /v2/users before proceeding."
+        )
+        with patch("app.cli_provider.run_command", return_value=output):
+            status, reason = review_plan_assumptions("plan text", "/project", self._PLAN_DIR)
+            assert status == ASSUMPTIONS_CRITICAL
+            assert "/v2/users" in reason
+
+    def test_empty_output_fails_closed(self):
+        with patch("app.cli_provider.run_command", return_value=""):
+            status, reason = review_plan_assumptions("plan text", "/project", self._PLAN_DIR)
+            assert status == ASSUMPTIONS_REVIEWER_ERROR
+            assert "empty output" in reason
+
+    def test_none_output_fails_closed(self):
+        with patch("app.cli_provider.run_command", return_value=None):
+            status, reason = review_plan_assumptions("plan text", "/project", self._PLAN_DIR)
+            assert status == ASSUMPTIONS_REVIEWER_ERROR
+            assert "empty output" in reason
+
+    def test_unexpected_output_returns_reviewer_error(self):
+        with patch("app.cli_provider.run_command", return_value="Some random text"):
+            status, reason = review_plan_assumptions("plan text", "/project", self._PLAN_DIR)
+            assert status == ASSUMPTIONS_REVIEWER_ERROR
+            assert "unparseable" in reason
+
+    def test_subagent_exception_fails_closed(self):
+        with patch("app.cli_provider.run_command",
+                    side_effect=RuntimeError("model unavailable")):
+            status, reason = review_plan_assumptions("plan text", "/project", self._PLAN_DIR)
+            assert status == ASSUMPTIONS_REVIEWER_ERROR
+            assert "model unavailable" in reason
+
+    def test_prompt_load_failure_fails_closed(self):
+        with patch("app.plan_runner.load_prompt_or_skill",
+                    side_effect=FileNotFoundError("missing")):
+            status, reason = review_plan_assumptions("plan text", "/project", self._PLAN_DIR)
+            assert status == ASSUMPTIONS_REVIEWER_ERROR
+            assert "prompt load failed" in reason

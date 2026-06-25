@@ -16,6 +16,7 @@ CLI:
     python3 -m app.plan_runner --project-path <path> --issue-url <url> --base-branch main
 """
 
+import logging
 import re
 import sys
 from contextlib import suppress
@@ -41,6 +42,8 @@ from app.tracker_comment_format import (
     jira_readable_markdown,
 )
 from app.url_skill_args import merge_context_with_base_branch
+
+logger = logging.getLogger(__name__)
 
 # Label used to tag plan issues for searchability
 _PLAN_LABEL = "plan"
@@ -366,6 +369,72 @@ def review_plan(plan_text: str, project_path: str, skill_dir) -> Tuple[bool, str
         file=sys.stderr,
     )
     return True, ""
+
+
+ASSUMPTIONS_OK = "ok"
+ASSUMPTIONS_CRITICAL = "critical_assumption"
+ASSUMPTIONS_REVIEWER_ERROR = "reviewer_error"
+
+
+def review_plan_assumptions(
+    plan_text: str, project_path: str, skill_dir,
+) -> Tuple[str, str]:
+    """Run a lightweight subagent to pressure-test plan assumptions.
+
+    Args:
+        plan_text: The plan to audit for hidden assumptions.
+        project_path: Project directory (for run_command cwd).
+        skill_dir: Skill directory for loading the assumptions prompt.
+
+    Returns:
+        (status, reason) tuple where status is one of:
+          - ASSUMPTIONS_OK: assumptions are safe (reason="").
+          - ASSUMPTIONS_CRITICAL: a critical assumption is unverified.
+          - ASSUMPTIONS_REVIEWER_ERROR: reviewer infrastructure failed. The
+            return only signals the error; the caller decides open vs. closed.
+            The current consumer (_run_plan_review_gate) fails open (does not block).
+    """
+    from app.cli_provider import run_command
+
+    try:
+        prompt = load_prompt_or_skill(
+            skill_dir, "plan-assumptions", PLAN=plan_text,
+        )
+    except (FileNotFoundError, OSError) as e:
+        logger.warning("Assumptions prompt load failed: %s", e)
+        return ASSUMPTIONS_REVIEWER_ERROR, f"assumptions prompt load failed: {e}"
+
+    try:
+        output = run_command(
+            prompt, project_path,
+            allowed_tools=["Read", "Glob", "Grep"],
+            model_key="lightweight",
+            max_turns=3,
+            timeout=120,
+            max_turns_source=None,
+        )
+    except Exception as e:
+        logger.warning("Assumptions subagent failed: %s", e)
+        return ASSUMPTIONS_REVIEWER_ERROR, f"assumptions subagent failed: {e}"
+
+    if not output:
+        logger.warning("Assumptions subagent returned empty output")
+        return ASSUMPTIONS_REVIEWER_ERROR, "assumptions check produced empty output — manual review needed"
+
+    first_line = output.strip().splitlines()[0].strip() if output.strip() else ""
+
+    if first_line.upper().startswith("ASSUMPTIONS_OK"):
+        return ASSUMPTIONS_OK, ""
+
+    if first_line.upper().startswith("CRITICAL_ASSUMPTION_UNVERIFIED"):
+        rest = "\n".join(output.strip().splitlines()[1:]).strip()
+        return ASSUMPTIONS_CRITICAL, rest
+
+    logger.warning(
+        "Assumptions check returned unparseable output: %r",
+        first_line,
+    )
+    return ASSUMPTIONS_REVIEWER_ERROR, "assumptions check produced unparseable output — manual review needed"
 
 
 def improve_plan(
