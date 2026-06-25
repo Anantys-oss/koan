@@ -1,6 +1,7 @@
 """Tests for provider-neutral issue tracker configuration."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -273,8 +274,6 @@ projects:
             lambda *a, **kw: {},
         )
 
-        from unittest.mock import patch
-
         with patch(
             "app.github.resolve_target_repo",
             return_value="upstream-owner/myapp",
@@ -297,8 +296,6 @@ projects:
 """,
         )
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-
-        from unittest.mock import patch
 
         with patch("app.github.resolve_target_repo", return_value=None):
             result = resolve_code_repository("myapp", "/some/path")
@@ -423,8 +420,6 @@ projects:
 """,
         )
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-        from unittest.mock import patch
-
         with patch("app.github.resolve_target_repo", side_effect=RuntimeError("nope")):
             assert resolve_code_repository("myapp", "/some/path") == "acme/myapp"
 
@@ -440,8 +435,6 @@ projects:
 """,
         )
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-        from unittest.mock import patch
-
         with patch("app.github.resolve_target_repo", return_value=None), patch(
             "app.github.origin_repo", return_value="acme/myapp"
         ):
@@ -457,8 +450,6 @@ projects:
 """,
         )
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-        from unittest.mock import patch
-
         with patch("app.github.resolve_target_repo", return_value=None), patch(
             "app.github.origin_repo", side_effect=OSError("git missing")
         ):
