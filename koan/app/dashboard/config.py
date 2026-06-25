@@ -3,6 +3,8 @@
 NOTE: this module is ``app.dashboard.config`` — it must never shadow the global
 ``app.config``. All references to the global config use absolute imports.
 """
+import logging
+
 from flask import Blueprint, jsonify, render_template, request
 
 from app.automation_rules import (
@@ -418,7 +420,16 @@ def api_config_setting():
         return jsonify({"ok": False, "error": f"Setting not editable: {key}"}), 422
     expected = EDITABLE_SETTINGS[key]
     if expected is bool:
-        value = value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes", "on")
+        if isinstance(value, bool):
+            pass
+        else:
+            token = str(value).strip().lower()
+            if token in ("1", "true", "yes", "on"):
+                value = True
+            elif token in ("0", "false", "no", "off"):
+                value = False
+            else:
+                return jsonify({"ok": False, "error": f"Invalid value for {key}"}), 422
     else:
         try:
             value = expected(value)
@@ -431,6 +442,8 @@ def api_config_setting():
     except Exception as exc:
         # A malformed config.yaml (parse/edit failure) is a client-fixable
         # condition, not a server crash — return 422 instead of a raw 500.
+        # Log server-side first so genuine server faults stay visible.
+        logging.exception("config.yaml edit failed for key %s", key)
         return jsonify({"ok": False, "error": f"Could not edit config.yaml: {exc}"}), 422
     return jsonify({"ok": True, "key": key, "value": value})
 

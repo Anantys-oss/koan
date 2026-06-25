@@ -474,12 +474,16 @@
     sel.addEventListener('change', () => loadProject(sel.value));
     document.getElementById('project-form-save').addEventListener('click', async () => {
         status.textContent = 'Saving…';
-        const resp = await fetch(`/api/projects/${encodeURIComponent(sel.value)}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ patch: collectPatch() }),
-        });
-        const data = await resp.json();
-        status.textContent = data.ok ? '✓ Saved' : `✗ ${data.error}`;
+        try {
+            const resp = await fetch(`/api/projects/${encodeURIComponent(sel.value)}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ patch: collectPatch() }),
+            });
+            const data = await resp.json();
+            status.textContent = data.ok ? '✓ Saved' : `✗ ${data.error}`;
+        } catch (e) {
+            status.textContent = `✗ Save failed: ${e}`;
+        }
     });
 
     loadProjectList();
@@ -494,12 +498,16 @@
 
     async function saveSetting(key, value) {
         status.textContent = 'Saving…';
-        const resp = await fetch('/api/config/setting', {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key, value }),
-        });
-        const data = await resp.json();
-        status.textContent = data.ok ? `✓ ${key} saved` : `✗ ${data.error}`;
+        try {
+            const resp = await fetch('/api/config/setting', {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key, value }),
+            });
+            const data = await resp.json();
+            status.textContent = data.ok ? `✓ ${key} saved` : `✗ ${data.error}`;
+        } catch (e) {
+            status.textContent = `✗ ${key} save failed: ${e}`;
+        }
     }
 
     document.querySelectorAll('[data-setting]').forEach(el => {
