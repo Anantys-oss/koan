@@ -179,16 +179,21 @@ class PrepResult:
     error: Optional[str] = None
 
 
-def _is_same_repo(path_a: str, path_b: str) -> bool:
+def _is_same_dir(path_a: str, path_b: str) -> bool:
     """Return True when two paths resolve to the same directory.
 
-    Uses realpath so symlinks and trailing slashes compare equal.
+    Uses realpath so symlinks and trailing slashes compare equal. This is a
+    same-directory check, not a same-git-repository check: a subdirectory of
+    a repo will not compare equal to the repo root.
     """
     if not path_a or not path_b:
         return False
     try:
         return os.path.realpath(path_a) == os.path.realpath(path_b)
-    except OSError:
+    except OSError as e:
+        logger.warning(
+            "realpath failed comparing '%s' and '%s': %s", path_a, path_b, e
+        )
         return False
 
 
@@ -269,10 +274,15 @@ def prepare_project_branch(
     # would discard the development branch the operator is testing. This guard
     # applies ONLY to the launching repo — every other managed project still
     # resets to its base branch before a mission, which is the intended behavior.
+    #
+    # Note: this compares against the config base_branch, not the auto-detected
+    # remote default (which is resolved only after the fetch below). The guard
+    # intentionally trusts the config value — a self-hosted operator on a dev
+    # branch does not want an auto-reset regardless of the real default branch.
     if (
         result.previous_branch
         and result.previous_branch not in (base_branch, "HEAD")
-        and _is_same_repo(project_path, koan_root)
+        and _is_same_dir(project_path, koan_root)
     ):
         logger.info(
             "Project %s is the launching repo on custom branch '%s'; "
