@@ -1251,3 +1251,367 @@ class TestIssueEdit:
             issue_edit(42, "new body", cwd="/fake")
             args = list(mock_gh.call_args.args)
             assert "--repo" not in args
+
+
+# ---------------------------------------------------------------------------
+# api — raw_body branch
+# ---------------------------------------------------------------------------
+class TestApiRawBody:
+    @patch("app.github.subprocess.run")
+    def test_raw_body_uses_input_flag(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="{}")
+        api("repos/o/r/x", method="POST", input_data='{"a": 1}', raw_body=True)
+        cmd = mock_run.call_args[0][0]
+        assert "--input" in cmd
+        assert cmd[cmd.index("--input") + 1] == "-"
+        assert "-F" not in cmd
+        assert mock_run.call_args.kwargs.get("input") == '{"a": 1}'
+
+
+# ---------------------------------------------------------------------------
+# list_open_issues / list_open_audit_issues
+# ---------------------------------------------------------------------------
+class TestListOpenIssues:
+    @patch("app.github.run_gh")
+    def test_returns_parsed_issues(self, mock_gh):
+        from app.github import list_open_issues
+
+        mock_gh.return_value = json.dumps([
+            {"number": 1, "title": "A", "url": "u1", "body": "first"},
+            {"number": 2, "title": "B", "url": "u2", "body": "second"},
+        ])
+        result = list_open_issues(repo="o/r")
+        assert len(result) == 2
+        assert result[0] == {"number": 1, "title": "A", "url": "u1", "body": "first"}
+
+    @patch("app.github.run_gh")
+    def test_repo_flag_added(self, mock_gh):
+        from app.github import list_open_issues
+
+        mock_gh.return_value = "[]"
+        list_open_issues(repo="o/r")
+        args = list(mock_gh.call_args.args)
+        assert "--repo" in args
+        assert args[args.index("--repo") + 1] == "o/r"
+
+    @patch("app.github.run_gh")
+    def test_no_repo_omits_flag(self, mock_gh):
+        from app.github import list_open_issues
+
+        mock_gh.return_value = "[]"
+        list_open_issues()
+        assert "--repo" not in list(mock_gh.call_args.args)
+
+    @patch("app.github.run_gh")
+    def test_body_contains_filters(self, mock_gh):
+        from app.github import list_open_issues
+
+        mock_gh.return_value = json.dumps([
+            {"number": 1, "title": "A", "url": "u1", "body": "has MARKER here"},
+            {"number": 2, "title": "B", "url": "u2", "body": "no match"},
+        ])
+        result = list_open_issues(body_contains="MARKER")
+        assert len(result) == 1
+        assert result[0]["number"] == 1
+
+    @patch("app.github.run_gh")
+    def test_limit_passed(self, mock_gh):
+        from app.github import list_open_issues
+
+        mock_gh.return_value = "[]"
+        list_open_issues(limit=50)
+        args = list(mock_gh.call_args.args)
+        assert args[args.index("--limit") + 1] == "50"
+
+    @patch("app.github.run_gh", side_effect=RuntimeError("boom"))
+    def test_returns_empty_on_error(self, mock_gh):
+        from app.github import list_open_issues
+
+        assert list_open_issues(repo="o/r") == []
+
+    @patch("app.github.run_gh", return_value="")
+    def test_returns_empty_on_blank_output(self, mock_gh):
+        from app.github import list_open_issues
+
+        assert list_open_issues() == []
+
+    @patch("app.github.run_gh", return_value="not json")
+    def test_returns_empty_on_bad_json(self, mock_gh):
+        from app.github import list_open_issues
+
+        assert list_open_issues() == []
+
+    @patch("app.github.run_gh", return_value='{"not": "a list"}')
+    def test_returns_empty_when_not_a_list(self, mock_gh):
+        from app.github import list_open_issues
+
+        assert list_open_issues() == []
+
+    @patch("app.github.run_gh")
+    def test_skips_non_dict_items_and_defaults_fields(self, mock_gh):
+        from app.github import list_open_issues
+
+        mock_gh.return_value = json.dumps([
+            "not a dict",
+            {"number": 3},  # missing title/url/body
+        ])
+        result = list_open_issues()
+        assert result == [{"number": 3, "title": "", "url": "", "body": ""}]
+
+
+class TestListOpenAuditIssues:
+    @patch("app.github.list_open_issues")
+    def test_filters_by_audit_marker(self, mock_list):
+        from app.github import list_open_audit_issues, AUDIT_ISSUE_MARKER
+
+        mock_list.return_value = [{"number": 1}]
+        result = list_open_audit_issues(repo="o/r", limit=10)
+        assert result == [{"number": 1}]
+        assert mock_list.call_args.kwargs["body_contains"] == AUDIT_ISSUE_MARKER
+        assert mock_list.call_args.kwargs["limit"] == 10
+
+
+# ---------------------------------------------------------------------------
+# _get_remote_url
+# ---------------------------------------------------------------------------
+class TestGetRemoteUrl:
+    @patch("app.github.subprocess.run")
+    def test_returns_url_on_success(self, mock_run):
+        from app.github import _get_remote_url
+
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="git@github.com:o/r.git\n")
+        assert _get_remote_url("/p", "origin") == "git@github.com:o/r.git"
+
+    @patch("app.github.subprocess.run")
+    def test_returns_none_on_nonzero(self, mock_run):
+        from app.github import _get_remote_url
+
+        mock_run.return_value = MagicMock(returncode=2, stdout="")
+        assert _get_remote_url("/p", "upstream") is None
+
+    @patch("app.github.subprocess.run", side_effect=FileNotFoundError())
+    def test_returns_none_when_git_missing(self, mock_run):
+        from app.github import _get_remote_url
+
+        assert _get_remote_url("/p", "origin") is None
+
+    @patch("app.github.subprocess.run",
+           side_effect=subprocess.TimeoutExpired("git", 5))
+    def test_returns_none_on_timeout(self, mock_run):
+        from app.github import _get_remote_url
+
+        assert _get_remote_url("/p", "origin") is None
+
+
+class TestUpstreamRemoteRepoUnparseable:
+    @patch("app.github._get_remote_url", return_value="not-a-github-url")
+    def test_returns_none_when_upstream_url_unparseable(self, mock_url):
+        assert _upstream_remote_repo("/p") is None
+
+
+# ---------------------------------------------------------------------------
+# _config_target_repo — exception path
+# ---------------------------------------------------------------------------
+class TestConfigTargetRepoException:
+    @patch("app.projects_config.load_projects_config",
+           side_effect=RuntimeError("config blew up"))
+    def test_returns_unset_on_exception(self, mock_load, monkeypatch):
+        from app.github import _config_target_repo, _UNSET
+
+        monkeypatch.setenv("KOAN_ROOT", "/koan")
+        assert _config_target_repo("/p", "proj") is _UNSET
+
+
+# ---------------------------------------------------------------------------
+# list_open_pr_branches
+# ---------------------------------------------------------------------------
+class TestListOpenPrBranches:
+    @patch("app.github.run_gh")
+    def test_returns_sorted_unique_branches(self, mock_gh):
+        from app.github import list_open_pr_branches
+
+        mock_gh.return_value = json.dumps([
+            {"headRefName": "feat/b"},
+            {"headRefName": "feat/a"},
+            {"headRefName": "feat/a"},
+        ])
+        assert list_open_pr_branches("o/r", "bot") == ["feat/a", "feat/b"]
+
+    def test_empty_author_returns_empty(self):
+        from app.github import list_open_pr_branches
+
+        assert list_open_pr_branches("o/r", "") == []
+
+    @patch("app.github.run_gh", return_value="")
+    def test_empty_output_returns_empty(self, mock_gh):
+        from app.github import list_open_pr_branches
+
+        assert list_open_pr_branches("o/r", "bot") == []
+
+    @patch("app.github.run_gh", return_value='{"not": "list"}')
+    def test_non_list_returns_empty(self, mock_gh):
+        from app.github import list_open_pr_branches
+
+        assert list_open_pr_branches("o/r", "bot") == []
+
+    @patch("app.github.run_gh")
+    def test_skips_entries_without_headrefname(self, mock_gh):
+        from app.github import list_open_pr_branches
+
+        mock_gh.return_value = json.dumps([
+            {"headRefName": "feat/a"},
+            {"other": "x"},
+            "not a dict",
+        ])
+        assert list_open_pr_branches("o/r", "bot") == ["feat/a"]
+
+    @patch("app.github.run_gh", side_effect=RuntimeError("boom"))
+    def test_error_returns_empty(self, mock_gh):
+        from app.github import list_open_pr_branches
+
+        assert list_open_pr_branches("o/r", "bot") == []
+
+
+# ---------------------------------------------------------------------------
+# check_pvrs_enabled
+# ---------------------------------------------------------------------------
+class TestCheckPvrsEnabled:
+    @patch("app.github.api", return_value='{"enabled": true}')
+    def test_true_when_enabled(self, mock_api):
+        from app.github import check_pvrs_enabled
+
+        assert check_pvrs_enabled("o/r") is True
+
+    @patch("app.github.api", return_value='{"enabled": false}')
+    def test_false_when_disabled(self, mock_api):
+        from app.github import check_pvrs_enabled
+
+        assert check_pvrs_enabled("o/r") is False
+
+    @patch("app.github.api", return_value='{}')
+    def test_false_when_field_absent(self, mock_api):
+        from app.github import check_pvrs_enabled
+
+        assert check_pvrs_enabled("o/r") is False
+
+    @patch("app.github.api", side_effect=RuntimeError("404"))
+    def test_false_on_error(self, mock_api):
+        from app.github import check_pvrs_enabled
+
+        assert check_pvrs_enabled("o/r") is False
+
+    @patch("app.github.api", return_value="not json")
+    def test_false_on_bad_json(self, mock_api):
+        from app.github import check_pvrs_enabled
+
+        assert check_pvrs_enabled("o/r") is False
+
+
+# ---------------------------------------------------------------------------
+# security_advisory_report
+# ---------------------------------------------------------------------------
+class TestSecurityAdvisoryReport:
+    def test_returns_html_url(self):
+        with patch("app.github.api",
+                   return_value='{"html_url": "https://x/advisory/1"}') as mock_api, \
+             patch("app.leak_detector.scan_and_redact",
+                   side_effect=lambda b, **kw: b):
+            from app.github import security_advisory_report
+
+            url = security_advisory_report(
+                "Sum", "Desc", "high", repo="o/r", package_name="pkg")
+            assert url == "https://x/advisory/1"
+            # Payload sent as raw body via POST
+            assert mock_api.call_args.kwargs["method"] == "POST"
+            assert mock_api.call_args.kwargs["raw_body"] is True
+            payload = json.loads(mock_api.call_args.kwargs["input_data"])
+            assert payload["severity"] == "high"
+            assert payload["vulnerabilities"][0]["package"]["name"] == "pkg"
+
+    def test_falls_back_to_ghsa_id(self):
+        with patch("app.github.api", return_value='{"ghsa_id": "GHSA-xxxx"}'), \
+             patch("app.leak_detector.scan_and_redact",
+                   side_effect=lambda b, **kw: b):
+            from app.github import security_advisory_report
+
+            assert security_advisory_report(
+                "S", "D", "low", repo="o/r") == "GHSA: GHSA-xxxx"
+
+    def test_returns_raw_output_on_bad_json(self):
+        with patch("app.github.api", return_value="weird output"), \
+             patch("app.leak_detector.scan_and_redact",
+                   side_effect=lambda b, **kw: b):
+            from app.github import security_advisory_report
+
+            assert security_advisory_report(
+                "S", "D", "low", repo="o/r") == "weird output"
+
+    def test_empty_when_api_returns_empty(self):
+        with patch("app.github.api", return_value=""), \
+             patch("app.leak_detector.scan_and_redact",
+                   side_effect=lambda b, **kw: b):
+            from app.github import security_advisory_report
+
+            assert security_advisory_report("S", "D", "low", repo="o/r") == ""
+
+    def test_default_package_name_is_unknown(self):
+        with patch("app.github.api", return_value='{"html_url": "u"}') as mock_api, \
+             patch("app.leak_detector.scan_and_redact",
+                   side_effect=lambda b, **kw: b):
+            from app.github import security_advisory_report
+
+            security_advisory_report("S", "D", "critical", repo="o/r")
+            payload = json.loads(mock_api.call_args.kwargs["input_data"])
+            assert payload["vulnerabilities"][0]["package"]["name"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# detect_ecosystem
+# ---------------------------------------------------------------------------
+class TestDetectEcosystem:
+    def _make(self, tmp_path, *files):
+        for f in files:
+            (tmp_path / f).write_text("x")
+        return str(tmp_path)
+
+    def test_pip_from_pyproject(self, tmp_path):
+        from app.github import detect_ecosystem
+
+        assert detect_ecosystem(self._make(tmp_path, "pyproject.toml")) == "pip"
+
+    def test_npm_from_package_json(self, tmp_path):
+        from app.github import detect_ecosystem
+
+        assert detect_ecosystem(self._make(tmp_path, "package.json")) == "npm"
+
+    def test_go_from_go_mod(self, tmp_path):
+        from app.github import detect_ecosystem
+
+        assert detect_ecosystem(self._make(tmp_path, "go.mod")) == "go"
+
+    def test_cargo(self, tmp_path):
+        from app.github import detect_ecosystem
+
+        assert detect_ecosystem(self._make(tmp_path, "Cargo.toml")) == "cargo"
+
+    def test_rubygems(self, tmp_path):
+        from app.github import detect_ecosystem
+
+        assert detect_ecosystem(self._make(tmp_path, "Gemfile")) == "rubygems"
+
+    def test_nuget_glob_match(self, tmp_path):
+        from app.github import detect_ecosystem
+
+        assert detect_ecosystem(self._make(tmp_path, "app.csproj")) == "nuget"
+
+    def test_pip_wins_over_npm_when_both_present(self, tmp_path):
+        from app.github import detect_ecosystem
+
+        path = self._make(tmp_path, "pyproject.toml", "package.json")
+        assert detect_ecosystem(path) == "pip"
+
+    def test_other_when_no_indicator(self, tmp_path):
+        from app.github import detect_ecosystem
+
+        assert detect_ecosystem(str(tmp_path)) == "other"
