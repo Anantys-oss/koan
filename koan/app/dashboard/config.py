@@ -377,3 +377,67 @@ def api_recurring_run(task_id):
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"ok": True, "injected": injected})
+
+
+@config_bp.route("/api/projects/<name>", methods=["GET"])
+def api_project_get(name):
+    """Return the editable subset of a project's merged config for the form."""
+    from app.projects_config import (
+        EDITABLE_PROJECT_FIELDS,
+        get_project_config,
+        load_projects_config,
+    )
+    config = load_projects_config(str(state.KOAN_ROOT))
+    if not config:
+        return jsonify({"ok": False, "error": "No projects.yaml"}), 404
+    merged = get_project_config(config, name)
+    editable = {k: merged.get(k) for k in EDITABLE_PROJECT_FIELDS}
+    return jsonify({"ok": True, "name": name, "config": editable})
+
+
+# Dotted config.yaml keys the Settings sub-tab may edit, with value type.
+EDITABLE_SETTINGS = {
+    "dashboard.nickname": str,
+    "git_auto_merge.enabled": bool,
+    "ci_dispatch.enabled": bool,
+    "review_dispatch.enabled": bool,
+    "auto_update.enabled": bool,
+}
+
+
+@config_bp.route("/api/config/setting", methods=["PUT"])
+def api_config_setting():
+    """Set one allow-listed config.yaml key, preserving comments."""
+    from app.utils import update_config_yaml
+    data = request.get_json(silent=True) or {}
+    key, value = data.get("key"), data.get("value")
+    if key not in EDITABLE_SETTINGS:
+        return jsonify({"ok": False, "error": f"Setting not editable: {key}"}), 422
+    expected = EDITABLE_SETTINGS[key]
+    if expected is bool:
+        value = value if isinstance(value, bool) else str(value).lower() in ("1", "true", "yes", "on")
+    else:
+        try:
+            value = expected(value)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": f"Invalid value for {key}"}), 422
+    try:
+        update_config_yaml(state.KOAN_ROOT / "instance" / "config.yaml", key, value)
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"Write failed: {exc}"}), 500
+    return jsonify({"ok": True, "key": key, "value": value})
+
+
+@config_bp.route("/api/projects/<name>", methods=["POST"])
+def api_project_save(name):
+    """Apply a validated partial patch to a project's overrides."""
+    from app.projects_config import apply_project_patch
+    data = request.get_json(silent=True) or {}
+    patch = data.get("patch")
+    if not isinstance(patch, dict):
+        return jsonify({"ok": False, "error": "Missing 'patch' object"}), 400
+    try:
+        merged = apply_project_patch(str(state.KOAN_ROOT), name, patch)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 422
+    return jsonify({"ok": True, "name": name, "config": merged})

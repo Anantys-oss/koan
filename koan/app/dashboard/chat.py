@@ -73,6 +73,21 @@ def chat_page():
     return render_template("chat.html")
 
 
+@chat_bp.route("/chat/history")
+def chat_history():
+    """Return recent persisted chat turns so the UI survives a reload.
+
+    Normalizes the stored ``text`` field to ``content`` so the chat template
+    binds to a stable {role, content} shape.
+    """
+    messages = load_recent_history(state.CONVERSATION_HISTORY_FILE, max_messages=20)
+    normalized = [
+        {"role": m.get("role", "assistant"), "content": m.get("text", "")}
+        for m in messages
+    ]
+    return jsonify({"ok": True, "messages": normalized})
+
+
 @chat_bp.route("/chat/send", methods=["POST"])
 def chat_send():
     """Send a message — either as mission or direct outbox message."""

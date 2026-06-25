@@ -98,6 +98,20 @@ async function send(mode) {
     }
 }
 
+async function loadHistory() {
+    try {
+        const resp = await fetch('/chat/history');
+        const data = await resp.json();
+        if (data.ok) {
+            for (const m of data.messages) {
+                if (m.role === 'user') addMessage('You', m.content, 'human');
+                else addMessage('Kōan', m.content, 'koan');
+            }
+        }
+    } catch (e) { /* non-fatal: start with an empty thread */ }
+}
+loadHistory();
+
 if (window.lucide) lucide.createIcons();
 </script>
 {% endblock %}
