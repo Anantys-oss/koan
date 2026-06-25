@@ -115,25 +115,6 @@ class TestNotifyStagnation:
 
 
 # ---------------------------------------------------------------------------
-# _finalize_mission
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def _clean_stagnation_state():
-    """Reset the module-level stagnation flags around each test."""
-    run._last_mission_stagnated.clear()
-    run._stagnation_pattern_type = ""
-    run._stagnation_pattern_excerpt = ""
-    yield
-    run._last_mission_stagnated.clear()
-    run._stagnation_pattern_type = ""
-    run._stagnation_pattern_excerpt = ""
-
-
-_STAG_CFG = {"max_retry_on_stagnation": 3, "max_total_retries": 10}
-
-
-# ---------------------------------------------------------------------------
 # _run_preflight_check
 # ---------------------------------------------------------------------------
 
@@ -213,6 +194,25 @@ class TestHandleUpdateRelease:
             assert run._handle_update_release("/root", "/inst", 4) is True
         mock_restart.assert_called_once()
         assert "Release update failed" in mock_notify.call_args[0][1]
+
+
+# ---------------------------------------------------------------------------
+# _finalize_mission
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _clean_stagnation_state():
+    """Reset the module-level stagnation flags around each test."""
+    run._last_mission_stagnated.clear()
+    run._stagnation_pattern_type = ""
+    run._stagnation_pattern_excerpt = ""
+    yield
+    run._last_mission_stagnated.clear()
+    run._stagnation_pattern_type = ""
+    run._stagnation_pattern_excerpt = ""
+
+
+_STAG_CFG = {"max_retry_on_stagnation": 3, "max_total_retries": 10}
 
 
 class TestFinalizeMission:
