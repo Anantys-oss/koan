@@ -376,6 +376,8 @@ class TestProviderResolution:
         "KOAN_SLACK_BOT_TOKEN",
         "KOAN_MATRIX_ACCESS_TOKEN",
         "KOAN_DISCORD_BOT_TOKEN",
+        "KOAN_TELEGRAM_TOKEN",
+        "KOAN_TELEGRAM_CHAT_ID",
     )
 
     def _clean_env(self, **overrides):
@@ -428,6 +430,31 @@ class TestProviderResolution:
             KOAN_MESSAGING_PROVIDER="telegram", KOAN_SLACK_BOT_TOKEN="xoxb-test"
         ):
             assert _resolve_provider_name() == "telegram"
+
+    def test_configured_telegram_blocks_silent_swap_to_slack(self):
+        """When Telegram is already set up (token + chat id), detection must not
+        silently swap to a non-telegram provider — keep the telegram default."""
+        from app.messaging import _resolve_provider_name
+
+        with self._clean_env(
+            KOAN_TELEGRAM_TOKEN="123:abc",
+            KOAN_TELEGRAM_CHAT_ID="999",
+            KOAN_SLACK_BOT_TOKEN="xoxb-test",
+        ):
+            with patch("app.utils.load_config", return_value={}):
+                assert _resolve_provider_name() == "telegram"
+
+    def test_disabled_config_block_not_detected(self):
+        """A config block with only a non-credential value (e.g. enabled: false)
+        is not treated as configured — only the primary credential key counts."""
+        from app.messaging import _resolve_provider_name
+
+        with self._clean_env():
+            with patch(
+                "app.utils.load_config",
+                return_value={"messaging": {"matrix": {"enabled": False}}},
+            ):
+                assert _resolve_provider_name() == "telegram"
 
 
 # ---------------------------------------------------------------------------

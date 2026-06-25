@@ -113,9 +113,19 @@ messaging:
 
 The env var takes precedence over `config.yaml`. When neither names a provider,
 Kōan resolves the one whose credentials are present — so configuring Slack alone
-won't trigger a spurious "set telegram credentials" warning. If credentials for
-more than one non-telegram provider are set, the choice is ambiguous and Kōan
-falls back to Telegram; set `KOAN_MESSAGING_PROVIDER` to disambiguate.
+won't trigger a spurious "set telegram credentials" warning. Auto-detection is
+deliberately conservative:
+
+- If Telegram is already configured (`KOAN_TELEGRAM_TOKEN` + `KOAN_TELEGRAM_CHAT_ID`),
+  Kōan never auto-switches away from it — selecting Slack would silently swap a
+  working setup. Set `KOAN_MESSAGING_PROVIDER=slack` to switch intentionally.
+- If credentials for more than one non-telegram provider are set, the choice is
+  ambiguous and Kōan falls back to Telegram; set `KOAN_MESSAGING_PROVIDER` to
+  disambiguate.
+
+When auto-detection does pick a provider, it logs a line to the bridge stderr
+(`auto-detected messaging provider 'slack' from credentials …`) so the
+resolution is traceable.
 
 ## Step 9: Start Kōan
 
