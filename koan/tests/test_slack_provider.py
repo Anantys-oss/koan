@@ -181,6 +181,38 @@ class TestHandleSocketEvent:
         provider._handle_socket_event(MagicMock(), req)
         assert provider._message_queue.empty()
 
+    def test_slash_command_without_mention_processed(self, provider):
+        # A /-prefixed message is a command — handled without @bot mention.
+        req = self._make_request("message", "C123", "/help")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "/help"
+
+    def test_slash_command_with_leading_whitespace_processed(self, provider):
+        req = self._make_request("message", "C123", "  /status")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "/status"
+
+    def test_slash_command_reply_routes_to_thread(self, provider):
+        # The command at channel root engages its thread; the reply posts there.
+        provider._web_client.chat_postMessage.return_value = {"ok": True}
+        req = self._make_request("message", "C123", "/help", ts="200.5")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        token = update.raw_data["message"]["message_id"]
+
+        assert provider.send_message("here you go", reply_to_message_id=token) is True
+        provider._web_client.chat_postMessage.assert_called_once_with(
+            channel="C123", text="here you go", thread_ts="200.5"
+        )
+
+    def test_non_command_slash_in_middle_ignored(self, provider):
+        # Only a leading slash counts — "a/b" chatter must not trigger the bot.
+        req = self._make_request("message", "C123", "see foo/bar for details")
+        provider._handle_socket_event(MagicMock(), req)
+        assert provider._message_queue.empty()
+
     def test_inline_mention_in_message_processed(self, provider):
         req = self._make_request("message", "C123", "hey <@U999> ship it")
         provider._handle_socket_event(MagicMock(), req)

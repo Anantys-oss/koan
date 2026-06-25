@@ -160,7 +160,8 @@ You should see in the logs:
   is not set — setting only the `KOAN_SLACK_*` tokens is not enough.
 - **You must @mention the bot.** Kōan ignores un-addressed channel chatter by
   design. Ping `@Koan ...` to start; after that you can keep replying in the
-  thread without re-mentioning.
+  thread without re-mentioning. (Messages beginning with `/` are an exception —
+  they are treated as commands and answered without a mention.)
 
 ### Bot not receiving messages
 
@@ -179,6 +180,9 @@ You should see in the logs:
 - **Mention to start**: In the configured channel, Kōan stays quiet until you
   @mention it (or it receives an `app_mention`). Ordinary channel chatter is
   ignored, so the bot is safe to drop into a shared channel.
+- **Commands need no mention**: A message beginning with `/` (e.g. `/help`,
+  `/status`) is treated as a command addressed to Kōan — exactly like
+  `@Koan /help`. It replies in a thread under the command, no @mention required.
 - **Replies go in a thread**: When you @mention Kōan on a channel-root message,
   it replies in a **thread** under your message rather than cluttering the
   channel.
