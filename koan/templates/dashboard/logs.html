@@ -74,7 +74,17 @@
         const source = sourceSelect.value;
         fetch(`/api/logs?source=${source}&limit=500`)
             .then(r => r.json())
-            .then(data => { allLines = data.lines || []; render(); })
+            .then(data => {
+                allLines = data.lines || [];
+                // Detect a regressed/malformed payload once, rather than
+                // silently coercing every missing `.text` to '' per line.
+                const malformed = allLines.filter(l => l == null || typeof l.text !== 'string').length;
+                if (malformed) {
+                    meta.textContent = `⚠ ${malformed}/${allLines.length} log lines have an unexpected shape (missing .text)`;
+                    return;
+                }
+                render();
+            })
             .catch(() => { meta.textContent = 'Failed to load logs'; });
     }
 
