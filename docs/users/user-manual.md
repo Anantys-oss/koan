@@ -1048,6 +1048,23 @@ Not ready to commit to a mission? Save it as an idea.
 - `/stats webapp` — How's Kōan doing on a specific project?
 </details>
 
+**`/report`** — Pull-Request activity report for the last week or month, per-project and global, posted as a markdown code block. Shortcuts: `/weekly_report`, `/monthly_report`.
+
+- **Usage:** `/report [--week|--month]`
+- **Metrics:**
+  - **Created** — PRs Kōan opened in the window.
+  - **Merged (%)** — of those created, how many are now merged (cohort success rate).
+  - **Interacted** — PRs Kōan was involved in (commented, reviewed) updated in the window, including human-authored PRs.
+  - **Interacted+merged** — PRs Kōan interacted with that merged during the window.
+- **Note:** "Interacted" is sourced from GitHub search (`involves:`). A bare force-push/rebase on a *human-authored* PR (no comment) won't be counted; Kōan's own PRs always are.
+
+<details>
+<summary>Use cases</summary>
+
+- `/weekly_report` — Monday digest of last week's PR throughput
+- `/report --month` — Monthly review across all projects
+</details>
+
 ### Understanding Quota Modes
 
 Kōan automatically adapts its work intensity based on remaining API quota:
@@ -2246,6 +2263,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/journal` | `/log` | I | View journal entries |
 | `/email` | — | I | Email digest status or test |
 | `/stats [project]` | — | I | Session outcome statistics |
+| `/report [--week\|--month]` | `/weekly_report`, `/monthly_report` | I | PR activity report (created, merged %, interacted) per-project + global |
 | `/done [project]` | `/merged` | I | List PRs merged in the last 24 hours |
 | `/explore [project]` | `/exploration` | I | Enable/show exploration mode |
 | `/noexplore [project]` | — | I | Disable exploration mode |

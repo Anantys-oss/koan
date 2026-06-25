@@ -31,6 +31,7 @@ memory, or integration changes:
 - [Memory Architecture](architecture/memory.md)
 - [GitHub And Trackers](architecture/github-and-trackers.md)
 - [GitHub Webhooks](messaging/github-webhooks.md)
+- [PR Activity Reports](operations/pr-reports.md)
 - [Messaging Level (bridge verbosity)](messaging/messaging-level.md)
 - [Design Decisions](design/decisions.md)
 
