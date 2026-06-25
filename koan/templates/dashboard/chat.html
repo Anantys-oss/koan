@@ -107,6 +107,9 @@ async function loadHistory() {
                 if (m.role === 'user') addMessage('You', m.content, 'human');
                 else addMessage('Kōan', m.content, 'koan');
             }
+        } else {
+            // Distinguish a genuine history-load failure from an empty thread.
+            console.warn('Chat history load failed:', data.error || 'unknown error');
         }
     } catch (e) { /* non-fatal: start with an empty thread */ }
 }
