@@ -1,6 +1,5 @@
 """Tests for the REST API server entrypoint (app/api/server.py main())."""
 
-import os
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -36,11 +35,16 @@ def _run_main(argv=None):
 
 
 class TestKoanRoot:
-    def test_missing_koan_root_exits(self, monkeypatch):
+    def test_missing_koan_root_exits(self, monkeypatch, patched_config, capsys):
+        # patched_config supplies a valid token so the KOAN_ROOT guard is the
+        # ONLY possible exit reason — pinning the branch the PR claims to cover.
+        # Asserting on the stderr message proves the KOAN_ROOT guard fired, not
+        # the token guard (which `Path("")` -> "." would otherwise slip past).
         monkeypatch.delenv("KOAN_ROOT", raising=False)
         with pytest.raises(SystemExit) as exc:
             _run_main()
         assert exc.value.code == 1
+        assert "KOAN_ROOT must be set" in capsys.readouterr().err
 
     def test_koan_root_not_a_dir_exits(self, monkeypatch, tmp_path):
         bogus = tmp_path / "does-not-exist"

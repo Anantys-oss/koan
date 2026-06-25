@@ -24,8 +24,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=None, help="Bind port (default: config or 8420)")
     args = parser.parse_args()
 
-    koan_root = Path(os.environ.get("KOAN_ROOT", ""))
-    if not koan_root or not koan_root.is_dir():
+    koan_root_env = os.environ.get("KOAN_ROOT", "")
+    koan_root = Path(koan_root_env)
+    if not koan_root_env or not koan_root.is_dir():
         print("ERROR: KOAN_ROOT must be set to a valid directory", file=sys.stderr)
         sys.exit(1)
 
