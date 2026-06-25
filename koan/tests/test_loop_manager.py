@@ -4175,13 +4175,19 @@ class TestCLIInProcess:
         with pytest.raises(SystemExit):
             _cli_lookup_project(["--name", "nope"])
 
-    def test_interruptible_sleep_handler(self, tmp_path, capsys):
+    def test_interruptible_sleep_handler(self, tmp_path, monkeypatch, capsys):
+        import app.loop_manager as lm
         from app.loop_manager import _cli_interruptible_sleep
 
         koan_root = tmp_path / "root"
         instance = tmp_path / "instance"
         koan_root.mkdir()
         instance.mkdir()
+
+        # Isolate the "timeout" exit path: stub the notification fetchers so the
+        # sleep loop doesn't run the real GitHub/Jira pipeline against temp dirs.
+        monkeypatch.setattr(lm, "process_github_notifications", lambda *a, **k: 0)
+        monkeypatch.setattr(lm, "process_jira_notifications", lambda *a, **k: 0)
 
         _cli_interruptible_sleep([
             "--interval", "1",
