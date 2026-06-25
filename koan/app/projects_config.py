@@ -848,12 +848,26 @@ EDITABLE_PROJECT_FIELDS = {
 }
 
 
+_TRUE_TOKENS = ("1", "true", "yes", "on")
+_FALSE_TOKENS = ("0", "false", "no", "off")
+
+
 def _coerce_editable_value(expected, raw):
-    """Coerce a raw form value to the declared type for an editable field."""
+    """Coerce a raw form value to the declared type for an editable field.
+
+    Booleans are validated against an explicit true/false token set; an
+    unrecognized value raises ``ValueError`` rather than silently becoming
+    ``False``.
+    """
     if expected is bool:
         if isinstance(raw, bool):
             return raw
-        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+        token = str(raw).strip().lower()
+        if token in _TRUE_TOKENS:
+            return True
+        if token in _FALSE_TOKENS:
+            return False
+        raise ValueError(f"not a boolean: {raw!r}")
     return expected(raw)
 
 
