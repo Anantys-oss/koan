@@ -441,15 +441,24 @@
     }
 
     async function loadProjectList() {
-        const projs = await (await fetch('/api/projects')).json();
-        const names = projs.projects || projs;   // tolerate {projects:[...]} or [...]
-        sel.innerHTML = names.map(n => `<option value="${esc(n.name || n)}">${esc(n.name || n)}</option>`).join('');
-        if (sel.value) loadProject(sel.value);
+        try {
+            const projs = await (await fetch('/api/projects')).json();
+            const names = projs.projects || projs;   // tolerate {projects:[...]} or [...]
+            sel.innerHTML = names.map(n => `<option value="${esc(n.name || n)}">${esc(n.name || n)}</option>`).join('');
+            if (sel.value) loadProject(sel.value);
+        } catch (e) {
+            status.textContent = `✗ Could not load project list: ${e}`;
+        }
     }
 
     async function loadProject(name) {
-        const data = await (await fetch(`/api/projects/${encodeURIComponent(name)}`)).json();
-        if (data.ok) renderFields(data.config);
+        try {
+            const data = await (await fetch(`/api/projects/${encodeURIComponent(name)}`)).json();
+            if (data.ok) { renderFields(data.config); status.textContent = ''; }
+            else status.textContent = `✗ ${data.error}`;
+        } catch (e) {
+            status.textContent = `✗ Could not load project: ${e}`;
+        }
     }
 
     function collectPatch() {

@@ -152,6 +152,11 @@ def get_provider() -> CLIProvider:
     return _cached_provider
 
 
+def is_known_provider(name: str) -> bool:
+    """True when ``name`` resolves to a registered CLI provider."""
+    return str(name or "").strip().lower() in _PROVIDERS
+
+
 def get_provider_by_name(name: str) -> CLIProvider:
     """Return a fresh provider instance by name.
 
