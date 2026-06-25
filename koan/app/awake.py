@@ -642,7 +642,7 @@ _worker_threads: Dict[str, Optional[threading.Thread]] = {
 _worker_lock = threading.Lock()
 
 # The chat lane tells the user when it is busy; the bg lane stays silent so
-# background work (GitHub notification parsing, etc.) never spams the channel.
+# background work (worker skills like /review, /rebase) never spams the channel.
 _LANE_BUSY_MSG: Dict[str, Optional[str]] = {
     "chat": "⏳ Busy with a previous message. Try again in a moment.",
     "bg": None,
