@@ -401,6 +401,47 @@ class TestTailLoop:
         assert "valid text" in content
 
 
+    def test_open_failure_after_getsize_is_swallowed(self, tmp_env, tmp_path):
+        """If getsize reports data but the file can't be opened, the loop
+        swallows the OSError and keeps running (lines 97-98)."""
+        from app.cli_journal_streamer import _tail_loop
+
+        stop = threading.Event()
+        missing = str(tmp_path / "ghost.txt")
+
+        def fake_getsize(_path):
+            # Report content so the loop attempts to open the (missing) file,
+            # then signal stop so the loop exits after one iteration.
+            stop.set()
+            return 100
+
+        with patch("app.cli_journal_streamer.os.path.getsize", side_effect=fake_getsize):
+            # Should not raise despite the open() failing inside the loop body.
+            _tail_loop(missing, Path(tmp_env["instance_dir"]), "test-project", stop)
+
+    def test_final_flush_emits_leftover_only(self, tmp_env, stdout_file):
+        """When the loop stops with only incomplete trailing UTF-8 bytes and no
+        new data, the final flush emits the leftover via the elif branch (line 114)."""
+        from app.cli_journal_streamer import start_tail_thread, stop_tail_thread
+
+        # "hello " + first 2 bytes of € (\xe2\x82\xac) — incomplete multibyte.
+        with open(stdout_file, "ab") as f:
+            f.write(b"hello \xe2\x82")
+            f.flush()
+
+        thread, stop_event = start_tail_thread(
+            stdout_file, tmp_env["instance_dir"], tmp_env["project_name"], run_num=1,
+        )
+        # Let one poll consume the bytes: "hello " is appended, \xe2\x82 held as leftover.
+        time.sleep(0.2)
+        stop_tail_thread(thread, stop_event)
+
+        content = _journal_content(tmp_env)
+        assert "hello" in content
+        # The leftover incomplete bytes are flushed with replacement chars.
+        assert "�" in content
+
+
 # ---------------------------------------------------------------------------
 # append_stderr_to_journal — edge cases
 # ---------------------------------------------------------------------------
