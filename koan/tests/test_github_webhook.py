@@ -10,6 +10,7 @@ Covers:
 
 import hashlib
 import hmac
+import io
 import json
 import os
 import socket
@@ -493,3 +494,276 @@ class TestHttpEndToEnd:
                 resp += chunk
         assert b"400" in resp.split(b"\r\n", 1)[0]
         assert not (koan_root / CHECK_NOTIFICATIONS_FILE).exists()
+
+
+# --- pure-function edge cases ------------------------------------------------
+
+
+class TestPureFunctionEdges:
+    def test_extract_repo_full_name_non_dict_repository(self):
+        from app.github_webhook import extract_repo_full_name
+
+        # repository present but not a dict → "" (no crash).
+        assert extract_repo_full_name({"repository": "oops"}) == ""
+        assert extract_repo_full_name({}) == ""
+
+    def test_extract_repo_full_name_missing_full_name(self):
+        from app.github_webhook import extract_repo_full_name
+
+        assert extract_repo_full_name({"repository": {}}) == ""
+
+    def test_comment_event_without_action_is_actionable(self):
+        from app.github_webhook import is_actionable_event
+
+        # Some comment events omit "action"; treat absence as actionable so the
+        # poll re-validates rather than silently dropping the delivery.
+        assert is_actionable_event("commit_comment", {}) is True
+
+    def test_write_check_signal_oswrite_failure_returns_false(self, tmp_path, monkeypatch):
+        import app.github_webhook as wh
+
+        def boom(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(wh, "atomic_write", boom)
+        assert wh.write_check_signal(str(tmp_path)) is False
+
+    def test_handle_event_returns_false_when_signal_not_written(self, tmp_path, monkeypatch):
+        import app.github_webhook as wh
+
+        # handle_event propagates the debounced-write result: when the write
+        # reports failure (False), handle_event returns False for an otherwise
+        # actionable event.
+        monkeypatch.setattr(wh, "write_check_signal_debounced",
+                            lambda _root: False)
+        payload = {"action": "created", "repository": {"full_name": "a/b"}}
+        assert wh.handle_event("issue_comment", payload, str(tmp_path), None) is False
+
+
+# --- do_POST request-validation branches (unit, no socket) -------------------
+
+
+def _post_handler(headers: dict, body: bytes, *, secret: str = SECRET,
+                  koan_root: str = "/tmp", known_repos=None):
+    """Construct a _WebhookHandler bypassing socketserver wiring.
+
+    Returns (handler, captured) where ``captured`` records the (code, body)
+    passed to ``_respond`` — letting us assert the HTTP outcome of each
+    do_POST validation branch without binding a real socket.
+    """
+    from app.github_webhook import _make_handler
+
+    cls = _make_handler(secret, str(koan_root), known_repos)
+    handler = cls.__new__(cls)
+    handler.headers = headers
+    handler.rfile = io.BytesIO(body)
+    handler.wfile = io.BytesIO()
+    captured = {}
+
+    def _respond(code, resp_body=""):
+        captured["code"] = code
+        captured["body"] = resp_body
+
+    handler._respond = _respond
+    return handler, captured
+
+
+class TestDoPostValidation:
+    def test_bad_content_length_returns_400(self):
+        handler, captured = _post_handler({"Content-Length": "not-a-number"}, b"x")
+        handler.do_POST()
+        assert captured["code"] == 400
+
+    def test_empty_body_returns_400(self):
+        handler, captured = _post_handler({"Content-Length": "0"}, b"")
+        handler.do_POST()
+        assert captured["code"] == 400
+
+    def test_oversized_body_returns_413(self):
+        from app.github_webhook import MAX_BODY_BYTES
+
+        handler, captured = _post_handler(
+            {"Content-Length": str(MAX_BODY_BYTES + 1)}, b"")
+        handler.do_POST()
+        assert captured["code"] == 413
+
+    def test_incomplete_body_returns_400(self):
+        # Advertise more than the buffer holds → short read → 400.
+        handler, captured = _post_handler({"Content-Length": "100"}, b"short")
+        handler.do_POST()
+        assert captured["code"] == 400
+
+    def test_invalid_json_returns_400(self):
+        body = b"not json at all"
+        handler, captured = _post_handler(
+            {"Content-Length": str(len(body)),
+             "X-Hub-Signature-256": _sign(body),
+             "X-GitHub-Event": "issue_comment"},
+            body)
+        handler.do_POST()
+        assert captured["code"] == 400
+        assert "json" in captured["body"]
+
+    def test_non_dict_payload_returns_400(self):
+        body = b"[1, 2, 3]"  # valid JSON, but not an object
+        handler, captured = _post_handler(
+            {"Content-Length": str(len(body)),
+             "X-Hub-Signature-256": _sign(body),
+             "X-GitHub-Event": "issue_comment"},
+            body)
+        handler.do_POST()
+        assert captured["code"] == 400
+
+    def test_handler_error_still_returns_202(self, monkeypatch):
+        import app.github_webhook as wh
+
+        # An exception inside handle_event must be swallowed → still 202.
+        def boom(*_a, **_k):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr(wh, "handle_event", boom)
+        body = json.dumps({"action": "created"}).encode()
+        handler, captured = _post_handler(
+            {"Content-Length": str(len(body)),
+             "X-Hub-Signature-256": _sign(body),
+             "X-GitHub-Event": "issue_comment"},
+            body)
+        handler.do_POST()
+        assert captured["code"] == 202
+
+
+# --- maybe_start_from_config / _resolve_known_repos --------------------------
+
+
+class TestMaybeStartFromConfig:
+    def test_disabled_returns_none(self, tmp_path, monkeypatch):
+        import app.github_webhook as wh
+
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr("app.github_config.get_github_webhook_enabled",
+                            lambda _cfg: False)
+        assert wh.maybe_start_from_config(str(tmp_path)) is None
+
+    def test_enabled_but_no_secret_returns_none(self, tmp_path, monkeypatch):
+        import app.github_webhook as wh
+
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr("app.github_config.get_github_webhook_enabled",
+                            lambda _cfg: True)
+        monkeypatch.delenv("KOAN_GITHUB_WEBHOOK_SECRET", raising=False)
+        assert wh.maybe_start_from_config(str(tmp_path)) is None
+
+    def test_enabled_with_secret_starts_server(self, tmp_path, monkeypatch):
+        import app.github_webhook as wh
+
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr("app.github_config.get_github_webhook_enabled",
+                            lambda _cfg: True)
+        monkeypatch.setattr("app.github_config.get_github_webhook_port",
+                            lambda _cfg: 0)
+        monkeypatch.setattr("app.github_config.get_github_webhook_host",
+                            lambda _cfg: "127.0.0.1")
+        monkeypatch.setattr(wh, "_resolve_known_repos", lambda _root: None)
+        monkeypatch.setenv("KOAN_GITHUB_WEBHOOK_SECRET", SECRET)
+
+        server = wh.maybe_start_from_config(str(tmp_path))
+        assert server is not None
+        try:
+            assert server.server_address[1] != 0  # bound to a real port
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_exception_returns_none(self, tmp_path, monkeypatch):
+        import app.github_webhook as wh
+
+        def boom():
+            raise RuntimeError("config blew up")
+
+        monkeypatch.setattr("app.utils.load_config", boom)
+        monkeypatch.setattr("app.github_config.get_github_webhook_enabled",
+                            lambda _cfg: True)
+        assert wh.maybe_start_from_config(str(tmp_path)) is None
+
+    def test_bind_failure_returns_none(self, tmp_path, monkeypatch):
+        import app.github_webhook as wh
+
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr("app.github_config.get_github_webhook_enabled",
+                            lambda _cfg: True)
+        monkeypatch.setattr("app.github_config.get_github_webhook_port",
+                            lambda _cfg: 0)
+        monkeypatch.setattr("app.github_config.get_github_webhook_host",
+                            lambda _cfg: "127.0.0.1")
+        monkeypatch.setattr(wh, "_resolve_known_repos", lambda _root: None)
+        monkeypatch.setenv("KOAN_GITHUB_WEBHOOK_SECRET", SECRET)
+
+        def cannot_bind(*_a, **_k):
+            raise OSError("address already in use")
+
+        monkeypatch.setattr(wh, "start_webhook_server", cannot_bind)
+        assert wh.maybe_start_from_config(str(tmp_path)) is None
+
+
+class TestResolveKnownRepos:
+    def test_returns_loop_manager_result(self, monkeypatch):
+        import app.github_webhook as wh
+
+        monkeypatch.setattr(
+            "app.loop_manager.get_known_repos_from_projects",
+            lambda _root: {"owner/repo"},
+        )
+        assert wh._resolve_known_repos("/koan") == {"owner/repo"}
+
+    def test_swallows_exception_returns_none(self, monkeypatch):
+        import app.github_webhook as wh
+
+        def boom(_root):
+            raise RuntimeError("no projects")
+
+        monkeypatch.setattr(
+            "app.loop_manager.get_known_repos_from_projects", boom)
+        assert wh._resolve_known_repos("/koan") is None
+
+
+# --- main() (standalone entrypoint) ------------------------------------------
+
+
+class TestMain:
+    def test_missing_koan_root_returns_1(self, monkeypatch):
+        import app.github_webhook as wh
+
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        assert wh.main() == 1
+
+    def test_missing_secret_returns_1(self, monkeypatch):
+        import app.github_webhook as wh
+
+        monkeypatch.setenv("KOAN_ROOT", "/tmp")
+        monkeypatch.delenv("KOAN_GITHUB_WEBHOOK_SECRET", raising=False)
+        assert wh.main() == 1
+
+    def test_serves_then_stops_on_keyboard_interrupt(self, tmp_path, monkeypatch):
+        import app.github_webhook as wh
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        monkeypatch.setenv("KOAN_GITHUB_WEBHOOK_SECRET", SECRET)
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr("app.github_config.get_github_webhook_port",
+                            lambda _cfg: 0)
+        monkeypatch.setattr("app.github_config.get_github_webhook_host",
+                            lambda _cfg: "127.0.0.1")
+        monkeypatch.setattr(wh, "_resolve_known_repos", lambda _root: None)
+
+        captured = {}
+
+        class _FakeServer:
+            def serve_forever(self):
+                raise KeyboardInterrupt
+            def shutdown(self):
+                captured["shutdown"] = True
+
+        monkeypatch.setattr(wh, "create_server",
+                            lambda *a, **k: _FakeServer())
+        assert wh.main() == 0
+        assert captured.get("shutdown") is True
