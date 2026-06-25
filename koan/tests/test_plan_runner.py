@@ -124,6 +124,23 @@ class TestRunNewPlan:
             calls = [str(c) for c in notify.call_args_list]
             assert any("Plan" in c for c in calls)
 
+    def test_normal_mode_gates_banner_but_sends_outcome(self):
+        """Under normal mode with the default sink, the 🧠 Planning banner is
+        suppressed but the ✅ Plan created outcome is always sent."""
+        sent = []
+        with patch("app.messaging_level.is_debug", return_value=False), \
+             patch("app.notify.send_telegram", lambda m, **k: sent.append(m)), \
+             patch("app.plan_runner._generate_plan", return_value="## Plan\nStep 1"), \
+             patch("app.plan_runner.find_existing_plan_issue", return_value=None), \
+             patch("app.plan_runner.tracker_is_configured", return_value=True), \
+             patch("app.plan_runner.tracker_supports_labels", return_value=True), \
+             patch("app.plan_runner.create_issue",
+                   return_value="https://github.com/o/r/issues/42"):
+            ok, _msg = run_plan("/project", idea="Add feature", notify_fn=None)
+        assert ok
+        assert not any("Planning" in m for m in sent)  # banner gated
+        assert any("https://github.com/o/r/issues/42" in m for m in sent)  # outcome sent
+
     def test_generate_plan_failure(self):
         notify = MagicMock()
         with patch("app.plan_runner.find_existing_plan_issue", return_value=None), \

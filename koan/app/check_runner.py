@@ -24,15 +24,36 @@ def run_check(
     koan_root: str,
     notify_fn=None,
 ) -> Tuple[bool, str]:
-    """Execute the check pipeline on a GitHub URL.
+    """Run the check pipeline and emit a single outcome line.
+
+    Intermediate progress is gated behind messaging.level=debug; the final
+    verdict (carrying the PR/issue URL where applicable) always reaches chat.
 
     Returns:
         (success, summary) tuple.
     """
     if notify_fn is None:
-        from app.notify import send_telegram
-        notify_fn = send_telegram
+        from app.messaging_level import progress_notify
+        notify_fn = progress_notify(log_category="check")
 
+    success, summary = _run_check_impl(url, instance_dir, koan_root, notify_fn)
+
+    from app.messaging_level import notify_outcome
+    notify_outcome(summary, notify_fn)
+    return success, summary
+
+
+def _run_check_impl(
+    url: str,
+    instance_dir: str,
+    koan_root: str,
+    notify_fn,
+) -> Tuple[bool, str]:
+    """Execute the check pipeline on a GitHub URL.
+
+    Returns:
+        (success, summary) tuple.
+    """
     instance_path = Path(instance_dir)
 
     try:

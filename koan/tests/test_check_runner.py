@@ -105,6 +105,27 @@ class TestRunCheckRouting:
 # PR handling — closed/merged
 # ---------------------------------------------------------------------------
 
+class TestCheckOutcomeGating:
+    def test_normal_mode_gates_progress_sends_outcome(self, instance_dir, koan_root):
+        from app.check_runner import run_check
+
+        pr_data = _pr_json(state="CLOSED")
+        sent = []
+        with patch("app.messaging_level.is_debug", return_value=False), \
+             patch("app.notify.send_telegram", lambda m, **k: sent.append(m)), \
+             patch("app.check_runner._fetch_pr_metadata", return_value=pr_data), \
+             patch("app.check_tracker.mark_checked"):
+            success, summary = run_check(
+                "https://github.com/sukria/koan/pull/42",
+                str(instance_dir), koan_root, notify_fn=None,
+            )
+        assert success
+        # The "🔍 Checking PR..." progress line is gated; exactly the outcome
+        # (the returned summary) is sent.
+        assert not any("Checking PR" in m for m in sent)
+        assert sent == [summary]
+
+
 class TestPrClosed:
     def test_closed_pr_no_action(self, instance_dir, koan_root):
         from app.check_runner import run_check

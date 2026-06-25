@@ -2823,13 +2823,13 @@ def run_review(
         from app.messaging_level import notify_outcome
         pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
         verb = "Ultra reviewed" if ultra else "Reviewed"
-        notify_outcome(f"✅ {verb} {pr_url}")
+        notify_outcome(f"✅ {verb} {pr_url}", notify_fn)
         return True, summary, review_data
     else:
         detail = f" Error: {post_error}" if post_error else ""
         from app.messaging_level import notify_outcome
         pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
-        notify_outcome(f"❌ Review failed {pr_url}{detail}")
+        notify_outcome(f"❌ Review failed {pr_url}{detail}", notify_fn)
         return False, f"Review generated but failed to post comment on PR #{pr_number}.{detail}", review_data
 
 

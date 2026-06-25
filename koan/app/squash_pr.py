@@ -201,9 +201,9 @@ def run_squash(
     from app.messaging_level import notify_outcome
     pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
     if success:
-        notify_outcome(f"✅ Squashed {pr_url}")
+        notify_outcome(f"✅ Squashed {pr_url}", notify_fn)
     else:
-        notify_outcome(f"❌ Squash failed {pr_url}: {summary}")
+        notify_outcome(f"❌ Squash failed {pr_url}: {summary}", notify_fn)
     return success, summary
 
 

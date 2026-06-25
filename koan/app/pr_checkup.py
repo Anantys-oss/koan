@@ -149,7 +149,7 @@ def run_checkup(
 
     from app.messaging_level import notify_outcome
     prefix = "✅" if success else "❌"
-    notify_outcome(f"{prefix} {summary}")
+    notify_outcome(f"{prefix} {summary}", notify_fn)
     return success, summary
 
 
