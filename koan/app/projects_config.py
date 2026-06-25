@@ -885,6 +885,13 @@ def apply_project_patch(koan_root: str, project_name: str, patch: dict) -> dict:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid value for {key}: {raw!r}") from exc
 
+    # cli_provider is free-text-typed but must name a registered provider —
+    # reject unknowns now so a typo can't become a KeyError at run time.
+    if clean.get("cli_provider"):
+        from app.provider import is_known_provider
+        if not is_known_provider(clean["cli_provider"]):
+            raise ValueError(f"Invalid value for cli_provider: {clean['cli_provider']!r}")
+
     # Resolve canonical casing so we update the existing entry instead of
     # creating a case-variant duplicate.
     canonical = project_name

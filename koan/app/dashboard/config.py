@@ -384,12 +384,15 @@ def api_project_get(name):
     """Return the editable subset of a project's merged config for the form."""
     from app.projects_config import (
         EDITABLE_PROJECT_FIELDS,
+        _find_project_entry,
         get_project_config,
         load_projects_config,
     )
     config = load_projects_config(str(state.KOAN_ROOT))
     if not config:
         return jsonify({"ok": False, "error": "No projects.yaml"}), 404
+    if not _find_project_entry(config.get("projects", {}), name):
+        return jsonify({"ok": False, "error": f"Unknown project: {name}"}), 404
     merged = get_project_config(config, name)
     editable = {k: merged.get(k) for k in EDITABLE_PROJECT_FIELDS}
     return jsonify({"ok": True, "name": name, "config": editable})
@@ -425,6 +428,10 @@ def api_config_setting():
         update_config_yaml(state.KOAN_ROOT / "instance" / "config.yaml", key, value)
     except OSError as exc:
         return jsonify({"ok": False, "error": f"Write failed: {exc}"}), 500
+    except Exception as exc:
+        # A malformed config.yaml (parse/edit failure) is a client-fixable
+        # condition, not a server crash — return 422 instead of a raw 500.
+        return jsonify({"ok": False, "error": f"Could not edit config.yaml: {exc}"}), 422
     return jsonify({"ok": True, "key": key, "value": value})
 
 
