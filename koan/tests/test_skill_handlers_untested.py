@@ -168,6 +168,9 @@ MISSIONS_TEMPLATE = (
 )
 
 
+_PR_URL = "https://github.com/owner/repo/pull/42"
+
+
 class TestRefactorHandler:
     def test_no_args_returns_usage(self, tmp_path):
         from skills.core.refactor.handler import handle
@@ -177,62 +180,113 @@ class TestRefactorHandler:
         assert "Usage:" in result
         assert "/refactor" in result
 
-    def test_github_url_delegates_to_handle_github_skill(self, tmp_path):
-        from skills.core.refactor.handler import handle
-
-        with patch("skills.core.refactor.handler.extract_github_url",
-                    return_value=("owner", "repo", "42")), \
-             patch("skills.core.refactor.handler.handle_github_skill",
-                    return_value="Refactor queued for #42") as mock_skill:
-            ctx = _make_ctx(
-                tmp_path, command_name="refactor",
-                args="https://github.com/owner/repo/pull/42",
-            )
-            result = handle(ctx)
-
-        mock_skill.assert_called_once()
-        assert result == "Refactor queued for #42"
-
-    def test_file_path_inserts_mission(self, tmp_path):
-        from skills.core.refactor.handler import handle
-
-        ctx = _make_ctx(
-            tmp_path, command_name="refactor",
-            args="src/utils.py",
-            missions_content=MISSIONS_TEMPLATE,
-        )
-        with patch("skills.core.refactor.handler.extract_github_url",
-                    return_value=None):
-            with patch("app.utils.insert_pending_mission") as mock_insert:
-                result = handle(ctx)
-
-        mock_insert.assert_called_once()
-        call_args = mock_insert.call_args[0]
-        assert "refactor" in call_args[1]
-        assert "src/utils.py" in call_args[1]
-        assert "src/utils.py" in result
-
-    def test_non_url_treated_as_file_path(self, tmp_path):
-        from skills.core.refactor.handler import handle
-
-        ctx = _make_ctx(
-            tmp_path, command_name="refactor",
-            args="koan/app/run.py",
-            missions_content=MISSIONS_TEMPLATE,
-        )
-        with patch("skills.core.refactor.handler.extract_github_url",
-                    return_value=None):
-            with patch("app.utils.insert_pending_mission"):
-                result = handle(ctx)
-
-        assert "koan/app/run.py" in result
-
     def test_whitespace_only_returns_usage(self, tmp_path):
         from skills.core.refactor.handler import handle
 
         ctx = _make_ctx(tmp_path, command_name="refactor", args="   ")
         result = handle(ctx)
         assert "Usage:" in result
+
+    def test_non_pr_url_returns_error(self, tmp_path):
+        from skills.core.refactor.handler import handle
+
+        ctx = _make_ctx(
+            tmp_path, command_name="refactor", args="src/utils.py",
+        )
+        result = handle(ctx)
+        assert "No valid GitHub PR URL" in result
+
+    def test_valid_pr_url_queues_mission(self, tmp_path):
+        from skills.core.refactor.handler import handle
+
+        ctx = _make_ctx(
+            tmp_path, command_name="refactor", args=_PR_URL,
+            missions_content=MISSIONS_TEMPLATE,
+        )
+        with patch(
+            "app.github_skill_helpers.resolve_project_for_repo",
+            return_value=("/path/to/repo", "repo"),
+        ), patch(
+            "app.github_skill_helpers.queue_github_mission_once",
+            return_value=None,
+        ) as mock_queue:
+            result = handle(ctx)
+
+        mock_queue.assert_called_once()
+        kwargs = mock_queue.call_args.kwargs
+        args = mock_queue.call_args.args
+        # positional: ctx, command, url, project_name, context
+        assert args[1] == "refactor"
+        assert args[2] == _PR_URL
+        assert kwargs.get("urgent") is False
+        assert "Refactor queued" in result
+
+    def test_context_passed_through(self, tmp_path):
+        from skills.core.refactor.handler import handle
+
+        ctx = _make_ctx(
+            tmp_path, command_name="refactor",
+            args=f"{_PR_URL} focus on the tests",
+            missions_content=MISSIONS_TEMPLATE,
+        )
+        with patch(
+            "app.github_skill_helpers.resolve_project_for_repo",
+            return_value=("/path/to/repo", "repo"),
+        ), patch(
+            "app.github_skill_helpers.queue_github_mission_once",
+            return_value=None,
+        ) as mock_queue:
+            handle(ctx)
+
+        # context is the 5th positional arg
+        assert mock_queue.call_args.args[4] == "focus on the tests"
+
+    def test_now_flag_sets_urgent(self, tmp_path):
+        from skills.core.refactor.handler import handle
+
+        ctx = _make_ctx(
+            tmp_path, command_name="refactor", args=f"--now {_PR_URL}",
+            missions_content=MISSIONS_TEMPLATE,
+        )
+        with patch(
+            "app.github_skill_helpers.resolve_project_for_repo",
+            return_value=("/path/to/repo", "repo"),
+        ), patch(
+            "app.github_skill_helpers.queue_github_mission_once",
+            return_value=None,
+        ) as mock_queue:
+            result = handle(ctx)
+
+        assert mock_queue.call_args.kwargs.get("urgent") is True
+        assert "priority" in result
+
+    def test_project_not_found(self, tmp_path):
+        from skills.core.refactor.handler import handle
+
+        ctx = _make_ctx(tmp_path, command_name="refactor", args=_PR_URL)
+        with patch(
+            "app.github_skill_helpers.resolve_project_for_repo",
+            return_value=(None, None),
+        ):
+            result = handle(ctx)
+        assert "repo" in result.lower()
+
+    def test_duplicate_returns_warning(self, tmp_path):
+        from skills.core.refactor.handler import handle
+
+        ctx = _make_ctx(
+            tmp_path, command_name="refactor", args=_PR_URL,
+            missions_content=MISSIONS_TEMPLATE,
+        )
+        with patch(
+            "app.github_skill_helpers.resolve_project_for_repo",
+            return_value=("/path/to/repo", "repo"),
+        ), patch(
+            "app.github_skill_helpers.queue_github_mission_once",
+            return_value="⚠️ Duplicate ignored",
+        ):
+            result = handle(ctx)
+        assert "Duplicate" in result
 
 
 # ---------------------------------------------------------------------------

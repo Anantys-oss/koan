@@ -47,6 +47,18 @@ from app.rebase_pr import (
 from app.claude_step import _is_permission_error, check_existing_ci, wait_for_ci
 
 
+@pytest.fixture(autouse=True)
+def _noop_internal_refactor():
+    """Stub the pre-gate internal refactor pass so rebase tests never invoke
+    Claude. Individual tests can re-patch it to assert it is called."""
+    from app.refactor_step import RefactorResult
+    with patch(
+        "app.rebase_pr.run_internal_refactor_pass",
+        return_value=RefactorResult(committed=False),
+    ) as m:
+        yield m
+
+
 # ---------------------------------------------------------------------------
 # parse_pr_url (from pr_review)
 # ---------------------------------------------------------------------------

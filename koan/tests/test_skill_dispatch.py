@@ -294,6 +294,27 @@ class TestBuildSkillCommand:
         cmd = self._build("recreate", "no url here")
         assert cmd is None
 
+    def test_refactor(self):
+        url = "https://github.com/sukria/koan/pull/42"
+        cmd = self._build("refactor", url)
+        assert cmd is not None
+        assert "app.refactor_pr" in cmd
+        assert url in cmd
+        assert "--project-path" in cmd
+        assert "--context" not in cmd
+
+    def test_refactor_with_context(self):
+        url = "https://github.com/sukria/koan/pull/42"
+        cmd = self._build("refactor", f"{url} focus on the tests")
+        assert cmd is not None
+        assert "app.refactor_pr" in cmd
+        assert "--context" in cmd
+        assert cmd[cmd.index("--context") + 1] == "focus on the tests"
+
+    def test_refactor_no_url(self):
+        cmd = self._build("refactor", "no url here")
+        assert cmd is None
+
     def test_ci_check(self):
         url = "https://github.com/sukria/koan/pull/42"
         cmd = self._build("ci_check", url)
