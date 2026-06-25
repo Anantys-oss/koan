@@ -116,7 +116,10 @@ def recover_orphaned_worktrees(koan_root: str, projects: list, instance: str = "
             continue
         try:
             entries = list(wt_dir.iterdir())
-        except OSError:
+        except OSError as e:
+            # A recovery skip means orphaned worktrees holding unpushed branches
+            # are never recovered — make the skip visible instead of silent.
+            log("error", f"  Could not scan worktrees in {name}: {e}")
             continue
         if not entries:
             continue

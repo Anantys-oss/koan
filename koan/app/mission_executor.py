@@ -1185,12 +1185,27 @@ def _run_iteration(
             try:
                 from app.config import get_worktree_isolation
                 if get_worktree_isolation():
-                    from app.worktree_manager import create_worktree
+                    from app.worktree_manager import create_worktree, setup_shared_deps
                     _worktree_info = create_worktree(project_path)
                     execution_cwd = _worktree_info.path
+                    # Match the parallel-session provisioning: symlink heavy
+                    # dependency dirs so dep-heavy missions can build in the
+                    # isolated worktree without re-installing.
+                    from app.projects_config import get_project_shared_deps
+                    _shared_deps = get_project_shared_deps(_dc_projects_config, project_name)
+                    if _shared_deps:
+                        setup_shared_deps(execution_cwd, project_path, _shared_deps)
                     log("worktree", f"Mission running in isolated worktree: {execution_cwd}")
             except Exception as e:
+                # Isolation was explicitly requested but could not be set up —
+                # surface the degraded (unisolated) run to the operator, don't
+                # just bury it in the log.
                 log("error", f"Worktree creation failed, falling back to project dir: {e}")
+                _run._notify(
+                    instance,
+                    f"⚠️ [{project_name}] Worktree isolation requested but setup failed "
+                    f"({e}) — mission running in the shared project dir.",
+                )
 
         # Capture git HEAD before execution for retry safety check
         pre_head = _run._get_git_head(execution_cwd)

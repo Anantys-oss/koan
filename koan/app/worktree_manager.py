@@ -316,7 +316,12 @@ def push_worktree_branch_or_preserve(
 
     try:
         branch_result = _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
-        current_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
+        # A directory that is not a valid git worktree (corrupt or non-git
+        # leftover) cannot be holding unpushed commits — prune it rather than
+        # preserving + re-notifying the operator on every startup forever.
+        if branch_result.returncode != 0:
+            return True, "not a valid git worktree"
+        current_branch = branch_result.stdout.strip()
 
         # Determine whether the worktree HEAD advanced past its starting point.
         has_commits = False
@@ -325,8 +330,12 @@ def push_worktree_branch_or_preserve(
             # On any error, assume commits exist (fail-safe toward preserving).
             has_commits = head.returncode != 0 or head.stdout.strip() != initial_commit
         else:
-            ahead = _run_git(["rev-list", "--count", "@{u}..HEAD"])
-            has_commits = ahead.returncode != 0 or int(ahead.stdout.strip() or "0") > 0
+            # No known starting commit (startup orphan recovery). Compare HEAD
+            # against the repo's base branch rather than @{u}: a freshly-created
+            # session branch has no upstream, so @{u}..HEAD would error and
+            # falsely report new commits — pushing an empty branch to the remote
+            # every startup.
+            has_commits = _head_ahead_of_base(_run_git)
     except (subprocess.SubprocessError, OSError, ValueError) as e:
         # Could not determine state — preserve to be safe.
         return False, f"branch/commit check failed: {e}"
@@ -347,6 +356,27 @@ def push_worktree_branch_or_preserve(
     if push.returncode != 0:
         return False, f"push failed: {(push.stderr or '').strip()}"
     return True, f"pushed {current_branch}"
+
+
+def _head_ahead_of_base(_run_git) -> bool:
+    """Return True if the worktree HEAD has commits beyond the repo base branch.
+
+    Resolves the base branch (origin/main, main, origin/master, master) and
+    counts commits in ``base..HEAD``. An unmodified session branch sits exactly
+    at base, so the count is 0 and the worktree is genuinely empty. When no base
+    branch can be resolved, conservatively reports True so unpushed work is never
+    silently dropped.
+    """
+    for base in ("origin/main", "main", "origin/master", "master"):
+        verify = _run_git(["rev-parse", "--verify", "--quiet", base])
+        if verify.returncode != 0:
+            continue
+        count = _run_git(["rev-list", "--count", f"{base}..HEAD"])
+        if count.returncode != 0:
+            continue
+        return int(count.stdout.strip() or "0") > 0
+    # No base branch resolvable — be conservative and assume there are commits.
+    return True
 
 
 def list_worktrees(project_path: str) -> List[WorktreeInfo]:
