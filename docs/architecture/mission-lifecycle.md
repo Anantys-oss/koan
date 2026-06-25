@@ -48,6 +48,20 @@ into `workspace/`).
 6. Post-mission reflection, journal writing, PR creation, security review,
    auto-merge checks, and autoreview queuing run only when their conditions apply.
 
+### Pre-mission branch preparation
+
+Before a mission runs, `git_prep.prepare_project_branch()` fetches refs, stashes
+dirty state, checks out the project's base branch, and fast-forwards it to the
+remote — so each mission starts from a clean, up-to-date base.
+
+**Launching-repo exception:** when the project being prepared resolves to the
+same directory as `KOAN_ROOT` (a self-hosting setup where Kōan works on the repo
+that launched it) **and** that repo is currently on a custom branch, prep leaves
+it untouched instead of switching to the base branch. This lets an operator
+check out a development branch and test it without Kōan resetting it to `main`.
+The exception applies only to the launching repo — every other managed project
+still resets to its base branch before each mission.
+
 ## Direct Skill Missions
 
 `skill_dispatch.py` detects slash-command missions that can run without a full

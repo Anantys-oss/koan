@@ -568,6 +568,49 @@ class TestPrepareProjectBranch:
         assert result.previous_branch == "feature-branch"
         assert result.error is None
 
+    def test_launching_repo_on_custom_branch_stays_put(self):
+        """The launching repo on a custom branch is left where it is.
+
+        When project_path resolves to the same repo as koan_root and the repo
+        is on a non-base branch, prep must not checkout/reset to base — it
+        returns early so the operator can test their development branch.
+        """
+        stack, mocks = self._patch_all()  # rev-parse → "feature-branch"
+        with stack:
+            result = prepare_project_branch("/koan", "koan", "/koan")
+
+        assert result.success is True
+        assert result.base_branch == "feature-branch"
+        assert result.previous_branch == "feature-branch"
+        # No destructive git ran past the guard.
+        called_cmds = [c.args[0] for c in mocks["run_git"].call_args_list if c.args]
+        assert "checkout" not in called_cmds
+        assert "reset" not in called_cmds
+        assert "fetch" not in called_cmds
+
+    def test_launching_repo_on_base_branch_runs_normally(self):
+        """The launching repo already on the base branch prepares normally."""
+        side_effect = _make_run_git_side_effect({"rev-parse": (0, "main", "")})
+        stack, mocks = self._patch_all(run_git_side_effect=side_effect)
+        with stack:
+            result = prepare_project_branch("/koan", "koan", "/koan")
+
+        assert result.success is True
+        assert result.base_branch == "main"
+        called_cmds = [c.args[0] for c in mocks["run_git"].call_args_list if c.args]
+        assert "checkout" in called_cmds
+
+    def test_non_launching_repo_on_custom_branch_resets_to_base(self):
+        """A regular managed project on a custom branch still resets to base."""
+        stack, mocks = self._patch_all()  # rev-parse → "feature-branch"
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True
+        assert result.base_branch == "main"
+        called_cmds = [c.args[0] for c in mocks["run_git"].call_args_list if c.args]
+        assert "checkout" in called_cmds
+
     def test_dirty_working_tree_stashed(self):
         """Dirty working tree is stashed."""
         side_effect = _make_run_git_side_effect({
