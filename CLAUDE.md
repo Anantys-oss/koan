@@ -62,7 +62,7 @@ Communication between processes happens through shared files in `instance/` with
 **Core data & config:**
 
 - **`missions.py`** — Single source of truth for `missions.md` parsing (sections: Pending / In Progress / Done; French equivalents also accepted). Missions can be tagged `[project:name]`. Provides explicit lifecycle transitions: `start_mission()` (Pending→In Progress with stale-flush sanity enforcement), `complete_mission()`, `fail_mission()`.
-- **`projects_config.py`** — Project configuration loader for `projects.yaml`. `load_projects_config()`, `get_projects_from_config()`, `get_project_config()` (merged defaults + overrides), `get_project_auto_merge()`, `get_project_cli_provider()`, `get_project_models()`, `get_project_tools()`. Per-project overrides for CLI provider, model selection, and tool restrictions. `ensure_github_urls()` auto-populates `github_url` fields from git remotes at startup.
+- **`projects_config.py`** — Project configuration loader for `projects.yaml`. `load_projects_config()`, `get_projects_from_config()`, `get_project_config()` (merged defaults + overrides), `get_project_auto_merge()`, `get_project_cli_provider()`, `get_project_models()`, `get_project_tools()`. Per-project overrides for CLI provider, model selection, and tool restrictions. `apply_project_patch()` writes allow-listed, type-coerced per-project scalar overrides (via `EDITABLE_PROJECT_FIELDS`) through `save_projects_config()` and invalidates the cache — used by the dashboard Projects-form tab. `ensure_github_urls()` auto-populates `github_url` fields from git remotes at startup.
 - **`projects_migration.py`** — One-shot migration from env vars (`KOAN_PROJECTS`/`KOAN_PROJECT_PATH`) to `projects.yaml`. Runs at startup if `projects.yaml` doesn't exist.
 - **`utils.py`** — File locking (thread + file locks), config loading, atomic writes, `get_branch_prefix()`, `get_known_projects()` (projects.yaml > KOAN_PROJECTS), `koan_tmp_dir()` (per-uid scratch/lock dir)
 - **`config.py`** — Centralized configuration loading and access: tool config, model selection, Claude CLI flag building, behavioral settings, auto-merge config
@@ -157,7 +157,8 @@ Communication between processes happens through shared files in `instance/` with
 - **`security_review.py`** — Differential security review on mission diffs: blast radius analysis, risk classification, journal logging. Runs before auto-merge decisions.
 - **`rename_project.py`** — CLI tool to rename a project across `projects.yaml` and all `instance/` files (missions, memory dir, journal files, JSON references). Dry-run by default, `--apply` to execute. Invoked via `make rename-project old=X new=Y [apply=1]`.
 - **`usage_service.py`** — Shared usage-payload builder (`build_usage_payload()` + week/month bucketing) used by both the dashboard and the REST API (`GET /v1/usage`).
-- **`log_reader.py`** — Shared log-tailing helpers (`tail_log()`, `read_logs()`) used by both the dashboard and the REST API (`GET /v1/logs`).
+- **`log_reader.py`** — Shared log-tailing helpers (`tail_log()`, `read_logs()`) used by both the dashboard and the REST API (`GET /v1/logs`). Returns dict-shaped lines (`{n, text, source}`); the dashboard `/logs` template reads `line.text`.
+- **`conversation_history.py`** — JSONL chat-history persistence for the dashboard chat tab: `save_conversation_message()`, `load_recent_history()`, `format_conversation_history()`, `compact_history()`. The dashboard route `GET /chat/history` reloads recent turns so the chat UI survives a page reload. Dashboard config routes: `GET/POST /api/projects/<name>` (structured project-override form, via `apply_project_patch`), `PUT /api/config/setting` (allow-listed single-key `config.yaml` edits).
 
 **Web dashboard** (`koan/app/dashboard/`):
 
