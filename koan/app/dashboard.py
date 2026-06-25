@@ -2563,11 +2563,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
-        print(
-            f"[dashboard] WARNING: Binding to {args.host} exposes the dashboard "
-            f"to the network. No authentication or rate limiting is configured.",
-            file=sys.stderr,
-        )
+        if DASHBOARD_PWD:
+            print(
+                f"[dashboard] Binding to {args.host} — protected by "
+                f"KOAN_DASHBOARD_PWD passphrase gate.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[dashboard] WARNING: Binding to {args.host} exposes the dashboard "
+                f"to the network. Set KOAN_DASHBOARD_PWD to require a passphrase.",
+                file=sys.stderr,
+            )
 
     print(f"[dashboard] Starting on http://{args.host}:{args.port}")
     print(f"[dashboard] Instance: {INSTANCE_DIR}")

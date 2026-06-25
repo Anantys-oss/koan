@@ -93,8 +93,11 @@ no shell steps, no onboarding wizard. On boot the entrypoint:
 > The dashboard binds to a public host, so it is locked behind a single shared
 > passphrase: the first visit shows a login page, and the passphrase unlocks a
 > browser session. **If the passphrase is unset, the dashboard refuses to
-> start** (rather than going world-open). Override the port with
-> `KOAN_DASHBOARD_PORT` if needed (defaults to `PORT`, then `5000`).
+> start** (rather than going world-open). The dashboard listens on **port
+> `5000`** (override with `KOAN_DASHBOARD_PORT`); Railway's injected `$PORT` is
+> ignored on purpose so the public domain's target port stays stable. In
+> Railway → service → **Settings → Networking**, generate a domain and set its
+> target port to **5000**.
 
 ---
 
