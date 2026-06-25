@@ -4012,3 +4012,41 @@ class TestEnqueueCiCheckConfigGate:
             )
         assert "disabled" in result.lower()
         assert any("disabled" in a.lower() for a in actions)
+
+
+class TestRebaseOutcomeGating:
+    def test_success_emits_single_outcome_with_pr_url(self, monkeypatch):
+        import app.rebase_pr as rp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+        monkeypatch.setattr(rp, "_run_rebase_impl", lambda *a, **k: (True, "done"))
+        ok, summary = rp.run_rebase("o", "r", "7", "/tmp/x")
+        assert ok is True
+        assert sent == ["✅ Rebased https://github.com/o/r/pull/7"]
+
+    def test_failure_emits_outcome_with_context(self, monkeypatch):
+        import app.rebase_pr as rp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+        monkeypatch.setattr(rp, "_run_rebase_impl", lambda *a, **k: (False, "boom"))
+        ok, summary = rp.run_rebase("o", "r", "7", "/tmp/x")
+        assert ok is False
+        assert len(sent) == 1
+        assert "https://github.com/o/r/pull/7" in sent[0] and "boom" in sent[0]
+
+    def test_progress_suppressed_under_normal(self, monkeypatch):
+        import app.rebase_pr as rp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+
+        def _impl(owner, repo, pr_number, project_path, notify_fn=None, **k):
+            notify_fn("Reading PR #7...")
+            return True, "done"
+
+        monkeypatch.setattr(rp, "_run_rebase_impl", _impl)
+        rp.run_rebase("o", "r", "7", "/tmp/x")
+        assert not any("..." in m for m in sent)  # progress gated
+        assert sent == ["✅ Rebased https://github.com/o/r/pull/7"]

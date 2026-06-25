@@ -50,13 +50,32 @@ without rewriting YAML — handy for temporary debugging.
 | Event | `normal` | `debug` |
 |-------|----------|---------|
 | Mission start (`🚀 … Starting/Autonomous/Skill`) | log only | sent |
-| Tracked skill completion (`/review` `/fix` `/rebase` `/plan` `/implement`) | one short line: `✅ [project] 🔍 Reviewed <pr-url>` | verbose summary |
+| Skill-runner **progress** (`Reviewing PR…`, `Analyzing code changes…`, `Posting review…`, `🧠 Planning…`, `🔍 Checking…`) | log only | sent |
+| Tracked skill completion (`/review` `/fix` `/rebase` `/plan` `/implement`) | one short outcome line: `✅ Reviewed <pr-url>` | progress + verbose summary |
 | Operator-initiated mission success (a user/Telegram-queued task with a real title) | one short line: `✅ [project] Done: <title>` | sent with journal summary |
 | Autonomous-run success (no mission title) | log only | sent with journal summary |
 | Mission failure | sent (short form) | sent with failure context |
 | GitHub/Jira per-mention queue line | log only | sent |
 | GitHub/Jira queued aggregate | `📬 GitHub: N new missions queued.` (when N > 0) | not emitted (per-mention lines already shown) |
+| GitHub notification/dispatch banners (`Processing N notification(s)…`) | log only | sent |
 | Command replies | always | always |
+
+### Progress vs. outcome (skill runners)
+
+Skill runners (`/review`, `/rebase`, `/recreate`, `/squash`, `/checkup`, `/plan`,
+`/check`, `/ai`, CI fixes) emit two kinds of message:
+
+- **Progress** — intermediate step narration (`Reviewing PR #2098…`, `Analyzing
+  code changes…`, `Posting review…`). Routed through a debug-gated notifier:
+  always logged, forwarded to chat **only** in `debug`.
+- **Outcome** — exactly one terminal line per mission carrying the PR/issue URL
+  on success (`✅ Reviewed https://github.com/o/r/pull/2098`) or a short context
+  string on failure (`❌ Rebase failed https://github.com/o/r/pull/7: <reason>`).
+  Always logged **and** sent, regardless of `messaging.level`.
+
+So under `normal` a PR review produces a single chat line — the PR URL — instead
+of the four-line play-by-play. Switch to `debug` to see every step again; nothing
+was lost, the suppressed progress is in the log.
 
 ## One-time notice
 

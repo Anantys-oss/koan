@@ -643,3 +643,32 @@ class TestRunTests:
             result = run_project_tests("/project")
             assert result["passed"] is False
             assert result["details"] == "command not found"
+
+
+class TestRecreateOutcomeGating:
+    def test_success_outcome_uses_new_pr_url(self, monkeypatch):
+        import app.recreate_pr as rp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+
+        def _impl(owner, repo, pr_number, project_path, notify_fn=None, **k):
+            notify_fn("Recreating PR #7...")
+            from app.messaging_level import notify_outcome
+            notify_outcome("✅ Recreated https://github.com/o/r/pull/42")
+            return True, "recreated"
+
+        monkeypatch.setattr(rp, "_run_recreate_impl", _impl)
+        ok, _ = rp.run_recreate("o", "r", "7", "/tmp/x")
+        assert ok is True
+        assert sent == ["✅ Recreated https://github.com/o/r/pull/42"]
+
+    def test_failure_outcome_with_context(self, monkeypatch):
+        import app.recreate_pr as rp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+        monkeypatch.setattr(rp, "_run_recreate_impl", lambda *a, **k: (False, "boom"))
+        ok, _ = rp.run_recreate("o", "r", "7", "/tmp/x")
+        assert ok is False
+        assert sent == ["❌ Recreate failed https://github.com/o/r/pull/7: boom"]

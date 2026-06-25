@@ -67,6 +67,29 @@ def test_set_and_clear_override(tmp_path, monkeypatch):
     assert ml.get_messaging_level() == "normal"
 
 
+def test_progress_notify_logs_always_sends_only_in_debug(monkeypatch):
+    logged, sent = [], []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: logged.append((cat, msg)))
+    monkeypatch.setattr(ml, "is_debug", lambda: False)
+    notify = ml.progress_notify(lambda m: sent.append(m), log_category="review")
+    notify("Reviewing PR #1...")
+    assert logged == [("review", "Reviewing PR #1...")]
+    assert sent == []  # suppressed under normal
+
+    monkeypatch.setattr(ml, "is_debug", lambda: True)
+    notify("Posting review on PR #1...")
+    assert sent == ["Posting review on PR #1..."]  # forwarded under debug
+
+
+def test_notify_outcome_always_logs_and_sends(monkeypatch):
+    logged, sent = [], []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: logged.append((cat, msg)))
+    monkeypatch.setattr(ml, "is_debug", lambda: False)  # even under normal
+    ml.notify_outcome("✅ Reviewed https://github.com/o/r/pull/1", lambda m: sent.append(m))
+    assert sent == ["✅ Reviewed https://github.com/o/r/pull/1"]
+    assert logged and logged[0][1].startswith("✅ Reviewed")
+
+
 # --- Phase 2: skill handler ---
 
 

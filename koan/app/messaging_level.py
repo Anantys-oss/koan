@@ -125,3 +125,56 @@ def debug_only(msg: str, send_fn, *, log_category: str = "bridge") -> None:
     _log(log_category, msg)
     if is_debug():
         send_fn()
+
+
+class _ProgressNotifier:
+    """notify_fn-compatible callable for *progress* messages.
+
+    Every message is logged unconditionally; it is forwarded to the user
+    (``raw_send``) only when messaging.level == "debug". ``raw_send`` exposes the
+    un-gated underlying sink (or None for the send_telegram default) so
+    notify_outcome() can deliver the outcome line through the same sink without
+    inheriting the debug gating.
+    """
+
+    def __init__(self, send_fn, log_category: str):
+        self.raw_send = send_fn
+        self._log_category = log_category
+
+    def __call__(self, msg: str) -> None:
+        fn = self.raw_send
+        if fn is None:
+            from app.notify import send_telegram
+            fn = send_telegram
+        debug_only(msg, lambda: fn(msg), log_category=self._log_category)
+
+
+def progress_notify(send_fn=None, *, log_category: str = "bridge"):
+    """Return a progress notifier (gated behind messaging.level=debug).
+
+    Drop-in replacement for a raw send_telegram default in skill runners —
+    intermediate progress lines become debug-only while the final outcome goes
+    through notify_outcome().
+    """
+    return _ProgressNotifier(send_fn, log_category)
+
+
+def notify_outcome(msg: str, send_fn=None) -> None:
+    """Always log AND send msg.
+
+    Use for the single success/failure outcome line a mission emits (PR url /
+    issue url / short failure context). Unlike progress_notify(), this is never
+    gated by messaging.level — the outcome is always shown.
+
+    ``send_fn`` may be a progress_notify() notifier; in that case the outcome is
+    delivered through its un-gated underlying sink so passing the runner's
+    progress notifier here does the right thing. A plain callable is invoked
+    directly; None falls back to ``send_telegram``.
+    """
+    _log("outcome", msg)
+    if isinstance(send_fn, _ProgressNotifier):
+        send_fn = send_fn.raw_send
+    if send_fn is None:
+        from app.notify import send_telegram
+        send_fn = send_telegram
+    send_fn(msg)

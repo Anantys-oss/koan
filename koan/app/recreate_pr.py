@@ -47,6 +47,36 @@ def run_recreate(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
 ) -> Tuple[bool, str]:
+    """Run the recreate pipeline and emit a single outcome line.
+
+    Intermediate progress is gated behind messaging.level=debug; the success
+    outcome (carrying the new PR URL) and failure outcome always reach chat.
+    The success outcome is emitted inside the impl where the new PR URL is known.
+    """
+    if notify_fn is None:
+        from app.messaging_level import progress_notify
+        notify_fn = progress_notify(log_category="recreate")
+
+    success, summary = _run_recreate_impl(
+        owner, repo, pr_number, project_path,
+        notify_fn=notify_fn, skill_dir=skill_dir,
+    )
+
+    if not success:
+        from app.messaging_level import notify_outcome
+        pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+        notify_outcome(f"❌ Recreate failed {pr_url}: {summary}", notify_fn)
+    return success, summary
+
+
+def _run_recreate_impl(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    project_path: str,
+    notify_fn=None,
+    skill_dir: Optional[Path] = None,
+) -> Tuple[bool, str]:
     """Execute the recreation pipeline for a pull request.
 
     Unlike run_rebase which preserves the branch history, this creates
@@ -64,10 +94,6 @@ def run_recreate(
     Returns:
         (success, summary) tuple.
     """
-    if notify_fn is None:
-        from app.notify import send_telegram
-        notify_fn = send_telegram
-
     actions_log: List[str] = []
 
     # -- Step 0: Resolve actual PR location (cross-owner support) ---------------
@@ -223,6 +249,11 @@ def run_recreate(
     summary = f"PR #{pr_number} recreated.\n" + "\n".join(
         f"- {a}" for a in actions_log
     )
+    from app.messaging_level import notify_outcome
+    new_pr_url = push_result.get("new_pr_url") or (
+        f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+    )
+    notify_outcome(f"✅ Recreated {new_pr_url}", notify_fn)
     return True, summary
 
 

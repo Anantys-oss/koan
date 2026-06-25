@@ -2470,8 +2470,8 @@ def run_review(
         errors = True
 
     if notify_fn is None:
-        from app.notify import send_telegram
-        notify_fn = send_telegram
+        from app.messaging_level import progress_notify
+        notify_fn = progress_notify(log_category="review")
 
     # ── Step 0: Resolve actual PR location (cross-owner support) ──────
     try:
@@ -2820,9 +2820,16 @@ def run_review(
             summary += f" Replied to {len(reply_results)} comment(s)."
         if closed:
             summary += f" PR closed: {close_reason or 'no reason provided'}."
+        from app.messaging_level import notify_outcome
+        pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+        verb = "Ultra reviewed" if ultra else "Reviewed"
+        notify_outcome(f"✅ {verb} {pr_url}", notify_fn)
         return True, summary, review_data
     else:
         detail = f" Error: {post_error}" if post_error else ""
+        from app.messaging_level import notify_outcome
+        pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+        notify_outcome(f"❌ Review failed {pr_url}{detail}", notify_fn)
         return False, f"Review generated but failed to post comment on PR #{pr_number}.{detail}", review_data
 
 

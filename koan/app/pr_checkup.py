@@ -136,6 +136,28 @@ def run_checkup(
     instance_dir: str,
     notify_fn=None,
 ) -> Tuple[bool, str]:
+    """Run a full PR checkup and emit a single outcome line.
+
+    Intermediate progress is gated behind messaging.level=debug; the final
+    verdict summary always reaches chat.
+    """
+    if notify_fn is None:
+        from app.messaging_level import progress_notify
+        notify_fn = progress_notify(log_category="checkup")
+
+    success, summary = _run_checkup_impl(koan_root, instance_dir, notify_fn=notify_fn)
+
+    from app.messaging_level import notify_outcome
+    prefix = "✅" if success else "❌"
+    notify_outcome(f"{prefix} {summary}", notify_fn)
+    return success, summary
+
+
+def _run_checkup_impl(
+    koan_root: str,
+    instance_dir: str,
+    notify_fn=None,
+) -> Tuple[bool, str]:
     """Run a full PR checkup across all configured projects.
 
     Scans all open PRs by the bot user, detects issues, and queues
@@ -144,10 +166,6 @@ def run_checkup(
     Returns:
         (success, summary) tuple.
     """
-    if notify_fn is None:
-        from app.notify import send_telegram
-        notify_fn = send_telegram
-
     instance_path = Path(instance_dir)
     missions_path = instance_path / "missions.md"
 

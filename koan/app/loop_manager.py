@@ -45,6 +45,16 @@ from app.run_log import log_safe as _log_loop, suppress_logged
 from app.utils import atomic_write
 
 
+def _progress_notifier():
+    """Return a progress_notify callable for loop-level dispatch banners.
+
+    Progress banners (e.g. 'Processing N GitHub notification(s)...') are logged
+    unconditionally but only forwarded to chat in messaging.level=debug.
+    """
+    from app.messaging_level import progress_notify
+    return progress_notify(log_category="loop")
+
+
 def _emit_queued_aggregate(source_label, count, emit=None):
     """In normal mode, emit one '📬 {source}: N new mission(s) queued.' line.
 

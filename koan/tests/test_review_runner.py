@@ -1456,6 +1456,32 @@ class TestRunReview:
         alerts = [str(c.args[0]) for c in mock_notify.call_args_list if c.args]
         assert any("couldn't be parsed" in a for a in alerts)
 
+    @patch("app.messaging_level.is_debug", return_value=False)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_normal_mode_single_outcome_with_pr_url(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
+        _mock_debug, pr_context, review_skill_dir,
+    ):
+        """Under normal mode (notify_fn defaulting to progress_notify), progress
+        lines are suppressed but exactly one outcome line carrying the canonical
+        PR URL is sent."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        sent = []
+        with patch("app.notify.send_telegram", lambda m, **k: sent.append(m)):
+            success, _summary, _rd = run_review(
+                "owner", "repo", "42", "/tmp/project",
+                notify_fn=None,  # default → progress_notify
+                skill_dir=review_skill_dir,
+            )
+        assert success is True
+        assert not any("..." in m for m in sent)  # progress gated under normal
+        assert any("https://github.com/owner/repo/pull/42" in m for m in sent)
+
     @patch("app.review_runner._reflect_findings", side_effect=lambda findings, *a, **kw: findings)
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")

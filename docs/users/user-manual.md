@@ -264,6 +264,8 @@ every cycle).
 
 By default Kōan's bridge runs in `normal` mode — quiet and operator-focused. Set `messaging.level: debug` in `config.yaml`, run `/messaging_level debug`, or export `KOAN_MESSAGING_LEVEL=debug` to restore the legacy chatty behavior. Precedence: env var > `/messaging_level` runtime override > `config.yaml` > `normal`.
 
+With `messaging.level=normal`, each skill mission emits a single status line — the PR/issue URL on success (e.g. `✅ Reviewed https://github.com/o/r/pull/2098`) or a short context string on failure — instead of the step-by-step play-by-play (`Reviewing PR…`, `Analyzing code changes…`, `Posting review…`). Switch to `debug` (`/messaging_level debug`) to see every intermediate progress line again; suppressed progress is always written to the log regardless.
+
 ### Branch Isolation & Reviewing Work
 
 Kōan **never commits to `main`**. All work happens in `koan/*` branches (the prefix is configurable). After completing a mission, Kōan typically:

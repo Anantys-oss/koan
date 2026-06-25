@@ -621,6 +621,38 @@ def run_rebase(
     skill_dir: Optional[Path] = None,
     min_severity: Optional[str] = None,
 ) -> Tuple[bool, str]:
+    """Run the rebase pipeline and emit a single outcome line.
+
+    Intermediate progress is gated behind messaging.level=debug (via the
+    progress_notify default); the success/failure outcome always reaches chat.
+    """
+    if notify_fn is None:
+        from app.messaging_level import progress_notify
+        notify_fn = progress_notify(log_category="rebase")
+
+    success, summary = _run_rebase_impl(
+        owner, repo, pr_number, project_path,
+        notify_fn=notify_fn, skill_dir=skill_dir, min_severity=min_severity,
+    )
+
+    from app.messaging_level import notify_outcome
+    pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
+    if success:
+        notify_outcome(f"✅ Rebased {pr_url}", notify_fn)
+    else:
+        notify_outcome(f"❌ Rebase failed {pr_url}: {summary}", notify_fn)
+    return success, summary
+
+
+def _run_rebase_impl(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    project_path: str,
+    notify_fn=None,
+    skill_dir: Optional[Path] = None,
+    min_severity: Optional[str] = None,
+) -> Tuple[bool, str]:
     """Execute the rebase pipeline for a pull request.
 
     Steps:
@@ -644,10 +676,6 @@ def run_rebase(
     Returns:
         (success, summary) tuple.
     """
-    if notify_fn is None:
-        from app.notify import send_telegram
-        notify_fn = send_telegram
-
     actions_log: List[str] = []
 
     # ── Step 0: Resolve actual PR location (cross-owner support) ──────
