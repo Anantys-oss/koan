@@ -897,6 +897,7 @@ def _run_iteration(
     # fail there, so skip it for the org-wide sentinel.
     from app.constants import ORG_WIDE_PROJECT
     is_org_wide = project_name == ORG_WIDE_PROJECT
+    prep = None
     if is_org_wide:
         log("git", f"Org-wide mission — running at workspace root ({project_path}); "
                     "skipping branch prep (mission manages git per repo)")
@@ -1186,7 +1187,14 @@ def _run_iteration(
                 from app.config import get_worktree_isolation
                 if get_worktree_isolation():
                     from app.worktree_manager import create_worktree, setup_shared_deps
-                    _worktree_info = create_worktree(project_path)
+                    # Base the worktree on the SAME branch every other pipeline
+                    # step resolved (prep.base_branch — config/auto-detected),
+                    # not a hardcoded "main". Otherwise a repo on master/develop
+                    # gets a worktree off the wrong commit and the PR diff is
+                    # computed against the wrong base. prep is None only for the
+                    # org-wide sentinel (branch prep skipped); fall back to "main".
+                    _wt_base_branch = prep.base_branch if prep else "main"
+                    _worktree_info = create_worktree(project_path, base_branch=_wt_base_branch)
                     execution_cwd = _worktree_info.path
                     # Match the parallel-session provisioning: symlink heavy
                     # dependency dirs so dep-heavy missions can build in the
@@ -1376,9 +1384,15 @@ def _run_iteration(
             post_result = run_post_mission(
                 instance_dir=instance,
                 project_name=project_name,
-                # Post-mission git work (pending archival, reflection, auto-merge)
+                # Post-mission git work (pending archival, reflection, quality)
                 # runs where the mission ran — the worktree when isolation is on.
                 project_path=execution_cwd,
+                # Auto-merge is the exception: it checks out base_branch, which
+                # cannot be done in the worktree while the main checkout already
+                # holds base_branch (git forbids the same branch in two
+                # worktrees). Run the merge against the main repo instead — the
+                # feature branch ref is shared, so the merge resolves there.
+                merge_path=project_path,
                 run_num=run_num,
                 exit_code=claude_exit,
                 stdout_file=stdout_file,

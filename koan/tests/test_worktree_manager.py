@@ -94,6 +94,31 @@ class TestCreateWorktree:
         wt = create_worktree(git_repo, branch_name="feature/custom")
         assert wt.branch == "feature/custom"
 
+    def test_bases_worktree_on_requested_base_branch(self, git_repo):
+        """A non-main base_branch is honored: the worktree starts from that
+        branch's commit, not from main. Guards against the call site defaulting
+        to 'main' and ignoring a repo's configured/detected base branch."""
+        # Create a 'develop' branch with its own commit, distinct from main.
+        subprocess.run(
+            ["git", "checkout", "-b", "develop"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        (Path(git_repo) / "dev.txt").write_text("develop\n")
+        subprocess.run(["git", "add", "."], cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "develop commit"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        develop_sha = subprocess.run(
+            ["git", "rev-parse", "develop"],
+            cwd=git_repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # Move back to main so it is not the current branch.
+        subprocess.run(["git", "checkout", "main"], cwd=git_repo, capture_output=True, check=True)
+
+        wt = create_worktree(git_repo, base_branch="develop")
+        assert wt.commit == develop_sha
+
     def test_concurrent_creation(self, git_repo):
         """Multiple worktrees can be created for the same project."""
         wt1 = create_worktree(git_repo)
