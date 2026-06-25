@@ -9,14 +9,16 @@ readable in Telegram and other chat channels.
 
 | Command | Window |
 |---|---|
-| `/report` | week (7 days) — default |
+| `/report` | both week (7 days) **and** month (30 days) — default |
 | `/report --week` | week (7 days) |
 | `/report --month` | month (30 days) |
+| `/report --week --month` | both windows |
 | `/weekly_report` | week (7 days) |
 | `/monthly_report` | month (30 days) |
 
-An explicit `--week` / `--month` flag always overrides the alias default (e.g.
-`/monthly_report --week` reports a week).
+A plain `/report` with no flag emits two stacked digests (weekly first, then
+monthly). Add `--week` or `--month` to narrow it to a single window. The
+`/weekly_report` and `/monthly_report` aliases always report their own window.
 
 ## Metrics
 

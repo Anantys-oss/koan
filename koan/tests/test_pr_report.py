@@ -233,32 +233,41 @@ def _ctx(tmp_path, command_name="report", args=""):
     )
 
 
-def test_handler_default_week(tmp_path):
+def test_handler_default_reports_both_windows(tmp_path):
+    from skills.core.report import handler as h
+    with patch("app.pr_report.build_report", side_effect=["WEEK", "MONTH"]) as mock_build:
+        assert h.handle(_ctx(tmp_path, "report")) == "WEEK\n\nMONTH"
+    assert [c.args[1] for c in mock_build.call_args_list] == [7, 30]
+
+
+def test_handler_weekly_alias_selects_7d_only(tmp_path):
     from skills.core.report import handler as h
     with patch("app.pr_report.build_report", return_value="OK") as mock_build:
-        assert h.handle(_ctx(tmp_path, "report")) == "OK"
-    assert mock_build.call_args[0][1] == 7
+        assert h.handle(_ctx(tmp_path, "weekly_report")) == "OK"
+    assert [c.args[1] for c in mock_build.call_args_list] == [7]
 
 
-def test_handler_monthly_alias_selects_30d(tmp_path):
+def test_handler_monthly_alias_selects_30d_only(tmp_path):
     from skills.core.report import handler as h
     with patch("app.pr_report.build_report", return_value="OK") as mock_build:
         h.handle(_ctx(tmp_path, "monthly_report"))
-    assert mock_build.call_args[0][1] == 30
+    assert [c.args[1] for c in mock_build.call_args_list] == [30]
 
 
-def test_handler_explicit_flag_overrides_alias(tmp_path):
+def test_handler_explicit_week_flag_single_window(tmp_path):
     from skills.core.report import handler as h
     with patch("app.pr_report.build_report", return_value="OK") as mock_build:
-        # monthly_report alias but --week flag wins
-        h.handle(_ctx(tmp_path, "monthly_report", args="--week"))
-    assert mock_build.call_args[0][1] == 7
+        h.handle(_ctx(tmp_path, "report", args="--month"))
+    assert [c.args[1] for c in mock_build.call_args_list] == [30]
 
 
-def test_resolve_days_matrix():
-    from skills.core.report.handler import _resolve_days
-    assert _resolve_days("report", "") == 7
-    assert _resolve_days("weekly_report", "") == 7
-    assert _resolve_days("monthly_report", "") == 30
-    assert _resolve_days("report", "--month") == 30
-    assert _resolve_days("monthly_report", "--week") == 7
+def test_resolve_windows_matrix():
+    from skills.core.report.handler import _resolve_windows
+    assert _resolve_windows("report", "") == [7, 30]
+    assert _resolve_windows("weekly_report", "") == [7]
+    assert _resolve_windows("monthly_report", "") == [30]
+    assert _resolve_windows("report", "--month") == [30]
+    assert _resolve_windows("report", "--week") == [7]
+    assert _resolve_windows("report", "--week --month") == [7, 30]
+    # Aliases pin their window regardless of flags.
+    assert _resolve_windows("monthly_report", "--week") == [30]

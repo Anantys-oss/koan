@@ -137,7 +137,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/quota [N]` | `/q` | Check LLM quota (live), or override remaining % |
 | `/usage` | — | Detailed quota and progress |
 | `/metrics` | — | Mission success rates and reliability stats |
-| `/report [--week\|--month]` | `/weekly_report`, `/monthly_report` | PR activity report (created, merged %, interacted) per-project + global |
+| `/report [--week\|--month]` | `/weekly_report`, `/monthly_report` | PR activity report (created, merged %, interacted) per-project + global; defaults to both weekly and monthly |
 | `/doctor` | — | Diagnostic self-checks; `--fix` auto-repairs, `--full` adds connectivity |
 | `/models` | `/model` | Show resolved model config for the active CLI provider |
 | `/config_check` | `/cfgcheck`, `/configcheck` | Detect drift between instance/config.yaml and the template |
