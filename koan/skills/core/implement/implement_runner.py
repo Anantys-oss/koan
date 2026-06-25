@@ -456,7 +456,7 @@ def _run_plan_review_gate(
         (False, msg) — block (only on catastrophic internal error).
     """
     from app.plan_runner import (
-        ASSUMPTIONS_CRITICAL, ASSUMPTIONS_OK,
+        ASSUMPTIONS_CRITICAL, ASSUMPTIONS_OK, ASSUMPTIONS_REVIEWER_ERROR,
         improve_plan, is_simple_plan, review_plan, review_plan_assumptions,
     )
 
@@ -494,7 +494,7 @@ def _run_plan_review_gate(
                 except Exception:
                     logger.warning("Failed to send assumption-block notification", exc_info=True)
             return (False, f"{label.capitalize()}: {assumptions_reason}")
-        elif assumptions_status != ASSUMPTIONS_OK:
+        elif assumptions_status == ASSUMPTIONS_REVIEWER_ERROR:
             logger.warning(
                 "Plan-review gate: assumptions reviewer error — failing open: %s",
                 assumptions_reason,
