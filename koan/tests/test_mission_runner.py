@@ -3932,3 +3932,34 @@ class TestSkillOutcomeCapture:
         )
 
         assert result["success"] is True
+
+
+class TestProvenanceWrapper:
+    def test_provenance_step_records_file(self, tmp_path):
+        import app.mission_runner as mission_runner
+
+        inst = tmp_path / "instance"
+        inst.mkdir()
+
+        # record_provenance is the thin wrapper; drive its inner helpers.
+        with patch("app.provenance.get_changed_files", return_value=["pkg/mod.py"]), \
+             patch("app.provenance._head_sha", return_value="abc123"), \
+             patch("app.provenance._resolve_base_branch", return_value="main"):
+            mission_runner.record_provenance(
+                str(inst), "my-toolkit", "/repo", "Wire provenance"
+            )
+
+        path = inst / ".mission-provenance.jsonl"
+        assert path.exists()
+        rec = json.loads(path.read_text().splitlines()[0])
+        assert rec["files"] == ["pkg/mod.py"]
+        assert rec["mission"] == "Wire provenance"
+        assert rec["commit_sha"] == "abc123"
+
+    def test_provenance_wrapper_never_raises(self, tmp_path):
+        import app.mission_runner as mission_runner
+
+        # An internal failure must be swallowed (pipeline must not break).
+        with patch("app.provenance.record_provenance", side_effect=RuntimeError("boom")):
+            # Should not raise.
+            mission_runner.record_provenance(str(tmp_path), "proj", "/repo", "m")
