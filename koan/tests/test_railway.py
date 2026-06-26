@@ -116,6 +116,39 @@ def test_dashboard_allowed_railway_blank_pwd(monkeypatch):
     assert railway.dashboard_allowed() is False
 
 
+# --- api_allowed gate (#2170 item D) ----------------------------------------
+
+def test_api_allowed_off_railway(monkeypatch):
+    """Off Railway, the API is always allowed regardless of token."""
+    monkeypatch.delenv("KOAN_DEPLOY", raising=False)
+    monkeypatch.delenv("KOAN_API_TOKEN", raising=False)
+    assert railway.api_allowed() is True
+
+
+def test_api_allowed_railway_with_env_token(monkeypatch):
+    """On Railway with KOAN_API_TOKEN set, the API is allowed."""
+    monkeypatch.setenv("KOAN_DEPLOY", "railway")
+    monkeypatch.setenv("KOAN_API_TOKEN", "secret")
+    assert railway.api_allowed() is True
+
+
+def test_api_allowed_railway_without_token(monkeypatch):
+    """On Railway without any token, the API must be refused."""
+    monkeypatch.setenv("KOAN_DEPLOY", "railway")
+    monkeypatch.delenv("KOAN_API_TOKEN", raising=False)
+    monkeypatch.setattr("app.config.get_api_token", lambda: "", raising=False)
+    assert railway.api_allowed() is False
+
+
+def test_api_allowed_railway_with_config_token(monkeypatch):
+    """A token set via api.token in config (not the env var) is the opt-in:
+    api_allowed must honor it, mirroring config.get_api_token resolution."""
+    monkeypatch.setenv("KOAN_DEPLOY", "railway")
+    monkeypatch.delenv("KOAN_API_TOKEN", raising=False)
+    monkeypatch.setattr("app.config.get_api_token", lambda: "config-token", raising=False)
+    assert railway.api_allowed() is True
+
+
 # --- has_instance / env path ------------------------------------------------
 
 def test_has_instance_true_via_env(tmp_path, monkeypatch):
