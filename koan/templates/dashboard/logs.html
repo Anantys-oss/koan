@@ -85,7 +85,7 @@
                 }
                 render();
             })
-            .catch(() => { meta.textContent = 'Failed to load logs'; });
+            .catch(e => { console.warn('logs load failed:', e); meta.textContent = 'Failed to load logs'; });
     }
 
     function debouncedFilter() {

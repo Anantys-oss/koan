@@ -400,6 +400,13 @@ def api_project_get(name):
     return jsonify({"ok": True, "name": name, "config": editable})
 
 
+@config_bp.route("/api/providers", methods=["GET"])
+def api_providers():
+    """Return registered CLI provider names so the form stays in sync."""
+    from app.provider import known_providers
+    return jsonify({"ok": True, "providers": known_providers()})
+
+
 # Dotted config.yaml keys the Settings sub-tab may edit, with value type.
 EDITABLE_SETTINGS = {
     "dashboard.nickname": str,
@@ -408,6 +415,31 @@ EDITABLE_SETTINGS = {
     "review_dispatch.enabled": bool,
     "auto_update.enabled": bool,
 }
+
+
+@config_bp.route("/api/config/settings", methods=["GET"])
+def api_config_settings_get():
+    """Return current values for the allow-listed Settings keys.
+
+    Lets the Settings sub-tab hydrate its controls from the live config.yaml
+    instead of rendering every toggle unchecked regardless of real state.
+    """
+    from app.utils import load_config
+    cfg = load_config()
+    values = {}
+    for dotted, expected in EDITABLE_SETTINGS.items():
+        node = cfg
+        for part in dotted.split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+            if node is None:
+                break
+        if node is None:
+            values[dotted] = False if expected is bool else ""
+        elif expected is bool:
+            values[dotted] = bool(node)
+        else:
+            values[dotted] = node
+    return jsonify({"ok": True, "settings": values})
 
 
 @config_bp.route("/api/config/setting", methods=["PUT"])
