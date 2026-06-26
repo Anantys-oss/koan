@@ -7,6 +7,7 @@ blocking the entire startup.
 Called from run.py's main_loop() during process initialization.
 """
 
+import contextlib
 import os
 import time
 from pathlib import Path
@@ -338,6 +339,19 @@ def cleanup_memory(instance: str):
             log("health", f"Global memory capped: {name} ({value} lines removed)")
 
 
+def _prune_old_missions_backups(missions_path: Path, keep: int = 5) -> None:
+    """Keep only the most recent ``keep`` ``.missions.md.bak-*`` backups.
+
+    Backups are timestamped (``YYYYMMDD-HHMMSS``) so lexical sort is
+    chronological. Prevents a flapping/corrupt file from accumulating an
+    unbounded set of backups in ``instance/``.
+    """
+    backups = sorted(missions_path.parent.glob(".missions.md.bak-*"))
+    for old in backups[:-keep]:
+        with contextlib.suppress(OSError):
+            old.unlink()
+
+
 def prune_missions_done(instance: str):
     """Validate, self-heal, and size-bound missions.md at startup.
 
@@ -382,10 +396,24 @@ def prune_missions_done(instance: str):
         if serious:
             ts = time.strftime("%Y%m%d-%H%M%S")
             backup = missions_path.with_name(f".missions.md.bak-{ts}")
+            backup_ok = False
             try:
                 backup.write_text(content)
+                backup_ok = backup.exists()
             except OSError as exc:
                 log("warn", f"Could not back up corrupt missions.md: {exc}")
+            if not backup_ok:
+                # Backup is the only safeguard before the destructive
+                # atomic_write below; without it, repairing would overwrite
+                # the sole copy of the data. Leave the file untouched and
+                # surface a hard error instead of silently destroying it.
+                log(
+                    "warn",
+                    "missions.md is corrupt but backup failed — leaving file "
+                    "untouched, skipping repair",
+                )
+                return
+            _prune_old_missions_backups(missions_path)
             summary = "; ".join(serious[:5])
             log("warn", f"missions.md structural corruption detected and repaired: {summary}")
             try:

@@ -1802,7 +1802,12 @@ def validate_missions_structure(content: str) -> List[str]:
     - Each required canonical section is present exactly once.
     - No ``## `` header is glued to a preceding non-blank line (the
       production corruption mode from issue #2085).
-    - Every ``- `` item line falls under a recognised section.
+    - Every ``- `` item line falls under some section header.
+
+    Content inside ```` ``` ```` code fences is treated as mission body
+    text, never structure — fenced ``## `` / ``- `` lines are ignored.
+    Items under non-canonical sections (e.g. ``## Ideas``) are not flagged
+    as orphans; only items appearing before any section header are.
     """
     issues: List[str] = []
 
@@ -1812,21 +1817,29 @@ def validate_missions_structure(content: str) -> List[str]:
 
     lines = content.splitlines()
     seen: Dict[str, int] = {}
-    current = None
+    seen_any_header = False
+    in_code_fence = False
     prev_line = None
 
     for line in lines:
         stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+            prev_line = line
+            continue
+        if in_code_fence:
+            prev_line = line
+            continue
         if stripped.startswith("## "):
             if prev_line is not None and prev_line.strip() != "":
                 issues.append(
                     f"Section header glued to preceding item (missing blank line): {stripped!r}"
                 )
             key = classify_section(stripped[3:].strip())
-            current = key
+            seen_any_header = True
             if key:
                 seen[key] = seen.get(key, 0) + 1
-        elif stripped.startswith("- ") and current is None:
+        elif stripped.startswith("- ") and not seen_any_header:
             issues.append(f"Item line outside any section: {stripped[:60]!r}")
         prev_line = line
 
@@ -1850,25 +1863,42 @@ def repair_missions_structure(content: str) -> str:
     - Collapse runaway blank lines via :func:`normalize_content`.
 
     Items, ideas, and any non-canonical content are preserved verbatim;
-    this never drops mission lines. Returns the repaired content.
+    this never drops mission lines. ``## `` lines inside ```` ``` ````
+    code fences are mission body text and are left untouched. Returns the
+    repaired content.
     """
     if not content.strip():
         return DEFAULT_SKELETON
 
     lines = content.splitlines()
     out: List[str] = []
+    in_code_fence = False
     for line in lines:
-        if line.strip().startswith("## ") and out and out[-1].strip() != "":
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+            out.append(line)
+            continue
+        if (
+            not in_code_fence
+            and stripped.startswith("## ")
+            and out
+            and out[-1].strip() != ""
+        ):
             out.append("")  # restore the missing blank line before the header
         out.append(line)
 
     repaired = "\n".join(out)
 
-    present = {
-        classify_section(ln.strip()[3:].strip())
-        for ln in repaired.splitlines()
-        if ln.strip().startswith("## ")
-    }
+    present = set()
+    in_code_fence = False
+    for ln in repaired.splitlines():
+        stripped = ln.strip()
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+            continue
+        if not in_code_fence and stripped.startswith("## "):
+            present.add(classify_section(stripped[3:].strip()))
     missing = [k for k in _REQUIRED_SECTIONS if k not in present]
     for key in missing:
         repaired += f"\n\n{_CANONICAL_HEADERS[key]}\n"

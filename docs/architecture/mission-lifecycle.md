@@ -93,14 +93,20 @@ file healthy:
 - **Validation** — `validate_missions_structure()` checks the canonical
   sections are present exactly once, that no `## ` header is glued to the
   preceding item (the production corruption mode), and that no item lines fall
-  outside a section.
+  before any section header. Content inside ` ``` ` code fences (mission bodies
+  routinely contain fenced markdown with `## ` / `- ` lines) is treated as text,
+  never structure.
 - **Self-heal** — `repair_missions_structure()` conservatively restores missing
   blank lines around headers and appends any missing canonical sections, never
   dropping mission lines (Pending/In Progress items and non-canonical sections
-  like Ideas are preserved). A merely incomplete file (e.g. a fresh install
-  without `## Failed`) is healed silently; genuine corruption is first backed up
-  to `instance/.missions.md.bak-<ts>` and surfaced to the operator via the
-  outbox.
+  like Ideas are preserved). Fenced mission-body content is left verbatim. A
+  merely incomplete file (e.g. a fresh install without `## Failed`) is healed
+  silently; genuine corruption is first backed up to
+  `instance/.missions.md.bak-<ts>` and surfaced to the operator via the outbox.
+  If the backup write fails, the destructive repair is skipped entirely and the
+  corrupt file is left untouched — the only copy of the data is never
+  overwritten without a verified backup. Backups are capped at the 5 most
+  recent.
 - **Size bounds** — `enforce_size_bound()` prunes Done/Failed history to the
   configured keeps, then progressively sheds more old completed entries until
   the file is under the line cap. Pending and In Progress are never pruned.

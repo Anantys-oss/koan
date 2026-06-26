@@ -3399,6 +3399,28 @@ class TestValidateMissionsStructure:
         issues = validate_missions_structure(content)
         assert any("Duplicate" in i for i in issues)
 
+    def test_items_under_non_canonical_section_not_flagged(self):
+        # Items under a non-canonical section (## Ideas) must not be
+        # reported as orphan corruption.
+        content = HEALTHY_MISSIONS + "\n## Ideas\n\n- A neat idea\n"
+        assert validate_missions_structure(content) == []
+
+    def test_fenced_headers_in_body_not_treated_as_structure(self):
+        # A mission body containing fenced markdown with ## / duplicate
+        # headers must not produce false glued/duplicate issues.
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Document the sections\n"
+            "  ```\n"
+            "  ## Done\n"
+            "  ## Done\n"
+            "  some text\n"
+            "  ```\n\n"
+            "## In Progress\n\n## Done\n\n## Failed\n"
+        )
+        assert validate_missions_structure(content) == []
+
 
 class TestRepairMissionsStructure:
     """repair_missions_structure() — conservative, content-preserving self-heal."""
@@ -3443,6 +3465,23 @@ class TestRepairMissionsStructure:
         repaired = repair_missions_structure(content)
         assert "## Ideas" in repaired
         assert "A neat idea" in repaired
+
+    def test_does_not_mutate_fenced_mission_body(self):
+        # A glued ## header inside a fenced mission body must be left
+        # untouched — repair must not inject a blank line into the body.
+        body_block = "  ```\n  ## Done\n  ## Failed\n  ```"
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Mission with fenced doc\n"
+            f"{body_block}\n\n"
+            "## In Progress\n\n## Done\n\n## Failed\n"
+        )
+        repaired = repair_missions_structure(content)
+        # The fenced block is preserved verbatim (no blank line injected
+        # before the fenced ## headers).
+        assert body_block in repaired
+        assert validate_missions_structure(repaired) == []
 
 
 class TestEnforceSizeBound:

@@ -412,6 +412,49 @@ class TestPruneMissionsDone:
         # Genuine corruption → timestamped backup written.
         assert list(tmp_path.glob(".missions.md.bak-*"))
 
+    def test_failed_backup_leaves_corrupt_file_untouched(self, tmp_path, monkeypatch):
+        from app.startup_manager import prune_missions_done
+
+        missions = tmp_path / "missions.md"
+        corrupt = (
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:koan] running\n## Done\n\n## Failed\n"
+        )
+        missions.write_text(corrupt)
+
+        # Simulate the backup write failing.
+        import pathlib
+
+        orig_write_text = pathlib.Path.write_text
+
+        def _failing_write_text(self, *args, **kwargs):
+            if self.name.startswith(".missions.md.bak-"):
+                raise OSError("disk full")
+            return orig_write_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "write_text", _failing_write_text)
+
+        prune_missions_done(str(tmp_path))
+
+        # Destructive write skipped: the corrupt file is preserved as-is.
+        assert missions.read_text() == corrupt
+        assert not list(tmp_path.glob(".missions.md.bak-*"))
+
+    def test_old_backups_are_pruned(self, tmp_path):
+        from app.startup_manager import _prune_old_missions_backups
+
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n")
+        for i in range(8):
+            (tmp_path / f".missions.md.bak-2026010{i}-000000").write_text("x")
+
+        _prune_old_missions_backups(missions, keep=5)
+
+        remaining = sorted(p.name for p in tmp_path.glob(".missions.md.bak-*"))
+        assert len(remaining) == 5
+        # Newest are kept.
+        assert remaining[-1] == ".missions.md.bak-20260107-000000"
+
 
 # ---------------------------------------------------------------------------
 # Test: cleanup_mission_history
