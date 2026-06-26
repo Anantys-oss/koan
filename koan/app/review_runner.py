@@ -2190,6 +2190,19 @@ def _resolve_verdict_config(project_name: Optional[str] = None) -> dict:
     return cfg
 
 
+def _is_self_review_error(error: Exception) -> bool:
+    """True when a verdict POST failed because the bot authored the PR.
+
+    GitHub returns HTTP 422 with a message like "Can not approve your own
+    pull request" (and the equivalent for request-changes). Matching the
+    422 status plus "own pull request" avoids treating unrelated 422s
+    (e.g. invalid commit_id, no commits between base and head) as
+    self-reviews.
+    """
+    msg = str(error).lower()
+    return "422" in msg and "own pull request" in msg
+
+
 def _submit_review_verdict(
     owner: str, repo: str, pr_number: str,
     approve: bool, head_sha: str,
@@ -2211,10 +2224,10 @@ def _submit_review_verdict(
         "No blocking issues found." if approve
         else "Blocking issues found — see the review comment above."
     )
+    reviews_path = f"repos/{owner}/{repo}/pulls/{pr_number}/reviews"
     try:
         run_gh(
-            "api",
-            f"repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+            "api", reviews_path,
             "-X", "POST",
             "-f", f"event={event}",
             "-f", f"body={review_body}",
@@ -2223,6 +2236,24 @@ def _submit_review_verdict(
         log("review", f"Submitted {event} verdict on PR #{pr_number}")
         return True
     except RuntimeError as e:
+        # GitHub forbids APPROVE / REQUEST_CHANGES on a PR you authored
+        # (HTTP 422). When the bot reviews its own PR, fall back to a COMMENT
+        # review so the verdict body still lands in the Reviewers panel
+        # instead of being lost to a misleading "failed to submit" error.
+        if _is_self_review_error(e):
+            try:
+                run_gh(
+                    "api", reviews_path,
+                    "-X", "POST",
+                    "-f", "event=COMMENT",
+                    "-f", f"body={review_body}",
+                    "-f", f"commit_id={head_sha}",
+                )
+                log("review", f"Posted {event} verdict as COMMENT on own PR #{pr_number}")
+                return True
+            except RuntimeError as e2:
+                log("review", f"Failed to submit {event} verdict on PR #{pr_number}: {e2}")
+                return False
         log("review", f"Failed to submit {event} verdict on PR #{pr_number}: {e}")
         return False
 

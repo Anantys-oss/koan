@@ -1596,6 +1596,8 @@ projects:
 
 When `approved: false`, the bot still posts review comments and PR feedback but skips the formal GitHub review status (green check / red X in the Reviewers panel). Configuration errors are fail-closed: if loading project overrides fails, or if the `review_verdict` section is malformed (non-dict value or non-boolean entries for known keys), the verdict is skipped to preserve operator intent.
 
+GitHub forbids APPROVE / REQUEST_CHANGES on a PR you authored (HTTP 422). When Kōan reviews its own PR, the verdict body is automatically posted as a `COMMENT` review instead, so the feedback still appears in the Reviewers panel rather than being lost to a submission error.
+
 **Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in `config.yaml` to also post each finding as an inline PR comment anchored to its code location, in addition to the bucketed summary comment (which is unchanged). Each inline thread shows the same severity marker (🔴/🟡/🟢) and the full finding detail, so reviewers can react or resolve in place. Cap the volume with `review_inline_comments.max_comments` (default 25). Disabled by default; findings without a resolvable line, or reviews with no head SHA, are skipped. Re-running `/review` is idempotent — findings already anchored on the PR are not re-posted. Multi-line findings anchor to their full range. If findings exist but every inline post fails, Kōan notifies you instead of failing silently.
 
 ```yaml
