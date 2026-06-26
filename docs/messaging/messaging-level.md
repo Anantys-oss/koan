@@ -51,7 +51,7 @@ without rewriting YAML — handy for temporary debugging.
 |-------|----------|---------|
 | Mission start (`🚀 … Starting/Autonomous/Skill`) | log only | sent |
 | Skill-runner **progress** (`Reviewing PR…`, `Analyzing code changes…`, `Posting review…`, `🧠 Planning…`, `🔍 Checking…`) | log only | sent |
-| Tracked skill completion (`/review` `/fix` `/rebase` `/plan` `/implement`) | one short outcome line: `✅ Reviewed <pr-url>` | progress + verbose summary |
+| Tracked skill completion (`/review` `/fix` `/rebase` `/plan` `/implement`) | one short outcome line: `✅ [project] 🔍 Reviewed <pr-url>` (emitted by the agent loop; the runner's own outcome line is suppressed to avoid a duplicate row) | progress + verbose summary (both lines) |
 | Operator-initiated mission success (a user/Telegram-queued task with a real title) | one short line: `✅ [project] Done: <title>` | sent with journal summary |
 | Autonomous-run success (no mission title) | log only | sent with journal summary |
 | Mission failure | sent (short form) | sent with failure context |
@@ -72,6 +72,13 @@ Skill runners (`/review`, `/rebase`, `/recreate`, `/squash`, `/checkup`, `/plan`
   on success (`✅ Reviewed https://github.com/o/r/pull/2098`) or a short context
   string on failure (`❌ Rebase failed https://github.com/o/r/pull/7: <reason>`).
   Always logged **and** sent, regardless of `messaging.level`.
+
+  Exception: for **tracked** skills (`/review`, `/fix`, `/rebase`, `/plan`,
+  `/implement`) dispatched through the agent loop, the loop already emits a
+  canonical completion line (`✅ [project] 🔍 Reviewed <pr-url>`). To avoid two
+  rows advertising the same result, the agent loop sets
+  `KOAN_SUPPRESS_RUNNER_OUTCOME=1` for the runner subprocess in `normal` mode, so
+  the runner's own outcome line is logged only (not sent). `debug` keeps both.
 
 So under `normal` a PR review produces a single chat line — the PR URL — instead
 of the four-line play-by-play. Switch to `debug` to see every step again; nothing

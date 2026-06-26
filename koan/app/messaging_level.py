@@ -170,8 +170,16 @@ def notify_outcome(msg: str, send_fn=None) -> None:
     delivered through its un-gated underlying sink so passing the runner's
     progress notifier here does the right thing. A plain callable is invoked
     directly; None falls back to ``send_telegram``.
+
+    When ``KOAN_SUPPRESS_RUNNER_OUTCOME=1`` is set in the environment (by the
+    agent loop for tracked skills like /review, /rebase, /plan in normal mode),
+    the runner's outcome line is logged only and not sent — the agent loop emits
+    the canonical "✅ [project] 🔍 Reviewed <url>" completion line instead, so
+    sending here too would duplicate the same information to the user (#2153).
     """
     _log("outcome", msg)
+    if os.environ.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1":
+        return
     if isinstance(send_fn, _ProgressNotifier):
         send_fn = send_fn.raw_send
     if send_fn is None:

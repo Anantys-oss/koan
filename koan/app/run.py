@@ -2717,6 +2717,14 @@ def _run_skill_mission(
     }
     if _mission_model_key:
         skill_env["KOAN_MISSION_MODEL_KEY"] = _mission_model_key
+    # For tracked skills (/review, /rebase, /plan, …) the agent loop emits the
+    # canonical "✅ [project] 🔍 Reviewed <url>" completion line after the runner
+    # finishes (see _notify_mission_end). In normal mode the runner's own
+    # notify_outcome() line would advertise the same information, producing a
+    # duplicate row in chat (#2153). Signal the subprocess to log-only its
+    # outcome line; debug mode keeps both for full verbosity.
+    if _tracked_skill(mission_title) and not is_debug():
+        skill_env["KOAN_SUPPRESS_RUNNER_OUTCOME"] = "1"
     stderr_fh = None
     try:
         stderr_fh = open(stderr_file, "w")
