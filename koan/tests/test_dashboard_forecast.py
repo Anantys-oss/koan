@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from app import dashboard
+from app import dashboard_service
 
 
 def _make_test_instance(tmp_path):
@@ -17,7 +18,7 @@ def _make_test_instance(tmp_path):
     (inst / "journal").mkdir()
     (inst / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n")
 
-    tpl_src = Path(__file__).parent.parent / "templates"
+    tpl_src = Path(__file__).parent.parent / "templates" / "dashboard"
     tpl_dest = tmp_path / "koan" / "templates"
     shutil.copytree(tpl_src, tpl_dest)
 
@@ -40,13 +41,13 @@ class TestBuildForecast:
 
     def test_normal_case(self, tmp_path):
         snap = self._make_snapshot(samples_count=5, rate=0.05)
-        with patch.object(dashboard, "INSTANCE_DIR", tmp_path), \
-             patch.object(dashboard, "get_signal_status", return_value=self._patch_signals()), \
+        with patch.object(dashboard.state, "INSTANCE_DIR", tmp_path), \
+             patch.object(dashboard_service.stats, "get_signal_status", return_value=self._patch_signals()), \
              patch("app.burn_rate.BurnRateSnapshot", return_value=snap), \
              patch("app.burn_rate.MIN_SAMPLES_FOR_ESTIMATE", 5), \
              patch("app.iteration_manager._read_session_pct_and_reset", return_value=(40.0, 300.0, {})), \
-             patch.object(dashboard, "get_agent_state", return_value={"autonomous_mode": "DEEP"}):
-            result = dashboard._build_forecast()
+             patch.object(dashboard_service.stats, "get_agent_state", return_value={"autonomous_mode": "DEEP"}):
+            result = dashboard_service.stats.build_forecast()
 
         assert result["status"] == "normal"
         assert result["burn_rate_pct_per_minute"] == 0.05
@@ -60,11 +61,11 @@ class TestBuildForecast:
     def test_warming_up_insufficient_samples(self, tmp_path):
         snap = self._make_snapshot(samples_count=3, rate=None)
         snap.burn_rate_pct_per_minute.return_value = None
-        with patch.object(dashboard, "INSTANCE_DIR", tmp_path), \
-             patch.object(dashboard, "get_signal_status", return_value=self._patch_signals()), \
+        with patch.object(dashboard.state, "INSTANCE_DIR", tmp_path), \
+             patch.object(dashboard_service.stats, "get_signal_status", return_value=self._patch_signals()), \
              patch("app.burn_rate.BurnRateSnapshot", return_value=snap), \
              patch("app.burn_rate.MIN_SAMPLES_FOR_ESTIMATE", 5):
-            result = dashboard._build_forecast()
+            result = dashboard_service.stats.build_forecast()
 
         assert result["status"] == "warming_up"
         assert result["burn_rate_pct_per_minute"] is None
@@ -72,29 +73,29 @@ class TestBuildForecast:
         assert result["samples_count"] == 3
 
     def test_paused(self, tmp_path):
-        with patch.object(dashboard, "INSTANCE_DIR", tmp_path), \
-             patch.object(dashboard, "get_signal_status", return_value=self._patch_signals(paused=True)):
-            result = dashboard._build_forecast()
+        with patch.object(dashboard.state, "INSTANCE_DIR", tmp_path), \
+             patch.object(dashboard_service.stats, "get_signal_status", return_value=self._patch_signals(paused=True)):
+            result = dashboard_service.stats.build_forecast()
 
         assert result["status"] == "paused"
         assert result["burn_rate_pct_per_minute"] is None
         assert result["time_to_exhaustion_minutes"] is None
 
     def test_quota_paused(self, tmp_path):
-        with patch.object(dashboard, "INSTANCE_DIR", tmp_path), \
-             patch.object(dashboard, "get_signal_status", return_value=self._patch_signals(quota_paused=True)):
-            result = dashboard._build_forecast()
+        with patch.object(dashboard.state, "INSTANCE_DIR", tmp_path), \
+             patch.object(dashboard_service.stats, "get_signal_status", return_value=self._patch_signals(quota_paused=True)):
+            result = dashboard_service.stats.build_forecast()
 
         assert result["status"] == "paused"
 
     def test_no_usage_state_json(self, tmp_path):
         snap = self._make_snapshot(samples_count=5, rate=0.05)
-        with patch.object(dashboard, "INSTANCE_DIR", tmp_path), \
-             patch.object(dashboard, "get_signal_status", return_value=self._patch_signals()), \
+        with patch.object(dashboard.state, "INSTANCE_DIR", tmp_path), \
+             patch.object(dashboard_service.stats, "get_signal_status", return_value=self._patch_signals()), \
              patch("app.burn_rate.BurnRateSnapshot", return_value=snap), \
              patch("app.burn_rate.MIN_SAMPLES_FOR_ESTIMATE", 5), \
              patch("app.iteration_manager._read_session_pct_and_reset", return_value=(None, None, None)):
-            result = dashboard._build_forecast()
+            result = dashboard_service.stats.build_forecast()
 
         assert result["status"] == "warming_up"
         assert result["session_pct"] is None
@@ -102,13 +103,13 @@ class TestBuildForecast:
 
     def test_empty_autonomous_mode(self, tmp_path):
         snap = self._make_snapshot(samples_count=5, rate=0.03)
-        with patch.object(dashboard, "INSTANCE_DIR", tmp_path), \
-             patch.object(dashboard, "get_signal_status", return_value=self._patch_signals()), \
+        with patch.object(dashboard.state, "INSTANCE_DIR", tmp_path), \
+             patch.object(dashboard_service.stats, "get_signal_status", return_value=self._patch_signals()), \
              patch("app.burn_rate.BurnRateSnapshot", return_value=snap), \
              patch("app.burn_rate.MIN_SAMPLES_FOR_ESTIMATE", 5), \
              patch("app.iteration_manager._read_session_pct_and_reset", return_value=(60.0, 200.0, {})), \
-             patch.object(dashboard, "get_agent_state", return_value={"autonomous_mode": ""}):
-            result = dashboard._build_forecast()
+             patch.object(dashboard_service.stats, "get_agent_state", return_value={"autonomous_mode": ""}):
+            result = dashboard_service.stats.build_forecast()
 
         assert result["status"] == "normal"
         assert result["autonomous_mode"] is None
@@ -118,13 +119,13 @@ class TestBuildForecast:
     def test_wait_mode_returns_zero_tte(self, tmp_path):
         snap = self._make_snapshot(samples_count=5, rate=0.1)
         snap.time_to_exhaustion.return_value = 0.0
-        with patch.object(dashboard, "INSTANCE_DIR", tmp_path), \
-             patch.object(dashboard, "get_signal_status", return_value=self._patch_signals()), \
+        with patch.object(dashboard.state, "INSTANCE_DIR", tmp_path), \
+             patch.object(dashboard_service.stats, "get_signal_status", return_value=self._patch_signals()), \
              patch("app.burn_rate.BurnRateSnapshot", return_value=snap), \
              patch("app.burn_rate.MIN_SAMPLES_FOR_ESTIMATE", 5), \
              patch("app.iteration_manager._read_session_pct_and_reset", return_value=(100.0, 0.0, {})), \
-             patch.object(dashboard, "get_agent_state", return_value={"autonomous_mode": "WAIT"}):
-            result = dashboard._build_forecast()
+             patch.object(dashboard_service.stats, "get_agent_state", return_value={"autonomous_mode": "WAIT"}):
+            result = dashboard_service.stats.build_forecast()
 
         assert result["status"] == "normal"
         assert result["time_to_exhaustion_minutes"] == 0.0
@@ -132,10 +133,10 @@ class TestBuildForecast:
     def test_import_error_returns_warming_up(self, tmp_path):
         import sys
         # Setting module to None causes ImportError on 'from X import Y'
-        with patch.object(dashboard, "INSTANCE_DIR", tmp_path), \
-             patch.object(dashboard, "get_signal_status", return_value=self._patch_signals()), \
+        with patch.object(dashboard.state, "INSTANCE_DIR", tmp_path), \
+             patch.object(dashboard_service.stats, "get_signal_status", return_value=self._patch_signals()), \
              patch.dict(sys.modules, {"app.burn_rate": None}):
-            result = dashboard._build_forecast()
+            result = dashboard_service.stats.build_forecast()
 
         assert result["status"] == "warming_up"
 
@@ -145,9 +146,9 @@ class TestApiForecastEndpoint:
 
     def test_endpoint_returns_200(self, tmp_path):
         inst = _make_test_instance(tmp_path)
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch("app.dashboard._build_forecast", return_value={
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst), \
+             patch("app.dashboard_service.stats.build_forecast", return_value={
                  "status": "warming_up",
                  "burn_rate_pct_per_minute": None,
                  "time_to_exhaustion_minutes": None,
@@ -164,8 +165,8 @@ class TestApiForecastEndpoint:
 
     def test_endpoint_warming_up_on_fresh_instance(self, tmp_path):
         inst = _make_test_instance(tmp_path)
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst):
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst):
             resp = dashboard.app.test_client().get("/api/forecast")
 
         assert resp.status_code == 200
@@ -180,8 +181,8 @@ class TestApiForecastEndpoint:
             "status", "burn_rate_pct_per_minute", "time_to_exhaustion_minutes",
             "session_pct", "autonomous_mode", "samples_count",
         }
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst):
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst):
             resp = dashboard.app.test_client().get("/api/forecast")
 
         data = json.loads(resp.data)
@@ -190,8 +191,8 @@ class TestApiForecastEndpoint:
     def test_endpoint_paused_when_pause_file_exists(self, tmp_path):
         inst = _make_test_instance(tmp_path)
         (tmp_path / ".koan-pause").write_text("manual\n")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst):
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst):
             resp = dashboard.app.test_client().get("/api/forecast")
 
         data = json.loads(resp.data)
@@ -203,10 +204,10 @@ class TestSSEStreamForecast:
 
     def test_sse_includes_forecast_key(self, tmp_path):
         inst = _make_test_instance(tmp_path)
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
-             patch("app.dashboard._build_forecast", return_value={
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst), \
+             patch.object(dashboard.state, "MISSIONS_FILE", inst / "missions.md"), \
+             patch("app.dashboard_service.stats.build_forecast", return_value={
                  "status": "warming_up",
                  "burn_rate_pct_per_minute": None,
                  "time_to_exhaustion_minutes": None,
@@ -214,7 +215,7 @@ class TestSSEStreamForecast:
                  "autonomous_mode": None,
                  "samples_count": 0,
              }), \
-             patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
+             patch("app.dashboard.chat.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")
 
         data_line = None
@@ -244,11 +245,11 @@ class TestSSEStreamForecast:
             "samples_count": 5,
         }
 
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
-             patch("app.dashboard._build_forecast", return_value=forecast_normal), \
-             patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst), \
+             patch.object(dashboard.state, "MISSIONS_FILE", inst / "missions.md"), \
+             patch("app.dashboard_service.stats.build_forecast", return_value=forecast_normal), \
+             patch("app.dashboard.chat.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")
 
         data_line = None

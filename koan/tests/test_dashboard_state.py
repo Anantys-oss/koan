@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import patch
 
 from app import dashboard
+from app import dashboard_service
 
 
 # ---------------------------------------------------------------------------
@@ -17,24 +18,24 @@ class TestGetAgentState:
     """Test get_agent_state() with various combinations of signal files."""
 
     def test_idle_no_files(self, tmp_path):
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "idle"
         assert state["badge_color"] == "muted"
         assert state["label"] == "Idle"
 
     def test_stopped(self, tmp_path):
         (tmp_path / ".koan-stop").write_text("1")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "stopped"
         assert state["badge_color"] == "red"
         assert "Stopped" in state["label"]
 
     def test_paused_quota(self, tmp_path):
         (tmp_path / ".koan-pause").write_text("quota\n1740000000\nResets at 15:30\n")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "paused"
         assert state["badge_color"] == "orange"
         assert "quota" in state["label"]
@@ -43,113 +44,113 @@ class TestGetAgentState:
 
     def test_paused_manual(self, tmp_path):
         (tmp_path / ".koan-pause").write_text("manual\n")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "paused"
         assert state["pause_reason"] == "manual"
 
     def test_paused_quota_reset_file_only(self, tmp_path):
         """quota_paused via .koan-quota-reset without .koan-pause."""
         (tmp_path / ".koan-quota-reset").write_text("1")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "paused"
         assert "quota" in state["label"]
 
     def test_working_executing(self, tmp_path):
         status_file = tmp_path / ".koan-status"
         status_file.write_text("Run 3/10 — executing mission on koan")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "working"
         assert state["badge_color"] == "green"
         assert state["run_info"] == "3/10"
 
     def test_working_skill_dispatch(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Run 5/10 — skill dispatch on myproject")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "working"
         assert state["run_info"] == "5/10"
 
     def test_working_review_mode(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Run 2/10 — REVIEW on koan")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "working"
         assert state["autonomous_mode"] == "REVIEW"
 
     def test_working_implement_mode(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Run 7/10 — IMPLEMENT on backend")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "working"
         assert state["autonomous_mode"] == "IMPLEMENT"
 
     def test_working_deep_mode(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Run 1/5 — DEEP on koan")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "working"
         assert state["autonomous_mode"] == "DEEP"
 
     def test_working_preparing(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Run 1/10 — preparing")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "working"
 
     def test_working_finalizing(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Run 3/10 — finalizing")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "working"
 
     def test_sleeping(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Idle — sleeping 300s")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "sleeping"
         assert state["badge_color"] == "blue"
 
     def test_contemplating(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Idle — post-contemplation sleep (14:30)")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "contemplating"
         assert state["badge_color"] == "blue"
 
     def test_error_recovery(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Error recovery (2/5)")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "error_recovery"
         assert state["badge_color"] == "red"
 
     def test_paused_from_status_text(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Paused (1740000000)")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "paused"
 
     def test_project_from_file(self, tmp_path):
         (tmp_path / ".koan-project").write_text("myproject")
         (tmp_path / ".koan-status").write_text("Run 1/5 — executing mission on myproject")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["project"] == "myproject"
 
     def test_project_from_status_text(self, tmp_path):
         """If no .koan-project, extract from status text."""
         (tmp_path / ".koan-status").write_text("Run 3/10 — executing mission on koan")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["project"] == "koan"
 
     def test_empty_status_file(self, tmp_path):
         (tmp_path / ".koan-status").write_text("")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "idle"
 
     def test_stale_status(self, tmp_path):
@@ -160,8 +161,8 @@ class TestGetAgentState:
         old_mtime = time.time() - 600
         import os
         os.utime(status_file, (old_mtime, old_mtime))
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "idle"
         assert "stale" in state["label"]
 
@@ -173,8 +174,8 @@ class TestGetAgentState:
             "reason": "missions",
         }
         (tmp_path / ".koan-focus").write_text(json_mod.dumps(focus_data))
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["focus"] is not None
         assert "remaining" in state["focus"]
         assert state["focus"]["reason"] == "missions"
@@ -187,8 +188,8 @@ class TestGetAgentState:
             "reason": "missions",
         }
         (tmp_path / ".koan-focus").write_text(json_mod.dumps(focus_data))
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["focus"] is None
 
 
@@ -203,15 +204,15 @@ class TestStatePriority:
         (tmp_path / ".koan-stop").write_text("1")
         (tmp_path / ".koan-pause").write_text("quota\n1740000000\n")
         (tmp_path / ".koan-status").write_text("Run 3/10 — executing")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "stopped"
 
     def test_paused_overrides_running(self, tmp_path):
         (tmp_path / ".koan-pause").write_text("manual\n")
         (tmp_path / ".koan-status").write_text("Run 3/10 — executing")
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path):
-            state = dashboard.get_agent_state()
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            state = dashboard_service.stats.get_agent_state()
         assert state["state"] == "paused"
 
 
@@ -234,7 +235,7 @@ class TestApiStateStream:
         (inst / "journal").mkdir()
         (inst / "missions.md").write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n")
 
-        tpl_src = Path(__file__).parent.parent / "templates"
+        tpl_src = Path(__file__).parent.parent / "templates" / "dashboard"
         tpl_dest = tmp_path / "koan" / "templates"
         shutil.copytree(tpl_src, tpl_dest)
 
@@ -242,21 +243,21 @@ class TestApiStateStream:
 
     def test_stream_returns_sse_content_type(self, tmp_path):
         inst, tpl_dest = self._make_client(tmp_path)
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"):
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst), \
+             patch.object(dashboard.state, "MISSIONS_FILE", inst / "missions.md"):
             with dashboard.app.test_request_context("/api/state/stream"):
-                resp = dashboard.api_state_stream()
+                resp = dashboard.chat.api_state_stream()
         assert resp.content_type == "text/event-stream; charset=utf-8"
         assert resp.headers.get("Cache-Control") == "no-cache"
 
     def test_stream_emits_valid_json(self, tmp_path):
         (tmp_path / ".koan-status").write_text("Run 1/5 — executing mission on koan")
         inst, _ = self._make_client(tmp_path)
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
-             patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst), \
+             patch.object(dashboard.state, "MISSIONS_FILE", inst / "missions.md"), \
+             patch("app.dashboard.chat.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")
         data_line = None
         for chunk in resp.response:
@@ -278,10 +279,10 @@ class TestApiStateStream:
             "# Missions\n\n## Pending\n\n- task1\n- task2\n\n"
             "## In Progress\n\n- task3\n\n## Done\n\n- task4\n"
         )
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"), \
-             patch("app.dashboard.time.sleep", side_effect=RuntimeError("break")):
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst), \
+             patch.object(dashboard.state, "MISSIONS_FILE", inst / "missions.md"), \
+             patch("app.dashboard.chat.time.sleep", side_effect=RuntimeError("break")):
             resp = dashboard.app.test_client().get("/api/state/stream")
         data_line = None
         for chunk in resp.response:
@@ -315,16 +316,16 @@ class TestApiStatusAgentState:
             "# Missions\n\n## Pending\n\n- task\n\n## In Progress\n\n## Done\n\n"
         )
 
-        tpl_src = Path(__file__).parent.parent / "templates"
+        tpl_src = Path(__file__).parent.parent / "templates" / "dashboard"
         tpl_dest = tmp_path / "koan" / "templates"
         shutil.copytree(tpl_src, tpl_dest)
 
         (tmp_path / ".koan-status").write_text("Run 2/10 — IMPLEMENT on koan")
         (tmp_path / ".koan-project").write_text("koan")
 
-        with patch.object(dashboard, "KOAN_ROOT", tmp_path), \
-             patch.object(dashboard, "INSTANCE_DIR", inst), \
-             patch.object(dashboard, "MISSIONS_FILE", inst / "missions.md"):
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path), \
+             patch.object(dashboard.state, "INSTANCE_DIR", inst), \
+             patch.object(dashboard.state, "MISSIONS_FILE", inst / "missions.md"):
             dashboard.app.config["TESTING"] = True
             dashboard.app.jinja_loader = FileSystemLoader(str(tpl_dest))
             with dashboard.app.test_client() as client:

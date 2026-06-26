@@ -13,7 +13,7 @@ from app.cost_tracker import daily_series
 from app.mission_metrics import compute_global_metrics, compute_project_trend
 from app import dashboard
 
-REAL_TEMPLATES = Path(__file__).parent.parent / "templates"
+REAL_TEMPLATES = Path(__file__).parent.parent / "templates" / "dashboard"
 
 
 # --- Fixtures ---
@@ -37,14 +37,14 @@ def instance_dir(tmp_path):
 def app_client(instance_dir, tmp_path):
     tpl_dest = tmp_path / "koan" / "templates"
     shutil.copytree(REAL_TEMPLATES, tpl_dest)
-    with patch.object(dashboard, "INSTANCE_DIR", instance_dir), \
-         patch.object(dashboard, "MISSIONS_FILE", instance_dir / "missions.md"), \
-         patch.object(dashboard, "OUTBOX_FILE", instance_dir / "outbox.md"), \
-         patch.object(dashboard, "SOUL_FILE", instance_dir / "soul.md"), \
-         patch.object(dashboard, "SUMMARY_FILE", instance_dir / "memory" / "summary.md"), \
-         patch.object(dashboard, "JOURNAL_DIR", instance_dir / "journal"), \
-         patch.object(dashboard, "PENDING_FILE", instance_dir / "journal" / "pending.md"), \
-         patch.object(dashboard, "KOAN_ROOT", tmp_path):
+    with patch.object(dashboard.state, "INSTANCE_DIR", instance_dir), \
+         patch.object(dashboard.state, "MISSIONS_FILE", instance_dir / "missions.md"), \
+         patch.object(dashboard.state, "OUTBOX_FILE", instance_dir / "outbox.md"), \
+         patch.object(dashboard.state, "SOUL_FILE", instance_dir / "soul.md"), \
+         patch.object(dashboard.state, "SUMMARY_FILE", instance_dir / "memory" / "summary.md"), \
+         patch.object(dashboard.state, "JOURNAL_DIR", instance_dir / "journal"), \
+         patch.object(dashboard.state, "PENDING_FILE", instance_dir / "journal" / "pending.md"), \
+         patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
         dashboard.app.config["TESTING"] = True
         dashboard.app.jinja_loader = FileSystemLoader(str(tpl_dest))
         with dashboard.app.test_client() as client:
