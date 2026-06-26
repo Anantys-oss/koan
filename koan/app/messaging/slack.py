@@ -9,7 +9,6 @@ Environment variables:
     KOAN_SLACK_CHANNEL_ID   — Channel ID to operate in (C...)
 """
 
-import contextlib
 import itertools
 import os
 import queue
@@ -328,8 +327,15 @@ class SlackProvider(MessagingProvider):
                 # WebSocket on a background thread, so re-dialing without
                 # disconnecting can leak the old monitor/receiver threads (or
                 # raise on SDKs that reject connect() while still "connected").
-                with contextlib.suppress(Exception):
+                try:
                     self._socket_client.disconnect()
+                except Exception as e:
+                    # A failing disconnect is non-fatal (we re-dial regardless),
+                    # but log it: this teardown exists to avoid leaking the old
+                    # monitor/receiver threads, so a persistently-failing
+                    # disconnect must be observable rather than silent.
+                    print(f"[slack] Socket disconnect during reconnect failed: {e}",
+                          file=sys.stderr)
                 self._start_socket_mode()
 
     def _is_socket_alive(self) -> bool:
