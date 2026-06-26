@@ -274,6 +274,11 @@ class TestGetProjectsFromConfig:
         config = {}
         assert get_projects_from_config(config) == []
 
+    def test_null_projects_value(self):
+        """A 'projects:' key present but empty parses to None — must not crash."""
+        config = {"projects": None}
+        assert get_projects_from_config(config) == []
+
     def test_single_project(self):
         config = {"projects": {"solo": {"path": "/solo"}}}
         result = get_projects_from_config(config)
