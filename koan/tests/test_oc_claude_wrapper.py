@@ -18,7 +18,7 @@ WRAPPER = REPO_ROOT / "bin" / "oc-claude"
 def _make_fake_ocgo(tmp_path: Path):
     """Create a fake `ocgo` that records its argv to a file."""
     bindir = tmp_path / "bin"
-    bindir.mkdir()
+    bindir.mkdir(exist_ok=True)
     record = tmp_path / "argv.txt"
     fake = bindir / "ocgo"
     fake.write_text(
