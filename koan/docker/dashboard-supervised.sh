@@ -25,4 +25,4 @@ fi
 
 PORT="${KOAN_DASHBOARD_PORT:-${PORT:-5000}}"
 echo "[dashboard] starting on 0.0.0.0:${PORT} (passphrase-gated)"
-exec /app/koan/docker/supervised-run.sh python3 app/dashboard.py --host 0.0.0.0 --port "${PORT}"
+exec /app/koan/docker/supervised-run.sh python3 app/dashboard/__main__.py --host 0.0.0.0 --port "${PORT}"

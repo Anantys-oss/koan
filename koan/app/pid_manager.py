@@ -463,12 +463,12 @@ def start_awake(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT)
 
 
 def start_dashboard(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
-    """Start the web dashboard (dashboard.py) as a detached subprocess.
+    """Start the web dashboard (dashboard/__main__.py) as a detached subprocess.
 
     Only launched when ``dashboard.enabled: true`` in config.yaml.
     Returns (success: bool, message: str).
     """
-    return _launch_python_process(koan_root, "app/dashboard.py", "dashboard", verify_timeout)
+    return _launch_python_process(koan_root, "app/dashboard/__main__.py", "dashboard", verify_timeout)
 
 
 def start_api(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:

@@ -159,6 +159,13 @@ Communication between processes happens through shared files in `instance/` with
 - **`usage_service.py`** — Shared usage-payload builder (`build_usage_payload()` + week/month bucketing) used by both the dashboard and the REST API (`GET /v1/usage`).
 - **`log_reader.py`** — Shared log-tailing helpers (`tail_log()`, `read_logs()`) used by both the dashboard and the REST API (`GET /v1/logs`).
 
+**Web dashboard** (`koan/app/dashboard/`):
+
+- **`dashboard/`** — Flask blueprint package built by a `create_app()` factory (mirrors `api/__init__.py`). Blueprints: `core` (index, auth, status/health/forecast/provider), `missions` (mission CRUD + attention), `chat` (chat + progress/state SSE), `usage` (usage/metrics/efficiency/journal/logs), `agent` (soul/memory/skills/config + pause/resume/restart), `config` (config/nickname/rules/recurring), `prs` (PRs + plans). Runnable entry: `app/dashboard/__main__.py` (used by `make dashboard` and `pid_manager.start_dashboard()`). `from app.dashboard import app` exposes the module-level instance for the test suite.
+  - **`dashboard/state.py`** — Single home for patchable module globals (paths, `CHAT_TIMEOUT`, `DASHBOARD_PWD`, caches, regexes). Route/service code reads `state.X` at call time so tests patch one target (`patch.object(app.dashboard.state, …)`).
+  - **`dashboard/_helpers.py`** — Cross-cutting Flask wiring: passphrase gate, static cache-buster, context processor, template filters (`strip_project_tag`, `project_badge`, `linkify`); attached via `register_helpers(app)`.
+- **`dashboard_service/`** — Pure business logic extracted from the routes, unit-tested without a Flask client: `missions` (parse/filter/project+skill names), `journal` (date/day readers + rule history), `plans` (plan-issue fetch + progress parsing), `stats` (forecast, skill metrics, agent-state readers); package-level `read_file`/`mask_sensitive`/`validate_yaml`. Dashboard templates live under `koan/templates/dashboard/`.
+
 **REST API** (`koan/app/api/`):
 
 - **`api/__init__.py`** — `create_app()` Flask factory; registers blueprints, health endpoint, JSON error handlers, per-request audit logging.

@@ -21,6 +21,36 @@ Configuration via environment:
 The dashboard reads shared state from `instance/` (missions, journal, signals, memory,
 config) and exposes a JSON/SSE API under `/api/*`.
 
+## Architecture
+
+The dashboard is a Flask **blueprint package** at `koan/app/dashboard/`, built by a
+`create_app()` factory that mirrors the REST-API factory (`koan/app/api/__init__.py`).
+Routes are grouped by domain into one blueprint per file:
+
+| Blueprint | Owns |
+|-----------|------|
+| `core` | `/`, `/login`, `/logout`, `/api/forecast`, `/api/status`, `/api/health`, `/api/provider` |
+| `missions` | `/missions*`, `/api/missions*`, `/api/projects`, `/api/attention*` |
+| `chat` | `/chat*`, `/progress`, `/api/progress*`, `/api/state/stream` |
+| `usage` | `/usage`, `/api/usage*`, `/api/metrics`, `/api/efficiency`, `/api/skill-metrics`, `/journal`, `/api/journal/<day>`, `/logs`, `/api/logs` |
+| `agent` | `/agent`, `/skills`, `/api/agent/*` |
+| `config` | `/config`, `/api/config/*`, `/api/nickname`, `/rules`, `/api/rules*`, `/recurring`, `/api/recurring*` |
+| `prs` | `/prs`, `/api/prs*`, `/plans`, `/api/plans*` |
+
+Supporting modules:
+
+- **`dashboard/state.py`** — patchable module globals (paths, `CHAT_TIMEOUT`, `DASHBOARD_PWD`,
+  caches, regexes). Route handlers read `state.X` at request time so a single patch target
+  affects everything.
+- **`dashboard/_helpers.py`** — passphrase gate, static cache-buster, context processor, and
+  template filters, attached via `register_helpers(app)`.
+- **`dashboard_service/`** — pure business logic (mission parsing, journal/rule-history readers,
+  plan-progress parsing, forecast & metric computation), unit-testable without a Flask client.
+
+Templates live under `koan/templates/dashboard/`; static assets under `koan/static/`. The
+runnable entry point is `koan/app/dashboard/__main__.py` (invoked by `make dashboard` and
+`pid_manager.start_dashboard()`).
+
 ### Passphrase gate
 
 By default the dashboard is unauthenticated and meant for local-only use

@@ -16,7 +16,7 @@ from app.dashboard import app
 @pytest.fixture
 def client(tmp_path):
     app.config["TESTING"] = True
-    with patch("app.dashboard.INSTANCE_DIR", tmp_path):
+    with patch("app.dashboard.state.INSTANCE_DIR", tmp_path):
         outcomes = [
             {
                 "timestamp": datetime.now().isoformat(),
@@ -78,7 +78,7 @@ def test_efficiency_basic(client):
 
 def test_efficiency_no_data(tmp_path):
     app.config["TESTING"] = True
-    with patch("app.dashboard.INSTANCE_DIR", tmp_path):
+    with patch("app.dashboard.state.INSTANCE_DIR", tmp_path):
         (tmp_path / "session_outcomes.json").write_text("[]")
         with app.test_client() as c:
             resp = c.get("/api/efficiency?days=7")
@@ -97,7 +97,7 @@ def test_efficiency_week_granularity_offset(client):
 
 def test_efficiency_cost_only_project(client, tmp_path):
     """Project in cost data but not in outcome data."""
-    with patch("app.dashboard.INSTANCE_DIR", tmp_path):
+    with patch("app.dashboard.state.INSTANCE_DIR", tmp_path):
         (tmp_path / "session_outcomes.json").write_text("[]")
         usage_dir = tmp_path / "usage"
         usage_dir.mkdir(exist_ok=True)
