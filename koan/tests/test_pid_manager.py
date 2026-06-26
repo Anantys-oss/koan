@@ -44,6 +44,17 @@ from app.pid_manager import (
 pytestmark = pytest.mark.slow
 
 
+@pytest.fixture(autouse=True)
+def _isolate_deploy_env(monkeypatch):
+    """Clear ambient deploy env so ollama gating tests are deterministic.
+
+    The host may set KOAN_DEPLOY=railway (which refuses ollama serve) or
+    KOAN_ALLOW_OLLAMA; tests that exercise those paths set them explicitly.
+    """
+    monkeypatch.delenv("KOAN_DEPLOY", raising=False)
+    monkeypatch.delenv("KOAN_ALLOW_OLLAMA", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # _pidfile_path
 # ---------------------------------------------------------------------------
@@ -1017,13 +1028,13 @@ class TestStartOllama:
         pidfile = tmp_path / ".koan-pid-ollama"
         pidfile.write_text(str(os.getpid()))
 
-        ok, msg = start_ollama(tmp_path)
+        ok, msg = start_ollama(tmp_path, provider="ollama")
         assert ok is False
         assert "already running" in msg
 
     def test_returns_error_when_binary_not_found(self, tmp_path):
         with patch("app.pid_manager.shutil.which", return_value=None):
-            ok, msg = start_ollama(tmp_path)
+            ok, msg = start_ollama(tmp_path, provider="ollama")
 
         assert ok is False
         assert "not found in PATH" in msg
@@ -1035,7 +1046,7 @@ class TestStartOllama:
         with patch("app.pid_manager.shutil.which", return_value="/usr/local/bin/ollama"), \
              patch("app.pid_manager.subprocess.Popen", return_value=mock_proc) as mock_popen, \
              patch("app.pid_manager._is_process_alive", return_value=True):
-            ok, msg = start_ollama(tmp_path, verify_timeout=0.5)
+            ok, msg = start_ollama(tmp_path, verify_timeout=0.5, provider="ollama")
 
         assert ok is True
         assert "54321" in msg
@@ -1051,7 +1062,7 @@ class TestStartOllama:
         with patch("app.pid_manager.shutil.which", return_value="/usr/local/bin/ollama"), \
              patch("app.pid_manager.subprocess.Popen", return_value=mock_proc), \
              patch("app.pid_manager._is_process_alive", return_value=True):
-            start_ollama(tmp_path, verify_timeout=0.5)
+            start_ollama(tmp_path, verify_timeout=0.5, provider="ollama")
 
         pidfile = tmp_path / ".koan-pid-ollama"
         assert pidfile.exists()
@@ -1060,7 +1071,7 @@ class TestStartOllama:
     def test_returns_failure_on_popen_exception(self, tmp_path):
         with patch("app.pid_manager.shutil.which", return_value="/usr/local/bin/ollama"), \
              patch("app.pid_manager.subprocess.Popen", side_effect=OSError("Permission denied")):
-            ok, msg = start_ollama(tmp_path)
+            ok, msg = start_ollama(tmp_path, provider="ollama")
 
         assert ok is False
         assert "Failed to launch ollama" in msg
@@ -1072,7 +1083,7 @@ class TestStartOllama:
         with patch("app.pid_manager.shutil.which", return_value="/usr/local/bin/ollama"), \
              patch("app.pid_manager.subprocess.Popen", return_value=mock_proc), \
              patch("app.pid_manager._is_process_alive", return_value=False):
-            ok, msg = start_ollama(tmp_path, verify_timeout=0.5)
+            ok, msg = start_ollama(tmp_path, verify_timeout=0.5, provider="ollama")
 
         assert ok is False
         assert "exited immediately" in msg
@@ -1085,11 +1096,50 @@ class TestStartOllama:
         with patch("app.pid_manager.shutil.which", return_value="/usr/local/bin/ollama"), \
              patch("app.pid_manager.subprocess.Popen", return_value=mock_proc), \
              patch("app.pid_manager._is_process_alive", return_value=False):
-            ok, msg = start_ollama(tmp_path, verify_timeout=0.5)
+            ok, msg = start_ollama(tmp_path, verify_timeout=0.5, provider="ollama")
 
         assert ok is False
         pidfile = tmp_path / ".koan-pid-ollama"
         assert not pidfile.exists(), "Stale PID file should be removed after failed launch"
+
+    # --- provider/deploy gating (#2172) ---
+
+    def test_refuses_when_provider_not_ollama(self, tmp_path):
+        """ollama serve must never start on a non-ollama deploy."""
+        with patch("app.pid_manager.subprocess.Popen") as mock_popen:
+            ok, msg = start_ollama(tmp_path, provider="claude")
+        assert ok is False
+        assert "not 'ollama'" in msg
+        mock_popen.assert_not_called()
+
+    def test_refuses_auto_detected_claude(self, tmp_path):
+        """With no provider arg, a claude-resolving deploy refuses ollama."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager.subprocess.Popen") as mock_popen:
+            ok, msg = start_ollama(tmp_path)
+        assert ok is False
+        mock_popen.assert_not_called()
+
+    def test_refuses_on_railway_without_opt_in(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_DEPLOY", "railway")
+        monkeypatch.delenv("KOAN_ALLOW_OLLAMA", raising=False)
+        with patch("app.pid_manager.subprocess.Popen") as mock_popen:
+            ok, msg = start_ollama(tmp_path, provider="ollama")
+        assert ok is False
+        assert "Railway" in msg
+        mock_popen.assert_not_called()
+
+    def test_railway_opt_in_allows_ollama(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_DEPLOY", "railway")
+        monkeypatch.setenv("KOAN_ALLOW_OLLAMA", "1")
+        mock_proc = MagicMock()
+        mock_proc.pid = 777
+        with patch("app.pid_manager.shutil.which", return_value="/usr/local/bin/ollama"), \
+             patch("app.pid_manager.subprocess.Popen", return_value=mock_proc), \
+             patch("app.pid_manager._is_process_alive", return_value=True):
+            ok, msg = start_ollama(tmp_path, verify_timeout=0.5, provider="ollama")
+        assert ok is True
+        assert "777" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -1556,7 +1606,7 @@ class TestStarterLogFiles:
         with patch("app.pid_manager.shutil.which", return_value="/usr/local/bin/ollama"), \
              patch("app.pid_manager.subprocess.Popen", return_value=mock_proc) as mock_popen, \
              patch("app.pid_manager._is_process_alive", return_value=True):
-            start_ollama(tmp_path, verify_timeout=0.5)
+            start_ollama(tmp_path, verify_timeout=0.5, provider="ollama")
 
         call_args = mock_popen.call_args
         stdout_arg = call_args[1]["stdout"]

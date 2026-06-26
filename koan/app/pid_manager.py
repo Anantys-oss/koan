@@ -348,14 +348,75 @@ def start_runner(
     )
 
 
-def start_ollama(koan_root: Path, verify_timeout: float = OLLAMA_VERIFY_TIMEOUT) -> tuple:
+def _ollama_railway_opt_in() -> bool:
+    """True when the operator explicitly allows ollama serve on a hosted deploy.
+
+    ``ollama serve`` is the single largest idle RAM consumer in the stack, so on
+    a Railway (hosted single-container) deploy — whose profile defaults to the
+    Claude provider — it is refused unless ``KOAN_ALLOW_OLLAMA`` opts in.
+    """
+    return os.environ.get("KOAN_ALLOW_OLLAMA", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _ollama_start_allowed(koan_root: Path, provider: Optional[str] = None) -> tuple:
+    """Decide whether ``ollama serve`` may be started on this deploy.
+
+    Returns ``(allowed: bool, reason: str)``. ``reason`` is empty when allowed.
+
+    ``ollama serve`` must never launch unless the resolved CLI provider is
+    exactly ``"ollama"`` — it is the largest idle memory consumer and is pure
+    wasted footprint on a Claude/Copilot deploy (#2172). On Railway the hosted
+    profile defaults to Claude, so even an ``ollama`` provider is refused unless
+    ``KOAN_ALLOW_OLLAMA`` explicitly opts in.
+
+    When ``provider`` is None it is resolved via :func:`_detect_provider`.
+    Callers that deliberately want ollama (e.g. ``make ollama``) pass
+    ``provider="ollama"`` to assert that intent.
+    """
+    if provider is None:
+        provider = _detect_provider(koan_root)
+    if not _needs_ollama(provider):
+        return False, (
+            f"provider is '{provider}', not 'ollama' — skipping ollama serve "
+            "(saves idle RAM)"
+        )
+    try:
+        from app.railway import is_railway
+        railway = is_railway()
+    except (ImportError, OSError, ValueError):
+        railway = False
+    if railway and not _ollama_railway_opt_in():
+        return False, (
+            "Railway deploy defaults to the Claude provider — refusing to start "
+            "ollama serve. Set KOAN_ALLOW_OLLAMA=1 to override."
+        )
+    return True, ""
+
+
+def start_ollama(
+    koan_root: Path,
+    verify_timeout: float = OLLAMA_VERIFY_TIMEOUT,
+    provider: Optional[str] = None,
+) -> tuple:
     """Start ollama serve as a detached subprocess.
 
-    Checks that ollama binary is available, not already running,
-    then launches it in the background with a tracked PID file.
+    Refuses to launch unless :func:`_ollama_start_allowed` permits it — this is
+    the single chokepoint that guarantees ``ollama serve`` (the largest idle RAM
+    consumer) never starts on a non-ollama deploy or an opt-out Railway deploy
+    (#2172). Then checks that the ollama binary is available and not already
+    running, and launches it in the background with a tracked PID file.
+
+    ``provider`` lets a caller assert the resolved/intended provider; when None
+    it is detected from env/config.
 
     Returns (success: bool, message: str).
     """
+    allowed, reason = _ollama_start_allowed(koan_root, provider)
+    if not allowed:
+        return False, reason
+
     pid = check_pidfile(koan_root, "ollama")
     if pid:
         return False, f"ollama already running (PID {pid})"
@@ -614,18 +675,29 @@ def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -
     if provider is None:
         provider = _detect_provider(koan_root)
 
+    # Log the resolved provider so a mis-set env/config (which would otherwise
+    # silently launch ollama serve) is visible at startup (#2172).
+    print(f"[pid_manager] resolved CLI provider: {provider}", file=sys.stderr)
+
     # Display startup banner before launching processes
     if show_banner:
         _show_startup_banner(koan_root, provider)
 
     results = {}
 
-    # 1. Start ollama serve if needed
-    if _needs_ollama(provider):
-        ok, msg = start_ollama(koan_root)
+    # 1. Start ollama serve only when the resolved provider needs it AND the
+    #    deploy permits it (never on a Claude deploy; not on Railway unless
+    #    explicitly opted in). ollama serve is the largest idle RAM consumer.
+    allowed, reason = _ollama_start_allowed(koan_root, provider)
+    if allowed:
+        ok, msg = start_ollama(koan_root, provider=provider)
         results["ollama"] = (ok, msg)
         if ok:
             time.sleep(1)
+    elif _needs_ollama(provider):
+        # Provider is ollama but the deploy guard refused (e.g. Railway without
+        # opt-in). Log the reason — this is intentional, not a launch failure.
+        print(f"[pid_manager] {reason}", file=sys.stderr)
 
     # 2. Start awake (Telegram bridge)
     ok, msg = start_awake(koan_root)
@@ -852,7 +924,9 @@ if __name__ == "__main__":
 
     if action == "start-ollama":
         root = Path(sys.argv[2])
-        ok, msg = start_ollama(root)
+        # Explicit operator command — assert ollama intent (the Railway guard in
+        # start_ollama still applies). Auto paths use the resolved provider.
+        ok, msg = start_ollama(root, provider="ollama")
         print(f"  {msg}")
         sys.exit(0 if ok else 1)
 
