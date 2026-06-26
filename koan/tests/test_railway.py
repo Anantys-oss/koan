@@ -86,6 +86,36 @@ def test_is_railway(monkeypatch):
     assert railway.is_railway() is False
 
 
+# --- dashboard_allowed gate (#2174) -----------------------------------------
+
+def test_dashboard_allowed_off_railway(monkeypatch):
+    """Off Railway, the dashboard is always allowed regardless of passphrase."""
+    monkeypatch.delenv("KOAN_DEPLOY", raising=False)
+    monkeypatch.delenv("KOAN_DASHBOARD_PWD", raising=False)
+    assert railway.dashboard_allowed() is True
+
+
+def test_dashboard_allowed_railway_with_pwd(monkeypatch):
+    """On Railway with a passphrase set, the dashboard is allowed."""
+    monkeypatch.setenv("KOAN_DEPLOY", "railway")
+    monkeypatch.setenv("KOAN_DASHBOARD_PWD", "secret")
+    assert railway.dashboard_allowed() is True
+
+
+def test_dashboard_allowed_railway_without_pwd(monkeypatch):
+    """On Railway without a passphrase, the dashboard must be refused."""
+    monkeypatch.setenv("KOAN_DEPLOY", "railway")
+    monkeypatch.delenv("KOAN_DASHBOARD_PWD", raising=False)
+    assert railway.dashboard_allowed() is False
+
+
+def test_dashboard_allowed_railway_blank_pwd(monkeypatch):
+    """A blank/whitespace passphrase counts as unset."""
+    monkeypatch.setenv("KOAN_DEPLOY", "railway")
+    monkeypatch.setenv("KOAN_DASHBOARD_PWD", "   ")
+    assert railway.dashboard_allowed() is False
+
+
 # --- has_instance / env path ------------------------------------------------
 
 def test_has_instance_true_via_env(tmp_path, monkeypatch):

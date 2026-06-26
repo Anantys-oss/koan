@@ -429,8 +429,15 @@ def _is_api_enabled() -> bool:
 
 
 def _is_dashboard_enabled() -> bool:
-    """Check if dashboard is enabled in config.yaml."""
+    """Check if dashboard is enabled in config.yaml and allowed by the deploy gate.
+
+    On Railway the dashboard is publicly exposed, so it must not launch without
+    KOAN_DASHBOARD_PWD — see ``railway.dashboard_allowed`` (the shared gate also
+    enforced by ``docker/dashboard-supervised.sh``)."""
     try:
+        from app.railway import dashboard_allowed
+        if not dashboard_allowed():
+            return False
         from app.config import is_dashboard_enabled
         return is_dashboard_enabled()
     except (ImportError, OSError, ValueError):
