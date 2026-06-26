@@ -5,6 +5,7 @@ branches of _handle_skill_dispatch. The heavy _run_iteration paths are
 already exercised by test_run.py.
 """
 
+import contextlib
 import os
 import subprocess
 from unittest.mock import patch
@@ -325,30 +326,48 @@ class TestHandleSkillDispatchMatched:
 
         _run._last_mission_stagnated.set()
         try:
-            with patch("app.skill_dispatch.dispatch_skill_mission",
-                       return_value=["claude", "/review"]), \
-                 patch("app.skill_dispatch.cleanup_skill_temp_files"), \
-                 patch("app.loop_manager.create_pending_file",
-                       side_effect=RuntimeError("boom")), \
-                 patch("app.core_files.snapshot_core_files", return_value=set()), \
-                 patch("app.core_files.check_core_files", return_value=["warn"]), \
-                 patch("app.core_files.recover_project_files",
-                       return_value=(["a.py"], ["b.py"])), \
-                 patch("app.core_files.log_integrity_warnings"), \
-                 patch("app.stagnation_monitor.get_retry_count", return_value=2), \
-                 patch("app.run._run_skill_mission", return_value=skill_result), \
-                 patch("app.run._provider_identity",
-                       return_value=("claude", "Claude")), \
-                 patch("app.run._classify_and_handle_cli_error", return_value=False), \
-                 patch("app.run._probe_exit0_quota", return_value=False), \
-                 patch("app.run._notify_mission_end"), \
-                 patch("app.run._finalize_mission"), \
-                 patch("app.run._commit_instance"), \
-                 patch("app.run._sleep_between_runs"), \
-                 patch("app.run.set_status"), \
-                 patch("app.run._notify"), \
-                 patch("app.run.log"), \
-                 patch("app.mission_executor._maybe_escalate_to_debug") as mock_esc:
+            # Use ExitStack rather than a comma-chained `with` so the 20
+            # patches don't exceed Python 3.11's 20-statically-nested-block
+            # compile limit (SyntaxError: too many statically nested blocks).
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch(
+                    "app.skill_dispatch.dispatch_skill_mission",
+                    return_value=["claude", "/review"]))
+                stack.enter_context(patch(
+                    "app.skill_dispatch.cleanup_skill_temp_files"))
+                stack.enter_context(patch(
+                    "app.loop_manager.create_pending_file",
+                    side_effect=RuntimeError("boom")))
+                stack.enter_context(patch(
+                    "app.core_files.snapshot_core_files", return_value=set()))
+                stack.enter_context(patch(
+                    "app.core_files.check_core_files", return_value=["warn"]))
+                stack.enter_context(patch(
+                    "app.core_files.recover_project_files",
+                    return_value=(["a.py"], ["b.py"])))
+                stack.enter_context(patch(
+                    "app.core_files.log_integrity_warnings"))
+                stack.enter_context(patch(
+                    "app.stagnation_monitor.get_retry_count", return_value=2))
+                stack.enter_context(patch(
+                    "app.run._run_skill_mission", return_value=skill_result))
+                stack.enter_context(patch(
+                    "app.run._provider_identity",
+                    return_value=("claude", "Claude")))
+                stack.enter_context(patch(
+                    "app.run._classify_and_handle_cli_error",
+                    return_value=False))
+                stack.enter_context(patch(
+                    "app.run._probe_exit0_quota", return_value=False))
+                stack.enter_context(patch("app.run._notify_mission_end"))
+                stack.enter_context(patch("app.run._finalize_mission"))
+                stack.enter_context(patch("app.run._commit_instance"))
+                stack.enter_context(patch("app.run._sleep_between_runs"))
+                stack.enter_context(patch("app.run.set_status"))
+                stack.enter_context(patch("app.run._notify"))
+                stack.enter_context(patch("app.run.log"))
+                mock_esc = stack.enter_context(patch(
+                    "app.mission_executor._maybe_escalate_to_debug"))
                 handled, _ = self._call(str(tmp_path))
         finally:
             _run._last_mission_stagnated.clear()
