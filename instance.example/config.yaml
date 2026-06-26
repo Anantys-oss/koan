@@ -870,6 +870,14 @@ auto_update:
 #     - coderabbitai
 #     - sourcery-ai
 
+# Review calibration — self-calibrate the reflect threshold by tracking
+# whether review findings were addressed in merge commits. After enough
+# outcomes accumulate, a lightweight Claude pass produces calibration hints
+# that flow into the reflect prompt via learnings.md.
+# review_calibration:
+#   batch_size: 10          # Min new outcomes before triggering calibration (default: 10)
+#   stale_days: 90          # Days after which unprocessed sidecar files are cleaned up (default: 90)
+
 # Review verdict — controls the formal APPROVE / REQUEST_CHANGES verdict
 # submitted via the GitHub Pull Request Reviews API.
 # Can also be overridden per-project in projects.yaml.

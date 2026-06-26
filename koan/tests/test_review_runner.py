@@ -32,6 +32,8 @@ from app.review_runner import (
     _fix_nested_fences,
     _github_blob_url,
     _parse_line_hint,
+    _write_review_findings_sidecar,
+    _load_calibration_hints,
 )
 
 
@@ -4680,6 +4682,142 @@ class TestRunReviewReflectionIntegration:
 
 
 # ---------------------------------------------------------------------------
+# Calibration hints: _load_calibration_hints + threading into reflect pass
+# ---------------------------------------------------------------------------
+
+
+class TestLoadCalibrationHints:
+    """_load_calibration_hints extracts the calibration section from learnings.md."""
+
+    def _write_learnings(self, koan_root, project_name, body):
+        path = (
+            koan_root / "instance" / "memory" / "projects"
+            / project_name / "learnings.md"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+
+    def test_returns_empty_without_project_name(self):
+        assert _load_calibration_hints(None) == ""
+        assert _load_calibration_hints("") == ""
+
+    def test_returns_empty_when_no_learnings_file(self, tmp_path):
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            assert _load_calibration_hints("proj") == ""
+
+    def test_returns_empty_when_no_calibration_section(self, tmp_path):
+        self._write_learnings(tmp_path, "proj", "## Other lessons\n- be careful\n")
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            assert _load_calibration_hints("proj") == ""
+
+    def test_extracts_calibration_section(self, tmp_path):
+        body = (
+            "## Other lessons\n- unrelated\n\n"
+            "## Review calibration (2026-06-01)\n"
+            "- raise threshold to 6\n\n"
+            "## Later section\n- ignore me\n"
+        )
+        self._write_learnings(tmp_path, "proj", body)
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            hints = _load_calibration_hints("proj")
+        assert "## Review calibration (2026-06-01)" in hints
+        assert "raise threshold to 6" in hints
+        # Bounded to the calibration section: neighbours excluded.
+        assert "unrelated" not in hints
+        assert "ignore me" not in hints
+
+
+class TestCalibrationHintsThreadedToReflect:
+    """Regression: calibration hints must reach _reflect_findings (dead loop bug)."""
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._reflect_findings")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.config.get_review_reflect_config", return_value={"threshold": 5})
+    @patch("app.config.get_model_config", return_value={
+        "mission": "m", "fallback": "f", "reflect": "haiku", "lightweight": "haiku",
+    })
+    @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
+    def test_reflect_receives_calibration_hints_from_learnings(
+        self, _mock_ignore, _mock_models, _mock_reflect_cfg,
+        mock_fetch, mock_claude, mock_reflect, mock_gh, _mock_repliable, _mock_shas,
+        review_skill_dir, tmp_path,
+    ):
+        """When learnings.md has a calibration section, reflect gets it (non-empty)."""
+        learnings = (
+            tmp_path / "instance" / "memory" / "projects" / "myproj" / "learnings.md"
+        )
+        learnings.parent.mkdir(parents=True, exist_ok=True)
+        learnings.write_text(
+            "## Review calibration (2026-06-01)\n- lower threshold to 4\n"
+        )
+
+        pr_ctx = {
+            "title": "t", "body": "", "branch": "b", "base": "main",
+            "state": "OPEN", "author": "a", "url": "u",
+            "diff": "some diff",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        mock_fetch.return_value = pr_ctx
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+        mock_reflect.return_value = []
+
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            run_review(
+                "owner", "repo", "1", "/tmp/project",
+                notify_fn=MagicMock(),
+                skill_dir=review_skill_dir,
+                project_name="myproj",
+            )
+
+        mock_reflect.assert_called_once()
+        hints = mock_reflect.call_args.kwargs.get("calibration_hints", "")
+        assert hints
+        assert "lower threshold to 4" in hints
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._reflect_findings")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.config.get_review_reflect_config", return_value={"threshold": 5})
+    @patch("app.config.get_model_config", return_value={
+        "mission": "m", "fallback": "f", "reflect": "haiku", "lightweight": "haiku",
+    })
+    @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
+    def test_reflect_hints_empty_without_calibration_section(
+        self, _mock_ignore, _mock_models, _mock_reflect_cfg,
+        mock_fetch, mock_claude, mock_reflect, mock_gh, _mock_repliable, _mock_shas,
+        review_skill_dir, tmp_path,
+    ):
+        """No calibration section → reflect gets empty hints (graceful default)."""
+        pr_ctx = {
+            "title": "t", "body": "", "branch": "b", "base": "main",
+            "state": "OPEN", "author": "a", "url": "u",
+            "diff": "some diff",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        mock_fetch.return_value = pr_ctx
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+        mock_reflect.return_value = []
+
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            run_review(
+                "owner", "repo", "1", "/tmp/project",
+                notify_fn=MagicMock(),
+                skill_dir=review_skill_dir,
+                project_name="myproj",
+            )
+
+        mock_reflect.assert_called_once()
+        assert mock_reflect.call_args.kwargs.get("calibration_hints", "") == ""
+
+
+# ---------------------------------------------------------------------------
 # close_pr field: review-driven PR closure
 # ---------------------------------------------------------------------------
 
@@ -5990,3 +6128,128 @@ class TestMaybePostInlineComments:
             assert _maybe_post_inline_comments(
                 "o", "r", "42", {"file_comments": []}, "abc123") == (0, 0)
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Review findings sidecar: _write_review_findings_sidecar
+# ---------------------------------------------------------------------------
+
+class TestWriteReviewFindingsSidecar:
+    def test_writes_sidecar_file(self, tmp_path):
+        """Sidecar JSON is written with correct structure."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        findings = [
+            {"file": "auth.py", "line_start": 10, "line_end": 12,
+             "severity": "warning", "title": "Mutable default",
+             "comment": "Use None instead", "code_snippet": ""},
+        ]
+        _write_review_findings_sidecar(
+            str(instance_dir), "owner", "repo", "42",
+            findings, base_ref="main", head_sha="abc123",
+            project_name="my-proj",
+        )
+        sidecar_path = instance_dir / ".review-findings" / "owner_repo_42.json"
+        assert sidecar_path.exists()
+        data = json.loads(sidecar_path.read_text())
+        assert data["base_ref"] == "main"
+        assert data["head_sha"] == "abc123"
+        assert data["pr_key"] == "owner/repo#42"
+        assert data["project_name"] == "my-proj"
+        assert len(data["file_comments"]) == 1
+        assert data["file_comments"][0]["file"] == "auth.py"
+        assert "timestamp" in data
+
+    def test_creates_directory_if_missing(self, tmp_path):
+        """The .review-findings directory is auto-created."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        _write_review_findings_sidecar(
+            str(instance_dir), "o", "r", "1",
+            [], base_ref="main", head_sha="def456",
+        )
+        assert (instance_dir / ".review-findings" / "o_r_1.json").exists()
+
+    def test_empty_findings_still_writes(self, tmp_path):
+        """Even with zero findings, a sidecar is written (records clean reviews)."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        _write_review_findings_sidecar(
+            str(instance_dir), "o", "r", "1",
+            [], base_ref="main", head_sha="aaa",
+        )
+        data = json.loads(
+            (instance_dir / ".review-findings" / "o_r_1.json").read_text()
+        )
+        assert data["file_comments"] == []
+
+    def test_survives_write_error(self, tmp_path):
+        """Write failures are swallowed (no exception raised)."""
+        _write_review_findings_sidecar(
+            "/nonexistent/path", "o", "r", "1",
+            [], base_ref="main", head_sha="bbb",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Review calibration config: get_review_calibration_config
+# ---------------------------------------------------------------------------
+
+class TestReviewCalibrationConfig:
+    """Tests for get_review_calibration_config() in app.config."""
+
+    def test_defaults_when_no_config(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={}):
+            cfg = get_review_calibration_config()
+        assert cfg == {"batch_size": 10, "stale_days": 90}
+
+    def test_reads_custom_values(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"batch_size": 20, "stale_days": 30},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["batch_size"] == 20
+        assert cfg["stale_days"] == 30
+
+    def test_non_dict_returns_defaults(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": "invalid",
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg == {"batch_size": 10, "stale_days": 90}
+
+    def test_invalid_batch_size_type(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"batch_size": "not_a_number"},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["batch_size"] == 10
+
+    def test_zero_batch_size_clamped_to_one(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"batch_size": 0},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["batch_size"] == 1
+
+    def test_negative_stale_days_clamped_to_one(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"stale_days": -5},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["stale_days"] == 1
+
+    def test_partial_config_uses_defaults(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"batch_size": 15},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["batch_size"] == 15
+        assert cfg["stale_days"] == 90

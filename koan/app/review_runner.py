@@ -793,6 +793,75 @@ def _run_claude_review(
         return "", error
 
 
+def _write_review_findings_sidecar(
+    instance_dir: str,
+    owner: str,
+    repo: str,
+    pr_number: str,
+    file_comments: list,
+    *,
+    base_ref: str,
+    head_sha: str,
+    project_name: str = "",
+) -> None:
+    """Write structured review findings to a sidecar JSON for post-merge outcome tracking."""
+    try:
+        import time as _time
+        sidecar_dir = Path(instance_dir) / ".review-findings"
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        sidecar_path = sidecar_dir / f"{owner}_{repo}_{pr_number}.json"
+        data = {
+            "pr_key": f"{owner}/{repo}#{pr_number}",
+            "project_name": project_name,
+            "base_ref": base_ref,
+            "head_sha": head_sha,
+            "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+            "file_comments": file_comments,
+        }
+        from app.utils import atomic_write_json
+        atomic_write_json(sidecar_path, data, indent=2)
+    except (OSError, TypeError, ValueError) as exc:
+        print(
+            f"[review_runner] failed to write review findings sidecar: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _load_calibration_hints(project_name: Optional[str]) -> str:
+    """Load calibration hints from learnings.md for the given project."""
+    if not project_name:
+        return ""
+    try:
+        learnings_path = (
+            KOAN_ROOT / "instance" / "memory" / "projects"
+            / project_name / "learnings.md"
+        )
+        if not learnings_path.is_file():
+            return ""
+        text = learnings_path.read_text()
+        last_section: list = []
+        in_section = False
+        for line in text.splitlines():
+            # Writer (_append_lessons_to_learnings) emits a level-2 heading:
+            # "## Review calibration (YYYY-MM-DD)". Match that, and end the
+            # section at the next level-2 heading.
+            if line.startswith("## Review calibration"):
+                in_section = True
+                last_section = [line]
+            elif in_section:
+                if line.startswith("## "):
+                    in_section = False
+                else:
+                    last_section.append(line)
+        return "\n".join(last_section).strip()
+    except OSError as exc:
+        print(
+            f"[review_runner] failed to load calibration hints: {exc}",
+            file=sys.stderr,
+        )
+        return ""
+
+
 def _reflect_findings(
     findings: list,
     diff: str,
@@ -800,6 +869,7 @@ def _reflect_findings(
     model: Optional[str],
     threshold: int,
     skill_dir: Optional[Path] = None,
+    calibration_hints: str = "",
 ) -> list:
     """Run a second-pass reflection on review findings and filter low-signal ones.
 
@@ -813,6 +883,7 @@ def _reflect_findings(
         project_path: Path to the project for codebase context.
         model: Model override for the reflection call (uses lightweight default).
         threshold: Minimum score (0-10) for a finding to be kept.
+        calibration_hints: Optional calibration hints from outcome tracking.
 
     Returns:
         Filtered list of findings.
@@ -832,6 +903,7 @@ def _reflect_findings(
             skill_dir, "reflect",
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
+            CALIBRATION_HINTS=calibration_hints or "(no calibration data available)",
         )
     except Exception as e:
         print(f"[reflect] prompt build failed: {e}", file=sys.stderr)
@@ -2279,6 +2351,7 @@ def _run_review_analysis(
     project_path: str,
     diff: str,
     skill_dir: Optional[Path] = None,
+    project_name: Optional[str] = None,
 ) -> Tuple[Optional[dict], str, Optional[str]]:
     """Run the provider review and parse it into structured review data.
 
@@ -2316,6 +2389,7 @@ def _run_review_analysis(
         reflect_cfg = get_review_reflect_config()
         reflect_model = models.get("reflect") or models.get("lightweight")
         reflect_threshold = reflect_cfg.get("threshold", 5)
+        calibration_hints = _load_calibration_hints(project_name)
         review_data["file_comments"] = _reflect_findings(
             review_data["file_comments"],
             diff,
@@ -2323,6 +2397,7 @@ def _run_review_analysis(
             reflect_model,
             reflect_threshold,
             skill_dir=skill_dir,
+            calibration_hints=calibration_hints,
         )
 
     return review_data, raw_output, error
@@ -2406,6 +2481,7 @@ def run_private_review(
     notify_fn(f"Analyzing code changes on `{context['branch']}` privately...")
     review_data, raw_output, error = _run_review_analysis(
         prompt, project_path, context.get("diff", ""), skill_dir=skill_dir,
+        project_name=project_name,
     )
     if not raw_output:
         detail = f" ({error})" if error else ""
@@ -2631,6 +2707,7 @@ def run_review(
     notify_fn(f"Analyzing code changes on `{context['branch']}`...")
     review_data, raw_output, error = _run_review_analysis(
         prompt, project_path, context.get("diff", ""), skill_dir=skill_dir,
+        project_name=project_name,
     )
     if not raw_output:
         detail = f" ({error})" if error else ""
@@ -2760,6 +2837,27 @@ def run_review(
             notify_fn(
                 f"Inline posting failed: 0 of {inline_attempted} comment(s) "
                 f"posted on PR #{pr_number}."
+            )
+
+    # Step 7a: Persist structured findings for post-merge outcome tracking
+    # Only written after review was successfully posted so we track
+    # findings that were actually delivered to the author.
+    if posted and review_data is not None:
+        _sidecar_head = current_shas[-1] if current_shas else ""
+        _sidecar_base = context.get("base", "main")
+        if _sidecar_head:
+            _write_review_findings_sidecar(
+                str(KOAN_ROOT / "instance"),
+                owner, repo, pr_number,
+                review_data.get("file_comments", []),
+                base_ref=_sidecar_base,
+                head_sha=_sidecar_head,
+                project_name=project_name or "",
+            )
+        else:
+            print(
+                "[review_runner] skipping outcome sidecar: no head SHA captured",
+                file=sys.stderr,
             )
 
     # Step 7b: Submit formal review verdict (APPROVE / REQUEST_CHANGES)

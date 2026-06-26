@@ -10,19 +10,25 @@ import pytest
 from app.pr_review_learning import (
     _analyze_rejection_with_cli,
     _append_lessons_to_learnings,
+    _cleanup_stale_sidecars,
+    _compute_finding_outcomes,
     _compute_review_hash,
     _fetch_issue_comments_for_pr,
     _fetch_review_comments_for_pr,
     _fetch_reviews_for_pr,
     _increment_failure_count,
     _is_cache_fresh,
+    _maybe_run_calibration_pass,
     _notify_analysis_failures,
     _parse_iso,
+    _process_review_findings_sidecars,
     _read_failure_count,
     _reset_failure_count,
+    _trim_outcomes_file,
     _write_cache,
     _write_rejection_journal_entries,
     _FAILURE_ALERT_THRESHOLD,
+    _MAX_OUTCOMES_LINES,
     analyze_reviews_with_cli,
     fetch_pr_reviews,
     format_reviews_for_analysis,
@@ -1153,3 +1159,485 @@ class TestCacheIncludesIssueComments:
         prs2 = [{"number": 1, "reviews": [], "review_comments": [],
                  "issue_comments": [{"body": "closing"}]}]
         assert _compute_review_hash(prs1) != _compute_review_hash(prs2)
+
+
+# ─── _compute_finding_outcomes ────────────────────────────────────────
+
+
+class TestComputeFindingOutcomes:
+    def test_finding_addressed_when_line_in_diff(self):
+        """Finding is addressed when its line appears in the diff hunk."""
+        finding = {"file": "auth.py", "line_start": 10, "line_end": 12,
+                   "severity": "warning", "title": "Mutable default"}
+        diff = (
+            "diff --git a/auth.py b/auth.py\n"
+            "--- a/auth.py\n"
+            "+++ b/auth.py\n"
+            "@@ -8,6 +8,7 @@\n"
+            " context\n"
+            "-old_line\n"
+            "+new_line\n"
+            " more context\n"
+        )
+        result = _compute_finding_outcomes([finding], diff)
+        assert len(result) == 1
+        assert result[0]["addressed"] is True
+        assert result[0]["title"] == "Mutable default"
+        assert result[0]["severity"] == "warning"
+
+    def test_finding_not_addressed_when_line_not_in_diff(self):
+        """Finding is not addressed when its line range is outside all hunks."""
+        finding = {"file": "auth.py", "line_start": 100, "line_end": 102,
+                   "severity": "critical", "title": "SQL injection"}
+        diff = (
+            "diff --git a/auth.py b/auth.py\n"
+            "--- a/auth.py\n"
+            "+++ b/auth.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            "+import os\n"
+            " line2\n"
+        )
+        result = _compute_finding_outcomes([finding], diff)
+        assert len(result) == 1
+        assert result[0]["addressed"] is False
+
+    def test_finding_addressed_within_window(self):
+        """Finding is addressed when hunk is within ±3 lines of the range."""
+        finding = {"file": "auth.py", "line_start": 10, "line_end": 10,
+                   "severity": "suggestion", "title": "Simplify"}
+        diff = (
+            "diff --git a/auth.py b/auth.py\n"
+            "--- a/auth.py\n"
+            "+++ b/auth.py\n"
+            "@@ -12,3 +12,4 @@\n"
+            "+new_line\n"
+        )
+        result = _compute_finding_outcomes([finding], diff)
+        assert result[0]["addressed"] is True
+
+    def test_finding_not_addressed_outside_window(self):
+        """Finding is not addressed when hunk is beyond ±3 lines."""
+        finding = {"file": "auth.py", "line_start": 10, "line_end": 10,
+                   "severity": "suggestion", "title": "Simplify"}
+        diff = (
+            "diff --git a/auth.py b/auth.py\n"
+            "--- a/auth.py\n"
+            "+++ b/auth.py\n"
+            "@@ -20,3 +20,4 @@\n"
+            "+new_line\n"
+        )
+        result = _compute_finding_outcomes([finding], diff)
+        assert result[0]["addressed"] is False
+
+    def test_file_not_in_diff(self):
+        """Finding for a file not in the diff is not addressed."""
+        finding = {"file": "other.py", "line_start": 1, "line_end": 5,
+                   "severity": "warning", "title": "Unused import"}
+        diff = (
+            "diff --git a/auth.py b/auth.py\n"
+            "--- a/auth.py\n"
+            "+++ b/auth.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            "+import os\n"
+        )
+        result = _compute_finding_outcomes([finding], diff)
+        assert result[0]["addressed"] is False
+
+    def test_empty_findings_returns_empty(self):
+        result = _compute_finding_outcomes([], "some diff")
+        assert result == []
+
+    def test_multiple_findings_mixed(self):
+        """Multiple findings: some addressed, some not."""
+        findings = [
+            {"file": "a.py", "line_start": 5, "line_end": 5,
+             "severity": "warning", "title": "A"},
+            {"file": "b.py", "line_start": 100, "line_end": 100,
+             "severity": "suggestion", "title": "B"},
+        ]
+        diff = (
+            "diff --git a/a.py b/a.py\n"
+            "--- a/a.py\n"
+            "+++ b/a.py\n"
+            "@@ -4,3 +4,4 @@\n"
+            "+fix\n"
+        )
+        result = _compute_finding_outcomes(findings, diff)
+        assert result[0]["addressed"] is True
+        assert result[1]["addressed"] is False
+
+
+# ─── _process_review_findings_sidecars ────────────────────────────────
+
+
+class TestProcessReviewFindingsSidecars:
+    def _make_sidecar(self, instance_dir, filename, data):
+        sidecar_dir = Path(instance_dir) / ".review-findings"
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        path = sidecar_dir / filename
+        path.write_text(json.dumps(data))
+        return path
+
+    def test_skips_when_no_sidecars(self, tmp_path):
+        """Returns 0 when .review-findings/ is empty or missing."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        result = _process_review_findings_sidecars(
+            str(instance_dir), "proj", "/repo",
+        )
+        assert result == 0
+
+    @patch("app.github.run_gh")
+    def test_skips_unmerged_pr(self, mock_gh, tmp_path):
+        """Sidecar for an unmerged PR is left in place."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        self._make_sidecar(instance_dir, "owner_repo_1.json", {
+            "pr_key": "owner/repo#1",
+            "project_name": "proj",
+            "base_ref": "main",
+            "head_sha": "abc",
+            "file_comments": [{"file": "a.py", "line_start": 1,
+                               "line_end": 1, "severity": "warning",
+                               "title": "Test"}],
+        })
+        mock_gh.return_value = '{"mergedAt": "", "headRefOid": ""}'
+        result = _process_review_findings_sidecars(
+            str(instance_dir), "proj", "/repo",
+        )
+        assert result == 0
+        assert (instance_dir / ".review-findings" / "owner_repo_1.json").exists()
+
+    @patch("subprocess.run")
+    @patch("app.github.run_gh")
+    def test_processes_merged_pr_and_writes_outcomes(self, mock_gh, mock_run, tmp_path):
+        """Merged PR sidecar is processed, outcomes written, sidecar cleaned up."""
+        instance_dir = tmp_path / "instance"
+        memory_dir = instance_dir / "memory" / "projects" / "proj"
+        memory_dir.mkdir(parents=True)
+        self._make_sidecar(instance_dir, "owner_repo_1.json", {
+            "pr_key": "owner/repo#1",
+            "project_name": "proj",
+            "base_ref": "main",
+            "head_sha": "abc123",
+            "file_comments": [{"file": "auth.py", "line_start": 10,
+                               "line_end": 12, "severity": "warning",
+                               "title": "Mutable default",
+                               "comment": "Use None", "code_snippet": ""}],
+        })
+        mock_gh.return_value = (
+            '{"mergedAt": "2026-06-10T12:00:00Z",'
+            ' "headRefOid": "final456"}'
+        )
+        diff_output = (
+            "diff --git a/auth.py b/auth.py\n"
+            "--- a/auth.py\n"
+            "+++ b/auth.py\n"
+            "@@ -9,4 +9,5 @@\n"
+            "+fixed\n"
+        )
+
+        def _run(cmd, *args, **kwargs):
+            # final_head already present locally → cat-file succeeds, then diff.
+            if cmd[:2] == ["git", "cat-file"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout=diff_output, stderr="")
+
+        mock_run.side_effect = _run
+        result = _process_review_findings_sidecars(
+            str(instance_dir), "proj", "/repo",
+        )
+        assert result == 1
+        outcomes_path = memory_dir / "review-outcomes.jsonl"
+        assert outcomes_path.exists()
+        lines = outcomes_path.read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["title"] == "Mutable default"
+        assert entry["addressed"] is True
+        assert not (instance_dir / ".review-findings" / "owner_repo_1.json").exists()
+        diff_cmds = [
+            c.args[0] for c in mock_run.call_args_list if c.args[0][:2] == ["git", "diff"]
+        ]
+        assert len(diff_cmds) == 1
+        assert "abc123..final456" in diff_cmds[0][2]
+
+    @patch("subprocess.run")
+    @patch("app.github.run_gh")
+    def test_handles_git_diff_failure(self, mock_gh, mock_run, tmp_path):
+        """When git diff fails, the sidecar is skipped but not deleted."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        self._make_sidecar(instance_dir, "owner_repo_2.json", {
+            "pr_key": "owner/repo#2",
+            "project_name": "proj",
+            "base_ref": "main",
+            "head_sha": "def456",
+            "file_comments": [{"file": "x.py", "line_start": 1,
+                               "line_end": 1, "severity": "warning",
+                               "title": "T"}],
+        })
+        mock_gh.return_value = (
+            '{"mergedAt": "2026-06-10T12:00:00Z",'
+            ' "headRefOid": "final789"}'
+        )
+
+        def _run(cmd, *args, **kwargs):
+            # final_head resolves, but the diff itself fails transiently.
+            if cmd[:2] == ["git", "cat-file"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=128, stdout="", stderr="fatal: bad object")
+
+        mock_run.side_effect = _run
+        result = _process_review_findings_sidecars(
+            str(instance_dir), "proj", "/repo",
+        )
+        assert result == 0
+        assert (instance_dir / ".review-findings" / "owner_repo_2.json").exists()
+
+    @patch("subprocess.run")
+    @patch("app.github.run_gh")
+    def test_drops_sidecar_when_final_head_unresolvable(self, mock_gh, mock_run, tmp_path):
+        """When final_head is pruned locally and unfetchable, the sidecar is
+        dropped (not retried forever) and counted as processed."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        self._make_sidecar(instance_dir, "owner_repo_3.json", {
+            "pr_key": "owner/repo#3",
+            "project_name": "proj",
+            "base_ref": "main",
+            "head_sha": "rev111",
+            "file_comments": [{"file": "y.py", "line_start": 1,
+                               "line_end": 1, "severity": "warning",
+                               "title": "T"}],
+        })
+        mock_gh.return_value = (
+            '{"mergedAt": "2026-06-10T12:00:00Z",'
+            ' "headRefOid": "gone222"}'
+        )
+
+        def _run(cmd, *args, **kwargs):
+            # cat-file always fails (SHA pruned); fetch can't recover it.
+            if cmd[:2] == ["git", "cat-file"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if cmd[:2] == ["git", "fetch"]:
+                return MagicMock(returncode=1, stdout="", stderr="not found")
+            raise AssertionError(f"git diff must not run for unresolvable SHA: {cmd}")
+
+        mock_run.side_effect = _run
+        result = _process_review_findings_sidecars(
+            str(instance_dir), "proj", "/repo",
+        )
+        assert result == 1
+        assert not (instance_dir / ".review-findings" / "owner_repo_3.json").exists()
+
+
+# ─── _trim_outcomes_file ──────────────────────────────────────────────
+
+
+class TestTrimOutcomesFile:
+    """Bound review-outcomes.jsonl so it can't grow without limit."""
+
+    def test_noop_when_file_missing(self, tmp_path):
+        # Must not raise on a nonexistent path.
+        _trim_outcomes_file(tmp_path / "review-outcomes.jsonl")
+
+    def test_under_cap_left_untouched(self, tmp_path):
+        path = tmp_path / "review-outcomes.jsonl"
+        body = "".join(f'{{"n": {i}}}\n' for i in range(10))
+        path.write_text(body)
+        _trim_outcomes_file(path)
+        assert path.read_text() == body
+
+    def test_over_cap_keeps_most_recent_lines(self, tmp_path):
+        path = tmp_path / "review-outcomes.jsonl"
+        total = _MAX_OUTCOMES_LINES + 50
+        path.write_text("".join(f'{{"n": {i}}}\n' for i in range(total)))
+        _trim_outcomes_file(path)
+        lines = path.read_text().strip().splitlines()
+        assert len(lines) == _MAX_OUTCOMES_LINES
+        # Oldest dropped, newest retained.
+        assert json.loads(lines[0])["n"] == 50
+        assert json.loads(lines[-1])["n"] == total - 1
+
+    def test_marker_decremented_by_dropped_count(self, tmp_path):
+        path = tmp_path / "review-outcomes.jsonl"
+        marker_path = tmp_path / ".review-calibration-marker.json"
+        total = _MAX_OUTCOMES_LINES + 30
+        path.write_text("".join(f'{{"n": {i}}}\n' for i in range(total)))
+        # All current lines marked processed.
+        marker_path.write_text(json.dumps({"last_processed_lines": total}))
+        _trim_outcomes_file(path)
+        marker = json.loads(marker_path.read_text())
+        # 30 lines dropped → marker drops by 30 so it never points past EOF.
+        assert marker["last_processed_lines"] == _MAX_OUTCOMES_LINES
+        assert marker["last_processed_lines"] <= len(
+            path.read_text().strip().splitlines()
+        )
+
+    def test_marker_floored_at_zero(self, tmp_path):
+        path = tmp_path / "review-outcomes.jsonl"
+        marker_path = tmp_path / ".review-calibration-marker.json"
+        total = _MAX_OUTCOMES_LINES + 30
+        path.write_text("".join(f'{{"n": {i}}}\n' for i in range(total)))
+        marker_path.write_text(json.dumps({"last_processed_lines": 5}))
+        _trim_outcomes_file(path)
+        marker = json.loads(marker_path.read_text())
+        assert marker["last_processed_lines"] == 0
+
+    @patch("subprocess.run")
+    @patch("app.github.run_gh")
+    def test_processing_trims_outcomes_over_cap(self, mock_gh, mock_run, tmp_path):
+        """_process_review_findings_sidecars bounds the outcomes log after appending."""
+        instance_dir = tmp_path / "instance"
+        memory_dir = instance_dir / "memory" / "projects" / "proj"
+        memory_dir.mkdir(parents=True)
+        outcomes_path = memory_dir / "review-outcomes.jsonl"
+        # Pre-seed the log at the cap so any new outcome pushes it over.
+        outcomes_path.write_text(
+            "".join(f'{{"n": {i}}}\n' for i in range(_MAX_OUTCOMES_LINES))
+        )
+
+        sidecar_dir = instance_dir / ".review-findings"
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        (sidecar_dir / "owner_repo_1.json").write_text(json.dumps({
+            "pr_key": "owner/repo#1",
+            "project_name": "proj",
+            "base_ref": "main",
+            "head_sha": "abc123",
+            "file_comments": [{"file": "auth.py", "line_start": 10,
+                               "line_end": 12, "severity": "warning",
+                               "title": "T", "comment": "c", "code_snippet": ""}],
+        }))
+        mock_gh.return_value = (
+            '{"mergedAt": "2026-06-10T12:00:00Z", "headRefOid": "final456"}'
+        )
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=("diff --git a/auth.py b/auth.py\n@@ -9,4 +9,5 @@\n+fixed\n"),
+            stderr="",
+        )
+
+        _process_review_findings_sidecars(str(instance_dir), "proj", "/repo")
+
+        lines = outcomes_path.read_text().strip().splitlines()
+        assert len(lines) == _MAX_OUTCOMES_LINES
+
+
+# ─── _maybe_run_calibration_pass ──────────────────────────────────────
+
+
+class TestMaybeRunCalibrationPass:
+    def test_skips_when_no_outcomes_file(self, tmp_path):
+        """No-op when review-outcomes.jsonl doesn't exist."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        result = _maybe_run_calibration_pass(
+            str(instance_dir), "proj", "/repo", batch_size=10,
+        )
+        assert result is False
+
+    def test_skips_when_below_batch_threshold(self, tmp_path):
+        """No-op when fewer than batch_size unprocessed entries."""
+        instance_dir = tmp_path / "instance"
+        mem_dir = instance_dir / "memory" / "projects" / "proj"
+        mem_dir.mkdir(parents=True)
+        outcomes_path = mem_dir / "review-outcomes.jsonl"
+        outcomes_path.write_text(
+            '{"title":"A","severity":"warning","addressed":true}\n'
+        )
+        result = _maybe_run_calibration_pass(
+            str(instance_dir), "proj", "/repo", batch_size=10,
+        )
+        assert result is False
+
+    @patch("app.pr_review_learning._run_calibration_cli")
+    def test_runs_when_above_threshold(self, mock_cli, tmp_path):
+        """Calibration runs when enough unprocessed outcomes exist."""
+        instance_dir = tmp_path / "instance"
+        mem_dir = instance_dir / "memory" / "projects" / "proj"
+        mem_dir.mkdir(parents=True)
+        outcomes_path = mem_dir / "review-outcomes.jsonl"
+        lines = '{"title":"A","severity":"warning","addressed":true}\n' * 12
+        outcomes_path.write_text(lines)
+        mock_cli.return_value = (
+            "### Review calibration (2026-06-14)\n\n"
+            "No calibration adjustments needed at this time."
+        )
+        result = _maybe_run_calibration_pass(
+            str(instance_dir), "proj", "/repo", batch_size=10,
+        )
+        assert result is True
+        learnings_path = mem_dir / "learnings.md"
+        assert learnings_path.exists()
+        assert "Review calibration" in learnings_path.read_text()
+        marker_path = mem_dir / ".review-calibration-marker.json"
+        assert marker_path.exists()
+
+    @patch("app.pr_review_learning._run_calibration_cli")
+    def test_skips_already_processed_entries(self, mock_cli, tmp_path):
+        """Only counts entries beyond the marker's last-processed line."""
+        instance_dir = tmp_path / "instance"
+        mem_dir = instance_dir / "memory" / "projects" / "proj"
+        mem_dir.mkdir(parents=True)
+        outcomes_path = mem_dir / "review-outcomes.jsonl"
+        lines = '{"title":"A","severity":"warning","addressed":true}\n' * 15
+        outcomes_path.write_text(lines)
+        marker = mem_dir / ".review-calibration-marker.json"
+        marker.write_text('{"last_processed_lines": 12}')
+        result = _maybe_run_calibration_pass(
+            str(instance_dir), "proj", "/repo", batch_size=10,
+        )
+        assert result is False
+        mock_cli.assert_not_called()
+
+    @patch("app.pr_review_learning._run_calibration_cli")
+    def test_cli_failure_returns_false(self, mock_cli, tmp_path):
+        """Returns False when the CLI call returns empty output."""
+        instance_dir = tmp_path / "instance"
+        mem_dir = instance_dir / "memory" / "projects" / "proj"
+        mem_dir.mkdir(parents=True)
+        outcomes_path = mem_dir / "review-outcomes.jsonl"
+        lines = '{"title":"A","severity":"warning","addressed":true}\n' * 12
+        outcomes_path.write_text(lines)
+        mock_cli.return_value = ""
+        result = _maybe_run_calibration_pass(
+            str(instance_dir), "proj", "/repo", batch_size=10,
+        )
+        assert result is False
+
+
+# ─── _cleanup_stale_sidecars ──────────────────────────────────────────
+
+
+class TestCleanupStaleSidecars:
+    def test_removes_old_sidecars(self, tmp_path):
+        """Sidecars older than stale_days are deleted."""
+        import os
+        import time as _time
+
+        instance_dir = tmp_path / "instance"
+        sidecar_dir = instance_dir / ".review-findings"
+        sidecar_dir.mkdir(parents=True)
+        old_file = sidecar_dir / "old_repo_1.json"
+        old_file.write_text('{"pr_key": "old/repo#1"}')
+        old_mtime = _time.time() - (100 * 86400)
+        os.utime(old_file, (old_mtime, old_mtime))
+        _cleanup_stale_sidecars(str(instance_dir), stale_days=90)
+        assert not old_file.exists()
+
+    def test_keeps_recent_sidecars(self, tmp_path):
+        """Sidecars newer than stale_days are kept."""
+        instance_dir = tmp_path / "instance"
+        sidecar_dir = instance_dir / ".review-findings"
+        sidecar_dir.mkdir(parents=True)
+        recent_file = sidecar_dir / "new_repo_2.json"
+        recent_file.write_text('{"pr_key": "new/repo#2"}')
+        _cleanup_stale_sidecars(str(instance_dir), stale_days=90)
+        assert recent_file.exists()
+
+    def test_noop_when_dir_missing(self, tmp_path):
+        """No error when .review-findings/ doesn't exist."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        _cleanup_stale_sidecars(str(instance_dir), stale_days=90)

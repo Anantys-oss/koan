@@ -26,6 +26,9 @@ Your task: for each finding, assign a score from 0 to 10 indicating how actionab
 - Misidentifying test utilities as production code
 - Generic advice not grounded in the specific diff ("consider adding tests")
 
+**Calibration hints (from post-merge outcome tracking):**
+{CALIBRATION_HINTS}
+
 **Findings list (JSON):**
 ```json
 {FINDINGS_JSON}

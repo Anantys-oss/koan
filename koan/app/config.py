@@ -1864,6 +1864,37 @@ def get_review_context_config() -> dict:
     }
 
 
+def get_review_calibration_config() -> dict:
+    """Get review calibration configuration from config.yaml.
+
+    Config key: review_calibration
+      - batch_size (int, >=1): Minimum new outcome entries before
+        triggering a calibration pass. Default: 10.
+      - stale_days (int, >=1): Days after which unprocessed sidecar
+        files are cleaned up. Default: 90.
+    """
+    config = _load_config()
+    cal_cfg = config.get("review_calibration", {}) or {}
+    if not isinstance(cal_cfg, dict):
+        cal_cfg = {}
+
+    batch_size = cal_cfg.get("batch_size", 10)
+    try:
+        batch_size = int(batch_size)
+    except (TypeError, ValueError):
+        batch_size = 10
+    batch_size = max(1, batch_size)
+
+    stale_days = cal_cfg.get("stale_days", 90)
+    try:
+        stale_days = int(stale_days)
+    except (TypeError, ValueError):
+        stale_days = 90
+    stale_days = max(1, stale_days)
+
+    return {"batch_size": batch_size, "stale_days": stale_days}
+
+
 def get_review_triage_config() -> dict:
     """Get review triage configuration from config.yaml.
 
