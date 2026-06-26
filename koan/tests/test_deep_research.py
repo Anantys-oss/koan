@@ -1427,6 +1427,60 @@ class TestPrCoverage:
 
         assert 555 in coverage["issue_numbers"]
 
+    def test_build_pr_coverage_body_closing_keyword(self, research_env):
+        """Issue numbers from 'Closes #N' in the PR body are collected.
+
+        Covers koan0/<descriptive-name> branches that reference the issue only
+        in the body, not the title or branch.
+        """
+        research = self._make_research(research_env, [
+            {
+                "number": 400,
+                "title": "feat: welcome screen",
+                "headRefName": "koan0/dashboard-welcome",
+                "body": "Adds a welcome screen.\n\nCloses #2131",
+            },
+        ])
+
+        coverage = research._build_pr_coverage()
+
+        assert 2131 in coverage["issue_numbers"]
+        assert coverage["pr_issues"][400] == {2131}
+
+    def test_build_pr_coverage_body_ignores_incidental_refs(self, research_env):
+        """Non-closing '#N' mentions in the body are not treated as coverage."""
+        research = self._make_research(research_env, [
+            {
+                "number": 401,
+                "title": "feat: thing",
+                "headRefName": "koan0/thing",
+                "body": "Related to #500 and follows up on #501. See discussion.",
+            },
+        ])
+
+        coverage = research._build_pr_coverage()
+
+        assert 500 not in coverage["issue_numbers"]
+        assert 501 not in coverage["issue_numbers"]
+
+    def test_topic_has_open_pr_body_closing_match(self, research_env):
+        """A topic is filtered when only the PR body declares it closes the issue."""
+        research = self._make_research(research_env, [
+            {
+                "number": 402,
+                "title": "feat: welcome screen",
+                "headRefName": "koan0/dashboard-welcome",
+                "body": "Closes #2131",
+            },
+        ])
+
+        coverage = research._build_pr_coverage()
+        result = research._topic_has_open_pr(
+            "GitHub #2131: Build welcome screen with project registry", coverage
+        )
+
+        assert result == 402
+
     def test_topic_has_open_pr_issue_match(self, research_env):
         """Topic referencing an issue covered by a PR is detected."""
         research = self._make_research(research_env, [
