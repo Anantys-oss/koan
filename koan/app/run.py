@@ -2679,7 +2679,7 @@ def _pump_skill_stdout(stdout, *, out_fh, pending_fh, tail, liveness=None):
 def _read_back_or_tail(stdout_file, tail):
     """Read the on-disk transcript; fall back to the in-RAM tail on error."""
     try:
-        return Path(stdout_file).read_text(errors="replace")
+        return Path(stdout_file).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "\n".join(tail)
 
@@ -2800,7 +2800,7 @@ def _run_skill_mission(
             pending_fh = open(pending_path, "a")
         except OSError as e:
             debug_log(f"[run] cannot open pending.md for streaming: {e}")
-        out_fh = open(stdout_file, "w")
+        out_fh = open(stdout_file, "w", encoding="utf-8")
         try:
             pending_fh = _pump_skill_stdout(
                 proc.stdout, out_fh=out_fh, pending_fh=pending_fh,
