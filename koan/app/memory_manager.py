@@ -1705,17 +1705,20 @@ def sanitize_memory_entry(content: str) -> Tuple[str, bool]:
 
     Last line of defense before stored memory reaches the LLM: an entry
     written before the intake scanner existed (or one that slipped through)
-    is checked here, on every read. Reuses ``prompt_guard.scan_mission_text``
-    so memory content is held to the same injection bar as incoming missions.
+    is checked here, on every read. Uses ``prompt_guard.scan_stored_memory``
+    rather than the intake scanner — memory is self-authored history injected
+    as data, so the ``shell_injection`` category (which caused ~100% of
+    false-positive blanks via ``sh``/``nc`` inline-code substrings) is
+    excluded while the reader-subverting categories stay armed.
 
     Returns ``(content, False)`` for clean entries and
     ``("[BLOCKED: injection pattern detected]", True)`` for flagged ones.
     """
     if not content:
         return content, False
-    from app.prompt_guard import scan_mission_text
+    from app.prompt_guard import scan_stored_memory
 
-    result = scan_mission_text(content)
+    result = scan_stored_memory(content)
     if result.blocked:
         logger.warning(
             "[memory] Blocked injection pattern in memory entry: %s", result.reason

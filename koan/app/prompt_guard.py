@@ -161,6 +161,33 @@ def scan_mission_text(text: str) -> GuardResult:
     Returns:
         GuardResult with blocked=True if injection detected.
     """
+    return _scan(text, _ALL_PATTERN_GROUPS)
+
+
+def scan_stored_memory(text: str) -> GuardResult:
+    """Scan already-stored, self-authored memory at read time.
+
+    Distinct from :func:`scan_mission_text` (the *intake* guard for untrusted
+    Telegram/GitHub input): memory entries are written by Kōan's own loop and
+    injected raw into the agent prompt as "Recent Project History" — not as
+    executable instructions. The ``shell_injection`` category is therefore
+    excluded: a backtick'd shell command appearing in a session summary is not
+    an injection vector for the *reading* agent (which is bound by OPSEC rules
+    and never executes snippets from its history log), yet it produced ~100% of
+    false-positive blanks because ``sh``/``nc`` match common inline-code
+    substrings (push, sync, instance…). Instruction-override, role-confusion,
+    secret-extraction and jailbreak markers — the categories that genuinely
+    subvert the reader — stay armed.
+
+    Returns:
+        GuardResult with blocked=True if a read-relevant injection is detected.
+    """
+    groups = [g for g in _ALL_PATTERN_GROUPS if g is not _SHELL_INJECTION_PATTERNS]
+    return _scan(text, groups)
+
+
+def _scan(text: str, pattern_groups: list) -> GuardResult:
+    """Run the severity-weighted injection scan over ``pattern_groups``."""
     if not text or not text.strip():
         return GuardResult(blocked=False)
 
@@ -168,7 +195,7 @@ def scan_mission_text(text: str) -> GuardResult:
     matched_categories: List[str] = []
     block_reason: Optional[str] = None
 
-    for pattern_group in _ALL_PATTERN_GROUPS:
+    for pattern_group in pattern_groups:
         for pattern, description, category, severity in pattern_group:
             if pattern.search(text):
                 if severity == "high":

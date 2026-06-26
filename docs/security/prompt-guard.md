@@ -47,8 +47,18 @@ Operators who want to audit detections before enforcing can set
   mission text, PR bodies, and code as data, not instructions.
 - **Assembly-time memory scanning** (`memory_manager.sanitize_memory_entry`)
   — last line of defense before stored memory reaches the LLM. Every entry
-  returned by `read_memory_window()` is run through `scan_mission_text()`;
+  returned by `read_memory_window()` is run through `scan_stored_memory()`;
   flagged entries have their content replaced with
   `[BLOCKED: injection pattern detected]` while the original line stays in
   the JSONL truth log for audit. This catches entries written before the
   intake guard existed, since scanning runs at read time, not write time.
+
+  Read-time scanning deliberately uses `scan_stored_memory()`, **not** the
+  intake `scan_mission_text()`. Memory is self-authored history injected as
+  data, not executable instructions, so the `shell_injection` category is
+  excluded: a backtick'd shell command in a session summary is not an injection
+  vector for the reading agent (bound by OPSEC rules), yet `sh`/`nc` matching
+  common inline-code substrings (`push`, `sync`, `instance`) produced
+  effectively all false-positive blanks. The reader-subverting categories —
+  instruction override, role confusion, secret extraction, jailbreak — stay
+  armed at read time.

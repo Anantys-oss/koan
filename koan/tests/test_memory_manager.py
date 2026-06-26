@@ -2025,6 +2025,16 @@ class TestSanitizeMemoryEntry:
         assert blocked is True
         assert sanitized == "[BLOCKED: injection pattern detected]"
 
+    def test_backtick_shell_substring_not_blanked(self):
+        """Self-authored history with inline code (push/sync/flush) survives.
+
+        These backtick'd substrings (sh/nc) triggered the intake shell guard and
+        blanked ~16% of real memory entries; the read-time scanner excludes that
+        category, so legitimate session summaries pass through verbatim.
+        """
+        content = "Session 41 (project: koan): `git push`, flush + sync of instance"
+        assert sanitize_memory_entry(content) == (content, False)
+
     def test_read_window_replaces_poisoned_entry_content(self, tmp_path):
         """A poisoned memory entry is masked at read time, not served verbatim."""
         instance = str(tmp_path)
