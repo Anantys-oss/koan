@@ -150,32 +150,26 @@ def fetch_github_issues(refs: List[Tuple[str, str, int]]) -> str:
         refs = refs[:MAX_REFS]
     import json
 
+    from app.github import run_gh
+
     lines: List[str] = []
     for owner, repo, number in refs:
         slug = f"{owner}/{repo}#{number}"
         try:
-            proc = subprocess.run(
-                [
-                    "gh", "issue", "view", str(number),
-                    "--repo", f"{owner}/{repo}",
-                    "--json", "title,body",
-                ],
-                capture_output=True,
-                text=True,
+            stdout = run_gh(
+                "issue", "view", str(number),
+                "--repo", f"{owner}/{repo}",
+                "--json", "title,body",
                 timeout=GH_TIMEOUT_SECONDS,
-                check=False,
             )
         except FileNotFoundError:
             logger.warning("[enrichment] gh CLI unavailable; skipping GitHub issue enrichment")
             return ""
-        except (OSError, subprocess.TimeoutExpired) as e:
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             logger.debug("[enrichment] gh fetch failed for %s: %s", slug, e)
             continue
-        if proc.returncode != 0:
-            logger.debug("[enrichment] gh non-zero for %s: %s", slug, proc.stderr.strip())
-            continue
         try:
-            data = json.loads(proc.stdout)
+            data = json.loads(stdout)
         except (json.JSONDecodeError, TypeError):
             continue
         title = (data.get("title") or "").strip()
