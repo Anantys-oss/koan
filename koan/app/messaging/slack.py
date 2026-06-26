@@ -66,6 +66,9 @@ class SlackProvider(MessagingProvider):
         self._last_send_time: float = 0.0
         self._connect_lock = threading.Lock()
         self._connected: bool = False
+        # One-shot guard so the "no usable liveness probe" warning is logged
+        # once, not on every 3s drain.
+        self._probe_warned: bool = False
 
         # Threading state. Slack threads are keyed by ``thread_ts`` (a string),
         # but the bridge's reply-context plumbing carries an int
@@ -339,7 +342,7 @@ class SlackProvider(MessagingProvider):
                 self._start_socket_mode()
 
     def _is_socket_alive(self) -> bool:
-        """Best-effort liveness probe; treat an unknown or raising probe.
+        """Best-effort liveness probe; treat an unknown probe as alive and a raising probe as dead.
 
         Returns True (assume alive) only when the SDK exposes no usable probe.
         A probe that raises is treated as dead so a persistently-failing socket
@@ -347,6 +350,16 @@ class SlackProvider(MessagingProvider):
         """
         probe = getattr(self._socket_client, "is_connected", None)
         if not callable(probe):
+            # No usable probe: we can't tell, so we assume alive to avoid
+            # churn. slack_sdk's SocketModeClient does expose is_connected(),
+            # so in practice this branch only fires on an unexpected SDK. Make
+            # the blind spot observable (once) rather than silently re-creating
+            # the 'bridge goes deaf with no signal' failure mode this PR fixes.
+            if not self._probe_warned:
+                print("[slack] SocketModeClient exposes no is_connected() probe; "
+                      "cannot detect a dead socket — assuming alive.",
+                      file=sys.stderr)
+                self._probe_warned = True
             return True
         try:
             return bool(probe())
