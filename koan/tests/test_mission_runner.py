@@ -3944,7 +3944,7 @@ class TestProvenanceWrapper:
         # record_provenance is the thin wrapper; drive its inner helpers.
         with patch("app.provenance.get_changed_files", return_value=["pkg/mod.py"]), \
              patch("app.provenance._head_sha", return_value="abc123"), \
-             patch("app.provenance._resolve_base_branch", return_value="main"):
+             patch("app.provenance.resolve_base_branch", return_value="main"):
             mission_runner.record_provenance(
                 str(inst), "my-toolkit", "/repo", "Wire provenance"
             )
