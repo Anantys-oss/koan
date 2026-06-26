@@ -61,6 +61,13 @@ On every boot, `KOAN_DEPLOY=railway` makes the entrypoint:
   program). On Railway the dashboard is the primary UI; on every other deploy
   the program stays idle. The port is overridable via `KOAN_DASHBOARD_PORT`
   (falls back to `PORT`, then `5000`).
+- **Refuse to start `ollama serve`.** The hosted profile defaults to the Claude
+  provider, and `ollama serve` is the single largest idle RAM consumer in the
+  stack. Even if the resolved provider is `ollama`, the launcher refuses to
+  start the bundled `ollama serve` unless you explicitly set
+  `KOAN_ALLOW_OLLAMA=1`. On every deploy (Railway or not) `ollama serve` is
+  also never started when the resolved provider is anything other than
+  `ollama`.
 
 ## Dashboard passphrase (`KOAN_DASHBOARD_PWD`)
 
@@ -104,6 +111,7 @@ service variables are set.
 | Git prompts for a username | No token set — set `KOAN_GH_TOKEN` (or `GH_TOKEN`). |
 | PRs/commits authored by the operator, not the bot | Railway injected its own `GH_TOKEN`; set `KOAN_GH_TOKEN` to the bot token (it overrides `GH_TOKEN`). |
 | No projects after a redeploy | Put config in `instance/projects.yaml`, not the repo root. |
+| `ollama serve` not starting (intended) | Hosted profile refuses it to save RAM. Set provider to `ollama` **and** `KOAN_ALLOW_OLLAMA=1` to run it on Railway. |
 
 ## Local / dev installs
 
