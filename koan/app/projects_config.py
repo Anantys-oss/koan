@@ -866,7 +866,12 @@ def apply_project_patch(koan_root: str, project_name: str, patch: dict) -> dict:
     save_projects_config(koan_root, full)
     invalidate_projects_config_cache()
 
-    fresh = load_projects_config(koan_root) or {}
+    # A falsy reload after a successful write means the file became
+    # unreadable/empty — surface it instead of substituting `{}`, which would
+    # report computed defaults as if they were the just-saved values.
+    fresh = load_projects_config(koan_root)
+    if not fresh:
+        raise ValueError("projects.yaml reload returned no config after save")
     return get_project_config(fresh, canonical)
 
 

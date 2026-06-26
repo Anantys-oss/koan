@@ -81,11 +81,17 @@ def chat_history():
     binds to a stable {role, content} shape.
     """
     messages = load_recent_history(state.CONVERSATION_HISTORY_FILE, max_messages=20)
-    normalized = [
-        {"role": m.get("role", "assistant"), "content": m.get("text", "")}
-        for m in messages
-    ]
-    return jsonify({"ok": True, "messages": normalized})
+    normalized = []
+    skipped = 0
+    for m in messages:
+        text = m.get("text")
+        if not text:
+            # Malformed/truncated JSONL line — skip rather than render a
+            # confusing blank chat bubble. Count so the response signals it.
+            skipped += 1
+            continue
+        normalized.append({"role": m.get("role", "assistant"), "content": text})
+    return jsonify({"ok": True, "messages": normalized, "skipped": skipped})
 
 
 @chat_bp.route("/chat/send", methods=["POST"])

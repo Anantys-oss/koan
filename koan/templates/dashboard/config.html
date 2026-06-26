@@ -413,9 +413,11 @@
     const status = document.getElementById('project-form-status');
     if (!sel) return;
 
-    // Field spec mirrors EDITABLE_PROJECT_FIELDS server-side.
+    // Field spec mirrors EDITABLE_PROJECT_FIELDS server-side. The cli_provider
+    // options are filled from /api/providers so they stay in sync with the
+    // backend registry instead of drifting from a hardcoded list.
     const SPEC = [
-        { key: 'cli_provider', type: 'select', options: ['', 'claude', 'cline', 'copilot'] },
+        { key: 'cli_provider', type: 'select', options: [''] },
         { key: 'autoreview', type: 'bool' },
         { key: 'focus', type: 'bool' },
         { key: 'exploration', type: 'bool' },
@@ -438,6 +440,19 @@
 
     function renderFields(cfg) {
         fields.innerHTML = SPEC.map(f => controlFor(f, cfg[f.key])).join('');
+    }
+
+    async function loadProviders() {
+        try {
+            const data = await (await fetch('/api/providers')).json();
+            if (data.ok && Array.isArray(data.providers)) {
+                const spec = SPEC.find(f => f.key === 'cli_provider');
+                spec.options = [''].concat(data.providers);
+            }
+        } catch (e) {
+            // Non-fatal: fall back to the default-only option list.
+            console.warn('provider list load failed:', e);
+        }
     }
 
     async function loadProjectList() {
@@ -486,7 +501,7 @@
         }
     });
 
-    loadProjectList();
+    loadProviders().then(loadProjectList);
 })();
 
 /* ------------------------------------------------------------------ */
