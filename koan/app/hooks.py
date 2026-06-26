@@ -219,12 +219,20 @@ class HookRegistry:
             print(f"[hooks] Failed to load automation rules: {exc}", file=sys.stderr)
             return
 
-        for rule in rules:
-            if rule.event != event:
-                continue
-            if not rule.enabled:
-                continue
-            if self._loop_guard(rule):
+        matching = [r for r in rules if r.event == event and r.enabled]
+        if not matching:
+            return
+
+        from app.utils import load_config
+        try:
+            config = load_config() or {}
+        except Exception as exc:
+            print(f"[hooks] Could not load config for loop guard: {exc}", file=sys.stderr)
+            config = {}
+        max_fires = config.get("automation_rules", {}).get("max_fires_per_minute", 5)
+
+        for rule in matching:
+            if self._loop_guard(rule, max_fires=max_fires):
                 print(
                     f"[hooks] Loop guard triggered for rule {rule.id} "
                     f"(action={rule.action}) — skipping.",
@@ -242,22 +250,14 @@ class HookRegistry:
                     file=sys.stderr,
                 )
 
-    def _loop_guard(self, rule: AutomationRule) -> bool:
+    def _loop_guard(self, rule: AutomationRule, max_fires: int = 5) -> bool:
         """Return True (skip) if rule has exceeded max_fires_per_minute.
 
-        The counter is in-memory and resets on process restart.
-        Threshold is read from instance/config.yaml under
-        automation_rules.max_fires_per_minute (default 5).
+        The counter is in-memory and resets on process restart. The threshold
+        is resolved once per event by the caller (from instance/config.yaml
+        under automation_rules.max_fires_per_minute, default 5) so all rules
+        in the same event fire see a consistent value.
         """
-        from app.utils import load_config
-        config = {}
-        try:
-            config = load_config() or {}
-        except Exception as exc:
-            print(f"[hooks] Could not load config for loop guard: {exc}", file=sys.stderr)
-        max_fires = (
-            config.get("automation_rules", {}).get("max_fires_per_minute", 5)
-        )
         window = 60.0  # seconds
         now = time.monotonic()
 

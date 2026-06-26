@@ -655,6 +655,33 @@ class TestAutomationRuleExecution:
         outbox_text = (tmp_path / "outbox.md").read_text()
         assert outbox_text.count("tick") == 2
 
+    def test_config_loaded_once_per_event(self, tmp_path):
+        """All rules in a single event fire resolve max_fires from one config
+        read, so they cannot see inconsistent thresholds mid-loop."""
+        _write_rules(str(tmp_path), [
+            {"id": f"r{i}", "event": "post_mission", "action": "notify",
+             "params": {"message": f"m{i}"}, "enabled": True, "created": ""}
+            for i in range(3)
+        ])
+        registry = self._make_registry(tmp_path)
+        with patch("app.utils.load_config",
+                   return_value={"automation_rules": {"max_fires_per_minute": 5}}) as mock_cfg:
+            registry.fire("post_mission")
+        # 3 matching rules, but config read exactly once for the event
+        assert mock_cfg.call_count == 1
+        assert (tmp_path / "outbox.md").read_text().count("m") == 3
+
+    def test_no_config_read_when_no_rules_match(self, tmp_path):
+        """An event with no matching enabled rules skips config loading."""
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "session_start", "action": "notify",
+             "params": {"message": "x"}, "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        with patch("app.utils.load_config") as mock_cfg:
+            registry.fire("post_mission")
+        mock_cfg.assert_not_called()
+
     def test_notify_action_appends_to_outbox(self, tmp_path):
         _write_rules(str(tmp_path), [
             {"id": "r1", "event": "post_mission", "action": "notify",
