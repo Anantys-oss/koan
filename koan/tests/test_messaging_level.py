@@ -102,6 +102,21 @@ def test_notify_outcome_suppressed_when_agent_loop_reports(monkeypatch):
     assert logged and logged[0][1].startswith("✅ Reviewed")  # still logged
 
 
+def test_notify_outcome_failure_still_sent_when_flag_set(monkeypatch):
+    """Even with KOAN_SUPPRESS_RUNNER_OUTCOME=1, a failure outcome line is still
+    sent: the agent-loop replacement carries only the mission title, so the
+    runner's detailed failure reason must reach chat (#2153 regression)."""
+    logged, sent = [], []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: logged.append((cat, msg)))
+    monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+    ml.notify_outcome(
+        "❌ Review failed https://github.com/o/r/pull/1: lint errors",
+        lambda m: sent.append(m),
+    )
+    assert sent == ["❌ Review failed https://github.com/o/r/pull/1: lint errors"]
+    assert logged and logged[0][1].startswith("❌ Review failed")
+
+
 def test_notify_outcome_not_suppressed_when_flag_unset(monkeypatch):
     sent = []
     monkeypatch.setattr(ml, "_log", lambda cat, msg: None)

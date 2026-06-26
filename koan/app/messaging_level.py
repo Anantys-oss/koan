@@ -173,12 +173,18 @@ def notify_outcome(msg: str, send_fn=None) -> None:
 
     When ``KOAN_SUPPRESS_RUNNER_OUTCOME=1`` is set in the environment (by the
     agent loop for tracked skills like /review, /rebase, /plan in normal mode),
-    the runner's outcome line is logged only and not sent — the agent loop emits
-    the canonical "✅ [project] 🔍 Reviewed <url>" completion line instead, so
-    sending here too would duplicate the same information to the user (#2153).
+    a runner *success* outcome line is logged only and not sent — the agent loop
+    emits the canonical "✅ [project] 🔍 Reviewed <url>" completion line instead,
+    so sending here too would duplicate the same information to the user (#2153).
+    Failure outcome lines are still sent: the agent-loop replacement carries only
+    the mission title ("❌ ... Failed: /review <url>"), so suppressing the
+    runner's failure line would drop the specific reason from chat.
     """
     _log("outcome", msg)
-    if os.environ.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1":
+    if (
+        os.environ.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1"
+        and msg.lstrip().startswith("✅")
+    ):
         return
     if isinstance(send_fn, _ProgressNotifier):
         send_fn = send_fn.raw_send
