@@ -27,6 +27,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -870,7 +871,13 @@ def run_command_streaming(
 
     from app.cli_exec import popen_cli
 
-    raw_lines: List[str] = []  # for error reporting (full transcript)
+    # raw_lines is scanned only for error/max-turns detection, never returned,
+    # so a bounded tail is safe and caps RAM on long provider streams. 2000 is
+    # deliberately generous so terminal _format_cli_error context and the
+    # non-stream-json max-turns regex fallback keep working.
+    raw_lines = deque(maxlen=2000)  # for error reporting (terminal lines)
+    # text_lines IS the fallback return value when no result event arrives —
+    # it must stay unbounded or long sessions would silently lose output.
     text_lines: List[str] = []  # fallback return value when no result event
     final_result: Optional[str] = None
     usage_snapshot: Optional[Dict[str, Any]] = None

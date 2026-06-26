@@ -31,6 +31,7 @@ import tempfile
 import threading
 import time
 import traceback
+from collections import deque
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -2648,6 +2649,41 @@ def _restore_koan_branch(koan_root: str, expected_branch: str):
             log("error", f"Failed to restore koan branch: {e}")
 
 
+def _pump_skill_stdout(stdout, *, out_fh, pending_fh, tail, liveness=None):
+    """Stream a skill subprocess's stdout to disk line-by-line.
+
+    Each line is written to *out_fh* (the per-mission stdout capture that
+    run_post_mission reads) and mirrored to *pending_fh* (pending.md, for
+    ``/live``). Only a bounded *tail* deque is retained in RAM, so a verbose
+    skill session cannot accumulate the full transcript in memory.
+
+    Returns the still-open *pending_fh*, or ``None`` if a write error disabled
+    the pending sink (out_fh writes continue regardless).
+    """
+    for line in stdout:
+        if liveness is not None:
+            liveness.heartbeat()
+        stripped = line.rstrip("\n")
+        tail.append(stripped)
+        print(stripped)
+        out_fh.write(f"{stripped}\n")
+        if pending_fh is not None:
+            try:
+                pending_fh.write(f"{stripped}\n")
+                pending_fh.flush()
+            except OSError:
+                pending_fh = None
+    return pending_fh
+
+
+def _read_back_or_tail(stdout_file, tail):
+    """Read the on-disk transcript; fall back to the in-RAM tail on error."""
+    try:
+        return Path(stdout_file).read_text(errors="replace")
+    except OSError:
+        return "\n".join(tail)
+
+
 def _run_skill_mission(
     skill_cmd: list,
     koan_root: str,
@@ -2689,7 +2725,7 @@ def _run_skill_mission(
 
     debug_log(f"[run] skill exec: cmd={' '.join(skill_cmd)}")
     debug_log(f"[run] skill exec: cwd={koan_pkg_dir} timeout={skill_timeout}s")
-    stdout_lines = []
+    tail = deque(maxlen=200)
     proc = None
 
     # Create temp files for post-mission processing up front.
@@ -2718,6 +2754,7 @@ def _run_skill_mission(
     if _mission_model_key:
         skill_env["KOAN_MISSION_MODEL_KEY"] = _mission_model_key
     stderr_fh = None
+    out_fh = None
     try:
         stderr_fh = open(stderr_file, "w")
         proc = subprocess.Popen(
@@ -2755,26 +2792,20 @@ def _run_skill_mission(
                 ),
             ).start()
 
-        # Stream stdout line-by-line, appending each to pending.md
-        # so /live shows real-time progress.
+        # Stream stdout line-by-line into stdout_file (the post-mission
+        # source) and pending.md (/live), keeping only a bounded tail in RAM
+        # so a verbose skill session cannot buffer the whole transcript.
         pending_fh = None
         try:
             pending_fh = open(pending_path, "a")
         except OSError as e:
             debug_log(f"[run] cannot open pending.md for streaming: {e}")
+        out_fh = open(stdout_file, "w")
         try:
-            for line in proc.stdout:
-                if liveness is not None:
-                    liveness.heartbeat()
-                stripped = line.rstrip("\n")
-                stdout_lines.append(stripped)
-                print(stripped)
-                if pending_fh is not None:
-                    try:
-                        pending_fh.write(f"{stripped}\n")
-                        pending_fh.flush()
-                    except OSError:
-                        pending_fh = None
+            pending_fh = _pump_skill_stdout(
+                proc.stdout, out_fh=out_fh, pending_fh=pending_fh,
+                tail=tail, liveness=liveness,
+            )
         finally:
             if pending_fh is not None:
                 pending_fh.close()
@@ -2784,11 +2815,12 @@ def _run_skill_mission(
 
         proc.wait(timeout=30)
         if watchdog.fired or (liveness and liveness.fired):
+            out_fh.close()
+            out_fh = None
             raise subprocess.TimeoutExpired(skill_cmd, skill_timeout)
         exit_code = proc.returncode
-        skill_stdout = "\n".join(stdout_lines)
         # Provider stream mode can persist token usage to a sidecar file.
-        # Append that JSON payload to stdout capture so token_parser can
+        # Append that JSON payload to the on-disk capture so token_parser can
         # account for skill-dispatch sessions in run_post_mission.
         with suppress_logged(log, "warning", "Skill stream usage read failed", OSError, json.JSONDecodeError):
             raw_usage = Path(stream_usage_file).read_text().strip()
@@ -2796,10 +2828,14 @@ def _run_skill_mission(
                 usage_payload = json.loads(raw_usage)
                 if isinstance(usage_payload, dict):
                     usage_json = json.dumps(usage_payload, separators=(",", ":"))
-                    if skill_stdout:
-                        skill_stdout = f"{skill_stdout}\n{usage_json}"
-                    else:
-                        skill_stdout = usage_json
+                    out_fh.write(f"{usage_json}\n")
+        out_fh.flush()
+        out_fh.close()
+        out_fh = None
+        # Full transcript is genuinely needed by the caller (_extract_pr_url,
+        # the "— skipping" check, error classification): read it back from
+        # disk once instead of holding every line in RAM for the whole run.
+        skill_stdout = _read_back_or_tail(stdout_file, tail)
         # Read stderr from file after process exits.
         stderr_fh.close()
         stderr_fh = None
@@ -2828,7 +2864,7 @@ def _run_skill_mission(
         debug_log(f"[run] skill exec: TIMEOUT ({timeout_kind}: {timeout_val}s)")
         # Log last lines of captured output so the journal shows *where*
         # the run stalled, not just that it timed out.
-        tail_lines = stdout_lines[-20:] if stdout_lines else []
+        tail_lines = list(tail)[-20:]
         if tail_lines:
             tail_preview = "\n".join(tail_lines)
             log("info", f"Last output before timeout:\n{tail_preview}")
@@ -2842,7 +2878,10 @@ def _run_skill_mission(
             if _timeout_stderr:
                 debug_log(f"[run] timeout stderr:\n{_timeout_stderr[:2000]}")
         exit_code = 1
-        skill_stdout = "\n".join(stdout_lines)
+        if out_fh is not None:
+            with suppress_logged(log, "debug", "Skill stdout flush failed", OSError):
+                out_fh.flush()
+        skill_stdout = _read_back_or_tail(stdout_file, tail)
         skill_stderr = ""
     except Exception as e:
         if proc is not None:
@@ -2850,9 +2889,15 @@ def _run_skill_mission(
         log("error", f"Skill runner failed: {e}\n{traceback.format_exc()}")
         debug_log(f"[run] skill exec: EXCEPTION {e}")
         exit_code = 1
-        skill_stdout = "\n".join(stdout_lines)
+        if out_fh is not None:
+            with suppress_logged(log, "debug", "Skill stdout flush failed", OSError):
+                out_fh.flush()
+        skill_stdout = _read_back_or_tail(stdout_file, tail)
         skill_stderr = ""
     finally:
+        if out_fh is not None:
+            with suppress_logged(log, "debug", "Skill stdout file close failed", OSError):
+                out_fh.close()
         if proc is not None and proc.stdout is not None:
             with suppress_logged(log, "debug", "Skill proc stdout close failed", OSError):
                 proc.stdout.close()
@@ -2876,9 +2921,8 @@ def _run_skill_mission(
         "quota_info": None,
     }
     try:
-        with open(stdout_file, 'wb') as f:
-            f.write(skill_stdout.encode('utf-8'))
-
+        # stdout_file is already populated by _pump_skill_stdout (plus the
+        # usage-JSON line); no re-write from the in-memory string is needed.
         _skill_prefix = f"Run {run_num}"
         set_status(koan_root, f"{_skill_prefix} — finalizing")
         from app.mission_runner import run_post_mission

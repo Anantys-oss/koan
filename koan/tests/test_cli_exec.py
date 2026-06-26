@@ -530,6 +530,18 @@ class TestStreamWithTimeout:
         assert result.stderr == ""
         assert result.timed_out is False
 
+    def test_returns_full_stdout_not_just_tail(self):
+        # 500 lines of output; the returned result must contain all of them,
+        # proving the result accumulator is intentionally unbounded (guards
+        # against an over-eager future cap — see #2173).
+        lines = [f"{i}\n" for i in range(500)]
+        proc = _fake_proc(lines, returncode=0)
+        result = stream_with_timeout(proc, timeout=30)
+        out = result.stdout.splitlines()
+        assert out[0] == "0"
+        assert out[-1] == "499"
+        assert len(out) == 500
+
     def test_forwards_each_line_to_callback(self):
         proc = _fake_proc(["one\n", "two\n", "three\n"], returncode=0)
         seen = []
