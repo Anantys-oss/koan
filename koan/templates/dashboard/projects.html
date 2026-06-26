@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block page_title %}Projects{% endblock %}
+{% block content %}
+<div class="k-row k-row--between" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+  <h1 class="k-heading-sm">Projects</h1>
+  <div id="health-summary" class="k-stat-group" data-src="/api/health" style="display:flex;align-items:center;gap:.5rem;">
+    <span class="k-badge" id="health-disk">disk …</span>
+    <span class="k-badge" id="health-run">run …</span>
+    <span class="k-badge" id="health-awake">awake …</span>
+    <button class="k-btn k-btn--primary" onclick="document.getElementById('add-modal').showModal()">+ Add project</button>
+  </div>
+</div>
+
+{% if add_error %}<p class="k-alert k-alert--error">{{ add_error }}</p>{% endif %}
+
+<div class="k-grid k-grid--cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-top:1rem;">
+  {% for p in projects %}
+  <section class="k-card" data-project="{{ p.name }}">
+    <header class="k-card__header" style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;">
+      <h2 class="k-card__title">{{ p.name }}</h2>
+      {% if p.github_url %}
+        <a href="{{ p.github_url }}" target="_blank" rel="noopener" class="k-link">GitHub ↗</a>
+      {% endif %}
+    </header>
+    <div class="k-stat-row" style="display:flex;gap:1rem;flex-wrap:wrap;margin:.5rem 0;">
+      <span class="k-stat"><b>{{ p.pending }}</b> pending</span>
+      <span class="k-stat"><b>{{ p.in_progress }}</b> in&nbsp;progress</span>
+      <span class="k-stat">{{ p.cli_provider or 'default' }}{% if p.model %} · {{ p.model }}{% endif %}</span>
+    </div>
+    <p class="k-muted">Last activity:
+      {% if p.last_activity %}<time data-ts="{{ p.last_activity }}">{{ p.last_activity }}</time>{% else %}N/A{% endif %}
+    </p>
+    {% if p.checklist %}
+    <ul class="k-checklist">
+      {% for item in p.checklist %}
+        <li class="k-checklist__item k-checklist__item--{{ item.severity|default('warn') }}">
+          ⚠ {{ item.label }} — <a href="/config" class="k-link">fix</a>
+        </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <footer class="k-card__actions" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.75rem;">
+      <a class="k-btn k-btn--sm" href="/prs?project={{ p.name }}">PRs</a>
+      <a class="k-btn k-btn--sm" href="/missions?project={{ p.name }}">Add mission</a>
+      <a class="k-btn k-btn--sm" href="/config">Settings</a>
+      <button class="k-btn k-btn--sm" onclick="koanPause()" title="Pauses the whole agent, not just this project">Pause agent (global)</button>
+    </footer>
+  </section>
+  {% endfor %}
+</div>
+
+<dialog id="add-modal" class="k-modal">
+  <form method="post" action="/projects/add" onsubmit="return koanValidateUrl(this)">
+    <h3>Add project</h3>
+    <label>GitHub URL <input name="github_url" id="gh-url" required placeholder="https://github.com/owner/repo"></label>
+    <label>Name (optional) <input name="name" placeholder="auto from URL"></label>
+    <p id="url-error" class="k-alert k-alert--error" hidden>Enter a valid GitHub URL.</p>
+    <menu style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:.75rem;">
+      <button type="button" class="k-btn" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="submit" class="k-btn k-btn--primary">Add</button>
+    </menu>
+  </form>
+</dialog>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function koanValidateUrl(form) {
+  const v = form.github_url.value.trim();
+  const ok = /^(https?:\/\/|git@)[^\s]+\/[^\s]+/.test(v);
+  document.getElementById('url-error').hidden = ok;
+  return ok;
+}
+function koanPause() {
+  fetch('/api/agent/pause', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
+    .then(() => location.reload());
+}
+(function loadHealth() {
+  const el = document.getElementById('health-summary');
+  if (!el) return;
+  fetch(el.dataset.src)
+    .then(r => r.json()).then(h => {
+      document.getElementById('health-disk').textContent = 'disk ' + (h.disk.used_pct ?? '–') + '%';
+      document.getElementById('health-run').textContent = h.run.alive ? 'run ✓' : 'run ✗';
+      document.getElementById('health-awake').textContent = h.awake.alive ? 'awake ✓' : 'awake ✗';
+    }).catch(() => {});
+})();
+// Render last-activity timestamps as locale strings.
+document.querySelectorAll('time[data-ts]').forEach(t => {
+  const ts = parseFloat(t.dataset.ts);
+  if (!isNaN(ts)) t.textContent = new Date(ts * 1000).toLocaleString();
+});
+</script>
+{% endblock %}

@@ -77,9 +77,20 @@ def logout():
 # Index
 # ---------------------------------------------------------------------------
 
+def _configured_project_count() -> int:
+    """Number of projects configured in projects.yaml / KOAN_PROJECTS."""
+    from app.utils import get_known_projects
+    try:
+        return len(get_known_projects())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 @core_bp.route("/")
 def index():
-    """Main dashboard page."""
+    """Main dashboard page (redirects to /projects for multi-project setups)."""
+    if _configured_project_count() >= 2:
+        return redirect(url_for("projects.projects_page"))
     agent_state = stats_svc.get_agent_state()
     selected_project = request.args.get("project", "")
     missions = missions_svc.parse_missions()
