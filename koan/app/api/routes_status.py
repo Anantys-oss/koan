@@ -51,6 +51,7 @@ def _get_agent_state() -> dict:
         "status_text": full["label"],
         "pause": pause_info,
         "elapsed_seconds": full["elapsed"],
+        "execution": full.get("execution"),
     }
 
 
@@ -95,14 +96,34 @@ def _attention_count() -> int:
         return 0
 
 
+def _execution_truth(agent: dict, missions: dict) -> dict:
+    """Reconcile declarative In Progress state against observed liveness (#2086).
+
+    A mission line in *In Progress* with no live provider process is a zombie:
+    surfaced loudly here rather than silently reported as "running".
+    """
+    execution = agent.get("execution") or {}
+    exec_state = execution.get("state", "idle")
+    in_progress = missions.get("in_progress", 0) > 0
+    zombie = in_progress and exec_state in ("idle", "zombie")
+    return {
+        "provider_state": exec_state,
+        "in_progress_lines": missions.get("in_progress", 0),
+        "zombie": zombie,
+    }
+
+
 @bp.route("/v1/status")
 @require_token
 def status():
+    agent = _get_agent_state()
+    missions = _mission_counts()
     return jsonify(
         {
-            "agent": _get_agent_state(),
-            "missions": _mission_counts(),
+            "agent": agent,
+            "missions": missions,
             "signals": _signal_flags(),
             "attention_count": _attention_count(),
+            "execution": _execution_truth(agent, missions),
         }
     )

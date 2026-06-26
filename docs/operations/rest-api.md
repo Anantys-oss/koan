@@ -80,7 +80,7 @@ All responses are JSON. Errors use a uniform envelope:
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/v1/status` | yes | Agent state, mode, mission counts, signal flags, attention count |
+| `GET` | `/v1/status` | yes | Agent state, mode, mission counts, signal flags, attention count, live execution truth |
 
 Response:
 ```json
@@ -93,7 +93,15 @@ Response:
     "focus": false,
     "status_text": "Run 12/20 — executing",
     "pause": {},
-    "elapsed_seconds": 42
+    "elapsed_seconds": 42,
+    "execution": {
+      "state": "idle|working|stalled|zombie",
+      "pid": 12345,
+      "project": "my-project",
+      "run_num": 12,
+      "elapsed": 42,
+      "last_output_age": 3.1
+    }
   },
   "missions": {
     "pending": 3,
@@ -106,9 +114,27 @@ Response:
     "quota_paused": false,
     "paused": false
   },
-  "attention_count": 2
+  "attention_count": 2,
+  "execution": {
+    "provider_state": "idle|working|stalled|zombie",
+    "in_progress_lines": 1,
+    "zombie": false
+  }
 }
 ```
+
+The `execution` block reports **observed** runtime state — backed by the live
+provider PID in `.koan-active` and provider-output recency — not the
+declarative `missions.md` ▶ timestamp, which can silently diverge (#2086):
+
+- `working` — a live provider PID with recent (or not-yet-produced) output.
+- `stalled` — a live PID but no output for over 120s (hung session).
+- `zombie` — a recorded PID that is no longer alive.
+- `idle` — no provider running.
+
+The top-level `execution.zombie` is `true` when an *In Progress* mission line
+exists but no live provider process backs it — surfacing the gap loudly instead
+of reporting a stuck/never-launched mission as "running".
 
 ### Missions
 

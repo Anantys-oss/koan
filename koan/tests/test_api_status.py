@@ -89,6 +89,36 @@ class TestSignalFlags:
         assert data["signals"]["paused"] is True
 
 
+class TestExecutionTruth:
+    def test_idle_execution_when_no_active_signal(self, client):
+        resp = client.get("/v1/status", headers=AUTH)
+        data = resp.get_json()
+        assert data["execution"]["provider_state"] == "idle"
+        assert data["execution"]["zombie"] is False
+        assert data["agent"]["execution"]["state"] == "idle"
+
+    def test_working_execution_with_live_pid(self, client, tmp_path):
+        from app.active_mission import write_active
+
+        write_active(tmp_path, pid=os.getpid(), project="koan")
+        resp = client.get("/v1/status", headers=AUTH)
+        data = resp.get_json()
+        assert data["execution"]["provider_state"] == "working"
+        assert data["execution"]["zombie"] is False
+
+    def test_zombie_when_in_progress_but_no_live_provider(
+        self, client, instance_dir
+    ):
+        # In Progress line present, but no .koan-active signal at all.
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n- task\n\n## Done\n"
+        )
+        resp = client.get("/v1/status", headers=AUTH)
+        data = resp.get_json()
+        assert data["execution"]["in_progress_lines"] == 1
+        assert data["execution"]["zombie"] is True
+
+
 class TestAttentionCount:
     def test_returns_actual_count(self, client):
         with patch("app.attention.get_attention_count", return_value=5):

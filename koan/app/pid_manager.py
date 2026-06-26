@@ -558,6 +558,26 @@ def _read_runner_state(koan_root: Path) -> dict:
     return state
 
 
+def _format_execution_line(koan_root: Path) -> str:
+    """One-line truthful provider-execution state (#2086)."""
+    from app.active_mission import get_execution_state
+
+    ex = get_execution_state(koan_root)
+    state = ex["state"]
+    if state == "idle":
+        return "execution: idle — no provider running"
+    pid = ex["pid"]
+    elapsed = ex["elapsed"]
+    age = ex["last_output_age"]
+    if state == "zombie":
+        return f"execution: ⚠ ZOMBIE — In Progress but PID {pid} not alive"
+    if state == "stalled":
+        age_s = f"{int(age)}s" if age is not None else "?"
+        return f"execution: stalled (PID {pid}, no output for {age_s})"
+    age_s = f"{int(age)}s ago" if age is not None else "unknown"
+    return f"execution: working (PID {pid}, {elapsed}s, last output {age_s})"
+
+
 def format_status_all(koan_root: Path) -> list:
     """Build a rich status display for 'make status'.
 
@@ -599,6 +619,10 @@ def format_status_all(koan_root: Path) -> list:
         project = runner_state.get("project", "")
         if project and not runner_state.get("paused"):
             lines.append(f"       project: {project}")
+
+        # Truthful provider-execution state from the live PID signal (#2086),
+        # not the inferred missions.md timestamp.
+        lines.append(f"       {_format_execution_line(koan_root)}")
     else:
         lines.append("  run: not running")
 

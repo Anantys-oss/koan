@@ -353,6 +353,20 @@ def run_claude_task(
             )
             _sig.claude_proc = proc
 
+            # Record the live provider PID so status consumers can report
+            # observed runtime state instead of an inferred timestamp (#2086).
+            koan_root_active = os.environ.get("KOAN_ROOT", "")
+            if koan_root_active:
+                from app.active_mission import write_active
+                with contextlib.suppress(OSError):
+                    write_active(
+                        koan_root_active,
+                        pid=proc.pid,
+                        project=project_name,
+                        run_num=run_num,
+                        stdout_file=stdout_file,
+                    )
+
             from app.subprocess_runner import ProcessWatchdog
 
             watchdog = None
@@ -418,6 +432,10 @@ def run_claude_task(
                         _last_mission_stagnated.set()
                         _stagnation_pattern_type = stagnation_monitor.pattern_type
                         _stagnation_pattern_excerpt = stagnation_monitor.pattern_excerpt
+                if koan_root_active:
+                    from app.active_mission import clear_active
+                    with contextlib.suppress(OSError):
+                        clear_active(koan_root_active)
                 cleanup()
 
         exit_code = proc.returncode
