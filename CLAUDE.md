@@ -178,7 +178,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`api/routes_observability.py`** — `GET /v1/usage`, `GET /v1/metrics`, `GET /v1/logs` (token-gated; delegate to usage_service / mission_metrics / log_reader).
 - **`api/server.py`** — Runnable entrypoint (`make api`); validates token at startup (fail-closed), warns on non-loopback bind, calls `waitress.serve(create_app(), ...)`.
 
-Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `127.0.0.1`), `get_api_port()` (default `8420`), `get_api_token()` (env `KOAN_API_TOKEN` → `api.token` → `""`), `get_api_threads()` (default `8`). `pid_manager.py` adds `"api"` to `PROCESS_NAMES` and provides `start_api()` / `_is_api_enabled()`. See `docs/operations/rest-api.md`.
+Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `127.0.0.1`), `get_api_port()` (default `8420`), `get_api_token()` (env `KOAN_API_TOKEN` → `api.token` → `""`), `get_api_threads()` (default `2`). `pid_manager.py` adds `"api"` to `PROCESS_NAMES` and provides `start_api()` / `_is_api_enabled()` (the latter also enforces `railway.api_allowed()` — the API only auto-launches on Railway when `KOAN_API_TOKEN` is set, mirroring the dashboard passphrase gate). See `docs/operations/rest-api.md`.
 
 ### Skills system (`koan/skills/`)
 
