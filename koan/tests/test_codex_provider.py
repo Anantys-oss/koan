@@ -504,6 +504,15 @@ class TestCodexQuotaDetection:
             exit_code=0,
         ) is False
 
+    def test_ignores_benign_spend_cap_prose_on_failed_stdout(self):
+        # exit=1 prose mentioning "spend cap" without the billing phrasing must
+        # not pause — exercises the anchored regex past the exit-code guard.
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="plan: respect the spend cap during the rollout",
+            stderr_text="",
+            exit_code=1,
+        ) is False
+
 
 # ---------------------------------------------------------------------------
 # is_available
