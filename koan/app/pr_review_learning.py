@@ -18,7 +18,6 @@ prompt_builder.py, and format_outbox.py — so lessons written here
 are automatically surfaced to the agent without additional wiring.
 """
 
-import contextlib
 import hashlib
 import json
 import logging
@@ -967,8 +966,14 @@ def _trim_outcomes_file(outcomes_path: Path) -> None:
         return
     new_last = max(0, last - dropped)
     if new_last != last:
-        with contextlib.suppress(OSError):
+        try:
             atomic_write_json(marker_path, {"last_processed_lines": new_last})
+        except OSError as exc:
+            print(
+                f"[pr_review_learning] failed to update calibration marker after "
+                f"trim (marker may over/under-count unprocessed lines): {exc}",
+                file=sys.stderr,
+            )
 
 
 def _process_review_findings_sidecars(
@@ -1078,6 +1083,16 @@ def _process_review_findings_sidecars(
             try:
                 with open(outcomes_path, "a") as f:
                     for fc in file_comments:
+                        # Mirror _compute_finding_outcomes: skip file-less
+                        # findings so both paths handle them identically and
+                        # calibration is not skewed by un-locatable findings.
+                        if not fc.get("file"):
+                            print(
+                                "[pr_review_learning] finding has no file path; "
+                                "skipping outcome to avoid skewing calibration",
+                                file=sys.stderr,
+                            )
+                            continue
                         f.write(json.dumps({
                             "severity": fc.get("severity", ""),
                             "title": fc.get("title", ""),
@@ -1111,13 +1126,14 @@ def _process_review_findings_sidecars(
         # PRs most useful for calibration. Ensure the commit is present (with a
         # targeted fetch) before diffing, and surface an unresolvable SHA
         # distinctly from a transient diff failure.
+        fetch_result = None
         try:
             present = subprocess.run(
                 ["git", "cat-file", "-e", final_head],
                 capture_output=True, text=True, cwd=project_path, timeout=30,
             )
             if present.returncode != 0:
-                subprocess.run(
+                fetch_result = subprocess.run(
                     ["git", "fetch", "origin", final_head],
                     capture_output=True, text=True, cwd=project_path, timeout=30,
                 )
@@ -1132,6 +1148,13 @@ def _process_review_findings_sidecars(
             )
             continue
         if present.returncode != 0:
+            if fetch_result is not None and fetch_result.returncode != 0:
+                print(
+                    f"[pr_review_learning] git fetch for {final_head[:12]} exited "
+                    f"{fetch_result.returncode} for {pr_key} (remote/credentials issue, "
+                    f"not a pruned SHA): {fetch_result.stderr.strip()[:200]}",
+                    file=sys.stderr,
+                )
             print(
                 f"[pr_review_learning] final_head {final_head[:12]} unresolvable "
                 f"for {pr_key} (pruned locally and not fetchable); dropping sidecar "
@@ -1247,12 +1270,21 @@ def _maybe_run_calibration_pass(
                 file=sys.stderr,
             )
 
+    # Clamp a stale/corrupt marker that points past EOF so the window math
+    # below stays in range.
+    last_processed = max(0, min(last_processed, total_lines))
+
     unprocessed = total_lines - last_processed
     if unprocessed < batch_size:
         return False
 
-    capped_lines = lines[-_MAX_CALIBRATION_LINES:]
-    outcomes_text = "\n".join(capped_lines)
+    # Process unprocessed entries oldest-first, capped per pass. Feeding the
+    # forward window (rather than the file tail) guarantees every outcome is
+    # eventually analyzed even when more than _MAX_CALIBRATION_LINES accumulate
+    # between passes, instead of silently skipping the older unprocessed ones.
+    window = lines[last_processed:last_processed + _MAX_CALIBRATION_LINES]
+    new_marker = last_processed + len(window)
+    outcomes_text = "\n".join(window)
     result = _run_calibration_cli(outcomes_text, project_path)
     if result is None:
         # CLI failure (distinct from an empty-but-successful result): leave the
@@ -1266,11 +1298,12 @@ def _maybe_run_calibration_pass(
         project_path=project_path,
     )
 
-    # Advance the marker even when the pass produced no hints ("no adjustments
-    # needed") so a successful empty result does not reprocess the same batch
-    # every cycle.
+    # Advance the marker by exactly the window we fed (not to EOF) so any
+    # entries beyond the per-pass cap remain unprocessed and are analyzed on a
+    # subsequent cycle. Advancing even when the pass produced no hints ("no
+    # adjustments needed") avoids reprocessing the same batch every cycle.
     from app.utils import atomic_write_json
-    atomic_write_json(marker_path, {"last_processed_lines": total_lines})
+    atomic_write_json(marker_path, {"last_processed_lines": new_marker})
 
     return added > 0
 

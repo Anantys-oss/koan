@@ -820,7 +820,7 @@ def _write_review_findings_sidecar(
         }
         from app.utils import atomic_write_json
         atomic_write_json(sidecar_path, data, indent=2)
-    except Exception as exc:
+    except (OSError, TypeError, ValueError) as exc:
         print(
             f"[review_runner] failed to write review findings sidecar: {exc}",
             file=sys.stderr,
