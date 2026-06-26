@@ -3,6 +3,7 @@ import hmac
 import logging
 import os
 import shutil
+from urllib.parse import urlparse
 
 from flask import (
     Blueprint,
@@ -31,12 +32,31 @@ core_bp = Blueprint("core", __name__)
 # Auth
 # ---------------------------------------------------------------------------
 
+def _safe_next_url(raw: str | None) -> str:
+    """Return a same-origin relative redirect target, or the index fallback.
+
+    Rejects absolute URLs, protocol-relative (``//evil.com``) and any target
+    carrying a scheme or host so a crafted ``?next=`` cannot send an
+    authenticated operator off-site (open-redirect phishing).
+    """
+    fallback = url_for("core.index")
+    if not raw:
+        return fallback
+    # Reject protocol-relative and backslash-obfuscated targets outright.
+    if not raw.startswith("/") or raw.startswith("//") or raw.startswith("/\\"):
+        return fallback
+    parsed = urlparse(raw)
+    if parsed.scheme or parsed.netloc:
+        return fallback
+    return raw
+
+
 @core_bp.route("/login", methods=["GET", "POST"])
 def login():
     if not state.DASHBOARD_PWD:
         return redirect(url_for("core.index"))
     error = ""
-    next_url = request.values.get("next") or url_for("core.index")
+    next_url = _safe_next_url(request.values.get("next"))
     if request.method == "POST":
         supplied = (request.form.get("passphrase") or "").strip()
         if hmac.compare_digest(supplied, state.DASHBOARD_PWD):
