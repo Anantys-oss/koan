@@ -1128,6 +1128,7 @@ def _owner_token_push(remote: str, branch: str, project_path: str) -> bool:
         return False  # SSH / non-GitHub remote — no token URL to build
     slug = _parse_remote_url(url)
     if not slug or "/" not in slug:
+        print(f"[claude_step] could not parse owner from {url}", file=sys.stderr)
         return False
     owner, repo = slug.split("/", 1)
     try:
@@ -1178,7 +1179,8 @@ def _force_push(remote: str, branch: str, project_path: str) -> None:
             ["git", "push", remote, branch, "--force"],
             cwd=project_path,
         )
-    except Exception:
+    except Exception as e:
+        print(f"[claude_step] --force failed, trying owner-token push: {e}", file=sys.stderr)
         if _owner_token_push(remote, branch, project_path):
             return
         raise

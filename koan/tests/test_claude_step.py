@@ -1733,6 +1733,42 @@ class TestOwnerTokenPush:
             assert _owner_token_push("origin", "koan/fix", "/project") is False
         mock_run.assert_not_called()  # no token → never attempts the push
 
+    def test_owner_token_push_redacts_token_on_timeout(self, capsys):
+        """A push timeout must not leak the token through the logged command."""
+        from app.claude_step import _owner_token_push
+        token = "ght_secret123"
+        with patch("app.github._get_remote_url",
+                   return_value="https://github.com/Koan-Bot/koan.git"), \
+             patch("app.github._parse_remote_url", return_value="Koan-Bot/koan"), \
+             patch("app.claude_step.run_gh", return_value=token), \
+             patch("app.claude_step.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(
+                       cmd=["git", "push",
+                            f"https://x-access-token:{token}@github.com/Koan-Bot/koan.git",
+                            "koan/fix", "--force"],
+                       timeout=120)):
+            assert _owner_token_push("origin", "koan/fix", "/project") is False
+        err = capsys.readouterr().err
+        assert token not in err
+        assert "***" in err
+
+    def test_owner_token_push_redacts_token_on_push_failure(self, capsys):
+        """A non-zero push must not leak the token if it echoes in stderr."""
+        from app.claude_step import _owner_token_push
+        token = "ght_secret123"
+        with patch("app.github._get_remote_url",
+                   return_value="https://github.com/Koan-Bot/koan.git"), \
+             patch("app.github._parse_remote_url", return_value="Koan-Bot/koan"), \
+             patch("app.claude_step.run_gh", return_value=token), \
+             patch("app.claude_step.subprocess.run",
+                   return_value=MagicMock(
+                       returncode=128,
+                       stderr=f"fatal: https://x-access-token:{token}@github.com/... rejected")):
+            assert _owner_token_push("origin", "koan/fix", "/project") is False
+        err = capsys.readouterr().err
+        assert token not in err
+        assert "***" in err
+
 
 # ---------- _push_with_pr_fallback ----------
 
