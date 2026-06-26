@@ -242,6 +242,7 @@ _KNOWN_SKILL_KEYS = frozenset({
     "worker", "github_enabled", "github_context_aware", "caveman",
     "forward_result", "iterative", "title_markers", "audience", "cli_skill",
     "group", "emoji", "requirements", "sub_commands", "parallel", "model_key",
+    "chat_confirmable",
 })
 
 
