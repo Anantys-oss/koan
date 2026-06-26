@@ -229,6 +229,24 @@ class PrepResult:
     error: Optional[str] = None
 
 
+def _is_same_dir(path_a: str, path_b: str) -> bool:
+    """Return True when two paths resolve to the same directory.
+
+    Uses realpath so symlinks and trailing slashes compare equal. This is a
+    same-directory check, not a same-git-repository check: a subdirectory of
+    a repo will not compare equal to the repo root.
+    """
+    if not path_a or not path_b:
+        return False
+    try:
+        return os.path.realpath(path_a) == os.path.realpath(path_b)
+    except OSError as e:
+        logger.warning(
+            "realpath failed comparing '%s' and '%s': %s", path_a, path_b, e
+        )
+        return False
+
+
 def get_upstream_remote(
     project_path: str, project_name: str, koan_root: str
 ) -> str:
@@ -299,6 +317,30 @@ def prepare_project_branch(
         logger.warning("config load error for base_branch: %s", e)
 
     base_branch = result.base_branch
+
+    # Launching-repo guard: when the project being prepared IS the repo that
+    # launched the service (project_path == koan_root) and it is currently on a
+    # custom branch, leave it where it is. Switching it back to the base branch
+    # would discard the development branch the operator is testing. This guard
+    # applies ONLY to the launching repo — every other managed project still
+    # resets to its base branch before a mission, which is the intended behavior.
+    #
+    # Note: this compares against the config base_branch, not the auto-detected
+    # remote default (which is resolved only after the fetch below). The guard
+    # intentionally trusts the config value — a self-hosted operator on a dev
+    # branch does not want an auto-reset regardless of the real default branch.
+    if (
+        result.previous_branch
+        and result.previous_branch not in (base_branch, "HEAD")
+        and _is_same_dir(project_path, koan_root)
+    ):
+        logger.info(
+            "Project %s is the launching repo on custom branch '%s'; "
+            "staying put instead of switching to '%s'",
+            project_name, result.previous_branch, base_branch,
+        )
+        result.base_branch = result.previous_branch
+        return result
 
     # Fetch latest refs (with HTTPS token fallback for repos cloned via
     # gh with an unauthenticated HTTPS remote URL)

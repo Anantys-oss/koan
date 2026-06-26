@@ -181,8 +181,8 @@ def run_exploration(
         (success, summary) tuple.
     """
     if notify_fn is None:
-        from app.notify import send_telegram
-        notify_fn = send_telegram
+        from app.messaging_level import progress_notify
+        notify_fn = progress_notify(log_category="ai")
 
     focus_hint = f" (focus: {focus_context})" if focus_context else ""
     notify_fn(f"Exploring {project_name}{focus_hint}...")
@@ -266,7 +266,8 @@ def run_exploration(
     cleaned = _clean_response(result)
     report = _strip_structured_output(cleaned)
     suffix = f"\n\n({len(missions)} mission(s) queued)" if missions else ""
-    notify_fn(f"AI exploration of {project_name}:\n\n{report}{suffix}")
+    from app.messaging_level import notify_outcome
+    notify_outcome(f"AI exploration of {project_name}:\n\n{report}{suffix}", notify_fn)
 
     return True, f"Exploration of {project_name} completed ({len(missions)} missions queued)."
 

@@ -1,7 +1,6 @@
 """Shared helpers for Kōan installation and onboarding."""
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path

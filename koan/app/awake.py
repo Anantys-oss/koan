@@ -24,7 +24,7 @@ import threading
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from app.bridge_log import log
 from app.bridge_state import (
@@ -630,22 +630,54 @@ def _format_outbox_message(raw_content: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Worker thread — runs handle_chat in background so polling stays responsive
+# Worker lanes — chat replies and background tasks run independently so a
+# long background task never blocks an interactive reply, and neither ever
+# blocks the Telegram poll loop.  One in-flight task per lane (back-pressure).
 # ---------------------------------------------------------------------------
 
-_worker_thread: Optional[threading.Thread] = None
+_WORKER_LANES = ("chat", "bg")
+_worker_threads: Dict[str, Optional[threading.Thread]] = {
+    lane: None for lane in _WORKER_LANES
+}
 _worker_lock = threading.Lock()
 
+# The chat lane tells the user when it is busy; the bg lane stays silent so
+# background work (worker skills like /review, /rebase) never spams the channel.
+_LANE_BUSY_MSG: Dict[str, Optional[str]] = {
+    "chat": "⏳ Busy with a previous message. Try again in a moment.",
+    "bg": None,
+}
 
-def _run_in_worker(fn, *args):
-    """Run fn(*args) in a background thread. One worker at a time.
 
-    Captures the current reply context so that send_telegram() calls
-    inside the worker thread reply to the correct message in groups.
+def _run_in_worker(fn, *args, lane: str = "chat") -> bool:
+    """Run fn(*args) in a background thread on a named lane.
+
+    Two lanes exist: ``"chat"`` (interactive replies) and ``"bg"``
+    (background tasks such as worker skills typed in chat — ``/review``,
+    ``/rebase``, etc.).  Each lane allows one worker at a time, but the lanes run
+    concurrently, so a background task never blocks a chat reply and vice
+    versa.  The Telegram poll loop is never blocked by either.
+
+    Captures the current reply context so that send_telegram() calls inside
+    the worker thread reply to the correct message in groups.
+
+    Returns ``True`` when the task was started and ``False`` when the lane
+    was already busy and the task was dropped.  The chat lane notifies the
+    user on its own when busy; the bg lane stays silent, so callers that
+    dispatch *user-initiated* work on the bg lane (e.g. worker skills typed
+    in chat) should inspect this return value and surface their own
+    feedback rather than dropping the command silently.
     """
-    from app.notify import get_reply_context
+    from app.notify import (
+        clear_reply_context,
+        get_reply_context,
+        send_telegram,
+        set_reply_context,
+    )
 
-    global _worker_thread
+    if lane not in _worker_threads:
+        raise ValueError(f"unknown worker lane: {lane!r}")
+
     reply_to = get_reply_context()
 
     def _wrapper():
@@ -656,11 +688,16 @@ def _run_in_worker(fn, *args):
             clear_reply_context()
 
     with _worker_lock:
-        if _worker_thread is not None and _worker_thread.is_alive():
-            send_telegram("⏳ Busy with a previous message. Try again in a moment.")
-            return
-        _worker_thread = threading.Thread(target=_wrapper, daemon=True)
-        _worker_thread.start()
+        existing = _worker_threads[lane]
+        if existing is not None and existing.is_alive():
+            busy_msg = _LANE_BUSY_MSG.get(lane)
+            if busy_msg:
+                send_telegram(busy_msg)
+            return False
+        thread = threading.Thread(target=_wrapper, daemon=True)
+        _worker_threads[lane] = thread
+        thread.start()
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -763,7 +800,7 @@ def handle_message(text: str):
     if is_mission(text):
         handle_mission(text)
     else:
-        _run_in_worker(handle_chat, text)
+        _run_in_worker(handle_chat, text, lane="chat")
 
 
 def _check_group_chat_mode(provider) -> None:
@@ -881,8 +918,8 @@ def _bridge_loop():
     check_config()
 
     # Ensure PYTHONPATH includes the koan/ package directory so that
-    # subprocess calls (e.g. local LLM runner via python -m app.local_llm_runner)
-    # can resolve app.* modules regardless of the subprocess CWD.
+    # subprocess calls (e.g. python -m app.issue_cli) can resolve app.*
+    # modules regardless of the subprocess CWD.
     koan_pkg_dir = str(KOAN_ROOT / "koan")
     current = os.environ.get("PYTHONPATH", "")
     if koan_pkg_dir not in current.split(os.pathsep):

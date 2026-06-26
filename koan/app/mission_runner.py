@@ -526,6 +526,7 @@ def _record_session_outcome(
     provider: str = "",
     model: str = "",
     last_action: str = "",
+    exit_code: Optional[int] = None,
 ) -> None:
     """Record session outcome for staleness tracking (fire-and-forget).
 
@@ -536,6 +537,9 @@ def _record_session_outcome(
         provider: CLI provider name (e.g. "claude", "copilot").
         model: Model identifier extracted from token output.
         last_action: Last tool action from JSONL session data (e.g. "Edit").
+        exit_code: Mission exit code. When provided, an "Outcome:" label is
+            added to the JSONL row, classified consistently with the bandit
+            pipeline (non-zero → failure; otherwise classify_session()).
     """
     try:
         from app.session_tracker import record_outcome
@@ -565,6 +569,17 @@ def _record_session_outcome(
             summary_parts.append(f"Mode: {autonomous_mode}")
         if duration_minutes:
             summary_parts.append(f"Duration: {duration_minutes}min")
+        # Record the mission outcome on this single session row, classified
+        # consistently with the bandit/auto-merge pipeline (non-zero exit →
+        # failure; otherwise the session classifier decides). This avoids a
+        # second near-duplicate row competing in the same recency/boost window.
+        if exit_code is not None:
+            if exit_code != 0:
+                outcome = "failure"
+            else:
+                from app.session_tracker import classify_session
+                outcome = classify_session(journal_content, mission_title=mission_title)
+            summary_parts.append(f"Outcome: {outcome}")
         if journal_content:
             summary_parts.append(journal_content[:500])
         content = " | ".join(summary_parts) if summary_parts else mission_title or "session"
@@ -1407,6 +1422,19 @@ def _extract_pr_url(content: str) -> str:
     return match.group(0) if match else ""
 
 
+def get_last_pr_url(instance_dir: str, project_name: str = "") -> str:
+    """Best-effort PR URL for the just-finished mission (from pending.md).
+
+    Used by the concise normal-mode completion line. project_name is accepted
+    for caller symmetry but pending.md is per-instance.
+    """
+    try:
+        pending = _read_pending_content(instance_dir)
+        return _extract_pr_url(pending or "")
+    except (OSError, ValueError):
+        return ""
+
+
 def _read_full_stdout_text(stdout_file: str) -> str:
     """Read and parse the full Claude stdout for PR detection.
 
@@ -1558,6 +1586,7 @@ def run_post_mission(
         "quota_exhausted": False,
         "quota_info": None,
         "cost_tracking_failed": False,
+        "pr_url": "",
     }
 
     tracker = _PipelineTracker()
@@ -1774,6 +1803,13 @@ def run_post_mission(
         pending_content = _read_pending_content(instance_dir)
         if not pending_content.strip():
             pending_content = _read_stdout_summary(stdout_file)
+        # Capture the PR URL now, while pending.md / stdout are still live —
+        # archive_pending() (below) deletes pending.md, so the concise normal-mode
+        # completion line cannot re-read it afterward. Prefer pending.md, then fall
+        # back to the full (untruncated) stdout where PR URLs often appear.
+        result["pr_url"] = _extract_pr_url(pending_content)
+        if not result["pr_url"] and stdout_file:
+            result["pr_url"] = _extract_pr_url(_read_full_stdout_text(stdout_file))
         result["pending_archived"] = archive_pending(instance_dir, project_name, run_num)
         tracker.record("journal_archive", "success" if result["pending_archived"] else "skipped",
                         "archived" if result["pending_archived"] else "nothing to archive")
@@ -1900,6 +1936,7 @@ def run_post_mission(
             provider=provider_name,
             model=_tokens.get("model", "") if _tokens else "",
             last_action=_jsonl_data.get("last_action", "") if _jsonl_data else "",
+            exit_code=exit_code,
         )
         tracker.record("session_outcome", "success")
 

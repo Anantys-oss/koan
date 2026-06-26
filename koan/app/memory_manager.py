@@ -42,6 +42,9 @@ from app.utils import PROJECT_HINT_RE, atomic_write
 
 logger = logging.getLogger(__name__)
 
+# Substituted for any memory entry the injection guard flags on read.
+_BLOCKED_PLACEHOLDER = "[BLOCKED: injection pattern detected]"
+
 
 def _log_memory_use(message: str) -> None:
     """Emit a memory-usage line to stderr so it lands in logs/run.log.
@@ -1415,7 +1418,7 @@ class MemoryManager:
                                 query_text[:60],
                             )
                         )
-                        return _sanitize_entries(fts_results)
+                        return _sanitize_and_report(fts_results, project)
             except Exception as e:
                 logger.warning("[memory_manager] FTS5 retrieval failed, falling back to JSONL: %s", e)
 
@@ -1453,7 +1456,7 @@ class MemoryManager:
                 entries.append(obj)
 
         # Return the max_entries most recent (tail), oldest-first order
-        return _sanitize_entries(entries[-max_entries:])
+        return _sanitize_and_report(entries[-max_entries:], project)
 
     def prune_memory_log(self, horizon_days: int = 365) -> int:
         """Remove log entries older than ``horizon_days``. Returns removed count.
@@ -1702,22 +1705,25 @@ def sanitize_memory_entry(content: str) -> Tuple[str, bool]:
 
     Last line of defense before stored memory reaches the LLM: an entry
     written before the intake scanner existed (or one that slipped through)
-    is checked here, on every read. Reuses ``prompt_guard.scan_mission_text``
-    so memory content is held to the same injection bar as incoming missions.
+    is checked here, on every read. Uses ``prompt_guard.scan_stored_memory``
+    rather than the intake scanner — memory is self-authored history injected
+    as data, so the ``shell_injection`` category (which caused ~100% of
+    false-positive blanks via ``sh``/``nc`` inline-code substrings) is
+    excluded while the reader-subverting categories stay armed.
 
     Returns ``(content, False)`` for clean entries and
     ``("[BLOCKED: injection pattern detected]", True)`` for flagged ones.
     """
     if not content:
         return content, False
-    from app.prompt_guard import scan_mission_text
+    from app.prompt_guard import scan_stored_memory
 
-    result = scan_mission_text(content)
+    result = scan_stored_memory(content)
     if result.blocked:
         logger.warning(
             "[memory] Blocked injection pattern in memory entry: %s", result.reason
         )
-        return "[BLOCKED: injection pattern detected]", True
+        return _BLOCKED_PLACEHOLDER, True
     return content, False
 
 
@@ -1728,6 +1734,26 @@ def _sanitize_entries(entries: List[dict]) -> List[dict]:
         if blocked:
             entry["content"] = sanitized
     return entries
+
+
+def _sanitize_and_report(entries: List[dict], project: Optional[str]) -> List[dict]:
+    """Sanitize entries and emit a single aggregate warning per read when any
+    were withheld.
+
+    The injection guard runs on every memory read, so an over-broad pattern can
+    blank legitimate accumulated knowledge while only emitting scattered
+    per-entry warnings — easy to miss, with no sense of scale. This surfaces an
+    aggregate count per read so anomalous blanking (e.g. a regex change flagging
+    benign inline code) is observable as a regression instead of going unnoticed.
+    """
+    sanitized = _sanitize_entries(entries)
+    blocked = sum(1 for e in sanitized if e.get("content") == _BLOCKED_PLACEHOLDER)
+    if blocked:
+        logger.warning(
+            "[memory] %d/%d entries withheld by injection guard for %s",
+            blocked, len(sanitized), project or "global",
+        )
+    return sanitized
 
 
 def read_memory_window(

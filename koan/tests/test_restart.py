@@ -138,7 +138,7 @@ class TestRestartAsStandaloneSkill:
         _reset_registry()
         # restart is a worker skill — set up a synchronous worker callback
         old_cb = ch._run_in_worker_cb
-        ch._run_in_worker_cb = lambda fn: fn()
+        ch._run_in_worker_cb = lambda fn, **kwargs: fn()
         try:
             with patch.object(ch, "KOAN_ROOT", tmp_path), \
                  patch.object(ch, "INSTANCE_DIR", tmp_path / "instance"), \

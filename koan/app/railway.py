@@ -19,6 +19,20 @@ def is_railway() -> bool:
     return os.environ.get("KOAN_DEPLOY", "").strip().lower() == "railway"
 
 
+def dashboard_allowed() -> bool:
+    """Whether launching the web dashboard is permitted by the deploy gate.
+
+    On a Railway deploy the dashboard binds to 0.0.0.0 and is exposed publicly,
+    so it MUST be passphrase-gated: refuse to launch unless KOAN_DASHBOARD_PWD
+    is set. Off Railway there is no public exposure, so config gating alone
+    decides. Single source of truth for the passphrase gate shared between the
+    config-driven launch path (``pid_manager.start_all``) and the supervised
+    dashboard launcher (``docker/dashboard-supervised.sh``)."""
+    if is_railway() and not os.environ.get("KOAN_DASHBOARD_PWD", "").strip():
+        return False
+    return True
+
+
 def resolve_gh_token() -> str:
     """Resolve the effective GitHub token for Kōan's git/gh operations.
 

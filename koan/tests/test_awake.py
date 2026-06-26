@@ -1352,7 +1352,7 @@ class TestHandleMessage:
     @patch("app.awake._run_in_worker")
     def test_dispatches_chat(self, mock_worker):
         handle_message("how are you?")
-        mock_worker.assert_called_once_with(handle_chat, "how are you?")
+        mock_worker.assert_called_once_with(handle_chat, "how are you?", lane="chat")
 
     @patch("app.awake.handle_command")
     @patch("app.awake.handle_mission")

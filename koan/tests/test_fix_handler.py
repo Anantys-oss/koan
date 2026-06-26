@@ -441,3 +441,69 @@ class TestHandleRouting:
         assert "2" in result
         assert "cpan-authors/YAML-Syck" in result
         assert mock_queue.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# handle (PR URL → rebase redirect)
+# ---------------------------------------------------------------------------
+
+class TestPrRedirectsToRebase:
+    """A /fix called on a PR is what /rebase does — redirect to the rebase
+    mechanism, preserving any extra context the user provided."""
+
+    def _make_ctx(self, args=""):
+        return SkillContext(
+            koan_root=Path("/tmp/test"),
+            instance_dir=Path("/tmp/test/instance"),
+            command_name="fix",
+            args=args,
+        )
+
+    @patch("skills.core.rebase.handler.is_rebase_foreign_prs_allowed", return_value=True)
+    @patch("app.github_skill_helpers.queue_github_mission", return_value=True)
+    @patch("app.github_skill_helpers.is_own_pr", return_value=(True, "koan/feature"))
+    @patch("app.github_skill_helpers.resolve_project_for_repo", return_value=("/path/repo", "repo"))
+    def test_pr_url_queues_rebase(self, mock_resolve, mock_own, mock_queue, mock_foreign):
+        ctx = self._make_ctx("https://github.com/owner/repo/pull/42")
+        result = handle(ctx)
+
+        # Delegated to the rebase mechanism, not /fix.
+        assert mock_queue.called
+        command = mock_queue.call_args[0][1]
+        url = mock_queue.call_args[0][2]
+        assert command == "rebase"
+        assert url == "https://github.com/owner/repo/pull/42"
+        assert "Rebase queued" in result
+
+    @patch("skills.core.rebase.handler.is_rebase_foreign_prs_allowed", return_value=True)
+    @patch("app.github_skill_helpers.queue_github_mission", return_value=True)
+    @patch("app.github_skill_helpers.is_own_pr", return_value=(True, "koan/feature"))
+    @patch("app.github_skill_helpers.resolve_project_for_repo", return_value=("/path/repo", "repo"))
+    def test_pr_url_preserves_context(self, mock_resolve, mock_own, mock_queue, mock_foreign):
+        ctx = self._make_ctx(
+            "https://github.com/owner/repo/pull/42 address the security concern"
+        )
+        result = handle(ctx)
+
+        # queue_github_mission(ctx, command, url, project_name, context, ...)
+        context = mock_queue.call_args[0][4]
+        assert context == "address the security concern"
+
+    @patch("skills.core.rebase.handler.is_rebase_foreign_prs_allowed", return_value=True)
+    @patch("app.github_skill_helpers.queue_github_mission", return_value=True)
+    @patch("app.github_skill_helpers.is_own_pr", return_value=(True, "koan/feature"))
+    @patch("app.github_skill_helpers.resolve_project_for_repo", return_value=("/path/repo", "repo"))
+    def test_pr_url_with_now_is_urgent(self, mock_resolve, mock_own, mock_queue, mock_foreign):
+        ctx = self._make_ctx("--now https://github.com/owner/repo/pull/42")
+        result = handle(ctx)
+
+        assert mock_queue.call_args[1].get("urgent") is True
+
+    @patch(f"{_HANDLER}.handle_github_skill")
+    def test_issue_url_still_routes_to_fix(self, mock_single):
+        """Issue URLs must NOT be redirected — they remain /fix missions."""
+        mock_single.return_value = "Fix queued"
+        ctx = self._make_ctx("https://github.com/owner/repo/issues/42")
+        handle(ctx)
+
+        mock_single.assert_called_once()

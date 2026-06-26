@@ -218,6 +218,32 @@ def _is_expired(exp_str: str, now_iso: str) -> bool:
     return exp_str < now_iso
 
 
+# Confidence → ranking weight. Higher weight ranks better. Supports both
+# Graphify-style labels and numeric [0,1] confidences. Absent/unknown sits
+# just below EXTRACTED so unlabelled entries aren't unduly penalised.
+_CONFIDENCE_WEIGHTS = {"extracted": 1.0, "inferred": 0.75, "ambiguous": 0.4}
+_DEFAULT_CONFIDENCE_WEIGHT = 0.9
+_MIN_CONFIDENCE_WEIGHT = 0.1
+
+
+def _confidence_weight(conf_str: str) -> float:
+    """Map a stored confidence value to a ranking weight in (0, 1].
+
+    Accepts label strings (EXTRACTED/INFERRED/AMBIGUOUS) or numeric
+    confidences. Empty/unknown values get a neutral default. Numerics are
+    clamped to a small floor so a zero confidence never erases an entry.
+    """
+    if not conf_str:
+        return _DEFAULT_CONFIDENCE_WEIGHT
+    label = conf_str.strip().lower()
+    if label in _CONFIDENCE_WEIGHTS:
+        return _CONFIDENCE_WEIGHTS[label]
+    try:
+        return max(_MIN_CONFIDENCE_WEIGHT, min(1.0, float(conf_str)))
+    except (ValueError, TypeError):
+        return _DEFAULT_CONFIDENCE_WEIGHT
+
+
 def _build_entry_dict(proj, type_, content, ts, skill, tags_str, conf_str, exp):
     """Build a result dict from FTS5 row columns, including optional metadata."""
     entry = {
@@ -236,8 +262,10 @@ def _build_entry_dict(proj, type_, content, ts, skill, tags_str, conf_str, exp):
     if conf_str:
         try:
             entry["confidence"] = float(conf_str)
-        except (ValueError, TypeError) as e:
-            logger.warning("[memory_db] Malformed confidence in entry ts=%s: %s", ts, e)
+        except (ValueError, TypeError):
+            # Non-numeric confidence (e.g. EXTRACTED/AMBIGUOUS labels) is kept
+            # verbatim — it still drives ranking via _confidence_weight().
+            entry["confidence"] = conf_str.strip()
     if exp:
         entry["expires_at"] = exp
     return entry
@@ -265,12 +293,16 @@ def search_entries(
 
     try:
         project_lower = project.lower() if project else ""
-        results = []
+        # Collect a candidate pool larger than max_results so confidence
+        # re-ranking has room to promote high-confidence matches over
+        # marginally-better-BM25 low-confidence ones.
+        candidates: List[tuple] = []
+        pool_size = max_results * 3
         limit = max_results * 3
         hard_cap = max_results * 20
         offset = 0
 
-        while len(results) < max_results and offset < hard_cap:
+        while len(candidates) < pool_size and offset < hard_cap:
             rows = conn.execute(
                 "SELECT project, type, content, ts, source_skill, tags, "
                 "confidence, expires_at, rank "
@@ -284,18 +316,23 @@ def search_entries(
             if not rows:
                 break
 
-            for proj, type_, content, ts, skill, tags_str, conf_str, exp, _rank in rows:
+            for proj, type_, content, ts, skill, tags_str, conf_str, exp, rank in rows:
                 if _is_expired(exp, now_iso):
                     continue
                 entry_proj = proj or ""
                 if entry_proj == "" or (project_lower and entry_proj.lower() == project_lower):
-                    results.append(_build_entry_dict(proj, type_, content, ts, skill, tags_str, conf_str, exp))
-                    if len(results) >= max_results:
-                        break
+                    # rank is negative (lower = better match); scaling by a
+                    # weight <= 1 pulls low-confidence rows toward 0 (worse).
+                    adjusted = rank * _confidence_weight(conf_str)
+                    entry = _build_entry_dict(proj, type_, content, ts, skill, tags_str, conf_str, exp)
+                    candidates.append((adjusted, entry))
 
             offset += limit
 
-        return results
+        # Stable sort by adjusted rank preserves BM25 order when confidences
+        # are equal/absent — so the no-confidence case is unchanged.
+        candidates.sort(key=lambda c: c[0])
+        return [entry for _, entry in candidates[:max_results]]
     except sqlite3.DatabaseError as e:
         logger.warning("[memory_db] search_entries failed: %s", e)
         return []

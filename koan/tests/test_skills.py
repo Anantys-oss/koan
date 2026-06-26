@@ -23,6 +23,7 @@ from app.skills import (
     build_registry,
     ensure_requirements,
     execute_skill,
+    get_core_skills_dir,
     get_default_skills_dir,
     parse_skill_md,
     validate_skill_metadata,
@@ -1266,6 +1267,69 @@ class TestBuildRegistryPendingGate:
         self._write_skill(tmp_path, "legacy", "preexisting")
         registry = build_registry(extra_dirs=[tmp_path])
         assert "legacy.preexisting" in registry
+
+
+class TestCoreDiscoveryScoping:
+    """#2084: core discovery is scoped to koan/skills/core/, so a stray
+    custom scope dropped under the core tree is ignored (no per-build
+    'missing required field' spam) and the operator gets one guidance line."""
+
+    @staticmethod
+    def _write_skill(parent, scope, name):
+        skill_dir = parent / scope / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(textwrap.dedent(f"""\
+            ---
+            name: {name}
+            scope: {scope}
+            description: x
+            commands:
+              - name: {name}
+                description: x
+            ---
+        """))
+
+    def _fake_default_tree(self, tmp_path):
+        """A koan/skills/-shaped tree: a core skill plus a misplaced scope."""
+        self._write_skill(tmp_path, "core", "status")
+        # Misplaced operator scope (the real-world cause: a Claude-format
+        # skill with no commands block landing under the core tree).
+        stray = tmp_path / "anantys" / "atoomic.review"
+        stray.mkdir(parents=True)
+        (stray / "SKILL.md").write_text(textwrap.dedent("""\
+            ---
+            name: review
+            description: claude-format skill, no commands block
+            ---
+        """))
+        return tmp_path
+
+    def test_get_core_skills_dir_is_core_subdir(self):
+        assert get_core_skills_dir() == get_default_skills_dir() / "core"
+
+    def test_stray_scope_not_registered(self, tmp_path, monkeypatch):
+        self._fake_default_tree(tmp_path)
+        monkeypatch.setattr("app.skills.get_default_skills_dir", lambda: tmp_path)
+        registry = build_registry()
+        assert "core.status" in registry
+        assert "anantys.review" not in registry
+        assert registry.scopes() == ["core"]
+
+    def test_misplaced_scope_warns_once(self, tmp_path, monkeypatch, caplog):
+        self._fake_default_tree(tmp_path)
+        monkeypatch.setattr("app.skills.get_default_skills_dir", lambda: tmp_path)
+        with caplog.at_level("WARNING", logger="app.skills"):
+            build_registry()
+        misplaced = [r for r in caplog.records if "non-core skill scope" in r.message]
+        assert len(misplaced) == 1
+        assert "anantys" in misplaced[0].getMessage()
+
+    def test_no_warning_without_stray(self, tmp_path, monkeypatch, caplog):
+        self._write_skill(tmp_path, "core", "status")
+        monkeypatch.setattr("app.skills.get_default_skills_dir", lambda: tmp_path)
+        with caplog.at_level("WARNING", logger="app.skills"):
+            build_registry()
+        assert not [r for r in caplog.records if "non-core skill scope" in r.message]
 
 
 # ---------------------------------------------------------------------------
@@ -3223,3 +3287,34 @@ class TestValidateSkillMetadata:
             "Core skills with validation warnings:\n"
             + "\n".join(f"  - {f}" for f in failures)
         )
+
+
+class TestSkillContextMemory:
+    def test_memory_returns_accessor(self, tmp_path):
+        ctx = SkillContext(
+            koan_root=tmp_path,
+            instance_dir=tmp_path / "instance",
+        )
+        from app.skill_memory_accessor import MemoryAccessor
+        assert isinstance(ctx.memory, MemoryAccessor)
+
+    def test_memory_is_cached(self, tmp_path):
+        ctx = SkillContext(
+            koan_root=tmp_path,
+            instance_dir=tmp_path / "instance",
+        )
+        assert ctx.memory is ctx.memory
+
+    def test_memory_not_created_until_accessed(self, tmp_path):
+        ctx = SkillContext(
+            koan_root=tmp_path,
+            instance_dir=tmp_path / "instance",
+        )
+        assert ctx._memory is None
+
+    def test_project_name_field_defaults_empty(self, tmp_path):
+        ctx = SkillContext(
+            koan_root=tmp_path,
+            instance_dir=tmp_path / "instance",
+        )
+        assert ctx.project_name == ""

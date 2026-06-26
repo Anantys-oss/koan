@@ -964,6 +964,29 @@ class TestRunExplorationStructured:
         assert "---IDEA---" not in result_msg
         assert "2 mission(s) queued" in result_msg
 
+    @patch("app.utils.insert_pending_mission")
+    @patch("app.cli_provider.run_command_streaming",
+           return_value=_STRUCTURED_OUTPUT)
+    @patch("app.ai_runner.get_missions_context", return_value="No active missions.")
+    @patch("app.ai_runner.gather_project_structure", return_value="Directories: src/")
+    @patch("app.ai_runner.gather_git_activity", return_value="Recent commits: abc")
+    @patch("app.ai_runner.load_skill_prompt", return_value="Explore myapp")
+    def test_normal_mode_gates_progress_sends_outcome(
+        self, mock_prompt, mock_git, mock_struct, mock_missions,
+        mock_claude, mock_insert, tmp_path,
+    ):
+        sent = []
+        with patch("app.messaging_level.is_debug", return_value=False), \
+             patch("app.notify.send_telegram", lambda m, **k: sent.append(m)):
+            run_exploration(
+                str(tmp_path), "myapp", str(tmp_path),
+                notify_fn=None,
+            )
+        # The "Exploring myapp..." progress line is gated; the exploration
+        # report (outcome) is always sent.
+        assert not any(m.endswith("...") for m in sent)
+        assert any("AI exploration of myapp" in m for m in sent)
+
 
 # ---------------------------------------------------------------------------
 # CLI entry point

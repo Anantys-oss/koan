@@ -668,6 +668,33 @@ class TestHandleMission:
         assert mock_insert.call_args[1].get("urgent") or mock_insert.call_args[0][2] is True
         assert "priority" in mock_send.call_args[0][0]
 
+    @patch("app.command_handlers.insert_pending_mission")
+    def test_mission_reaction_suppresses_text_reply(
+        self, mock_insert, patch_bridge_state, mock_send
+    ):
+        from app import command_handlers as ch
+        prov = MagicMock()
+        prov.add_reaction.return_value = True  # Slack-like: reaction succeeds
+        with patch("app.command_handlers.get_reply_context", return_value=42), \
+             patch("app.command_handlers._get_messaging_provider", return_value=prov):
+            ch.handle_mission("fix the login bug")
+        prov.add_reaction.assert_called_once_with(42, ch.ACK_EMOJI)
+        prov.stop_typing.assert_called_once_with(reply_to_message_id=42)
+        mock_send.assert_not_called()
+
+    @patch("app.command_handlers.insert_pending_mission")
+    def test_mission_falls_back_to_text_when_no_reaction(
+        self, mock_insert, patch_bridge_state, mock_send
+    ):
+        from app import command_handlers as ch
+        prov = MagicMock()
+        prov.add_reaction.return_value = False  # Telegram/Matrix/unconfigured
+        with patch("app.command_handlers.get_reply_context", return_value=42), \
+             patch("app.command_handlers._get_messaging_provider", return_value=prov):
+            ch.handle_mission("fix the login bug")
+        mock_send.assert_called_once()
+        assert "Mission received" in mock_send.call_args[0][0]
+
 
 # ---------------------------------------------------------------------------
 # Test: _dispatch_skill
@@ -772,6 +799,33 @@ class TestCliSkillDispatch:
         # Should ack to user
         mock_send.assert_called_once()
         assert "Mission queued" in mock_send.call_args[0][0]
+
+    @patch("app.command_handlers.insert_pending_mission")
+    def test_cli_skill_agent_reaction_suppresses_text(
+        self, mock_insert, patch_bridge_state, mock_send, mock_registry
+    ):
+        """A reaction-capable provider acks the slash command with a reaction, no reply."""
+        from app import command_handlers as ch
+        from app.skills import Skill, SkillCommand
+        from unittest.mock import patch as _patch
+
+        skill = Skill(
+            name="myskill",
+            scope="group",
+            description="Bridge to my-tool",
+            audience="agent",
+            cli_skill="my-tool",
+            commands=[SkillCommand(name="myskill", description="Invoke /my-tool")],
+        )
+        prov = MagicMock()
+        prov.add_reaction.return_value = True
+        with _patch("app.command_handlers.execute_skill"), \
+             _patch("app.command_handlers.get_reply_context", return_value=42), \
+             _patch("app.command_handlers._get_messaging_provider", return_value=prov):
+            ch._dispatch_skill(skill, "myskill", "do something")
+        prov.add_reaction.assert_called_once_with(42, ch.ACK_EMOJI)
+        prov.stop_typing.assert_called_once_with(reply_to_message_id=42)
+        mock_send.assert_not_called()
 
     @patch("app.command_handlers.insert_pending_mission")
     def test_cli_skill_agent_extracts_project(
@@ -1563,7 +1617,7 @@ class TestDispatchSkillWorkerNoCallback:
         skill.audience = "bridge"
 
         # Use a real function as worker callback that runs immediately
-        def run_immediately(fn):
+        def run_immediately(fn, **kwargs):
             fn()
 
         old_cb = mod._run_in_worker_cb
@@ -1598,7 +1652,7 @@ class TestDispatchSkillWorkerExceptionHandling:
 
         # Capture the closure and run it synchronously
         captured_fn = None
-        def capture_worker(fn):
+        def capture_worker(fn, **kwargs):
             nonlocal captured_fn
             captured_fn = fn
         set_callbacks(handle_chat=MagicMock(), run_in_worker=capture_worker)
@@ -1625,7 +1679,7 @@ class TestDispatchSkillWorkerExceptionHandling:
         skill.audience = "bridge"
 
         captured_fn = None
-        def capture_worker(fn):
+        def capture_worker(fn, **kwargs):
             nonlocal captured_fn
             captured_fn = fn
         set_callbacks(handle_chat=MagicMock(), run_in_worker=capture_worker)
@@ -1652,7 +1706,7 @@ class TestDispatchSkillWorkerExceptionHandling:
         skill.audience = "bridge"
 
         captured_fn = None
-        def capture_worker(fn):
+        def capture_worker(fn, **kwargs):
             nonlocal captured_fn
             captured_fn = fn
         set_callbacks(handle_chat=MagicMock(), run_in_worker=capture_worker)

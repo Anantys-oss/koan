@@ -43,13 +43,17 @@
 
 You pay for AI coding quota. You use it 8 hours a day. The other 16? Wasted quota.
 
-Koan fixes that. It's a background agent that runs on your machine, pulls tasks from a shared mission queue, executes them via your configured CLI provider (Claude Code, Codex, Copilot, or local), and reports back through Telegram, Slack, or Matrix. It writes code in isolated branches, never touches `main`, and waits for your review before anything ships.
+Koan fixes that. It's a background agent that runs on your machine, pulls tasks from a shared mission queue, executes them via your configured CLI provider (Claude Code, Codex, Copilot, or local models via Ollama Launch), and reports back through Telegram, Slack, or Matrix. It writes code in isolated branches, never touches `main`, and waits for your review before anything ships.
 
 **The agent proposes. The human decides.**
 
 This isn't a chatbot wrapper. It's a collaborator with memory, personality, and opinions. It tracks its own learnings across sessions, evolves its working style, and writes a zen koan at the end of every run. Because why not.
 
 ## Quick Start
+
+Run Kōan natively on your machine, or in a container — both are fully supported.
+
+### Native
 
 ```bash
 git clone https://github.com/Anantys-oss/koan.git
@@ -73,6 +77,23 @@ On macOS, keep your machine awake while Koan runs:
 ```bash
 caffeinate -s &
 ```
+
+### Docker
+
+Prefer containers (VPS/server hosting or a sandboxed local run)? Pull the
+prebuilt image from GitHub Container Registry — no local build:
+
+```bash
+git clone https://github.com/Anantys-oss/koan.git && cd koan
+cp -r instance.example instance && cp env.example .env   # then fill in messaging + auth creds
+./setup-docker.sh        # detect host paths, generate mounts
+make docker-pull-up      # pull & run prebuilt image (or: make docker-up to build from source)
+make docker-logs         # watch it work
+```
+
+The image lives at [`ghcr.io/anantys-oss/koan`](https://github.com/Anantys-oss/koan/pkgs/container/koan)
+(`latest`, `stable`, and per-version tags). Full guide — auth, GHCR access, pinning,
+and troubleshooting: [docs/setup/docker.md](docs/setup/docker.md).
 
 That's it. Send it a mission via Telegram: *"audit the auth module for security issues"* — and go live your life.
 
@@ -270,7 +291,7 @@ All behavioral config lives in `instance/config.yaml`. Secrets stay in `.env`.
 
 ```yaml
 # How hard should Kōan work
-max_runs_per_day: 10
+max_runs_per_day: 60
 interval_seconds: 60
 
 # Model selection per role
@@ -327,13 +348,13 @@ Koan isn't locked to Claude. Swap the backend per-project:
 | **Claude Code** (default) | Full-featured agent, best reasoning |
 | **OpenAI Codex** | ChatGPT users (Plus/Pro/Business/Edu/Enterprise) |
 | **GitHub Copilot** | Teams with existing Copilot licenses |
-| **Local LLM** | Offline, privacy, zero API cost |
+| **Ollama Launch** | Local/offline models behind the Claude CLI harness |
 
 See provider guides:
 - [docs/providers/claude.md](docs/providers/claude.md)
 - [docs/providers/codex.md](docs/providers/codex.md)
 - [docs/providers/copilot.md](docs/providers/copilot.md)
-- [docs/providers/local.md](docs/providers/local.md)
+- [docs/providers/ollama-launch.md](docs/providers/ollama-launch.md)
 
 ### Dashboard Configuration
 
@@ -370,7 +391,7 @@ koan/
       claude.py           #     Claude Code CLI
       codex.py            #     OpenAI Codex CLI
       copilot.py          #     GitHub Copilot CLI
-      local.py            #     Local LLM backends
+      ollama_launch.py    #     Ollama Launch (local models via ollama)
   skills/                 # Pluggable command system (44 core skills)
   system-prompts/         # All LLM prompts (20 files, no inline prompts)
   templates/              # Dashboard Jinja2 templates
@@ -398,6 +419,8 @@ instance/                 # Your private data (gitignored)
 | `make dashboard` | Web UI (default: http://127.0.0.1:5001) |
 | `make test` | Run test suite |
 | `make say m="..."` | Send a test message |
+| `make docker-pull-up` | Pull the prebuilt GHCR image and run in Docker (recommended) |
+| `make docker-up` | Build the image from source and run in Docker |
 | `make rename-project old=X new=Y` | Rename a project everywhere (dry-run by default, add `apply=1` to execute) |
 | `make clean` | Remove virtualenv |
 

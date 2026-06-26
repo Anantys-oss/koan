@@ -132,12 +132,70 @@ def reset_provider():
         _instance = None
 
 
+# Primary credential signal for each non-telegram provider. Slack credentials
+# only come from env vars; matrix/discord also accept a config.yaml block under
+# the named primary-credential key.
+_NON_TELEGRAM_ENV_CREDENTIAL = {
+    "slack": "KOAN_SLACK_BOT_TOKEN",
+    "matrix": "KOAN_MATRIX_ACCESS_TOKEN",
+    "discord": "KOAN_DISCORD_BOT_TOKEN",
+}
+
+# Primary credential key inside each provider's messaging.<name> config block.
+_NON_TELEGRAM_CONFIG_CREDENTIAL = {
+    "matrix": "access_token",
+    "discord": "bot_token",
+}
+
+
+def _telegram_credentials_present() -> bool:
+    """True when Telegram is already set up (token + chat id present).
+
+    Checks only the KOAN_TELEGRAM_TOKEN / KOAN_TELEGRAM_CHAT_ID env vars — the
+    exact source the Telegram provider reads (see telegram.py configure()). The
+    provider never consults a messaging.telegram config block, so neither does
+    this guard.
+    """
+    token = os.environ.get("KOAN_TELEGRAM_TOKEN", "").strip()
+    chat_id = os.environ.get("KOAN_TELEGRAM_CHAT_ID", "").strip()
+    return bool(token and chat_id)
+
+
+def _detect_provider_from_credentials(config: dict) -> str:
+    """Infer a non-telegram provider from credentials already configured.
+
+    When the user sets up e.g. Slack (KOAN_SLACK_* env vars) but leaves
+    messaging.provider unset, the default would be telegram — producing a
+    spurious "set telegram credentials" warning and a bridge that can't connect.
+    If exactly one non-telegram provider is configured, honor it. Ambiguous
+    setups (zero or multiple) return "" and fall back to the telegram default.
+
+    Telegram already being configured is itself ambiguous: auto-detecting away
+    from a working Telegram setup would silently swap providers. In that case we
+    keep the telegram default and never auto-switch.
+    """
+    if _telegram_credentials_present():
+        return ""
+    found = {
+        name for name, var in _NON_TELEGRAM_ENV_CREDENTIAL.items()
+        if os.environ.get(var, "").strip()
+    }
+    messaging = config.get("messaging", {}) if isinstance(config, dict) else {}
+    if isinstance(messaging, dict):
+        for name, key in _NON_TELEGRAM_CONFIG_CREDENTIAL.items():
+            block = messaging.get(name)
+            if isinstance(block, dict) and str(block.get(key, "")).strip():
+                found.add(name)
+    return next(iter(found)) if len(found) == 1 else ""
+
+
 def resolve_provider_name() -> str:
-    """Resolve provider name from env var or config."""
+    """Resolve provider name from env var, config, or detected credentials."""
     name = os.environ.get("KOAN_MESSAGING_PROVIDER", "")
     if name:
         return name.lower().strip()
 
+    config = {}
     try:
         from app.utils import load_config
         config = load_config()
@@ -150,6 +208,16 @@ def resolve_provider_name() -> str:
         pass
     except Exception as e:
         _write_error(f"Error reading messaging config: {e}")
+
+    # No explicit provider chosen: if exactly one non-telegram platform is
+    # already set up, use it rather than defaulting to telegram.
+    detected = _detect_provider_from_credentials(config)
+    if detected:
+        _write_error(
+            f"auto-detected messaging provider {detected!r} from credentials "
+            "(no explicit messaging.provider set)"
+        )
+        return detected
 
     return "telegram"
 

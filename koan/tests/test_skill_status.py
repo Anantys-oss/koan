@@ -71,8 +71,8 @@ class TestNeedsOllama:
         assert _needs_ollama() is False
 
     @patch("app.provider.get_provider_name", return_value="local")
-    def test_returns_true_for_local_provider(self, _mock):
-        assert _needs_ollama() is True
+    def test_returns_false_for_removed_local_provider(self, _mock):
+        assert _needs_ollama() is False
 
     @patch("app.provider.get_provider_name", return_value="ollama")
     def test_returns_true_for_ollama_provider(self, _mock):

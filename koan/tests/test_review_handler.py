@@ -1,12 +1,13 @@
 """Tests for review skill handler — batch mode and single-PR dispatch."""
 
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import call, patch
 
 from skills.core.review.handler import (
     handle,
     _list_open_prs,
     _handle_batch,
+    _split_review_targets,
 )
 from app.github_skill_helpers import parse_repo_url, parse_limit
 from app.skills import SkillContext
@@ -237,6 +238,7 @@ class TestHandleRouting:
         result = handle(ctx)
 
         mock_single.assert_called_once()
+        assert result == "Review queued"
 
     @patch(f"{_HANDLER}.handle_github_skill")
     def test_issue_url_routes_to_single(self, mock_single):
@@ -290,3 +292,66 @@ class TestHandleRouting:
         handle(ctx)
 
         assert mock_single.call_args[1].get("urgent", False) is False
+
+    @patch(f"{_HANDLER}.handle_github_skill")
+    @patch(f"{_HANDLER}.queue_github_mission", return_value=True)
+    @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path/to/repo", "myrepo"))
+    def test_multiple_pr_urls_queue_individual_reviews(
+        self, mock_resolve, mock_queue, mock_single,
+    ):
+        ctx = self._make_ctx(
+            "https://github.com/owner/repo/pull/76 "
+            "https://github.com/owner/repo/pull/77"
+        )
+        result = handle(ctx)
+
+        assert result == "Queued 2 /review missions."
+        mock_single.assert_not_called()
+        assert mock_queue.call_args_list == [
+            call(
+                ctx, "review", "https://github.com/owner/repo/pull/76",
+                "myrepo", None, urgent=False,
+            ),
+            call(
+                ctx, "review", "https://github.com/owner/repo/pull/77",
+                "myrepo", None, urgent=False,
+            ),
+        ]
+
+    @patch(f"{_HANDLER}.queue_github_mission", return_value=True)
+    @patch(f"{_HANDLER}.resolve_project_for_repo", return_value=("/path/to/repo", "myrepo"))
+    def test_multiple_pr_urls_preserve_shared_flags(self, mock_resolve, mock_queue):
+        plan_url = "https://github.com/owner/repo/issues/9"
+        ctx = self._make_ctx(
+            "--now https://github.com/owner/repo/pull/76 --errors "
+            f"https://github.com/owner/repo/pull/77 --plan-url {plan_url}"
+        )
+        result = handle(ctx)
+
+        assert result == "Queued 2 priority /review missions."
+        assert mock_queue.call_args_list == [
+            call(
+                ctx, "review", "https://github.com/owner/repo/pull/76",
+                "myrepo", f"--errors --plan-url {plan_url}", urgent=True,
+            ),
+            call(
+                ctx, "review", "https://github.com/owner/repo/pull/77",
+                "myrepo", f"--errors --plan-url {plan_url}", urgent=True,
+            ),
+        ]
+
+
+class TestSplitReviewTargets:
+    def test_plan_url_value_is_context_not_target(self):
+        plan_url = "https://github.com/owner/repo/issues/9"
+        urls, context = _split_review_targets(
+            "https://github.com/owner/repo/pull/76 "
+            f"--plan-url {plan_url} "
+            "https://github.com/owner/repo/pull/77 --comments"
+        )
+
+        assert urls == [
+            "https://github.com/owner/repo/pull/76",
+            "https://github.com/owner/repo/pull/77",
+        ]
+        assert context == f"--plan-url {plan_url} --comments"

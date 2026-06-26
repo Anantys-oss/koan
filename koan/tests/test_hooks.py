@@ -687,6 +687,36 @@ class TestAutomationRuleExecution:
         registry.fire("pre_mission")
         assert pause_file.exists()
 
+    def test_pause_action_writes_auto_resumable_pause(self, tmp_path):
+        """A pause from an automation rule must auto-resume after cooldown.
+
+        Regression for #2079: the action used to write a one-line file with
+        no timestamp, so `should_auto_resume` hit its `timestamp <= 0`
+        early-return and the pause became permanent. Going through
+        `create_pause` stamps the current time, so the standard 5h cooldown
+        applies and the agent recovers on its own.
+        """
+        from app.pause_manager import (
+            DEFAULT_COOLDOWN_SECONDS,
+            get_pause_state,
+            should_auto_resume,
+        )
+        _write_rules(str(tmp_path), [
+            {"id": "r1", "event": "pre_mission", "action": "pause",
+             "enabled": True, "created": ""},
+        ])
+        registry = self._make_registry(tmp_path)
+        registry.fire("pre_mission")
+        state = get_pause_state(str(tmp_path.parent))
+        assert state is not None
+        assert state.timestamp > 0
+        # Not yet eligible immediately after pausing...
+        assert should_auto_resume(state, now=state.timestamp) is False
+        # ...but eligible once the cooldown has elapsed.
+        assert should_auto_resume(
+            state, now=state.timestamp + DEFAULT_COOLDOWN_SECONDS
+        ) is True
+
     def test_resume_action_removes_koan_pause(self, tmp_path):
         _write_rules(str(tmp_path), [
             {"id": "r1", "event": "session_start", "action": "resume",

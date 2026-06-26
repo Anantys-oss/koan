@@ -2,7 +2,7 @@
 CLI provider abstraction for Kōan.
 
 Allows switching between Claude Code CLI, GitHub Copilot CLI,
-OpenAI Codex CLI, Cline CLI, or a local LLM server as the underlying AI agent
+OpenAI Codex CLI, Cline CLI, or Ollama Launch as the underlying AI agent
 binary. Each provider knows how to translate Kōan's generic command
 spec into provider-specific flags.
 
@@ -16,7 +16,6 @@ Package structure:
     provider/cline.py        — ClineProvider implementation
     provider/codex.py        — CodexProvider implementation
     provider/copilot.py      — CopilotProvider implementation
-    provider/local.py        — LocalLLMProvider implementation
     provider/ollama_launch.py — OllamaLaunchProvider (ollama launch claude)
     provider/__init__.py     — Registry, resolution, convenience functions
 """
@@ -28,6 +27,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -44,7 +44,6 @@ from app.provider.claude import ClaudeProvider  # noqa: F401
 from app.provider.cline import ClineProvider  # noqa: F401
 from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
-from app.provider.local import LocalLLMProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
 
 
@@ -102,7 +101,6 @@ _PROVIDERS = {
     "cline": ClineProvider,
     "codex": CodexProvider,
     "copilot": CopilotProvider,
-    "local": LocalLLMProvider,
     "ollama-launch": OllamaLaunchProvider,
 }
 
@@ -873,7 +871,13 @@ def run_command_streaming(
 
     from app.cli_exec import popen_cli
 
-    raw_lines: List[str] = []  # for error reporting (full transcript)
+    # raw_lines is scanned only for error/max-turns detection, never returned,
+    # so a bounded tail is safe and caps RAM on long provider streams. 2000 is
+    # deliberately generous so terminal _format_cli_error context and the
+    # non-stream-json max-turns regex fallback keep working.
+    raw_lines = deque(maxlen=2000)  # for error reporting (terminal lines)
+    # text_lines IS the fallback return value when no result event arrives —
+    # it must stay unbounded or long sessions would silently lose output.
     text_lines: List[str] = []  # fallback return value when no result event
     final_result: Optional[str] = None
     usage_snapshot: Optional[Dict[str, Any]] = None

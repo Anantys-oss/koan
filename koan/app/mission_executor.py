@@ -70,7 +70,9 @@ def _handle_skill_dispatch(
         log("mission", f"Project: {project_name}")
         log("mission", f"Runner: {' '.join(skill_cmd[:4])}...")
         _run.set_status(koan_root, f"Run {run_num}/{max_runs} — skill dispatch on {project_name}")
-        _run._notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Skill: {mission_title}")
+        from app.messaging_level import debug_only
+        _start_msg = f"🚀 [{project_name}] Run {run_num}/{max_runs} — Skill: {mission_title}"
+        debug_only(_start_msg, lambda: _run._notify(instance, _start_msg), log_category="mission")
 
         # Create pending.md so /live can show progress during skill dispatch
         from app.loop_manager import create_pending_file
@@ -206,9 +208,19 @@ def _handle_skill_dispatch(
             and "— skipping" in _skill_stdout
         )
         if not _skill_already_notified:
+            # Tracked skills (/review, /fix, /rebase, /plan, /implement) render a
+            # concise "✅ [project] 🔍 Reviewed <pr-url>" line. The skill runners
+            # emit their transcript (which carries the PR URL) to stdout rather
+            # than pending.md, so extract it here and thread it through —
+            # otherwise the URL falls back to a pending.md-only read that the
+            # skill path rarely populates. Empty result still falls back to the
+            # pending.md re-read inside _notify_mission_end.
+            from app.mission_runner import _extract_pr_url
+            _skill_pr_url = _extract_pr_url(_skill_stdout)
             _run._notify_mission_end(
                 instance, project_name, run_num, max_runs,
                 exit_code, mission_title,
+                pr_url=_skill_pr_url,
             )
         was_stagnated = _run._last_mission_stagnated.is_set()
         _run._finalize_mission(instance, mission_title, project_name, exit_code)
@@ -959,14 +971,16 @@ def _run_iteration(
         log("mission", "Decision: MISSION mode (assigned)")
         log("mission", f"  Mission: {mission_title}")
         log("mission", f"  Project: {project_name}")
-        _run._notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Starting: {mission_title}")
+        _start_msg = f"🚀 [{project_name}] Run {run_num}/{max_runs} — Starting: {mission_title}"
     else:
         mode_upper = autonomous_mode.upper()
         log("mission", f"Decision: {mode_upper} mode (estimated cost: 5.0% session)")
         log("mission", f"  Reason: {plan['decision_reason']}")
         log("mission", f"  Project: {project_name}")
         log("mission", f"  Focus: {focus_area}")
-        _run._notify(instance, f"🚀 [{project_name}] Run {run_num}/{max_runs} — Autonomous: {autonomous_mode} mode")
+        _start_msg = f"🚀 [{project_name}] Run {run_num}/{max_runs} — Autonomous: {autonomous_mode} mode"
+    from app.messaging_level import debug_only
+    debug_only(_start_msg, lambda: _run._notify(instance, _start_msg), log_category="mission")
 
     # --- Fire pre-mission hook ---
     try:
@@ -1320,6 +1334,9 @@ def _run_iteration(
         log("koan", "Starting post-mission pipeline...")
         _status_prefix = f"Run {run_num}/{max_runs}"
         _run.set_status(koan_root, f"{_status_prefix} — finalizing")
+        # PR URL captured during post-mission processing (before pending.md is
+        # deleted) so the concise completion line can attach it afterward.
+        _completion_pr_url = ""
         try:
             from app.mission_runner import run_post_mission
             from app.restart_manager import RESTART_EXIT_CODE
@@ -1341,6 +1358,7 @@ def _run_iteration(
                 provider_name=provider_name,
             )
 
+            _completion_pr_url = post_result.get("pr_url", "")
             if post_result.get("pending_archived"):
                 log("health", f"pending.md archived to journal ({provider_label} didn't clean up)")
             if post_result.get("auto_merge_branch"):
@@ -1398,6 +1416,7 @@ def _run_iteration(
     _run._notify_mission_end(
         instance, project_name, run_num, max_runs,
         claude_exit, mission_title,
+        pr_url=_completion_pr_url,
     )
 
     # Commit instance

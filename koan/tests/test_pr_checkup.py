@@ -545,3 +545,21 @@ class TestRunCheckup:
         assert "2 open PR(s)" in msg
         assert len(queued) == 1  # only app2 has conflicts
         assert queued[0][0] == "app2"
+
+
+class TestCheckupOutcomeGating:
+    def test_success_emits_single_outcome(self, monkeypatch):
+        import app.pr_checkup as pc
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+
+        def _impl(koan_root, instance_dir, notify_fn=None, **k):
+            notify_fn("Checking PRs...")
+            return True, "PR checkup complete: 3 open PR(s) — all healthy"
+
+        monkeypatch.setattr(pc, "_run_checkup_impl", _impl)
+        ok, _ = pc.run_checkup("/root", "/inst")
+        assert ok is True
+        assert not any("..." in m for m in sent)  # progress gated
+        assert sent == ["✅ PR checkup complete: 3 open PR(s) — all healthy"]

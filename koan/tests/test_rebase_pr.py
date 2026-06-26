@@ -595,7 +595,7 @@ class TestBuildRebaseComment:
         assert "## Rebase with requested adjustments" in result
         assert "review feedback was applied" in result
 
-    def test_feedback_timeout_note_does_not_count_as_adjustments(self):
+    def test_feedback_failed_flag_reports_not_applied(self):
         result = _build_rebase_comment(
             "42", "koan/fix", "main",
             [
@@ -603,7 +603,26 @@ class TestBuildRebaseComment:
                 "Review feedback timed out; restored clean rebased state and continuing with rebase-only push",
             ],
             {"title": "Fix bug", "review_comments": "please fix the typo"},
+            feedback_failed=True,
         )
+        assert "## Rebase completed; review feedback not applied" in result
+        assert "review feedback could not be applied automatically" in result
+        assert "## Rebase with requested adjustments" not in result
+
+    def test_feedback_failure_label_drives_summary_not_log_prose(self):
+        # Detection comes from the structured status the caller passes, not
+        # from substring-matching log lines.  A failure marker left in the
+        # log must NOT, on its own, flip the summary to "not applied".
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            [
+                "Rebased onto origin/main",
+                "Review feedback step crashed; continuing with rebase-only push",
+            ],
+            {"title": "Fix bug", "review_comments": "please fix the typo"},
+            feedback_failed=False,
+        )
+        assert "## Rebase completed; review feedback not applied" not in result
         assert "## Simple rebase" in result
 
     def test_conflict_resolution_noted(self):
@@ -1670,6 +1689,19 @@ class TestBuildRebasePrompt:
         assert "fix this" in prompt
         assert "Please fix" in prompt
 
+    def test_includes_review_protocol(self):
+        """The receiving-code-review {@include} fragment resolves in the prompt."""
+        context = {
+            "title": "T", "body": "", "branch": "br", "base": "main",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        prompt = _build_rebase_prompt(context, skill_dir=REBASE_SKILL_DIR)
+        # Protocol markers — present means the {@include} fragment resolved
+        # rather than leaking the literal directive into the agent prompt.
+        assert "VERIFY" in prompt
+        assert "EVALUATE" in prompt
+        assert "{@include" not in prompt
+
     def test_prompt_without_skill_dir_falls_back(self):
         """Without skill_dir, falls back to system-prompts directory."""
         context = {
@@ -1706,6 +1738,7 @@ class TestApplyReviewFeedback:
         call_kwargs = mock_step.call_args.kwargs
         assert call_kwargs["commit_msg"] == "rebase: apply review feedback on #42"
         assert call_kwargs["success_label"] == "Applied review feedback"
+        assert call_kwargs["bypass_hook_failures"] is True
         assert summary == "Changed things."
 
     @patch("app.rebase_pr.get_rebase_review_max_duration", return_value=10800)
@@ -3979,3 +4012,41 @@ class TestEnqueueCiCheckConfigGate:
             )
         assert "disabled" in result.lower()
         assert any("disabled" in a.lower() for a in actions)
+
+
+class TestRebaseOutcomeGating:
+    def test_success_emits_single_outcome_with_pr_url(self, monkeypatch):
+        import app.rebase_pr as rp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+        monkeypatch.setattr(rp, "_run_rebase_impl", lambda *a, **k: (True, "done"))
+        ok, summary = rp.run_rebase("o", "r", "7", "/tmp/x")
+        assert ok is True
+        assert sent == ["✅ Rebased https://github.com/o/r/pull/7"]
+
+    def test_failure_emits_outcome_with_context(self, monkeypatch):
+        import app.rebase_pr as rp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+        monkeypatch.setattr(rp, "_run_rebase_impl", lambda *a, **k: (False, "boom"))
+        ok, summary = rp.run_rebase("o", "r", "7", "/tmp/x")
+        assert ok is False
+        assert len(sent) == 1
+        assert "https://github.com/o/r/pull/7" in sent[0] and "boom" in sent[0]
+
+    def test_progress_suppressed_under_normal(self, monkeypatch):
+        import app.rebase_pr as rp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+
+        def _impl(owner, repo, pr_number, project_path, notify_fn=None, **k):
+            notify_fn("Reading PR #7...")
+            return True, "done"
+
+        monkeypatch.setattr(rp, "_run_rebase_impl", _impl)
+        rp.run_rebase("o", "r", "7", "/tmp/x")
+        assert not any("..." in m for m in sent)  # progress gated
+        assert sent == ["✅ Rebased https://github.com/o/r/pull/7"]

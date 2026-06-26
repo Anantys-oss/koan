@@ -23,7 +23,11 @@ for concurrent safety.
 
 A read-optimized projection of the JSONL log. Provides BM25-ranked full-text
 search so mission-relevant entries surface in agent prompts instead of pure
-recency. Dual-written alongside JSONL (best-effort — JSONL succeeds regardless
+recency. Ranking is confidence-weighted: BM25 `rank` is scaled by the entry's
+`confidence` (`EXTRACTED`→1.0, `INFERRED`→0.75, `AMBIGUOUS`→0.4, numeric values
+used directly, absent→0.9) so a high-confidence match outranks a marginally
+better-matching but low-confidence one. Entries without confidence keep pure
+BM25 order. Dual-written alongside JSONL (best-effort — JSONL succeeds regardless
 of SQLite errors). Populated by a dedicated, always-run startup step
 (`startup_manager.index_memory_sqlite`) that bulk-indexes existing JSONL entries.
 This step is self-gated: `migrate_jsonl_to_sqlite()` only runs when `memory.db`
@@ -79,7 +83,7 @@ Each JSONL entry has four required and four optional fields:
 | `content` | string | yes | Entry text (capped at 2000 chars) |
 | `source_skill` | string | no | Skill that produced this entry (e.g. `"review"`, `"fix"`) |
 | `tags` | list of strings | no | Freeform classification tags |
-| `confidence` | float 0.0–1.0 | no | Confidence level of the observation |
+| `confidence` | float 0.0–1.0 or label (`EXTRACTED`/`INFERRED`/`AMBIGUOUS`) | no | Confidence of the observation; weights FTS5 ranking |
 | `expires_at` | ISO8601 string | no | Auto-expiry timestamp; entry is pruned after this time |
 
 Optional fields are omitted from the JSON when not set (not stored as null).

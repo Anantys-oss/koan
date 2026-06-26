@@ -20,7 +20,7 @@ def _needs_ollama() -> bool:
     """Return True if the configured provider requires ollama serve."""
     try:
         from app.provider import get_provider_name
-        return get_provider_name() in ("local", "ollama")
+        return get_provider_name() == "ollama"
     except Exception:
         return False
 

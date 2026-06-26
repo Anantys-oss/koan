@@ -369,6 +369,93 @@ class TestProviderResolution:
             ):
                 assert _resolve_provider_name() == "slack"
 
+    # -- Credential auto-detection (no explicit provider chosen) -------------
+
+    _CRED_ENV = (
+        "KOAN_MESSAGING_PROVIDER",
+        "KOAN_SLACK_BOT_TOKEN",
+        "KOAN_MATRIX_ACCESS_TOKEN",
+        "KOAN_DISCORD_BOT_TOKEN",
+        "KOAN_TELEGRAM_TOKEN",
+        "KOAN_TELEGRAM_CHAT_ID",
+    )
+
+    def _clean_env(self, **overrides):
+        env = {k: "" for k in self._CRED_ENV}
+        env.update(overrides)
+        return patch.dict(os.environ, env)
+
+    def test_detects_slack_from_env_credentials(self):
+        """Setting KOAN_SLACK_BOT_TOKEN without messaging.provider resolves to
+        slack rather than defaulting to telegram — so the bridge connects and
+        no spurious telegram-credentials warning fires."""
+        from app.messaging import _resolve_provider_name
+
+        with self._clean_env(KOAN_SLACK_BOT_TOKEN="xoxb-test"):
+            with patch("app.utils.load_config", return_value={}):
+                assert _resolve_provider_name() == "slack"
+
+    def test_detects_matrix_from_config_block(self):
+        from app.messaging import _resolve_provider_name
+
+        with self._clean_env():
+            with patch(
+                "app.utils.load_config",
+                return_value={"messaging": {"matrix": {"access_token": "syt_x"}}},
+            ):
+                assert _resolve_provider_name() == "matrix"
+
+    def test_ambiguous_credentials_fall_back_to_telegram(self):
+        """When two non-telegram providers are configured, resolution is
+        ambiguous and we keep the telegram default rather than guessing."""
+        from app.messaging import _resolve_provider_name
+
+        with self._clean_env(
+            KOAN_SLACK_BOT_TOKEN="xoxb-test", KOAN_DISCORD_BOT_TOKEN="bot-test"
+        ):
+            with patch("app.utils.load_config", return_value={}):
+                assert _resolve_provider_name() == "telegram"
+
+    def test_no_credentials_defaults_to_telegram(self):
+        from app.messaging import _resolve_provider_name
+
+        with self._clean_env():
+            with patch("app.utils.load_config", return_value={}):
+                assert _resolve_provider_name() == "telegram"
+
+    def test_explicit_telegram_wins_over_detected_slack(self):
+        from app.messaging import _resolve_provider_name
+
+        with self._clean_env(
+            KOAN_MESSAGING_PROVIDER="telegram", KOAN_SLACK_BOT_TOKEN="xoxb-test"
+        ):
+            assert _resolve_provider_name() == "telegram"
+
+    def test_configured_telegram_blocks_silent_swap_to_slack(self):
+        """When Telegram is already set up (token + chat id), detection must not
+        silently swap to a non-telegram provider — keep the telegram default."""
+        from app.messaging import _resolve_provider_name
+
+        with self._clean_env(
+            KOAN_TELEGRAM_TOKEN="123:abc",
+            KOAN_TELEGRAM_CHAT_ID="999",
+            KOAN_SLACK_BOT_TOKEN="xoxb-test",
+        ):
+            with patch("app.utils.load_config", return_value={}):
+                assert _resolve_provider_name() == "telegram"
+
+    def test_disabled_config_block_not_detected(self):
+        """A config block with only a non-credential value (e.g. enabled: false)
+        is not treated as configured — only the primary credential key counts."""
+        from app.messaging import _resolve_provider_name
+
+        with self._clean_env():
+            with patch(
+                "app.utils.load_config",
+                return_value={"messaging": {"matrix": {"enabled": False}}},
+            ):
+                assert _resolve_provider_name() == "telegram"
+
 
 # ---------------------------------------------------------------------------
 # DEFAULT_MAX_MESSAGE_SIZE constant consistency
@@ -506,3 +593,15 @@ class TestThreadSafety:
         assert result.returncode == 0, (
             f"subprocess failed:\nstdout={result.stdout}\nstderr={result.stderr}"
         )
+
+
+def test_add_reaction_default_is_unsupported():
+    """Base provider reports no reaction support so callers fall back to text."""
+    class _Dummy(MessagingProvider):
+        def send_message(self, text, reply_to_message_id=0): return True
+        def poll_updates(self, offset=None): return []
+        def get_provider_name(self): return "dummy"
+        def get_channel_id(self): return "c"
+        def configure(self): return True
+
+    assert _Dummy().add_reaction(123, "✅") is False

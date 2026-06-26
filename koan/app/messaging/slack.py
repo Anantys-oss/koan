@@ -32,6 +32,14 @@ MAX_MESSAGE_SIZE = DEFAULT_MAX_MESSAGE_SIZE
 _MAX_THREAD_TOKENS = 1000   # int token -> thread_ts, for routing replies
 _MAX_ENGAGED_THREADS = 1000  # thread_ts the bot is participating in
 _MAX_SEEN_TS = 2000          # event ts already processed (dedup)
+_MAX_TS_TOKENS = 1000        # int token -> message ts, for reactions
+
+# Unicode emoji -> Slack shortname (reactions.add wants a name, not the glyph).
+_SLACK_EMOJI_NAMES = {
+    "✅": "white_check_mark",
+    "👍": "+1",
+    "❌": "x",
+}
 
 
 @register_provider("slack")
@@ -66,6 +74,9 @@ class SlackProvider(MessagingProvider):
         # Telegram-shaped envelope) that maps back to its ``thread_ts`` here.
         self._state_lock = threading.Lock()
         self._thread_by_token: "OrderedDict[int, str]" = OrderedDict()
+        # Token -> the message's own ts (not the thread root), so reactions.add
+        # lands on the exact user message even for in-thread replies.
+        self._ts_by_token: "OrderedDict[int, str]" = OrderedDict()
         # thread_ts values the bot is engaged in (was mentioned / replied in),
         # so follow-up messages in the thread are handled without re-mention.
         self._engaged_threads: "OrderedDict[str, None]" = OrderedDict()
@@ -217,6 +228,36 @@ class SlackProvider(MessagingProvider):
             return True
         return self._set_status(thread_ts, "")
 
+    def add_reaction(self, reply_to_message_id: int, emoji: str) -> bool:
+        """Add an emoji reaction to the user's original message.
+
+        Reacts on the message's own ts (not the thread root), so an in-thread
+        command is acknowledged on the right message. Best-effort: a missing
+        token or API failure returns False so the caller falls back to text.
+        """
+        ts = self._ts_for_token(reply_to_message_id)
+        if not ts or not self._web_client:
+            return False
+        name = self._slack_reaction_name(emoji)
+        try:
+            resp = self._web_client.reactions_add(
+                channel=self._channel_id, timestamp=ts, name=name,
+            )
+            if resp.get("ok"):
+                return True
+            print(f"[slack] reactions_add error: {resp.get('error', 'unknown')}",
+                  file=sys.stderr)
+            return False
+        except Exception as e:
+            if "already_reacted" in str(e):
+                return True  # idempotent — the reaction is present
+            print(f"[slack] reactions_add failed: {e}", file=sys.stderr)
+            return False
+
+    def reaction_acknowledges_mission(self) -> bool:
+        """On Slack a ✅ reaction is a complete ack; suppress the text reply."""
+        return True
+
     # -- Internal helpers -----------------------------------------------------
 
     def _thread_for_token(self, token: int) -> str:
@@ -225,6 +266,21 @@ class SlackProvider(MessagingProvider):
             return ""
         with self._state_lock:
             return self._thread_by_token.get(token, "")
+
+    def _ts_for_token(self, token: int) -> str:
+        """Resolve an inbound message token back to that message's own ts."""
+        if not token:
+            return ""
+        with self._state_lock:
+            return self._ts_by_token.get(token, "")
+
+    @staticmethod
+    def _slack_reaction_name(emoji: str) -> str:
+        """Translate a Unicode emoji to a Slack reaction shortname."""
+        name = _SLACK_EMOJI_NAMES.get(emoji)
+        if name:
+            return name
+        return emoji.strip(":")  # tolerate a shortname passed directly
 
     def _set_status(self, thread_ts: str, status: str) -> bool:
         """Best-effort assistant status update; swallow API/SDK errors."""
@@ -323,18 +379,28 @@ class SlackProvider(MessagingProvider):
         return self._is_addressed_to_bot(event)
 
     def _is_addressed_to_bot(self, event: dict) -> bool:
-        """Return True for app_mentions, direct @mentions, or engaged threads.
+        """Return True for app_mentions, direct @mentions, commands, or engaged threads.
+
+        A message whose text begins with ``/`` followed by a letter (e.g.
+        ``/help``) is treated as a command addressed to the bot, just like an
+        explicit ``@bot /help`` — no mention required. A leading slash followed
+        by a non-letter (``//`` comments, dotfile paths like ``/.bashrc``,
+        numeric/symbol prefixes) is ignored. Note that this heuristic cannot
+        distinguish a command from a letter-initial path: a pasted path like
+        ``/Users/foo/log.txt`` at message start *is* treated as a command and
+        falls through to an (unrecognized-command) help reply.
 
         Side effect: when the bot is addressed, the conversation's thread root is
         marked engaged so subsequent replies in that thread are handled too.
         """
         text = event.get("text", "")
         mentioned = bool(self._bot_user_id) and f"<@{self._bot_user_id}>" in text
+        is_command = bool(re.match(r"/[a-zA-Z]", text.lstrip()))
         # For a channel-root message Slack omits thread_ts; the message's own ts
         # is the root of the thread the bot will reply into.
         thread_root = event.get("thread_ts") or event.get("ts", "")
 
-        if event.get("type") == "app_mention" or mentioned:
+        if event.get("type") == "app_mention" or mentioned or is_command:
             if thread_root:
                 self._mark_engaged(thread_root)
             return True
@@ -393,6 +459,10 @@ class SlackProvider(MessagingProvider):
         token = next(self._update_counter)
         if thread_ts:
             self._remember_thread(token, thread_ts)
+        message_ts = event.get("ts", "")
+        if message_ts:
+            with self._state_lock:
+                self._bounded_add(self._ts_by_token, token, message_ts, _MAX_TS_TOKENS)
 
         envelope = {
             "message": {

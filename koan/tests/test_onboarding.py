@@ -435,12 +435,12 @@ class TestStepProvider:
         with patch.object(onb, "KOAN_ROOT", root), patch(
             "app.onboarding._is_interactive", False
         ):
-            state = onb.OnboardingState(data={"installed_providers": ["local"]})
+            state = onb.OnboardingState(data={"installed_providers": ["ollama-launch"]})
             result = onb.step_provider(state)
 
-        assert result.data["cli_provider"] == "local"
+        assert result.data["cli_provider"] == "ollama-launch"
         config = yaml.safe_load((root / "instance" / "config.yaml").read_text())
-        assert config["cli_provider"] == "local"
+        assert config["cli_provider"] == "ollama-launch"
 
 
 class TestStepVenv:
@@ -936,7 +936,7 @@ class TestRunOnboarding:
 
         root = Path(onboarding_root)
         (root / "instance").mkdir(exist_ok=True)
-        (root / "instance" / "config.yaml").write_text('cli_provider: "local"\nmax_runs_per_day: 20\n')
+        (root / "instance" / "config.yaml").write_text('cli_provider: "ollama-launch"\nmax_runs_per_day: 20\n')
         (root / ".env").write_text(
             "KOAN_TELEGRAM_TOKEN=123:ABC\nKOAN_TELEGRAM_CHAT_ID=456\n"
         )
@@ -944,8 +944,10 @@ class TestRunOnboarding:
 
         with patch.object(onb, "KOAN_ROOT", root), patch(
             "app.onboarding.ask_yes_no"
-        ) as ask_yes_no:
-            result = onb.step_final(onb.OnboardingState(data={"cli_provider": "local"}))
+        ) as ask_yes_no, patch.object(
+            onb, "_provider_ready", return_value=(True, "ollama-launch provider ready")
+        ):
+            result = onb.step_final(onb.OnboardingState(data={"cli_provider": "ollama-launch"}))
 
         out = capsys.readouterr().out
         assert result is not None
@@ -1217,6 +1219,18 @@ class TestOllamaLaunchInOnboarding:
         assert ok is True
         assert "ollama-launch provider selected" in msg
 
+
+class TestLocalProviderRemovedFromOnboarding:
+    """The removed 'local' provider must not be offered by onboarding."""
+
+    def test_local_provider_not_offered(self):
+        from app.onboarding import PROVIDERS, _PROVIDER_MODEL_DEFAULTS
+
+        keys = [k for k, _ in PROVIDERS]
+        assert "local" not in keys
+        assert "ollama-launch" in keys
+        assert "local" not in _PROVIDER_MODEL_DEFAULTS
+
     def test_provider_ready_ollama_launch_when_missing(self, onboarding_root):
         import app.onboarding as onb
 
@@ -1245,3 +1259,32 @@ class TestOllamaLaunchInOnboarding:
         assert result.data["cli_provider"] == "ollama-launch"
         config = yaml.safe_load((root / "instance" / "config.yaml").read_text())
         assert config["cli_provider"] == "ollama-launch"
+
+
+def test_step_instance_init_without_env_example(tmp_path, monkeypatch, capsys):
+    import app.onboarding as ob
+
+    (tmp_path / "instance.example").mkdir()
+    (tmp_path / "instance.example" / "config.yaml").write_text("x: 1\n")
+    # Intentionally NO env.example present: env-var-only deploy. The required
+    # config is supplied via the process environment, so create_env_file
+    # synthesizes the .env instead of failing.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    monkeypatch.setenv("GH_TOKEN", "gh")
+    monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "tg")
+    monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "42")
+
+    monkeypatch.setattr(ob, "KOAN_ROOT", tmp_path)
+    monkeypatch.setattr(ob, "_instance_dir", lambda: tmp_path / "instance")
+    monkeypatch.setattr(ob, "_env_file", lambda: tmp_path / ".env")
+
+    state = ob.OnboardingState()
+    ob.step_instance_init(state)
+
+    env_text = (tmp_path / ".env").read_text()
+    assert f"KOAN_ROOT={tmp_path}" in env_text
+    out = capsys.readouterr().out
+    assert "Failed to create .env" not in out
+    # The env-var branch — decided from the runtime KOAN_ROOT, not the
+    # import-time ENV_EXAMPLE constant — must actually be taken and reported.
+    assert "No env.example" in out

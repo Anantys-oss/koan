@@ -992,10 +992,10 @@ class TestGetProjectCliProvider:
 
     def test_unknown_project_returns_default(self):
         config = {
-            "defaults": {"cli_provider": "local"},
+            "defaults": {"cli_provider": "ollama-launch"},
             "projects": {"app": {"path": "/app"}},
         }
-        assert get_project_cli_provider(config, "unknown") == "local"
+        assert get_project_cli_provider(config, "unknown") == "ollama-launch"
 
     def test_normalizes_to_lowercase(self):
         config = {

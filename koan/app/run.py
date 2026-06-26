@@ -31,6 +31,7 @@ import tempfile
 import threading
 import time
 import traceback
+from collections import deque
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -69,6 +70,7 @@ from app.signals import (
     STOP_FILE,
 )
 from app.config import get_recovery_config
+from app.messaging_level import is_debug
 from app.subprocess_runner import kill_process_group
 from app.utils import atomic_write, koan_tmp_dir
 
@@ -542,6 +544,77 @@ def _is_ci_check_mission(mission_title: str) -> bool:
     return False
 
 
+_SKILL_COMPLETION = {
+    "review": ("🔍", "Reviewed"),
+    "fix": ("🐞", "Fixed"),
+    "rebase": ("🔄", "Rebased"),
+    "plan": ("🧠", "Planned"),
+    "implement": ("🔨", "Implemented"),
+}
+
+
+def _tracked_skill(mission_title: str):
+    """Return (emoji, past_tense) if the mission is a tracked skill, else None."""
+    t = (mission_title or "").strip()
+    if not t.startswith("/"):
+        return None
+    cmd = t[1:].split(None, 1)[0].lower()
+    return _SKILL_COMPLETION.get(cmd)
+
+
+def _completion_pr_url(instance, project_name):
+    try:
+        from app.mission_runner import get_last_pr_url
+        return get_last_pr_url(instance, project_name)
+    except (ImportError, OSError, ValueError):
+        return ""
+
+
+def _notify_mission_normal(
+    instance: str,
+    project_name: str,
+    run_num: int,
+    max_runs: int,
+    exit_code: int,
+    mission_title: str,
+    pr_url: str,
+):
+    """Normal-mode (quiet) end-of-mission emit. See _notify_mission_end."""
+    skill = _tracked_skill(mission_title)
+
+    # Failures always surface (short form).
+    if exit_code != 0:
+        emoji = (skill[0] + " ") if skill else ""
+        prefix = "🚦" if _is_ci_check_mission(mission_title) else "❌"
+        label = mission_title or "Run"
+        _notify(instance, f"{prefix} [{project_name}] {emoji}Failed: {label}")
+        return
+
+    # Tracked skill success → concise "✅ [project] 🔍 Reviewed <pr-url>". Prefer
+    # the URL captured during post-mission processing (before pending.md was
+    # deleted); fall back to a best-effort re-read.
+    if skill is not None:
+        emoji, verb = skill
+        url = pr_url or _completion_pr_url(instance, project_name)
+        _notify(instance, f"✅ [{project_name}] {emoji} {verb} {url}".rstrip())
+        return
+
+    # Genuinely autonomous background runs carry no mission title — suppress
+    # those (log only). An operator-initiated mission (a user/Telegram-queued
+    # task with a real title) still gets a minimal completion signal so
+    # explicitly-requested work isn't silently dropped.
+    title = (mission_title or "").strip()
+    if not title:
+        from app.run_log import log_safe
+        log_safe(
+            "mission",
+            f"[{project_name}] Run {run_num}/{max_runs} done "
+            "(normal mode, autonomous run suppressed)",
+        )
+        return
+    _notify(instance, f"✅ [{project_name}] Done: {title}")
+
+
 def _notify_mission_end(
     instance: str,
     project_name: str,
@@ -549,14 +622,26 @@ def _notify_mission_end(
     max_runs: int,
     exit_code: int,
     mission_title: str = "",
+    pr_url: str = "",
 ):
     """Send a notification when a mission or autonomous run completes.
 
-    Always sends — both on success and failure — so the human always
-    gets a status update. Uses unicode prefix: ✅ for success, ❌ for failure
-    (🚦 for CI check missions to reduce alarm noise).
-    On success, appends a brief journal summary when available.
+    Honors messaging.level:
+    - normal (default): one short line for tracked skill missions
+      (✅ [project] 🔍 Reviewed <pr-url>); operator-initiated missions get a
+      minimal one-line success (✅ [project] Done: <title>); genuinely
+      autonomous background runs (no mission title) are logged only (no bridge
+      push); failures always surface (short form).
+    - debug: full lifecycle line + journal summary (legacy behavior).
     """
+    if not is_debug():
+        _notify_mission_normal(
+            instance, project_name, run_num, max_runs,
+            exit_code, mission_title, pr_url,
+        )
+        return
+
+    # ---- debug mode: legacy verbose behavior ----
     if exit_code == 0:
         prefix = "✅"
         label = mission_title if mission_title else "Autonomous run"
@@ -1308,9 +1393,9 @@ def _handle_wait_pause(
     instance: str,
 ):
     """Enter pause mode when budget is exhausted (WAIT action)."""
-    from app.config import is_unlimited_quota
-    if is_unlimited_quota():
-        log("quota", "WAIT pause suppressed — unlimited_quota is active")
+    from app.usage_tracker import _get_budget_mode
+    if _get_budget_mode() == "disabled":
+        log("quota", "WAIT pause suppressed — budget gating is disabled")
         return
 
     project_name = plan["project_name"]
@@ -1517,6 +1602,7 @@ def _parallel_reap_sessions(
             _notify_mission_end(
                 instance, session.project_name, run_num, max_runs,
                 result.exit_code, session.mission_text,
+                pr_url=post.get("pr_url", ""),
             )
         except Exception as e:
             log("error", f"[parallel] notification failed for {session.id}: {e}")
@@ -2563,6 +2649,41 @@ def _restore_koan_branch(koan_root: str, expected_branch: str):
             log("error", f"Failed to restore koan branch: {e}")
 
 
+def _pump_skill_stdout(stdout, *, out_fh, pending_fh, tail, liveness=None):
+    """Stream a skill subprocess's stdout to disk line-by-line.
+
+    Each line is written to *out_fh* (the per-mission stdout capture that
+    run_post_mission reads) and mirrored to *pending_fh* (pending.md, for
+    ``/live``). Only a bounded *tail* deque is retained in RAM, so a verbose
+    skill session cannot accumulate the full transcript in memory.
+
+    Returns the still-open *pending_fh*, or ``None`` if a write error disabled
+    the pending sink (out_fh writes continue regardless).
+    """
+    for line in stdout:
+        if liveness is not None:
+            liveness.heartbeat()
+        stripped = line.rstrip("\n")
+        tail.append(stripped)
+        print(stripped)
+        out_fh.write(f"{stripped}\n")
+        if pending_fh is not None:
+            try:
+                pending_fh.write(f"{stripped}\n")
+                pending_fh.flush()
+            except OSError:
+                pending_fh = None
+    return pending_fh
+
+
+def _read_back_or_tail(stdout_file, tail):
+    """Read the on-disk transcript; fall back to the in-RAM tail on error."""
+    try:
+        return Path(stdout_file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "\n".join(tail)
+
+
 def _run_skill_mission(
     skill_cmd: list,
     koan_root: str,
@@ -2604,7 +2725,7 @@ def _run_skill_mission(
 
     debug_log(f"[run] skill exec: cmd={' '.join(skill_cmd)}")
     debug_log(f"[run] skill exec: cwd={koan_pkg_dir} timeout={skill_timeout}s")
-    stdout_lines = []
+    tail = deque(maxlen=200)
     proc = None
 
     # Create temp files for post-mission processing up front.
@@ -2633,6 +2754,7 @@ def _run_skill_mission(
     if _mission_model_key:
         skill_env["KOAN_MISSION_MODEL_KEY"] = _mission_model_key
     stderr_fh = None
+    out_fh = None
     try:
         stderr_fh = open(stderr_file, "w")
         proc = subprocess.Popen(
@@ -2670,26 +2792,20 @@ def _run_skill_mission(
                 ),
             ).start()
 
-        # Stream stdout line-by-line, appending each to pending.md
-        # so /live shows real-time progress.
+        # Stream stdout line-by-line into stdout_file (the post-mission
+        # source) and pending.md (/live), keeping only a bounded tail in RAM
+        # so a verbose skill session cannot buffer the whole transcript.
         pending_fh = None
         try:
             pending_fh = open(pending_path, "a")
         except OSError as e:
             debug_log(f"[run] cannot open pending.md for streaming: {e}")
+        out_fh = open(stdout_file, "w", encoding="utf-8")
         try:
-            for line in proc.stdout:
-                if liveness is not None:
-                    liveness.heartbeat()
-                stripped = line.rstrip("\n")
-                stdout_lines.append(stripped)
-                print(stripped)
-                if pending_fh is not None:
-                    try:
-                        pending_fh.write(f"{stripped}\n")
-                        pending_fh.flush()
-                    except OSError:
-                        pending_fh = None
+            pending_fh = _pump_skill_stdout(
+                proc.stdout, out_fh=out_fh, pending_fh=pending_fh,
+                tail=tail, liveness=liveness,
+            )
         finally:
             if pending_fh is not None:
                 pending_fh.close()
@@ -2699,11 +2815,12 @@ def _run_skill_mission(
 
         proc.wait(timeout=30)
         if watchdog.fired or (liveness and liveness.fired):
+            out_fh.close()
+            out_fh = None
             raise subprocess.TimeoutExpired(skill_cmd, skill_timeout)
         exit_code = proc.returncode
-        skill_stdout = "\n".join(stdout_lines)
         # Provider stream mode can persist token usage to a sidecar file.
-        # Append that JSON payload to stdout capture so token_parser can
+        # Append that JSON payload to the on-disk capture so token_parser can
         # account for skill-dispatch sessions in run_post_mission.
         with suppress_logged(log, "warning", "Skill stream usage read failed", OSError, json.JSONDecodeError):
             raw_usage = Path(stream_usage_file).read_text().strip()
@@ -2711,10 +2828,14 @@ def _run_skill_mission(
                 usage_payload = json.loads(raw_usage)
                 if isinstance(usage_payload, dict):
                     usage_json = json.dumps(usage_payload, separators=(",", ":"))
-                    if skill_stdout:
-                        skill_stdout = f"{skill_stdout}\n{usage_json}"
-                    else:
-                        skill_stdout = usage_json
+                    out_fh.write(f"{usage_json}\n")
+        out_fh.flush()
+        out_fh.close()
+        out_fh = None
+        # Full transcript is genuinely needed by the caller (_extract_pr_url,
+        # the "— skipping" check, error classification): read it back from
+        # disk once instead of holding every line in RAM for the whole run.
+        skill_stdout = _read_back_or_tail(stdout_file, tail)
         # Read stderr from file after process exits.
         stderr_fh.close()
         stderr_fh = None
@@ -2743,7 +2864,7 @@ def _run_skill_mission(
         debug_log(f"[run] skill exec: TIMEOUT ({timeout_kind}: {timeout_val}s)")
         # Log last lines of captured output so the journal shows *where*
         # the run stalled, not just that it timed out.
-        tail_lines = stdout_lines[-20:] if stdout_lines else []
+        tail_lines = list(tail)[-20:]
         if tail_lines:
             tail_preview = "\n".join(tail_lines)
             log("info", f"Last output before timeout:\n{tail_preview}")
@@ -2757,7 +2878,10 @@ def _run_skill_mission(
             if _timeout_stderr:
                 debug_log(f"[run] timeout stderr:\n{_timeout_stderr[:2000]}")
         exit_code = 1
-        skill_stdout = "\n".join(stdout_lines)
+        if out_fh is not None:
+            with suppress_logged(log, "debug", "Skill stdout flush failed", OSError):
+                out_fh.flush()
+        skill_stdout = _read_back_or_tail(stdout_file, tail)
         skill_stderr = ""
     except Exception as e:
         if proc is not None:
@@ -2765,9 +2889,15 @@ def _run_skill_mission(
         log("error", f"Skill runner failed: {e}\n{traceback.format_exc()}")
         debug_log(f"[run] skill exec: EXCEPTION {e}")
         exit_code = 1
-        skill_stdout = "\n".join(stdout_lines)
+        if out_fh is not None:
+            with suppress_logged(log, "debug", "Skill stdout flush failed", OSError):
+                out_fh.flush()
+        skill_stdout = _read_back_or_tail(stdout_file, tail)
         skill_stderr = ""
     finally:
+        if out_fh is not None:
+            with suppress_logged(log, "debug", "Skill stdout file close failed", OSError):
+                out_fh.close()
         if proc is not None and proc.stdout is not None:
             with suppress_logged(log, "debug", "Skill proc stdout close failed", OSError):
                 proc.stdout.close()
@@ -2791,9 +2921,8 @@ def _run_skill_mission(
         "quota_info": None,
     }
     try:
-        with open(stdout_file, 'wb') as f:
-            f.write(skill_stdout.encode('utf-8'))
-
+        # stdout_file is already populated by _pump_skill_stdout (plus the
+        # usage-JSON line); no re-write from the in-memory string is needed.
         _skill_prefix = f"Run {run_num}"
         set_status(koan_root, f"{_skill_prefix} — finalizing")
         from app.mission_runner import run_post_mission

@@ -63,6 +63,13 @@ On every boot, `KOAN_DEPLOY=railway` makes the entrypoint:
   `KOAN_DASHBOARD_PORT`); Railway's injected `$PORT` is intentionally ignored
   so the public domain's target port stays stable across deploys. Point the
   Railway public domain at port `5000`.
+- **Refuse to start `ollama serve`.** The hosted profile defaults to the Claude
+  provider, and `ollama serve` is the single largest idle RAM consumer in the
+  stack. Even if the resolved provider is `ollama`, the launcher refuses to
+  start the bundled `ollama serve` unless you explicitly set
+  `KOAN_ALLOW_OLLAMA=1`. On every deploy (Railway or not) `ollama serve` is
+  also never started when the resolved provider is anything other than
+  `ollama`.
 
 ## Dashboard passphrase (`KOAN_DASHBOARD_PWD`)
 
@@ -77,6 +84,13 @@ If `KOAN_DASHBOARD_PWD` is **unset on Railway, the dashboard refuses to start**
 (it would otherwise be world-open). Set the passphrase to enable it. When
 `KOAN_DEPLOY` is not `railway`, the gate is inert and the dashboard behaves as
 the local-only tool it has always been.
+
+This gate is enforced on **both** launch paths through a single helper
+(`railway.dashboard_allowed()`): the supervisord `dashboard` program
+(`docker/dashboard-supervised.sh`) and the config-driven launcher
+(`pid_manager.start_all`, triggered by `dashboard.enabled: true` in
+`config.yaml`). With the passphrase unset on Railway, only `run` + `awake`
+launch, exposing the minimal worker footprint.
 
 `make koan` either **attaches** to the already-running daemon (status/logs/
 dashboard), or runs the onboarding **wizard** on an empty volume. Because the
@@ -99,6 +113,7 @@ service variables are set.
 | Git prompts for a username | No token set — set `KOAN_GH_TOKEN` (or `GH_TOKEN`). |
 | PRs/commits authored by the operator, not the bot | Railway injected its own `GH_TOKEN`; set `KOAN_GH_TOKEN` to the bot token (it overrides `GH_TOKEN`). |
 | No projects after a redeploy | Put config in `instance/projects.yaml`, not the repo root. |
+| `ollama serve` not starting (intended) | Hosted profile refuses it to save RAM. Set provider to `ollama` **and** `KOAN_ALLOW_OLLAMA=1` to run it on Railway. |
 
 ## Local / dev installs
 

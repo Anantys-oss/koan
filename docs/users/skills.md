@@ -41,12 +41,12 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/plan [--iterations N] <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review). `--iterations N` (1-5) runs N critique+refine rounds. | — |
 | `/deepplan <desc>` | `/deeplan` | Spec-first design: explore approaches, post spec, queue /plan | — |
 | `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; creates a draft PR, then privately reviews/fixes Important+ findings by default | Yes |
-| `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic | Yes |
+| `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic. A PR URL is redirected to `/rebase` (preserving `--now` and trailing context) | Yes |
 | `/debug <issue>` | `/dbg` | Structured 4-step debug loop: reproduce → hypothesize → minimal fix → verify. Auto-queued when `/fix` fails (opt-in via `debug_escalation.on_fix_failure` in config.yaml) | Yes |
-| `/review <PR> [--bot-comments]` | `/rv` | Review a pull request; `--bot-comments` triages bot findings | Yes |
+| `/review <PR> [PR ...] [--bot-comments]` | `/rv` | Review one or more pull requests; each URL queues a separate review mission. `--bot-comments` triages bot findings | Yes |
 | `/ultrareview <PR>` | `/urv` | Ultra-thorough review: architecture + silent-failure passes combined | Yes |
 | `/explain <PR>` | `/xp` | Explain a PR's changes in plain language with examples and alternative approaches | Yes |
-| `/rebase <PR>` | `/rb` | Rebase a PR onto its base branch | Yes |
+| `/rebase <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch; trailing text after the URL is threaded into the mission as focus context | Yes |
 | `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |
@@ -71,6 +71,15 @@ with `private_review_gate` in `config.yaml` or `projects.yaml`.
 human-curated context/priorities into the review prompt, ranked against the PR
 content. Enable `review_memory` in `config.yaml` to also include recent typed
 project memory (decisions, observations) from the SQLite memory index.
+
+**Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in
+`config.yaml` to also post each finding as an inline PR comment anchored to its
+code location, in addition to the bucketed summary comment (which is unchanged).
+Each inline thread shows the same severity marker (🔴/🟡/🟢) and the full finding
+detail, so reviewers can react or resolve in place. Cap the volume with
+`review_inline_comments.max_comments` (default 25). Re-running `/review` is
+idempotent (already-anchored findings are skipped); multi-line findings anchor
+to their full range; if all posts fail, you are notified. Disabled by default.
 
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
@@ -128,6 +137,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/quota [N]` | `/q` | Check LLM quota (live), or override remaining % |
 | `/usage` | — | Detailed quota and progress |
 | `/metrics` | — | Mission success rates and reliability stats |
+| `/report [--week\|--month]` | `/weekly_report`, `/monthly_report` | PR activity report (created, merged %, interacted) per-project + global; defaults to both weekly and monthly |
 | `/doctor` | — | Diagnostic self-checks; `--fix` auto-repairs, `--full` adds connectivity |
 | `/models` | `/model` | Show resolved model config for the active CLI provider |
 | `/config_check` | `/cfgcheck`, `/configcheck` | Detect drift between instance/config.yaml and the template |
@@ -139,6 +149,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/version` | `/ver`, `/v` | Show Kōan version (tag, commit, commits ahead) |
 | `/verbose` | — | Enable real-time progress updates |
 | `/silent` | — | Disable real-time progress updates |
+| `/messaging_level` | `/msglevel` | Show or set bridge verbosity (`debug` / `normal`) |
 
 ## Configuration
 

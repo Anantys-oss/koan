@@ -173,6 +173,76 @@ class TestInsertAndSearch:
         )
         conn.close()
 
+    def test_high_confidence_outranks_low_on_equal_match(self, instance_dir):
+        from app.memory_db import ensure_db, insert_entry, search_entries
+        conn = ensure_db(instance_dir)
+        # Identical content → identical BM25 rank; confidence breaks the tie.
+        insert_entry(conn, {
+            "ts": "2026-01-01T00:00:00Z", "type": "session", "project": "koan",
+            "content": "authentication retry backoff bug",
+            "confidence": "AMBIGUOUS",
+        })
+        insert_entry(conn, {
+            "ts": "2026-01-02T00:00:00Z", "type": "session", "project": "koan",
+            "content": "authentication retry backoff bug",
+            "confidence": "EXTRACTED",
+        })
+        results = search_entries(conn, "koan", "authentication retry backoff", max_results=5)
+        assert len(results) == 2
+        assert results[0]["confidence"] == "EXTRACTED"  # ranked first
+        conn.close()
+
+    def test_numeric_confidence_breaks_tie(self, instance_dir):
+        from app.memory_db import ensure_db, insert_entry, search_entries
+        conn = ensure_db(instance_dir)
+        insert_entry(conn, {
+            "ts": "2026-01-01T00:00:00Z", "type": "session", "project": "koan",
+            "content": "deadlock in lock manager path", "confidence": "0.2",
+        })
+        insert_entry(conn, {
+            "ts": "2026-01-02T00:00:00Z", "type": "session", "project": "koan",
+            "content": "deadlock in lock manager path", "confidence": "0.95",
+        })
+        results = search_entries(conn, "koan", "deadlock lock manager", max_results=5)
+        assert results[0]["confidence"] == 0.95
+        conn.close()
+
+    def test_absent_confidence_preserves_bm25_order(self, instance_dir):
+        from app.memory_db import ensure_db, insert_entry, search_entries
+        conn = ensure_db(instance_dir)
+        # No confidence on either → ranking is pure BM25 (unchanged behavior).
+        insert_entry(conn, {
+            "ts": "2026-01-01T00:00:00Z", "type": "session", "project": "koan",
+            "content": "cache eviction policy tuning for the memory window",
+        })
+        insert_entry(conn, {
+            "ts": "2026-01-02T00:00:00Z", "type": "session", "project": "koan",
+            "content": "unrelated note mentioning cache once",
+        })
+        results = search_entries(conn, "koan", "cache eviction policy", max_results=5)
+        assert results[0]["content"].startswith("cache eviction policy")
+        conn.close()
+
+
+class TestConfidenceWeight:
+
+    def test_labels(self):
+        from app.memory_db import _confidence_weight
+        assert _confidence_weight("EXTRACTED") == 1.0
+        assert _confidence_weight("inferred") == 0.75
+        assert _confidence_weight("AMBIGUOUS") == 0.4
+
+    def test_absent_and_unknown_default(self):
+        from app.memory_db import _confidence_weight
+        assert _confidence_weight("") == 0.9
+        assert _confidence_weight("garbage") == 0.9
+
+    def test_numeric_clamped(self):
+        from app.memory_db import _confidence_weight
+        assert _confidence_weight("0.5") == 0.5
+        assert _confidence_weight("0.0") == 0.1   # floored, never zero
+        assert _confidence_weight("5") == 1.0     # capped at 1.0
+
 
 class TestSearchLearnings:
 

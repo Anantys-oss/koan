@@ -376,6 +376,35 @@ class TelegramProvider(MessagingProvider):
         except (requests.RequestException, ValueError):
             return False
 
+    def add_reaction(self, reply_to_message_id: int, emoji: str) -> bool:
+        """React to a message via setMessageReaction. Best-effort; False on failure.
+
+        Telegram's ``reply_to_message_id`` is the real message id, so no token
+        map is needed. Only a fixed set of emoji are allowed from a bot (✅ is
+        among them); a disallowed emoji yields ``ok: false`` → text fallback.
+        """
+        if not reply_to_message_id or not self._bot_token or not self._chat_id:
+            return False
+        try:
+            resp = requests.post(
+                f"{self._api_base}/setMessageReaction",
+                json={
+                    "chat_id": self._chat_id,
+                    "message_id": reply_to_message_id,
+                    "reaction": [{"type": "emoji", "emoji": emoji}],
+                },
+                timeout=5,
+            )
+            body = resp.json()
+            if body.get("ok"):
+                return True
+            print(f"[telegram] setMessageReaction error: "
+                  f"{body.get('description', 'unknown')}", file=sys.stderr)
+            return False
+        except (requests.RequestException, ValueError) as e:
+            print(f"[telegram] setMessageReaction failed: {e}", file=sys.stderr)
+            return False
+
     def reset_flood_state(self):
         """Reset flood protection state.
         

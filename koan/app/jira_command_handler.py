@@ -441,6 +441,11 @@ def _notify_mission_from_jira(mention: dict, command_name: str) -> None:
         if issue_url:
             msg += f"\n{issue_url}"
 
-        send_telegram(msg, priority=NotificationPriority.ACTION)
+        from app.messaging_level import debug_only
+        debug_only(
+            msg,
+            lambda: send_telegram(msg, priority=NotificationPriority.ACTION),
+            log_category="jira",
+        )
     except (ImportError, OSError) as e:
         log.debug("Failed to send Jira notification message: %s", e)

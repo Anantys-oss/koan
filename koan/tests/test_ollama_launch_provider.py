@@ -508,9 +508,9 @@ class TestOllamaLaunchPidManager:
         from app.pid_manager import _needs_ollama
         assert _needs_ollama("ollama-launch") is False
 
-    def test_needs_ollama_true_for_local(self):
+    def test_needs_ollama_false_for_removed_local(self):
         from app.pid_manager import _needs_ollama
-        assert _needs_ollama("local") is True
+        assert _needs_ollama("local") is False
 
     def test_needs_ollama_true_for_ollama(self):
         from app.pid_manager import _needs_ollama

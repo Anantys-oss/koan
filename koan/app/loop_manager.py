@@ -39,9 +39,36 @@ from app.constants import (
     NOTIF_CACHE_MAX as _NOTIF_CACHE_MAX,
     NOTIF_CACHE_TTL as _NOTIF_CACHE_TTL,
 )
+from app.messaging_level import is_debug
 from app.missions import count_pending
 from app.run_log import log_safe as _log_loop, suppress_logged
 from app.utils import atomic_write
+
+
+def _progress_notifier():
+    """Return a progress_notify callable for loop-level dispatch banners.
+
+    Progress banners (e.g. 'Processing N GitHub notification(s)...') are logged
+    unconditionally but only forwarded to chat in messaging.level=debug.
+    """
+    from app.messaging_level import progress_notify
+    return progress_notify(log_category="loop")
+
+
+def _emit_queued_aggregate(source_label, count, emit=None):
+    """In normal mode, emit one '📬 {source}: N new mission(s) queued.' line.
+
+    No-op when debug (per-mention lines already shown) or when count <= 0.
+    """
+    if is_debug() or count <= 0:
+        return
+    label = "mission" if count == 1 else "missions"
+    msg = f"📬 {source_label}: {count} new {label} queued."
+    if emit is None:
+        from app.notify import NotificationPriority, send_telegram
+        def emit(m):
+            send_telegram(m, priority=NotificationPriority.ACTION)
+    emit(msg)
 
 
 # --- Focus area resolution ---
@@ -954,6 +981,23 @@ def process_github_notifications(
             workers=workers,
         )
 
+        # Fallback for @mentions that appear in GitHub's issue timeline but
+        # are omitted from the notifications API. This scans only configured
+        # repos and reuses the same command-processing path as notifications.
+        try:
+            from app.github_command_handler import scan_recent_mention_missions
+
+            scanned_mentions = scan_recent_mention_missions(
+                projects_config, config, registry, instance_dir,
+            )
+            if scanned_mentions > 0:
+                _github_log(
+                    f"Queued {scanned_mentions} mention-triggered mission(s)"
+                )
+                missions_created += scanned_mentions
+        except (ImportError, OSError, RuntimeError, subprocess.SubprocessError) as e:
+            log.warning("GitHub mention scan failed: %s", e, exc_info=True)
+
         # Fallback for review requests that GitHub does not expose through
         # notifications: scan known repos for PRs still requesting the bot.
         try:
@@ -1020,6 +1064,9 @@ def process_github_notifications(
                 missions_created += review_dispatched
         except (ImportError, OSError, RuntimeError) as e:
             log.warning("Review comment dispatch failed: %s", e, exc_info=True)
+
+        # Normal mode: collapse per-mention chatter into one aggregate line.
+        _emit_queued_aggregate("GitHub", missions_created)
 
         # Update backoff state
         with _github_state_lock:
@@ -1303,7 +1350,11 @@ def _notify_mission_from_mention(notif: dict) -> None:
         if thread_url:
             msg += f"\n{thread_url}"
         from app.notify import NotificationPriority
-        send_telegram(msg, priority=NotificationPriority.ACTION)
+        # Always log; only push the per-mention line to the bridge in debug mode
+        # (normal mode collapses these into one aggregate count downstream).
+        _log_loop("github", msg)
+        if is_debug():
+            send_telegram(msg, priority=NotificationPriority.ACTION)
     except (ImportError, OSError) as e:
         log.debug("Failed to send notification message: %s", e)
 
@@ -1633,6 +1684,9 @@ def process_jira_notifications(
         if mentions:
             from app.jira_notifications import _save_processed_tracker
             _save_processed_tracker(tracker_path, processed_set)
+
+        # Normal mode: collapse per-mention chatter into one aggregate line.
+        _emit_queued_aggregate("Jira", missions_created)
 
         # Update backoff
         with _jira_state_lock:

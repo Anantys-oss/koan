@@ -889,13 +889,13 @@ class TestGetMaxRuns:
         config_dir.mkdir()
         (config_dir / "config.yaml").write_text("other_setting: value\n")
         from app.utils import get_max_runs
-        assert get_max_runs() == 20
+        assert get_max_runs() == 60
 
     def test_returns_default_when_no_config(self, tmp_path, monkeypatch):
         from app import utils
         monkeypatch.setattr(utils, "KOAN_ROOT", tmp_path)
         from app.utils import get_max_runs
-        assert get_max_runs() == 20
+        assert get_max_runs() == 60
 
 
 class TestGetIntervalSeconds:

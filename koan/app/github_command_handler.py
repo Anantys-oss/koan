@@ -32,6 +32,8 @@ from app.bounded_set import BoundedSet
 from app.github_config import (
     get_github_ack_enabled,
     get_github_authorized_users,
+    get_github_max_age_hours,
+    get_mention_scan_interval_minutes,
     get_github_natural_language,
     get_github_nickname,
     get_github_parallel_workers,
@@ -55,6 +57,7 @@ from app.github_notifications import (
     mark_notification_read,
     parse_mention_command,
 )
+from app.github_skill_helpers import split_review_targets
 from app.skills import SkillRegistry
 
 log = logging.getLogger(__name__)
@@ -597,6 +600,37 @@ def build_mission_from_command(
     # Trailing 📬 marks missions originating from GitHub @mentions.
     # The /list handler repositions it as a leading visual hint.
     return f"- [project:{project_name}] {mission_text} 📬"
+
+
+def _expand_multi_target_review_mission(
+    command_name: str,
+    mission_entry: str,
+    default_project_name: str,
+) -> List[str]:
+    """Expand a GitHub-triggered /review mission with multiple URLs."""
+    if command_name != "review":
+        return [mission_entry]
+
+    match = re.match(
+        r"^- \[project:(?P<project>[^\]]+)\] /review(?P<body>.*)$",
+        mission_entry,
+    )
+    if not match:
+        return [mission_entry]
+
+    body = match.group("body").replace("📬", "").strip()
+    urls, context = split_review_targets(body)
+    if len(urls) <= 1:
+        return [mission_entry]
+
+    entries = []
+    for url in urls:
+        project_name = _resolve_project_from_url(url) or default_project_name
+        entry = f"- [project:{project_name}] /review {url}"
+        if context:
+            entry += f" {context}"
+        entries.append(f"{entry} 📬")
+    return entries
 
 
 def resolve_project_from_notification(notification: dict) -> Optional[Tuple[str, str, str]]:
@@ -1340,6 +1374,276 @@ def _fetch_requested_review_prs(repo_slug: str, bot_username: str) -> Optional[L
     return result
 
 
+def _comment_subject_from_api_comment(
+    repo_slug: str,
+    comment: dict,
+) -> Optional[Tuple[str, str]]:
+    """Return ``(subject_api_url, subject_type)`` for an issue/review comment."""
+    html_url = str(comment.get("html_url") or "")
+    issue_url = str(comment.get("issue_url") or "")
+    pull_url = str(comment.get("pull_request_url") or "")
+
+    match = re.search(r"/pull/(\d+)", html_url)
+    if match:
+        number = match.group(1)
+        return f"https://api.github.com/repos/{repo_slug}/pulls/{number}", "PullRequest"
+
+    match = re.search(r"/issues/(\d+)", html_url)
+    if match:
+        number = match.group(1)
+        return f"https://api.github.com/repos/{repo_slug}/issues/{number}", "Issue"
+
+    if pull_url.startswith("https://api.github.com/repos/"):
+        return pull_url, "PullRequest"
+
+    if issue_url.startswith("https://api.github.com/repos/"):
+        return issue_url, "Issue"
+
+    return None
+
+
+def _synthetic_notification_for_comment(repo_slug: str, comment: dict) -> Optional[dict]:
+    """Build the minimal notification object needed to process a fallback mention."""
+    subject = _comment_subject_from_api_comment(repo_slug, comment)
+    if not subject:
+        return None
+    subject_url, subject_type = subject
+    comment_id = str(comment.get("id") or "")
+    return {
+        "id": f"mention-scan:{comment_id}",
+        "reason": "mention",
+        "updated_at": comment.get("updated_at") or comment.get("created_at") or "",
+        "repository": {"full_name": repo_slug},
+        "subject": {
+            "type": subject_type,
+            "url": subject_url,
+            "latest_comment_url": comment.get("url") or "",
+        },
+        "_koan_mention_scan": True,
+    }
+
+
+def _fetch_recent_repo_comments(
+    repo_slug: str,
+    since_iso: str,
+) -> Optional[List[dict]]:
+    """Fetch recent issue and PR review comments for fallback mention scanning."""
+    from app.github import SSOAuthRequired, run_gh
+    from app.github_notifications import _record_sso_failure
+
+    endpoints = [
+        f"repos/{repo_slug}/issues/comments?since={since_iso}&per_page=100",
+        f"repos/{repo_slug}/pulls/comments?since={since_iso}&per_page=100",
+    ]
+    comments: List[dict] = []
+    any_ok = False
+    for endpoint in endpoints:
+        try:
+            raw = run_gh("api", endpoint, "--paginate", timeout=30)
+        except SSOAuthRequired:
+            # Auth is broken for the whole repo — the other endpoint will fail
+            # identically, so abort the repo rather than retry it.
+            _record_sso_failure(f"mention_scan {repo_slug}")
+            return None
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+            # Best-effort per endpoint: a transient failure on one endpoint
+            # must not discard comments already gathered from the other. Log
+            # at warning so a consistently-failing fallback scan is visible.
+            log.warning(
+                "GitHub mention scan: failed to list %s for %s: %s",
+                endpoint, repo_slug, exc,
+            )
+            continue
+
+        try:
+            parsed = json.loads(raw) if raw else []
+        except json.JSONDecodeError:
+            log.warning(
+                "GitHub mention scan: invalid comment JSON for %s (%s)",
+                repo_slug, endpoint,
+            )
+            continue
+
+        if not isinstance(parsed, list):
+            log.warning(
+                "GitHub mention scan: unexpected comment shape for %s (%s)",
+                repo_slug, endpoint,
+            )
+            continue
+        any_ok = True
+        comments.extend(c for c in parsed if isinstance(c, dict))
+
+    # Return whatever was gathered; signal total failure (None) only when no
+    # endpoint produced usable data, so the caller can throttle accordingly.
+    return comments if any_ok else None
+
+
+def _recent_unprocessed_mentions(
+    repo_slug: str,
+    comments: List[dict],
+    bot_username: str,
+    instance_dir: str,
+) -> List[Tuple[dict, dict]]:
+    """Filter fetched comments to synthetic notifications with unprocessed mentions."""
+    from app.github_notification_tracker import is_comment_tracked
+
+    bot_lower = f"@{bot_username}".lower()
+    seen: set = set()
+    result: List[Tuple[dict, dict]] = []
+
+    for comment in comments:
+        comment_id = str(comment.get("id") or "")
+        if not comment_id or comment_id in seen:
+            continue
+        seen.add(comment_id)
+
+        body = str(comment.get("body") or "")
+        if bot_lower not in body.lower():
+            continue
+        if (comment.get("user") or {}).get("login") == bot_username:
+            continue
+        if instance_dir and is_comment_tracked(instance_dir, comment_id):
+            continue
+
+        notification = _synthetic_notification_for_comment(repo_slug, comment)
+        if notification:
+            result.append((notification, comment))
+
+    result.sort(key=lambda item: item[1].get("created_at", ""))
+    return result
+
+
+def _process_scanned_mention(
+    notification: dict,
+    comment: dict,
+    registry: SkillRegistry,
+    config: dict,
+    projects_config: Optional[dict],
+    bot_username: str,
+    project_name: str,
+    owner: str,
+    repo: str,
+    instance_dir: str,
+) -> bool:
+    """Process one fallback-scanned @mention comment."""
+    from app.github_notification_tracker import track_comment
+
+    comment_id = str(comment.get("id", ""))
+
+    if _is_subject_closed(notification):
+        add_reaction(
+            owner, repo, comment_id, emoji="eyes",
+            comment_api_url=comment.get("url", ""),
+        )
+        if instance_dir:
+            track_comment(instance_dir, comment_id)
+        return False
+
+    queued, error = _process_mention_comment(
+        notification, comment, registry, config, projects_config,
+        bot_username, project_name, owner, repo,
+    )
+
+    if error:
+        issue_number = extract_issue_number_from_notification(notification)
+        if issue_number and comment_id:
+            from app.github_reply import _enforce_reply_budget
+            if _enforce_reply_budget(owner, repo, issue_number):
+                post_error_reply(
+                    owner, repo, issue_number, comment_id, error,
+                    comment_api_url=comment.get("url", ""),
+                )
+            else:
+                log.info(
+                    "GitHub mention scan: error reply suppressed by circuit breaker "
+                    "for %s/%s#%s comment %s: %s",
+                    owner, repo, issue_number, comment_id, error,
+                )
+
+    if instance_dir:
+        track_comment(instance_dir, comment_id)
+
+    return queued
+
+
+def scan_recent_mention_missions(
+    projects_config: Optional[dict],
+    config: dict,
+    registry: SkillRegistry,
+    instance_dir: str,
+) -> int:
+    """Queue missions for recent @mentions missing from GitHub notifications."""
+    bot_username = get_github_nickname(config)
+    if not bot_username:
+        return 0
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    if not koan_root:
+        log.error("GitHub mention scan: KOAN_ROOT not set")
+        return 0
+
+    tracker_dir = instance_dir or str(Path(koan_root) / "instance")
+    interval_seconds = get_mention_scan_interval_minutes(config) * 60
+
+    from datetime import datetime, timedelta, timezone
+
+    since_iso = (
+        datetime.now(timezone.utc) - timedelta(hours=get_github_max_age_hours(config))
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    from app.github_notification_tracker import (
+        is_repo_mention_scan_due,
+        mark_repo_mention_scanned,
+    )
+
+    due_repos = [
+        (project_name, repo_slug)
+        for project_name, repo_slug in _project_review_scan_repos(projects_config)
+        if is_repo_mention_scan_due(tracker_dir, repo_slug, interval_seconds)
+    ]
+    if not due_repos:
+        return 0
+
+    queued = 0
+    for project_name, repo_slug in due_repos:
+        comments = _fetch_recent_repo_comments(repo_slug, since_iso)
+        # Throttle even on fetch failure: a persistently-slow/failing repo must
+        # back off to the full interval rather than be re-scanned every poll.
+        # Losing one cycle of fallback coverage is acceptable; an unthrottled
+        # retry loop that hammers the API is not.
+        mark_repo_mention_scanned(tracker_dir, repo_slug)
+        if comments is None:
+            continue
+
+        owner, repo = repo_slug.split("/", 1)
+        mentions = _recent_unprocessed_mentions(
+            repo_slug, comments, bot_username, tracker_dir,
+        )
+        for notification, comment in mentions:
+            # Isolate each comment: one malformed payload must not abort the
+            # whole scan (the outer handler only catches a narrow set, and
+            # external comment data is not guaranteed to be well-formed).
+            try:
+                processed = _process_scanned_mention(
+                    notification, comment, registry, config, projects_config,
+                    bot_username, project_name, owner, repo, tracker_dir,
+                )
+            except Exception as exc:  # noqa: BLE001 — per-comment isolation
+                log.warning(
+                    "GitHub mention scan: failed to process comment %s on %s: %s",
+                    comment.get("id", "?"), repo_slug, exc, exc_info=True,
+                )
+                continue
+            if processed:
+                queued += 1
+                log.info(
+                    "GitHub mention scan: queued mission from comment %s on %s",
+                    comment.get("id", "?"), repo_slug,
+                )
+
+    return queued
+
+
 def scan_requested_review_missions(
     projects_config: Optional[dict],
     config: dict,
@@ -1543,7 +1847,7 @@ def _process_mention_comment(
         Tuple of (queued, error_message).  queued is True when a mission
         was successfully inserted into missions.md.
     """
-    comment_author = comment.get("user", {}).get("login", "")
+    comment_author = (comment.get("user") or {}).get("login", "")
 
     # Validate and parse command
     skill, command_name, context = _validate_and_parse_command(
@@ -1715,9 +2019,13 @@ def _process_mention_comment(
         return False, "KOAN_ROOT not configured"
     missions_path = Path(koan_root) / "instance" / "missions.md"
 
-    mission_entries = _expand_combo_mission(
+    mission_entries = []
+    for entry in _expand_multi_target_review_mission(
         command_name, mission_entry, project_name,
-    )
+    ):
+        mission_entries.extend(
+            _expand_combo_mission(command_name, entry, project_name)
+        )
 
     inserted_any = False
     try:

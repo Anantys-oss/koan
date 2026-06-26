@@ -18,6 +18,7 @@ _CODEX_QUOTA_PATTERNS = [
     r"(?:exceeded|reached|exhausted|insufficient).*\bquota\b",
     r"usage.*(?:limit|cap).*(?:reached|exceeded|hit)",
     r"billing.*(?:limit|quota|credit)",
+    r"spend\s+cap",
     r"HTTP\s*429",
     r"status[\s:]+429",
     r"too many requests",
@@ -25,6 +26,17 @@ _CODEX_QUOTA_PATTERNS = [
 ]
 
 _CODEX_QUOTA_RE = re.compile("|".join(_CODEX_QUOTA_PATTERNS), re.IGNORECASE)
+
+# The workspace spend-cap message ("You hit your spend cap set by the owner of
+# your workspace…") is an unmistakable OpenAI/Codex billing failure. It surfaces
+# on plain stdout with exit=1 and carries none of the generic error-marker words
+# (error/openai/codex/api), so it is honored directly rather than gated behind a
+# marker. Anchored to "spend cap" plus "you hit"/"increase" wording so benign
+# assistant prose that merely mentions a spend cap does not trip a false pause.
+_CODEX_SPEND_CAP_RE = re.compile(
+    r"(?:you\s+hit\s+your|increase\s+your)\s+spend\s+cap",
+    re.IGNORECASE,
+)
 
 _CODEX_ERROR_KEYS = {
     "code",
@@ -222,6 +234,10 @@ class CodexProvider(CLIProvider):
         """Check non-JSON stdout only when it resembles a provider error."""
         if exit_code == 0:
             return False
+        # The spend-cap billing error has no generic error marker; honor it
+        # directly so the daemon pauses for quota instead of failing the mission.
+        if _CODEX_SPEND_CAP_RE.search(line):
+            return True
         if not self._line_has_error_marker(line, self._STDOUT_ERROR_MARKERS):
             return False
         return bool(_CODEX_QUOTA_RE.search(line))

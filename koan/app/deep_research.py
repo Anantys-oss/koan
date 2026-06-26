@@ -37,6 +37,13 @@ _STOP_WORDS = frozenset({
 
 _BRANCH_ISSUE_RE = re.compile(r"(?:implement|fix|issue)[/-](\d+)")
 
+# GitHub's closing keywords — only these forms in a PR body reliably mean
+# "this PR resolves issue N". Restricting to them avoids treating incidental
+# "#123" mentions in prose as coverage.
+_CLOSING_ISSUE_RE = re.compile(
+    r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE
+)
+
 
 def _extract_issue_numbers(text: str) -> set[int]:
     """Extract GitHub issue/PR numbers (#NNN) from a string.
@@ -44,6 +51,15 @@ def _extract_issue_numbers(text: str) -> set[int]:
     Assumes PR/issue-style text (titles, branch names), not arbitrary markdown.
     """
     return {int(m) for m in re.findall(r"#(\d+)", text)}
+
+
+def _extract_closing_issue_numbers(body: str) -> set[int]:
+    """Extract issue numbers a PR body declares it closes (Closes/Fixes #N).
+
+    Scoped to GitHub's closing keywords so unrelated '#N' references in the
+    body don't count as coverage.
+    """
+    return {int(m) for m in _CLOSING_ISSUE_RE.findall(body)}
 
 
 def _extract_branch_issue_numbers(branch: str) -> set[int]:
@@ -151,7 +167,7 @@ class DeepResearch:
             output = run_gh(
                 "pr", "list",
                 "--state", "open",
-                "--json", "number,title,createdAt,headRefName",
+                "--json", "number,title,createdAt,headRefName,body",
                 cwd=self.project_path,
             )
             self._pending_prs = json.loads(output)
@@ -165,31 +181,42 @@ class DeepResearch:
 
         Returns:
             Dict with keys:
-            - issue_numbers: set of int — issue numbers referenced in PR titles/branches
+            - issue_numbers: set of int — all issue numbers referenced by open PRs
+            - pr_issues: dict mapping PR number to the issue numbers it covers
             - pr_tokens: dict mapping PR number to normalized token set
             - prs: list of PR dicts (for display)
         """
         prs = self.get_pending_prs()
         covered_issues: set[int] = set()
+        pr_issues: dict[int, set[int]] = {}
         pr_tokens: dict[int, set[str]] = {}
 
         for pr in prs:
             title = pr.get("title", "")
             branch = pr.get("headRefName", "")
+            body = pr.get("body", "") or ""
             number = pr.get("number", 0)
 
-            # Extract issue numbers from title and branch
-            covered_issues |= _extract_issue_numbers(title)
-            covered_issues |= _extract_issue_numbers(branch)
+            # Issue numbers from title, branch, branch patterns ("implement-1042"),
+            # and the PR body's closing keywords ("Closes #N") — the body is the
+            # most reliable signal for koan0/<descriptive-name> branches that don't
+            # encode the issue number in the title or branch.
+            issues = (
+                _extract_issue_numbers(title)
+                | _extract_issue_numbers(branch)
+                | _extract_branch_issue_numbers(branch)
+                | _extract_closing_issue_numbers(body)
+            )
+            pr_issues[number] = issues
+            covered_issues |= issues
 
-            # Also extract issue numbers from branch patterns like "implement-1042"
-            covered_issues |= _extract_branch_issue_numbers(branch)
-
-            # Build token set for fuzzy matching
+            # Build token set for fuzzy matching (title + branch only; the body is
+            # too long and would pollute overlap scoring).
             pr_tokens[number] = _normalize_tokens(title) | _normalize_tokens(branch)
 
         return {
             "issue_numbers": covered_issues,
+            "pr_issues": pr_issues,
             "pr_tokens": pr_tokens,
             "prs": prs,
         }
@@ -205,16 +232,11 @@ class DeepResearch:
         """
         # 1. Issue number match
         topic_issues = _extract_issue_numbers(topic)
-        overlap = topic_issues & coverage["issue_numbers"]
-        if overlap:
-            # Find which PR covers this issue
-            for pr in coverage["prs"]:
-                pr_title = pr.get("title", "")
-                pr_branch = pr.get("headRefName", "")
-                pr_issues = _extract_issue_numbers(pr_title) | _extract_issue_numbers(pr_branch)
-                pr_issues |= _extract_branch_issue_numbers(pr_branch)
+        if topic_issues & coverage["issue_numbers"]:
+            # Find which PR covers this issue (title, branch, or body).
+            for pr_num, pr_issues in coverage["pr_issues"].items():
                 if pr_issues & topic_issues:
-                    return pr.get("number")
+                    return pr_num
 
         # 2. Token overlap (fuzzy match)
         topic_tokens = _normalize_tokens(topic)

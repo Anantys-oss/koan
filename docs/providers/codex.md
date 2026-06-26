@@ -205,9 +205,16 @@ will pause for auth and requeue the active mission instead of marking it failed.
 Codex shares quota with your ChatGPT subscription. If you hit limits,
 Kōan's quota detection will pause and notify you. Codex quota detection is
 provider-specific: Kōan trusts Codex/OpenAI error events and stderr, but does
-not scan normal command output for generic billing or credit words. Token
-accounting failures and quota detection are separate: if usage extraction
-fails for a mission, Koan still runs quota detection for that mission.
+not scan normal command output for generic billing or credit words. The
+workspace spend-cap error ("You hit your spend cap set by the owner of your
+workspace…") is recognized as a quota failure and triggers a quota pause even
+though it carries no generic error marker. Token accounting failures and quota
+detection are separate: if usage extraction fails for a mission, Koan still
+runs quota detection for that mission.
+
+Quota detection is reactive and is **not** disabled by
+`usage.unlimited_quota: true` — that flag only skips proactive budget gating.
+A real spend-cap or rate-limit error from Codex still pauses the daemon.
 
 ### Tool restrictions not working
 

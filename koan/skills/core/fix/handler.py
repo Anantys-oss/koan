@@ -8,6 +8,7 @@ from app.github import run_gh
 from app.github_url_parser import parse_issue_url
 from app.missions import extract_now_flag
 from app.github_skill_helpers import (
+    extract_github_url,
     handle_github_skill,
     parse_limit,
     parse_repo_url,
@@ -86,6 +87,14 @@ def handle(ctx):
         /fix https://github.com/owner/repo --limit=5    (batch: 5 most recent)
     """
     args = ctx.args.strip() if ctx.args else ""
+
+    # /fix is for issues, but users often call it on a PR to address review
+    # concerns — which is exactly what /rebase does (rebase onto target, read
+    # comments, push). Redirect PR URLs to the rebase mechanism, leaving ctx
+    # untouched so the --now flag and any extra context are preserved.
+    if extract_github_url(args, url_type="pr"):
+        from skills.core.rebase.handler import handle as rebase_handle
+        return rebase_handle(ctx)
 
     # Extract --now flag for priority queuing
     urgent, args = extract_now_flag(args)

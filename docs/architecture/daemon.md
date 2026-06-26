@@ -32,6 +32,28 @@ process does not stop cleanly.
 Bridge state that would otherwise create circular imports lives in
 `bridge_state.py`. Bridge logging lives in `bridge_log.py`.
 
+### Worker lanes (chat vs background)
+
+The bridge runs heavy work off the messaging poll loop in two independent
+daemon-thread lanes (`awake._run_in_worker(fn, lane=...)`):
+
+- **chat** — interactive replies (`handle_chat`). When busy, a second chat
+  message is answered with "⏳ Busy with a previous message."
+- **bg** — background tasks: worker skills (Claude/API/GitHub calls typed
+  in chat, e.g. `/review`, `/rebase`). When busy, additional bg tasks are dropped
+  silently (no chat spam). `_run_in_worker` returns `True`/`False`
+  (started vs dropped) so callers can tell. Autonomous background work
+  ignores the result and stays silent; **user-initiated** worker skills
+  (a `/review`, `/implement`, etc. typed in chat) dispatch on the bg lane
+  but surface a "⏳ Busy with a previous task" reply when the lane was full,
+  so a typed command never vanishes without feedback.
+
+Because the lanes run concurrently, a long-running background task never
+blocks an interactive chat reply, and neither blocks the poll loop. One
+in-flight task per lane provides back-pressure (no unbounded fan-out). No
+extra OS process is forked — the "dedicated chat channel vs bg tasks" split is
+realized with threads inside the existing bridge process.
+
 ## Agent Loop
 
 `run.py` owns background work. Its loop is split across focused modules:
@@ -104,3 +126,27 @@ path because they depend on git prep and specialised post-mission handling.
 
 Single-slot installations (`max_parallel_sessions: 1`, the default) skip all
 parallel logic with zero overhead.
+
+## CLI stdout memory model
+
+Claude/skill CLI output can reach hundreds of MB per mission, multiplied per
+concurrent session when `max_parallel_sessions > 1`. To keep peak RAM bounded,
+no path holds the full transcript in a Python list while the mission runs:
+
+- **Main mission path** (`run_claude_task`): the child's stdout is wired
+  straight to a temp file (`subprocess.Popen(stdout=out_f)`); no Python-side
+  line list is ever built. Downstream consumers (`run_post_mission`, token
+  parsing, PR-URL extraction) read that file.
+- **Skill-dispatch path** (`_run_skill_mission`): each line is streamed via
+  `_pump_skill_stdout` to the same on-disk capture and to `pending.md` (for
+  `/live`) as it arrives; only a 200-line tail deque is kept in RAM for timeout
+  diagnostics. The full transcript is read back from disk once, at
+  end-of-mission, when a caller needs it (`_extract_pr_url`, the `— skipping`
+  check, error classification).
+- **Provider stream runner** (`run_command_streaming`): the error/max-turns
+  accumulator (`raw_lines`) is a bounded `deque`; the assistant-text
+  accumulator (`text_lines`) is the actual return value and is intentionally
+  unbounded so long sessions never silently lose output.
+
+Operators running on constrained hosts (e.g. Railway) should also pin
+`max_parallel_sessions: 1` so per-session cost is not multiplied.

@@ -3911,7 +3911,15 @@ class TestRecoveryHelpers:
 # ---------------------------------------------------------------------------
 
 class TestNotifyMissionEnd:
-    """Tests for _notify_mission_end() — end-of-mission notifications."""
+    """Tests for _notify_mission_end() — end-of-mission notifications.
+
+    These cover the verbose (debug) lifecycle path; normal-mode behavior is
+    covered separately in test_notify_verbosity.py.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_debug(self, monkeypatch):
+        monkeypatch.setattr("app.run.is_debug", lambda: True)
 
     @patch("app.run._notify")
     def test_success_with_mission_title(self, mock_notify):
@@ -6039,6 +6047,66 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
         mock_finalize.assert_called_once()
         mock_requeue.assert_not_called()
 
+    def test_success_threads_pr_url_from_stdout_to_notify(self, tmp_path):
+        """Tracked-skill success threads the PR URL from the runner transcript.
+
+        The concise completion line (✅ [project] 🔍 Reviewed <pr-url>) must
+        receive the PR URL captured from the skill runner's stdout, not rely
+        solely on a pending.md re-read the skill path rarely populates.
+        """
+        from app.run import _handle_skill_dispatch
+
+        koan_root = str(tmp_path)
+        instance = str(tmp_path / "instance")
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+
+        pr_url = "https://github.com/Org/repo/pull/713"
+        mock_proc = self._make_mock_popen(
+            returncode=0,
+            stdout_lines=[f"Reviewed and opened {pr_url}\n"],
+        )
+
+        mock_post_result = {
+            "success": True,
+            "quota_exhausted": False,
+            "quota_info": None,
+        }
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.run.protected_phase", return_value=MagicMock(
+                 __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
+             )), \
+             patch("app.run._notify"), \
+             patch("app.run._notify_mission_end") as mock_notify_end, \
+             patch("app.run._finalize_mission"), \
+             patch("app.run._commit_instance"), \
+             patch("app.run._sleep_between_runs"), \
+             patch("app.run.set_status"), \
+             patch("app.run.log"), \
+             patch("app.skill_dispatch.dispatch_skill_mission",
+                   return_value=["python3", "-m", "app.review_runner"]), \
+             patch("app.mission_runner.run_post_mission", return_value=mock_post_result):
+            handled, _ = _handle_skill_dispatch(
+                mission_title="/review fix the bug",
+                project_name="test",
+                project_path=str(tmp_path),
+                koan_root=koan_root,
+                instance=instance,
+                run_num=1,
+                max_runs=20,
+                autonomous_mode="implement",
+                interval=30,
+            )
+
+        assert handled is True
+        mock_notify_end.assert_called_once()
+        assert mock_notify_end.call_args.kwargs.get("pr_url") == pr_url
+
 
 # ---------------------------------------------------------------------------
 # Bug fix: _run_skill_mission temp file cleanup must use try/finally
@@ -7300,10 +7368,10 @@ class TestHandleWaitPauseCommit:
         assert "retro failed" in error_msg
         assert "Traceback" in error_msg
 
-    @patch("app.config.is_unlimited_quota", return_value=True)
+    @patch("app.usage_tracker._get_budget_mode", return_value="disabled")
     @patch("app.run.log")
-    def test_unlimited_quota_skips_pause(self, mock_log, mock_unlimited):
-        """unlimited_quota: true suppresses the wait pause entirely."""
+    def test_disabled_budget_skips_pause(self, mock_log, mock_budget):
+        """Disabled budget mode suppresses the wait pause entirely."""
         from app.run import _handle_wait_pause
 
         plan = {
@@ -7315,6 +7383,30 @@ class TestHandleWaitPauseCommit:
 
         log_calls = [c[0] for c in mock_log.call_args_list]
         assert any("suppressed" in msg for _, msg in log_calls)
+
+    @patch("app.run._notify")
+    @patch("app.run._commit_instance")
+    @patch("app.pause_manager.create_pause")
+    @patch("app.run._compute_quota_reset_ts", return_value=(9999, "soon"))
+    @patch("app.usage_tracker._get_budget_mode", return_value="disabled")
+    @patch("app.run.log")
+    def test_disabled_budget_does_not_create_wait_pause(
+        self, mock_log, mock_budget, mock_reset, mock_pause, mock_commit,
+        mock_notify,
+    ):
+        """A stale wait_pause plan is a no-op when budget gating is disabled."""
+        from app.run import _handle_wait_pause
+
+        plan = {
+            "project_name": "test-proj",
+            "decision_reason": "Budget exhausted",
+            "display_lines": [],
+        }
+        _handle_wait_pause(plan, 42, "/tmp/koan", "/tmp/koan/instance")
+
+        mock_pause.assert_not_called()
+        mock_commit.assert_not_called()
+        mock_notify.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

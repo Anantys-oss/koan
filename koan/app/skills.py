@@ -673,6 +673,21 @@ class SkillContext:
     args: str = ""
     send_message: Optional[Callable[[str], Any]] = None
     handle_chat: Optional[Callable[[str], Any]] = None
+    project_name: str = ""
+    _memory: Any = field(init=False, default=None, repr=False)
+
+    @property
+    def memory(self):
+        """Lazy :class:`~app.skill_memory_accessor.MemoryAccessor` instance.
+
+        Constructed on first access so skills that never touch memory pay
+        nothing. Read methods take ``project`` as a parameter; pass
+        ``ctx.project_name`` when no explicit project is in scope.
+        """
+        if self._memory is None:
+            from app.skill_memory_accessor import MemoryAccessor
+            self._memory = MemoryAccessor(self.instance_dir)
+        return self._memory
 
 
 def execute_skill(skill: Skill, ctx: SkillContext) -> Optional[Union[str, SkillError]]:
@@ -941,18 +956,57 @@ def get_default_skills_dir() -> Path:
     return Path(__file__).parent.parent / "skills"
 
 
+def get_core_skills_dir() -> Path:
+    """Return the core skills directory (koan/skills/core/).
+
+    Core discovery is scoped to this subdirectory: ``koan/skills/`` is reserved
+    for core skills, and custom scopes belong under ``instance/skills/<scope>/``.
+    Scanning only ``core/`` keeps a stray custom scope dropped under the core
+    tree out of the core registry. See CLAUDE.md skills boundary + issue #2084.
+    """
+    return get_default_skills_dir() / "core"
+
+
+def _warn_misplaced_core_scopes() -> None:
+    """Emit one guidance warning if a non-core scope sits under koan/skills/.
+
+    Such a scope is ignored by core discovery; without this the operator gets
+    no hint why their skill is invisible (and previously got per-build
+    'missing required field' spam, one line per misplaced skill). See #2084.
+    """
+    default_dir = get_default_skills_dir()
+    try:
+        strays = sorted(
+            p.name for p in default_dir.iterdir()
+            if p.is_dir() and p.name not in {"core", "__pycache__"}
+        )
+    except OSError:
+        return
+    if strays:
+        _log.warning(
+            "Ignoring non-core skill scope(s) under %s: %s — move custom "
+            "skills to instance/skills/<scope>/ so they load correctly.",
+            default_dir, ", ".join(strays),
+        )
+
+
 def build_registry(extra_dirs: Optional[List[Path]] = None) -> SkillRegistry:
-    """Build a registry from the default skills dir + optional extra dirs.
+    """Build a registry from the core skills dir + optional extra dirs.
 
     Args:
         extra_dirs: Additional directories to scan (e.g., instance/skills/).
+
+    Core discovery is scoped to ``koan/skills/core/`` (see
+    ``get_core_skills_dir``); custom scopes belong under ``extra_dirs``.
 
     Skills under ``extra_dirs`` are filtered through the approval gate:
     any SKILL.md whose own directory or an ancestor up to the extra dir
     carries a ``.koan-pending`` marker is silently skipped so the bridge
     cannot exec a handler that has not been approved.
     """
-    registry = SkillRegistry(get_default_skills_dir())
+    core_dir = get_core_skills_dir()
+    registry = SkillRegistry(core_dir if core_dir.is_dir() else get_default_skills_dir())
+    _warn_misplaced_core_scopes()
 
     if extra_dirs:
         from app.skill_approval import find_pending_ancestor

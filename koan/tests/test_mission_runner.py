@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 from contextlib import ExitStack
 from datetime import date
 from pathlib import Path
@@ -3780,3 +3781,154 @@ class TestMaybeQueueAutoreview:
         # Should use PR URL from pending_content (#42), not stdout (#99)
         first_call = str(mock_insert.call_args_list[0])
         assert "/pull/42" in first_call
+
+
+class TestSkillOutcomeCapture:
+    """Outcome label folded into the single session JSONL row (no duplicate).
+
+    The PR originally wrote a separate ``skill_outcome`` row; review feedback
+    found it duplicated the ``session`` row already written for the same
+    mission. The outcome is now recorded once on the session row, classified
+    consistently with the bandit pipeline.
+    """
+
+    @staticmethod
+    def _session_calls(mock_append):
+        return [
+            c for c in mock_append.call_args_list
+            if len(c.args) >= 2 and c.args[1] == "session"
+        ]
+
+    @patch("app.memory_manager.append_memory_entry")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_no_duplicate_skill_outcome_row(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_append, tmp_path,
+    ):
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            mission_title="/review https://github.com/org/repo/pull/42",
+            start_time=int(time.time()) - 180,
+        )
+
+        # No separate skill_outcome row — outcome lives on the session row.
+        skill_calls = [
+            c for c in mock_append.call_args_list
+            if len(c.args) >= 2 and c.args[1] == "skill_outcome"
+        ]
+        assert len(skill_calls) == 0
+
+        session_calls = self._session_calls(mock_append)
+        assert len(session_calls) == 1
+        content = session_calls[0].args[3]
+        assert "/review" in content
+        # /review is a productive skill → classify_session() → "productive".
+        assert "Outcome: productive" in content
+
+    @patch("app.memory_manager.append_memory_entry")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_nonzero_exit_records_failure_outcome(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_append, tmp_path,
+    ):
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=1,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            mission_title="/rebase https://github.com/org/repo/pull/10",
+        )
+
+        session_calls = self._session_calls(mock_append)
+        assert len(session_calls) == 1
+        content = session_calls[0].args[3]
+        assert "Outcome: failure" in content
+
+    @patch("app.memory_manager.append_memory_entry")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_outcome_classification_matches_pipeline(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_append, tmp_path,
+    ):
+        # A zero-exit non-skill mission with no journal content classifies as
+        # "empty" — the same label the bandit/auto-merge pipeline would assign,
+        # not a bare exit-code "success".
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            mission_title="Fix the login bug on the dashboard",
+        )
+
+        session_calls = self._session_calls(mock_append)
+        assert len(session_calls) == 1
+        content = session_calls[0].args[3]
+        assert "Outcome: empty" in content
+
+    @patch("app.memory_manager.append_memory_entry", side_effect=OSError("disk full"))
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_outcome_recording_swallows_errors(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_append, tmp_path,
+    ):
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            mission_title="/review https://github.com/org/repo/pull/1",
+        )
+
+        assert result["success"] is True

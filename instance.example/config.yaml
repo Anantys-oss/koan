@@ -61,7 +61,7 @@
 # These are the primary source of truth for run loop configuration.
 # max_runs_per_day: Maximum runs before auto-pause (resets on /resume or quota reset)
 # interval_seconds: Seconds between runs (how often the loop iterates)
-max_runs_per_day: 20
+max_runs_per_day: 60
 interval_seconds: 300
 
 # Startup delay — seconds to wait before the first mission after boot.
@@ -336,6 +336,18 @@ contemplative_chance: 10
 # notifications:
 #   min_priority: action
 
+# Bridge verbosity level (debug / normal). Distinct from notifications.min_priority
+# (per-message severity): this is a global verbosity tier for lifecycle chatter.
+#   normal (default) — quiet, operator-focused. Failures, command replies, and
+#                      one-line PR results still come through; per-mention and
+#                      mission-start lines are collapsed/suppressed (still logged).
+#   debug            — full lifecycle narration (legacy firehose).
+# Precedence: KOAN_MESSAGING_LEVEL env > .koan-messaging-level state file
+#             (set by /messaging_level) > this key > "normal".
+# See docs/messaging/messaging-level.md.
+# messaging:
+#   level: normal
+
 # Telegram
 # NOTE: Prefer setting these in .env (KOAN_TELEGRAM_TOKEN, KOAN_TELEGRAM_CHAT_ID)
 # These config values are only used if the env vars are not set.
@@ -411,17 +423,10 @@ cli_provider: "claude"
 # mcp:
 #   - "/path/to/mcp-servers.json"
 
-# Local LLM configuration (used when cli_provider: "local")
-# Connects to any OpenAI-compatible API server:
-#   - Ollama:     http://localhost:11434/v1
-#   - llama.cpp:  http://localhost:8080/v1
-#   - LM Studio:  http://localhost:1234/v1
-#   - vLLM:       http://localhost:8000/v1
-# Can also be set via KOAN_LOCAL_LLM_* env vars (override config values)
-# local_llm:
-#   base_url: "http://localhost:11434/v1"
-#   model: "glm4"
-#   api_key: ""   # Usually empty for local servers
+# NOTE: The 'local' CLI provider has been removed. To run local models use
+# 'ollama-launch' (see below) — the Claude CLI driven by ``ollama launch claude``.
+# A leftover 'local_llm:' block is tolerated for backward compatibility but is
+# unused. See docs/providers/ollama-launch.md.
 
 # Ollama Launch configuration (used when cli_provider: "ollama-launch")
 # Uses Ollama v0.16.0+ ``ollama launch claude`` to run the Claude Code CLI
@@ -561,7 +566,7 @@ usage:
 # Per-project overrides are now configured in projects.yaml.
 # Supported per-project settings:
 #   - git_auto_merge: per-project merge rules
-#   - cli_provider: override AI provider ("claude", "codex", "copilot", "local")
+#   - cli_provider: override AI provider ("claude", "codex", "copilot", "ollama-launch")
 #   - models: override model selection (mission, chat, lightweight, etc.)
 #   - tools: restrict available tools (mission, chat tool lists)
 #   - github: override authorized_users for GitHub @mention commands
@@ -876,6 +881,14 @@ auto_update:
 #                               # Set to false for a silent verdict (just the check/X)
 #   include_blockers: true      # When REQUEST_CHANGES, list blocking finding titles
 #                               # in the verdict body (default: true)
+
+# Review inline comments — in addition to the single bucketed summary comment,
+# post each finding as an inline PR comment anchored to its code location, so a
+# reviewer can react/resolve/discuss each one in place. Additive: never
+# replaces the summary comment. Opt-in (default: disabled).
+# review_inline_comments:
+#   enabled: false        # Master switch (default: false)
+#   max_comments: 25      # Cap inline threads posted per review (default: 25)
 
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention

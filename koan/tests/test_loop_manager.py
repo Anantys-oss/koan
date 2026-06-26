@@ -1071,6 +1071,36 @@ class TestGitHubNotificationBackoff:
     @patch("app.loop_manager._build_skill_registry")
     @patch("app.loop_manager._get_known_repos_from_projects")
     @patch("app.utils.load_config")
+    def test_recent_mention_scan_counts_as_created_mission(
+        self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
+    ):
+        import app.loop_manager as lm
+        from app.github_notifications import FetchResult
+        from app.loop_manager import process_github_notifications
+
+        lm._consecutive_empty_checks = 3
+        mock_config.return_value = {"github": {"nickname": "koan-bot"}}
+        mock_gh_config.return_value = {"bot_username": "koan-bot", "max_age": 300}
+        mock_registry.return_value = MagicMock()
+        mock_repos.return_value = {"sukria/koan"}
+
+        with patch("app.projects_config.load_projects_config", return_value={}), \
+             patch("app.github_notifications.fetch_unread_notifications",
+                   return_value=FetchResult([], [])), \
+             patch("app.github_command_handler.scan_recent_mention_missions",
+                   return_value=1) as mock_mention_scan, \
+             patch("app.github_command_handler.scan_requested_review_missions",
+                   return_value=0):
+            result = process_github_notifications(str(tmp_path), str(tmp_path))
+
+        assert result == 1
+        assert lm._consecutive_empty_checks == 0
+        mock_mention_scan.assert_called_once()
+
+    @patch("app.loop_manager._load_github_config")
+    @patch("app.loop_manager._build_skill_registry")
+    @patch("app.loop_manager._get_known_repos_from_projects")
+    @patch("app.utils.load_config")
     def test_found_notifications_resets_backoff(
         self, mock_config, mock_repos, mock_registry, mock_gh_config, tmp_path
     ):
@@ -2195,7 +2225,15 @@ class TestCLI:
 
 
 class TestNotifyMissionFromMention:
-    """Tests for _notify_mission_from_mention Telegram notification."""
+    """Tests for _notify_mission_from_mention Telegram notification.
+
+    Per-mention sends are gated to debug mode; force it so these legacy
+    message-shape assertions exercise the send path.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_debug(self, monkeypatch):
+        monkeypatch.setattr("app.loop_manager.is_debug", lambda: True)
 
     @patch("app.notify.send_telegram", return_value=True)
     def test_uses_mailbox_emoji(self, mock_send):
@@ -3847,3 +3885,359 @@ class TestGithubParallelWorkersConfig:
         from app.github_config import get_github_parallel_workers
         assert get_github_parallel_workers({"github": {"parallel_workers": "x"}}) == 4
         assert get_github_parallel_workers({"github": None}) == 4
+
+
+class _Mentions:
+    """Minimal stand-in for JiraFetchResult."""
+
+    def __init__(self, mentions):
+        self.mentions = mentions
+
+
+def _reset_jira_globals(monkeypatch):
+    import app.loop_manager as lm
+    monkeypatch.setattr(lm, "_last_jira_check", 0.0)
+    monkeypatch.setattr(lm, "_last_jira_check_iso", "")
+    monkeypatch.setattr(lm, "_consecutive_jira_empty", 0)
+    monkeypatch.setattr(lm, "_jira_config_logged", False)
+    monkeypatch.setattr(lm, "_jira_interval_loaded", True)
+    monkeypatch.setattr(lm, "_JIRA_CHECK_INTERVAL", 60)
+    monkeypatch.setattr(lm, "_JIRA_MAX_CHECK_INTERVAL", 600)
+    return lm
+
+
+class TestProcessJiraNotifications:
+    """Behavioral tests for process_jira_notifications dispatch body."""
+
+    def test_disabled_returns_zero(self, monkeypatch, tmp_path):
+        lm = _reset_jira_globals(monkeypatch)
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr(lm, "_warn_legacy_jira_projects", lambda cfg: None)
+        monkeypatch.setattr("app.jira_config.get_jira_enabled", lambda cfg: False)
+
+        result = lm.process_jira_notifications(
+            str(tmp_path), str(tmp_path), force=True
+        )
+        assert result == 0
+
+    def test_config_error_returns_zero(self, monkeypatch, tmp_path):
+        lm = _reset_jira_globals(monkeypatch)
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr(lm, "_warn_legacy_jira_projects", lambda cfg: None)
+        monkeypatch.setattr("app.jira_config.get_jira_enabled", lambda cfg: True)
+        monkeypatch.setattr(
+            "app.jira_config.validate_jira_config", lambda cfg: "bad token"
+        )
+
+        result = lm.process_jira_notifications(
+            str(tmp_path), str(tmp_path), force=True
+        )
+        assert result == 0
+
+    def test_throttled_returns_zero(self, monkeypatch, tmp_path):
+        import time
+        lm = _reset_jira_globals(monkeypatch)
+        # Pretend we just checked — non-forced call must be throttled away.
+        monkeypatch.setattr(lm, "_last_jira_check", time.time())
+
+        called = {"load": False}
+
+        def _fail_load():
+            called["load"] = True
+            return {}
+
+        monkeypatch.setattr("app.utils.load_config", _fail_load)
+
+        result = lm.process_jira_notifications(
+            str(tmp_path), str(tmp_path), force=False
+        )
+        assert result == 0
+        # Throttle short-circuits before any config work happens.
+        assert called["load"] is False
+
+    def test_happy_path_cold_start_creates_missions(self, monkeypatch, tmp_path):
+        lm = _reset_jira_globals(monkeypatch)
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr(lm, "_warn_legacy_jira_projects", lambda cfg: None)
+        monkeypatch.setattr("app.jira_config.get_jira_enabled", lambda cfg: True)
+        monkeypatch.setattr(
+            "app.jira_config.validate_jira_config", lambda cfg: None
+        )
+        monkeypatch.setattr(
+            "app.jira_config.get_jira_nickname", lambda cfg: "bot"
+        )
+        monkeypatch.setattr(
+            "app.jira_config.get_jira_max_age_hours", lambda cfg: 24
+        )
+        monkeypatch.setattr(
+            "app.issue_tracker.config.get_jira_project_map_for_polling",
+            lambda cfg, koan_root=None: {"PROJ": "my-toolkit"},
+        )
+        monkeypatch.setattr(
+            "app.issue_tracker.config.get_jira_branch_map_for_polling",
+            lambda cfg, koan_root=None: {},
+        )
+        monkeypatch.setattr(lm, "_load_processed_jira_tracker",
+                            lambda inst: (set(), str(tmp_path / "tracker.json")))
+        monkeypatch.setattr(lm, "_build_skill_registry", lambda inst: object())
+        monkeypatch.setattr(
+            "app.jira_notifications.fetch_jira_mentions",
+            lambda cfg, pm, since_iso=None: _Mentions(
+                [{"issue_key": "PROJ-1"}]
+            ),
+        )
+        monkeypatch.setattr(
+            "app.jira_command_handler.process_jira_mention",
+            lambda mention, registry, config, processed, branch_map=None: (True, None),
+        )
+        monkeypatch.setattr(
+            "app.jira_notifications._save_processed_tracker",
+            lambda path, s: None,
+        )
+
+        result = lm.process_jira_notifications(
+            str(tmp_path), str(tmp_path), force=True
+        )
+        assert result == 1
+
+    def test_mention_skipped_creates_no_mission(self, monkeypatch, tmp_path):
+        lm = _reset_jira_globals(monkeypatch)
+        # Prime the iso so we skip the cold-start branch.
+        monkeypatch.setattr(lm, "_last_jira_check_iso", "2026-01-01T00:00:00Z")
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr(lm, "_warn_legacy_jira_projects", lambda cfg: None)
+        monkeypatch.setattr("app.jira_config.get_jira_enabled", lambda cfg: True)
+        monkeypatch.setattr(
+            "app.jira_config.validate_jira_config", lambda cfg: None
+        )
+        monkeypatch.setattr(
+            "app.jira_config.get_jira_nickname", lambda cfg: "bot"
+        )
+        monkeypatch.setattr(
+            "app.issue_tracker.config.get_jira_project_map_for_polling",
+            lambda cfg, koan_root=None: {"PROJ": "my-toolkit"},
+        )
+        monkeypatch.setattr(
+            "app.issue_tracker.config.get_jira_branch_map_for_polling",
+            lambda cfg, koan_root=None: {},
+        )
+        monkeypatch.setattr(lm, "_load_processed_jira_tracker",
+                            lambda inst: (set(), str(tmp_path / "tracker.json")))
+        monkeypatch.setattr(lm, "_build_skill_registry", lambda inst: object())
+        monkeypatch.setattr(
+            "app.jira_notifications.fetch_jira_mentions",
+            lambda cfg, pm, since_iso=None: _Mentions(
+                [{"issue_key": "PROJ-2"}]
+            ),
+        )
+        monkeypatch.setattr(
+            "app.jira_command_handler.process_jira_mention",
+            lambda *a, **k: (False, "not a command"),
+        )
+        monkeypatch.setattr(
+            "app.jira_notifications._save_processed_tracker",
+            lambda path, s: None,
+        )
+
+        result = lm.process_jira_notifications(
+            str(tmp_path), str(tmp_path), force=True
+        )
+        assert result == 0
+
+    def test_no_mentions_increments_backoff(self, monkeypatch, tmp_path):
+        lm = _reset_jira_globals(monkeypatch)
+        monkeypatch.setattr(lm, "_last_jira_check_iso", "2026-01-01T00:00:00Z")
+        monkeypatch.setattr(lm, "_consecutive_jira_empty", 2)
+        monkeypatch.setattr("app.utils.load_config", lambda: {})
+        monkeypatch.setattr(lm, "_warn_legacy_jira_projects", lambda cfg: None)
+        monkeypatch.setattr("app.jira_config.get_jira_enabled", lambda cfg: True)
+        monkeypatch.setattr(
+            "app.jira_config.validate_jira_config", lambda cfg: None
+        )
+        monkeypatch.setattr(
+            "app.jira_config.get_jira_nickname", lambda cfg: "bot"
+        )
+        monkeypatch.setattr(
+            "app.issue_tracker.config.get_jira_project_map_for_polling",
+            lambda cfg, koan_root=None: {},
+        )
+        monkeypatch.setattr(
+            "app.issue_tracker.config.get_jira_branch_map_for_polling",
+            lambda cfg, koan_root=None: {},
+        )
+        monkeypatch.setattr(lm, "_load_processed_jira_tracker",
+                            lambda inst: (set(), str(tmp_path / "tracker.json")))
+        monkeypatch.setattr(lm, "_build_skill_registry", lambda inst: object())
+        monkeypatch.setattr(
+            "app.jira_notifications.fetch_jira_mentions",
+            lambda cfg, pm, since_iso=None: _Mentions([]),
+        )
+
+        result = lm.process_jira_notifications(
+            str(tmp_path), str(tmp_path), force=True
+        )
+        assert result == 0
+        # force=True resets backoff at entry, then an empty result re-increments.
+        assert lm._consecutive_jira_empty == 1
+
+    def test_exception_returns_zero(self, monkeypatch, tmp_path):
+        lm = _reset_jira_globals(monkeypatch)
+
+        def _boom():
+            raise ValueError("config blew up")
+
+        monkeypatch.setattr("app.utils.load_config", _boom)
+
+        result = lm.process_jira_notifications(
+            str(tmp_path), str(tmp_path), force=True
+        )
+        assert result == 0
+
+
+class TestCLIInProcess:
+    """In-process CLI dispatch (captures coverage that subprocess tests miss)."""
+
+    def test_resolve_focus_handler(self, capsys):
+        from app.loop_manager import _cli_resolve_focus
+
+        _cli_resolve_focus(["--mode", "deep"])
+        out = capsys.readouterr().out
+        assert "deep work" in out.lower()
+
+    def test_create_pending_handler(self, tmp_path, capsys):
+        from app.loop_manager import _cli_create_pending
+
+        instance = tmp_path / "instance"
+        (instance / "journal").mkdir(parents=True)
+
+        _cli_create_pending([
+            "--instance", str(instance),
+            "--project-name", "koan",
+            "--run-num", "3",
+            "--max-runs", "10",
+            "--autonomous-mode", "deep",
+            "--mission-title", "Hello",
+        ])
+        out = capsys.readouterr().out
+        assert "pending.md" in out
+        assert (instance / "journal" / "pending.md").exists()
+
+    def test_validate_projects_handler(self, tmp_path, monkeypatch, capsys):
+        from app.loop_manager import _cli_validate_projects
+
+        proj = tmp_path / "myproj"
+        proj.mkdir()
+        subprocess.run(["git", "init"], cwd=proj, capture_output=True)
+        monkeypatch.setattr(
+            "app.utils.get_known_projects", lambda: [("myproj", str(proj))]
+        )
+
+        _cli_validate_projects([])
+        out = capsys.readouterr().out
+        assert "myproj" in out
+
+    def test_validate_projects_handler_no_projects(self, monkeypatch):
+        from app.loop_manager import _cli_validate_projects
+
+        monkeypatch.setattr("app.utils.get_known_projects", lambda: [])
+        with pytest.raises(SystemExit):
+            _cli_validate_projects([])
+
+    def test_validate_projects_handler_invalid(self, tmp_path, monkeypatch):
+        from app.loop_manager import _cli_validate_projects
+
+        monkeypatch.setattr(
+            "app.utils.get_known_projects",
+            lambda: [("p", str(tmp_path / "does-not-exist"))],
+        )
+        with pytest.raises(SystemExit):
+            _cli_validate_projects([])
+
+    def test_lookup_project_handler(self, tmp_path, monkeypatch, capsys):
+        from app.loop_manager import _cli_lookup_project
+
+        proj = tmp_path / "koan"
+        proj.mkdir()
+        monkeypatch.setattr(
+            "app.utils.get_known_projects", lambda: [("koan", str(proj))]
+        )
+
+        _cli_lookup_project(["--name", "koan"])
+        out = capsys.readouterr().out
+        assert str(proj) in out
+
+    def test_lookup_project_handler_not_found(self, monkeypatch):
+        from app.loop_manager import _cli_lookup_project
+
+        monkeypatch.setattr(
+            "app.utils.get_known_projects", lambda: [("koan", "/tmp/koan")]
+        )
+        with pytest.raises(SystemExit):
+            _cli_lookup_project(["--name", "nope"])
+
+    def test_interruptible_sleep_handler(self, tmp_path, monkeypatch, capsys):
+        import app.loop_manager as lm
+        from app.loop_manager import _cli_interruptible_sleep
+
+        koan_root = tmp_path / "root"
+        instance = tmp_path / "instance"
+        koan_root.mkdir()
+        instance.mkdir()
+
+        # Isolate the "timeout" exit path: stub the notification fetchers so the
+        # sleep loop doesn't run the real GitHub/Jira pipeline against temp dirs.
+        monkeypatch.setattr(lm, "process_github_notifications", lambda *a, **k: 0)
+        monkeypatch.setattr(lm, "process_jira_notifications", lambda *a, **k: 0)
+
+        _cli_interruptible_sleep([
+            "--interval", "1",
+            "--koan-root", str(koan_root),
+            "--instance", str(instance),
+            "--check-interval", "1",
+        ])
+        out = capsys.readouterr().out.strip()
+        assert out.splitlines()[-1] == "timeout"
+
+    def test_main_no_subcommand_exits(self, monkeypatch):
+        import app.loop_manager as lm
+
+        monkeypatch.setattr(sys, "argv", ["loop_manager"])
+        with pytest.raises(SystemExit):
+            lm.main()
+
+    def test_main_unknown_subcommand_exits(self, monkeypatch):
+        import app.loop_manager as lm
+
+        monkeypatch.setattr(sys, "argv", ["loop_manager", "bogus"])
+        with pytest.raises(SystemExit):
+            lm.main()
+
+    def test_main_dispatches_handler(self, monkeypatch, capsys):
+        import app.loop_manager as lm
+
+        monkeypatch.setattr(
+            sys, "argv", ["loop_manager", "resolve-focus", "--mode", "deep"]
+        )
+        lm.main()
+        out = capsys.readouterr().out
+        assert "deep work" in out.lower()
+
+
+class TestProgressNotifier:
+    def test_dispatch_banner_suppressed_in_normal(self, monkeypatch):
+        import app.loop_manager as lm
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m: sent.append(m))
+        notify = lm._progress_notifier()
+        notify("Processing 3 GitHub notification(s)...")
+        assert sent == []
+
+    def test_dispatch_banner_sent_in_debug(self, monkeypatch):
+        import app.loop_manager as lm
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: True)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m: sent.append(m))
+        notify = lm._progress_notifier()
+        notify("Processing 3 GitHub notification(s)...")
+        assert sent == ["Processing 3 GitHub notification(s)..."]

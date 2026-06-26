@@ -70,9 +70,11 @@ def run_plan(
     Returns:
         (success, summary) tuple.
     """
+    # Progress lines are gated behind messaging.level=debug when we default the
+    # sink; the outcome line always reaches chat via notify_outcome().
     if notify_fn is None:
-        from app.notify import send_telegram
-        notify_fn = send_telegram
+        from app.messaging_level import progress_notify
+        notify_fn = progress_notify(log_category="plan")
 
     # Heartbeat so the liveness watchdog in run.py knows we're alive
     # before Claude CLI starts streaming.
@@ -147,7 +149,8 @@ def _run_new_plan(
     issue_body = f"{plan_body}\n\n---\n{build_koan_footer()}"
 
     if not tracker_is_configured(project_name, project_path):
-        notify_fn(f"✅ Plan generated inline:\n\n{plan[:3000]}")
+        from app.messaging_level import notify_outcome
+        notify_outcome(f"✅ Plan generated inline:\n\n{plan[:3000]}", notify_fn)
         return True, "Plan generated inline (no issue tracker configured)."
 
     provider = tracker_provider(project_name, project_path)
@@ -167,13 +170,16 @@ def _run_new_plan(
         try:
             result_url = create_issue(project_name, project_path, title, issue_body)
         except (RuntimeError, OSError) as e2:
-            notify_fn(
+            from app.messaging_level import notify_outcome
+            notify_outcome(
                 f"⚠️ Plan ready but tracker issue creation failed "
-                f"({e2}):\n\n{plan[:3000]}"
+                f"({e2}):\n\n{plan[:3000]}",
+                notify_fn,
             )
             return True, f"Plan generated but issue creation failed: {e2}"
 
-    notify_fn(f"✅ Plan created: {result_url}")
+    from app.messaging_level import notify_outcome
+    notify_outcome(f"✅ Plan created: {result_url}", notify_fn)
     return True, f"Plan created: {result_url}"
 
 
@@ -199,7 +205,8 @@ def _run_issue_plan(
         )
     except UnresolvedJiraProjectError as e:
         msg = str(e)
-        notify_fn(f"❌ {msg}")
+        from app.messaging_level import notify_outcome
+        notify_outcome(f"❌ {msg}", notify_fn)
         return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
@@ -213,7 +220,8 @@ def _run_issue_plan(
         )
     except UnresolvedJiraProjectError as e:
         msg = str(e)
-        notify_fn(f"❌ {msg}")
+        from app.messaging_level import notify_outcome
+        notify_outcome(f"❌ {msg}", notify_fn)
         return False, msg
     except Exception as e:
         return False, f"Failed to fetch issue: {str(e)[:300]}"
@@ -279,12 +287,14 @@ def _run_issue_plan(
             project_path=project_path,
         )
     except Exception as e:
-        notify_fn(f"Plan ready but comment failed ({e}):\n\n{plan[:3000]}")
+        from app.messaging_level import notify_outcome
+        notify_outcome(f"Plan ready but comment failed ({e}):\n\n{plan[:3000]}", notify_fn)
         return True, f"Plan generated but comment failed: {e}"
 
     if title:
         label = f"{label} ({title[:60]})"
-    notify_fn(f"✅ Plan posted as comment on {label}: {issue_url}")
+    from app.messaging_level import notify_outcome
+    notify_outcome(f"✅ Plan posted as comment on {label}: {issue_url}", notify_fn)
     return True, f"Plan posted on {label}: {issue_url}"
 
 

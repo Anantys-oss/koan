@@ -1,8 +1,11 @@
 """Tests for provider-neutral issue tracker configuration."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
+
+import pytest
 
 from app.issue_tracker.config import (
     get_jira_branch_map_for_polling,
@@ -10,6 +13,7 @@ from app.issue_tracker.config import (
     get_project_issue_tracker,
     get_tracker_for_project,
     detect_legacy_jira_projects,
+    find_project_for_jira_key,
     format_legacy_jira_projects_warning,
     normalize_github_repo,
     resolve_code_repository,
@@ -270,8 +274,6 @@ projects:
             lambda *a, **kw: {},
         )
 
-        from unittest.mock import patch
-
         with patch(
             "app.github.resolve_target_repo",
             return_value="upstream-owner/myapp",
@@ -295,11 +297,191 @@ projects:
         )
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
 
-        from unittest.mock import patch
-
         with patch("app.github.resolve_target_repo", return_value=None):
             result = resolve_code_repository("myapp", "/some/path")
         assert result == "acme/myapp"
+
+
+class TestLoadProjectsFallbacks:
+    def test_no_root_defaults_to_github(self, monkeypatch):
+        """No koan_root arg and no KOAN_ROOT env: resolution still returns a
+        usable GitHub default rather than raising."""
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        tracker = get_tracker_for_project("myapp")
+        assert tracker["provider"] == "github"
+        assert tracker["repo"] == ""
+
+    def test_unreadable_config_defaults_to_github(self, tmp_path, monkeypatch):
+        """An OSError/ValueError while loading projects.yaml degrades to the
+        GitHub default instead of propagating."""
+        monkeypatch.setattr(
+            "app.issue_tracker.config.load_projects_config",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("boom")),
+        )
+        tracker = get_tracker_for_project("myapp", koan_root=str(tmp_path))
+        assert tracker["provider"] == "github"
+
+
+class TestGetProjectIssueTrackerEdgeCases:
+    def test_non_dict_issue_tracker_section_uses_defaults(self):
+        config = {"projects": {"myapp": {"issue_tracker": "not-a-dict"}}}
+        tracker = get_project_issue_tracker(config, "myapp")
+        assert tracker["provider"] == "github"
+        assert tracker["repo"] == ""
+
+    def test_unknown_provider_falls_back_to_github(self):
+        config = {
+            "projects": {"myapp": {"issue_tracker": {"provider": "gitlab"}}}
+        }
+        tracker = get_project_issue_tracker(config, "myapp")
+        assert tracker["provider"] == "github"
+
+    def test_blank_issue_type_uses_default(self):
+        config = {
+            "projects": {
+                "myapp": {
+                    "issue_tracker": {
+                        "provider": "jira",
+                        "jira_project": "FOO",
+                        "jira_issue_type": "   ",
+                    }
+                }
+            }
+        }
+        tracker = get_project_issue_tracker(config, "myapp")
+        assert tracker["jira_issue_type"] == "Task"
+
+
+class TestPollingMapsEmptyConfig:
+    def test_empty_config_yields_empty_maps(self):
+        assert get_jira_project_map_for_polling({}, koan_root="") == {}
+        assert get_jira_branch_map_for_polling({}, koan_root="") == {}
+
+
+class TestFindProjectForJiraKey:
+    def test_key_without_dash_returns_empty(self):
+        assert find_project_for_jira_key("NODASH") == ""
+
+    def test_empty_key_returns_empty(self):
+        assert find_project_for_jira_key("") == ""
+
+    def test_resolves_to_project(self, tmp_path):
+        _write_yaml(
+            tmp_path,
+            """
+projects:
+  alpha:
+    issue_tracker:
+      provider: jira
+      jira_project: FOO
+""",
+        )
+        assert find_project_for_jira_key("FOO-123", koan_root=str(tmp_path)) == "alpha"
+
+    def test_unmapped_key_returns_empty(self, tmp_path):
+        _write_yaml(tmp_path, "projects: {}\n")
+        assert find_project_for_jira_key("BAR-9", koan_root=str(tmp_path)) == ""
+
+
+class TestLegacyJiraHelperEdgeCases:
+    def test_detect_non_dict_projects_returns_empty(self):
+        assert detect_legacy_jira_projects({"jira": {"projects": ["FOO"]}}) == []
+
+    def test_format_empty_keys_returns_empty_string(self):
+        assert format_legacy_jira_projects_warning([]) == ""
+
+
+class TestResolveCodeRepositoryFallbacks:
+    def test_tracker_repo_used_when_no_submit_target(self, tmp_path, monkeypatch):
+        _write_yaml(
+            tmp_path,
+            """
+projects:
+  myapp:
+    issue_tracker:
+      provider: github
+      repo: acme/myapp
+""",
+        )
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        # No project_path: skip fork detection, fall through to tracker repo.
+        assert resolve_code_repository("myapp") == "acme/myapp"
+
+    def test_fork_detection_error_falls_through(self, tmp_path, monkeypatch):
+        """A failure inside resolve_target_repo must not crash resolution; it
+        falls through to github_url."""
+        _write_yaml(
+            tmp_path,
+            """
+projects:
+  myapp:
+    github_url: acme/myapp
+    path: /some/path
+""",
+        )
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.github.resolve_target_repo", side_effect=RuntimeError("nope")):
+            assert resolve_code_repository("myapp", "/some/path") == "acme/myapp"
+
+    def test_origin_repo_last_resort(self, tmp_path, monkeypatch):
+        """With no submit target, no tracker repo, and no github_url, the
+        origin remote is the final fallback."""
+        _write_yaml(
+            tmp_path,
+            """
+projects:
+  myapp:
+    path: /some/path
+""",
+        )
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.github.resolve_target_repo", return_value=None), patch(
+            "app.github.origin_repo", return_value="acme/myapp"
+        ):
+            assert resolve_code_repository("myapp", "/some/path") == "acme/myapp"
+
+    def test_origin_repo_error_returns_empty(self, tmp_path, monkeypatch):
+        _write_yaml(
+            tmp_path,
+            """
+projects:
+  myapp:
+    path: /some/path
+""",
+        )
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        with patch("app.github.resolve_target_repo", return_value=None), patch(
+            "app.github.origin_repo", side_effect=OSError("git missing")
+        ):
+            assert resolve_code_repository("myapp", "/some/path") == ""
+
+    def test_no_config_no_path_returns_empty(self, monkeypatch):
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        assert resolve_code_repository("myapp") == ""
+
+
+class TestSetProjectTrackerValidation:
+    def test_rejects_unknown_provider(self, tmp_path):
+        with pytest.raises(ValueError, match="Unsupported issue tracker provider"):
+            set_project_tracker(str(tmp_path), "myapp", {"provider": "gitlab"})
+
+    def test_jira_requires_project_key(self, tmp_path):
+        with pytest.raises(ValueError, match="jira_project is required"):
+            set_project_tracker(str(tmp_path), "myapp", {"provider": "jira"})
+
+    def test_none_project_entry_is_replaced(self, tmp_path):
+        _write_yaml(
+            tmp_path,
+            """
+projects:
+  myapp:
+""",
+        )
+        set_project_tracker(
+            str(tmp_path), "myapp", {"provider": "github", "repo": "acme/myapp"}
+        )
+        config = load_projects_config(str(tmp_path))
+        assert config["projects"]["myapp"]["issue_tracker"]["repo"] == "acme/myapp"
 
 
 def test_normalize_github_repo_accepts_owner_repo_and_urls():

@@ -26,6 +26,7 @@
                 "im:read",
                 "im:write",
                 "chat:write",
+                "reactions:write",
                 "files:read",
                 "files:write",
                 "users:read"

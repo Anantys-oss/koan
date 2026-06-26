@@ -56,6 +56,8 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "startup_reflection": "bool",
     "auto_pause": "bool",
     "attention_github_notifications": "bool",
+    "enable_multiple_instances": "bool",
+    "focus": "bool",
     "skip_permissions": "bool",
     "cli_provider": "str",
     "mcp": "list",
@@ -88,6 +90,16 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "thinking": _NESTED,
     "stagnation": _NESTED,
     "optimizations": _NESTED,
+}
+
+# Top-level keys that are recognized but deprecated: they still work (honored
+# elsewhere for backward compatibility) but should migrate to a new location.
+# These must NOT be reported as "unrecognized" — only with their migration hint.
+_DEPRECATED_TOP_LEVEL_KEYS: Dict[str, str] = {
+    "unlimited_quota": (
+        "'unlimited_quota' moved to 'usage.unlimited_quota'; "
+        "the top-level form is deprecated"
+    ),
 }
 
 # Sub-schemas for nested sections
@@ -130,8 +142,14 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "subscribe_enabled": "bool",
         "subscribe_max_per_cycle": "int",
         "max_age_hours": "int",
+        "stale_drain_hours": "int",
         "check_interval_seconds": "int",
         "max_check_interval_seconds": "int",
+        "parallel_workers": "int",
+        "review_scan_interval_minutes": "int",
+        "mention_scan_interval_minutes": "int",
+        "ack_enabled": "bool",
+        "max_replies_per_thread_per_hour": "int",
         "webhook": "dict",
     },
     "schedule": {
@@ -317,9 +335,27 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
     if not isinstance(config, dict):
         return [("", "config.yaml root is not a mapping")]
 
+    # The 'local' CLI provider has been removed; warn instead of silently
+    # falling back to 'claude'.
+    if str(config.get("cli_provider", "")).strip().lower() == "local":
+        warnings.append((
+            "cli_provider",
+            "cli_provider: 'local' has been removed and is now ignored "
+            "(falling back to 'claude'). To run local models use "
+            "'ollama-launch'. See docs/providers/ollama-launch.md.",
+        ))
+
     known_top = list(CONFIG_SCHEMA.keys())
 
+    for deprecated_key, hint in _DEPRECATED_TOP_LEVEL_KEYS.items():
+        if deprecated_key in config:
+            warnings.append((deprecated_key, hint))
+
     for key, value in config.items():
+        if key in _DEPRECATED_TOP_LEVEL_KEYS:
+            # Recognized-but-deprecated: already warned above; do not also
+            # flag as unrecognized.
+            continue
         if key not in CONFIG_SCHEMA:
             suggestion = _suggest_typo(key, known_top)
             msg = f"unrecognized key '{key}'"

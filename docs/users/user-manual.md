@@ -258,6 +258,14 @@ every cycle).
 - `/silent` — Turn off updates when you're busy (default)
 </details>
 
+**`/messaging_level [debug|normal]`** (alias `/msglevel`) — Show or set the bridge verbosity tier. `normal` (the default) is quiet: failures, command replies, and one-line PR results still come through, but per-mention queue lines and mission-start chatter are collapsed or suppressed. `debug` restores the full lifecycle firehose. Distinct from `/verbose` (which toggles in-mission progress). Every suppressed message is still written to the logs. See [Quieter bridge](#quieter-bridge) and `docs/messaging/messaging-level.md`.
+
+#### Quieter bridge
+
+By default Kōan's bridge runs in `normal` mode — quiet and operator-focused. Set `messaging.level: debug` in `config.yaml`, run `/messaging_level debug`, or export `KOAN_MESSAGING_LEVEL=debug` to restore the legacy chatty behavior. Precedence: env var > `/messaging_level` runtime override > `config.yaml` > `normal`.
+
+With `messaging.level=normal`, each skill mission emits a single status line — the PR/issue URL on success (e.g. `✅ Reviewed https://github.com/o/r/pull/2098`) or a short context string on failure — instead of the step-by-step play-by-play (`Reviewing PR…`, `Analyzing code changes…`, `Posting review…`). Switch to `debug` (`/messaging_level debug`) to see every intermediate progress line again; suppressed progress is always written to the log regardless.
+
 ### Branch Isolation & Reviewing Work
 
 Kōan **never commits to `main`**. All work happens in `koan/*` branches (the prefix is configurable). After completing a mission, Kōan typically:
@@ -523,6 +531,8 @@ Before attempting a fix, `/fix` runs a lightweight read-only diagnostic phase us
 
 After a draft PR is created, `/fix` also runs the private review gate when it is enabled (opt-in; disabled by default during the testing phase). Findings and fix attempts stay backend-only: no review comment, verdict, or issue comment is posted by the gate.
 
+If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebase` — addressing review concerns on an existing PR is exactly what `/rebase` does. The `--now` flag and any trailing context are preserved through the redirect.
+
 <details>
 <summary>Use cases</summary>
 
@@ -530,6 +540,7 @@ After a draft PR is created, `/fix` also runs the private review gate when it is
 - `/fix https://github.com/org/repo/issues/99 Regression from v2.3` — Provide extra context
 - `/fix https://github.com/org/repo/issues/99 --skip-diagnose` — Skip diagnostic for a trivial fix
 - `/fix https://myorg.atlassian.net/browse/PROJ-123 branch:main` — Fix a Jira ticket using a one-off target branch
+- `/fix https://github.com/org/repo/pull/42 address the security concern` — PR URL redirects to `/rebase`, preserving the trailing context
 </details>
 
 **`/debug`** — Structured 4-step debugging when a previous fix attempt failed.
@@ -554,9 +565,10 @@ The debug loop enforces four steps:
 
 **`/review`** — Queue a code review for a pull request or issue.
 
-- **Usage:** `/review <github-pr-or-issue-url> [--architecture] [--errors] [--comments] [--bot-comments] [--plan-url <issue-url>]`
+- **Usage:** `/review <github-pr-or-issue-url> [additional-pr-or-issue-url ...] [--architecture] [--errors] [--comments] [--bot-comments] [--plan-url <issue-url>]`
 - **Aliases:** `/rv`
 - **GitHub @mention:** `@koan-bot /review` on a PR
+- **Multiple URLs:** Queues one independent review mission per PR/issue URL. Shared flags such as `--errors` and `--plan-url <issue-url>` are applied to each queued review.
 - **Flags:**
   - `--architecture` — Architecture-focused review (SOLID principles, layering, coupling, abstraction boundaries)
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
@@ -576,6 +588,7 @@ The debug loop enforces four steps:
 - `/review https://github.com/org/repo/pull/55 --comments` — Comment quality review
 - `/review https://github.com/org/repo/pull/55 --bot-comments` — Triage and reply to bot review comments
 - `/review https://github.com/org/repo/pull/55 --architecture --errors` — Both passes
+- `/review https://github.com/org/repo/pull/55 https://github.com/org/repo/pull/56 --errors` — Queue separate error-focused reviews for both PRs
 </details>
 
 **`/ultrareview`** — Queue the most thorough review Kōan can run for a PR.
@@ -638,9 +651,11 @@ Produces a pedagogical walkthrough of the PR: what problem it solves (with examp
 
 **`/rebase`** — Rebase a PR onto its base branch.
 
-- **Usage:** `/rebase <pr-url>`
+- **Usage:** `/rebase <pr-url> [focus area]`
 - **Aliases:** `/rb`
 - **GitHub @mention:** `@koan-bot /rebase` on a PR
+
+Any text after the URL is threaded into the mission as extra focus context (e.g. `/rebase <pr-url> address the security concern`). A `/fix` invoked on a PR URL redirects here, preserving that context.
 
 By default, Telegram `/rebase` only queues PRs created by this instance
 (branch prefix match). Set `allow_rebase_foreign_prs: true` in
@@ -661,6 +676,14 @@ reported in the rebase summary but do not fail an otherwise successful rebase.
 
 When `/rebase` runs long, Kōan uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout), Kōan now restores the clean rebased checkpoint and still pushes the rebase (without partial feedback edits), so timeout noise does not discard a valid rebase. If the feedback step hits a *provider quota limit*, the rebase still stops so you can retry after quota reset. Any other transient feedback error remains best-effort and does not block pushing the rebase.
 
+When a target repository pre-commit hook formats files during the feedback
+commit, Kōan stages the hook-created edits and retries the commit once. If local
+hooks still reject the feedback commit, Kōan commits the feedback with
+`--no-verify` so valid review edits are not discarded by broad local gates; CI
+remains the final validation. If the feedback step itself still fails, Kōan
+pushes the clean rebase and reports that review feedback was not applied instead
+of labeling the result as a simple rebase.
+
 After completion, Kōan posts a structured comment on the PR with these sections:
 
 1. **Summary** — Classifies the rebase (simple / with adjustments / with conflict resolution)
@@ -673,6 +696,7 @@ After completion, Kōan posts a structured comment on the PR with these sections
 <summary>Use cases</summary>
 
 - `/rebase https://github.com/org/repo/pull/42` — Resolve conflicts and update the PR
+- `/rebase https://github.com/org/repo/pull/42 address the security concern` — Rebase with a focus area
 </details>
 
 **`/reviewrebase`** — Review a PR then rebase it, so review insights feed the rebase.
@@ -1026,6 +1050,23 @@ Not ready to commit to a mission? Save it as an idea.
 - `/stats webapp` — How's Kōan doing on a specific project?
 </details>
 
+**`/report`** — Pull-Request activity report per-project and global, posted as a markdown code block. A plain `/report` emits both the weekly and the monthly digest; add `--week` or `--month` to narrow it. Shortcuts: `/weekly_report`, `/monthly_report`.
+
+- **Usage:** `/report` (both) | `/report --week` | `/report --month`
+- **Metrics:**
+  - **Created** — PRs Kōan opened in the window.
+  - **Merged (%)** — of those created, how many are now merged (cohort success rate).
+  - **Interacted** — PRs Kōan was involved in (commented, reviewed) updated in the window, including human-authored PRs.
+  - **Interacted+merged** — PRs Kōan interacted with that merged during the window.
+- **Note:** "Interacted" is sourced from GitHub search (`involves:`). A bare force-push/rebase on a *human-authored* PR (no comment) won't be counted; Kōan's own PRs always are.
+
+<details>
+<summary>Use cases</summary>
+
+- `/weekly_report` — Monday digest of last week's PR throughput
+- `/report --month` — Monthly review across all projects
+</details>
+
 ### Understanding Quota Modes
 
 Kōan automatically adapts its work intensity based on remaining API quota:
@@ -1218,7 +1259,7 @@ All behavioral config lives in `instance/config.yaml`. Key settings:
 
 ```yaml
 # Work intensity
-max_runs_per_day: 10          # Max missions per day
+max_runs_per_day: 60          # Max missions per day (default: 60)
 interval_seconds: 60          # Seconds between mission checks
 
 # Model selection (see docs/users/model-configuration.md)
@@ -1555,6 +1596,14 @@ projects:
 
 When `approved: false`, the bot still posts review comments and PR feedback but skips the formal GitHub review status (green check / red X in the Reviewers panel). Configuration errors are fail-closed: if loading project overrides fails, or if the `review_verdict` section is malformed (non-dict value or non-boolean entries for known keys), the verdict is skipped to preserve operator intent.
 
+**Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in `config.yaml` to also post each finding as an inline PR comment anchored to its code location, in addition to the bucketed summary comment (which is unchanged). Each inline thread shows the same severity marker (🔴/🟡/🟢) and the full finding detail, so reviewers can react or resolve in place. Cap the volume with `review_inline_comments.max_comments` (default 25). Disabled by default; findings without a resolvable line, or reviews with no head SHA, are skipped. Re-running `/review` is idempotent — findings already anchored on the PR are not re-posted. Multi-line findings anchor to their full range. If findings exist but every inline post fails, Kōan notifies you instead of failing silently.
+
+```yaml
+review_inline_comments:
+  enabled: false        # Master switch (default: false)
+  max_comments: 25      # Cap inline threads posted per review (default: 25)
+```
+
 ### Custom Skills
 
 Kōan's skill system is fully extensible. Install skills from Git repos or create your own.
@@ -1653,8 +1702,7 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **Cline** | Multi-backend (OpenRouter, Anthropic, OpenAI) | [cline.md](../providers/cline.md) |
 | **OpenAI Codex** | ChatGPT users who want Codex models | [codex.md](../providers/codex.md) |
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
-| **Local LLM** | Offline, privacy, zero API cost | [local.md](../providers/local.md) |
-| **Ollama Launch** | Claude CLI via Ollama-managed server | [ollama-launch.md](../providers/ollama-launch.md) |
+| **Ollama Launch** | Local/offline models behind the Claude CLI harness | [ollama-launch.md](../providers/ollama-launch.md) |
 | **OpenRouter** (via Claude CLI) | Claude CLI behavior with OpenRouter's model catalog/billing | [openrouter.md](../providers/openrouter.md) |
 
 #### Provider-specific model config
@@ -2164,6 +2212,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/version` | `/ver`, `/v` | B | Show Kōan version |
 | `/verbose` | — | B | Enable real-time progress updates |
 | `/silent` | — | B | Disable real-time progress updates |
+| `/messaging_level [debug\|normal]` | `/msglevel` | B | Show or set bridge verbosity (debug / normal) |
 | `/projects` | `/proj` | B | List configured projects |
 | `/tracker` | — | B | Show or set issue tracker routing |
 | `/alias <proj> <short>` | — | B | Create project shortcut (e.g. /alias Template2 tt) |
@@ -2176,13 +2225,13 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/deepplan <idea\|issue-url>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |
 | `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
-| `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR) |
+| `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR); a PR URL redirects to `/rebase` |
 | `/debug <issue>` | `/dbg` | I | Structured 4-step debug loop (reproduce → hypothesize → fix → verify) |
-| `/review <PR> [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review a pull request |
+| `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review one or more pull requests |
 | `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
-| `/rebase <PR>` | `/rb` | I | Rebase a PR onto its base branch |
+| `/rebase <PR> [focus area]` | `/rb` | I | Rebase a PR onto its base branch; trailing text becomes focus context |
 | `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo) |
 | `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | I | Plan then implement an issue (combo) |
 | `/squash <PR>` | `/sq` | I | Squash all PR commits into one clean commit |
@@ -2216,6 +2265,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/journal` | `/log` | I | View journal entries |
 | `/email` | — | I | Email digest status or test |
 | `/stats [project]` | — | I | Session outcome statistics |
+| `/report [--week\|--month]` | `/weekly_report`, `/monthly_report` | I | PR activity report (created, merged %, interacted) per-project + global; defaults to both weekly and monthly |
 | `/done [project]` | `/merged` | I | List PRs merged in the last 24 hours |
 | `/explore [project]` | `/exploration` | I | Enable/show exploration mode |
 | `/noexplore [project]` | — | I | Disable exploration mode |

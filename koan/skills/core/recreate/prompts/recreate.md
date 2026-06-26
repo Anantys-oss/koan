@@ -40,6 +40,13 @@ since this was written — adapt the implementation to the current state.
 
 ---
 
+{@include receiving-code-review}
+
+When reimplementing from scratch, the EVALUATE step matters most: decide whether each
+reviewer suggestion is correct before folding it into your fresh implementation.
+
+---
+
 ## Your Task
 
 You are working on a **fresh branch** created from the current `{BASE}`.

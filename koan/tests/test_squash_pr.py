@@ -426,3 +426,30 @@ class TestMain:
     def test_failure_returns_one(self, mock_run, mock_parse):
         code = main(["https://github.com/o/r/pull/1", "--project-path", "/tmp"])
         assert code == 1
+
+
+class TestSquashOutcomeGating:
+    def test_success_emits_single_outcome_with_pr_url(self, monkeypatch):
+        import app.squash_pr as sp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+
+        def _impl(owner, repo, pr_number, project_path, notify_fn=None, **k):
+            notify_fn("Squashing PR #7...")
+            return True, "done"
+
+        monkeypatch.setattr(sp, "_run_squash_impl", _impl)
+        ok, _ = sp.run_squash("o", "r", "7", "/tmp/x")
+        assert ok is True
+        assert sent == ["✅ Squashed https://github.com/o/r/pull/7"]
+
+    def test_failure_outcome_with_context(self, monkeypatch):
+        import app.squash_pr as sp
+        sent = []
+        monkeypatch.setattr("app.messaging_level.is_debug", lambda: False)
+        monkeypatch.setattr("app.notify.send_telegram", lambda m, **k: sent.append(m))
+        monkeypatch.setattr(sp, "_run_squash_impl", lambda *a, **k: (False, "boom"))
+        ok, _ = sp.run_squash("o", "r", "7", "/tmp/x")
+        assert ok is False
+        assert "https://github.com/o/r/pull/7" in sent[0] and "boom" in sent[0]

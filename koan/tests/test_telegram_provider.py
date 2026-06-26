@@ -475,3 +475,23 @@ class TestSendWithParseMode:
         assert payload["parse_mode"] == "HTML"
         assert "<pre>" in payload["text"]
         assert "10:00" in payload["text"]
+
+
+class TestAddReaction:
+    @patch("app.messaging.telegram.requests.post")
+    def test_add_reaction_posts_set_message_reaction(self, mock_post, provider):
+        mock_post.return_value = MagicMock(json=lambda: {"ok": True})
+        assert provider.add_reaction(55, "✅") is True
+        args, kwargs = mock_post.call_args
+        assert args[0].endswith("/setMessageReaction")
+        assert kwargs["json"]["chat_id"] == "12345"
+        assert kwargs["json"]["message_id"] == 55
+        assert kwargs["json"]["reaction"] == [{"type": "emoji", "emoji": "✅"}]
+
+    def test_add_reaction_no_message_id_returns_false(self, provider):
+        assert provider.add_reaction(0, "✅") is False
+
+    @patch("app.messaging.telegram.requests.post")
+    def test_add_reaction_api_failure_returns_false(self, mock_post, provider):
+        mock_post.return_value = MagicMock(json=lambda: {"ok": False})
+        assert provider.add_reaction(55, "✅") is False

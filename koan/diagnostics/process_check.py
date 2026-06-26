@@ -51,7 +51,7 @@ def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
     try:
         from app.provider import get_provider_name
         provider = get_provider_name()
-        if provider in ("local", "ollama"):
+        if provider == "ollama":
             pid = check_pidfile(root, "ollama")
             if pid:
                 results.append(CheckResult(

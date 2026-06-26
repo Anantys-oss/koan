@@ -610,7 +610,7 @@ class TestBucketCacheFields:
     """Tests for cache hit rate recomputation in weekly/monthly bucket functions."""
 
     def test_bucket_by_week_recomputes_cache_hit_rate(self):
-        from app.dashboard import _bucket_by_week
+        from app.usage_service import _bucket_by_week
         from datetime import date
 
         monday = date(2026, 6, 1)  # A Monday
@@ -645,7 +645,7 @@ class TestBucketCacheFields:
         assert abs(b["cache_hit_rate"] - expected) < 1e-9
 
     def test_bucket_by_week_by_project_cache_fields(self):
-        from app.dashboard import _bucket_by_week
+        from app.usage_service import _bucket_by_week
 
         monday = date(2026, 6, 1)
         tuesday = date(2026, 6, 2)
@@ -687,7 +687,7 @@ class TestBucketCacheFields:
         assert abs(bp["cache_hit_rate"] - expected) < 1e-9
 
     def test_bucket_by_month_recomputes_cache_hit_rate(self):
-        from app.dashboard import _bucket_by_month
+        from app.usage_service import _bucket_by_month
 
         d1 = date(2026, 5, 1)
         d2 = date(2026, 5, 15)
@@ -713,7 +713,7 @@ class TestBucketCacheFields:
         assert abs(b["cache_hit_rate"] - expected) < 1e-9
 
     def test_bucket_zero_cache_returns_zero_hit_rate(self):
-        from app.dashboard import _bucket_by_week
+        from app.usage_service import _bucket_by_week
 
         series = [
             {

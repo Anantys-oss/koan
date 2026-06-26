@@ -42,11 +42,17 @@ Then continue from Step 4 (Install to Workspace) to collect your tokens.
    | Scope | Purpose |
    |-------|---------|
    | `chat:write` | Send messages and set the "thinking" status |
+   | `reactions:write` | Acknowledge queued missions with a ✅ reaction (falls back to a text reply if missing) |
    | `assistant:write` | Show the assistant "thinking" status (optional; `chat:write` also works) |
    | `channels:history` | Read messages in public channels |
    | `groups:history` | Read messages in private channels |
    | `im:history` | Read direct messages |
    | `app_mentions:read` | Respond to @mentions |
+
+   > **Upgrading an existing app?** `reactions:write` is new. Add it under
+   > **OAuth & Permissions → Bot Token Scopes**, then **reinstall the app to
+   > your workspace** to grant the scope — without the reinstall `reactions.add`
+   > keeps failing and Kōan falls back to the text reply.
 
 3. Go to **Event Subscriptions** → Enable Events
 4. Under **Subscribe to bot events**, add:
@@ -93,9 +99,9 @@ pip install 'slack-sdk>=3.27'
 Edit your `.env` file:
 
 ```bash
-# Messaging provider — REQUIRED. Without this, Kōan defaults to Telegram and
-# ignores the KOAN_SLACK_* credentials entirely (the #1 "Slack isn't working"
-# cause). Setting only the three tokens below is not enough.
+# Messaging provider. Recommended but no longer strictly required: if you set
+# the KOAN_SLACK_* tokens below and no other provider, Kōan auto-detects Slack
+# instead of defaulting to Telegram. Set this explicitly to remove any ambiguity.
 KOAN_MESSAGING_PROVIDER=slack
 
 # Slack credentials (all required)
@@ -111,7 +117,21 @@ messaging:
   provider: "slack"
 ```
 
-The env var takes precedence over `config.yaml`.
+The env var takes precedence over `config.yaml`. When neither names a provider,
+Kōan resolves the one whose credentials are present — so configuring Slack alone
+won't trigger a spurious "set telegram credentials" warning. Auto-detection is
+deliberately conservative:
+
+- If Telegram is already configured (`KOAN_TELEGRAM_TOKEN` + `KOAN_TELEGRAM_CHAT_ID`),
+  Kōan never auto-switches away from it — selecting Slack would silently swap a
+  working setup. Set `KOAN_MESSAGING_PROVIDER=slack` to switch intentionally.
+- If credentials for more than one non-telegram provider are set, the choice is
+  ambiguous and Kōan falls back to Telegram; set `KOAN_MESSAGING_PROVIDER` to
+  disambiguate.
+
+When auto-detection does pick a provider, it logs a line to the bridge stderr
+(`auto-detected messaging provider 'slack' from credentials …`) so the
+resolution is traceable.
 
 ## Step 9: Start Kōan
 
@@ -146,7 +166,12 @@ You should see in the logs:
   is not set — setting only the `KOAN_SLACK_*` tokens is not enough.
 - **You must @mention the bot.** Kōan ignores un-addressed channel chatter by
   design. Ping `@Koan ...` to start; after that you can keep replying in the
-  thread without re-mentioning.
+  thread without re-mentioning. (Messages beginning with `/` followed by a
+  letter — e.g. `/help` — are an exception: they are treated as commands and
+  answered without a mention. A leading slash before a non-letter, like a
+  `//` comment or a `/.bashrc` dotfile path, stays ignored — but a
+  letter-initial path such as `/Users/foo/log.txt` looks like a command and
+  is answered.)
 
 ### Bot not receiving messages
 
@@ -165,6 +190,14 @@ You should see in the logs:
 - **Mention to start**: In the configured channel, Kōan stays quiet until you
   @mention it (or it receives an `app_mention`). Ordinary channel chatter is
   ignored, so the bot is safe to drop into a shared channel.
+- **Commands need no mention**: A message beginning with `/` followed by a
+  letter (e.g. `/help`, `/status`) is treated as a command addressed to Kōan —
+  exactly like `@Koan /help`. It replies in a thread under the command, no
+  @mention required. A leading slash before a non-letter (`//` comments,
+  dotfile paths like `/.bashrc`, numeric/symbol prefixes) is ignored. This
+  heuristic cannot tell a command from a letter-initial path, so a pasted
+  path like `/Users/foo/log.txt` at the start of a message *is* treated as a
+  command and gets an (unrecognized-command) help reply.
 - **Replies go in a thread**: When you @mention Kōan on a channel-root message,
   it replies in a **thread** under your message rather than cluttering the
   channel.
@@ -178,6 +211,38 @@ You should see in the logs:
   code…", …) via Slack's assistant status API. It clears automatically when the
   reply posts. This is best-effort: if the API call fails it is silently skipped
   and never affects the reply itself. See "Thinking status" below.
+
+## Queued-mission acknowledgement
+
+When a slash command (`/fix`, `/rebase`, `/plan`, `/review`, …) or a plain
+mission is queued, Kōan acknowledges it with a ✅ **reaction** on the original
+message on platforms that support reactions. A brief "Queuing…" status is shown
+while the acknowledgement settles.
+
+On **Slack** the reaction is a complete acknowledgement, so it *replaces* the
+thread reply. On **Telegram** the reaction is *additive*: the informative
+"Mission received/queued: …" text reply (which carries project, priority, and a
+preview of the mission) is still sent, because Telegram users rely on that
+detail — the reaction is a bonus, not a replacement. On providers without
+reaction support (Matrix, or an unconfigured provider) and on any error, Kōan
+replies with the familiar text.
+
+The Slack reaction lands on the user's *own* message (not the thread root), so
+an in-thread command is acknowledged on the right message. The reaction needs
+the `reactions:write` scope; without it `reactions.add` fails and Kōan falls
+back to the text reply. Errors and unsupported platforms always reply in text.
+
+Whether a reaction replaces the text reply is decided by the provider's
+`reaction_acknowledges_mission()` capability (True for Slack, default False —
+so new providers keep the full text ack until they opt in).
+
+Per-platform matrix:
+
+| Provider | Acknowledgement |
+|----------|-----------------|
+| Slack | ✅ reaction *replaces* text reply (text reply on failure / missing `reactions:write`) |
+| Telegram | ✅ reaction via `setMessageReaction` *plus* the full text reply |
+| Matrix / unconfigured | Text reply ("Mission received/queued: …") |
 
 ## Thinking status
 

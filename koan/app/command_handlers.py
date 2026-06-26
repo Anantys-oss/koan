@@ -19,7 +19,7 @@ from app.bridge_state import (
     _get_registry,
     _reset_registry,
 )
-from app.notify import TypingIndicator, send_telegram
+from app.notify import TypingIndicator, get_reply_context, send_telegram
 from app.signals import CYCLE_FILE, CYCLE_RELEASE_FILE, PAUSE_FILE, QUOTA_RESET_FILE, STOP_FILE
 from app.skills import Skill, SkillContext, SkillError, execute_skill
 from app.utils import (
@@ -31,9 +31,58 @@ from app.utils import (
     is_known_project,
 )
 
+# Emoji used to acknowledge a queued mission via reaction (reaction-capable
+# providers like Slack); falls back to a text reply elsewhere.
+ACK_EMOJI = "✅"
+
 # Callbacks injected by awake.py at startup to avoid circular imports
 _handle_chat_cb: Optional[Callable] = None
 _run_in_worker_cb: Optional[Callable] = None
+
+
+def _get_messaging_provider():
+    """Return the active messaging provider, or None if unavailable."""
+    try:
+        from app.messaging import get_messaging_provider
+        return get_messaging_provider()
+    except (SystemExit, Exception) as e:
+        # SystemExit is intentional (import-time KOAN_ROOT checks); still log so
+        # a genuinely broken messaging config is observable, not silently
+        # degraded to text replies forever.
+        log("warn", f"messaging provider unavailable: {e}")
+        return None
+
+
+def _show_queuing_status() -> None:
+    """Best-effort 'thinking' indicator while a mission is being queued."""
+    reply_to = get_reply_context()
+    provider = _get_messaging_provider()
+    if provider is not None:
+        with contextlib.suppress(Exception):
+            provider.send_typing(reply_to_message_id=reply_to, status="Queuing…")
+
+
+def _acknowledge_queued(summary: str) -> None:
+    """Acknowledge a queued mission.
+
+    Add a ✅ reaction to the user's original message on reaction-capable
+    providers. The text reply is suppressed only when the provider treats a
+    reaction as a complete ack (Slack). Providers whose text ack carries info
+    users rely on (project / priority / preview, e.g. Telegram) still get the
+    full text reply — the reaction is additive there. Matrix / unconfigured /
+    any failure always falls back to the text acknowledgement.
+    """
+    reply_to = get_reply_context()
+    provider = _get_messaging_provider()
+    reacted = False
+    if reply_to and provider is not None:
+        with contextlib.suppress(Exception):
+            reacted = provider.add_reaction(reply_to, ACK_EMOJI)
+    if reacted and provider.reaction_acknowledges_mission():
+        with contextlib.suppress(Exception):
+            provider.stop_typing(reply_to_message_id=reply_to)
+        return
+    send_telegram(summary)
 
 
 def set_callbacks(
@@ -278,7 +327,17 @@ def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
                     send_telegram(f"/{command_name} failed: {type(e).__name__}: {e}")
                 except Exception as notify_err:
                     log("error", f"Failed to notify user about '{command_name}' error: {notify_err}")
-        _run_in_worker_cb(_run_skill)
+        # Worker skills are user-initiated, so dispatch them on the bg lane
+        # (keeping the chat lane free for interactive replies) but notify the
+        # user if the lane is busy.  The bg lane is silent by design for
+        # autonomous background work; a typed command dropping with zero
+        # feedback would read as the bot ignoring the user.
+        started = _run_in_worker_cb(_run_skill, lane="bg")
+        if started is False:
+            send_telegram(
+                f"⏳ Busy with a previous task — please re-send /{command_name} "
+                "in a moment."
+            )
         return
 
     # Standard skill execution
@@ -343,13 +402,14 @@ def _queue_cli_skill_mission(skill: Skill, args: str):
     else:
         entry = f"- {koan_cmd}"
 
+    _show_queuing_status()
     insert_pending_mission(MISSIONS_FILE, entry)
 
     ack = "✅ Mission queued"
     if project:
         ack += f" (project: {project})"
     ack += f":\n\n{koan_cmd[:500]}"
-    send_telegram(ack)
+    _acknowledge_queued(ack)
 
 
 def _handle_skill_command(args: str):
@@ -972,6 +1032,8 @@ def handle_mission(text: str):
     # Sanitize multi-line input (e.g. from Telegram) into a single line
     text = sanitize_mission_text(text)
 
+    _show_queuing_status()
+
     # Check for --now flag in first 5 words (queue at top instead of bottom)
     urgent, text = extract_now_flag(text)
 
@@ -1028,5 +1090,5 @@ def handle_mission(text: str):
     if project:
         ack_msg += f" (project: {project})"
     ack_msg += f":\n\n{mission_text[:500]}"
-    send_telegram(ack_msg)
+    _acknowledge_queued(ack_msg)
     log("mission", f"Mission queued: [{project or 'default'}] {mission_text[:60]}")

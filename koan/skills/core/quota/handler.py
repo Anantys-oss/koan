@@ -268,23 +268,25 @@ def _format_koan_usage(state, session_limit, weekly_limit, instance_dir=None):
 
 
 def _format_burn_rate(instance_dir, session_pct):
-    """Build the burn-rate summary line for /quota output."""
+    """Build the burn-rate summary line for /quota output.
+
+    Constructs a single BurnRateSnapshot so both metrics share one read
+    of .burn-rate.json instead of reloading it per metric.
+    """
     if instance_dir is None:
         return []
 
     try:
-        from app.burn_rate import (
-            burn_rate_pct_per_minute,
-            time_to_exhaustion,
-        )
+        from app.burn_rate import BurnRateSnapshot
     except ImportError:
         return []
 
-    rate = burn_rate_pct_per_minute(instance_dir)
+    snapshot = BurnRateSnapshot(instance_dir)
+    rate = snapshot.burn_rate_pct_per_minute()
     if rate is None:
         return []
 
-    tte = time_to_exhaustion(instance_dir, session_pct)
+    tte = snapshot.time_to_exhaustion(session_pct)
     tte_str = "—" if tte is None else _format_minutes(tte)
     return [
         f"  ↗ ~{rate * 60:.1f}%/h ({rate:.2f}%/min) │ {tte_str} left",

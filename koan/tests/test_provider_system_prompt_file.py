@@ -13,7 +13,6 @@ from app.provider import (
     ClaudeProvider,
     ClineProvider,
     CodexProvider,
-    LocalLLMProvider,
     OllamaLaunchProvider,
     build_full_command,
     build_full_command_managed,
@@ -32,9 +31,6 @@ class TestProviderCapabilityFlag:
 
     def test_codex_does_not_support_file_mode(self):
         assert CodexProvider().supports_system_prompt_file() is False
-
-    def test_local_does_not_support_file_mode(self):
-        assert LocalLLMProvider().supports_system_prompt_file() is False
 
     def test_ollama_launch_supports_file_mode(self):
         assert OllamaLaunchProvider().supports_system_prompt_file() is True

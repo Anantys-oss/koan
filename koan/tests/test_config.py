@@ -645,6 +645,18 @@ class TestIsUnlimitedQuota:
         with _mock_config({"usage": {"unlimited_quota": False}}):
             assert is_unlimited_quota() is False
 
+    def test_true_from_legacy_top_level(self):
+        from app.config import is_unlimited_quota
+
+        with _mock_config({"unlimited_quota": True, "usage": {}}):
+            assert is_unlimited_quota() is True
+
+    def test_nested_false_overrides_legacy_top_level_true(self):
+        from app.config import is_unlimited_quota
+
+        with _mock_config({"unlimited_quota": True, "usage": {"unlimited_quota": False}}):
+            assert is_unlimited_quota() is False
+
     def test_truthy_string_coerced(self):
         from app.config import is_unlimited_quota
 
@@ -669,7 +681,7 @@ class TestGetMaxRuns:
         from app.config import get_max_runs
 
         with _mock_config({}):
-            assert get_max_runs() == 20
+            assert get_max_runs() == 60
 
     def test_custom(self):
         from app.config import get_max_runs
@@ -1160,12 +1172,12 @@ class TestGetMaxRunsInvalidConfig:
     def test_invalid_string_returns_default(self):
         from app.config import get_max_runs
         with _mock_config({"max_runs_per_day": "not_a_number"}):
-            assert get_max_runs() == 20
+            assert get_max_runs() == 60
 
     def test_none_returns_default(self):
         from app.config import get_max_runs
         with _mock_config({"max_runs_per_day": None}):
-            assert get_max_runs() == 20
+            assert get_max_runs() == 60
 
 
 class TestGetIntervalSecondsInvalidConfig:
@@ -1826,3 +1838,33 @@ class TestGetReviewVerdictConfig:
         with _mock_config({"review_verdict": {"approved": "yes"}}):
             cfg = get_review_verdict_config()
         assert cfg["approved"] is False
+
+
+class TestReviewInlineCommentsConfig:
+    def test_disabled_by_default(self):
+        from app.config import get_review_inline_comments_config
+        with _mock_config({}):
+            cfg = get_review_inline_comments_config()
+        assert cfg["enabled"] is False
+        assert cfg["max_comments"] == 25
+
+    def test_opt_in(self):
+        from app.config import get_review_inline_comments_config
+        raw = {"review_inline_comments": {"enabled": True, "max_comments": 5}}
+        with _mock_config(raw):
+            cfg = get_review_inline_comments_config()
+        assert cfg["enabled"] is True
+        assert cfg["max_comments"] == 5
+
+    def test_malformed_section_disabled(self):
+        from app.config import get_review_inline_comments_config
+        with _mock_config({"review_inline_comments": "nonsense"}):
+            cfg = get_review_inline_comments_config()
+        assert cfg["enabled"] is False
+        assert cfg["max_comments"] == 25
+
+    def test_negative_max_comments_falls_back(self):
+        from app.config import get_review_inline_comments_config
+        with _mock_config({"review_inline_comments": {"enabled": True, "max_comments": -3}}):
+            cfg = get_review_inline_comments_config()
+        assert cfg["max_comments"] == 25

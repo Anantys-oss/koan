@@ -7,7 +7,7 @@ export
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-launchd-service uninstall-launchd-service
-.PHONY: docker-setup docker-up docker-down docker-logs docker-test docker-auth docker-gh-auth
+.PHONY: docker-setup docker-pull-up docker-up docker-down docker-logs docker-test docker-auth docker-gh-auth
 
 .DEFAULT_GOAL := koan
 
@@ -295,9 +295,20 @@ uninstall-launchd-service:
 
 # --- Docker targets ---
 
+# Published image on GitHub Container Registry. Override the tag to pin a
+# release, e.g. make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:stable
+KOAN_IMAGE ?= ghcr.io/anantys-oss/koan:latest
+
 docker-setup:
 	@./setup-docker.sh
 
+# Recommended: pull the prebuilt image and start (no local build).
+docker-pull-up: docker-setup
+	KOAN_IMAGE="$(KOAN_IMAGE)" docker compose pull
+	KOAN_IMAGE="$(KOAN_IMAGE)" docker compose up -d --no-build
+	@echo "→ Kōan running from prebuilt image $(KOAN_IMAGE). Use 'make docker-logs' to watch output."
+
+# Fallback: build the image from source and start.
 docker-up: docker-setup
 	docker compose up --build -d
 	@echo "→ Kōan running in Docker. Use 'make docker-logs' to watch output."

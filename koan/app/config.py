@@ -583,6 +583,24 @@ def is_debug_on_fix_failure() -> bool:
     return False
 
 
+def get_configured_messaging_level_explicit() -> Optional[str]:
+    """Return messaging.level only if explicitly set in config.yaml, else None."""
+    config = _load_config()
+    messaging_cfg = config.get("messaging", {})
+    if isinstance(messaging_cfg, dict) and "level" in messaging_cfg:
+        return str(messaging_cfg["level"]).strip().lower()
+    return None
+
+
+def get_configured_messaging_level() -> str:
+    """Return the persistent bridge verbosity level (default: 'normal').
+
+    Config key: messaging.level  (one of: debug, normal)
+    """
+    level = get_configured_messaging_level_explicit()
+    return level if level in ("debug", "normal") else "normal"
+
+
 def get_api_host() -> str:
     """Return the API bind host (default: 127.0.0.1).
 
@@ -692,7 +710,9 @@ def is_unlimited_quota() -> bool:
         usage = config.get("usage", {})
         if not isinstance(usage, dict):
             return False
-        return bool(usage.get("unlimited_quota", False))
+        if "unlimited_quota" in usage:
+            return bool(usage.get("unlimited_quota", False))
+        return bool(config.get("unlimited_quota", False))
     except Exception as e:
         print(f"[config] is_unlimited_quota error: {e}", file=sys.stderr)
         return False
@@ -702,10 +722,10 @@ def get_max_runs() -> int:
     """Get maximum runs per day from config.yaml.
 
     This is the primary source of truth for max_runs configuration.
-    Returns default of 20 if not configured.
+    Returns default of 60 if not configured.
     """
     config = _load_config()
-    return _safe_int(config.get("max_runs_per_day", 20), 20)
+    return _safe_int(config.get("max_runs_per_day", 60), 60)
 
 
 def get_interval_seconds() -> int:
@@ -1551,7 +1571,7 @@ def get_cli_binary_for_shell() -> str:
 def get_cli_provider_name() -> str:
     """Get the configured CLI provider name for display.
 
-    Returns "claude", "codex", "copilot", "local", or "ollama-launch".
+    Returns "claude", "codex", "copilot", or "ollama-launch".
     """
     from app.cli_provider import get_provider_name
     return get_provider_name()
@@ -1982,6 +2002,38 @@ def get_review_verdict_config() -> dict:
     if malformed:
         result["approved"] = False
     return result
+
+
+def get_review_inline_comments_config() -> dict:
+    """Get inline-comment posting configuration for /review.
+
+    When enabled, each structured finding is ALSO posted as an inline PR
+    comment anchored to its code location, in addition to the single bucketed
+    summary comment. Disabled by default (opt-in).
+
+    Config key: review_inline_comments::
+
+        review_inline_comments:
+          enabled: false
+          max_comments: 25
+
+    Returns:
+        Dict with keys: enabled (bool), max_comments (int, >= 0).
+    """
+    config = _load_config()
+    section = config.get("review_inline_comments", {})
+    if not isinstance(section, dict):
+        section = {}
+
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        enabled = False
+
+    max_comments = section.get("max_comments", 25)
+    if not isinstance(max_comments, int) or isinstance(max_comments, bool) or max_comments < 0:
+        max_comments = 25
+
+    return {"enabled": enabled, "max_comments": max_comments}
 
 
 def is_caveman_mode() -> bool:

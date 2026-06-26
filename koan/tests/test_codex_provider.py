@@ -476,6 +476,43 @@ class TestCodexQuotaDetection:
             exit_code=0,
         ) is False
 
+    def test_detects_spend_cap_message_on_plain_stdout(self):
+        # OpenAI/Codex spend-cap billing error surfaces on stdout with exit=1
+        # and carries no generic error-marker word.
+        stdout = (
+            "You hit your spend cap set by the owner of your workspace. "
+            "Ask an owner to increase your spend cap to continue."
+        )
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout,
+            stderr_text="",
+            exit_code=1,
+        ) is True
+
+    def test_detects_spend_cap_message_in_stderr(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="",
+            stderr_text="You hit your spend cap set by the owner of your workspace.",
+            exit_code=1,
+        ) is True
+
+    def test_ignores_spend_cap_words_on_success_stdout(self):
+        # A success run that merely discusses spend caps must not pause.
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="plan: respect the spend cap during the rollout",
+            stderr_text="",
+            exit_code=0,
+        ) is False
+
+    def test_ignores_benign_spend_cap_prose_on_failed_stdout(self):
+        # exit=1 prose mentioning "spend cap" without the billing phrasing must
+        # not pause — exercises the anchored regex past the exit-code guard.
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="plan: respect the spend cap during the rollout",
+            stderr_text="",
+            exit_code=1,
+        ) is False
+
 
 # ---------------------------------------------------------------------------
 # is_available
