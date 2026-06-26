@@ -566,9 +566,11 @@ def _apply_command_suggestion(response: str, chat_id: str) -> str:
     from app.command_confirm import extract_suggestion, register_pending
 
     if not get_chat_confirm_commands_enabled():
-        # Still strip any stray marker so it never reaches the human.
+        # Still strip any stray marker so it never reaches the human. No
+        # ``or response`` fallback: a reply that was *only* a marker must
+        # collapse to empty rather than re-leak the raw marker.
         from app.command_confirm import _MARKER_RE
-        return _MARKER_RE.sub("", response or "").strip() or response
+        return _MARKER_RE.sub("", response or "").strip()
 
     try:
         registry = _get_registry()
@@ -579,8 +581,11 @@ def _apply_command_suggestion(response: str, chat_id: str) -> str:
             return f"{cleaned}{footer}"
         return cleaned
     except Exception:
+        # Strip any marker even on failure so the internal control marker can
+        # never surface to the human; never return the raw response unsanitized.
+        from app.command_confirm import _MARKER_RE
         log("error", f"[chat] command-suggestion processing failed:\n{traceback.format_exc()}")
-        return response
+        return _MARKER_RE.sub("", response or "").strip()
 
 
 def handle_chat(text: str, chat_id: str = ""):

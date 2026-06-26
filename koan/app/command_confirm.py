@@ -160,10 +160,22 @@ def peek_pending(chat_id: str, now: Optional[float] = None) -> Optional[str]:
 
 
 def take_pending(chat_id: str, now: Optional[float] = None) -> Optional[str]:
-    """Consume and return the live pending command for ``chat_id`` (single-use)."""
+    """Consume and return the live pending command for ``chat_id`` (single-use).
+
+    Read and clear happen in one critical section so a concurrent
+    ``register_pending`` (chat handlers run in worker threads) cannot have its
+    brand-new offer silently dropped, and an expiry between read and clear cannot
+    return ``None`` to a caller that already decided to run.
+    """
     global _pending
-    command = peek_pending(chat_id, now=now)
-    if command is not None:
-        with _LOCK:
-            _pending = None
-    return command
+    stamp = time.time() if now is None else now
+    with _LOCK:
+        if _pending is None:
+            return None
+        if stamp >= _pending["expires_at"] or _pending["chat_id"] != str(chat_id):
+            if stamp >= _pending["expires_at"]:
+                _pending = None
+            return None
+        command = _pending["command"]
+        _pending = None
+        return command
