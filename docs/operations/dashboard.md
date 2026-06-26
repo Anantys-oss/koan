@@ -78,6 +78,7 @@ dashboard starts automatically on `0.0.0.0:5000` and **requires** the passphrase
 | `/logs` | Recent log lines with source filter and search |
 | `/agent` | Read-only introspection: soul, memory, skills, config |
 | `/rules` | Automation rules CRUD |
+| `/projects` | Project registry / welcome screen — one card per project (mission counts, GitHub link, provider/model, config checklist) + add-project modal. `/` redirects here when 2+ projects are configured |
 
 ### Usage activity backfill
 
@@ -96,6 +97,33 @@ python -m app.backfill_usage --start 2026-05-30 --apply
 Synthetic rows carry a `"backfill": true` marker (zero tokens/cost — counts only, since token
 data is unrecoverable) and the tool is idempotent: re-running writes nothing already present and
 credits any real rows so days are never over-counted.
+
+### Projects page
+
+`/projects` is the multi-project welcome screen. Each configured project (from
+`projects.yaml`, falling back to `KOAN_PROJECTS`) renders as a card showing:
+
+- Name and clickable GitHub URL (shown only when `github_url` is set)
+- Pending / in-progress mission counts (from `missions.md`, grouped by `[project:name]` tag)
+- Last activity — the newest mtime among that project's `instance/journal/YYYY-MM-DD/<project>.md`
+  files, or **N/A** when none exist (best-effort; no subprocess, so nothing can hang)
+- CLI provider and `mission` model from the merged per-project config
+- A **configuration checklist** that flags a missing `github_url` (and notes when no
+  `cli_provider` is set), each linking to `/config` for an inline fix
+- Quick actions: **PRs** (`/prs?project=…`), **Add mission** (`/missions?project=…`),
+  **Settings** (`/config`)
+
+`GET /api/projects/<name>/status` returns a single project's card as JSON for async refresh.
+The add-project modal validates the GitHub URL client-side, then `POST`s to `/projects/add`,
+which runs the `add_project` skill in-process and appends the project to `projects.yaml`.
+
+> **Global pause caveat:** the card's **"Pause agent (global)"** button calls
+> `/api/agent/pause`, which pauses the **entire agent** via `pause_manager.create_pause()`.
+> Kōan has no per-project pause; the label is explicit so this is not mistaken for pausing
+> a single project. Resume from the agent controls or `/api/agent/resume`.
+
+Routing note: `/` (the `core.index` route) redirects to `/projects` when 2+ projects are
+configured; a single-project install keeps the classic single-project dashboard at `/`.
 
 ## Layout
 
