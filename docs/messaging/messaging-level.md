@@ -78,10 +78,13 @@ Skill runners (`/review`, `/rebase`, `/recreate`, `/squash`, `/checkup`, `/plan`
   canonical completion line (`✅ [project] 🔍 Reviewed <pr-url>`). To avoid two
   rows advertising the same result, the agent loop sets
   `KOAN_SUPPRESS_RUNNER_OUTCOME=1` for the runner subprocess in `normal` mode, so
-  the runner's own **success** outcome line is logged only (not sent). Failure
-  outcome lines are still sent — the agent-loop replacement carries only the
-  mission title, so the runner's specific failure reason must still reach chat.
-  `debug` keeps both.
+  the runner's own **single-line** success outcome line is logged only (not sent).
+  A **multi-line** success outcome is always sent — it carries content the
+  canonical line does not (e.g. `/plan` with no tracker emits the full plan body
+  in `✅ Plan generated inline:\n\n<body>`, the only place the plan reaches the
+  user). Failure outcome lines are still sent too — the agent-loop replacement
+  carries only the mission title, so the runner's specific failure reason must
+  still reach chat. `debug` keeps both.
 
 So under `normal` a PR review produces a single chat line — the PR URL — instead
 of the four-line play-by-play. Switch to `debug` to see every step again; nothing

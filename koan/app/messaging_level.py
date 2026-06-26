@@ -176,14 +176,22 @@ def notify_outcome(msg: str, send_fn=None) -> None:
     a runner *success* outcome line is logged only and not sent — the agent loop
     emits the canonical "✅ [project] 🔍 Reviewed <url>" completion line instead,
     so sending here too would duplicate the same information to the user (#2153).
-    Failure outcome lines are still sent: the agent-loop replacement carries only
-    the mission title ("❌ ... Failed: /review <url>"), so suppressing the
-    runner's failure line would drop the specific reason from chat.
+
+    Only a *single-line* ``✅`` outcome is suppressed: those are bare URL/title
+    restatements that the canonical line fully replaces. A multi-line ``✅``
+    outcome carries content the canonical line does NOT (e.g. /plan's no-tracker
+    "✅ Plan generated inline:\\n\\n<body>" — the only place the plan reaches the
+    user), so it is always sent. Failure outcome lines are still sent too: the
+    agent-loop replacement carries only the mission title
+    ("❌ ... Failed: /review <url>"), so suppressing the runner's failure line
+    would drop the specific reason from chat.
     """
     _log("outcome", msg)
+    stripped = msg.strip()
     if (
         os.environ.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1"
-        and msg.lstrip().startswith("✅")
+        and stripped.startswith("✅")
+        and "\n" not in stripped
     ):
         return
     if isinstance(send_fn, _ProgressNotifier):

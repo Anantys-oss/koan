@@ -125,6 +125,20 @@ def test_notify_outcome_not_suppressed_when_flag_unset(monkeypatch):
     assert sent == ["✅ Recreated https://github.com/o/r/pull/2"]
 
 
+def test_notify_outcome_multiline_success_still_sent_when_flag_set(monkeypatch):
+    """A multi-line ✅ outcome carries content the canonical agent-loop line does
+    not (e.g. /plan's no-tracker '✅ Plan generated inline:\\n\\n<body>'). The
+    suppression flag must NOT drop it, otherwise the plan vanishes from chat in
+    normal mode (#2153 regression)."""
+    logged, sent = [], []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: logged.append((cat, msg)))
+    monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+    body = "✅ Plan generated inline:\n\n# Plan\n1. Do the thing\n2. Verify it"
+    ml.notify_outcome(body, lambda m: sent.append(m))
+    assert sent == [body]  # content-bearing line reaches chat
+    assert logged and logged[0][1] == body
+
+
 # --- Phase 2: skill handler ---
 
 
