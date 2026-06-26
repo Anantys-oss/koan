@@ -2393,7 +2393,7 @@ class TestChatHistory:
         hist = instance_dir / "conversation-history.jsonl"
         save_conversation_message(hist, "user", "ping")
         save_conversation_message(hist, "assistant", "pong")
-        with patch.object(dashboard, "CONVERSATION_HISTORY_FILE", hist):
+        with patch.object(dashboard.state, "CONVERSATION_HISTORY_FILE", hist):
             resp = app_client.get("/chat/history")
         data = resp.get_json()
         assert data["ok"] is True
