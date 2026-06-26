@@ -2018,6 +2018,20 @@ class TestDashboardConfig:
         with patch("app.config._load_config", return_value={"dashboard": {"enabled": True}}):
             assert _is_dashboard_enabled()
 
+    def test_is_dashboard_enabled_blocked_on_railway_without_pwd(self, monkeypatch):
+        """On Railway without KOAN_DASHBOARD_PWD, the config path must not enable it."""
+        monkeypatch.setenv("KOAN_DEPLOY", "railway")
+        monkeypatch.delenv("KOAN_DASHBOARD_PWD", raising=False)
+        with patch("app.config._load_config", return_value={"dashboard": {"enabled": True}}):
+            assert not _is_dashboard_enabled()
+
+    def test_is_dashboard_enabled_allowed_on_railway_with_pwd(self, monkeypatch):
+        """On Railway with KOAN_DASHBOARD_PWD set, config enablement is honored."""
+        monkeypatch.setenv("KOAN_DEPLOY", "railway")
+        monkeypatch.setenv("KOAN_DASHBOARD_PWD", "secret")
+        with patch("app.config._load_config", return_value={"dashboard": {"enabled": True}}):
+            assert _is_dashboard_enabled()
+
     def test_get_status_processes_excludes_dashboard_by_default(self, tmp_path):
         """status processes should NOT include dashboard when disabled."""
         with patch("app.pid_manager._detect_provider", return_value="claude"), \

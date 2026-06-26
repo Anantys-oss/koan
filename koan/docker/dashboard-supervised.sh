@@ -15,7 +15,9 @@ if [ "${KOAN_DEPLOY:-}" != "railway" ]; then
     exec sleep infinity
 fi
 
-if [ -z "${KOAN_DASHBOARD_PWD:-}" ]; then
+# Shared passphrase gate (railway.dashboard_allowed) — single source of truth
+# with the config-driven launch path (pid_manager.start_all).
+if ! python3 -c "import sys; from app.railway import dashboard_allowed; sys.exit(0 if dashboard_allowed() else 1)"; then
     echo "[dashboard] refusing to start: KOAN_DASHBOARD_PWD is not set." >&2
     echo "[dashboard] Set a passphrase to expose the dashboard on Railway." >&2
     exec sleep infinity

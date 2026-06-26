@@ -76,6 +76,13 @@ If `KOAN_DASHBOARD_PWD` is **unset on Railway, the dashboard refuses to start**
 `KOAN_DEPLOY` is not `railway`, the gate is inert and the dashboard behaves as
 the local-only tool it has always been.
 
+This gate is enforced on **both** launch paths through a single helper
+(`railway.dashboard_allowed()`): the supervisord `dashboard` program
+(`docker/dashboard-supervised.sh`) and the config-driven launcher
+(`pid_manager.start_all`, triggered by `dashboard.enabled: true` in
+`config.yaml`). With the passphrase unset on Railway, only `run` + `awake`
+launch, exposing the minimal worker footprint.
+
 `make koan` either **attaches** to the already-running daemon (status/logs/
 dashboard), or runs the onboarding **wizard** on an empty volume. Because the
 volume is made writable at boot, config edits (`instance/config.yaml`,
