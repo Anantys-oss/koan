@@ -309,10 +309,21 @@ class HookRegistry:
         insert_pending_mission(missions_path, text)
 
     def _action_pause(self, instance_dir: str) -> None:
-        """Write .koan-pause to pause the agent."""
-        pause_file = Path(instance_dir).parent / ".koan-pause"
-        # Idempotent — overwrite is harmless
-        pause_file.write_text("automation_rule\n")
+        """Pause the agent via the pause_manager protocol.
+
+        A direct one-line write produces a malformed pause file (no
+        timestamp), which strands `should_auto_resume` on its
+        `timestamp <= 0` early-return — the pause never lifts. Going
+        through `create_pause` stamps the current time so the standard
+        5h cooldown applies.
+        """
+        from app.pause_manager import create_pause
+        koan_root = str(Path(instance_dir).parent)
+        create_pause(
+            koan_root,
+            reason="automation_rule",
+            display="Paused by automation rule",
+        )
 
     def _action_resume(self, instance_dir: str) -> None:
         """Remove .koan-pause if it exists."""
