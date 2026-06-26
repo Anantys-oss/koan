@@ -1574,6 +1574,21 @@ def check_security_review(
         return False
 
 
+def record_provenance(
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+    mission_title: str,
+) -> None:
+    """Record which files this mission touched (best-effort, never raises)."""
+    try:
+        from app.provenance import record_provenance as _record
+
+        _record(instance_dir, project_name, project_path, mission_title)
+    except Exception as e:
+        print(f"[mission_runner] Provenance recording failed: {e}", file=sys.stderr)
+
+
 _PR_URL_RE = re.compile(r'https?://[^/]*github[^\s)]+/pull/\d+')
 
 
@@ -2064,6 +2079,16 @@ def run_post_mission(
                 )
                 _notify_security_review_inconclusive(instance_dir, project_name)
             result["security_review_passed"] = security_passed
+
+            # Record per-mission file-touch provenance (audit trail; foundation
+            # for churn detection and prompt-time hot-file warnings).
+            _report("recording provenance")
+            tracker.run_step(
+                "provenance",
+                record_provenance,
+                instance_dir, project_name, project_path, mission_title,
+                pipeline_expired=_pipeline_expired,
+            )
 
             # Auto-merge check (respects quality gate + lint gate + verification + security review)
             _report("checking auto-merge")
