@@ -111,7 +111,12 @@ async function loadHistory() {
             // Distinguish a genuine history-load failure from an empty thread.
             console.warn('Chat history load failed:', data.error || 'unknown error');
         }
-    } catch (e) { /* non-fatal: start with an empty thread */ }
+    } catch (e) {
+        // Non-fatal: degrade to an empty thread — but surface genuine
+        // client-side errors (e.g. a render bug in addMessage) rather than
+        // swallowing them as if the network simply had no history.
+        console.warn('Chat history hydration error:', e);
+    }
 }
 loadHistory();
 

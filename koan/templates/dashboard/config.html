@@ -510,12 +510,29 @@
         }
     }
 
+    async function loadSettings() {
+        try {
+            const data = await (await fetch('/api/config/settings')).json();
+            if (!data.ok) { status.textContent = `✗ ${data.error}`; return; }
+            const vals = data.settings || {};
+            document.querySelectorAll('[data-setting]').forEach(el => {
+                const v = vals[el.dataset.setting];
+                if (el.type === 'checkbox') el.checked = !!v;
+                else el.value = v == null ? '' : v;
+            });
+        } catch (e) {
+            status.textContent = `✗ Could not load settings: ${e}`;
+        }
+    }
+
     document.querySelectorAll('[data-setting]').forEach(el => {
         el.addEventListener('change', () => {
             const value = el.type === 'checkbox' ? el.checked : el.value;
             saveSetting(el.dataset.setting, value);
         });
     });
+
+    loadSettings();
 })();
 </script>
 
