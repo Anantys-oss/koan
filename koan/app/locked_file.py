@@ -217,6 +217,42 @@ def locked_jsonl_append(path: Path, record: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# JSONL: locked append with rotation cap (exclusive sidecar lock)
+# ---------------------------------------------------------------------------
+
+def locked_jsonl_append_capped(path: Path, record: dict, max_lines: int) -> None:
+    """Append a record to a JSONL file, then truncate to the newest *max_lines*.
+
+    Append + rotation happen under a single exclusive sidecar lock so
+    concurrent writers never interleave or lose the cap. The rewrite uses
+    :func:`app.utils.atomic_write` (temp + rename), so a sidecar lock file
+    is used rather than locking the data file's own (soon-to-be-replaced)
+    inode.
+    """
+    from app.utils import atomic_write
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = _default_lock_path(path)
+    with open(lock, "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            if path.exists():
+                existing = [
+                    ln for ln in path.read_text(encoding="utf-8").splitlines()
+                    if ln.strip()
+                ]
+            else:
+                existing = []
+            existing.append(json.dumps(record, ensure_ascii=False))
+            if max_lines > 0 and len(existing) > max_lines:
+                existing = existing[-max_lines:]
+            atomic_write(path, "\n".join(existing) + "\n")
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------
 # JSONL: locked read (shared lock on data file)
 # ---------------------------------------------------------------------------
 
