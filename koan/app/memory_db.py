@@ -133,12 +133,18 @@ def _reindex_from_jsonl(conn: sqlite3.Connection, instance: str) -> None:
     if not log_path.exists():
         return
     try:
-        inserted, _ = _stream_jsonl_into_entries(conn, log_path)
+        inserted, skipped = _stream_jsonl_into_entries(conn, log_path)
     except OSError:
         return
     except sqlite3.DatabaseError as e:
+        # Roll back the partial batches: ensure_db keeps this connection open
+        # and hands it to the caller, whose next insert_entry() commit would
+        # otherwise flush an orphaned half-reindexed table with no signal.
+        conn.rollback()
         logger.warning("[memory_db] Re-index after schema upgrade failed: %s", e)
         return
+    if skipped:
+        logger.warning("[memory_db] Skipped %d malformed JSONL lines during reindex", skipped)
     if inserted:
         conn.commit()
         logger.info("[memory_db] Re-indexed %d JSONL entries after schema upgrade", inserted)
