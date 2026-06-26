@@ -35,6 +35,22 @@ def dashboard_allowed() -> bool:
     return True
 
 
+def api_allowed() -> bool:
+    """Whether launching the REST API process is permitted by the deploy gate.
+
+    On a Railway deploy every extra long-lived process adds to the container's
+    idle RAM floor, so optional processes must be explicitly opted into. The
+    API is a control plane that already fail-closes without a token, so the
+    presence of a token (``KOAN_API_TOKEN``) is the explicit opt-in: refuse to
+    launch on Railway unless it is set. Off Railway there is no shared RAM
+    pressure, so config gating (``api.enabled``) alone decides. Mirrors
+    ``dashboard_allowed`` so the managed launcher applies a single, consistent
+    "no optional processes on Railway unless explicitly opted in" policy."""
+    if is_railway() and not os.environ.get("KOAN_API_TOKEN", "").strip():
+        return False
+    return True
+
+
 def resolve_gh_token() -> str:
     """Resolve the effective GitHub token for Kōan's git/gh operations.
 

@@ -481,8 +481,15 @@ def start_api(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -
 
 
 def _is_api_enabled() -> bool:
-    """Check if REST API is enabled in config.yaml."""
+    """Check if REST API is enabled in config.yaml and allowed by the deploy gate.
+
+    On Railway every optional process adds to the idle RAM floor, so the API
+    only launches when explicitly opted in (token set) — see
+    ``railway.api_allowed``. Off Railway, config gating alone decides."""
     try:
+        from app.railway import api_allowed
+        if not api_allowed():
+            return False
         from app.config import is_api_enabled
         return is_api_enabled()
     except (ImportError, OSError, ValueError):

@@ -23,7 +23,7 @@ api:
   enabled: true       # Include API in managed processes (default: false)
   host: "127.0.0.1"  # Bind address (default: 127.0.0.1 — loopback only)
   port: 8420          # HTTP port (default: 8420)
-  threads: 8          # waitress worker threads (default: 8)
+  threads: 2          # waitress worker threads (default: 2)
   # token: ""         # Bearer token fallback (prefer KOAN_API_TOKEN env var)
 ```
 
