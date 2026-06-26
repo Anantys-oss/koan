@@ -339,6 +339,29 @@ class TestMigration:
         assert entry_count(conn) == 3
         conn.close()
 
+    def test_migrate_streams_across_batch_boundary_and_skips_malformed(self, instance_dir):
+        """Migration must index every valid row even past the internal batch
+        size, and silently skip malformed JSONL lines — proving the bounded
+        line-streaming path inserts the full file, not just the last batch."""
+        from app.memory_db import migrate_jsonl_to_sqlite, ensure_db, entry_count, _STREAM_BATCH
+
+        log_path = Path(instance_dir) / "memory" / "log.jsonl"
+        total = _STREAM_BATCH * 2 + 7  # crosses two flush boundaries
+        lines = [
+            json.dumps({"ts": f"2026-01-01T00:00:{i:02d}Z", "type": "session",
+                        "project": "koan", "content": f"entry {i}"})
+            for i in range(total)
+        ]
+        lines.insert(10, "{ this is not valid json")  # one malformed line
+        log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        count = migrate_jsonl_to_sqlite(instance_dir)
+        assert count == total
+
+        conn = ensure_db(instance_dir)
+        assert entry_count(conn) == total
+        conn.close()
+
     def test_migration_skips_when_db_populated(self, instance_dir):
         from app.memory_db import migrate_jsonl_to_sqlite, ensure_db, insert_entry
 
