@@ -858,11 +858,11 @@ def step_instance_init(state: OnboardingState) -> OnboardingState:
         if not ok:
             print(f"  {red('✗')} Failed to create .env — is env.example present?")
             sys.exit(1)
-        from app.onboarding_helpers import ENV_EXAMPLE
+        from app.onboarding_helpers import paths_for_root
 
-        if not ENV_EXAMPLE.exists():
+        if not paths_for_root(KOAN_ROOT)["env_example"].exists():
             print(
-                f"  {green('✓')} No env.example — created empty .env "
+                f"  {green('✓')} No env.example — created .env "
                 f"(configuration supplied via environment variables)"
             )
         else:

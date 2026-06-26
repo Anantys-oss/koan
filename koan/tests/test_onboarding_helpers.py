@@ -85,23 +85,3 @@ def test_create_instance_and_env_with_explicit_root(tmp_path):
     assert create_env_file(tmp_path) is True
     assert (tmp_path / "instance" / "config.yaml").exists()
     assert (tmp_path / ".env").read_text() == "# env\n"
-
-
-def test_create_env_file_without_example_creates_empty_env(tmp_path):
-    from app.onboarding_helpers import create_env_file
-
-    # No env.example present on disk.
-    assert create_env_file(tmp_path) is True
-    env_path = tmp_path / ".env"
-    assert env_path.exists()
-    assert env_path.read_text() == ""
-
-
-def test_required_env_present(monkeypatch):
-    from app.onboarding_helpers import required_env_present
-
-    monkeypatch.delenv("KOAN_ROOT", raising=False)
-    assert required_env_present() is False
-
-    monkeypatch.setenv("KOAN_ROOT", "/tmp/koan")
-    assert required_env_present() is True

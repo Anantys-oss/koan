@@ -1,7 +1,6 @@
 """Shared helpers for Kōan installation and onboarding."""
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -60,15 +59,6 @@ def create_env_file(koan_root: Path | None = None) -> bool:
         write_env_from_environment(env_file)
         return True
     return False
-
-
-def required_env_present() -> bool:
-    """Return True when the minimum required config is in the environment.
-
-    KOAN_ROOT is the only value the app needs at import time; when it is
-    present we can safely run env-var-only (no .env file needed).
-    """
-    return bool(os.environ.get("KOAN_ROOT", "").strip())
 
 
 def update_env_var(key: str, value: str, env_file: Path | None = None) -> bool:
