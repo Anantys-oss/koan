@@ -294,6 +294,8 @@ def run_claude(
     idle_timeout: Optional[int] = None,
     max_duration: Optional[int] = None,
     heartbeat_interval: Optional[int] = None,
+    use_stream_json: bool = False,
+    last_message_path: Optional[str] = None,
 ) -> dict:
     """Run a Claude Code CLI command, streaming stdout in real time.
 
@@ -318,6 +320,22 @@ def run_claude(
             marker to sys.stdout while the CLI is running. This keeps
             the parent process's LivenessWatchdog alive even when the
             CLI runs in print mode (no output during tool use).
+        use_stream_json: When True, the command was built with a
+            streaming JSONL output format (``--output-format stream-json``
+            for Claude, ``--json`` for codex/cline). Each JSONL event is
+            parsed and rendered as a short human-readable summary line.
+            Crucially, because *every* consumed stdout line resets the
+            inner idle watchdog, a provider that is silent during tool use
+            in plain-text mode (notably codex) now emits a steady stream
+            of per-event lines — so the idle watchdog tracks genuine
+            progress instead of spuriously firing. ``output`` is set to
+            the clean final assistant text (NOT raw JSONL), so callers that
+            parse the transcript (e.g. ``parse_commit_subject``) keep
+            working unchanged.
+        last_message_path: When set (stream-json + a provider that supports
+            ``--output-last-message``), the definitive final assistant text
+            is read from this file. The caller owns the file's lifecycle
+            (creation and cleanup).
 
     Returns:
         Dict with keys: success (bool), output (str), error (str).
@@ -349,11 +367,47 @@ def run_claude(
     if heartbeat_interval and heartbeat_interval > 0:
         heartbeat_thread = _start_heartbeat(proc, heartbeat_interval)
 
+    # When streaming JSONL, accumulate the final assistant text from parsed
+    # events so ``output`` stays clean text (raw JSONL never reaches callers).
+    # The summarized event line is what gets printed — feeding both the inner
+    # idle watchdog (every consumed line) and the parent run.py watchdog.
+    stream_text_chunks: List[str] = []
+    stream_final_result: Optional[str] = None
+    if use_stream_json:
+        from app.provider import (
+            _extract_assistant_text_chunks,
+            _extract_result_text,
+            _summarize_stream_event,
+        )
+
+        def on_line(line: str) -> None:
+            nonlocal stream_final_result
+            if not line:
+                return
+            try:
+                parsed = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                print(_summarize_stream_event(parsed), flush=True)
+                stream_text_chunks.extend(_extract_assistant_text_chunks(parsed))
+                result_text = _extract_result_text(parsed)
+                if result_text is not None:
+                    stream_final_result = result_text
+            else:
+                # Stray non-JSON line (warning printed before the stream): keep
+                # it both on screen and as fallback text.
+                print(line, flush=True)
+                stream_text_chunks.append(line)
+    else:
+        def on_line(line: str) -> None:
+            print(line, flush=True)
+
     try:
         stream_result = stream_with_timeout(
             proc,
             timeout=timeout,
-            on_line=lambda line: print(line, flush=True),
+            on_line=on_line,
             idle_timeout=idle_timeout,
             max_duration=max_duration,
         )
@@ -362,8 +416,27 @@ def run_claude(
             heartbeat_thread.cancel()
         cleanup()
 
-    stdout_text = stream_result.stdout
+    raw_stdout = stream_result.stdout
     stderr_text = stream_result.stderr
+
+    if use_stream_json:
+        # Final-text precedence mirrors run_command_streaming: last-message
+        # file → result event → accumulated assistant chunks → raw stdout.
+        last_message_text = ""
+        if last_message_path:
+            import contextlib
+            with contextlib.suppress(OSError, UnicodeDecodeError):
+                last_message_text = Path(last_message_path).read_text()
+        if last_message_text.strip():
+            stdout_text = last_message_text
+        elif stream_final_result is not None:
+            stdout_text = stream_final_result
+        elif stream_text_chunks:
+            stdout_text = "\n".join(stream_text_chunks)
+        else:
+            stdout_text = raw_stdout
+    else:
+        stdout_text = raw_stdout
 
     if stream_result.timed_out:
         timeout_kind = getattr(stream_result, "timeout_kind", "")
@@ -683,13 +756,41 @@ def run_claude_step(
     if use_skill:
         tools.append("Skill")
 
+    # Opt into streaming JSONL output when the provider supports it. This is
+    # the fix for codex: in plain-text mode codex is silent during tool use, so
+    # the inner idle watchdog (no stdout line for idle_timeout seconds) kills a
+    # still-progressing step. With stream-json/--json every event is a stdout
+    # line that resets the watchdog on genuine progress. run_claude parses the
+    # events back into clean assistant text, so the downstream
+    # parse_commit_subject and change-summary logic is unaffected.
+    from app.provider import get_provider
+
+    provider = get_provider()
+    use_stream_json = provider.supports_stream_json()
+
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=tools,
         model=models["mission"],
         fallback=models["fallback"],
         max_turns=max_turns,
+        output_format="stream-json" if use_stream_json else "",
     )
+
+    # Last-message sidecar: lets run_claude recover the definitive final
+    # assistant text even if the stream is truncated. Caller owns the file —
+    # created here, removed in the finally below (fires on success/timeout/kill).
+    last_message_path: Optional[str] = None
+    if use_stream_json and provider.supports_last_message_file():
+        import tempfile
+
+        from app.utils import koan_tmp_dir
+
+        fd, last_message_path = tempfile.mkstemp(
+            prefix="koan-last-message-", suffix=".txt", dir=koan_tmp_dir(),
+        )
+        os.close(fd)
+        cmd = provider.add_last_message_file_args(cmd, last_message_path)
 
     from app.commit_conventions import parse_commit_subject
     from app.config import get_first_output_timeout
@@ -702,14 +803,23 @@ def run_claude_step(
     _fot = get_first_output_timeout()
     _heartbeat = max(60, _fot // 2) if _fot > 0 else 120
 
-    result = run_claude(
-        cmd,
-        project_path,
-        timeout=timeout,
-        idle_timeout=idle_timeout,
-        max_duration=max_duration,
-        heartbeat_interval=_heartbeat,
-    )
+    try:
+        result = run_claude(
+            cmd,
+            project_path,
+            timeout=timeout,
+            idle_timeout=idle_timeout,
+            max_duration=max_duration,
+            heartbeat_interval=_heartbeat,
+            use_stream_json=use_stream_json,
+            last_message_path=last_message_path,
+        )
+    finally:
+        if last_message_path:
+            import contextlib
+
+            with contextlib.suppress(OSError):
+                os.unlink(last_message_path)
     cleaned_output = strip_cli_noise(result.get("output", ""))
     if result["success"]:
         effective_msg = commit_msg

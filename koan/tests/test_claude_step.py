@@ -4,6 +4,7 @@ Tests _run_git, truncate_text, _rebase_onto_target, run_claude,
 commit_if_changes, and run_claude_step.
 """
 
+import json
 import subprocess
 from unittest.mock import MagicMock, call, patch
 
@@ -657,6 +658,99 @@ class TestRunClaude:
         assert result["success"] is True
 
 
+class TestRunClaudeStreamJson:
+    """run_claude(use_stream_json=True) parses JSONL events into clean text.
+
+    Each event is one stdout line, so the inner idle watchdog resets on
+    genuine per-event progress (the codex silent-tool-use fix), while the
+    returned ``output`` is the final assistant text — not raw JSONL.
+    """
+
+    @staticmethod
+    def _jsonl(*events):
+        return [json.dumps(e) + "\n" for e in events]
+
+    @patch("app.claude_step.popen_cli")
+    def test_result_event_is_clean_output(self, mock_popen):
+        lines = self._jsonl(
+            {"type": "system", "subtype": "init", "model": "gpt-5.5"},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read"},
+            ]}},
+            {"type": "result", "subtype": "success",
+             "result": "COMMIT_SUBJECT: fix the thing\n\nApplied the fix."},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["claude", "-p", "x"], "/project", use_stream_json=True,
+        )
+        assert result["success"] is True
+        # Clean final text, not raw JSONL.
+        assert result["output"] == (
+            "COMMIT_SUBJECT: fix the thing\n\nApplied the fix."
+        )
+        assert '"type"' not in result["output"]
+
+    @patch("app.claude_step.popen_cli")
+    def test_summarized_events_printed_not_raw_json(self, mock_popen, capsys):
+        lines = self._jsonl(
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Grep"},
+            ]}},
+            {"type": "result", "subtype": "success", "result": "done"},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        run_claude(["claude", "-p", "x"], "/project", use_stream_json=True)
+        captured = capsys.readouterr()
+        # Human-readable summaries are printed (these reset the idle watchdog),
+        # not the raw JSON lines.
+        assert "[cli]" in captured.out
+        assert "tool_use: Grep" in captured.out
+        assert '{"type"' not in captured.out
+
+    @patch("app.claude_step.popen_cli")
+    def test_falls_back_to_assistant_chunks_without_result(self, mock_popen):
+        """If the stream dies before a result event, accumulated assistant
+        text is still returned instead of empty/raw JSONL."""
+        lines = self._jsonl(
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "partial answer"},
+            ]}},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["claude", "-p", "x"], "/project", use_stream_json=True,
+        )
+        assert result["output"] == "partial answer"
+
+    @patch("app.claude_step.popen_cli")
+    def test_last_message_file_takes_precedence(self, mock_popen, tmp_path):
+        last_msg = tmp_path / "last.txt"
+        last_msg.write_text("definitive final text")
+        lines = self._jsonl(
+            {"type": "result", "subtype": "success", "result": "streamed text"},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["claude", "-p", "x"], "/project",
+            use_stream_json=True, last_message_path=str(last_msg),
+        )
+        # File content wins over the result event.
+        assert result["output"] == "definitive final text"
+
+    @patch("app.claude_step.popen_cli")
+    def test_plain_text_path_unchanged(self, mock_popen):
+        """Default (use_stream_json=False) is byte-for-byte the old behavior."""
+        proc = _fake_proc(["plain line one\n", "plain line two\n"], returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(["claude", "-p", "x"], "/project")
+        assert result["output"] == "plain line one\nplain line two"
+
+
 # ---------- commit_if_changes ----------
 
 
@@ -1018,6 +1112,77 @@ class TestIsHookRejection:
 
 
 # ---------- run_claude_step ----------
+
+
+class TestRunClaudeStepStreaming:
+    """run_claude_step opts into stream-json when the provider supports it,
+    so codex (silent in plain-text mode) emits per-event lines that keep the
+    inner idle watchdog alive. See the codex /rebase feedback-timeout fix."""
+
+    def _fake_provider(self, *, stream_json, last_message):
+        provider = MagicMock()
+        provider.supports_stream_json.return_value = stream_json
+        provider.supports_last_message_file.return_value = last_message
+        provider.add_last_message_file_args.side_effect = (
+            lambda cmd, path: [*cmd[:-1], "--output-last-message", path, cmd[-1]]
+        )
+        return provider
+
+    @patch("app.provider.get_provider")
+    @patch("app.claude_step.commit_if_changes", return_value=False)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["codex", "exec", "p"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "gpt-5.5", "fallback": "gpt-5.5", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_codex_like_provider_requests_streaming_and_cleans_tempfile(
+        self, mock_config, mock_flags, mock_claude, mock_commit, mock_provider,
+    ):
+        mock_provider.return_value = self._fake_provider(
+            stream_json=True, last_message=True,
+        )
+        mock_claude.return_value = {"success": True, "output": "ok", "error": ""}
+        run_claude_step(
+            prompt="apply feedback", project_path="/project",
+            commit_msg="rebase: apply", success_label="ok", failure_label="no",
+            actions_log=[],
+        )
+        # build_full_command asked for stream-json output.
+        assert mock_flags.call_args.kwargs["output_format"] == "stream-json"
+        # run_claude told to parse events, with a last-message sidecar path.
+        ck = mock_claude.call_args.kwargs
+        assert ck["use_stream_json"] is True
+        last_path = ck["last_message_path"]
+        assert last_path
+        # Caller-owned temp file is cleaned up after the run.
+        import os as _os
+        assert not _os.path.exists(last_path)
+
+    @patch("app.provider.get_provider")
+    @patch("app.claude_step.commit_if_changes", return_value=False)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["copilot", "-p", "x"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_nonstreaming_provider_keeps_plain_text(
+        self, mock_config, mock_flags, mock_claude, mock_commit, mock_provider,
+    ):
+        mock_provider.return_value = self._fake_provider(
+            stream_json=False, last_message=False,
+        )
+        mock_claude.return_value = {"success": True, "output": "ok", "error": ""}
+        run_claude_step(
+            prompt="x", project_path="/project",
+            commit_msg="m", success_label="ok", failure_label="no",
+            actions_log=[],
+        )
+        assert mock_flags.call_args.kwargs["output_format"] == ""
+        ck = mock_claude.call_args.kwargs
+        assert ck["use_stream_json"] is False
+        assert ck["last_message_path"] is None
 
 
 class TestRunClaudeStep:

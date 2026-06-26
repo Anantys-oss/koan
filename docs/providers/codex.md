@@ -86,6 +86,16 @@ a plan, executes it, and returns the result. Streaming skill calls use
 assistant response, so Kōan can show live activity without relying on
 Codex event shapes for the final answer.
 
+The git-pipeline steps that run through `run_claude_step` — notably the
+`/rebase` "apply review feedback" step and the CI-fix step — also request
+`--json` streaming. This matters for liveness: in plain-text mode Codex is
+silent during tool use, and these steps are guarded by an **idle watchdog**
+that kills the process when no output arrives for `rebase_review_idle_timeout`
+seconds (default 600). With `--json`, every event is a line of output that
+resets the watchdog on genuine progress, so a long-but-working feedback step
+on a large repo is no longer mistaken for a hang. The events are parsed back
+into clean final text (preferring `--output-last-message`).
+
 ### Execution Modes
 
 | Kōan Setting          | Codex Flag       | Behavior                        |

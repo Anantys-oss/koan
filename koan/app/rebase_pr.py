@@ -630,15 +630,31 @@ def run_rebase(
         from app.messaging_level import progress_notify
         notify_fn = progress_notify(log_category="rebase")
 
+    outcome_meta: Dict[str, str] = {}
     success, summary = _run_rebase_impl(
         owner, repo, pr_number, project_path,
         notify_fn=notify_fn, skill_dir=skill_dir, min_severity=min_severity,
+        outcome_meta=outcome_meta,
     )
 
     from app.messaging_level import notify_outcome
     pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
     if success:
-        notify_outcome(f"✅ Rebased {pr_url}", notify_fn)
+        # A successful rebase that could NOT apply the reviewer's feedback is a
+        # partial success — surface it as a warning that always reaches chat
+        # (notify_outcome is not messaging.level-gated), so the dropped feedback
+        # is not mistaken for "done". The bare ✅ here is exactly why these were
+        # easy to miss.
+        feedback_unapplied = outcome_meta.get("feedback_unapplied")
+        if feedback_unapplied:
+            notify_outcome(
+                f"⚠️ Rebased {pr_url} — review feedback NOT applied "
+                f"({feedback_unapplied}); the reviewer comments still need "
+                "attention.",
+                notify_fn,
+            )
+        else:
+            notify_outcome(f"✅ Rebased {pr_url}", notify_fn)
     else:
         notify_outcome(f"❌ Rebase failed {pr_url}: {summary}", notify_fn)
     return success, summary
@@ -652,6 +668,7 @@ def _run_rebase_impl(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     min_severity: Optional[str] = None,
+    outcome_meta: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str]:
     """Execute the rebase pipeline for a pull request.
 
@@ -819,6 +836,7 @@ def _run_rebase_impl(
     # ── Step 4: Analyze review comments and apply changes ──────────────
     change_summary = ""
     feedback_status = ""
+    feedback_reason = ""
     if _has_review_feedback(context):
         severity_hint = ""
         if min_severity and min_severity != "suggestion":
@@ -873,6 +891,9 @@ def _run_rebase_impl(
                 f"Review feedback timed out on `{branch}`{suffix}; "
                 "pushing the clean rebase without feedback edits."
             )
+            feedback_reason = "the feedback step timed out"
+            if outcome_meta is not None:
+                outcome_meta["feedback_unapplied"] = "timed out"
         if feedback_status == "feedback_quota":
             # Provider quota is exhausted — no point pushing a half-applied
             # review, and the loop should back off until quota resets.
@@ -897,6 +918,9 @@ def _run_rebase_impl(
                 f"Could not apply review feedback on `{branch}`{suffix}; "
                 "pushing the rebase without feedback changes."
             )
+            feedback_reason = "the feedback step errored"
+            if outcome_meta is not None:
+                outcome_meta["feedback_unapplied"] = "step errored"
 
         # Claude may switch branches during feedback — ensure we're still
         # on the expected branch before pushing.
@@ -980,6 +1004,7 @@ def _run_rebase_impl(
         ci_section=ci_section,
         change_summary=change_summary,
         feedback_failed=feedback_status in ("feedback_timeout", "feedback_failed"),
+        feedback_reason=feedback_reason,
     )
 
     try:
@@ -2196,13 +2221,17 @@ def _build_rebase_comment(
     ci_section: str = "",
     change_summary: str = "",
     feedback_failed: bool = False,
+    feedback_reason: str = "",
 ) -> str:
     """Build a structured markdown comment summarizing the rebase.
 
     ``feedback_failed`` is supplied by the caller from the structured
     feedback status (``feedback_timeout`` / ``feedback_failed``) rather than
     inferred from log prose, so a reworded log line cannot silently revert
-    the summary to "Simple rebase".
+    the summary to "Simple rebase". ``feedback_reason`` carries a short
+    human-readable cause (e.g. "the feedback step timed out") that is surfaced
+    in a prominent, non-collapsed warning callout so the dropped feedback is
+    obvious instead of being buried in the collapsed Actions section.
 
     Sections:
     1. Summary — rebase type (simple vs. with adjustments) + one-liner
@@ -2244,6 +2273,17 @@ def _build_rebase_comment(
 
     parts = [f"## {rebase_type}\n"]
     parts.append(f"{summary_line}\n")
+
+    # Prominent, non-collapsed warning so dropped reviewer feedback is
+    # impossible to miss (the cause otherwise hides in the <details> block).
+    if feedback_failed:
+        reason = feedback_reason.strip() or "the feedback step did not complete"
+        parts.append(
+            "> [!WARNING]\n"
+            f"> **Review feedback was NOT applied** — {reason}. The reviewer "
+            "comments above still need to be addressed: re-run `/rebase` or "
+            "apply them manually.\n"
+        )
 
     # ── 2. Changes ──────────────────────────────────────────────────
     # Only include when there are meaningful changes beyond rebasing
