@@ -393,6 +393,10 @@ def send_telegram(text: str,
     # Prepend priority emoji for urgent and warning messages (idempotent)
     text = _apply_priority_emoji(text, priority)
 
+    # Keep links clickable: separate trailing punctuation from URLs
+    from app.text_utils import separate_url_trailing_punctuation
+    text = separate_url_trailing_punctuation(text)
+
     reply_to = get_reply_context()
 
     try:

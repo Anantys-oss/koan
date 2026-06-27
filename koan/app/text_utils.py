@@ -76,6 +76,38 @@ def expand_github_refs(text: str, github_url: str) -> str:
     return re.sub(r'(?<![/\w])#(\d+)\b', _replace, text)
 
 
+# URL token + trailing punctuation that breaks clickable links in chat apps.
+_URL_TOKEN_RE = re.compile(r'https?://\S+')
+_URL_TRAILING_PUNCT = ".,;:!?"
+
+
+def separate_url_trailing_punctuation(text: str) -> str:
+    """Insert a space between a URL and trailing sentence punctuation.
+
+    Chat clients (Telegram, Slack, …) include trailing ``.,;:!?`` in the
+    auto-detected link, breaking it. ``Rebased https://…/pull/123;`` becomes
+    ``Rebased https://…/pull/123 ;`` so the link stays clickable. Runs of
+    punctuation (``…123.,;``) are moved as a whole.
+
+    Args:
+        text: Outbound message text.
+
+    Returns:
+        Text with trailing link-breaking punctuation separated by a space.
+    """
+    if not text or "://" not in text:
+        return text
+
+    def _fix(m: "re.Match") -> str:
+        token = m.group(0)
+        stripped = token.rstrip(_URL_TRAILING_PUNCT)
+        if stripped and stripped != token:
+            return f"{stripped} {token[len(stripped):]}"
+        return token
+
+    return _URL_TOKEN_RE.sub(_fix, text)
+
+
 def extract_project_from_message(text: str) -> str:
     """Extract a project name from a message's tag markers.
 
