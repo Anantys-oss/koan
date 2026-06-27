@@ -112,6 +112,7 @@ ARTIFACT_SCHEMAS: Dict[str, TableSpec] = {
 
 def connect(db_path: Path) -> Optional[sqlite3.Connection]:
     """Open a SQLite connection, returning ``None`` on any DB error."""
+    conn = None
     try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path), timeout=5)
@@ -121,6 +122,13 @@ def connect(db_path: Path) -> Optional[sqlite3.Connection]:
         # OSError covers mkdir failures (perms, read-only FS) so the documented
         # "None on failure" contract holds for non-DB errors too.
         logger.warning("[artifact_db] connect failed: %s", e)
+        if conn is not None:
+            # PRAGMA raised after connect() succeeded — close the orphan so we
+            # don't leak the handle/WAL lock while still returning None.
+            try:
+                conn.close()
+            except sqlite3.DatabaseError:
+                pass
         return None
 
 
@@ -255,8 +263,13 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
             # DatabaseError and falls back to the authoritative file.
             try:
                 conn.close()
-            except sqlite3.DatabaseError:
-                pass
+            except sqlite3.DatabaseError as close_err:
+                # Even close() failed — surface it. A live conn with stale
+                # dirty=0 would keep serving the divergent DB as if it were the
+                # authoritative file; logging makes that observable.
+                logger.warning(
+                    "[artifact_db] could not close %s conn after failed dirty "
+                    "flag: %s", table, close_err)
 
 
 def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,
@@ -268,14 +281,19 @@ def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,
     empty, the projection is flagged dirty (a prior write failed to project), or
     a DB error occurs. ``order_key`` overrides default insertion (rowid) ordering
     for artifacts whose file order is semantic; it is validated against the
-    declared columns to avoid interpolating an arbitrary identifier into SQL.
+    declared (non-PK) columns to avoid interpolating an arbitrary identifier into
+    SQL. Surrogate primary-key columns are excluded from the result so a
+    DB-served read carries the same dict shape as ``file_reader()``.
     """
     spec = ARTIFACT_SCHEMAS.get(table)
     if conn is None or spec is None:
         return file_reader()
     if _is_dirty(conn, table):
         return file_reader()        # projection known-divergent -> trust the file
-    cols = spec.column_names()
+    # Exclude surrogate PK columns: the file has no synthetic ``id``, so a
+    # DB-served read must yield the same dict shape as ``file_reader()`` or a
+    # consumer could tell which source served the read (key presence).
+    cols = [c.name for c in spec.columns if not c.primary_key]
     if order_key and order_key not in cols:
         logger.warning(
             "[artifact_db] read %s: unknown order_key %r, using rowid", table, order_key)
