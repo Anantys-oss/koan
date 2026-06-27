@@ -1423,7 +1423,7 @@ def record_provenance(
 
         _record(instance_dir, project_name, project_path, mission_title)
     except Exception as e:
-        print(f"[mission_runner] Provenance recording failed: {e}", file=sys.stderr)
+        _log_runner("error", f"Provenance recording failed: {e}")
 
 
 _PR_URL_RE = re.compile(r'https?://[^/]*github[^\s)]+/pull/\d+')
