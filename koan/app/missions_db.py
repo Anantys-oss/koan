@@ -307,15 +307,23 @@ def migrate_md_to_sqlite(instance: str, *, dry_run: bool = False) -> dict:
                 ts = extract_timestamps(item)
                 when = ts.get(ts_key)
                 queued = ts.get("queued")
+                when_str = when.strftime("%Y-%m-%dT%H:%M") if when else None
+                queued_str = queued.strftime("%Y-%m-%dT%H:%M") if queued else None
+                base_cols = (_canonical(key_src), state,
+                             extract_project_tag(item),
+                             extract_complexity_tag(item))
+                if ts_field == "queued_at":
+                    # pending: ts_field is already queued_at, so naming it plus
+                    # queued_at would duplicate the column. Bind it once.
+                    sql = ("INSERT INTO missions(text, state, project, complexity, queued_at) "
+                           "VALUES (?, ?, ?, ?, ?)")
+                    params = (*base_cols, queued_str)
+                else:
+                    sql = (f"INSERT INTO missions(text, state, project, complexity, {ts_field}, queued_at) "
+                           "VALUES (?, ?, ?, ?, ?, ?)")
+                    params = (*base_cols, when_str, queued_str)
                 try:
-                    conn.execute(
-                        f"INSERT INTO missions(text, state, project, complexity, {ts_field}, queued_at) "
-                        f"VALUES (?, ?, ?, ?, ?, ?)",
-                        (_canonical(key_src), state, extract_project_tag(item),
-                         extract_complexity_tag(item),
-                         when.strftime("%Y-%m-%dT%H:%M") if when else None,
-                         queued.strftime("%Y-%m-%dT%H:%M") if queued else None),
-                    )
+                    conn.execute(sql, params)
                     report["inserted"] += 1
                     report["by_state"][state] = report["by_state"].get(state, 0) + 1
                 except sqlite3.DatabaseError as e:
