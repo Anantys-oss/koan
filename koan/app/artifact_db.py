@@ -117,7 +117,9 @@ def connect(db_path: Path) -> Optional[sqlite3.Connection]:
         conn = sqlite3.connect(str(db_path), timeout=5)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
-    except sqlite3.DatabaseError as e:
+    except (sqlite3.DatabaseError, OSError) as e:
+        # OSError covers mkdir failures (perms, read-only FS) so the documented
+        # "None on failure" contract holds for non-DB errors too.
         logger.warning("[artifact_db] connect failed: %s", e)
         return None
 
@@ -146,13 +148,20 @@ def _set_dirty(conn: sqlite3.Connection, table: str, dirty: bool) -> None:
     )
 
 
-def _mark_dirty(conn: sqlite3.Connection, table: str) -> None:
-    """Best-effort: flag the projection divergent after a failed write."""
+def _mark_dirty(conn: sqlite3.Connection, table: str) -> bool:
+    """Flag the projection divergent after a failed write.
+
+    Returns ``True`` when the dirty flag was persisted. On ``False`` the flag may
+    still read ``0`` (the last good write), so the caller must invalidate the
+    connection to keep the "file is source of truth" guarantee.
+    """
     try:
         _set_dirty(conn, table, True)
         conn.commit()
+        return True
     except sqlite3.DatabaseError as e:
         logger.warning("[artifact_db] could not mark %s dirty: %s", table, e)
+        return False
 
 
 def _is_dirty(conn: sqlite3.Connection, table: str) -> bool:
@@ -193,17 +202,31 @@ def verify_schema(conn: sqlite3.Connection, table: str) -> Dict:
 
 
 def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None],
-               conn: Optional[sqlite3.Connection], table: str) -> None:
+               conn: Optional[sqlite3.Connection], table: str,
+               mode: str = "replace") -> None:
     """Write the authoritative file first, then best-effort project to DB.
 
     ``file_writer`` (e.g. a wrapper over :func:`utils.atomic_write`) owns the
-    source of truth and rewrites the whole artifact, so the DB projection is
-    truncated and rebuilt in one transaction to mirror it — appending would
-    accumulate duplicates across rewrites. A DB projection failure is logged,
-    rolled back, and the projection flagged dirty (so subsequent reads fall back
-    to the file) but never propagated. If ``file_writer`` raises, the error
+    source of truth; the DB projection mirrors whatever it wrote.
+
+    ``mode`` matches the artifact's file-write style:
+
+    - ``"replace"`` (default) — rewrite-style artifacts (``missions.md``,
+      ``outbox.md``): ``file_writer`` rewrites the whole file, so the projection
+      is truncated and rebuilt in one transaction. Appending would accumulate
+      duplicates across rewrites.
+    - ``"append"`` — append-only artifacts (``journal``, ``memory`` log,
+      ``recovery.jsonl``): ``records`` are the new rows only; they are inserted
+      without truncating, mirroring an append to the file.
+
+    A DB projection failure is logged, rolled back, and the projection flagged
+    dirty (so subsequent reads fall back to the file) but never propagated; if
+    the dirty flag itself cannot be persisted the connection is closed so reads
+    still fall through to the file. If ``file_writer`` raises, the error
     propagates (the write genuinely failed).
     """
+    if mode not in ("replace", "append"):
+        raise ValueError(f"dual_write: unknown mode {mode!r}")
     file_writer(records)                       # authoritative — may raise
     if conn is None:
         return
@@ -215,7 +238,8 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
     placeholders = ", ".join("?" for _ in cols)
     sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})"
     try:
-        conn.execute(f"DELETE FROM {table}")   # full-rewrite mirror, not append
+        if mode == "replace":
+            conn.execute(f"DELETE FROM {table}")   # full-rewrite mirror
         conn.executemany(sql, [tuple(r.get(c) for c in cols) for r in records])
         _set_dirty(conn, table, False)
         conn.commit()
@@ -223,9 +247,16 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
         logger.warning("[artifact_db] dual_write DB projection failed (%s): %s", table, e)
         try:
             conn.rollback()                    # leave a consistent (stale) DB
-        except sqlite3.DatabaseError:
-            pass
-        _mark_dirty(conn, table)               # reads fall back to the file
+        except sqlite3.DatabaseError as rb_err:
+            logger.warning("[artifact_db] rollback failed for %s: %s", table, rb_err)
+        if not _mark_dirty(conn, table):
+            # Dirty flag unpersistable -> a stale dirty=0 would serve the
+            # divergent DB. Close the connection so every later read raises
+            # DatabaseError and falls back to the authoritative file.
+            try:
+                conn.close()
+            except sqlite3.DatabaseError:
+                pass
 
 
 def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,

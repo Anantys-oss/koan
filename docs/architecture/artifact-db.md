@@ -18,17 +18,22 @@ columns are pinned to `memory_db._EXPECTED_COLUMNS` so the two indexes agree.
 
 ## API
 
-- `connect(path)` — open a connection; returns `None` on any DB error.
+- `connect(path)` — open a connection; returns `None` on any DB **or** OS error
+  (e.g. an `mkdir` permission failure), so the contract holds for both.
 - `create_tables(conn)` — idempotent `CREATE TABLE IF NOT EXISTS` for all specs.
 - `verify_schema(conn, table)` — drift check against `PRAGMA table_info`; returns
   `{in_sync, missing, unexpected}`. `in_sync` is `None` when the table does not
   exist yet (safe to call before `create_tables`).
-- `dual_write(records, file_writer=, conn=, table=)` — writes the authoritative
-  file first, then mirrors it to the DB best-effort. The file writer rewrites the
-  whole artifact, so the projection is **truncated and rebuilt** in one
-  transaction (not appended) — otherwise rows accumulate across rewrites. A DB
-  failure is logged, rolled back, and flags the projection **dirty** so later
-  reads fall back to the file; it is never propagated. A `file_writer` failure
+- `dual_write(records, file_writer=, conn=, table=, mode="replace")` — writes the
+  authoritative file first, then mirrors it to the DB best-effort. `mode` matches
+  the artifact's file-write style: `"replace"` (rewrite-style files like
+  `missions.md`/`outbox.md`) truncates and rebuilds the projection in one
+  transaction so rows don't accumulate across rewrites; `"append"` (append-only
+  files like `journal`, the `memory` log, `recovery.jsonl`) inserts the supplied
+  new rows without truncating. A DB failure is logged, rolled back, and flags the
+  projection **dirty** so later reads fall back to the file; if the dirty flag
+  itself can't be persisted the connection is closed so reads still fall through
+  to the file. The DB failure is never propagated. A `file_writer` failure
   propagates (the write genuinely failed).
 - `read_from_db_or_file(conn, table, file_reader=, order_key=None)` — reads the
   DB when populated and in-sync, else parses the file; preserves file-parse
