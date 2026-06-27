@@ -65,6 +65,35 @@ per terminal state by insertion id, matching the file's keep semantics. (When th
 file is shrunk further by the line cap, exact counts can momentarily differ until
 the next `reconcile()`; the pending read path is unaffected.)
 
+## Known divergence: canonical-key collapse
+
+`canonical_mission_key()` is **not unique** — that is deliberate. A re-queued or
+crash-recovered mission must map back to the *same* row across its lifecycle, so
+the key strips lifecycle timestamps, the `[r:N]` counter, and the `[complexity:X]`
+tag. The cost is that two *distinct* `missions.md` entries that reduce to the same
+canonical key share one DB row, and the mirror collapses them:
+
+- A repeated plain-text or recurring mission appends a second `- ` line to the
+  file (`is_duplicate_mission()` only dedups entries carrying a real GitHub URL),
+  but `mirror_transition('pending')` finds the existing pending row and updates it
+  instead of inserting — so the file has 2 pending lines while the DB has 1.
+- Transitioning one of those duplicates runs `UPDATE … WHERE text=?` with no
+  `LIMIT`, flipping *every* matching live row, while the file moves only one line.
+- `migrate_md_to_sqlite()` (and therefore `reconcile()`) inserts one row per item
+  with no dedup, so immediately after a reconcile the duplicates *do* yield N rows
+  — but the next mirror insert collapses them back to the existing row(s).
+
+So for duplicate/recurring missions sharing a canonical key,
+`mission_count_by_state('pending')` can **under-report** relative to the file.
+This is bounded and non-fatal: `missions.md` stays the source of truth, the count
+is consulted only in the *fallback* extract, and the dual-read treats the DB count
+as authoritative **only when `> 0`** while still re-reading the file — a
+non-zero-but-low count routes through `fallback_extract(content)`, which re-parses
+`missions.md`. A `reconcile()` re-syncs the rows (to N) at the next self-heal or
+startup. The invariant the freeze plan requires ("zero divergence") therefore
+holds only for missions with distinct canonical keys; duplicates are the explicit
+exception until dedup semantics for plain-text/recurring missions are tightened.
+
 ## Startup reconcile
 
 Crash recovery (`recover.recover_missions()`) rewrites `missions.md` (moving stale

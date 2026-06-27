@@ -84,6 +84,41 @@ def test_requeue_mirrors_in_progress_back_to_pending(tmp_path):
     assert missions_db.mission_count_by_state(str(inst), "in_progress") == 0
 
 
+def test_duplicate_pending_canonical_key_collapses_in_db(tmp_path):
+    """Two pending entries sharing a canonical key collapse to one DB row.
+
+    This pins the documented divergence (docs/architecture/missions.md,
+    "Known divergence: canonical-key collapse"): a repeated plain-text mission
+    appends a second ``- `` line to the file, but ``mirror_transition('pending')``
+    updates the existing pending row instead of inserting, so the DB count
+    under-reports relative to the file. The invariant holds only for distinct
+    canonical keys; this is the deliberate exception.
+    """
+    from app.missions import count_pending
+
+    inst = tmp_path
+    _seed(inst, "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+    missions_db.reconcile(str(inst))
+
+    # First insert: file and DB agree at 1.
+    insert_pending_mission(inst / "missions.md", "- recurring digest task")
+    assert missions_db.mission_count_by_state(str(inst), "pending") == 1
+
+    # Second insert of an identical (non-URL) mission: the file appends a second
+    # pending line (plain-text missions are not deduped), but the mirror finds
+    # the existing pending row and updates it, inserting nothing.
+    insert_pending_mission(inst / "missions.md", "- recurring digest task")
+    file_count = count_pending((inst / "missions.md").read_text())
+    assert file_count == 2, "missions.md (source of truth) holds both entries"
+    assert missions_db.mission_count_by_state(str(inst), "pending") == 1, (
+        "shared canonical key collapses to one DB row — DB under-reports"
+    )
+
+    # reconcile() rebuilds one row per file item, re-syncing the count to N.
+    missions_db.reconcile(str(inst))
+    assert missions_db.mission_count_by_state(str(inst), "pending") == 2
+
+
 def test_batch_insert_mirrors_all_entries(tmp_path):
     from app.utils import insert_pending_missions
     inst = tmp_path
