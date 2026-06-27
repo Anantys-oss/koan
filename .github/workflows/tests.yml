@@ -106,10 +106,8 @@ jobs:
           pattern: coverage-py*
           path: coverage-parts
 
-      - name: 🔍 Combine coverage and check baselines
+      - name: 🔗 Combine coverage
         working-directory: koan
-        env:
-          KOAN_ROOT: ${{ github.workspace }}/koan
         run: |
           # Collect all .coverage files and rename for combine
           i=0
@@ -119,6 +117,31 @@ jobs:
           done
 
           coverage combine
+
+      - name: 📊 Per-file coverage report
+        working-directory: koan
+        run: |
+          # Lowest-covered files first — that is where attention is needed.
+          coverage report --show-missing --sort=cover
+
+      - name: 📝 Generate coverage artifacts (markdown + html)
+        working-directory: koan
+        run: |
+          coverage report --format=markdown --sort=cover > coverage-report.md
+          coverage html -d htmlcov --title "Kōan test coverage"
+          # Surface the per-file table directly on the run summary page.
+          {
+            echo "## 📊 Test coverage by file"
+            echo "_Combined across all test groups, lowest coverage first._"
+            echo ""
+            cat coverage-report.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 🔍 Check coverage baseline
+        working-directory: koan
+        env:
+          KOAN_ROOT: ${{ github.workspace }}/koan
+        run: |
           TOTAL_COV=$(coverage report --format=total 2>/dev/null || coverage report | grep '^TOTAL' | awk '{print $NF}' | tr -d '%')
           echo "Total coverage: ${TOTAL_COV}%"
 
@@ -137,6 +160,16 @@ jobs:
               sys.exit(1)
           print(f'OK: Coverage {actual}% meets baseline {baseline}% (tolerance {tolerance}%)')
           "
+
+      - name: ⬆️ Upload coverage report (markdown + html)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            koan/coverage-report.md
+            koan/htmlcov/
+          include-hidden-files: true
 
       - name: ✅ Check test count baseline
         run: |
