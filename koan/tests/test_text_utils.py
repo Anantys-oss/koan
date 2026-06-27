@@ -6,6 +6,7 @@ from app.text_utils import (
     strip_markdown, clean_cli_response, DEFAULT_MAX_LENGTH,
     expand_github_refs, extract_project_from_message,
     expand_github_refs_auto, _resolve_project_for_refs,
+    separate_url_trailing_punctuation,
 )
 
 
@@ -77,6 +78,55 @@ class TestStripMarkdown:
     def test_multiple_bold_pairs(self):
         text = "**first** and **second** bold"
         assert strip_markdown(text) == "first and second bold"
+
+
+class TestSeparateUrlTrailingPunctuation:
+    """Tests for separate_url_trailing_punctuation()."""
+
+    def test_semicolon_after_url(self):
+        text = "Rebased https://github.com/org/repo/pull/123;"
+        assert separate_url_trailing_punctuation(text) == (
+            "Rebased https://github.com/org/repo/pull/123 ;"
+        )
+
+    def test_period_after_url(self):
+        text = "See https://example.com/page."
+        assert separate_url_trailing_punctuation(text) == "See https://example.com/page ."
+
+    def test_run_of_punctuation(self):
+        text = "Done https://example.com/x.,;"
+        assert separate_url_trailing_punctuation(text) == "Done https://example.com/x .,;"
+
+    def test_punctuation_mid_text(self):
+        text = "Go to https://example.com/a, then home."
+        assert separate_url_trailing_punctuation(text) == (
+            "Go to https://example.com/a , then home."
+        )
+
+    def test_clean_url_unchanged(self):
+        text = "Link https://example.com/page and more"
+        assert separate_url_trailing_punctuation(text) == text
+
+    def test_url_with_internal_dot_unchanged(self):
+        text = "https://example.com/a.b.c here"
+        assert separate_url_trailing_punctuation(text) == text
+
+    def test_multiple_urls(self):
+        text = "a https://a.com/1, b https://b.com/2."
+        assert separate_url_trailing_punctuation(text) == (
+            "a https://a.com/1 , b https://b.com/2 ."
+        )
+
+    def test_no_url_unchanged(self):
+        text = "Just a sentence; with punctuation."
+        assert separate_url_trailing_punctuation(text) == text
+
+    def test_empty_string(self):
+        assert separate_url_trailing_punctuation("") == ""
+
+    def test_question_and_exclamation(self):
+        assert separate_url_trailing_punctuation("Why https://x.com/q?") == "Why https://x.com/q ?"
+        assert separate_url_trailing_punctuation("Wow https://x.com/y!") == "Wow https://x.com/y !"
 
 
 class TestCleanCliResponse:
