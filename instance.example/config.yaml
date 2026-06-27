@@ -243,6 +243,18 @@ skill_timeout: 7200
 # Default: 300 (5 minutes).
 # post_mission_timeout: 300
 
+# missions.md integrity and size bounds. The mission queue file is read/rewritten
+# every loop iteration; these caps keep it bounded and structurally healthy.
+# At startup the file is validated and conservatively self-healed (missing blank
+# lines around headers restored, missing canonical sections appended). Genuine
+# corruption is backed up to instance/.missions.md.bak-<ts> and surfaced to the
+# outbox before repair. Old completed history is pruned to the keeps below, then
+# further shed if the file still exceeds max_lines (Pending/In Progress untouched).
+# missions:
+#   done_keep: 50      # max Done items retained (default 50)
+#   failed_keep: 30    # max Failed items retained (default 30)
+#   max_lines: 500     # hard line cap; 0 disables (default 500)
+
 # Forward Claude's final result text to outbox.md when a mission's outcome is an
 # alert (SKIP / FAIL / ERROR / BLOCKED, "permission deadlock", "no PR opened",
 # etc.) or when the mission title matches a skill that opted in via SKILL.md

@@ -364,15 +364,116 @@ class TestPruneMissionsDone:
         from app.startup_manager import prune_missions_done
         prune_missions_done(str(tmp_path))  # should not raise
 
-    def test_noop_when_few_done_items(self, tmp_path):
+    def test_no_pruning_when_few_done_items(self, tmp_path):
+        from app.startup_manager import prune_missions_done
+        from app.missions import parse_sections
+
+        missions = tmp_path / "missions.md"
+        # Incomplete file (no In Progress/Failed): items are preserved and
+        # missing canonical sections are silently healed, but no Done items
+        # are pruned since the count is under the keep threshold.
+        missions.write_text("# Missions\n\n## Pending\n\n## Done\n- Task 1\n- Task 2\n")
+
+        prune_missions_done(str(tmp_path))
+
+        sections = parse_sections(missions.read_text())
+        assert sections["done"] == ["- Task 1", "- Task 2"]
+
+    def test_silently_heals_missing_sections_without_backup(self, tmp_path):
         from app.startup_manager import prune_missions_done
 
         missions = tmp_path / "missions.md"
-        content = "# Missions\n\n## Pending\n\n## Done\n- Task 1\n- Task 2\n"
-        missions.write_text(content)
+        missions.write_text("# Missions\n\n## Pending\n\n## Done\n- Task 1\n")
 
         prune_missions_done(str(tmp_path))
-        assert missions.read_text() == content
+
+        content = missions.read_text()
+        assert "## In Progress" in content
+        assert "## Failed" in content
+        # Benign incomplete file → no corruption backup written.
+        assert not list(tmp_path.glob(".missions.md.bak-*"))
+
+    def test_backs_up_and_repairs_glued_header(self, tmp_path):
+        from app.startup_manager import prune_missions_done
+        from app.missions import validate_missions_structure
+
+        missions = tmp_path / "missions.md"
+        # '## Done' glued to the preceding In Progress item — real corruption.
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:koan] running\n## Done\n\n## Failed\n"
+        )
+
+        prune_missions_done(str(tmp_path))
+
+        content = missions.read_text()
+        assert validate_missions_structure(content) == []
+        assert "running" in content
+        # Genuine corruption → timestamped backup written.
+        assert list(tmp_path.glob(".missions.md.bak-*"))
+
+    def test_failed_backup_leaves_corrupt_file_untouched(self, tmp_path, monkeypatch):
+        from app.startup_manager import prune_missions_done
+
+        missions = tmp_path / "missions.md"
+        corrupt = (
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "- [project:koan] running\n## Done\n\n## Failed\n"
+        )
+        missions.write_text(corrupt)
+
+        # Simulate the backup write failing.
+        import pathlib
+
+        orig_write_text = pathlib.Path.write_text
+
+        def _failing_write_text(self, *args, **kwargs):
+            if self.name.startswith(".missions.md.bak-"):
+                raise OSError("disk full")
+            return orig_write_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, "write_text", _failing_write_text)
+
+        prune_missions_done(str(tmp_path))
+
+        # Destructive write skipped: the corrupt file is preserved as-is.
+        assert missions.read_text() == corrupt
+        assert not list(tmp_path.glob(".missions.md.bak-*"))
+
+    def test_corrupt_file_not_renotified_on_second_pass(self, tmp_path):
+        from app.startup_manager import prune_missions_done
+        from app.missions import validate_missions_structure
+
+        missions = tmp_path / "missions.md"
+        # Orphan item + duplicate Done — corruption repair must fully resolve.
+        missions.write_text(
+            "# Missions\n- orphan task\n## Pending\n\n## In Progress\n\n"
+            "## Done\n\n## Done\n\n## Failed\n"
+        )
+
+        prune_missions_done(str(tmp_path))
+        first_backups = list(tmp_path.glob(".missions.md.bak-*"))
+        assert first_backups  # genuine corruption → backed up once
+        assert validate_missions_structure(missions.read_text()) == []
+
+        # Second pass over the now-healed file: no new corruption, no new backup.
+        prune_missions_done(str(tmp_path))
+        assert list(tmp_path.glob(".missions.md.bak-*")) == first_backups
+
+    def test_old_backups_are_pruned(self, tmp_path):
+        from app.startup_manager import _prune_old_missions_backups
+
+        missions = tmp_path / "missions.md"
+        missions.write_text("# Missions\n")
+        for i in range(8):
+            (tmp_path / f".missions.md.bak-2026010{i}-000000").write_text("x")
+
+        _prune_old_missions_backups(missions, keep=5)
+
+        remaining = sorted(p.name for p in tmp_path.glob(".missions.md.bak-*"))
+        assert len(remaining) == 5
+        # Newest are kept.
+        assert remaining[-1] == ".missions.md.bak-20260107-000000"
 
 
 # ---------------------------------------------------------------------------

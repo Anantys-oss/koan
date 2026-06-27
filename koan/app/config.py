@@ -807,6 +807,25 @@ def get_skill_timeout() -> int:
     return _safe_int(config.get("skill_timeout", 7200), 7200)
 
 
+def _missions_section() -> dict:
+    return _load_config().get("missions", {}) or {}
+
+
+def get_missions_done_keep() -> int:
+    """Max Done items retained in missions.md. Config: missions.done_keep (50)."""
+    return _safe_int(_missions_section().get("done_keep", 50), 50)
+
+
+def get_missions_failed_keep() -> int:
+    """Max Failed items retained in missions.md. Config: missions.failed_keep (30)."""
+    return _safe_int(_missions_section().get("failed_keep", 30), 30)
+
+
+def get_missions_max_lines() -> int:
+    """Hard line cap for missions.md; 0 disables. Config: missions.max_lines (500)."""
+    return _safe_int(_missions_section().get("max_lines", 500), 500)
+
+
 def get_mission_timeout() -> int:
     """Get timeout in seconds for regular mission execution.
 

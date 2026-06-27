@@ -45,6 +45,9 @@ from app.missions import (
     strip_all_lifecycle_markers,
     strip_timestamps,
     prune_completed_sections,
+    validate_missions_structure,
+    repair_missions_structure,
+    enforce_size_bound,
     prune_done_section,
     prune_failed_section,
     _enforce_quarantine_cap,
@@ -3345,6 +3348,225 @@ class TestPruneCompletedSections:
         content = "# Missions\n\n## Pending\n\n- Task\n"
         result, total = prune_completed_sections(content)
         assert total == 0
+
+
+HEALTHY_MISSIONS = (
+    "# Missions\n\n"
+    "## Pending\n\n"
+    "- Pending task\n\n"
+    "## In Progress\n\n"
+    "## Done\n\n"
+    "- Done task ✅\n\n"
+    "## Failed\n\n"
+    "- Failed task ❌\n"
+)
+
+
+class TestValidateMissionsStructure:
+    """validate_missions_structure() — read-only structural integrity check."""
+
+    def test_healthy_file_has_no_issues(self):
+        assert validate_missions_structure(HEALTHY_MISSIONS) == []
+
+    def test_empty_file_is_not_corrupt(self):
+        assert validate_missions_structure("") == []
+        assert validate_missions_structure("   \n") == []
+
+    def test_detects_glued_header(self):
+        # '## Done' glued directly to the preceding item — the production
+        # corruption mode from issue #2085.
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- [project:koan] running\n"
+            "## Done\n\n"
+            "## Failed\n"
+        )
+        issues = validate_missions_structure(content)
+        assert any("glued" in i.lower() for i in issues)
+
+    def test_detects_missing_section(self):
+        content = "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        issues = validate_missions_structure(content)
+        assert any("Failed" in i for i in issues)
+
+    def test_detects_duplicate_section(self):
+        content = (
+            "# Missions\n\n## Pending\n\n## In Progress\n\n"
+            "## Done\n\n## Done\n\n## Failed\n"
+        )
+        issues = validate_missions_structure(content)
+        assert any("Duplicate" in i for i in issues)
+
+    def test_items_under_non_canonical_section_not_flagged(self):
+        # Items under a non-canonical section (## Ideas) must not be
+        # reported as orphan corruption.
+        content = HEALTHY_MISSIONS + "\n## Ideas\n\n- A neat idea\n"
+        assert validate_missions_structure(content) == []
+
+    def test_fenced_headers_in_body_not_treated_as_structure(self):
+        # A mission body containing fenced markdown with ## / duplicate
+        # headers must not produce false glued/duplicate issues.
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Document the sections\n"
+            "  ```\n"
+            "  ## Done\n"
+            "  ## Done\n"
+            "  some text\n"
+            "  ```\n\n"
+            "## In Progress\n\n## Done\n\n## Failed\n"
+        )
+        assert validate_missions_structure(content) == []
+
+
+class TestRepairMissionsStructure:
+    """repair_missions_structure() — conservative, content-preserving self-heal."""
+
+    def test_healthy_file_round_trips_valid(self):
+        repaired = repair_missions_structure(HEALTHY_MISSIONS)
+        assert validate_missions_structure(repaired) == []
+
+    def test_repairs_glued_header_and_preserves_items(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Keep me pending\n\n"
+            "## In Progress\n\n"
+            "- [project:koan] running\n"
+            "## Done\n\n"
+            "## Failed\n"
+        )
+        assert validate_missions_structure(content)  # corrupt before
+        repaired = repair_missions_structure(content)
+        assert validate_missions_structure(repaired) == []
+        sections = parse_sections(repaired)
+        assert sections["pending"] == ["- Keep me pending"]
+        assert any("running" in i for i in sections["in_progress"])
+
+    def test_appends_missing_sections(self):
+        content = "# Missions\n\n## Pending\n\n- Task\n"
+        repaired = repair_missions_structure(content)
+        assert validate_missions_structure(repaired) == []
+        assert parse_sections(repaired)["pending"] == ["- Task"]
+
+    def test_empty_yields_skeleton(self):
+        repaired = repair_missions_structure("")
+        assert validate_missions_structure(repaired) == []
+
+    def test_preserves_non_canonical_ideas_section(self):
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n\n"
+            "## Ideas\n\n- A neat idea\n"
+        )
+        repaired = repair_missions_structure(content)
+        assert "## Ideas" in repaired
+        assert "A neat idea" in repaired
+
+    def test_does_not_mutate_fenced_mission_body(self):
+        # A glued ## header inside a fenced mission body must be left
+        # untouched — repair must not inject a blank line into the body.
+        body_block = "  ```\n  ## Done\n  ## Failed\n  ```"
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Mission with fenced doc\n"
+            f"{body_block}\n\n"
+            "## In Progress\n\n## Done\n\n## Failed\n"
+        )
+        repaired = repair_missions_structure(content)
+        # The fenced block is preserved verbatim (no blank line injected
+        # before the fenced ## headers).
+        assert body_block in repaired
+        assert validate_missions_structure(repaired) == []
+
+    def test_h1_title_glued_to_first_section_not_corruption(self):
+        # '# Missions' directly above '## Pending' (no blank line) is the
+        # title, not a glued item — must not be flagged as corruption.
+        content = "# Missions\n## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
+        assert validate_missions_structure(content) == []
+
+    def test_merges_duplicate_sections(self):
+        content = (
+            "# Missions\n\n## Pending\n\n- p1\n\n## In Progress\n\n"
+            "## Done\n\n- d1 ✅\n\n## Done\n\n- d2 ✅\n\n## Failed\n"
+        )
+        assert validate_missions_structure(content)  # duplicate flagged
+        repaired = repair_missions_structure(content)
+        assert validate_missions_structure(repaired) == []
+        done = parse_sections(repaired)["done"]
+        assert "- d1 ✅" in done
+        assert "- d2 ✅" in done
+
+    def test_rehomes_orphan_items_under_pending(self):
+        # Item line before any section header — orphan corruption.
+        content = (
+            "# Missions\n\n- orphan task\n\n## Pending\n\n- p1\n\n"
+            "## In Progress\n\n## Done\n\n## Failed\n"
+        )
+        assert validate_missions_structure(content)  # orphan flagged
+        repaired = repair_missions_structure(content)
+        assert validate_missions_structure(repaired) == []
+        pending = parse_sections(repaired)["pending"]
+        assert "- orphan task" in pending
+        assert "- p1" in pending
+
+    def test_repair_converges_on_second_pass(self):
+        # Repair must resolve everything validate flags as serious, so a
+        # second repair/validate round produces no further issues.
+        content = (
+            "# Missions\n- orphan\n## Pending\n\n- p1\n## In Progress\n\n"
+            "## Done\n\n## Done\n\n## Failed\n"
+        )
+        once = repair_missions_structure(content)
+        assert validate_missions_structure(once) == []
+        twice = repair_missions_structure(once)
+        assert once == twice
+
+
+class TestEnforceSizeBound:
+    """enforce_size_bound() — caps file line count by shedding old history."""
+
+    def _build(self, n_done):
+        done_items = "\n".join(f"- Done {i} ✅" for i in range(n_done))
+        return (
+            "# Missions\n\n"
+            "## Pending\n\n- keep pending\n\n"
+            "## In Progress\n\n"
+            "## Done\n"
+            f"{done_items}\n\n"
+            "## Failed\n\n- one fail ❌\n"
+        )
+
+    def test_under_cap_only_applies_keeps(self):
+        content = self._build(5)
+        result, pruned = enforce_size_bound(
+            content, max_lines=500, done_keep=50, failed_keep=30
+        )
+        assert pruned == 0
+        assert len(parse_sections(result)["done"]) == 5
+
+    def test_shrinks_below_max_lines(self):
+        content = self._build(200)
+        result, pruned = enforce_size_bound(
+            content, max_lines=40, done_keep=50, failed_keep=30
+        )
+        assert pruned > 0
+        assert len(result.splitlines()) <= 40
+        # Pending/In Progress preserved — only completed history shed.
+        assert parse_sections(result)["pending"] == ["- keep pending"]
+
+    def test_zero_max_lines_disables_hard_cap(self):
+        content = self._build(100)
+        result, pruned = enforce_size_bound(
+            content, max_lines=0, done_keep=50, failed_keep=30
+        )
+        # Only the configured keep applies; no further shrink loop.
+        assert len(parse_sections(result)["done"]) == 50
+        assert pruned == 50
 
 
 # ---------------------------------------------------------------------------

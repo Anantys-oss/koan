@@ -2486,7 +2486,12 @@ def _prune_missions_history(instance: str) -> None:
     is logged and swallowed.
     """
     try:
-        from app.missions import prune_completed_sections
+        from app.config import (
+            get_missions_done_keep,
+            get_missions_failed_keep,
+            get_missions_max_lines,
+        )
+        from app.missions import enforce_size_bound
         from app.utils import modify_missions_file
         missions_path = Path(instance, "missions.md")
         if not missions_path.exists():
@@ -2495,7 +2500,12 @@ def _prune_missions_history(instance: str) -> None:
         pruned = [0]
 
         def _transform(content):
-            new_content, count = prune_completed_sections(content)
+            new_content, count = enforce_size_bound(
+                content,
+                max_lines=get_missions_max_lines(),
+                done_keep=get_missions_done_keep(),
+                failed_keep=get_missions_failed_keep(),
+            )
             pruned[0] = count
             return new_content
 
