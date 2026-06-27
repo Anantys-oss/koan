@@ -41,7 +41,7 @@ def test_factory_builds_app():
 def test_factory_registers_blueprints():
     app = create_app()
     assert set(app.blueprints) == {
-        "core", "missions", "chat", "usage", "agent", "config", "prs"
+        "core", "missions", "chat", "usage", "agent", "config", "prs", "projects"
     }
 
 
@@ -57,6 +57,6 @@ def test_main_init_under_300_lines():
 
 
 def test_each_blueprint_under_400_lines():
-    for f in ["core", "missions", "chat", "usage", "agent", "config", "prs"]:
+    for f in ["core", "missions", "chat", "usage", "agent", "config", "prs", "projects"]:
         n = len((PKG / f"{f}.py").read_text().splitlines())
         assert n < 400, f"{f}.py is {n} lines"
