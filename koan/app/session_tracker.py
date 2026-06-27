@@ -52,6 +52,17 @@ _EMPTY_KEYWORDS = [
     "no changes needed",
 ]
 
+# Subset of _EMPTY_KEYWORDS that signal "blocked on external review" rather
+# than "nothing to do". These are scored via the dedicated blocked check in
+# classify_session(), NOT via empty_score — otherwise the canonical blocked
+# phrasing ("all work blocked. blocked on merge queue.") double-counts itself
+# into empty_score >= 3 and the "blocked" outcome becomes unreachable.
+_BLOCKED_KEYWORDS = (
+    "blocked on merge",
+    "merge queue",
+    "all work blocked",
+)
+
 # Strong productive signals — multi-word phrases that are unambiguous
 _STRONG_PRODUCTIVE = [
     "branch pushed",
@@ -110,19 +121,22 @@ def classify_session(journal_content: str, mission_title: str = "") -> str:
     if any(kw in lower for kw in _STRONG_PRODUCTIVE):
         return "productive"
 
-    # Count empty signals (multi-word phrases, low false positive rate)
-    empty_score = sum(1 for kw in _EMPTY_KEYWORDS if kw in lower)
+    # Count empty signals (multi-word phrases, low false positive rate).
+    # Blocked-trigger phrases are scored separately below, so a session that
+    # only signals "blocked" doesn't inflate empty_score and mask itself.
+    empty_score = sum(
+        1
+        for kw in _EMPTY_KEYWORDS
+        if kw in lower and kw not in _BLOCKED_KEYWORDS
+    )
 
-    # Strong empty overrides everything (including blocked keywords)
+    # Strong empty overrides everything: 3+ NON-blocked empty signals means the
+    # session was idle for reasons other than waiting on review.
     if empty_score >= 3:
         return "empty"
 
     # Blocked keywords with insufficient productive evidence → blocked
-    has_blocked = (
-        "blocked on merge" in lower
-        or "merge queue" in lower
-        or "all work blocked" in lower
-    )
+    has_blocked = any(kw in lower for kw in _BLOCKED_KEYWORDS)
     weak_productive = len(_WEAK_PRODUCTIVE_RE.findall(lower))
     if has_blocked and weak_productive < 1:
         return "blocked"
