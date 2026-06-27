@@ -34,9 +34,7 @@ from app.recurring import (
 config_bp = Blueprint("config", __name__)
 
 
-# ---------------------------------------------------------------------------
 # Config page
-# ---------------------------------------------------------------------------
 
 @config_bp.route("/config")
 def config_page():
@@ -102,16 +100,12 @@ def api_config_sync():
 
 @config_bp.route("/api/config/restart-if-idle", methods=["POST"])
 def api_config_restart_if_idle():
-    """Restart the agent only when it is idle (no in-flight mission)."""
+    """Restart the agent only when idle (no in-flight mission); 409 if busy."""
     import sys
-
     agent_state = stats_svc.get_agent_state()
     if agent_state.get("state") != "idle":
-        return jsonify({
-            "ok": False,
-            "error": "agent_busy",
-            "state": agent_state.get("state"),
-        }), 409
+        return jsonify({"ok": False, "error": "agent_busy",
+                        "state": agent_state.get("state")}), 409
     from app.restart_manager import request_restart
     try:
         request_restart(str(state.KOAN_ROOT))
@@ -144,9 +138,7 @@ def api_nickname_set():
     return jsonify({"ok": True, "nickname": nickname})
 
 
-# ---------------------------------------------------------------------------
 # Automation rules
-# ---------------------------------------------------------------------------
 
 @config_bp.route("/rules")
 def rules_page():
@@ -218,9 +210,7 @@ def api_rules_delete(rule_id):
     return jsonify({"ok": True})
 
 
-# ---------------------------------------------------------------------------
 # Recurring tasks
-# ---------------------------------------------------------------------------
 
 @config_bp.route("/recurring")
 def recurring_page():
