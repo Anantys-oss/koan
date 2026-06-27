@@ -8,7 +8,6 @@ prompt-time "this file is hot" warnings (#2128).
 """
 
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
@@ -17,6 +16,7 @@ from typing import List
 from app.security_review import get_changed_files, _run_git
 from app.locked_file import locked_jsonl_append_capped, locked_jsonl_read
 from app.projects_config import resolve_base_branch
+from app.run_log import log_safe
 
 _PROVENANCE_FILE = ".mission-provenance.jsonl"
 _MAX_PROVENANCE_ENTRIES = 2000
@@ -25,6 +25,20 @@ _MAX_PROVENANCE_ENTRIES = 2000
 def _head_sha(project_path: str) -> str:
     """Return the current HEAD sha, or '' on any git failure (no raise)."""
     return _run_git(project_path, "rev-parse", "HEAD")
+
+
+def _base_ref_resolvable(project_path: str, base_branch: str) -> bool:
+    """True if any candidate base ref resolves to a commit.
+
+    Mirrors the ref-fallback order in ``get_changed_files``. An empty change
+    set is a genuine no-op only when the base ref it was diffed against
+    actually exists; if no candidate resolves, the empty list is the product
+    of a failed diff, not a real no-op.
+    """
+    for ref in (f"upstream/{base_branch}", f"origin/{base_branch}", base_branch):
+        if _run_git(project_path, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"):
+            return True
+    return False
 
 
 def record_provenance(
@@ -36,8 +50,11 @@ def record_provenance(
     """Append a provenance record for the just-completed mission.
 
     Best-effort: tolerates empty file lists (writes ``"files": []``) and a
-    missing/failed git repo (``commit_sha`` becomes ``""``). Capped at
-    ``_MAX_PROVENANCE_ENTRIES`` lines via oldest-first rotation.
+    missing/failed git repo (``commit_sha`` becomes ``""``). The
+    ``incomplete`` flag is set when either HEAD or the changed-file diff
+    could not be reliably obtained, so a failed read is distinguishable from
+    a genuine no-op. Capped at ``_MAX_PROVENANCE_ENTRIES`` lines via
+    oldest-first rotation.
 
     NOTE: deliberately has NO ``pipeline_expired`` parameter — the pipeline
     passes that kwarg to ``_PipelineTracker.run_step``, which consumes it
@@ -46,14 +63,18 @@ def record_provenance(
     base_branch = resolve_base_branch(project_name, project_path)
     files = get_changed_files(project_path, base_branch)
     commit_sha = _head_sha(project_path)
-    # An empty sha means git failed; mark the record so downstream churn/
-    # hot-file analysis can tell a broken-git read from a genuine no-op.
-    incomplete = not commit_sha
+    # Mark the record incomplete when git could not be read reliably, so
+    # downstream churn/hot-file analysis can tell a broken-git read from a
+    # genuine no-op. Two failure modes: (1) HEAD unresolvable -> empty sha;
+    # (2) an empty file list that came from a failed diff rather than a real
+    # no-op -- detectable because no base ref resolved.
+    files_unreliable = not files and not _base_ref_resolvable(project_path, base_branch)
+    incomplete = (not commit_sha) or files_unreliable
     if incomplete:
-        print(
-            f"[provenance] git read failed for {project_name} "
+        log_safe(
+            "error",
+            f"provenance: git read failed for {project_name} "
             f"({project_path}); recording incomplete entry",
-            file=sys.stderr,
         )
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -87,10 +108,7 @@ def read_provenance(
         try:
             rec = json.loads(raw)
         except json.JSONDecodeError:
-            print(
-                f"[provenance] skipping malformed line {idx} in {path}",
-                file=sys.stderr,
-            )
+            log_safe("error", f"provenance: skipping malformed line {idx} in {path}")
             continue
         if rec.get("project") != project:
             continue
