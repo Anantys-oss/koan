@@ -4060,6 +4060,64 @@ class TestSweepDecomposedParents:
         # Should not raise
         _sweep_decomposed_parents(inst)
 
+    def test_transition_failure_increments_counter(self, tmp_path):
+        """A ready parent that fails to transition must count as a sweep
+        failure — not be swallowed into a 'success' that resets the counter."""
+        import app.iteration_manager as im
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Big mission [decomposed:grp1]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [group:grp1] Task A ✅ (2026-05-20 10:00)\n"
+        )
+        inst = self._make_instance(tmp_path, content)
+        im._sweep_consecutive_failures = 0
+        with patch("app.missions.complete_mission",
+                   side_effect=RuntimeError("needle not found")):
+            _sweep_decomposed_parents(inst)
+        assert im._sweep_consecutive_failures == 1
+
+    def test_transition_failure_notifies_via_append_to_outbox(self, tmp_path):
+        """After the threshold of consecutive transition failures, the operator
+        warning goes out through the lock-safe append_to_outbox helper."""
+        import app.iteration_manager as im
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Big mission [decomposed:grp1]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [group:grp1] Task A ✅ (2026-05-20 10:00)\n"
+        )
+        inst = self._make_instance(tmp_path, content)
+        # One short of the threshold so this single failing sweep trips it.
+        im._sweep_consecutive_failures = im._SWEEP_FAILURE_NOTIFY_THRESHOLD - 1
+        with patch("app.missions.complete_mission",
+                   side_effect=RuntimeError("needle not found")), \
+             patch("app.utils.append_to_outbox") as mock_outbox:
+            _sweep_decomposed_parents(inst)
+        mock_outbox.assert_called_once()
+        msg = mock_outbox.call_args[0][1]
+        assert "Decompose sweep" in msg
+        im._sweep_consecutive_failures = 0
+
+    def test_successful_sweep_resets_counter(self, tmp_path):
+        import app.iteration_manager as im
+        content = (
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Big mission [decomposed:grp1]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [group:grp1] Task A ✅ (2026-05-20 10:00)\n"
+        )
+        inst = self._make_instance(tmp_path, content)
+        im._sweep_consecutive_failures = 3
+        _sweep_decomposed_parents(inst)
+        assert im._sweep_consecutive_failures == 0
+
 
 class TestMaybeDecomposeMission:
 

@@ -1360,6 +1360,11 @@ def _sweep_decomposed_parents(instance_dir: Path) -> None:
     missions_path = instance_dir / "missions.md"
     if not missions_path.exists():
         return
+    # Collected across the _apply pass so per-parent transition failures —
+    # the realistic stuck-parent mode — count as sweep failures rather than
+    # being swallowed (which would let modify_missions_file "succeed" and
+    # reset the counter, so the operator alert never fired).
+    transition_failures: list[str] = []
     try:
         from app.missions import (
             check_all_subtasks_failed,
@@ -1392,29 +1397,48 @@ def _sweep_decomposed_parents(instance_dir: Path) -> None:
                         _log_iteration("koan",
                             f"Group sweep: completed decomposed parent — {needle[:80]}")
                 except Exception as exc:
+                    transition_failures.append(f"{needle[:80]}: {exc}")
                     _log_iteration("error",
                         f"Group sweep: failed to transition parent — {needle[:80]}: {exc}")
             return content
 
         modify_missions_file(missions_path, _apply)
-        _sweep_consecutive_failures = 0
+        if transition_failures:
+            # A ready parent failed to transition this pass — treat as a sweep
+            # failure so a perpetually-stuck parent eventually trips the alert.
+            _sweep_consecutive_failures += 1
+            reason = (
+                f"{len(transition_failures)} decomposed parent(s) ready but "
+                f"could not transition: {'; '.join(transition_failures)}"
+            )
+            _maybe_notify_sweep_failure(instance_dir, reason)
+        else:
+            _sweep_consecutive_failures = 0
     except Exception as e:
         _sweep_consecutive_failures += 1
         _log_iteration("error", f"Group-completion sweep failed: {e}")
-        if _sweep_consecutive_failures >= _SWEEP_FAILURE_NOTIFY_THRESHOLD:
-            try:
-                from app.utils import atomic_write
-                outbox_path = instance_dir / "outbox.md"
-                existing = outbox_path.read_text() if outbox_path.exists() else ""
-                msg = (
-                    f"\n⚠️ Decompose sweep has failed "
-                    f"{_sweep_consecutive_failures} consecutive times: {e}\n"
-                    f"Decomposed parent missions may be stuck in Pending.\n"
-                )
-                atomic_write(outbox_path, existing + msg)
-            except Exception as notify_err:
-                _log_iteration("error",
-                    f"Failed to write decompose sweep warning to outbox: {notify_err}")
+        _maybe_notify_sweep_failure(instance_dir, str(e))
+
+
+def _maybe_notify_sweep_failure(instance_dir: Path, reason: str) -> None:
+    """Notify the operator once the sweep has failed enough times in a row.
+
+    Uses the lock-protected append_to_outbox() helper so the message can't
+    clobber a concurrent bridge flush of outbox.md.
+    """
+    if _sweep_consecutive_failures < _SWEEP_FAILURE_NOTIFY_THRESHOLD:
+        return
+    try:
+        from app.utils import append_to_outbox
+        msg = (
+            f"⚠️ Decompose sweep has failed "
+            f"{_sweep_consecutive_failures} consecutive times: {reason}\n"
+            f"Decomposed parent missions may be stuck in Pending."
+        )
+        append_to_outbox(instance_dir / "outbox.md", msg)
+    except Exception as notify_err:
+        _log_iteration("error",
+            f"Failed to write decompose sweep warning to outbox: {notify_err}")
 
 
 def _maybe_decompose_mission(
@@ -1676,6 +1700,32 @@ def plan_iteration(
         # Step 3c: Auto-dispatch CI fix missions for failing Koan PRs
         _dispatch_ci_fixes(instance, koan_root)
 
+    # Step 3c2: Passive mode gate — block all execution and state mutation.
+    # Must run BEFORE the group-completion sweep (Step 3d) and the
+    # decomposition gate (Step 4a): both mutate missions.md / invoke the CLI,
+    # which passive (read-only) mode forbids. The sweep in particular runs
+    # unconditionally every iteration, so it must be suppressed here too.
+    passive_state = _check_passive(koan_root)
+    if passive_state is not None:
+        remaining = passive_state.remaining_display()
+        _log_iteration("koan", f"Passive mode active ({remaining}) — skipping execution")
+        return _make_result(
+            action="passive_wait",
+            project_name=projects[0][0] if projects else "default",
+            project_path="",
+            mission_title="",
+            autonomous_mode=autonomous_mode,
+            focus_area="Passive mode: read-only, no execution",
+            available_pct=available_pct,
+            decision_reason=f"Passive mode — read-only ({remaining})",
+            display_lines=display_lines,
+            recurring_injected=recurring_injected,
+            focus_remaining=None,
+            schedule_mode=schedule_state.mode if schedule_state else "normal",
+            tracker_error=tracker_error,
+            passive_remaining=remaining,
+        )
+
     # Step 3d: Group-completion sweep — complete parent missions whose
     # sub-missions have all left Pending and In-Progress.
     _sweep_decomposed_parents(instance)
@@ -1739,29 +1789,6 @@ def plan_iteration(
                 schedule_mode=schedule_state.mode if schedule_state else "normal",
                 tracker_error=tracker_error,
             )
-
-    # Step 4b: Passive mode gate — block all execution
-    # Missions stay Pending, no autonomous work. Must check before start_mission().
-    passive_state = _check_passive(koan_root)
-    if passive_state is not None:
-        remaining = passive_state.remaining_display()
-        _log_iteration("koan", f"Passive mode active ({remaining}) — skipping execution")
-        return _make_result(
-            action="passive_wait",
-            project_name=mission_project or (projects[0][0] if projects else "default"),
-            project_path="",
-            mission_title="",
-            autonomous_mode=autonomous_mode,
-            focus_area="Passive mode: read-only, no execution",
-            available_pct=available_pct,
-            decision_reason=f"Passive mode — read-only ({remaining})",
-            display_lines=display_lines,
-            recurring_injected=recurring_injected,
-            focus_remaining=None,
-            schedule_mode=schedule_state.mode if schedule_state else "normal",
-            tracker_error=tracker_error,
-            passive_remaining=remaining,
-        )
 
     # Step 5: Resolve project for the picked mission.
     if mission_project and mission_title:

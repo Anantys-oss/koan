@@ -36,9 +36,25 @@ class TestParseResponse:
         with pytest.raises(DecomposeError):
             _parse_response("")
 
-    def test_handles_empty_subtasks_composite(self):
+    def test_raises_on_empty_subtasks_composite(self):
+        # Composite verdict with zero usable sub-tasks is degenerate classifier
+        # output — must surface, not silently downgrade to atomic (None).
         output = json.dumps({"type": "composite", "subtasks": []})
-        assert _parse_response(output) is None
+        with pytest.raises(DecomposeError):
+            _parse_response(output)
+
+    def test_raises_on_all_blank_subtasks_composite(self):
+        output = json.dumps({"type": "composite", "subtasks": ["  ", "", "\t"]})
+        with pytest.raises(DecomposeError):
+            _parse_response(output)
+
+    def test_raises_on_non_list_subtasks_composite(self):
+        # Composite verdict with a malformed subtasks field is a classifier
+        # failure — must raise so callers distinguish it from a real atomic
+        # verdict, not return None.
+        output = json.dumps({"type": "composite", "subtasks": "not a list"})
+        with pytest.raises(DecomposeError):
+            _parse_response(output)
 
     def test_truncates_to_max_six(self):
         output = json.dumps({

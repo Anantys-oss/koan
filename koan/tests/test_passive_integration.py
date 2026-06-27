@@ -132,6 +132,45 @@ class TestPlanIterationPassive:
         assert result["action"] == "mission"
         assert result["mission_title"] == "Fix auth bug"
 
+    @patch("app.pick_mission.pick_mission", return_value="")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_passive_suppresses_decompose_sweep(
+        self, mock_refresh, mock_pick, instance_dir, koan_root, usage_state
+    ):
+        """Passive mode must block the group-completion sweep — a ready parent
+        must stay Pending (no state mutation) instead of being completed."""
+        from app.passive_manager import create_passive
+
+        create_passive(str(koan_root))
+        (instance_dir / "usage.md").write_text(
+            "Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20%\n"
+        )
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n"
+            "## Pending\n\n"
+            "- Big mission [decomposed:grp1]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n"
+            "- [group:grp1] Task A ✅ (2026-05-20 10:00)\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "passive_wait"
+        # Parent must NOT have been completed by the suppressed sweep.
+        from app.missions import parse_sections
+        sections = parse_sections((instance_dir / "missions.md").read_text())
+        assert any("Big mission" in p for p in sections["pending"])
+        assert not any("Big mission" in d for d in sections["done"])
+
     @patch("app.pick_mission.pick_mission", return_value="koan:Fix bug")
     @patch("app.usage_estimator.cmd_refresh")
     def test_passive_timed_shows_remaining(

@@ -101,12 +101,21 @@ def _parse_response(output: str) -> Optional[List[str]]:
 
     subtasks = data.get("subtasks", [])
     if not isinstance(subtasks, list):
-        return None
+        # Composite verdict with a malformed subtasks field is a classifier
+        # failure, not an atomic mission — raise so the caller can tell them
+        # apart and runs the mission whole *knowingly*.
+        raise DecomposeError(
+            f"Composite verdict but subtasks is {type(subtasks).__name__}, "
+            f"not a list: {output[:200]}")
 
     # Filter empty strings, cap at max
     valid = [str(t).strip() for t in subtasks if str(t).strip()]
     if not valid:
-        return None
+        # Composite verdict that yields zero usable sub-tasks is degenerate
+        # classifier output — surface it rather than silently downgrading to
+        # atomic, which would hide a classifier-quality problem.
+        raise DecomposeError(
+            f"Composite verdict but no usable sub-tasks: {output[:200]}")
 
     if len(valid) > _MAX_SUBTASKS:
         _log_decompose("warning",
