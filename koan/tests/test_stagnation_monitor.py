@@ -20,8 +20,10 @@ from app.stagnation_monitor import (
     get_retry_count,
     get_retry_info,
     get_total_attempts,
+    get_verify_count,
     increment_crash_count,
     increment_retry_count,
+    increment_verify_count,
 )
 
 
@@ -779,6 +781,46 @@ class TestCrashCount:
         # crash_count should be preserved
         assert get_crash_count(d, "mission B") == 2
         assert get_total_attempts(d, "mission B") == 2
+
+
+class TestVerifyCount:
+    """Tests for verify_count tracking — separate from stagnation/crash counts."""
+
+    def test_get_verify_count_returns_zero_for_unknown(self, tmp_path):
+        assert get_verify_count(str(tmp_path), "unseen mission") == 0
+
+    def test_verify_count_increments_and_feeds_total(self, tmp_path):
+        d = str(tmp_path)
+        title = "Implement feature X"
+        assert get_verify_count(d, title) == 0
+        assert increment_verify_count(d, title) == 1
+        assert increment_verify_count(d, title) == 2
+        assert get_verify_count(d, title) == 2
+        assert get_total_attempts(d, title) == 2
+
+    def test_verify_count_independent_of_stagnation(self, tmp_path):
+        d = str(tmp_path)
+        title = "Implement feature Y"
+        increment_retry_count(d, title)          # stagnation
+        increment_verify_count(d, title)         # verify
+        assert get_retry_count(d, title) == 1
+        assert get_verify_count(d, title) == 1
+        assert get_total_attempts(d, title) == 2
+
+    def test_verify_count_preserves_crash_count(self, tmp_path):
+        d = str(tmp_path)
+        title = "Implement feature Z"
+        increment_crash_count(d, title)
+        increment_verify_count(d, title)
+        assert get_crash_count(d, title) == 1
+        assert get_verify_count(d, title) == 1
+        assert get_total_attempts(d, title) == 2
+
+    def test_verify_count_key_stable_across_lifecycle_markers(self, tmp_path):
+        d = str(tmp_path)
+        increment_verify_count(d, "- Fix the bug [verify-failed: no PR]")
+        assert get_verify_count(d, "- Fix the bug") == 1
+        assert get_verify_count(d, "- Fix the bug [verify-failed: still no PR]") == 1
 
 
 class TestClassifyStagnationEdgeCases:
