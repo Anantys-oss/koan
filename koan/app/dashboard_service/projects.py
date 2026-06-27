@@ -8,7 +8,6 @@ never raises.
 from __future__ import annotations
 
 import logging
-import os
 
 from app.dashboard import state
 from app.dashboard_service import read_file
@@ -54,6 +53,10 @@ def _last_activity(project: str) -> float | None:
                 if newest is None or m > newest:
                     newest = m
     except OSError:
+        logger.debug(
+            "last-activity scan failed for project %r under %s",
+            project, jdir, exc_info=True,
+        )
         return None
     return newest
 
@@ -107,7 +110,7 @@ def _card(name: str, path: str, counts: dict, cfg) -> dict:
 
 def build_project_registry() -> list:
     """One card dict per known project, sorted case-insensitively by name."""
-    cfg = load_projects_config(os.environ.get("KOAN_ROOT", "")) or None
+    cfg = load_projects_config(str(state.KOAN_ROOT)) or None
     counts = _project_counts()
     cards = [
         _card(name, path, counts, cfg)
@@ -117,11 +120,19 @@ def build_project_registry() -> list:
 
 
 def build_project_status(name: str) -> dict:
-    """Single card for one project (async refresh / unknown-project safe)."""
-    cfg = load_projects_config(os.environ.get("KOAN_ROOT", "")) or None
+    """Single card for one project (async refresh / unknown-project safe).
+
+    The returned card carries a ``found`` flag so callers can distinguish an
+    unknown/typo'd project name from a genuinely idle one.
+    """
+    cfg = load_projects_config(str(state.KOAN_ROOT)) or None
     path = ""
+    found = False
     for pname, ppath in get_known_projects():
         if pname.lower() == name.lower():
             path = ppath
+            found = True
             break
-    return _card(name, path, _project_counts(), cfg)
+    card = _card(name, path, _project_counts(), cfg)
+    card["found"] = found
+    return card

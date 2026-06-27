@@ -81,11 +81,21 @@ def test_index_single_project_renders_dashboard():
 
 
 def test_status_endpoint_returns_card_json():
-    card = {"name": "alpha", "pending": 2, "in_progress": 0, "checklist": []}
+    card = {"name": "alpha", "pending": 2, "in_progress": 0,
+            "checklist": [], "found": True}
     with patch("app.dashboard.projects.proj_svc.build_project_status", return_value=card):
         resp = _client().get("/api/projects/alpha/status")
     assert resp.status_code == 200
     assert resp.get_json()["name"] == "alpha"
+
+
+def test_status_endpoint_404_for_unknown_project():
+    card = {"name": "ghost", "pending": 0, "in_progress": 0,
+            "checklist": [], "found": False}
+    with patch("app.dashboard.projects.proj_svc.build_project_status", return_value=card):
+        resp = _client().get("/api/projects/ghost/status")
+    assert resp.status_code == 404
+    assert resp.get_json()["found"] is False
 
 
 def test_add_project_rejects_blank_url():
