@@ -1,7 +1,8 @@
 """
 Token Parser — Single source of truth for provider JSON token extraction.
 
-Parses provider JSON/JSONL output files (Claude and Codex) to extract token
+Parses provider JSON/JSONL output files (Claude, Codex, and OpenAI-style
+``prompt_tokens``/``completion_tokens`` envelopes from multi-backend CLIs) to extract token
 usage, cache metrics, model info, and cost data. All modules that need token
 data should import from here rather than implementing their own parsing.
 """
@@ -142,16 +143,14 @@ def _extract_tokens_from_dict(data: dict) -> Optional[TokenResult]:
     model = data.get("model") or _primary_model_from_usage(data) or "unknown"
 
     # Try top-level fields
-    inp = data.get("input_tokens", 0)
-    out = data.get("output_tokens", 0)
+    inp, out = _read_io_tokens(data)
     if inp or out:
         return _build_result(inp, out, model, data)
 
     # Try nested usage object
     usage = data.get("usage", {})
     if isinstance(usage, dict):
-        inp = usage.get("input_tokens", 0)
-        out = usage.get("output_tokens", 0)
+        inp, out = _read_io_tokens(usage)
         if inp or out:
             return _build_result(inp, out, model, data)
 
@@ -159,12 +158,24 @@ def _extract_tokens_from_dict(data: dict) -> Optional[TokenResult]:
     for key in ("stats", "metadata", "session"):
         sub = data.get(key, {})
         if isinstance(sub, dict):
-            inp = sub.get("input_tokens", 0)
-            out = sub.get("output_tokens", 0)
+            inp, out = _read_io_tokens(sub)
             if inp or out:
                 return _build_result(inp, out, model, data)
 
     return None
+
+
+def _read_io_tokens(obj: dict) -> tuple[int, int]:
+    """Read input/output token counts, accepting both naming conventions.
+
+    Claude/Anthropic use ``input_tokens``/``output_tokens``; OpenAI-style
+    backends (and multi-backend CLIs like Haze that pass them through) use
+    ``prompt_tokens``/``completion_tokens``. Recognizing both keeps budget and
+    burn-rate gating working regardless of which backend produced the envelope.
+    """
+    inp = obj.get("input_tokens", 0) or obj.get("prompt_tokens", 0) or 0
+    out = obj.get("output_tokens", 0) or obj.get("completion_tokens", 0) or 0
+    return int(inp), int(out)
 
 
 def _has_usage(result: TokenResult) -> bool:

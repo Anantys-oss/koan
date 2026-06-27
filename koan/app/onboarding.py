@@ -529,6 +529,7 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
         "cline": "cline",
         "codex": "codex",
         "copilot": "gh",
+        "haze": "haze",
         "ollama-launch": "ollama",
     }
     for provider, tool in provider_tools.items():
@@ -576,6 +577,7 @@ PROVIDERS = [
     ("cline", "Cline CLI"),
     ("codex", "OpenAI Codex CLI"),
     ("copilot", "GitHub Copilot CLI"),
+    ("haze", "Haze CLI"),
     ("ollama-launch", "Ollama Launch (local models via ollama)"),
 ]
 
@@ -586,6 +588,7 @@ def _provider_ready(provider: str) -> tuple[bool, str]:
         "cline": "cline",
         "codex": "codex",
         "copilot": "gh",
+        "haze": "haze",
         "ollama-launch": "ollama",
     }
     tool = tool_by_provider.get(provider)
@@ -609,6 +612,7 @@ def _detect_installed_providers() -> list[str]:
         "cline": "cline",
         "codex": "codex",
         "copilot": "gh",
+        "haze": "haze",
         "ollama-launch": "ollama",
     }
     return [p for p, t in provider_tools.items() if _check_tool(t)]
@@ -707,6 +711,14 @@ _PROVIDER_MODEL_DEFAULTS: dict[str, dict[str, str]] = {
         "chat": "",
         "lightweight": "haiku",
         "fallback": "sonnet",
+        "review_mode": "",
+        "reflect": "",
+    },
+    "haze": {
+        "mission": "",
+        "chat": "",
+        "lightweight": "",
+        "fallback": "",
         "review_mode": "",
         "reflect": "",
     },
