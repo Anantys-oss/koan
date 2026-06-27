@@ -52,6 +52,12 @@ class TableSpec:
         return f"CREATE TABLE IF NOT EXISTS {self.name} ({cols})"
 
 
+# Bookkeeping table tracking whether each artifact's DB projection is in sync
+# with the authoritative file. A failed/rolled-back dual_write sets dirty=1 so
+# read_from_db_or_file serves the file until the next successful projection.
+_META_TABLE = "_artifact_meta"
+
+
 # --- Concrete artifact schemas (shapes pinned to current code) ---
 ARTIFACT_SCHEMAS: Dict[str, TableSpec] = {
     # missions.md — sections + [project:name] tags (see missions.py)
@@ -119,6 +125,10 @@ def connect(db_path: Path) -> Optional[sqlite3.Connection]:
 def create_tables(conn: sqlite3.Connection) -> bool:
     """Create every artifact table idempotently. Returns ``False`` on DB error."""
     try:
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {_META_TABLE} "
+            "(table_name TEXT PRIMARY KEY, dirty INTEGER NOT NULL DEFAULT 0)"
+        )
         for spec in ARTIFACT_SCHEMAS.values():
             conn.execute(spec.create_ddl())
         conn.commit()
@@ -126,6 +136,34 @@ def create_tables(conn: sqlite3.Connection) -> bool:
     except sqlite3.DatabaseError as e:
         logger.warning("[artifact_db] create_tables failed: %s", e)
         return False
+
+
+def _set_dirty(conn: sqlite3.Connection, table: str, dirty: bool) -> None:
+    """Stage a dirty-flag update (no commit — caller owns the transaction)."""
+    conn.execute(
+        f"INSERT OR REPLACE INTO {_META_TABLE} (table_name, dirty) VALUES (?, ?)",
+        (table, 1 if dirty else 0),
+    )
+
+
+def _mark_dirty(conn: sqlite3.Connection, table: str) -> None:
+    """Best-effort: flag the projection divergent after a failed write."""
+    try:
+        _set_dirty(conn, table, True)
+        conn.commit()
+    except sqlite3.DatabaseError as e:
+        logger.warning("[artifact_db] could not mark %s dirty: %s", table, e)
+
+
+def _is_dirty(conn: sqlite3.Connection, table: str) -> bool:
+    """Return ``True`` when the projection is known-divergent or unverifiable."""
+    try:
+        row = conn.execute(
+            f"SELECT dirty FROM {_META_TABLE} WHERE table_name = ?", (table,)
+        ).fetchone()
+    except sqlite3.DatabaseError:
+        return True  # can't verify -> assume divergent, serve the file
+    return bool(row and row[0])
 
 
 def verify_schema(conn: sqlite3.Connection, table: str) -> Dict:
@@ -159,8 +197,12 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
     """Write the authoritative file first, then best-effort project to DB.
 
     ``file_writer`` (e.g. a wrapper over :func:`utils.atomic_write`) owns the
-    source of truth. A DB projection failure is logged but never propagated.
-    If ``file_writer`` raises, the error propagates (the write genuinely failed).
+    source of truth and rewrites the whole artifact, so the DB projection is
+    truncated and rebuilt in one transaction to mirror it — appending would
+    accumulate duplicates across rewrites. A DB projection failure is logged,
+    rolled back, and the projection flagged dirty (so subsequent reads fall back
+    to the file) but never propagated. If ``file_writer`` raises, the error
+    propagates (the write genuinely failed).
     """
     file_writer(records)                       # authoritative — may raise
     if conn is None:
@@ -173,10 +215,17 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
     placeholders = ", ".join("?" for _ in cols)
     sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})"
     try:
+        conn.execute(f"DELETE FROM {table}")   # full-rewrite mirror, not append
         conn.executemany(sql, [tuple(r.get(c) for c in cols) for r in records])
+        _set_dirty(conn, table, False)
         conn.commit()
     except sqlite3.DatabaseError as e:
         logger.warning("[artifact_db] dual_write DB projection failed (%s): %s", table, e)
+        try:
+            conn.rollback()                    # leave a consistent (stale) DB
+        except sqlite3.DatabaseError:
+            pass
+        _mark_dirty(conn, table)               # reads fall back to the file
 
 
 def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,
@@ -185,13 +234,21 @@ def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,
     """Read DB-first with file fallback, preserving file-parse ordering.
 
     Falls back to ``file_reader()`` when the DB is unavailable, the table is
-    empty, or a DB error occurs. ``order_key`` overrides default insertion
-    (rowid) ordering for artifacts whose file order is semantic.
+    empty, the projection is flagged dirty (a prior write failed to project), or
+    a DB error occurs. ``order_key`` overrides default insertion (rowid) ordering
+    for artifacts whose file order is semantic; it is validated against the
+    declared columns to avoid interpolating an arbitrary identifier into SQL.
     """
     spec = ARTIFACT_SCHEMAS.get(table)
     if conn is None or spec is None:
         return file_reader()
+    if _is_dirty(conn, table):
+        return file_reader()        # projection known-divergent -> trust the file
     cols = spec.column_names()
+    if order_key and order_key not in cols:
+        logger.warning(
+            "[artifact_db] read %s: unknown order_key %r, using rowid", table, order_key)
+        order_key = None
     order = f"{order_key} ASC" if order_key else "rowid ASC"
     try:
         rows = conn.execute(

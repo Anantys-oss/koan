@@ -24,11 +24,22 @@ columns are pinned to `memory_db._EXPECTED_COLUMNS` so the two indexes agree.
   `{in_sync, missing, unexpected}`. `in_sync` is `None` when the table does not
   exist yet (safe to call before `create_tables`).
 - `dual_write(records, file_writer=, conn=, table=)` — writes the authoritative
-  file first, then projects to the DB best-effort. A DB failure is logged, never
-  propagated; a `file_writer` failure propagates (the write genuinely failed).
+  file first, then mirrors it to the DB best-effort. The file writer rewrites the
+  whole artifact, so the projection is **truncated and rebuilt** in one
+  transaction (not appended) — otherwise rows accumulate across rewrites. A DB
+  failure is logged, rolled back, and flags the projection **dirty** so later
+  reads fall back to the file; it is never propagated. A `file_writer` failure
+  propagates (the write genuinely failed).
 - `read_from_db_or_file(conn, table, file_reader=, order_key=None)` — reads the
-  DB when populated, else parses the file; preserves file-parse ordering so a
-  consumer can't tell which source served the read.
+  DB when populated and in-sync, else parses the file; preserves file-parse
+  ordering so a consumer can't tell which source served the read. A dirty
+  projection (last write failed to mirror) always falls back to the file.
+  `order_key` is validated against the declared columns before interpolation —
+  an unknown key is ignored (rowid order) rather than injected into SQL.
+
+A `_artifact_meta` bookkeeping table tracks the dirty flag per artifact so the
+"file is source of truth" guarantee holds even when a projection write fails
+midway.
 
 Every function catches `sqlite3.DatabaseError` and degrades gracefully — when
 sqlite is unavailable, reads fall back to the file and writes still write the

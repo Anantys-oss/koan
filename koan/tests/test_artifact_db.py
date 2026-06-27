@@ -105,6 +105,40 @@ def test_dual_write_propagates_file_writer_error(tmp_path):
     conn.close()
 
 
+def test_dual_write_truncates_no_duplicate_accumulation(tmp_path):
+    # Rewrite-style artifact: each dual_write is a full file rewrite, so the
+    # DB projection must mirror it (replace), not append.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    artifact_db.dual_write([{"text": "a", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn, table="missions")
+    artifact_db.dual_write([{"text": "a", "section": "pending"},
+                            {"text": "b", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn, table="missions")
+    rows = conn.execute("SELECT text FROM missions ORDER BY rowid").fetchall()
+    assert [r[0] for r in rows] == ["a", "b"]   # not ["a", "a", "b"]
+    conn.close()
+
+
+def test_dual_write_db_failure_flags_dirty_read_uses_file(tmp_path):
+    # First write succeeds; a later projection failure must roll back and flag
+    # the projection dirty so reads fall back to the (authoritative) file.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    artifact_db.dual_write([{"text": "old", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn, table="missions")
+    # Force the projection to fail by dropping the table after a good write.
+    conn.execute("DROP TABLE missions")
+    conn.commit()
+    file_recs = [{"text": "new", "section": "pending"}]
+    artifact_db.dual_write(file_recs, file_writer=lambda r: None,
+                           conn=conn, table="missions")
+    out = artifact_db.read_from_db_or_file(
+        conn, "missions", file_reader=lambda: file_recs)
+    assert out == file_recs                     # served from file, not stale DB
+    conn.close()
+
+
 # --- Phase 4: dual-read with file-stable ordering --------------------------
 
 def test_dual_read_matches_file_order(tmp_path):
@@ -129,6 +163,23 @@ def test_dual_read_falls_back_when_db_empty(tmp_path):
     out = artifact_db.read_from_db_or_file(
         conn, "missions", file_reader=lambda: file_recs)
     assert out == file_recs
+    conn.close()
+
+
+def test_dual_read_rejects_unknown_order_key(tmp_path):
+    # An order_key not in the schema must not be interpolated into SQL; it
+    # falls back to rowid ordering instead of raising / injecting.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    file_recs = [{"text": "a", "section": "pending"},
+                 {"text": "b", "section": "pending"}]
+    artifact_db.dual_write(file_recs, file_writer=lambda r: None,
+                           conn=conn, table="missions")
+    out = artifact_db.read_from_db_or_file(
+        conn, "missions", file_reader=lambda: [],
+        order_key="text; DROP TABLE missions")
+    assert [r["text"] for r in out] == ["a", "b"]   # rowid order, table intact
+    assert conn.execute("SELECT count(*) FROM missions").fetchone()[0] == 2
     conn.close()
 
 
