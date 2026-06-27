@@ -83,6 +83,8 @@ def _configured_project_count() -> int:
     try:
         return len(get_known_projects())
     except Exception:  # noqa: BLE001
+        logger.warning("Failed to count configured projects; "
+                       "defaulting to single-project view", exc_info=True)
         return 0
 
 

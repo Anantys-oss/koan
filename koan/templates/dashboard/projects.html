@@ -12,6 +12,7 @@
 </div>
 
 {% if add_error %}<p class="k-alert k-alert--error">{{ add_error }}</p>{% endif %}
+{% if request.args.get('add_started') %}<p class="k-alert k-alert--info">Adding project — cloning in the background. Refresh in a moment; the outcome is also sent to Telegram.</p>{% endif %}
 
 <div class="k-grid k-grid--cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-top:1rem;">
   {% for p in projects %}
@@ -73,17 +74,28 @@ function koanValidateUrl(form) {
 }
 function koanPause() {
   fetch('/api/agent/pause', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
-    .then(() => location.reload());
+    .then(r => {
+      if (!r.ok) throw new Error('pause failed: ' + r.status);
+      location.reload();
+    })
+    .catch(e => alert('Could not pause the agent: ' + e.message));
 }
 (function loadHealth() {
   const el = document.getElementById('health-summary');
   if (!el) return;
+  function healthError() {
+    ['health-disk', 'health-run', 'health-awake'].forEach(id => {
+      const b = document.getElementById(id);
+      if (b) b.textContent = b.id.replace('health-', '') + ' ?';
+    });
+  }
   fetch(el.dataset.src)
-    .then(r => r.json()).then(h => {
+    .then(r => { if (!r.ok) throw new Error('health ' + r.status); return r.json(); })
+    .then(h => {
       document.getElementById('health-disk').textContent = 'disk ' + (h.disk.used_pct ?? '–') + '%';
       document.getElementById('health-run').textContent = h.run.alive ? 'run ✓' : 'run ✗';
       document.getElementById('health-awake').textContent = h.awake.alive ? 'awake ✓' : 'awake ✗';
-    }).catch(() => {});
+    }).catch(healthError);
 })();
 // Render last-activity timestamps as locale strings.
 document.querySelectorAll('time[data-ts]').forEach(t => {

@@ -1,5 +1,6 @@
 """Projects blueprint: registry page, per-project status, add-project."""
 import logging
+import threading
 
 from flask import (
     Blueprint,
@@ -53,14 +54,20 @@ def add_project():
         ), 400
 
     args = f"{github_url} {name}".strip()
-    ok, result = _run_add_skill(args)
-    if not ok:
-        logger.warning("add_project skill failed: %s", result)
-    return redirect(url_for("projects.projects_page"))
+    # The add_project skill clones (and may fork) the repo — up to ~120s of
+    # blocking I/O. Run it off the request thread so the dashboard stays
+    # responsive; surface the outcome to the outbox (Telegram) and the log
+    # since we can no longer report it inline.
+    threading.Thread(target=_run_add_skill, args=(args,), daemon=True).start()
+    return redirect(url_for("projects.projects_page", add_started=1))
 
 
 def _run_add_skill(args: str) -> tuple:
-    """Run the add_project skill in-process. Returns (ok, message)."""
+    """Run the add_project skill in-process. Returns (ok, message).
+
+    Runs on a background thread; the outcome is reported via the outbox and
+    the log rather than the HTTP response, so failures are never silent.
+    """
     parts = []
     try:
         from app.bridge_state import _get_registry
@@ -69,6 +76,7 @@ def _run_add_skill(args: str) -> tuple:
         registry = _get_registry()
         skill = registry.find_by_command("add_project")
         if skill is None:
+            _report(False, "add_project skill not found")
             return False, "add_project skill not found"
         ctx = SkillContext(
             koan_root=state.KOAN_ROOT,
@@ -81,5 +89,24 @@ def _run_add_skill(args: str) -> tuple:
         if out:
             parts.append(str(out))
     except Exception as e:  # noqa: BLE001 - best-effort skill dispatch
+        _report(False, f"add_project failed: {e}")
         return False, f"Error: {e}"
-    return True, "\n".join(parts).strip()
+    message = "\n".join(parts).strip()
+    _report(True, message)
+    return True, message
+
+
+def _report(ok: bool, message: str) -> None:
+    """Surface an async add_project outcome to the log and the outbox."""
+    if ok:
+        logger.info("add_project: %s", message)
+    else:
+        logger.warning("add_project failed: %s", message)
+    try:
+        from app.utils import append_to_outbox
+
+        prefix = "✅ Add project:" if ok else "⚠️ Add project failed:"
+        append_to_outbox(state.INSTANCE_DIR / "outbox.md",
+                         f"{prefix} {message}".strip())
+    except Exception:  # noqa: BLE001 - outbox notification is best-effort
+        logger.exception("Failed to write add_project outcome to outbox")

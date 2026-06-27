@@ -7,6 +7,7 @@ never raises.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from app.dashboard import state
@@ -19,6 +20,8 @@ from app.projects_config import (
     load_projects_config,
 )
 from app.utils import get_known_projects
+
+logger = logging.getLogger(__name__)
 
 
 def _project_counts() -> dict:
@@ -84,7 +87,10 @@ def _card(name: str, path: str, counts: dict, cfg) -> dict:
             models = get_project_models(cfg, name)
             model = str(models.get("mission", "") or "")
         except Exception:  # noqa: BLE001 - registry must never raise
-            pass
+            logger.warning(
+                "Failed to read config for project %r; using empty defaults",
+                name, exc_info=True,
+            )
     c = counts.get(name, {})
     return {
         "name": name,
