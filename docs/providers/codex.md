@@ -96,6 +96,13 @@ resets the watchdog on genuine progress, so a long-but-working feedback step
 on a large repo is no longer mistaken for a hang. The events are parsed back
 into clean final text (preferring `--output-last-message`).
 
+Quota detection survives this parsing: Codex reports quota exhaustion as a
+stdout JSONL `rate_limit_event` (never on stderr), which the summarizer
+collapses to a `[cli] rate_limit_rejected` marker. That marker is kept out of
+the clean final text but surfaced separately so a feedback/CI-fix step that
+hits quota is still classified as a quota stop (triggering the backoff) rather
+than a generic failure.
+
 ### Execution Modes
 
 | Kōan Setting          | Codex Flag       | Behavior                        |

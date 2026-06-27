@@ -372,6 +372,12 @@ def run_claude(
     # The summarized event line is what gets printed — feeding both the inner
     # idle watchdog (every consumed line) and the parent run.py watchdog.
     stream_text_chunks: List[str] = []
+    # Summarized ``[cli] …`` lines (notably the ``rate_limit_rejected`` marker)
+    # are printed to keep the watchdog alive but stripped from the clean
+    # ``output``. Accumulate them separately so the caller can run the quota
+    # detector against a runtime-trusted channel — codex surfaces quota
+    # exhaustion as a stdout JSONL ``rate_limit_event``, never on stderr.
+    stream_summary_lines: List[str] = []
     stream_final_result: Optional[str] = None
     if use_stream_json:
         from app.provider import (
@@ -389,7 +395,9 @@ def run_claude(
             except (json.JSONDecodeError, ValueError):
                 parsed = None
             if isinstance(parsed, dict):
-                print(_summarize_stream_event(parsed), flush=True)
+                summary = _summarize_stream_event(parsed)
+                print(summary, flush=True)
+                stream_summary_lines.append(summary)
                 stream_text_chunks.extend(_extract_assistant_text_chunks(parsed))
                 result_text = _extract_result_text(parsed)
                 if result_text is not None:
@@ -418,15 +426,27 @@ def run_claude(
 
     raw_stdout = stream_result.stdout
     stderr_text = stream_result.stderr
+    # Runtime-trusted quota channel: in stream-json mode the rejected
+    # ``rate_limit_event`` is collapsed by the summarizer to a ``[cli]
+    # rate_limit_rejected`` marker that never reaches ``output``. Surface the
+    # summary lines so the caller can detect codex quota exhaustion.
+    stream_summary = "\n".join(stream_summary_lines)
 
     if use_stream_json:
         # Final-text precedence mirrors run_command_streaming: last-message
         # file → result event → accumulated assistant chunks → raw stdout.
         last_message_text = ""
         if last_message_path:
-            import contextlib
-            with contextlib.suppress(OSError, UnicodeDecodeError):
+            try:
                 last_message_text = Path(last_message_path).read_text()
+            except (OSError, UnicodeDecodeError) as exc:
+                # An unreadable sidecar (vs. a legitimately empty one) is a real
+                # signal the provider wrote unexpected bytes — log it rather than
+                # silently degrading to the raw-JSONL fallback.
+                logging.warning(
+                    "Could not read last-message sidecar %s: %s",
+                    last_message_path, exc,
+                )
         if last_message_text.strip():
             stdout_text = last_message_text
         elif stream_final_result is not None:
@@ -456,6 +476,7 @@ def run_claude(
             "output": stdout_text,
             "error": timeout_error,
             "stderr": stderr_text,
+            "stream_summary": stream_summary,
             "timeout_kind": timeout_kind or "timeout",
         }
 
@@ -477,6 +498,7 @@ def run_claude(
             "output": stdout_text,
             "error": f"Exit code {returncode}: {stderr_snippet}",
             "stderr": stderr_text,
+            "stream_summary": stream_summary,
             "exit_code": returncode,
         }
 
@@ -490,6 +512,7 @@ def run_claude(
         "output": stdout_text,
         "error": "",
         "stderr": stderr_text,
+        "stream_summary": stream_summary,
         "exit_code": returncode,
     }
 
@@ -859,6 +882,12 @@ def run_claude_step(
         # stderr channel for the full pattern set; from the transcript only
         # honor signals the CLI runtime itself emits.
         stderr_text = result.get("stderr", result.get("error", ""))
+        # ``stream_summary`` holds the CLI runtime's own ``[cli] …`` event
+        # summaries (stream-json mode only). Unlike ``output`` — agent DATA that
+        # may quote quota phrases — these lines are runtime-emitted, so the
+        # rejected ``rate_limit_event`` marker there is a trustworthy quota
+        # signal. This is the channel codex quota exhaustion arrives on (stdout
+        # JSONL, never stderr).
         quota_exhausted = (
             classify_cli_error(
                 int(result.get("exit_code") or 1),
@@ -868,6 +897,7 @@ def run_claude_step(
             )
             == ErrorCategory.QUOTA
             or cli_runtime_quota_signal(result.get("output", ""))
+            or cli_runtime_quota_signal(result.get("stream_summary", ""))
         )
     except Exception as exc:
         logging.warning("Failed to classify Claude step error: %s", exc)
