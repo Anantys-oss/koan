@@ -41,7 +41,7 @@ def test_factory_builds_app():
 def test_factory_registers_blueprints():
     app = create_app()
     assert set(app.blueprints) == {
-        "core", "missions", "chat", "usage", "agent", "config", "prs"
+        "core", "missions", "chat", "usage", "agent", "config", "config_form", "prs"
     }
 
 

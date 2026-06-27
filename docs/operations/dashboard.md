@@ -78,6 +78,25 @@ dashboard starts automatically on `0.0.0.0:5000` and **requires** the passphrase
 | `/logs` | Recent log lines with source filter and search |
 | `/agent` | Read-only introspection: soul, memory, skills, config |
 | `/rules` | Automation rules CRUD |
+| `/config` | View/edit `config.yaml` & `projects.yaml`; structured **Projects (form)** and **Settings** tabs (see below) |
+
+## Operator config tabs
+
+The `/config` page is a first-class operator console — change configuration without
+hand-editing YAML or going through Telegram:
+
+- **config.yaml / projects.yaml** — raw, comment-preserving textarea editors with
+  validation (secrets are redacted in the view).
+- **Projects (form)** — pick a project, toggle an allow-listed set of per-project
+  overrides (`cli_provider`, `autoreview`, `focus`, `exploration`, `rtk`,
+  `devcontainer`, `max_open_prs`, `max_pending_branches`). Saved to
+  `instance/projects.yaml` (persistent on a hosted deployment's volume) via
+  `apply_project_patch()`. `path`, secrets, and nested-dict sections are never editable
+  from the form. Backed by `GET/POST /api/projects/<name>`.
+- **Settings** — single-field `config.yaml` edits (dashboard nickname, auto-merge,
+  CI fix dispatch, review-comment dispatch, auto-update). Each control writes one
+  allow-listed dotted key through `PUT /api/config/setting`, comment-preserving.
+  Off-list keys are rejected with HTTP 422.
 
 ### Usage activity backfill
 

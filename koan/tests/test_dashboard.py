@@ -2370,3 +2370,94 @@ class TestPassphraseGate:
             app_client.get("/logout")
             resp = app_client.get("/api/status")
             assert resp.status_code == 401
+
+
+class TestLogsApiShape:
+    def test_logs_lines_are_dicts_with_text(self, app_client, instance_dir):
+        logs_dir = instance_dir.parent / "logs"
+        logs_dir.mkdir(exist_ok=True)
+        (logs_dir / "run.log").write_text("hello world\nsecond line\n")
+        resp = app_client.get("/api/logs?source=run&limit=10")
+        data = resp.get_json()
+        assert data["lines"], "expected at least one line"
+        first = data["lines"][0]
+        # Template now reads `line.text`; guard the contract.
+        assert isinstance(first, dict)
+        assert "text" in first and "source" in first
+        assert first["text"] == "hello world"
+
+
+class TestChatHistory:
+    def test_history_returns_saved_turns(self, app_client, instance_dir):
+        from app.conversation_history import save_conversation_message
+        hist = instance_dir / "conversation-history.jsonl"
+        save_conversation_message(hist, "user", "ping")
+        save_conversation_message(hist, "assistant", "pong")
+        with patch.object(dashboard.state, "CONVERSATION_HISTORY_FILE", hist):
+            resp = app_client.get("/chat/history")
+        data = resp.get_json()
+        assert data["ok"] is True
+        roles = [m["role"] for m in data["messages"]]
+        assert roles == ["user", "assistant"]
+        assert data["messages"][1]["content"] == "pong"
+
+
+class TestProjectConfigEndpoints:
+    def test_get_then_save_roundtrip(self, app_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text(
+            "projects:\n  koan:\n    path: /tmp/koan\n    autoreview: false\n"
+        )
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        get_resp = app_client.get("/api/projects/koan").get_json()
+        assert get_resp["config"]["autoreview"] is False
+        save = app_client.post("/api/projects/koan", json={"patch": {"autoreview": True}})
+        assert save.get_json()["config"]["autoreview"] is True
+
+    def test_save_rejects_non_editable_field(self, app_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text(
+            "projects:\n  koan:\n    path: /tmp/koan\n"
+        )
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        resp = app_client.post("/api/projects/koan", json={"patch": {"path": "/etc"}})
+        assert resp.status_code == 422
+
+
+class TestConfigPageProjectsForm:
+    def test_config_page_renders_projects_form_tab(self, app_client):
+        html = app_client.get("/config").get_data(as_text=True)
+        assert 'data-tab="projects-form"' in html
+        assert 'id="panel-projects-form"' in html
+        assert 'id="project-form-select"' in html
+
+    def test_config_page_renders_settings_tab(self, app_client):
+        html = app_client.get("/config").get_data(as_text=True)
+        assert 'data-tab="settings"' in html
+        assert 'id="panel-settings"' in html
+
+    def test_projects_form_feed_returns_editable_fields(self, app_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text(
+            "projects:\n  koan:\n    path: /tmp/koan\n    max_open_prs: 5\n"
+        )
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        data = app_client.get("/api/projects/koan").get_json()
+        assert "autoreview" in data["config"]      # allow-listed key present
+        assert data["config"]["max_open_prs"] == 5
+        assert "path" not in data["config"]         # path is never exposed for edit
+
+
+class TestSettingEndpoint:
+    def test_put_allowed_setting_persists(self, app_client, instance_dir):
+        (instance_dir / "config.yaml").write_text("dashboard:\n  nickname: Old\n")
+        resp = app_client.put("/api/config/setting",
+                               json={"key": "dashboard.nickname", "value": "Lab42"})
+        assert resp.get_json()["ok"] is True
+        assert "nickname: Lab42" in (instance_dir / "config.yaml").read_text()
+
+    def test_put_rejects_unlisted_key(self, app_client, instance_dir):
+        (instance_dir / "config.yaml").write_text("dashboard:\n  nickname: Old\n")
+        resp = app_client.put("/api/config/setting",
+                               json={"key": "secrets.telegram_token", "value": "x"})
+        assert resp.status_code == 422

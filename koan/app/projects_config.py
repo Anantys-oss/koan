@@ -773,6 +773,108 @@ def get_project_security_config(config: dict, project_name: str) -> dict:
     return {"pvrs": pvrs, "pvrs_threshold": threshold}
 
 
+# Fields a non-technical operator may safely toggle through the dashboard.
+# Anything off this allow-list is rejected so the UI can never write an
+# arbitrary key or clobber `path`/secrets/nested-dict sections.
+EDITABLE_PROJECT_FIELDS = {
+    "cli_provider": str,
+    "autoreview": bool,
+    "focus": bool,
+    "exploration": bool,
+    "rtk": bool,
+    "devcontainer": bool,
+    "max_open_prs": int,
+    "max_pending_branches": int,
+}
+
+
+_TRUE_TOKENS = ("1", "true", "yes", "on")
+_FALSE_TOKENS = ("0", "false", "no", "off")
+
+
+def _coerce_editable_value(expected, raw):
+    """Coerce a raw form value to the declared type for an editable field.
+
+    Booleans are validated against an explicit true/false token set; an
+    unrecognized value raises ``ValueError`` rather than silently becoming
+    ``False``.
+    """
+    if expected is bool:
+        if isinstance(raw, bool):
+            return raw
+        token = str(raw).strip().lower()
+        if token in _TRUE_TOKENS:
+            return True
+        if token in _FALSE_TOKENS:
+            return False
+        raise ValueError(f"not a boolean: {raw!r}")
+    return expected(raw)
+
+
+def apply_project_patch(koan_root: str, project_name: str, patch: dict) -> dict:
+    """Validate and persist a partial update to one project's overrides.
+
+    Only ``EDITABLE_PROJECT_FIELDS`` keys are accepted; values are coerced to
+    the declared type. Persists via :func:`save_projects_config`
+    (comment-preserving, ``instance/``-aware) and invalidates the cache.
+    Returns the merged project config after the write.
+
+    Raises ``ValueError`` on unknown project, non-editable field, or a value
+    that cannot be coerced to the declared type.
+    """
+    import copy
+
+    config = load_projects_config(koan_root)
+    if not config:
+        raise ValueError("No projects.yaml found")
+    if not _find_project_entry(config.get("projects", {}), project_name):
+        raise ValueError(f"Unknown project: {project_name}")
+
+    clean: dict = {}
+    for key, raw in patch.items():
+        if key not in EDITABLE_PROJECT_FIELDS:
+            raise ValueError(f"Field not editable: {key}")
+        try:
+            clean[key] = _coerce_editable_value(EDITABLE_PROJECT_FIELDS[key], raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid value for {key}: {raw!r}") from exc
+
+    # cli_provider is free-text-typed but must name a registered provider —
+    # reject unknowns now so a typo can't become a KeyError at run time.
+    if clean.get("cli_provider"):
+        from app.provider import is_known_provider
+        if not is_known_provider(clean["cli_provider"]):
+            raise ValueError(f"Invalid value for cli_provider: {clean['cli_provider']!r}")
+
+    # Resolve canonical casing so we update the existing entry instead of
+    # creating a case-variant duplicate.
+    canonical = project_name
+    for existing in config.get("projects", {}):
+        if existing.lower() == project_name.lower():
+            canonical = existing
+            break
+
+    # Mutate a deep copy of the full config (not the shared cache object),
+    # then persist the whole thing. save_projects_config() deep-merges and
+    # *removes keys absent from the source*, so a partial dict would wipe
+    # other projects / defaults — passing the full config keeps them intact.
+    full = copy.deepcopy(config)
+    full.setdefault("projects", {})
+    full["projects"].setdefault(canonical, {})
+    full["projects"][canonical].update(clean)
+
+    save_projects_config(koan_root, full)
+    invalidate_projects_config_cache()
+
+    # A falsy reload after a successful write means the file became
+    # unreadable/empty — surface it instead of substituting `{}`, which would
+    # report computed defaults as if they were the just-saved values.
+    fresh = load_projects_config(koan_root)
+    if not fresh:
+        raise ValueError("projects.yaml reload returned no config after save")
+    return get_project_config(fresh, canonical)
+
+
 def save_projects_config(koan_root: str, config: dict) -> None:
     """Write config back to projects.yaml atomically, preserving comments.
 

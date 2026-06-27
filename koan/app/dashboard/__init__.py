@@ -33,12 +33,13 @@ def create_app() -> Flask:
     from app.dashboard.agent import agent_bp
     from app.dashboard.chat import chat_bp
     from app.dashboard.config import config_bp
+    from app.dashboard.config_form import config_form_bp
     from app.dashboard.core import core_bp
     from app.dashboard.missions import missions_bp
     from app.dashboard.prs import prs_bp
     from app.dashboard.usage import usage_bp
 
-    for bp in (core_bp, missions_bp, chat_bp, usage_bp, agent_bp, config_bp, prs_bp):
+    for bp in (core_bp, missions_bp, chat_bp, usage_bp, agent_bp, config_bp, config_form_bp, prs_bp):
         app.register_blueprint(bp)
 
     return app
