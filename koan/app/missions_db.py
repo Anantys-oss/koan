@@ -271,18 +271,34 @@ def prune_terminal_rows(instance: str, done_keep: int, failed_keep: int) -> int:
 
 
 def reconcile(instance: str) -> dict:
-    """Truncate the DB and rebuild it from ``missions.md`` (idempotent)."""
+    """Atomically truncate the DB and rebuild it from ``missions.md`` (idempotent).
+
+    The truncate and the repopulate run in a **single transaction**: if the
+    rebuild fails or yields nothing, the deletion rolls back to the prior rows
+    instead of leaving the table silently empty/partial. The returned report
+    carries an ``"ok"`` flag (``False`` on any failure) so callers can detect a
+    rebuild that did not complete cleanly.
+    """
     conn = ensure_db(instance)
-    if conn is not None:
-        try:
-            conn.execute("DELETE FROM missions")
+    if conn is None:
+        return {"inserted": 0, "unparseable": [], "by_state": {}, "ok": False}
+    try:
+        conn.execute("DELETE FROM missions")
+        report = _populate_from_md(conn, instance)
+        if report.get("ok", True):
             conn.commit()
-        except sqlite3.DatabaseError as e:
-            logger.warning("[missions_db] reconcile truncate failed: %s", e)
-        finally:
+        else:
             with contextlib.suppress(Exception):
-                conn.close()
-    return migrate_md_to_sqlite(instance)
+                conn.rollback()
+        return report
+    except Exception as e:  # defensive: never raise into the agent loop
+        logger.warning("[missions_db] reconcile failed: %s", e)
+        with contextlib.suppress(Exception):
+            conn.rollback()
+        return {"inserted": 0, "unparseable": [], "by_state": {}, "ok": False}
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
 
 
 def _mission_key_source(item: str) -> Optional[str]:
@@ -300,14 +316,17 @@ def _mission_key_source(item: str) -> Optional[str]:
     return None
 
 
-def migrate_md_to_sqlite(instance: str, *, dry_run: bool = False) -> dict:
-    """Parse ``missions.md`` and insert one row per entry.
+def _populate_from_md(conn: Optional[sqlite3.Connection], instance: str, *,
+                      dry_run: bool = False) -> dict:
+    """Parse ``missions.md`` and insert one row per entry on ``conn``.
 
-    Returns ``{"inserted": int, "unparseable": [str, ...], "by_state": {...}}``.
-    Items with no identifiable ``- ``/``### `` line surface in ``unparseable``
-    rather than being dropped. When ``dry_run`` is True, nothing is written —
-    the report reflects what *would* be inserted (single source of truth for the
-    migration CLI's dry-run output).
+    The caller owns the transaction: this helper neither commits nor closes
+    ``conn`` (so ``reconcile`` can truncate + repopulate atomically). When
+    ``dry_run`` is True, ``conn`` may be ``None`` and nothing is written.
+
+    Returns ``{"inserted", "unparseable", "by_state", "ok"}``. ``ok`` is False
+    if a non-DB error (e.g. a parse-layer failure) aborts the walk — so a
+    failure can never masquerade as a clean empty rebuild.
     """
     from app.missions import (
         extract_complexity_tag,
@@ -316,14 +335,9 @@ def migrate_md_to_sqlite(instance: str, *, dry_run: bool = False) -> dict:
         parse_sections,
     )
     md = Path(instance) / "missions.md"
-    report = {"inserted": 0, "unparseable": [], "by_state": {}}
+    report = {"inserted": 0, "unparseable": [], "by_state": {}, "ok": True}
     if not md.exists():
         return report
-    conn = None
-    if not dry_run:
-        conn = ensure_db(instance)
-        if conn is None:
-            return report
     try:
         sections = parse_sections(md.read_text())
         for state, items in sections.items():
@@ -364,12 +378,30 @@ def migrate_md_to_sqlite(instance: str, *, dry_run: bool = False) -> dict:
                 except sqlite3.DatabaseError as e:
                     logger.warning("[missions_db] migrate insert failed: %s", e)
                     report["unparseable"].append(item[:120])
-        if conn is not None:
-            conn.commit()
-    except sqlite3.DatabaseError as e:
-        logger.warning("[missions_db] migrate_md_to_sqlite failed: %s", e)
-    finally:
-        if conn is not None:
-            with contextlib.suppress(Exception):
-                conn.close()
+    except Exception as e:  # parse-layer or DB failure: signal, don't escape
+        logger.warning("[missions_db] populate_from_md failed: %s", e)
+        report["ok"] = False
     return report
+
+
+def migrate_md_to_sqlite(instance: str, *, dry_run: bool = False) -> dict:
+    """Parse ``missions.md`` and insert one row per entry (own transaction).
+
+    Returns ``{"inserted", "unparseable", "by_state", "ok"}``. Items with no
+    identifiable ``- ``/``### `` line surface in ``unparseable`` rather than
+    being dropped. When ``dry_run`` is True, nothing is written — the report
+    reflects what *would* be inserted (single source of truth for the migration
+    CLI's dry-run output).
+    """
+    if dry_run:
+        return _populate_from_md(None, instance, dry_run=True)
+    conn = ensure_db(instance)
+    if conn is None:
+        return {"inserted": 0, "unparseable": [], "by_state": {}, "ok": False}
+    try:
+        report = _populate_from_md(conn, instance)
+        conn.commit()
+        return report
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
