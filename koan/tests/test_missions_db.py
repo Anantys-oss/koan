@@ -120,3 +120,39 @@ def test_mirror_transition_pending_rerun_after_done_creates_new_row(tmp_path):
     missions_db.mirror_transition(inst, "again", "pending")
     assert missions_db.mission_count_by_state(inst, "done") == 1
     assert missions_db.mission_count_by_state(inst, "pending") == 1
+
+
+def test_prune_terminal_rows_caps_done_and_failed_keeping_recent(tmp_path):
+    inst = str(tmp_path)
+    for i in range(5):
+        missions_db._insert_row(inst, f"done {i}", "done")
+        missions_db._insert_row(inst, f"failed {i}", "failed")
+    deleted = missions_db.prune_terminal_rows(inst, done_keep=2, failed_keep=3)
+    assert deleted == (5 - 2) + (5 - 3)
+    assert missions_db.mission_count_by_state(inst, "done") == 2
+    assert missions_db.mission_count_by_state(inst, "failed") == 3
+    # Most recent rows are kept (highest insertion id).
+    kept = {r["text"] for r in missions_db.list_by_state(inst, "done")}
+    assert kept == {missions_db._canonical("done 3"), missions_db._canonical("done 4")}
+
+
+def test_prune_terminal_rows_leaves_live_rows_untouched(tmp_path):
+    inst = str(tmp_path)
+    missions_db.insert_mission_row(inst, "pending work")
+    missions_db._insert_row(inst, "in flight", "in_progress")
+    for i in range(3):
+        missions_db._insert_row(inst, f"done {i}", "done")
+    missions_db.prune_terminal_rows(inst, done_keep=1, failed_keep=1)
+    assert missions_db.mission_count_by_state(inst, "pending") == 1
+    assert missions_db.mission_count_by_state(inst, "in_progress") == 1
+    assert missions_db.mission_count_by_state(inst, "done") == 1
+
+
+def test_prune_terminal_rows_zero_keep_deletes_all_of_state(tmp_path):
+    inst = str(tmp_path)
+    for i in range(3):
+        missions_db._insert_row(inst, f"done {i}", "done")
+        missions_db._insert_row(inst, f"failed {i}", "failed")
+    missions_db.prune_terminal_rows(inst, done_keep=0, failed_keep=2)
+    assert missions_db.mission_count_by_state(inst, "done") == 0
+    assert missions_db.mission_count_by_state(inst, "failed") == 2

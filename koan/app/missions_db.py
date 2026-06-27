@@ -235,6 +235,41 @@ def mirror_transition(instance: str, text: str, state: str, *, project: str = "d
         logger.warning("[missions_db] mirror_transition swallowed: %s", e)
 
 
+def prune_terminal_rows(instance: str, done_keep: int, failed_keep: int) -> int:
+    """Cap terminal (``done``/``failed``) rows, keeping the most recent N per state.
+
+    Mirrors ``missions.enforce_size_bound`` so the DB's terminal history stays
+    bounded and tracks the pruned ``missions.md`` instead of growing without
+    bound across a long-running daemon. "Most recent" is by insertion ``id``
+    (rows are inserted in transition order). A non-positive keep deletes all
+    rows in that state. Best-effort: returns the number of rows deleted, 0 on
+    any error.
+    """
+    conn = ensure_db(instance)
+    if conn is None:
+        return 0
+    deleted = 0
+    try:
+        for state, keep in (("done", done_keep), ("failed", failed_keep)):
+            if keep <= 0:
+                cur = conn.execute("DELETE FROM missions WHERE state=?", (state,))
+            else:
+                cur = conn.execute(
+                    "DELETE FROM missions WHERE state=? AND id NOT IN "
+                    "(SELECT id FROM missions WHERE state=? ORDER BY id DESC LIMIT ?)",
+                    (state, state, keep),
+                )
+            deleted += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        conn.commit()
+        return deleted
+    except sqlite3.DatabaseError as e:
+        logger.warning("[missions_db] prune_terminal_rows failed: %s", e)
+        return 0
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
 def reconcile(instance: str) -> dict:
     """Truncate the DB and rebuild it from ``missions.md`` (idempotent)."""
     conn = ensure_db(instance)

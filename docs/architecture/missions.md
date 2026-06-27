@@ -54,6 +54,17 @@ row — so a re-run of an identical past mission gets its own fresh row instead 
 flipping the historical one. The In Progress → Pending requeue path is mirrored
 too.
 
+## History pruning
+
+`missions.md` Done/Failed history is trimmed by `run._prune_missions_history()`
+after each finalize commits. The same step calls
+`missions_db.prune_terminal_rows()` with the configured `done_keep`/`failed_keep`,
+so the DB's terminal rows stay bounded and track the file instead of growing
+without limit across a long-running daemon. The DB keeps the most-recent N rows
+per terminal state by insertion id, matching the file's keep semantics. (When the
+file is shrunk further by the line cap, exact counts can momentarily differ until
+the next `reconcile()`; the pending read path is unaffected.)
+
 ## Startup reconcile
 
 Crash recovery (`recover.recover_missions()`) rewrites `missions.md` (moving stale

@@ -2757,6 +2757,18 @@ def _prune_missions_history(instance: str) -> None:
         modify_missions_file(missions_path, _transform)
         if pruned[0] > 0:
             log("health", f"Pruned {pruned[0]} old Done/Failed items from missions.md")
+
+        # Mirror the prune into the DB so terminal rows stay bounded and don't
+        # diverge from the file (best-effort; never fatal).
+        try:
+            from app import missions_db
+            missions_db.prune_terminal_rows(
+                instance,
+                done_keep=get_missions_done_keep(),
+                failed_keep=get_missions_failed_keep(),
+            )
+        except Exception as e:
+            log("warning", f"DB terminal-row prune skipped: {e}")
     except Exception as e:
         log("error", f"Missions history pruning failed: {e}")
 
