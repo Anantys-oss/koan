@@ -209,6 +209,22 @@ def test_dual_read_matches_file_order(tmp_path):
     conn.close()
 
 
+def test_dual_read_shape_matches_file_no_surrogate_id(tmp_path):
+    # DB-served read must yield the same dict shape as the file (no synthetic
+    # `id` PK key), so a consumer can't tell which source served the read.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    file_recs = [{"text": "a", "section": "pending", "project": "koan",
+                  "queued_ts": None, "started_ts": None, "completed_ts": None}]
+    artifact_db.dual_write(file_recs, file_writer=lambda r: None,
+                           conn=conn, table="missions")
+    from_db = artifact_db.read_from_db_or_file(
+        conn, "missions", file_reader=lambda: file_recs)
+    assert from_db == file_recs          # whole-dict equality, "id" excluded
+    assert "id" not in from_db[0]
+    conn.close()
+
+
 def test_dual_read_falls_back_when_db_empty(tmp_path):
     conn = artifact_db.connect(tmp_path / "a.db")
     artifact_db.create_tables(conn)

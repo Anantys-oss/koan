@@ -37,7 +37,8 @@ columns are pinned to `memory_db._EXPECTED_COLUMNS` so the two indexes agree.
   propagates (the write genuinely failed).
 - `read_from_db_or_file(conn, table, file_reader=, order_key=None)` — reads the
   DB when populated and in-sync, else parses the file; preserves file-parse
-  ordering so a consumer can't tell which source served the read. A dirty
+  ordering **and dict shape** (surrogate `id` PK columns are excluded) so a
+  consumer can't tell which source served the read. A dirty
   projection (last write failed to mirror) always falls back to the file.
   `order_key` is validated against the declared columns before interpolation —
   an unknown key is ignored (rowid order) rather than injected into SQL.
