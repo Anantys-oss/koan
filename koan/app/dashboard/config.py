@@ -17,6 +17,7 @@ from app.automation_rules import (
 from app.dashboard import state
 from app.dashboard_service import journal as journal_svc
 from app.dashboard_service import missions as missions_svc
+from app.dashboard_service import stats as stats_svc
 from app.dashboard_service import validate_yaml
 from app.recurring import (
     _locked_modify as _recurring_locked_modify,
@@ -90,6 +91,34 @@ def api_config_restart():
     except Exception as e:
         print(f"[dashboard] restart signal failed: {e}", file=sys.stderr)
         return jsonify({"ok": False, "error": "Failed to send restart signal"}), 500
+
+
+@config_bp.route("/api/config/sync", methods=["GET"])
+def api_config_sync():
+    """Non-SSE poll fallback for config-sync status."""
+    from app import config_sync
+    return jsonify(config_sync.compute_status(state.KOAN_ROOT))
+
+
+@config_bp.route("/api/config/restart-if-idle", methods=["POST"])
+def api_config_restart_if_idle():
+    """Restart the agent only when it is idle (no in-flight mission)."""
+    import sys
+
+    agent_state = stats_svc.get_agent_state()
+    if agent_state.get("state") != "idle":
+        return jsonify({
+            "ok": False,
+            "error": "agent_busy",
+            "state": agent_state.get("state"),
+        }), 409
+    from app.restart_manager import request_restart
+    try:
+        request_restart(str(state.KOAN_ROOT))
+    except Exception as e:
+        print(f"[dashboard] restart-if-idle failed: {e}", file=sys.stderr)
+        return jsonify({"ok": False, "error": "restart_failed"}), 500
+    return jsonify({"ok": True, "status": "restart_signaled"})
 
 
 @config_bp.route("/api/nickname", methods=["GET"])
