@@ -277,7 +277,10 @@ def _start_stagnation_monitor(stdout_file: str, proc, project_name: str):
         if not get_provider().emits_incremental_progress():
             return None
     except Exception as e:
-        log("error", f"provider progress capability check failed: {e}")
+        # Fail safe: skip the monitor rather than risk a false-kill on a
+        # non-incremental provider whose capability check transiently failed.
+        log("error", f"provider progress capability check failed; skipping stagnation monitor: {e}")
+        return None
 
     def _on_warn(count: int) -> None:
         log("koan", f"⚠️  Possible stagnation detected (identical output {count}x)")

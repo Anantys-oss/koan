@@ -39,14 +39,19 @@ is set up for.
 | MCP servers      | —                   | Configure in Haze, not via Kōan             |
 | System prompt    | —                   | Prepended to the user prompt                |
 | Reasoning effort | —                   | Not supported (ignored)                     |
-| Token usage      | `usage` envelope    | `prompt_tokens`/`completion_tokens` feed budget + burn-rate gating |
+| Token usage      | `usage` envelope    | `prompt_tokens`/`completion_tokens` feed token-count usage accounting |
 
 Unsupported features are logged once and ignored — the mission still runs.
 
-Kōan reads the final envelope's `usage` block for budget and burn-rate
+Kōan reads the final envelope's `usage` block for token-count usage
 accounting. Backends that report OpenAI-style `prompt_tokens`/`completion_tokens`
 are recognized alongside the Anthropic-style `input_tokens`/`output_tokens`, so
-metered quota gating works regardless of the selected backend.
+token-count tracking works regardless of the selected backend.
+
+The haze `{type,status,result,usage}` envelope carries no `model` or
+`total_cost_usd`, so recorded entries bucket under `model="unknown"` with
+`cost_usd=0.0`: token *counts* are tracked, but dollar-denominated cost and any
+cost-based burn-rate signal under-report for haze.
 
 ## Timeouts
 
