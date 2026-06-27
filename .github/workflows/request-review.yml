@@ -14,12 +14,11 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const bot = 'Koan-Bot';
-            const fallbackBot = 'Father-Koan';
+            const bots = ['Koan-Bot', 'Father-Koan'];
             const author = context.payload.pull_request.user.login;
-            let commented = false;
 
-            if (author !== bot) {
+            for (const bot of bots) {
+              if (bot === author) continue;
               try {
                 await github.rest.pulls.requestReviewers({
                   owner: context.repo.owner,
@@ -27,17 +26,6 @@ jobs:
                   pull_number: context.issue.number,
                   reviewers: [bot]
                 });
-                commented = true;
-              } catch (e) {}
-            }
-
-            if (!commented) {
-              try {
-                await github.rest.pulls.requestReviewers({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: context.issue.number,
-                  reviewers: [fallbackBot]
-                });
+                break;
               } catch (e) {}
             }
