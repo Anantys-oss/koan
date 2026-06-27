@@ -137,6 +137,9 @@ The custom binary must accept the same CLI interface as `claude`
 
 When unset or empty, Koan uses the standard `claude` command from PATH.
 
+When a custom path is set, `/status` shows the binary name next to the provider
+(e.g. `claude (ollama-claude)`), so you can confirm which wrapper is in use.
+
 > **Running OpenRouter models through the Claude CLI?** See
 > [openrouter.md](openrouter.md) — it uses this wrapper mechanism plus a local
 > CCR router to make non-Anthropic OpenRouter models work in `-p` mode.

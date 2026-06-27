@@ -82,6 +82,10 @@ unset). Linger keeps `/run/user/<uid>` alive so the bus is reachable.
 | `make status` | `systemctl --user status koan.service koan-awake.service` |
 | `make restart` | `make stop` + `make start` |
 
+When `KOAN_SERVICE_MANAGER` is set, the `/status` output advertises it on the
+system-info line (e.g. `⚙️ systemd-user`), so you can confirm at a glance which
+manager a running instance is under.
+
 ## Viewing Logs
 
 Units write to `logs/run.log` and `logs/awake.log` (via `StandardOutput`/
