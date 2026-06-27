@@ -124,6 +124,8 @@ which runs the `add_project` skill in-process and appends the project to `projec
 
 Routing note: `/` (the `core.index` route) redirects to `/projects` when 2+ projects are
 configured; a single-project install keeps the classic single-project dashboard at `/`.
+An explicit `?project=<name>` bypasses the redirect, so the classic single-project view
+stays reachable on multi-project installs (e.g. the registry's per-project links).
 
 ## Layout
 

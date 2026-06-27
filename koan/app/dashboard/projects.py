@@ -34,8 +34,13 @@ def projects_page():
 
 @projects_bp.route("/api/projects/<name>/status")
 def api_project_status(name: str):
-    """JSON card for one project (async refresh)."""
-    return jsonify(proj_svc.build_project_status(name))
+    """JSON card for one project (async refresh).
+
+    Returns 404 for an unknown name so callers can distinguish a typo'd
+    project from a genuinely idle one.
+    """
+    card = proj_svc.build_project_status(name)
+    return jsonify(card), (200 if card.get("found") else 404)
 
 
 @projects_bp.route("/projects/add", methods=["POST"])
@@ -92,8 +97,36 @@ def _run_add_skill(args: str) -> tuple:
         _report(False, f"add_project failed: {e}")
         return False, f"Error: {e}"
     message = "\n".join(parts).strip()
-    _report(True, message)
-    return True, message
+    # The add_project skill returns a plain string and signals failure by
+    # returning an error message (clone/fork failure, invalid repo, already
+    # exists) rather than raising. Only the success path reports the project
+    # was added to the workspace; classify on that so a failed add is not
+    # announced as a success.
+    ok = _looks_successful(message)
+    _report(ok, message)
+    return ok, message
+
+
+_FAILURE_MARKERS = (
+    "failed",
+    "could not",
+    "invalid",
+    "already exists",
+    "usage:",
+    "error",
+)
+
+
+def _looks_successful(message: str) -> bool:
+    """Best-effort success classification of the add_project skill output.
+
+    The skill returns ``Project '<name>' added to workspace.`` on success and
+    a descriptive error string otherwise. Treat an empty result or any known
+    failure marker as a failure.
+    """
+    if not message:
+        return False
+    return not any(marker in message.lower() for marker in _FAILURE_MARKERS)
 
 
 def _report(ok: bool, message: str) -> None:
