@@ -708,7 +708,7 @@ After completion, Kōan posts a structured comment on the PR with these sections
 <details>
 <summary>Use cases</summary>
 
-- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase` in sequence
+- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase` at the **top** of the queue so the combo runs next (review stays ahead of rebase)
 - Extra context after the URL is passed to the review step (e.g., `/rr <url> focus on error handling`)
 </details>
 

@@ -652,6 +652,40 @@ def insert_pending_mission(
     return inserted
 
 
+def insert_pending_missions(
+    missions_path: Path, entries: list, *, urgent: bool = False,
+) -> list:
+    """Insert several mission entries atomically, preserving list order.
+
+    Non-duplicate entries keep their relative order in the pending section:
+    the first entry ends up above the second, and so on. When urgent=True the
+    block is inserted at the top of the pending section; otherwise at the
+    bottom. The whole batch is one locked read-modify-write, so the run loop
+    can never observe a half-inserted, mis-ordered queue.
+
+    Returns:
+        A per-entry list of bools — True if inserted, False if it was a
+        duplicate (same command + URL already pending or in progress).
+    """
+    from app.missions import insert_mission, is_duplicate_mission
+
+    results = [True] * len(entries)
+
+    def _transform(content: str) -> str:
+        # For top insertion each entry lands just under the header, so insert
+        # in reverse to leave the first entry on top.
+        order = range(len(entries) - 1, -1, -1) if urgent else range(len(entries))
+        for i in order:
+            if is_duplicate_mission(content, entries[i]):
+                results[i] = False
+                continue
+            content = insert_mission(content, entries[i], urgent=urgent)
+        return content
+
+    _locked_missions_rw(missions_path, _transform)
+    return results
+
+
 def modify_missions_file(missions_path: Path, transform):
     """Apply a transform function to missions.md content with file locking.
 

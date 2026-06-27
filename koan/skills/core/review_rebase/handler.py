@@ -5,7 +5,7 @@ from app.github_skill_helpers import (
     extract_github_url,
     format_project_not_found_error,
     format_success_message,
-    queue_github_mission,
+    queue_github_missions,
     resolve_project_for_repo,
 )
 
@@ -47,9 +47,17 @@ def handle(ctx):
     if not project_path:
         return format_project_not_found_error(repo, owner=owner)
 
-    # Queue review first, then rebase — review learnings inform the rebase
-    review_ok = queue_github_mission(ctx, "review", pr_url, project_name, context)
-    rebase_ok = queue_github_mission(ctx, "rebase", pr_url, project_name)
+    # Queue at the top of the pending queue so the combo runs next, review
+    # above rebase — review learnings inform the rebase. One atomic batch keeps
+    # the order intact (the run loop never sees rebase queued before review).
+    review_ok, rebase_ok = queue_github_missions(
+        ctx,
+        [
+            ("review", pr_url, project_name, context),
+            ("rebase", pr_url, project_name, None),
+        ],
+        urgent=True,
+    )
 
     target = format_success_message('PR', pr_number, owner, repo)
     if not review_ok and not rebase_ok:
