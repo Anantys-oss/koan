@@ -127,8 +127,11 @@ def connect(db_path: Path) -> Optional[sqlite3.Connection]:
             # don't leak the handle/WAL lock while still returning None.
             try:
                 conn.close()
-            except sqlite3.DatabaseError:
-                pass
+            except sqlite3.DatabaseError as close_err:
+                # Log so a leaked handle/WAL lock is observable rather than
+                # vanishing into a bare ``pass``.
+                logger.warning(
+                    "[artifact_db] could not close orphan conn: %s", close_err)
         return None
 
 
@@ -178,7 +181,10 @@ def _is_dirty(conn: sqlite3.Connection, table: str) -> bool:
         row = conn.execute(
             f"SELECT dirty FROM {_META_TABLE} WHERE table_name = ?", (table,)
         ).fetchone()
-    except sqlite3.DatabaseError:
+    except sqlite3.DatabaseError as e:
+        # Surface persistent meta-table corruption/locking instead of masking
+        # it as a routine file fallback.
+        logger.warning("[artifact_db] dirty check for %s failed: %s", table, e)
         return True  # can't verify -> assume divergent, serve the file
     return bool(row and row[0])
 
@@ -225,7 +231,10 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
       duplicates across rewrites.
     - ``"append"`` — append-only artifacts (``journal``, ``memory`` log,
       ``recovery.jsonl``): ``records`` are the new rows only; they are inserted
-      without truncating, mirroring an append to the file.
+      without truncating, mirroring an append to the file. A once-dirty append
+      projection stays dirty across subsequent successful appends — an append
+      cannot backfill rows a prior failed append dropped, so only a full rebuild
+      (``"replace"``) heals it.
 
     A DB projection failure is logged, rolled back, and the projection flagged
     dirty (so subsequent reads fall back to the file) but never propagated; if
@@ -248,11 +257,29 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
     try:
         if mode == "replace":
             conn.execute(f"DELETE FROM {table}")   # full-rewrite mirror
-        conn.executemany(sql, [tuple(r.get(c) for c in cols) for r in records])
-        _set_dirty(conn, table, False)
+            conn.executemany(sql, [tuple(r.get(c) for c in cols) for r in records])
+            _set_dirty(conn, table, False)         # full rebuild heals any gap
+        else:  # append
+            # An append inserts only the new rows; it cannot backfill rows a
+            # prior failed append dropped. Clearing the dirty flag here would
+            # serve a DB permanently missing those rows. So a once-dirty append
+            # projection stays dirty until a full rebuild (replace) heals it.
+            already_dirty = _is_dirty(conn, table)
+            conn.executemany(sql, [tuple(r.get(c) for c in cols) for r in records])
+            _set_dirty(conn, table, already_dirty)
         conn.commit()
     except sqlite3.DatabaseError as e:
         logger.warning("[artifact_db] dual_write DB projection failed (%s): %s", table, e)
+        # A structural problem (table missing / schema drift) makes every write
+        # fail identically; surface it once as a distinct diagnostic instead of
+        # only the per-write warning above.
+        drift = verify_schema(conn, table)
+        if drift.get("in_sync") is not True:
+            logger.warning(
+                "[artifact_db] %s projection structurally unusable "
+                "(in_sync=%s, missing=%s, unexpected=%s) — running file-only",
+                table, drift.get("in_sync"), drift.get("missing"),
+                drift.get("unexpected"))
         try:
             conn.rollback()                    # leave a consistent (stale) DB
         except sqlite3.DatabaseError as rb_err:
@@ -278,8 +305,10 @@ def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,
     """Read DB-first with file fallback, preserving file-parse ordering.
 
     Falls back to ``file_reader()`` when the DB is unavailable, the table is
-    empty, the projection is flagged dirty (a prior write failed to project), or
-    a DB error occurs. ``order_key`` overrides default insertion (rowid) ordering
+    empty, the projection is flagged dirty (a prior write failed to project),
+    the live schema drifts from the declared columns (verified via
+    :func:`verify_schema`), or a DB error occurs. ``order_key`` overrides default
+    insertion (rowid) ordering
     for artifacts whose file order is semantic; it is validated against the
     declared (non-PK) columns to avoid interpolating an arbitrary identifier into
     SQL. Surrogate primary-key columns are excluded from the result so a
@@ -290,6 +319,11 @@ def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,
         return file_reader()
     if _is_dirty(conn, table):
         return file_reader()        # projection known-divergent -> trust the file
+    # Honor the in-sync guarantee: a column-superset/-subset drift would yield a
+    # different dict shape than the file, so fall back rather than serve it.
+    # in_sync is None pre-create (empty projection -> falls back below anyway).
+    if verify_schema(conn, table).get("in_sync") is False:
+        return file_reader()
     # Exclude surrogate PK columns: the file has no synthetic ``id``, so a
     # DB-served read must yield the same dict shape as ``file_reader()`` or a
     # consumer could tell which source served the read (key presence).
