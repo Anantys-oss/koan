@@ -97,10 +97,15 @@ _SECRET_EXTRACTION_PATTERNS = [
 ]
 
 _SHELL_INJECTION_PATTERNS = [
-    # Shell metacharacters in natural-language context combined with dangerous commands
+    # Dangerous commands (network fetch / destructive rm) inside backticks or a
+    # subshell. Word boundaries keep the tool names from matching as substrings of
+    # ordinary words (e.g. `sh` in "shadow", `nc` in "Sync"). Bare interpreters
+    # (bash/sh/python/...) are intentionally NOT listed here: mentioning them in
+    # inline code is overwhelmingly benign, and genuinely dangerous use ("… | bash")
+    # is already covered by the pipe-to-shell pattern below.
     (re.compile(
-        r'(?:`[^`]*(?:curl|wget|nc|ncat|bash|sh|python|ruby|perl|rm\s+-rf)[^`]*`'
-        r'|\$\([^)]*(?:curl|wget|nc|ncat|bash|sh|python|ruby|perl|rm\s+-rf)[^)]*\))',
+        r'(?:`[^`]*\b(?:curl|wget|nc|ncat|rm\s+-rf)\b[^`]*`'
+        r'|\$\([^)]*\b(?:curl|wget|nc|ncat|rm\s+-rf)\b[^)]*\))',
         re.IGNORECASE,
     ), "Shell command injection via backticks/subshell", "shell_injection", "high"),
     (re.compile(
