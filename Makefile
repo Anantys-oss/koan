@@ -6,6 +6,7 @@ export
 .PHONY: awake run errand-run errand-awake dashboard koan api api-token webhook
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
+.PHONY: install-user-service uninstall-user-service
 .PHONY: install-launchd-service uninstall-launchd-service
 .PHONY: docker-setup docker-pull-up docker-up docker-down docker-logs docker-test docker-auth docker-gh-auth
 
@@ -315,6 +316,16 @@ uninstall-systemctl-service:
 	@if [ -z "$(IS_LINUX)" ]; then echo "Error: systemd is only available on Linux." >&2; exit 1; fi
 	@if [ -z "$(USE_SYSTEMD)" ]; then echo "Error: systemctl not found." >&2; exit 1; fi
 	sudo bash koan/systemd/uninstall-service.sh
+
+install-user-service: setup
+	@if [ -z "$(IS_LINUX)" ]; then echo "Error: systemd is only available on Linux." >&2; exit 1; fi
+	@command -v systemctl >/dev/null 2>&1 || (echo "Error: systemctl not found. systemd is required." >&2; exit 1)
+	bash koan/systemd/install-user-service.sh "$(PWD)" "$(PWD)/$(PYTHON)"
+
+uninstall-user-service:
+	@if [ -z "$(IS_LINUX)" ]; then echo "Error: systemd is only available on Linux." >&2; exit 1; fi
+	@command -v systemctl >/dev/null 2>&1 || (echo "Error: systemctl not found." >&2; exit 1)
+	bash koan/systemd/uninstall-user-service.sh $(if $(disable-linger),--disable-linger,)
 
 install-launchd-service: setup
 	@if [ -z "$(IS_MAC)" ]; then echo "Error: launchd is only available on macOS." >&2; exit 1; fi

@@ -53,8 +53,6 @@ write_unit() {
     cat > "$file" <<UNIT
 [Unit]
 Description=$3
-After=network-online.target
-Wants=network-online.target
 $5
 
 [Service]
@@ -98,6 +96,17 @@ fi
 # Reach the user bus even when invoked without a login session (e.g. sudo -niu).
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}"
+
+# On a fresh no-session host (sudo -niu, linger just enabled), logind spins up
+# user@<uid>.service asynchronously — enable-linger returns before the user
+# manager's bus socket is listening. Wait for it so the first `--user` call
+# below doesn't fail with "Failed to connect to bus" and abort under set -e.
+for _ in $(seq 1 40); do
+    if [ -S "$XDG_RUNTIME_DIR/bus" ] && systemctl --user show-environment >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.25
+done
 
 systemctl --user daemon-reload
 systemctl --user enable koan.service koan-awake.service
