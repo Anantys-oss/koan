@@ -31,6 +31,7 @@ memory, or integration changes:
 - [Architecture Overview](architecture/overview.md)
 - [Daemon Runtime](architecture/daemon.md)
 - [Mission Lifecycle](architecture/mission-lifecycle.md)
+- [SQLite Mission Mirror](architecture/missions.md)
 - [Shared State](architecture/shared-state.md)
 - [Provider Architecture](architecture/providers.md)
 - [Skills System](architecture/skills-system.md)

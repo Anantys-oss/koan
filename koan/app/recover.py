@@ -583,6 +583,17 @@ def recover_missions(
     if recovered_count > 0 and _read_cp is not None and not dry_run:
         _inject_checkpoint_context(instance_dir, recovered_mission_texts)
 
+    # After stale In Progress entries are moved back to Pending / escalated to
+    # Failed, rebuild the SQLite mirror from the recovered missions.md so both
+    # agree at startup. Best-effort: a DB failure must never block startup.
+    if not dry_run:
+        from app.run_log import log_safe
+        try:
+            from app import missions_db
+            missions_db.reconcile(instance_dir)
+        except Exception as e:
+            log_safe("warning", f"[recover] missions_db reconcile skipped: {e}")
+
     return recovered_count, escalated_missions
 
 

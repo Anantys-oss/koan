@@ -649,6 +649,20 @@ def insert_pending_mission(
         return insert_mission(content, entry, urgent=urgent)
 
     _locked_missions_rw(missions_path, _transform)
+
+    # Mirror the committed insert into the SQLite projection (best-effort;
+    # never fatal — missions.md remains the source of truth).
+    if inserted:
+        try:
+            from app import missions, missions_db
+            instance = str(Path(missions_path).parent)
+            missions_db.mirror_transition(
+                instance, entry, "pending",
+                project=missions.extract_project_tag(entry) or "default",
+                complexity=missions.extract_complexity_tag(entry) or "",
+            )
+        except Exception as e:
+            print(f"[utils] missions_db mirror (insert) skipped: {e}", file=sys.stderr)
     return inserted
 
 
@@ -683,6 +697,21 @@ def insert_pending_missions(
         return content
 
     _locked_missions_rw(missions_path, _transform)
+
+    # Mirror each committed insert into the SQLite projection (best-effort).
+    try:
+        from app import missions, missions_db
+        instance = str(Path(missions_path).parent)
+        for entry, inserted in zip(entries, results):
+            if not inserted:
+                continue
+            missions_db.mirror_transition(
+                instance, entry, "pending",
+                project=missions.extract_project_tag(entry) or "default",
+                complexity=missions.extract_complexity_tag(entry) or "",
+            )
+    except Exception as e:
+        print(f"[utils] missions_db mirror (batch insert) skipped: {e}", file=sys.stderr)
     return results
 
 

@@ -22,6 +22,7 @@ Output: JSON on stdout with iteration plan.
 """
 
 import argparse
+import contextlib
 import json
 import random
 import re
@@ -395,6 +396,7 @@ def _fallback_mission_extract(instance_dir: Path, projects_str: str,
         (project_name, mission_title) or (None, None)
     """
     try:
+        from app import missions_db
         from app.missions import count_pending
         from app.pick_mission import fallback_extract
 
@@ -404,7 +406,17 @@ def _fallback_mission_extract(instance_dir: Path, projects_str: str,
         except FileNotFoundError:
             return None, None
 
-        pending_count = count_pending(content)
+        # DB-first count (constant time). The DB count is authoritative only
+        # when > 0; during the dual-write transition a lagging mirror could
+        # read 0 while the file still has work, so fall back to the file parse
+        # and self-heal the DB via reconcile().
+        pending_count = missions_db.mission_count_by_state(str(instance_dir), "pending")
+        if pending_count <= 0:
+            file_count = count_pending(content)
+            if file_count > 0:
+                pending_count = file_count
+                with contextlib.suppress(Exception):
+                    missions_db.reconcile(str(instance_dir))
         if pending_count <= 0:
             return None, None
 

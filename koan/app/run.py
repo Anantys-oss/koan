@@ -2620,6 +2620,19 @@ def _start_mission_in_file(instance: str, mission_title: str, project_name: str 
                         f"recover.py missed them "
                         f"(see _flush_in_progress_to_failed): {titles}"
                     ))
+
+                # Mirror the committed Pending→In Progress move (best-effort).
+                try:
+                    from app import missions_db
+                    from app.missions import extract_project_tag, extract_timestamps
+                    started = extract_timestamps(entry).get("started")
+                    missions_db.mirror_transition(
+                        instance, mission_title, "in_progress",
+                        project=project_name or extract_project_tag(mission_title),
+                        started_at=started.strftime("%Y-%m-%dT%H:%M") if started else "",
+                    )
+                except Exception as e:
+                    log("warning", f"DB mirror (start) skipped: {e}")
                 return True
         log("warning", f"Mission transition unconfirmed — '{clean_title[:60]}' "
             "not found in In Progress after start_mission(). "
@@ -2685,6 +2698,20 @@ def _update_mission_in_file(
             return False
         # Move committed — trim history as a decoupled, best-effort step.
         _prune_missions_history(instance)
+
+        # Mirror the committed In Progress→Done/Failed move (best-effort).
+        try:
+            import time as _time
+
+            from app import missions_db
+            now = _time.strftime("%Y-%m-%dT%H:%M")
+            missions_db.mirror_transition(
+                instance, mission_title,
+                "failed" if failed else "done",
+                completed_at=now,
+            )
+        except Exception as e:
+            log("warning", f"DB mirror (finalize) skipped: {e}")
         return True
     except Exception as e:
         label = "fail" if failed else "complete"
@@ -2743,6 +2770,16 @@ def _requeue_mission_in_file(instance: str, mission_title: str):
         if not missions_path.exists():
             return
         modify_missions_file(missions_path, lambda c: requeue_mission(c, mission_title))
+        # Mirror the committed In Progress→Pending move (best-effort).
+        try:
+            from app import missions_db
+            from app.missions import extract_project_tag
+            missions_db.mirror_transition(
+                instance, mission_title, "pending",
+                project=extract_project_tag(mission_title),
+            )
+        except Exception as e:
+            log("warning", f"DB mirror (requeue) skipped: {e}")
     except Exception as e:
         log("error", f"Could not requeue mission in missions.md: {e}")
 

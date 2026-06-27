@@ -4160,3 +4160,37 @@ class TestBudgetModeFallbackUnlimitedQuota:
         )
         assert result["action"] == "mission"
         mock_warn_burn.assert_not_called()
+
+
+class TestFallbackMissionExtractDbCount:
+    """_fallback_mission_extract reads pending counts DB-first with file fallback."""
+
+    def test_fallback_uses_db_count_when_present(self, tmp_path):
+        from unittest.mock import patch
+
+        from app import missions_db
+        import app.iteration_manager as im
+
+        (tmp_path / "missions.md").write_text("# Missions\n\n## Pending\n- a\n- b\n")
+        missions_db.reconcile(str(tmp_path))  # DB now has 2 pending
+        with patch("app.pick_mission.fallback_extract", return_value=("koan", "a")):
+            proj, title = im._fallback_mission_extract(tmp_path, "koan:/x", "picker empty")
+        assert (proj, title) == ("koan", "a")
+
+    def test_fallback_falls_back_to_file_when_db_empty(self, tmp_path):
+        from unittest.mock import patch
+
+        import app.iteration_manager as im
+
+        (tmp_path / "missions.md").write_text("# Missions\n\n## Pending\n- a\n")
+        # No reconcile → DB count is 0 but file has 1 pending.
+        with patch("app.pick_mission.fallback_extract", return_value=("koan", "a")):
+            proj, title = im._fallback_mission_extract(tmp_path, "koan:/x", "picker empty")
+        assert (proj, title) == ("koan", "a")
+
+    def test_fallback_returns_none_when_no_pending(self, tmp_path):
+        import app.iteration_manager as im
+
+        (tmp_path / "missions.md").write_text("# Missions\n\n## Pending\n")
+        proj, title = im._fallback_mission_extract(tmp_path, "koan:/x", "picker empty")
+        assert (proj, title) == (None, None)
