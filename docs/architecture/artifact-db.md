@@ -30,7 +30,10 @@ columns are pinned to `memory_db._EXPECTED_COLUMNS` so the two indexes agree.
   `missions.md`/`outbox.md`) truncates and rebuilds the projection in one
   transaction so rows don't accumulate across rewrites; `"append"` (append-only
   files like `journal`, the `memory` log, `recovery.jsonl`) inserts the supplied
-  new rows without truncating. A DB failure is logged, rolled back, and flags the
+  new rows without truncating. A once-dirty `"append"` projection stays dirty
+  across later successful appends — an append cannot backfill rows a prior failed
+  append dropped, so only a `"replace"` rebuild heals it. A DB failure is logged,
+  rolled back, and flags the
   projection **dirty** so later reads fall back to the file; if the dirty flag
   itself can't be persisted the connection is closed so reads still fall through
   to the file. The DB failure is never propagated. A `file_writer` failure
@@ -38,7 +41,9 @@ columns are pinned to `memory_db._EXPECTED_COLUMNS` so the two indexes agree.
 - `read_from_db_or_file(conn, table, file_reader=, order_key=None)` — reads the
   DB when populated and in-sync, else parses the file; preserves file-parse
   ordering **and dict shape** (surrogate `id` PK columns are excluded) so a
-  consumer can't tell which source served the read. A dirty
+  consumer can't tell which source served the read. The in-sync gate is enforced
+  via `verify_schema` — a column drift falls back to the file rather than serving
+  a divergent shape. A dirty
   projection (last write failed to mirror) always falls back to the file.
   `order_key` is validated against the declared columns before interpolation —
   an unknown key is ignored (rowid order) rather than injected into SQL.

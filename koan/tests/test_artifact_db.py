@@ -135,6 +135,60 @@ def test_dual_write_append_mode_accumulates(tmp_path):
     conn.close()
 
 
+def test_dual_write_append_dirty_is_sticky_until_rebuild(tmp_path):
+    # An append cannot backfill rows a prior failed append dropped, so a
+    # once-dirty append projection must stay dirty (reads keep using the file)
+    # across later successful appends — only a replace rebuild heals it.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    artifact_db.dual_write([{"text": "a", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn,
+                           table="missions", mode="append")
+    conn.execute("ALTER TABLE missions RENAME TO missions_tmp")  # break insert
+    artifact_db.dual_write([{"text": "dropped", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn,
+                           table="missions", mode="append")
+    conn.execute("ALTER TABLE missions_tmp RENAME TO missions")  # restore
+    file_recs = [{"text": "a", "section": "pending"},
+                 {"text": "dropped", "section": "pending"},
+                 {"text": "c", "section": "pending"}]
+    # A later *successful* append must NOT clear the dirty flag.
+    artifact_db.dual_write([{"text": "c", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn,
+                           table="missions", mode="append")
+    out = artifact_db.read_from_db_or_file(
+        conn, "missions", file_reader=lambda: file_recs)
+    assert out == file_recs                     # served from file, hole not exposed
+    # A full replace rebuild heals the projection.
+    artifact_db.dual_write(file_recs, file_writer=lambda r: None,
+                           conn=conn, table="missions", mode="replace")
+    healed = artifact_db.read_from_db_or_file(
+        conn, "missions", file_reader=lambda: [])
+    assert [r["text"] for r in healed] == ["a", "dropped", "c"]
+    conn.close()
+
+
+def test_dual_read_falls_back_on_schema_drift(tmp_path):
+    # A DB whose live columns drift from the declared set must fall back to the
+    # file rather than serve a divergent dict shape — even with a clean (dirty=0)
+    # projection, so the schema gate (not the dirty gate) is what forces it.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    artifact_db.dual_write([{"text": "ok", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn,
+                           table="missions")             # leaves dirty=0
+    # Replace the table with a drifted (column-subset) shape.
+    conn.execute("DROP TABLE missions")
+    conn.execute("CREATE TABLE missions (id INTEGER PRIMARY KEY, text TEXT)")
+    conn.execute("INSERT INTO missions (text) VALUES ('db-only')")
+    conn.commit()
+    file_recs = [{"text": "from-file", "section": "pending"}]
+    out = artifact_db.read_from_db_or_file(
+        conn, "missions", file_reader=lambda: file_recs)
+    assert out == file_recs
+    conn.close()
+
+
 def test_dual_write_unknown_mode_raises(tmp_path):
     conn = artifact_db.connect(tmp_path / "a.db")
     artifact_db.create_tables(conn)
