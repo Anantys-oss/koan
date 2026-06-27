@@ -6,6 +6,7 @@ All implementation lives in the app.provider package:
     app/provider/claude.py  — ClaudeProvider
     app/provider/codex.py   — CodexProvider
     app/provider/copilot.py — CopilotProvider
+    app/provider/haze.py    — HazeProvider
     app/provider/ollama_launch.py — OllamaLaunchProvider
     app/provider/__init__.py — Registry, resolution, convenience functions
 
@@ -22,6 +23,7 @@ from app.provider import (  # noqa: F401
     ClaudeProvider,
     CodexProvider,
     CopilotProvider,
+    HazeProvider,
     OllamaLaunchProvider,
     # Registry & resolution
     get_provider_name,

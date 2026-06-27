@@ -43,7 +43,7 @@
 
 You pay for AI coding quota. You use it 8 hours a day. The other 16? Wasted quota.
 
-Koan fixes that. It's a background agent that runs on your machine, pulls tasks from a shared mission queue, executes them via your configured CLI provider (Claude Code, Codex, Copilot, or local models via Ollama Launch), and reports back through Telegram, Slack, or Matrix. It writes code in isolated branches, never touches `main`, and waits for your review before anything ships.
+Koan fixes that. It's a background agent that runs on your machine, pulls tasks from a shared mission queue, executes them via your configured CLI provider (Claude Code, Codex, Copilot, Haze, or local models via Ollama Launch), and reports back through Telegram, Slack, or Matrix. It writes code in isolated branches, never touches `main`, and waits for your review before anything ships.
 
 **The agent proposes. The human decides.**
 
@@ -348,12 +348,14 @@ Koan isn't locked to Claude. Swap the backend per-project:
 | **Claude Code** (default) | Full-featured agent, best reasoning |
 | **OpenAI Codex** | ChatGPT users (Plus/Pro/Business/Edu/Enterprise) |
 | **GitHub Copilot** | Teams with existing Copilot licenses |
+| **Haze** | Any OpenAI-compatible backend (OpenRouter, OpenAI, Z.ai, local) |
 | **Ollama Launch** | Local/offline models behind the Claude CLI harness |
 
 See provider guides:
 - [docs/providers/claude.md](docs/providers/claude.md)
 - [docs/providers/codex.md](docs/providers/codex.md)
 - [docs/providers/copilot.md](docs/providers/copilot.md)
+- [docs/providers/haze.md](docs/providers/haze.md)
 - [docs/providers/ollama-launch.md](docs/providers/ollama-launch.md)
 
 ### Dashboard Configuration
@@ -391,6 +393,7 @@ koan/
       claude.py           #     Claude Code CLI
       codex.py            #     OpenAI Codex CLI
       copilot.py          #     GitHub Copilot CLI
+      haze.py             #     Haze CLI (headless bridge)
       ollama_launch.py    #     Ollama Launch (local models via ollama)
   skills/                 # Pluggable command system (44 core skills)
   system-prompts/         # All LLM prompts (20 files, no inline prompts)
