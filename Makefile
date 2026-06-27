@@ -51,21 +51,35 @@ endif
 
 # --- service manager detection ---
 # Default: foreground processes via pid_manager (no service manager)
-# Set KOAN_SERVICE_MANAGER=systemd or KOAN_SERVICE_MANAGER=launchd in .env to opt in
+# Set KOAN_SERVICE_MANAGER=systemd | systemd-user | launchd in .env to opt in.
+#   systemd      — system service in /etc/systemd/system (needs sudo)
+#   systemd-user — per-user service in ~/.config/systemd/user (no sudo; uses linger)
+#   launchd      — macOS LaunchAgents
 IS_LINUX := $(shell [ "$$(uname -s)" = "Linux" ] && echo 1)
 IS_MAC := $(shell [ "$$(uname -s)" = "Darwin" ] && echo 1)
 ifeq ($(KOAN_SERVICE_MANAGER),systemd)
   USE_SYSTEMD := 1
+  USE_SYSTEMD_USER :=
+  USE_LAUNCHD :=
+else ifeq ($(KOAN_SERVICE_MANAGER),systemd-user)
+  USE_SYSTEMD :=
+  USE_SYSTEMD_USER := 1
   USE_LAUNCHD :=
 else ifeq ($(KOAN_SERVICE_MANAGER),launchd)
   USE_SYSTEMD :=
+  USE_SYSTEMD_USER :=
   USE_LAUNCHD := 1
 else
   USE_SYSTEMD :=
+  USE_SYSTEMD_USER :=
   USE_LAUNCHD :=
 endif
 SERVICE_INSTALLED = $(shell [ -f /etc/systemd/system/koan.service ] && echo 1)
+USER_SERVICE_INSTALLED = $(shell [ -f ~/.config/systemd/user/koan.service ] && echo 1)
 LAUNCHD_INSTALLED = $(shell [ -f ~/Library/LaunchAgents/com.koan.run.plist ] && echo 1)
+# Bus-safe `systemctl --user` prefix: works from a normal login AND via `sudo -niu`
+# (where XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS are unset). Linger keeps /run/user/<uid> alive.
+SYSTEMCTL_USER = XDG_RUNTIME_DIR="$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}" DBUS_SESSION_BUS_ADDRESS="$${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$$(id -u)/bus}" systemctl --user
 
 setup: $(VENV)/.installed
 
@@ -170,6 +184,26 @@ stop:
 
 status:
 	@sudo systemctl status koan koan-awake --no-pager || true
+
+else ifeq ($(USE_SYSTEMD_USER),1)
+
+start: setup
+	@if [ -n "$$SSH_AUTH_SOCK" ]; then \
+		ln -sf "$$SSH_AUTH_SOCK" "$(PWD)/.ssh-agent-sock"; \
+		echo "✓ SSH agent socket forwarded"; \
+	fi
+	@if [ -z "$(USER_SERVICE_INSTALLED)" ]; then \
+		echo "→ systemd (user) detected — installing Kōan user service (one-time setup)..."; \
+		bash koan/systemd/install-user-service.sh "$(PWD)" "$(PWD)/$(PYTHON)"; \
+	fi
+	@$(SYSTEMCTL_USER) start koan.service
+	@echo "✓ Kōan started via systemd --user"
+
+stop:
+	@$(SYSTEMCTL_USER) stop koan.service koan-awake.service 2>/dev/null || true
+
+status:
+	@$(SYSTEMCTL_USER) status koan.service koan-awake.service --no-pager || true
 
 else ifeq ($(USE_LAUNCHD),1)
 
