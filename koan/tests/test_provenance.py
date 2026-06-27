@@ -41,6 +41,36 @@ def test_record_tolerates_empty_file_list(tmp_path):
     assert rec["commit_sha"] == ""
 
 
+def test_record_flags_incomplete_on_failed_diff(tmp_path):
+    # Empty file list, valid HEAD, base ref resolves -- but the diff command
+    # itself fails (rc != 0). The empty list is a broken read, not a no-op.
+    inst = tmp_path / "instance"
+    inst.mkdir()
+    with patch.object(provenance, "get_changed_files", return_value=[]), \
+         patch.object(provenance, "_head_sha", return_value="sha"), \
+         patch.object(provenance, "_run_git", return_value="commit"), \
+         patch.object(provenance, "_run_git_rc", return_value=(1, "")):
+        provenance.record_provenance(str(inst), "proj", "/repo", "broken diff")
+
+    rec = json.loads((inst / ".mission-provenance.jsonl").read_text().splitlines()[0])
+    assert rec["incomplete"] is True
+
+
+def test_record_genuine_noop_not_incomplete(tmp_path):
+    # Empty file list, valid HEAD, base ref resolves, diff exits cleanly:
+    # a real no-op must NOT be flagged incomplete.
+    inst = tmp_path / "instance"
+    inst.mkdir()
+    with patch.object(provenance, "get_changed_files", return_value=[]), \
+         patch.object(provenance, "_head_sha", return_value="sha"), \
+         patch.object(provenance, "_run_git", return_value="commit"), \
+         patch.object(provenance, "_run_git_rc", return_value=(0, "")):
+        provenance.record_provenance(str(inst), "proj", "/repo", "noop")
+
+    rec = json.loads((inst / ".mission-provenance.jsonl").read_text().splitlines()[0])
+    assert rec["incomplete"] is False
+
+
 def test_record_rotation_caps_entries(tmp_path):
     inst = tmp_path / "instance"
     inst.mkdir()
