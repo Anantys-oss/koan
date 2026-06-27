@@ -179,6 +179,10 @@ def get_agent_state(koan_root: Path) -> dict:
         if m:
             project = m.group(1)
 
+    from app.active_mission import get_execution_state
+
+    execution = get_execution_state(koan_root)
+
     return {
         "state": state,
         "label": label,
@@ -190,4 +194,5 @@ def get_agent_state(koan_root: Path) -> dict:
         "focus": focus,
         "elapsed": elapsed,
         "badge_color": BADGE_COLORS.get(state, "muted"),
+        "execution": execution,
     }

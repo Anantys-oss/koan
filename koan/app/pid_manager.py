@@ -558,6 +558,57 @@ def _read_runner_state(koan_root: Path) -> dict:
     return state
 
 
+def _in_progress_count(koan_root: Path) -> int:
+    """Best-effort count of In Progress mission lines (#2086)."""
+    try:
+        from app.missions import parse_sections
+
+        missions_file = Path(koan_root) / "instance" / "missions.md"
+        content = missions_file.read_text() if missions_file.exists() else ""
+        return len(parse_sections(content).get("in_progress", []))
+    except Exception as e:
+        # A chronic parse failure silently reports zero In Progress lines,
+        # which would suppress the zombie warning for the exact "In Progress
+        # but nothing launched" case this feature targets — log it (#2086).
+        print(f"[pid_manager] in-progress count failed: {e}", file=sys.stderr)
+        return 0
+
+
+def _format_execution_line(koan_root: Path) -> str:
+    """One-line truthful provider-execution state (#2086).
+
+    Cross-checks the declarative In Progress count against observed liveness so
+    the loud zombie warning also fires for the common "In Progress but nothing
+    ever launched" case — parity with the REST ``/v1/status`` cross-check —
+    not only when a dead PID is recorded.
+    """
+    from app.active_mission import get_execution_state, is_zombie
+
+    ex = get_execution_state(koan_root)
+    state = ex["state"]
+    in_progress = _in_progress_count(koan_root)
+
+    if is_zombie(koan_root, in_progress=in_progress > 0, execution=ex):
+        pid = ex["pid"]
+        if pid:
+            return f"execution: ⚠ ZOMBIE — In Progress but PID {pid} not alive"
+        return "execution: ⚠ ZOMBIE — In Progress but no live provider"
+    if state == "zombie":
+        # Stale signal: a recorded provider PID is dead even though no mission
+        # line is currently In Progress (leftover from a hard crash).
+        return f"execution: ⚠ ZOMBIE — stale signal, PID {ex['pid']} not alive"
+    if state == "idle":
+        return "execution: idle — no provider running"
+    pid = ex["pid"]
+    elapsed = ex["elapsed"]
+    age = ex["last_output_age"]
+    if state == "stalled":
+        age_s = f"{int(age)}s" if age is not None else "?"
+        return f"execution: stalled (PID {pid}, no output for {age_s})"
+    age_s = f"{int(age)}s ago" if age is not None else "unknown"
+    return f"execution: working (PID {pid}, {elapsed}s, last output {age_s})"
+
+
 def format_status_all(koan_root: Path) -> list:
     """Build a rich status display for 'make status'.
 
@@ -599,6 +650,10 @@ def format_status_all(koan_root: Path) -> list:
         project = runner_state.get("project", "")
         if project and not runner_state.get("paused"):
             lines.append(f"       project: {project}")
+
+        # Truthful provider-execution state from the live PID signal (#2086),
+        # not the inferred missions.md timestamp.
+        lines.append(f"       {_format_execution_line(koan_root)}")
     else:
         lines.append("  run: not running")
 

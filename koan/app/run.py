@@ -342,6 +342,9 @@ def run_claude_task(
     mission_timeout = get_mission_timeout()
 
     exit_code = 1  # default if subprocess never completes
+    # Read once up front so the outer finally can always clear the liveness
+    # signal, even if an exception fires before the subprocess loop (#2086).
+    koan_root_active = os.environ.get("KOAN_ROOT", "")
     try:
         with open(stdout_file, "w") as out_f, open(stderr_file, "w") as err_f:
             proc, cleanup = popen_cli(
@@ -352,6 +355,24 @@ def run_claude_task(
                 start_new_session=True,
             )
             _sig.claude_proc = proc
+
+            # Record the live provider PID so status consumers can report
+            # observed runtime state instead of an inferred timestamp (#2086).
+            if koan_root_active:
+                from app.active_mission import write_active
+                try:
+                    write_active(
+                        koan_root_active,
+                        pid=proc.pid,
+                        project=project_name,
+                        run_num=run_num,
+                        stdout_file=stdout_file,
+                    )
+                except OSError as e:
+                    # A chronically failing write would make every status
+                    # consumer report the running mission as idle/zombie —
+                    # log it so the cause is diagnosable rather than invisible.
+                    log("error", f"liveness signal write failed: {e}")
 
             from app.subprocess_runner import ProcessWatchdog
 
@@ -429,6 +450,13 @@ def run_claude_task(
         elif _last_mission_stagnated.is_set():
             exit_code = 1
     finally:
+        # Clear the liveness signal on every exit path — including exceptions
+        # raised before the subprocess wait loop — so no stale .koan-active
+        # survives to be misread as a live (then zombie) mission (#2086).
+        if koan_root_active:
+            from app.active_mission import clear_active
+            with contextlib.suppress(OSError):
+                clear_active(koan_root_active)
         # Always stop journal streaming, even on exception
         if journal_stream:
             from app.cli_journal_streamer import stop_journal_stream
