@@ -372,6 +372,7 @@ def run_claude(
     # The summarized event line is what gets printed — feeding both the inner
     # idle watchdog (every consumed line) and the parent run.py watchdog.
     stream_text_chunks: List[str] = []
+    stream_summary_lines: List[str] = []
     stream_final_result: Optional[str] = None
     if use_stream_json:
         from app.provider import (
@@ -389,7 +390,15 @@ def run_claude(
             except (json.JSONDecodeError, ValueError):
                 parsed = None
             if isinstance(parsed, dict):
-                print(_summarize_stream_event(parsed), flush=True)
+                summary = _summarize_stream_event(parsed)
+                print(summary, flush=True)
+                # Keep the summarized runtime lines (incl. the quota-bearing
+                # ``[cli] rate_limit_rejected`` marker) out of ``output`` but
+                # available to callers via ``stream_summary`` for quota
+                # classification: codex surfaces quota as a stdout JSONL
+                # ``rate_limit_event``, never on stderr, so the clean assistant
+                # text the caller receives never carries the signal.
+                stream_summary_lines.append(summary)
                 stream_text_chunks.extend(_extract_assistant_text_chunks(parsed))
                 result_text = _extract_result_text(parsed)
                 if result_text is not None:
@@ -418,15 +427,25 @@ def run_claude(
 
     raw_stdout = stream_result.stdout
     stderr_text = stream_result.stderr
+    # Summarized runtime lines, exposed separately so callers can scan for
+    # quota signals without polluting the clean assistant ``output``.
+    stream_summary = "\n".join(stream_summary_lines)
 
     if use_stream_json:
         # Final-text precedence mirrors run_command_streaming: last-message
         # file → result event → accumulated assistant chunks → raw stdout.
         last_message_text = ""
         if last_message_path:
-            import contextlib
-            with contextlib.suppress(OSError, UnicodeDecodeError):
+            try:
                 last_message_text = Path(last_message_path).read_text()
+            except (OSError, UnicodeDecodeError) as exc:
+                # Distinguish an unreadable sidecar (bad encoding, vanished
+                # file) from a legitimately absent one — the former silently
+                # degrades the returned text down the fallback chain.
+                logging.warning(
+                    "Could not read last-message sidecar %s: %s",
+                    last_message_path, exc,
+                )
         if last_message_text.strip():
             stdout_text = last_message_text
         elif stream_final_result is not None:
@@ -456,6 +475,7 @@ def run_claude(
             "output": stdout_text,
             "error": timeout_error,
             "stderr": stderr_text,
+            "stream_summary": stream_summary,
             "timeout_kind": timeout_kind or "timeout",
         }
 
@@ -477,6 +497,7 @@ def run_claude(
             "output": stdout_text,
             "error": f"Exit code {returncode}: {stderr_snippet}",
             "stderr": stderr_text,
+            "stream_summary": stream_summary,
             "exit_code": returncode,
         }
 
@@ -490,6 +511,7 @@ def run_claude(
         "output": stdout_text,
         "error": "",
         "stderr": stderr_text,
+        "stream_summary": stream_summary,
         "exit_code": returncode,
     }
 
@@ -868,6 +890,11 @@ def run_claude_step(
             )
             == ErrorCategory.QUOTA
             or cli_runtime_quota_signal(result.get("output", ""))
+            # In stream-json mode ``output`` is clean assistant text; the
+            # quota-bearing ``[cli] rate_limit_rejected`` marker lives only in
+            # ``stream_summary``. codex emits quota there (stdout JSONL), never
+            # on stderr, so this channel is the one that catches it.
+            or cli_runtime_quota_signal(result.get("stream_summary", ""))
         )
     except Exception as exc:
         logging.warning("Failed to classify Claude step error: %s", exc)

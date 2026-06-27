@@ -558,6 +558,38 @@ class TestRunClaude:
         assert "done" in captured.out
 
     @patch("app.claude_step.popen_cli")
+    def test_stream_json_exposes_quota_marker_in_stream_summary(self, mock_popen):
+        """In stream-json mode the rejected rate_limit_event must reach the
+        caller via ``stream_summary`` while ``output`` stays clean text.
+
+        codex emits quota only as a stdout JSONL ``rate_limit_event`` — never
+        on stderr — so the summary channel is the only way a quota-exhausted
+        step is detectable downstream.
+        """
+        rate_limit = json.dumps({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "rejected",
+                "rateLimitType": "primary",
+                "resetsAt": 1900000000,
+            },
+        })
+        assistant = json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "partial work"}]},
+        })
+        proc = _fake_proc([assistant + "\n", rate_limit + "\n"], returncode=1)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["codex", "exec", "test"], "/project", use_stream_json=True,
+        )
+        # The quota marker is available for classification...
+        assert "rate_limit_rejected" in result["stream_summary"]
+        # ...but never leaks into the clean assistant output.
+        assert "rate_limit_rejected" not in result["output"]
+        assert "rate_limit_event" not in result["output"]
+
+    @patch("app.claude_step.popen_cli")
     def test_uses_new_session_for_process_group_kill(self, mock_popen):
         """popen must request a new POSIX session so the whole process
         group can be killed on timeout — preventing grandchildren from
@@ -1364,6 +1396,83 @@ class TestRunClaudeStep:
         )
 
         assert result.quota_exhausted is True
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["codex", "exec", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_codex_quota_from_stream_summary_detected(
+        self, mock_config, mock_flags, mock_claude, mock_provider,
+    ):
+        """codex quota surfaces only via the stream-json summary, never stderr.
+
+        In stream-json mode ``output`` is clean assistant text and stderr is
+        empty on a quota rejection; the only place the rejection appears is the
+        ``[cli] rate_limit_rejected`` marker in ``stream_summary``. Without
+        scanning that channel a quota-exhausted feedback step is misclassified
+        as a plain failure, skipping the feedback_quota backoff.
+        """
+        mock_claude.return_value = {
+            "success": False,
+            "output": "Applying the review feedback to the rebase...",
+            "error": "Exit code 1: no stderr",
+            "stderr": "",
+            "stream_summary": (
+                "[cli] assistant: working\n"
+                "[cli] rate_limit_rejected (primary) resetsAt 1900000000"
+            ),
+            "exit_code": 1,
+        }
+        result = run_claude_step(
+            prompt="apply feedback",
+            project_path="/project",
+            commit_msg="rebase: apply",
+            success_label="Applied",
+            failure_label="Feedback failed",
+            actions_log=[],
+        )
+
+        assert result.quota_exhausted is True
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["codex", "exec", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_informational_rate_limit_in_stream_summary_not_quota(
+        self, mock_config, mock_flags, mock_claude, mock_provider,
+    ):
+        """An informational (allowed) rate_limit summary must not trip quota.
+
+        Every codex session emits ``[cli] rate_limit_ok`` lines; only a
+        rejection should pause Kōan.
+        """
+        mock_claude.return_value = {
+            "success": False,
+            "output": "Could not finish the edit.",
+            "error": "Exit code 1: no stderr",
+            "stderr": "",
+            "stream_summary": (
+                "[cli] rate_limit_ok: allowed (primary)\n"
+                "[cli] result: error (12s)"
+            ),
+            "exit_code": 1,
+        }
+        result = run_claude_step(
+            prompt="apply feedback",
+            project_path="/project",
+            commit_msg="rebase: apply",
+            success_label="Applied",
+            failure_label="Feedback failed",
+            actions_log=[],
+        )
+
+        assert result.quota_exhausted is False
 
     @patch("app.claude_step.run_claude")
     @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
