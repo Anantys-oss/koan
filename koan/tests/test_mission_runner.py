@@ -4081,3 +4081,44 @@ class TestSkillOutcomeCapture:
         )
 
         assert result["success"] is True
+
+
+class TestApplyVerifyRequeueSignal:
+    """_apply_verify_requeue_signal flags re-queue only for failed ≥2-failure results."""
+
+    @staticmethod
+    def _fail(n):
+        from app.mission_verifier import Check, CheckStatus
+        return Check(name=f"c{n}", status=CheckStatus.FAIL, message=f"failure {n}")
+
+    def test_two_failures_set_verify_requeue(self):
+        from app.mission_verifier import VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(
+            passed=False,
+            checks=[self._fail(1), self._fail(2)],
+            summary="2 checks failed",
+        )
+        result = {}
+        _apply_verify_requeue_signal(result, vr)
+        assert result["verify_requeue"] is True
+        assert "failure 1" in result["verify_failure_summary"]
+
+    def test_single_failure_does_not_requeue(self):
+        from app.mission_verifier import VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(passed=False, checks=[self._fail(1)], summary="1 check failed")
+        result = {}
+        _apply_verify_requeue_signal(result, vr)
+        assert result.get("verify_requeue") is not True
+
+    def test_passed_result_does_not_requeue(self):
+        from app.mission_verifier import VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(passed=True, checks=[], summary="ok")
+        result = {}
+        _apply_verify_requeue_signal(result, vr)
+        assert result.get("verify_requeue") is not True
