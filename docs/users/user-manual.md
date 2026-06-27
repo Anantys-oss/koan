@@ -2319,8 +2319,19 @@ Run `make dashboard` to start a local web UI on port 5001. The dashboard provide
 - Mission queue management
 - Chat interface
 - Journal browsing
+- Real-time config sync
 
 The dashboard binds to `localhost` only — not accessible from the network.
+
+**Real-time config sync:** Edits to `instance/config.yaml` and
+`instance/projects.yaml` are reflected on the Config page within ~2s without a
+`make stop && make start` round-trip. Safe settings (`dashboard.nickname`,
+`tools.*`, `automation_rules.*`, `messaging_level`, `verbose`) are already
+re-read per use, so they toast "Settings updated" and stay live. Unsafe settings
+(`cli_provider`, `models`, anything in `projects.yaml`, and any other key) show a
+"Restart required" modal; the restart only runs when the agent is idle. Disable
+with `config_sync: { enabled: false }`. See
+[Real-time Config Sync](../operations/config-sync.md).
 
 ### Deployment
 

@@ -112,6 +112,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "ci_check": _NESTED,
     "running_indicator": _NESTED,
     "verification": _NESTED,
+    "config_sync": _NESTED,
 }
 
 # Top-level keys that are recognized but deprecated: they still work (honored
@@ -317,6 +318,9 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "commit_status": "bool",
         "issue_label": "bool",
         "label_name": "str",
+    },
+    "config_sync": {
+        "enabled": "bool",
     },
 }
 
