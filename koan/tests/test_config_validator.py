@@ -912,3 +912,9 @@ class TestValidateConfigOrRaise:
         from app.config_validator import validate_config_or_raise
         self._write_config(tmp_path, "unknown_key: 42\n")
         validate_config_or_raise(str(tmp_path))
+
+
+class TestConfigSyncSection:
+    def test_config_sync_section_valid(self):
+        errors = validate_config({"config_sync": {"enabled": True}})
+        assert not errors  # well-formed section produces no errors

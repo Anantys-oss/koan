@@ -8,6 +8,7 @@ safe (already live) vs unsafe (need a restart to take effect).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -59,10 +60,8 @@ def _snapshot(koan_root: Path) -> Dict[str, Dict[str, Any]]:
 def write_baseline(koan_root: Path) -> None:
     """Persist the current config as the post-restart baseline."""
     path = koan_root / "instance" / BASELINE_FILE
-    try:
+    with contextlib.suppress(OSError):
         atomic_write(path, json.dumps(_snapshot(koan_root)))
-    except OSError:
-        pass
 
 
 def _read_baseline(koan_root: Path) -> Optional[Dict[str, Dict[str, Any]]]:
@@ -84,10 +83,7 @@ def _is_safe(dotted: str) -> bool:
 
 
 def _diff_keys(base: Dict[str, Any], cur: Dict[str, Any]) -> List[str]:
-    changed = []
-    for k in set(base) | set(cur):
-        if base.get(k) != cur.get(k):
-            changed.append(k)
+    changed = [k for k in set(base) | set(cur) if base.get(k) != cur.get(k)]
     return sorted(changed)
 
 
@@ -113,8 +109,10 @@ def compute_status(koan_root: Path) -> Dict[str, Any]:
         (safe_keys if _is_safe(ck) else unsafe_keys).append(ck)
 
     # projects.yaml: path/cli_provider/models are all unsafe -> wholesale.
-    for pk in _diff_keys(baseline.get("projects", {}), current["projects"]):
-        unsafe_keys.append(f"projects.yaml:{pk}")
+    unsafe_keys.extend(
+        f"projects.yaml:{pk}"
+        for pk in _diff_keys(baseline.get("projects", {}), current["projects"])
+    )
 
     return {
         "synced": not safe_keys and not unsafe_keys,
