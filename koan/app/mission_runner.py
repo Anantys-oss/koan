@@ -976,6 +976,22 @@ def _is_lint_blocking(
         return False
 
 
+def _apply_verify_requeue_signal(result: dict, verify_result) -> None:
+    """Flag a verify-failure re-queue when ≥2 checks failed (false-positive guard).
+
+    Sets ``result["verify_requeue"]`` and ``result["verify_failure_summary"]``
+    so ``_finalize_mission`` can move the mission back to Pending instead of
+    completing it. The ≥2-failure threshold avoids re-queueing on a single
+    borderline check (verification uses the mission title as its spec). This
+    only *signals*; the lifecycle transition happens in ``_finalize_mission``.
+    """
+    failures = verify_result.failures
+    if not verify_result.passed and len(failures) >= 2:
+        summary = "; ".join(c.message for c in failures)[:300] or verify_result.summary
+        result["verify_requeue"] = True
+        result["verify_failure_summary"] = summary
+
+
 def _run_mission_verification(
     project_path: str,
     mission_title: str,
@@ -1865,6 +1881,7 @@ def run_post_mission(
                     "warnings": len(verify_result.warnings),
                     "failures": len(verify_result.failures),
                 }
+                _apply_verify_requeue_signal(result, verify_result)
 
             # Quality pipeline (scan, tests, branch hygiene, PR enrichment)
             _report("running quality pipeline")
