@@ -215,6 +215,21 @@ class CLIProvider:
         """
         return False
 
+    def emits_incremental_progress(self) -> bool:
+        """Return True if the provider streams incremental stdout during a run.
+
+        The mission stagnation monitor (run._start_stagnation_monitor) hashes
+        the tail of the subprocess stdout file to detect a session stuck in a
+        loop. That heuristic only makes sense for providers that emit progress
+        incrementally. Providers that emit only a single final result envelope
+        (e.g. Haze ``--output json``, which prints one ``{type,status,result,
+        usage}`` object at the end) produce no incremental signal, so the
+        monitor would false-positive on a silent-but-alive run and kill it.
+        Such providers return False so the run loop relies solely on the
+        wall-clock ``mission_timeout`` watchdog as the authoritative timeout.
+        """
+        return True
+
     def supports_last_message_file(self) -> bool:
         """Return True if the provider can write its final assistant text to a file."""
         return False
