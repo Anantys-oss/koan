@@ -1806,6 +1806,51 @@ class TestRequeueMission:
         assert "⏳" not in sections["pending"][0]
         assert "Do something" in sections["pending"][0]
 
+    def test_requeue_appends_verify_tag(self):
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix the parser ▶(2026-06-27T10:00)\n"
+        )
+        result = requeue_mission(
+            content, "Fix the parser", append_tag="[verify-failed: no tests; no PR]",
+        )
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert "[verify-failed: no tests; no PR]" in sections["pending"][0]
+        assert "▶" not in sections["pending"][0]
+
+    def test_requeue_verify_tag_does_not_stack(self):
+        """A prior verify-failed tag is replaced, not accumulated."""
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix the parser [verify-failed: no tests; no PR] ▶(2026-06-27T11:00)\n"
+        )
+        result = requeue_mission(
+            content,
+            "Fix the parser [verify-failed: no tests; no PR]",
+            append_tag="[verify-failed: still no PR]",
+        )
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert sections["pending"][0].count("[verify-failed:") == 1
+        assert "[verify-failed: still no PR]" in sections["pending"][0]
+
+
+# ---------------------------------------------------------------------------
+# canonical_mission_key — verify-failed tag stability
+# ---------------------------------------------------------------------------
+
+class TestCanonicalKeyVerifyFailed:
+    def test_canonical_key_strips_verify_failed_tag(self):
+        base = "Fix the parser [project:my-toolkit]"
+        tagged = (
+            "Fix the parser [verify-failed: no tests added; PR missing] "
+            "[project:my-toolkit]"
+        )
+        assert canonical_mission_key(tagged) == canonical_mission_key(base)
+
 
 # ---------------------------------------------------------------------------
 # parse_sections — failed section
