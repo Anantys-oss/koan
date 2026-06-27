@@ -5,6 +5,7 @@ import subprocess
 from unittest.mock import patch
 
 from app.issue_tracker.enrichment import (
+    GH_TIMEOUT_SECONDS,
     MAX_EXCERPT_CHARS,
     MAX_REFS,
     MAX_TOTAL_CHARS,
@@ -113,40 +114,51 @@ class TestFetchJiraIssues:
         assert mock.call_count == MAX_REFS
 
 
-def _gh_result(returncode=0, stdout="", stderr=""):
-    return subprocess.CompletedProcess(
-        args=["gh"], returncode=returncode, stdout=stdout, stderr=stderr
-    )
-
-
 class TestFetchGithubIssues:
     def test_formats_summary(self):
         payload = json.dumps({"title": "Add feature", "body": "Details here."})
-        with patch(
-            "app.issue_tracker.enrichment.subprocess.run",
-            return_value=_gh_result(stdout=payload),
-        ):
+        with patch("app.github.run_gh", return_value=payload):
             out = fetch_github_issues([("o", "r", 5)])
         assert "- o/r#5: Add feature" in out
         assert "> Details here." in out
 
+    def test_uses_run_gh_wrapper(self):
+        # run_gh provides retry-with-backoff, SSO mapping, and audit logging;
+        # the fetch must route through it rather than calling gh directly.
+        payload = json.dumps({"title": "T", "body": "b"})
+        with patch("app.github.run_gh", return_value=payload) as mock:
+            fetch_github_issues([("o", "r", 5)])
+        mock.assert_called_once_with(
+            "issue", "view", "5",
+            "--repo", "o/r",
+            "--json", "title,body",
+            timeout=GH_TIMEOUT_SECONDS,
+        )
+
     def test_returns_empty_on_nonzero(self):
+        # run_gh raises RuntimeError on a non-zero gh exit.
         with patch(
-            "app.issue_tracker.enrichment.subprocess.run",
-            return_value=_gh_result(returncode=1, stderr="not found"),
+            "app.github.run_gh",
+            side_effect=RuntimeError("gh failed: ... — not found"),
+        ):
+            assert fetch_github_issues([("o", "r", 5)]) == ""
+
+    def test_returns_empty_on_sso_error(self):
+        # SSOAuthRequired subclasses RuntimeError; best-effort contract skips it.
+        from app.github import SSOAuthRequired
+        with patch(
+            "app.github.run_gh",
+            side_effect=SSOAuthRequired("SAML SSO required"),
         ):
             assert fetch_github_issues([("o", "r", 5)]) == ""
 
     def test_returns_empty_when_gh_missing(self):
-        with patch(
-            "app.issue_tracker.enrichment.subprocess.run",
-            side_effect=FileNotFoundError(),
-        ):
+        with patch("app.github.run_gh", side_effect=OSError()):
             assert fetch_github_issues([("o", "r", 5)]) == ""
 
     def test_returns_empty_on_timeout(self):
         with patch(
-            "app.issue_tracker.enrichment.subprocess.run",
+            "app.github.run_gh",
             side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=5),
         ):
             assert fetch_github_issues([("o", "r", 5)]) == ""
@@ -156,12 +168,9 @@ class TestFetchGithubIssues:
 
     def test_fetch_count_capped_at_max_refs(self):
         payload = json.dumps({"title": "T", "body": "b"})
-        with patch(
-            "app.issue_tracker.enrichment.subprocess.run",
-            return_value=_gh_result(stdout=payload),
-        ) as mock:
+        with patch("app.github.run_gh", return_value=payload) as mock:
             fetch_github_issues([("o", "r", i) for i in range(MAX_REFS + 10)])
-        # Only MAX_REFS gh subprocesses are spawned, regardless of ref count.
+        # Only MAX_REFS gh calls are made, regardless of ref count.
         assert mock.call_count == MAX_REFS
 
 
