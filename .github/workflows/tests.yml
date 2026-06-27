@@ -125,6 +125,7 @@ jobs:
           coverage report --show-missing --sort=cover
 
       - name: 📝 Generate coverage artifacts (markdown + html)
+        if: always()
         working-directory: koan
         run: |
           coverage report --format=markdown --sort=cover > coverage-report.md
@@ -139,8 +140,6 @@ jobs:
 
       - name: 🔍 Check coverage baseline
         working-directory: koan
-        env:
-          KOAN_ROOT: ${{ github.workspace }}/koan
         run: |
           TOTAL_COV=$(coverage report --format=total 2>/dev/null || coverage report | grep '^TOTAL' | awk '{print $NF}' | tr -d '%')
           echo "Total coverage: ${TOTAL_COV}%"
