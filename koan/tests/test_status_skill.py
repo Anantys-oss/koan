@@ -557,6 +557,33 @@ class TestGetServerIp:
             result = _handle_status(ctx)
         assert "IP:" not in result
 
+    def test_hostname_shown_in_status(self, tmp_path):
+        """Server hostname appears in /status output alongside the IP."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="192.168.1.42"), \
+                patch("skills.core.status.handler._get_hostname", return_value="myhost"):
+            result = _handle_status(ctx)
+        assert "🖥️ myhost" in result
+
+    def test_hostname_hidden_when_unknown(self, tmp_path):
+        """When hostname can't be determined, no hostname shown."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="unknown"), \
+                patch("skills.core.status.handler._get_hostname", return_value="unknown"):
+            result = _handle_status(ctx)
+        assert "🖥️" not in result
+
+    def test_get_hostname_returns_unknown_on_failure(self):
+        from skills.core.status.handler import _get_hostname
+        with patch("socket.gethostname", side_effect=OSError("boom")):
+            assert _get_hostname() == "unknown"
+
 
 # ---------------------------------------------------------------------------
 # _handle_ping()
