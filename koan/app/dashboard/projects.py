@@ -91,42 +91,54 @@ def _run_add_skill(args: str) -> tuple:
             send_message=parts.append,
         )
         out = execute_skill(skill, ctx)
+        # execute_skill returns a SkillError sentinel (not a raise) when the
+        # handler crashes. Detect it explicitly so a crashed add is never
+        # announced as a success by the text heuristic below.
+        if _is_skill_error(out):
+            message = "\n".join([*parts, str(out.message)]).strip()
+            _report(False, message)
+            return False, message
         if out:
             parts.append(str(out))
     except Exception as e:  # noqa: BLE001 - best-effort skill dispatch
         _report(False, f"add_project failed: {e}")
         return False, f"Error: {e}"
     message = "\n".join(parts).strip()
-    # The add_project skill returns a plain string and signals failure by
-    # returning an error message (clone/fork failure, invalid repo, already
-    # exists) rather than raising. Only the success path reports the project
-    # was added to the workspace; classify on that so a failed add is not
-    # announced as a success.
+    # The add_project skill returns a plain string and signals success by
+    # reporting the project was added to the workspace; every failure path
+    # returns a descriptive error string instead. Classify on the explicit
+    # success marker (not on failure-keyword absence) so a failed add is never
+    # reported as a success and a legitimate repo name containing a word like
+    # "error" or "failed" is never reported as a failure.
     ok = _looks_successful(message)
     _report(ok, message)
     return ok, message
 
 
-_FAILURE_MARKERS = (
-    "failed",
-    "could not",
-    "invalid",
-    "already exists",
-    "usage:",
-    "error",
-)
+def _is_skill_error(result) -> bool:
+    """Check if a skill result is a SkillError, surviving module reloads."""
+    return (
+        type(result).__name__ == "SkillError"
+        and hasattr(result, "exception")
+        and hasattr(result, "message")
+    )
+
+
+# The add_project handler emits this exact phrase only on the success path
+# (``Project '<name>' added to workspace.``). Matching the positive marker is
+# robust against repo names that contain failure keywords.
+_SUCCESS_MARKER = "added to workspace."
 
 
 def _looks_successful(message: str) -> bool:
-    """Best-effort success classification of the add_project skill output.
+    """Classify add_project skill output by its explicit success marker.
 
     The skill returns ``Project '<name>' added to workspace.`` on success and
-    a descriptive error string otherwise. Treat an empty result or any known
-    failure marker as a failure.
+    a descriptive error string on every failure path. Match the positive
+    marker rather than the absence of failure keywords so that a legitimate
+    repo name (e.g. ``error-handler``) is not misread as a failure.
     """
-    if not message:
-        return False
-    return not any(marker in message.lower() for marker in _FAILURE_MARKERS)
+    return _SUCCESS_MARKER in message.lower()
 
 
 def _report(ok: bool, message: str) -> None:
