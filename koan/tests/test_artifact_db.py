@@ -120,6 +120,59 @@ def test_dual_write_truncates_no_duplicate_accumulation(tmp_path):
     conn.close()
 
 
+def test_dual_write_append_mode_accumulates(tmp_path):
+    # Append-only artifacts: each dual_write adds new rows without truncating.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    artifact_db.dual_write([{"text": "a", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn,
+                           table="missions", mode="append")
+    artifact_db.dual_write([{"text": "b", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn,
+                           table="missions", mode="append")
+    rows = conn.execute("SELECT text FROM missions ORDER BY rowid").fetchall()
+    assert [r[0] for r in rows] == ["a", "b"]   # both kept, not truncated
+    conn.close()
+
+
+def test_dual_write_unknown_mode_raises(tmp_path):
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    with pytest.raises(ValueError):
+        artifact_db.dual_write([{"text": "x", "section": "pending"}],
+                               file_writer=lambda r: None, conn=conn,
+                               table="missions", mode="upsert")
+    conn.close()
+
+
+def test_connect_returns_none_on_oserror(tmp_path, monkeypatch):
+    # mkdir failure (OSError, not DatabaseError) must still yield None.
+    def boom(*a, **k):
+        raise PermissionError("read-only fs")
+
+    monkeypatch.setattr(artifact_db.Path, "mkdir", boom)
+    assert artifact_db.connect(tmp_path / "sub" / "a.db") is None
+
+
+def test_dual_write_unpersistable_dirty_closes_conn_for_file_fallback(tmp_path):
+    # If both the projection write and the dirty flag cannot be persisted, the
+    # connection is closed so later reads fall through to the authoritative file.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    artifact_db.dual_write([{"text": "old", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn, table="missions")
+    # Drop both the data table and the meta table so projection AND dirty fail.
+    conn.execute("DROP TABLE missions")
+    conn.execute("DROP TABLE _artifact_meta")
+    conn.commit()
+    file_recs = [{"text": "new", "section": "pending"}]
+    artifact_db.dual_write(file_recs, file_writer=lambda r: None,
+                           conn=conn, table="missions")
+    out = artifact_db.read_from_db_or_file(
+        conn, "missions", file_reader=lambda: file_recs)
+    assert out == file_recs                     # served from file, not stale DB
+
+
 def test_dual_write_db_failure_flags_dirty_read_uses_file(tmp_path):
     # First write succeeds; a later projection failure must roll back and flag
     # the projection dirty so reads fall back to the (authoritative) file.
