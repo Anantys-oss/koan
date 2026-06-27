@@ -8,6 +8,11 @@ the same baseline.
 When code and docs disagree, treat code as the immediate source of truth, then
 update the relevant docs in the same change.
 
+For **design contracts** (why a component exists, the invariants it upholds, what
+breaks if you change it), see [`specs/`](../specs/README.md) — the single source of
+truth for design. Specs drive implementation and refactoring; these docs explain how
+to operate Koan. Most non-trivial changes update both.
+
 ## Start Here
 
 - [User Manual](users/user-manual.md) - daily use, workflows, and command guide.

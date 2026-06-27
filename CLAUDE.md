@@ -6,6 +6,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kōan is an autonomous background agent that uses idle Claude API quota to work on local projects. It runs as a continuous loop, pulling missions from a shared file, executing them via Claude Code CLI, and communicating progress via Telegram. Philosophy: "The agent proposes. The human decides." — no unsupervised code modifications.
 
+## Specs discipline (mandatory)
+
+`specs/` is the **single source of truth for design** — *why* a component exists, the
+contract it upholds, and what breaks if you change it. Specs drive the application; docs
+explain how to use it (see `specs/README.md` for the specs-vs-docs split). This discipline
+is **not optional**:
+
+1. **Before implementing** any feature or refactor, READ the relevant spec first:
+   - Component change → `specs/components/<group>.md` (core, agent-loop, bridge,
+     providers, git-github, issue-tracking, skills, web).
+   - Skill change → `specs/skills/<skill-name>.md`.
+   The spec tells you the invariants you must not silently break. Do not skip this because
+   a change "looks small" — small changes break contracts too.
+2. **After implementing**, UPDATE the spec in the same branch to reflect the new design:
+   new types/functions, changed integration points, resolved or newly-introduced debt. A
+   PR that alters a component's contract without updating its spec is **incomplete**.
+3. **No spec yet?** If you touch a component or skill that has no spec, WRITE one using
+   `specs/components/` conventions or `specs/skills/SKILL_SPEC_TEMPLATE.md`. Phase 1 ships
+   specs for the highest-impact pieces; the rest are added on-demand as they are touched.
+
+Specs and `docs/` coexist — most non-trivial changes update both. Use specs to anchor
+clean refactoring: change the spec's contract deliberately, then make the code match.
+
 ## Documentation first
 
 - Before planning or implementing a feature or important refactor, inspect the relevant documentation with `grep`, `find`, or equivalent search. Start at `docs/README.md`, then read the matching pages under `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`, `docs/operations/`, `docs/design/`, `docs/security/`, or `docs/setup/`.
