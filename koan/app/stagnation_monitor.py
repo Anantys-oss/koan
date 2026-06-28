@@ -567,7 +567,10 @@ def increment_verify_count(instance_dir: str, mission_title: str) -> int:
     per-system verify cap and the combined max_total_retries cap remain
     effective. Preserves sibling sub-counters (count, crash_count).
 
-    Returns the new verify_count value.
+    Returns the new verify_count value, or ``-1`` if the tracker could not be
+    persisted — callers MUST treat a negative return as "not incremented" and
+    skip the re-queue, otherwise the on-disk count stays below the cap and the
+    mission could be re-queued unboundedly.
     """
     path = _retry_tracker_path(instance_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -601,7 +604,7 @@ def increment_verify_count(instance_dir: str, mission_title: str) -> int:
         return locked_json_modify(path, _mutate, default_factory=dict, validator=_validate_tracker)
     except OSError as e:
         print(f"[stagnation_monitor] verify tracker save error: {e}", file=sys.stderr)
-        return 1
+        return -1
 
 
 def seed_crash_count(instance_dir: str, mission_title: str, seed_value: int) -> None:
