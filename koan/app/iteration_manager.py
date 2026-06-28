@@ -282,10 +282,15 @@ def _maybe_warn_burn_rate(instance_dir: Path, usage_state_path: Path) -> None:
     if last_warned is not None and usage_state is not None:
         with suppress_logged(_log_iteration, "error", "Burn rate warning state parse failed",
                              json.JSONDecodeError, OSError, KeyError, ValueError, TypeError):
-            from datetime import datetime, timezone
+            from datetime import datetime
             session_start = datetime.fromisoformat(usage_state["session_start"])
             if session_start.tzinfo is None:
-                session_start = session_start.replace(tzinfo=timezone.utc)
+                # session_start is written naive via datetime.now() (local
+                # clock); last_warned is genuine UTC from burn_rate._now_utc().
+                # Localize (assume system tz) rather than relabel as UTC, else
+                # the two are compared in mismatched frames and the stale-warning
+                # clear fires off by the host's UTC offset.
+                session_start = session_start.astimezone()
             if last_warned < session_start:
                 clear_warning(instance_dir)
                 last_warned = None
