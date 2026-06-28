@@ -684,3 +684,51 @@ class TestCLIMainBlock:
             with pytest.raises(SystemExit) as exc_info:
                 run_module("app.reset_parser", run_name="__main__")
             assert exc_info.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# Naive `now` is presumed system-local and must be CONVERTED to the reset
+# timezone, not relabeled. Regression for non-Paris hosts (e.g. UTC servers).
+# ---------------------------------------------------------------------------
+
+
+class TestNaiveNowSystemLocal:
+    """When `now` is naive it represents the host's local clock.
+
+    Production always calls parse_reset_time() with now=None, yielding a naive
+    datetime.now() in the host's local timezone. The parser must convert that
+    instant into the reset timezone before deciding today-vs-tomorrow. Relabeling
+    (replace(tzinfo=tz)) silently assumes the host runs in the reset timezone,
+    which is false on the typical UTC server — and produces a reset time off by
+    the UTC offset, flipping the day near boundaries.
+    """
+
+    def test_naive_now_on_utc_host_converts_to_paris(self):
+        """UTC host at 09:30 == 10:30 Paris (CET); 'resets 10am' is tomorrow.
+
+        Pre-fix the naive branch relabeled 09:30 as Paris time, so 10am looked
+        still-upcoming today — pointing auto-resume at a reset that already
+        passed in real Paris time, hammering the still-exhausted quota.
+        """
+        import os
+        import time
+        from app.reset_parser import parse_reset_time
+
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+        try:
+            # Naive: presumed system-local (UTC). Feb → CET (UTC+1) in Paris.
+            now = datetime(2026, 2, 4, 9, 30, 0)
+            ts, _ = parse_reset_time("resets 10am (Europe/Paris)", now=now)
+            assert ts is not None
+            reset_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("Europe/Paris"))
+            # Real Paris time is 10:30 > 10:00, so the next 10am is tomorrow.
+            assert reset_dt.day == 5
+            assert reset_dt.hour == 10
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
