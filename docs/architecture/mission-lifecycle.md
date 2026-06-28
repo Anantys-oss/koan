@@ -87,12 +87,13 @@ limited number of times before regular failure handling and user notification.
 
 After a mission exits successfully, the RARV Verify phase
 (`mission_verifier.py`) checks that the work actually matches the mission title
-(meaningful changes, tests added, a PR created). When verification fails with
-**≥2** failed checks, `run_post_mission()` signals a re-queue and
-`_finalize_mission()` moves the mission back to **Pending** with a
-`[verify-failed: <summary>]` context tag instead of completing it. The single
-`>= 2` failure threshold avoids re-queueing on one borderline check, since the
-verifier uses the mission title as its spec.
+(meaningful changes, tests added, a PR created). When verification fails,
+`run_post_mission()` signals a re-queue and `_finalize_mission()` moves the
+mission back to **Pending** with a `[verify-failed: <summary>]` context tag
+instead of completing it. On a successful (exit 0) mission the only check that
+can FAIL is `check_diff_coherence` (an empty branch) — the other checks only
+PASS/WARN/SKIP — so a single failure is already a strong, unambiguous signal,
+and requiring two would make the re-queue unreachable.
 
 - The cap is `verification.max_requeue` in `config.yaml` (default **2**); `0`
   disables the verify re-queue entirely.
