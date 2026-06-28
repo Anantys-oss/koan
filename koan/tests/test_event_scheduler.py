@@ -180,6 +180,58 @@ class TestTick:
         mock_insert.assert_not_called()
         assert result == []
 
+    def test_past_due_event_with_utc_z_suffix_processed(self, tmp_path):
+        """An overdue event whose run_at carries a 'Z' (UTC) suffix is processed,
+        not crashed on. ``datetime.fromisoformat`` returns a tz-aware value for a
+        'Z'-suffixed string; comparing it against a naive ``now`` raises TypeError.
+        Such an event file would otherwise never be archived and poison every
+        subsequent tick.
+        """
+        events_dir = tmp_path / "events"
+        events_dir.mkdir()
+        # Far in the past, expressed as a UTC instant with explicit 'Z'.
+        (events_dir / "z.json").write_text(
+            json.dumps({"type": "once", "run_at": "2020-01-01T00:00:00Z",
+                        "mission": "Z-suffixed mission"}),
+            encoding="utf-8",
+        )
+
+        missions_path = tmp_path / "missions.md"
+        missions_path.write_text("## Pending\n\n## In Progress\n\n## Done\n")
+
+        with patch("app.event_scheduler.insert_pending_mission", return_value=True) as mock_insert:
+            from app.event_scheduler import tick
+            result = tick(str(tmp_path))
+
+        mock_insert.assert_called_once()
+        assert result == ["Z-suffixed mission"]
+        # File must be archived so it is not reprocessed (poison-pill guard).
+        assert not (events_dir / "z.json").exists()
+        assert (events_dir / "archive" / "z.json").exists()
+
+    def test_future_event_with_offset_not_inserted(self, tmp_path):
+        """A future event with an explicit timezone offset is compared correctly
+        and not inserted (no crash on naive-vs-aware comparison).
+        """
+        events_dir = tmp_path / "events"
+        events_dir.mkdir()
+        # 2 hours in the future expressed in UTC; well ahead of local now regardless
+        # of host offset, padded so even a +14h zone stays in the future.
+        future = datetime.now() + timedelta(hours=20)
+        (events_dir / "f.json").write_text(
+            json.dumps({"type": "once",
+                        "run_at": future.strftime("%Y-%m-%dT%H:%M:%S") + "+00:00",
+                        "mission": "Future offset mission"}),
+            encoding="utf-8",
+        )
+
+        with patch("app.event_scheduler.insert_pending_mission") as mock_insert:
+            from app.event_scheduler import tick
+            result = tick(str(tmp_path))
+
+        mock_insert.assert_not_called()
+        assert result == []
+
 
 # ---------------------------------------------------------------------------
 # parse_at_arg() — natural-language time parsing for /at command
