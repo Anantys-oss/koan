@@ -65,8 +65,11 @@ def parse_reset_time(text: str, now: Optional[datetime] = None) -> Tuple[Optiona
     except (KeyError, ValueError):
         tz = ZoneInfo("Europe/Paris")
 
-    # Parse the time component
-    now_tz = now.astimezone(tz) if now.tzinfo else now.replace(tzinfo=tz)
+    # Parse the time component. astimezone(tz) converts in both cases: an
+    # aware `now` is shifted into `tz`, and a naive `now` (the production path
+    # via datetime.now()) is presumed system-local and converted — never
+    # relabeled, which would wrongly assume the host runs in `tz`.
+    now_tz = now.astimezone(tz)
 
     # Pattern: "10am" or "5pm" (today or next occurrence)
     time_only = re.match(r'^(\d{1,2})\s*(am|pm)$', reset_str, re.IGNORECASE)
