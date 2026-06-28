@@ -264,6 +264,40 @@ Weekly (7 day) : 70% (Resets in 1d)
         # With defaults (stop=85): 5 < 15 → wait
         assert mode == "wait"
 
+    def test_implement_band_reachable_with_default_thresholds(self, tmp_path):
+        """Default config keeps the implement band [30, 40) reachable."""
+        usage = tmp_path / "usage.md"
+        # 65% used, no safety margin via session_only weekly=90 → 35% remaining
+        usage.write_text("Session (5hr) : 65% (reset in 1h)\n")
+        tracker = UsageTracker(usage, budget_mode="session_only")
+        tracker.safety_margin = 0.0
+        # 35% remaining: 30 <= 35 < 40 → implement
+        assert tracker.decide_mode() == "implement"
+
+    def test_ladder_monotonic_when_warn_exceeds_deep_threshold(self, tmp_path):
+        """Raising warn_at_percent past the deep cutoff must not strand a tier.
+
+        Regression: the implement branch used a hard ``< 40`` literal. When an
+        operator set warn_at_percent low enough that warn_remaining >= 40, the
+        review branch swallowed everything below 40 and implement became dead
+        code — yet remaining in [40, warn_remaining) still wrongly returned
+        review/deep with no predictable boundary. The floored cutoff makes the
+        ladder monotonic: review below the comfort line, deep above it.
+        """
+        usage = tmp_path / "usage.md"
+        usage.write_text("Session (5hr) : 55% (reset in 1h)\n")
+        # warn_pct=50 → warn_remaining=50 (>= deep threshold 40)
+        tracker = UsageTracker(usage, budget_mode="session_only",
+                               warn_pct=50, stop_pct=85)
+        tracker.safety_margin = 0.0
+
+        # 45% remaining: below the 50% comfort line → review (not a dead branch)
+        tracker.session_pct = 55.0
+        assert tracker.decide_mode() == "review"
+        # 55% remaining: at/above comfort line → deep
+        tracker.session_pct = 45.0
+        assert tracker.decide_mode() == "deep"
+
 
 class TestOutputFormatting:
     """Test CLI output formatting."""

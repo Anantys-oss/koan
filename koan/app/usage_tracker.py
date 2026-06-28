@@ -31,6 +31,12 @@ STALE_SAFETY_MARGIN = 15.0  # vs normal 10%
 # accidentally running in unlimited/DEEP mode on bad data.
 MALFORMED_DEFAULT_PCT = 75.0
 
+# Remaining-budget cutoff (in percentage points) at/above which DEEP mode is
+# allowed. The implement tier occupies the band [warn_remaining, this value).
+# Floored against warn_remaining in decide_mode() so the threshold ladder
+# stays monotonic regardless of operator config (see decide_mode docstring).
+DEEP_REMAINING_THRESHOLD = 40.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -185,14 +191,21 @@ class UsageTracker:
         Budget thresholds (derived from config):
         - < (100 - stop_pct)%: wait (too close to limit)
         - < (100 - warn_pct)%: review (low-cost only)
-        - < 40%: implement (medium-cost)
-        - >= 40%: deep (high-cost allowed)
+        - < max(warn_remaining, DEEP_REMAINING_THRESHOLD)%: implement
+        - otherwise: deep (high-cost allowed)
 
         With defaults (warn_pct=70, stop_pct=85):
         - < 15%: wait
         - < 30%: review
         - < 40%: implement
         - >= 40%: deep
+
+        The implement cutoff is floored against ``warn_remaining`` to keep the
+        ladder monotonic: an operator who raises ``warn_at_percent`` so that
+        ``warn_remaining`` meets or exceeds ``DEEP_REMAINING_THRESHOLD`` is
+        asking for review-only below their comfort line and full capability
+        above it — the implement band collapses by design rather than leaving
+        a provably-dead ``< 40`` branch.
 
         Returns:
             One of: "wait", "review", "implement", "deep"
@@ -202,12 +215,13 @@ class UsageTracker:
 
         stop_remaining = 100 - self.stop_pct  # default: 15
         warn_remaining = 100 - self.warn_pct  # default: 30
+        deep_remaining = max(warn_remaining, DEEP_REMAINING_THRESHOLD)  # default: 40
 
         if available < stop_remaining:
             return "wait"
         elif available < warn_remaining:
             return "review"
-        elif available < 40:
+        elif available < deep_remaining:
             return "implement"
         else:
             return "deep"
