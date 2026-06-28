@@ -117,8 +117,8 @@ def fetch_unresolved_review_comments(
     results: List[dict] = []
     try:
         raw = run_gh(
-            "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
-            "--limit", "100", "--jq",
+            "api", f"repos/{full_repo}/pulls/{pr_number}/comments?per_page=100",
+            "--jq",
             r'.[] | {id: .id, user: .user.login, body: .body, path: .path, user_type: .user.type}',
             timeout=15,
         )
@@ -161,8 +161,8 @@ def fetch_review_body_comments(
     results: List[dict] = []
     try:
         raw = run_gh(
-            "api", f"repos/{full_repo}/pulls/{pr_number}/reviews",
-            "--limit", "100", "--jq",
+            "api", f"repos/{full_repo}/pulls/{pr_number}/reviews?per_page=100",
+            "--jq",
             r'.[] | {id: .id, user: .user.login, body: .body, state: .state, user_type: .user.type}',
             timeout=15,
         )

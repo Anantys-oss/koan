@@ -188,6 +188,24 @@ class TestFetchUnresolvedReviewComments:
 
         assert fetch_unresolved_review_comments("owner/repo", 1) == []
 
+    @patch("app.review_comment_dispatch.run_gh", return_value="")
+    def test_gh_api_invocation_has_no_invalid_limit_flag(self, mock_gh):
+        """`gh api` rejects --limit; pagination must use the per_page query param.
+
+        Regression: passing `--limit 100` to `gh api` made every fetch exit
+        non-zero, so run_gh raised, the comments list came back empty, and the
+        whole review-dispatch feature silently never fired. Pin the invocation
+        so the page size travels in the endpoint, not an unsupported flag.
+        """
+        from app.review_comment_dispatch import fetch_unresolved_review_comments
+
+        fetch_unresolved_review_comments("owner/repo", 1)
+        args = mock_gh.call_args.args
+        assert "--limit" not in args
+        endpoint = args[1]
+        assert endpoint.startswith("repos/owner/repo/pulls/1/comments")
+        assert "per_page=100" in endpoint
+
 
 class TestFetchReviewBodyComments:
     """fetch_review_body_comments filters approvals and empty bodies."""
@@ -220,6 +238,18 @@ class TestFetchReviewBodyComments:
         comments = fetch_review_body_comments("owner/repo", 1, bot_username="mybot")
 
         assert comments == [{"id": 21, "user": "alice", "body": "needs tests"}]
+
+    @patch("app.review_comment_dispatch.run_gh", return_value="")
+    def test_gh_api_invocation_has_no_invalid_limit_flag(self, mock_gh):
+        """`gh api` rejects --limit; the reviews fetch must page via per_page."""
+        from app.review_comment_dispatch import fetch_review_body_comments
+
+        fetch_review_body_comments("owner/repo", 1)
+        args = mock_gh.call_args.args
+        assert "--limit" not in args
+        endpoint = args[1]
+        assert endpoint.startswith("repos/owner/repo/pulls/1/reviews")
+        assert "per_page=100" in endpoint
 
 
 class TestReviewDispatchConfigHelpers:
