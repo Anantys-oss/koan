@@ -19,6 +19,9 @@ memory_monitor:
 Defaults: disabled, `threshold_mb: 1200`, `sustained_samples: 3`,
 `min_runs_before_restart: 1`, `tracemalloc: false`.
 
+All knobs are read once at agent-loop startup and frozen for the session — a
+live config edit takes effect on the next restart, consistently for every knob.
+
 ## How it works
 
 RSS is read from `/proc/self/status` (`VmRSS`, current RSS) with a
@@ -43,4 +46,8 @@ memory overhead — enable it only while investigating, then turn it off.
 ## Observability
 
 `GET /api/health` on the dashboard includes a `memory` block with current
-`rss_mb`, the configured `threshold_mb`, and `watchdog_enabled`.
+`rss_mb`, the configured `threshold_mb`, `watchdog_enabled`, and `source`.
+The dashboard runs in its own process, so it resolves the agent loop's (`run`)
+PID and reports *that* process's RSS (`source: "agent_loop"`) — the watchdog's
+actual subject. If the run PID can't be resolved (agent loop not running) it
+falls back to the dashboard's own RSS (`source: "self"`).

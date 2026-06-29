@@ -227,7 +227,7 @@ def api_health():
     awake_health = _check_process_alive(state.KOAN_ROOT, "awake")
 
     from app.memory_monitor import get_memory_status
-    memory = get_memory_status()
+    memory = get_memory_status(state.KOAN_ROOT)
 
     return jsonify({
         "disk": disk,

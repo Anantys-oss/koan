@@ -876,6 +876,7 @@ def _build_memory_monitor():
         threshold_mb=conf["threshold_mb"],
         sustained_samples=conf["sustained_samples"],
         tracemalloc_enabled=conf.get("tracemalloc", False),
+        min_runs_before_restart=conf.get("min_runs_before_restart", 1),
     )
 
 
@@ -1219,10 +1220,14 @@ def main_loop():
                 sys.exit(RESTART_EXIT_CODE)
 
             # --- Memory watchdog (#2232) ---
+            # All knobs are frozen at startup in _build_memory_monitor() — a
+            # live config edit takes effect on the next restart, consistently
+            # for every knob (no per-iteration YAML re-read).
             if memory_monitor is not None:
-                from app.config import get_memory_monitor_config
-                min_runs = get_memory_monitor_config().get("min_runs_before_restart", 1)
-                if memory_monitor.sample() and count >= min_runs:
+                if (
+                    memory_monitor.sample()
+                    and count >= memory_monitor.min_runs_before_restart
+                ):
                     _handle_memory_restart(koan_root, instance, memory_monitor, count)
 
             # --- Pause mode ---
