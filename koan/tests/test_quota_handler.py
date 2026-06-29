@@ -419,6 +419,66 @@ Please try again later."""
         result = extract_reset_info(text)
         assert "resets 5pm" in result
 
+    def test_bounds_single_line_json_tail(self):
+        """Greedy regex must not swallow the JSON tail of one-line CLI output.
+
+        The Claude CLI emits its result as a single-line JSON object, so the
+        reset message sits inline: ``...resets 8:40am (America/Denver)","stop_reason":...``
+        An unbounded ``resets\\s*.+`` captured that whole tail into
+        reset_display, which then leaked into the chat warning, the pause file
+        (shown by /status), and the journal. Only the reset phrase is wanted.
+        """
+        from app.quota_handler import extract_reset_info
+
+        text = (
+            'out of extra usage. resets 8:40am (America/Denver)",'
+            '"stop_reason":"stop_sequence","session_id":"abc",'
+            '"total_cost_usd":0.98,"usage":{"input_tokens":1234}'
+        )
+        result = extract_reset_info(text)
+        assert result == "resets 8:40am (America/Denver)"
+        assert "stop_reason" not in result
+        assert "total_cost_usd" not in result
+
+
+class TestQuotaDebugSnippet:
+    """quota_debug_snippet produces a bounded debug window for chat code blocks."""
+
+    def test_empty_returns_empty(self):
+        from app.quota_handler import quota_debug_snippet
+
+        assert quota_debug_snippet("", "") == ""
+        assert quota_debug_snippet() == ""
+
+    def test_centers_on_resets_signal(self):
+        from app.quota_handler import quota_debug_snippet
+
+        raw = (
+            "preamble noise here. resets 8:40am (America/Denver)\","
+            '"stop_reason":"stop_sequence","total_cost_usd":0.98'
+        )
+        out = quota_debug_snippet("", raw)
+        assert "resets 8:40am" in out
+        assert "stop_reason" in out
+        assert "total_cost_usd" in out
+
+    def test_prefers_stderr_over_stdout(self):
+        from app.quota_handler import quota_debug_snippet
+
+        out = quota_debug_snippet("stdout noise", "stderr resets 10am (UTC)")
+        assert "stderr resets 10am" in out
+        assert "stdout noise" not in out
+
+    def test_bounds_long_output(self):
+        from app.quota_handler import quota_debug_snippet
+
+        raw = "resets 8:40am (UTC)" + ("z" * 5000)
+        out = quota_debug_snippet(raw, max_chars=200)
+        assert "resets 8:40am" in out
+        assert out.endswith("…(truncated)")
+        assert len(out) < 260  # bounded, not the full 5000+ chars
+
+
 
 class TestExtractResetInfoCopilot:
     """Test extract_reset_info with Copilot/GitHub-style retry info."""
