@@ -224,14 +224,17 @@ def process_chat_request(text: str, soul: str, summary: str, project_path: str) 
                 allowed_tools=chat_tools_list,
                 model=models["chat"],
                 fallback=models["fallback"],
-                max_turns=1,
+                max_turns=5,
             )
 
             try:
+                # Run from KOAN_ROOT (not project cwd) so chat does not
+                # collide with the mission session lock — reintroducing the
+                # API contention this PR exists to remove.
                 result = run_cli(
                     cmd,
                     capture_output=True, text=True, timeout=attempt_timeout,
-                    cwd=project_path or str(KOAN_ROOT),
+                    cwd=str(KOAN_ROOT),
                 )
                 response = clean_chat_response(result.stdout.strip(), text)
 
