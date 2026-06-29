@@ -649,6 +649,15 @@ def _route_to_chat_process(text: str) -> bool:
     if not write_to_inbox(text):
         log("error", "Chat inbox write failed — falling back to worker thread")
         return False
+
+    # Re-check liveness after the write. The process may have died between the
+    # initial PID check and the inbox write (TOCTOU): the entry would then sit
+    # unconsumed and the user would never get a reply. Fall back to the worker
+    # thread so the message is still handled inline.
+    if not _is_chat_process_running():
+        log("error", "Chat process died after inbox write — falling back to worker thread")
+        return False
+
     log("chat", "Chat routed to dedicated chat process")
     return True
 
