@@ -38,6 +38,7 @@ memory, or integration changes:
 - [GitHub And Trackers](architecture/github-and-trackers.md)
 - [GitHub Webhooks](messaging/github-webhooks.md)
 - [PR Activity Reports](operations/pr-reports.md)
+- [Memory Watchdog](operations/memory-watchdog.md)
 - [Messaging Level (bridge verbosity)](messaging/messaging-level.md)
 - [Design Decisions](design/decisions.md)
 
