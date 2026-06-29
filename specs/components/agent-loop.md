@@ -56,6 +56,18 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
   mistaken for a quota/auth message. Keep that default for new dispatch pathways.
 - **Every termination pathway needs a retry guard.** Stagnation kill, timeout kill,
   and CLI error all route through `_maybe_retry_mission`'s RETRYABLE check.
+- **Contemplative failures must surface, not swallow.** `_handle_contemplative`
+  captures the CLI exit code and runs `_notify_contemplative_failure`, which classifies
+  the outcome (529 overload, quota, auth, transient, exit-code) and sends ONE throttled
+  message per outage episode (`.contemplative-failure-notify.json`, 6h cooldown). Without
+  it a failed contemplative session is invisible and the agent emits generic
+  "Run failed / went sideways" text. The contemplative path does NOT retry — it sleeps
+  and the next iteration retries naturally.
+- **Provider gateway overloads (HTTP 5xx via `API Error: NNN`) are RETRYABLE.**
+  OpenAI-compatible gateways behind the Claude CLI surface 529 as
+  `API Error: 529 [..][The service may be temporarily overloaded...]`; `cli_errors`
+  matches `api error: 5\d\d` and `temporarily overloaded` so these classify as
+  RETRYABLE, not UNKNOWN.
 - **Quota signals come from the summary stream, not assistant text.** Clean `output`
   must never carry quota signals; read `stream_summary` (`cli_runtime_quota_signal`).
 - **`reset_display` is shared by the chat warning, `.koan-pause` (`/status`), and the

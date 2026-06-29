@@ -1390,6 +1390,133 @@ def _resolve_idle_wait_interval(
     return IDLE_LOOP_BREATH_SECONDS
 
 
+# Re-notify a sustained contemplative outage at most this often, so a 529
+# overload streak lasting hours produces one clear message per episode
+# instead of spamming every iteration.
+_CONTEMP_FAILURE_NOTIFY_COOLDOWN = 6 * 3600
+_CONTEMP_FAILURE_NOTIFY_FILE = ".contemplative-failure-notify.json"
+
+
+def _classify_contemplative_failure(exit_code, stdout_text, stderr_text):
+    """Classify a contemplative session outcome.
+
+    Returns ``(failed, signature, reason)``:
+    - ``failed``: the session produced no usable reflection.
+    - ``signature``: stable throttle key (e.g. ``"overload:529"``).
+    - ``reason``: short human label for the notification.
+    """
+    import re
+
+    stdout_text = stdout_text or ""
+    stderr_text = stderr_text or ""
+    combined = f"{stdout_text}\n{stderr_text}"
+
+    # False-success: CLI exits 0 but the result JSON carries an API error
+    # (a gateway 529 surfaces as {"is_error": true, "api_error_status": 529}).
+    # ``api_error_status`` is the precise signal — it lives only in the final
+    # result object, never in a tool_result, so it won't false-fire on a
+    # failed tool call inside an otherwise-successful stream-json session.
+    api_match = re.search(r'"api_error_status"\s*:\s*(\d+)', combined)
+    api_status = api_match.group(1) if api_match else ""
+
+    failed = exit_code != 0 or bool(api_status)
+    if not failed:
+        return False, "", ""
+
+    from app.cli_errors import ErrorCategory, classify_cli_error
+
+    category = classify_cli_error(exit_code, stdout_text, stderr_text)
+    lowered = combined.lower()
+
+    if api_status or "temporarily overloaded" in lowered:
+        code = api_status or "5xx"
+        return True, f"overload:{code}", f"provider gateway overloaded (HTTP {code})"
+    if category == ErrorCategory.QUOTA:
+        return True, "quota", "API quota exhausted"
+    if category == ErrorCategory.AUTH:
+        return True, "auth", "not authenticated (provider login needed)"
+    if category == ErrorCategory.RETRYABLE:
+        return True, "transient", "transient provider/network error"
+    if exit_code != 0:
+        return True, f"exit:{exit_code}", f"CLI exited with code {exit_code}"
+    return True, "unknown", "session produced no output"
+
+
+def _notify_contemplative_failure(
+    instance, project_name, exit_code, stdout_file, stderr_file
+):
+    """Send ONE clear, throttled message when a contemplative session fails.
+
+    Without this the contemplative path swallows the CLI exit code entirely,
+    so a failed session (e.g. a provider 529) leaves the agent to emit generic
+    'Run failed / went sideways' text with no real cause. Re-notifies at most
+    every ``_CONTEMP_FAILURE_NOTIFY_COOLDOWN`` per failure type during a
+    sustained outage, and clears the tracker on success.
+    """
+    try:
+        stdout_text = Path(stdout_file).read_text(errors="replace") if stdout_file else ""
+    except OSError:
+        stdout_text = ""
+    try:
+        stderr_text = Path(stderr_file).read_text(errors="replace") if stderr_file else ""
+    except OSError:
+        stderr_text = ""
+
+    failed, signature, reason = _classify_contemplative_failure(
+        exit_code, stdout_text, stderr_text
+    )
+    tracker_path = Path(instance) / _CONTEMP_FAILURE_NOTIFY_FILE
+
+    if not failed:
+        # Session recovered — reset so the next outage notifies immediately.
+        with contextlib.suppress(OSError):
+            tracker_path.unlink(missing_ok=True)
+        return
+
+    now = int(time.time())
+    should_notify = True
+    try:
+        data = json.loads(tracker_path.read_text())
+        if (
+            data.get("signature") == signature
+            and now - int(data.get("last_notify", 0)) < _CONTEMP_FAILURE_NOTIFY_COOLDOWN
+        ):
+            should_notify = False
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+    prefix = f"[{project_name}] " if project_name else ""
+    if signature.startswith("overload"):
+        msg = (
+            f"🪷 {prefix}Contemplative session couldn't run — {reason}. "
+            "Transient server-side issue; retrying next iteration. No action needed."
+        )
+    elif signature == "quota":
+        msg = (
+            f"🪷 {prefix}Contemplative session paused — API quota exhausted. "
+            "Runs auto-resume once the quota resets."
+        )
+    elif signature == "auth":
+        msg = (
+            f"🪷 {prefix}Contemplative session couldn't run — provider not "
+            "authenticated. A re-login may be needed."
+        )
+    else:
+        msg = f"🪷 {prefix}Contemplative session ended early: {reason}."
+
+    if should_notify:
+        _notify(instance, msg)
+        try:
+            from app.utils import atomic_write_json
+
+            atomic_write_json(
+                tracker_path, {"signature": signature, "last_notify": now}
+            )
+        except OSError as e:
+            log("warn", f"Could not persist contemplative-failure tracker: {e}")
+    log("warn", f"Contemplative session failed ({signature}): {reason}")
+
+
 def _handle_contemplative(
     plan: dict,
     run_num: int,
@@ -1419,8 +1546,9 @@ def _handle_contemplative(
         fd_err, stderr_file = tempfile.mkstemp(prefix="koan-contemp-err-", dir=koan_tmp_dir())
         os.close(fd_err)
         cli_error = None
+        contemp_exit = 1
         try:
-            run_claude_task(
+            contemp_exit = run_claude_task(
                 cmd, stdout_file, stderr_file, cwd=koan_root,
                 instance_dir=instance, project_name=project_name, run_num=run_num,
             )
@@ -1460,6 +1588,14 @@ def _handle_contemplative(
             )
         except Exception as e:
             log("warn", f"Failed to record contemplative outcome: {e}")
+        # Surface a clear reason when the session failed instead of leaving
+        # the user with generic 'Run failed...' text. Read before cleanup.
+        try:
+            _notify_contemplative_failure(
+                instance, project_name, contemp_exit, stdout_file, stderr_file
+            )
+        except Exception as e:
+            log("warn", f"Contemplative failure notification failed: {e}")
         _cleanup_temp(stdout_file, stderr_file)
         if cli_error:
             log("error", f"Contemplative error:\n{cli_error}")
