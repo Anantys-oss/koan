@@ -68,3 +68,17 @@ def test_missing_baseline_reports_synced(koan_root):
     _write_config(koan_root, {"dashboard": {"nickname": "Koan"}})
     status = config_sync.compute_status(koan_root)
     assert status["synced"] is True
+
+
+def test_disabled_flag_suppresses_status(koan_root, monkeypatch):
+    # An unsafe change would normally set restart_pending, but the disable
+    # flag must suppress all UI feedback.
+    _write_config(koan_root, {"cli_provider": "claude"})
+    config_sync.write_baseline(koan_root)
+    _write_config(koan_root, {"cli_provider": "copilot"})
+    monkeypatch.setattr(config_sync._config, "is_config_sync_enabled",
+                        lambda: False)
+    status = config_sync.compute_status(koan_root)
+    assert status["synced"] is True
+    assert status["restart_pending"] is False
+    assert status["changed_unsafe_keys"] == []

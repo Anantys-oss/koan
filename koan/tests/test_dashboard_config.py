@@ -33,3 +33,13 @@ def test_restart_if_idle_restarts_when_idle():
         resp = _client().post("/api/config/restart-if-idle")
     assert resp.status_code == 200
     req.assert_called_once()
+
+
+def test_restart_if_idle_restarts_when_sleeping():
+    # "sleeping" is the normal between-runs state and must allow a restart.
+    with patch("app.dashboard.config.stats_svc.get_agent_state",
+               return_value={"state": "sleeping"}), \
+         patch("app.restart_manager.request_restart") as req:
+        resp = _client().post("/api/config/restart-if-idle")
+    assert resp.status_code == 200
+    req.assert_called_once()
