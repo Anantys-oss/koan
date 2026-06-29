@@ -181,7 +181,15 @@ def _strict_quota_match(text: str) -> bool:
 # Pattern to extract reset info from output.
 # Claude: "resets 10am (Europe/Paris)"
 # Copilot/GitHub: "Retry-After: 60" or "retry after 60 seconds" or "try again in X minutes"
-_RESET_RE = re.compile(r"resets\s+.+", re.IGNORECASE)
+#
+# The match is bounded: it stops at the first JSON/structural delimiter (``"``,
+# ``,``, ``}```, ``<``, ``>``, ``|``) or newline. The Claude CLI emits its result
+# as a *single-line* JSON object, so the quota message appears inline as
+# ``...resets 8:40am (America/Denver)","stop_reason":"stop_sequence",...``. An
+# unbounded ``resets\s+.+`` greedily swallowed that whole JSON tail into
+# ``reset_display`` — which then leaked into the chat warning, the pause file
+# (``/status``), and the journal. Bounding here keeps only the reset phrase.
+_RESET_RE = re.compile(r"resets\s+[^\",\n\r}<>|]+", re.IGNORECASE)
 _RESETS_AT_RE = re.compile(r'"?resetsAt"?\s*:?\s*(\d{9,})', re.IGNORECASE)
 _RETRY_AFTER_RE = re.compile(
     r"(?:retry[\s-]+after[\s:]+(\d+))|(?:try again in\s+(\d+)\s*(seconds?|minutes?|hours?))",
@@ -312,6 +320,33 @@ def extract_reset_info(text: str) -> str:
                 seconds = _clamp_retry_seconds(value)
             return f"resets in {_seconds_to_human(seconds)}"
     return ""
+
+
+def quota_debug_snippet(stdout_text: str = "", stderr_text: str = "",
+                        max_chars: int = 1200) -> str:
+    """Return a bounded CLI-output snippet for a quota debug code block.
+
+    The raw CLI output around a quota stop is useful for debugging (reset time,
+    stop reason, cost, usage), but a full ``--output-format json`` result is too
+    large and noisy to dump verbatim into a chat warning. Center a bounded
+    window on the ``resets`` signal so the relevant fields stay visible.
+
+    Prefers stderr (the trusted CLI channel — usually a concise error) over
+    stdout. Returns ``""`` when no output is available, so callers can skip the
+    code block entirely.
+    """
+    text = (stderr_text or "").strip() or (stdout_text or "").strip()
+    if not text:
+        return ""
+    match = _RESET_RE.search(text)
+    start = max(0, (match.start() - 150) if match else 0)
+    end = min(len(text), start + max_chars)
+    snippet = text[start:end].strip()
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(text):
+        snippet = snippet + "\n…(truncated)"
+    return snippet
 
 
 def _seconds_to_human(seconds: int) -> str:

@@ -71,22 +71,27 @@ def parse_reset_time(text: str, now: Optional[datetime] = None) -> Tuple[Optiona
     # relabeled, which would wrongly assume the host runs in `tz`.
     now_tz = now.astimezone(tz)
 
-    # Pattern: "10am" or "5pm" (today or next occurrence)
-    time_only = re.match(r'^(\d{1,2})\s*(am|pm)$', reset_str, re.IGNORECASE)
+    # Pattern: "10am" / "5pm", or minute-precision "8:40am" / "4:15pm"
+    # (today or next occurrence). The Claude CLI emits minute-precision reset
+    # times; without the optional ``:MM`` group those fell through every
+    # branch and parse_reset_time returned the raw text as-is.
+    time_only = re.match(r'^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$', reset_str, re.IGNORECASE)
     if time_only:
         hour = int(time_only.group(1))
-        is_pm = time_only.group(2).lower() == 'pm'
+        minute = int(time_only.group(2) or 0)
+        is_pm = time_only.group(3).lower() == 'pm'
         if is_pm and hour != 12:
             hour += 12
         elif not is_pm and hour == 12:
             hour = 0
 
-        reset_dt = now_tz.replace(hour=hour, minute=0, second=0, microsecond=0)
+        reset_dt = now_tz.replace(hour=hour, minute=minute, second=0, microsecond=0)
         # If time has passed today, it means tomorrow
         if reset_dt <= now_tz:
             reset_dt += timedelta(days=1)
 
-        reset_info = f"resets {time_only.group(1)}{time_only.group(2).lower()} ({tz_name})"
+        minute_str = f":{minute:02d}" if minute else ""
+        reset_info = f"resets {time_only.group(1)}{minute_str}{time_only.group(3).lower()} ({tz_name})"
         return int(reset_dt.timestamp()), reset_info
 
     # Pattern: "Feb 4 at 10am" or "Feb 4, 10am"

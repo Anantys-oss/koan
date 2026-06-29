@@ -45,6 +45,38 @@ class TestParseResetTime:
         assert reset_dt.hour == 17
         assert "5pm" in info
 
+    def test_minute_precision_time(self):
+        """Parse minute-precision reset times like '8:40am'.
+
+        The Claude CLI emits minute-precision reset strings. Without the
+        optional ``:MM`` group these fell through every branch and the parser
+        returned the raw text as reset_display — leaking the whole CLI JSON
+        blob into the chat warning, pause file, and journal.
+        """
+        from app.reset_parser import parse_reset_time
+
+        now = datetime(2026, 2, 4, 8, 0, 0, tzinfo=ZoneInfo("America/Denver"))
+        ts, info = parse_reset_time("resets 8:40am (America/Denver)", now=now)
+
+        assert ts is not None
+        reset_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("America/Denver"))
+        assert reset_dt.hour == 8
+        assert reset_dt.minute == 40
+        assert info == "resets 8:40am (America/Denver)"
+
+    def test_minute_precision_pm_boundary(self):
+        """Minute-precision PM time converts 12:30pm correctly."""
+        from app.reset_parser import parse_reset_time
+
+        now = datetime(2026, 2, 4, 8, 0, 0, tzinfo=ZoneInfo("UTC"))
+        ts, info = parse_reset_time("resets 12:30pm (UTC)", now=now)
+
+        assert ts is not None
+        reset_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("UTC"))
+        assert reset_dt.hour == 12
+        assert reset_dt.minute == 30
+        assert "12:30pm" in info
+
     def test_time_already_passed_rolls_to_tomorrow(self):
         """If reset time has passed today, should be tomorrow."""
         from app.reset_parser import parse_reset_time
