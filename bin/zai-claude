@@ -77,21 +77,29 @@ args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --model)
-            args+=("--model" "$(map_model "${2:-}")")
+            # Emit only when a value follows; drop a bare trailing --model
+            # so we never forward an empty --model "" (Koan always supplies one).
+            if [[ $# -ge 2 ]]; then
+                args+=("--model" "$(map_model "$2")")
+            fi
             shift
             [[ $# -gt 0 ]] && shift
             ;;
         --model=*)
-            args+=("--model=$(map_model "${1#--model=}")")
+            val="${1#--model=}"
+            [[ -n "$val" ]] && args+=("--model=$(map_model "$val")")
             shift
             ;;
         --fallback-model)
-            args+=("--fallback-model" "$(map_model "${2:-}")")
+            if [[ $# -ge 2 ]]; then
+                args+=("--fallback-model" "$(map_model "$2")")
+            fi
             shift
             [[ $# -gt 0 ]] && shift
             ;;
         --fallback-model=*)
-            args+=("--fallback-model=$(map_model "${1#--fallback-model=}")")
+            val="${1#--fallback-model=}"
+            [[ -n "$val" ]] && args+=("--fallback-model=$(map_model "$val")")
             shift
             ;;
         *)

@@ -12,7 +12,20 @@ class ClaudeProvider(CLIProvider):
     name = "claude"
 
     def binary(self) -> str:
-        return os.environ.get("KOAN_CLAUDE_CLI_PATH", "").strip() or "claude"
+        raw = os.environ.get("KOAN_CLAUDE_CLI_PATH", "").strip()
+        if not raw:
+            return "claude"
+        # Absolute path → as-is. Bare command name (no directory component)
+        # → leave for PATH lookup. Relative path → resolve against KOAN_ROOT
+        # so .env config is portable across installs/copies. Note the process
+        # CWD is KOAN_ROOT/koan (Makefile runs `cd koan`), not KOAN_ROOT, so a
+        # naive relative path would resolve to the wrong place.
+        if os.path.isabs(raw) or not os.path.dirname(raw):
+            return raw
+        root = os.environ.get("KOAN_ROOT", "").strip()
+        if root:
+            return os.path.normpath(os.path.join(root, raw))
+        return raw
 
     def supports_session_resume(self) -> bool:
         return True

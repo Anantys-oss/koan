@@ -97,6 +97,37 @@ class TestClaudeProvider:
         assert cmd[0] == "/opt/bin/claude-proxy"
         assert cmd[1:] == ["-p", "hello"]
 
+    def test_binary_relative_path_resolved_against_koan_root(self, monkeypatch):
+        # Portable .env form: a relative path is joined to KOAN_ROOT.
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "bin/zai-claude")
+        monkeypatch.setenv("KOAN_ROOT", "/home/user/koan")
+        assert self.provider.binary() == "/home/user/koan/bin/zai-claude"
+
+    def test_binary_relative_path_normalizes(self, monkeypatch):
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "./bin/zai-claude")
+        monkeypatch.setenv("KOAN_ROOT", "/home/user/koan/")
+        assert self.provider.binary() == "/home/user/koan/bin/zai-claude"
+
+    def test_binary_relative_path_without_koan_root_returns_raw(self, monkeypatch):
+        # Graceful fallback: no KOAN_ROOT → return the path unchanged (CWD/PATH).
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "bin/zai-claude")
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        assert self.provider.binary() == "bin/zai-claude"
+
+    def test_binary_bare_command_name_not_joined(self, monkeypatch):
+        # A bare name (no directory component) stays a PATH lookup, even with
+        # KOAN_ROOT set — it must not be silently re-rooted.
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "my-wrapper")
+        monkeypatch.setenv("KOAN_ROOT", "/home/user/koan")
+        assert self.provider.binary() == "my-wrapper"
+
+    def test_binary_relative_path_flows_into_build_command(self, monkeypatch):
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "bin/zai-claude")
+        monkeypatch.setenv("KOAN_ROOT", "/srv/koan")
+        cmd = self.provider.build_command(prompt="hello")
+        assert cmd[0] == "/srv/koan/bin/zai-claude"
+        assert cmd[1:] == ["-p", "hello"]
+
     def test_name(self):
         assert self.provider.name == "claude"
 

@@ -9,12 +9,14 @@ Each wrapper is a `claude`-compatible executable. Point Koan at one with:
 
 ```bash
 # .env
-KOAN_CLAUDE_CLI_PATH=/absolute/path/to/koan/bin/<wrapper>
+KOAN_CLAUDE_CLI_PATH=bin/<wrapper>
 ```
 
-Koan's `ClaudeProvider` reads `KOAN_CLAUDE_CLI_PATH` (see
-`koan/app/provider/claude.py`) and invokes it exactly like the real `claude`
-CLI, e.g. `-p "<prompt>" --model <name> --output-format json --verbose …`.
+The path may be **relative to `KOAN_ROOT`** (recommended — keeps the config
+portable across installs/copies) or absolute. Koan's `ClaudeProvider` reads
+`KOAN_CLAUDE_CLI_PATH` (see `koan/app/provider/claude.py`), resolves a relative
+value against `KOAN_ROOT`, and invokes it exactly like the real `claude` CLI,
+e.g. `-p "<prompt>" --model <name> --output-format json --verbose …`.
 
 ## The contract every wrapper must honor
 
