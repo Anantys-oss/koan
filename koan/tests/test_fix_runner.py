@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from skills.core.fix.fix_runner import (
     run_fix,
     _build_issue_body,
@@ -31,6 +33,18 @@ from app.pr_submit import (
 _FIX_MODULE = "skills.core.fix.fix_runner"
 _DIAG_MODULE = "skills.core.fix.fix_diagnose"
 _PR_MODULE = "app.pr_submit"
+
+
+@pytest.fixture(autouse=True)
+def _noop_internal_refactor():
+    """Stub the pre-gate internal refactor pass so runner tests never invoke
+    Claude. Individual tests can re-patch it to assert it is called."""
+    from app.refactor_step import RefactorResult
+    with patch(
+        f"{_FIX_MODULE}.run_internal_refactor_pass",
+        return_value=RefactorResult(committed=False),
+    ) as m:
+        yield m
 
 _MOCK_DIAGNOSTIC = {
     "confidence": "HIGH", "hypothesis": "Test hypothesis",

@@ -70,6 +70,7 @@ _CANONICAL_RUNNERS = {
     "rebase": "app.rebase_pr",
     "recreate": "app.recreate_pr",
     "squash": "app.squash_pr",
+    "refactor": "app.refactor_pr",
     "review": "app.review_runner",
     "ultrareview": "app.review_runner",
     "ai": "app.ai_runner",
@@ -447,6 +448,7 @@ def build_skill_command(
         "rebase": lambda: _build_rebase_cmd(base_cmd, args, project_path),
         "recreate": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "squash": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
+        "refactor": lambda: _build_refactor_cmd(base_cmd, args, project_path),
         "review": lambda: _build_review_cmd(base_cmd, args, project_path, project_name),
         "ultrareview": lambda: _build_review_cmd(
             base_cmd, args, project_path, project_name, ultra=True,
@@ -698,6 +700,24 @@ def _build_pr_url_cmd(
     if not url_match:
         return None
     return base_cmd + [url_match.group(0), "--project-path", project_path]
+
+
+def _build_refactor_cmd(
+    base_cmd: List[str], args: str, project_path: str,
+) -> Optional[List[str]]:
+    """Build refactor command: PR URL + optional trailing focus context.
+
+        /refactor <url>                       → refactor the changed code
+        /refactor <url> focus on the tests    → --context "focus on the tests"
+    """
+    url_match = _PR_URL_RE.search(args)
+    if not url_match:
+        return None
+    cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
+    remainder = args[url_match.end():].strip()
+    if remainder:
+        cmd.extend(["--context", remainder])
+    return cmd
 
 
 # Regex to extract a severity keyword from rebase args.
@@ -1075,7 +1095,7 @@ def validate_skill_args(command: str, args: str) -> Optional[str]:
     canonical = _resolve_canonical(command)
 
     # Validation rules use canonical names — aliases inherit automatically.
-    if canonical in ("rebase", "recreate", "review", "ultrareview", "squash", "ci_check", "explain"):
+    if canonical in ("rebase", "recreate", "review", "ultrareview", "squash", "ci_check", "explain", "refactor"):
         if not _PR_URL_RE.search(args):
             return (
                 f"/{command} requires a PR URL "
