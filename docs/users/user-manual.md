@@ -639,6 +639,7 @@ Produces a pedagogical walkthrough of the PR: what problem it solves (with examp
 **`/ask`** — Ask a question about a GitHub PR or issue and get an AI-generated reply posted directly to the thread.
 
 - **Usage:** `/ask <github-comment-url>`
+- **Aliases:** `/question` (also a bare-keyword trigger — `question <url>` runs `/ask`)
 - **GitHub @mention:** `@koan-bot ask <your question>` on any PR or issue
 
 <details>
@@ -2233,7 +2234,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review one or more pull requests |
 | `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
-| `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
+| `/ask <comment-url>` | `/question` | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase <PR> [focus area]` | `/rb` | I | Rebase a PR onto its base branch; trailing text becomes focus context |
 | `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo) |
 | `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | I | Plan then implement an issue (combo) |

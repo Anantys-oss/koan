@@ -3,6 +3,8 @@
 ## Command(s)
 
 - **Primary:** `/ask <github-comment-url>`
+- **Alias:** `/question` (also a bare-keyword trigger — typing `question <url>`
+  routes here via the core-skill shortcut)
 - **Group:** `pr`
 
 ## Purpose
