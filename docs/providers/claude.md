@@ -125,11 +125,15 @@ You can point Koan at a custom Claude-compatible binary instead of the
 default `claude` command. Set `KOAN_CLAUDE_CLI_PATH` in your `.env`:
 
 ```bash
-KOAN_CLAUDE_CLI_PATH=/path/to/my-claude-wrapper
+KOAN_CLAUDE_CLI_PATH=bin/my-claude-wrapper   # relative to KOAN_ROOT (portable)
+# or
+KOAN_CLAUDE_CLI_PATH=/path/to/my-claude-wrapper   # absolute
 ```
 
-The custom binary must accept the same CLI interface as `claude`
-(e.g., `my-wrapper --model <model> -p "prompt"`). This is useful for:
+A relative value is resolved against `KOAN_ROOT`, so the config stays portable
+across installs/copies without a hard-coded path. The custom binary must
+accept the same CLI interface as `claude` (e.g., `my-wrapper --model <model>
+-p "prompt"`). This is useful for:
 
 - Using a custom `ANTHROPIC_BASE_URL` via a wrapper script
 - Adding default arguments or environment variables
