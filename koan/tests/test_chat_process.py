@@ -104,6 +104,18 @@ class TestChatRouting:
         result = _route_to_chat_process("Hello")
         assert result is False
 
+    @patch("app.awake._is_chat_process_running", side_effect=[True, False])
+    def test_falls_back_when_process_dies_after_write(self, mock_running, monkeypatch, instance_dir):
+        """If the process dies between the PID check and the inbox write,
+        routing reports failure so the caller falls back to the worker thread."""
+        from app.awake import _route_to_chat_process
+
+        inbox = instance_dir / "chat-inbox.jsonl"
+        monkeypatch.setattr("app.chat_process.CHAT_INBOX", inbox)
+
+        result = _route_to_chat_process("Hello")
+        assert result is False
+
     @patch("app.awake._is_chat_process_running", return_value=True)
     @patch("app.awake.send_telegram")
     def test_queues_when_pending_requests(self, mock_send, mock_running, monkeypatch, instance_dir):
