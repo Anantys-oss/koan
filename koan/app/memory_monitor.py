@@ -27,7 +27,8 @@ def read_rss_mb() -> float:
     try:
         import resource
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-    except Exception:  # pragma: no cover - platform dependent
+    except Exception as exc:  # pragma: no cover - platform dependent
+        print(f"[memory_monitor] read_rss_mb fallback failed: {exc}", file=sys.stderr)
         return 0.0
 
 
@@ -55,7 +56,8 @@ class MemoryMonitor:
             import tracemalloc
             if not tracemalloc.is_tracing():
                 tracemalloc.start(self._tracemalloc_frames)
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[memory_monitor] tracemalloc start failed: {exc}", file=sys.stderr)
             self.tracemalloc_enabled = False
 
     @property
@@ -89,7 +91,8 @@ class MemoryMonitor:
                 f"{s.traceback[0]}: {s.size / 1024 / 1024:.1f} MiB ({s.count} blocks)"
                 for s in stats
             ]
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[memory_monitor] top_allocations failed: {exc}", file=sys.stderr)
             return []
 
 
