@@ -232,7 +232,7 @@ def _handle_status(ctx) -> str:
         except Exception:
             parts.append(f"  🟢 Active{queue_suffix}")
 
-    # System info: IP │ Provider on one compact line
+    # System info: IP │ hostname │ service manager on one compact line
     info_items = []
     server_ip = _get_server_ip()
     if server_ip != "unknown":
@@ -240,16 +240,18 @@ def _handle_status(ctx) -> str:
     hostname = _get_hostname()
     if hostname != "unknown":
         info_items.append(f"🖥️ {hostname}")
-    try:
-        from app.provider import get_provider_display
-        info_items.append(get_provider_display())
-    except Exception:
-        pass
     service_manager = _get_service_manager()
     if service_manager:
         info_items.append(f"⚙️ {service_manager}")
     if info_items:
         parts.append(f"  {' │ '.join(info_items)}")
+
+    # Provider/model on its own line — the AI powering this instance
+    try:
+        from app.provider import get_provider_display
+        parts.append(f"  🤖 {get_provider_display()}")
+    except Exception:
+        pass
 
     # Focus mode
     try:
