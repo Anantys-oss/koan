@@ -734,7 +734,9 @@ def get_drift_summary(
     # Parse the timestamp for display
     try:
         dt = datetime.fromisoformat(ts)
-        days_ago = (datetime.now() - dt).days
+        # Calendar-day difference, not elapsed 24h periods: a session at
+        # 23:59 viewed at 00:30 next day is "yesterday", not "today".
+        days_ago = (datetime.now().date() - dt.date()).days
         if days_ago == 0:
             time_desc = "today"
         elif days_ago == 1:
