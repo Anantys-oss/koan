@@ -25,6 +25,11 @@ from app.messaging import register_provider
 
 # Rate limit: Slack allows ~1 msg/sec for chat.postMessage
 SLACK_RATE_LIMIT_SECONDS = 1.0
+# Minimum spacing between (re)connect attempts. A persistently-unreachable
+# workspace (network partition, revoked token, Slack outage) would otherwise be
+# re-dialed on every 3s bridge drain; connect() is blocking under
+# ``_connect_lock``, so tight retries also stall the poll loop.
+SLACK_RECONNECT_COOLDOWN_SECONDS = 30.0
 MAX_MESSAGE_SIZE = DEFAULT_MAX_MESSAGE_SIZE
 
 # Bounded memory for threading/dedup state. These cap unbounded growth on a
@@ -66,6 +71,10 @@ class SlackProvider(MessagingProvider):
         self._last_send_time: float = 0.0
         self._connect_lock = threading.Lock()
         self._connected: bool = False
+        # Wall-clock time of the last connect()/re-dial attempt. Used to space
+        # out retries (SLACK_RECONNECT_COOLDOWN_SECONDS) so a dead workspace
+        # doesn't hammer the SDK on every 3s drain.
+        self._last_connect_attempt: float = 0.0
         # One-shot guard so the "no usable liveness probe" warning is logged
         # once, not on every 3s drain.
         self._probe_warned: bool = False
@@ -313,16 +322,23 @@ class SlackProvider(MessagingProvider):
         long idle periods that connection can drop; slack_sdk's monitor usually
         reconnects, but if it dies silently the bridge goes deaf with no
         recovery — inbound messages are simply never queued. We poll liveness
-        on every drain (cheap) so the next 3s bridge cycle re-establishes the
-        link. Telegram has no equivalent failure mode: it re-polls over a fresh
-        HTTP request each cycle, so it is self-healing by construction.
+        on every drain (cheap) and re-establish the link when it drops.
+        Telegram has no equivalent failure mode: it re-polls over a fresh HTTP
+        request each cycle, so it is self-healing by construction.
+
+        (Re)connect attempts are spaced by SLACK_RECONNECT_COOLDOWN_SECONDS:
+        ``connect()`` is blocking under this lock, so a persistently-unreachable
+        workspace is retried at most once per cooldown rather than every 3s,
+        which would stall the poll loop and spam stderr.
         """
         if not self._socket_client:
             return
         with self._connect_lock:
-            if not self._connected:
-                self._start_socket_mode()
-            elif not self._is_socket_alive():
+            if self._connected and self._is_socket_alive():
+                return
+            if not self._can_attempt_connect():
+                return
+            if self._connected:
                 print("[slack] Socket Mode connection lost — reconnecting.",
                       file=sys.stderr)
                 self._connected = False
@@ -339,7 +355,21 @@ class SlackProvider(MessagingProvider):
                     # disconnect must be observable rather than silent.
                     print(f"[slack] Socket disconnect during reconnect failed: {e}",
                           file=sys.stderr)
-                self._start_socket_mode()
+            self._last_connect_attempt = time.time()
+            self._start_socket_mode()
+
+    def _can_attempt_connect(self) -> bool:
+        """True if enough time has passed since the last connect attempt.
+
+        Gates both first-connect failures and dead-socket re-dials: a failed
+        ``_start_socket_mode()`` leaves ``_connected`` False, so without this
+        cooldown every 3s drain would call ``connect()`` again. The first ever
+        attempt (``_last_connect_attempt == 0.0``) is never delayed.
+        """
+        if not self._last_connect_attempt:
+            return True
+        return (time.time() - self._last_connect_attempt
+                >= SLACK_RECONNECT_COOLDOWN_SECONDS)
 
     def _is_socket_alive(self) -> bool:
         """Best-effort liveness probe; treat an unknown probe as alive and a raising probe as dead.

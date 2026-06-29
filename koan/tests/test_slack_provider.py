@@ -2,6 +2,7 @@
 
 from unittest.mock import patch, MagicMock, PropertyMock
 import queue
+import time
 
 import pytest
 
@@ -172,6 +173,28 @@ class TestPollUpdates:
         provider._socket_client.is_connected.return_value = True
         provider.poll_updates()
         provider._socket_client.connect.assert_not_called()
+
+    def test_reconnect_held_within_cooldown(self, provider):
+        """A dead socket is not re-dialed again until the cooldown elapses.
+
+        Without the cooldown, a persistently-unreachable workspace would be
+        re-dialed on every 3s drain (connect() is blocking under the lock).
+        """
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider._last_connect_attempt = time.time()
+        provider.poll_updates()
+        provider._socket_client.connect.assert_not_called()
+        provider._socket_client.disconnect.assert_not_called()
+
+    def test_reconnects_again_after_cooldown(self, provider):
+        """Once the cooldown window has passed, the dead socket is re-dialed."""
+        from app.messaging.slack import SLACK_RECONNECT_COOLDOWN_SECONDS
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider._last_connect_attempt = time.time() - SLACK_RECONNECT_COOLDOWN_SECONDS - 1
+        provider.poll_updates()
+        provider._socket_client.connect.assert_called_once()
 
 
 class TestHandleSocketEvent:
