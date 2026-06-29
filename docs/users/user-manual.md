@@ -775,6 +775,17 @@ After completion, Kōan posts a structured comment on the PR with these sections
 - `/branches koan` — Show branches for a specific project
 </details>
 
+**`/checkup`** — Health-check every open PR you authored across all projects. For each PR with merge conflicts it queues a `/rebase`; for each with failing CI it queues a `/check`. Results are deduplicated against already-queued missions and skipped when a PR is unchanged since the last checkup.
+
+- **Usage:** `/checkup`
+- **Aliases:** `/checkprs`
+
+<details>
+<summary>Use cases</summary>
+
+- `/checkup` — Sweep all open PRs and auto-queue fixes for conflicts and CI failures
+</details>
+
 **`/orphans`** — Recover orphan branches by rebasing onto the default branch and creating draft PRs.
 
 - **Usage:** `/orphans <project_name>`
@@ -2244,6 +2255,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
+| `/checkup` | `/checkprs` | B | Health-check all open PRs — auto-queue /rebase + /check |
 | `/orphans <project>` | `/orphan` | B | Recover orphan branches — rebase + draft PR |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
 | `/check_need <url>` | `/need`, `/needs` | I | Analyze if a PR/issue is still needed |
