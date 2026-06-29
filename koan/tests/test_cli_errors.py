@@ -52,6 +52,19 @@ class TestClassifyCliError:
         """Retryable patterns in stdout are also detected."""
         assert classify_cli_error(1, stdout="HTTP 503 error") == ErrorCategory.RETRYABLE
 
+    def test_provider_gateway_overload_529(self):
+        """OpenAI-compatible gateways surface a 529 as 'API Error: 529'.
+
+        ``HTTP\\s+5\\d\\d`` misses it (no ``HTTP`` prefix) and ``temporarily
+        unavailable`` misses ``overloaded``. Both forms must classify RETRYABLE.
+        """
+        stderr = (
+            "API Error: 529 [1305][The service may be temporarily overloaded, "
+            "please try again later]"
+        )
+        assert classify_cli_error(1, stderr=stderr) == ErrorCategory.RETRYABLE
+        assert classify_cli_error(1, stdout=stderr) == ErrorCategory.RETRYABLE
+
     # -- Terminal errors --------------------------------------------------------
 
     @pytest.mark.parametrize("stderr", [

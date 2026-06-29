@@ -41,6 +41,12 @@ _RETRYABLE_PATTERNS = [
     r"timeout",
     r"timed?\s*out",
     r"temporarily\s+unavailable",
+    # Provider gateway overload. OpenAI-compatible gateways behind the Claude
+    # CLI surface a 529 as ``API Error: 529 [..][The service may be temporarily
+    # overloaded...]``. ``HTTP\s+5\d\d`` misses it (no ``HTTP`` prefix) and
+    # ``temporarily unavailable`` misses ``overloaded``.
+    r"api\s+error:\s*5\d\d",
+    r"temporarily\s+overloaded",
     r"internal\s+server\s+error",
     r"bad\s+gateway",
     r"service\s+unavailable",
