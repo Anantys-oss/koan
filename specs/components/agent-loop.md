@@ -43,7 +43,7 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `mission_runner.parse_claude_output()` | JSON → text extraction from `--output-format json` / stream-json. |
 | `iteration_manager._downgrade_if_burning_fast()` | Burn-rate-driven mode downgrade, next to affordability downgrade. |
 | `stagnation_monitor` | Daemon thread hashing last-N stdout lines; kills the subprocess group after K identical hashes; requeues up to `max_retry_on_stagnation`. |
-| `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. |
+| `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
 | `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, each error-isolated. |
 
 ## Invariants
@@ -58,6 +58,12 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
   and CLI error all route through `_maybe_retry_mission`'s RETRYABLE check.
 - **Quota signals come from the summary stream, not assistant text.** Clean `output`
   must never carry quota signals; read `stream_summary` (`cli_runtime_quota_signal`).
+- **`reset_display` is shared by the chat warning, `.koan-pause` (`/status`), and the
+  journal — it must stay clean.** `_RESET_RE` is bounded so a one-line CLI JSON result
+  can't dump its tail into it; `parse_reset_time` handles minute-precision times (`8:40am`).
+  Quota chat warnings go through `_notify_raw` (`_notify_quota_warning`) with the raw
+  output fenced in a code block — `_notify` runs the Claude reformatter, which strips
+  markdown fences, so a code block would never render that way.
 
 ## Integration points
 
