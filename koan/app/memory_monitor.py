@@ -126,7 +126,8 @@ def get_memory_status(koan_root=None) -> dict:
         try:
             from app.utils import KOAN_ROOT
             koan_root = KOAN_ROOT
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"get_memory_status: KOAN_ROOT import failed: {exc}", file=sys.stderr)
             koan_root = None
 
     run_pid = _read_run_pid(koan_root) if koan_root is not None else None
