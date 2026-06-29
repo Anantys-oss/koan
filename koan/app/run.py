@@ -1397,6 +1397,37 @@ _CONTEMP_FAILURE_NOTIFY_COOLDOWN = 6 * 3600
 _CONTEMP_FAILURE_NOTIFY_FILE = ".contemplative-failure-notify.json"
 
 
+def _parse_result_object(stdout_text):
+    """Return the final ``{"type":"result"}`` dict from CLI stdout, or None.
+
+    Scoped to the result object so a failed ``tool_result`` inside a stream-json
+    session can never be mistaken for a session-level failure — the invariant
+    holds by construction, not by coincidence. Handles both the single-object
+    default output and the last result line of a stream-json transcript.
+    """
+    text = (stdout_text or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Stream-json: the result object is the last {"type":"result"} line.
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("type") == "result":
+            return data
+    return None
+
+
 def _classify_contemplative_failure(exit_code, stdout_text, stderr_text):
     """Classify a contemplative session outcome.
 
@@ -1405,21 +1436,26 @@ def _classify_contemplative_failure(exit_code, stdout_text, stderr_text):
     - ``signature``: stable throttle key (e.g. ``"overload:529"``).
     - ``reason``: short human label for the notification.
     """
-    import re
-
     stdout_text = stdout_text or ""
     stderr_text = stderr_text or ""
     combined = f"{stdout_text}\n{stderr_text}"
 
-    # False-success: CLI exits 0 but the result JSON carries an API error
-    # (a gateway 529 surfaces as {"is_error": true, "api_error_status": 529}).
-    # ``api_error_status`` is the precise signal — it lives only in the final
-    # result object, never in a tool_result, so it won't false-fire on a
-    # failed tool call inside an otherwise-successful stream-json session.
-    api_match = re.search(r'"api_error_status"\s*:\s*(\d+)', combined)
-    api_status = api_match.group(1) if api_match else ""
+    result_obj = _parse_result_object(stdout_text)
+    # ``is_error`` is the proven field the codebase already trusts
+    # (mission_runner.check_json_success). Keying failure on it — scoped to the
+    # parsed result object — means a gateway that returns {"is_error": true}
+    # without ``api_error_status`` still surfaces, and a failed ``tool_result``
+    # inside a stream-json session can never be misread as a session failure.
+    is_error = bool(result_obj and result_obj.get("is_error") is True)
+    # ``api_error_status`` is an optional label source for the HTTP code only;
+    # it is NOT the failure trigger, since not every gateway/proxy emits it.
+    api_status = ""
+    if result_obj:
+        raw_status = result_obj.get("api_error_status")
+        if isinstance(raw_status, int) and raw_status > 0:
+            api_status = str(raw_status)
 
-    failed = exit_code != 0 or bool(api_status)
+    failed = exit_code != 0 or is_error
     if not failed:
         return False, "", ""
 

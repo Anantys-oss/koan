@@ -58,6 +58,16 @@ class TestClassifyContemplativeFailure:
         assert failed is True
         assert sig == "overload:529"
 
+    def test_is_error_without_api_status_still_fails(self):
+        # Exit 0 but the proven result object flags is_error:true with no
+        # api_error_status. Keying failure on api_error_status alone (the
+        # pre-fix logic) left such a session silent — the exact invisibility
+        # this PR exists to fix. is_error, scoped to the result object, now
+        # drives the trigger.
+        stream = '{"type":"result","subtype":"error_max_turns","is_error":true}'
+        failed, _sig, _reason = _classify_contemplative_failure(0, stream, "")
+        assert failed is True
+
     def test_quota(self):
         stderr = "Error: out of extra usage quota. resets 10am."
         failed, sig, reason = _classify_contemplative_failure(1, "", stderr)
