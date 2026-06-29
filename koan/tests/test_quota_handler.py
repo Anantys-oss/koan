@@ -440,6 +440,22 @@ Please try again later."""
         assert "stop_reason" not in result
         assert "total_cost_usd" not in result
 
+    def test_preserves_comma_date_format(self):
+        """Comma-bearing date forms survive the bounded extraction regex.
+
+        ``parse_reset_time`` accepts ``resets Feb 5, 10am (Europe/Paris)``;
+        if ``extract_reset_info`` truncated at the comma, the time component
+        would be lost and the parser would fall through to the 5h fallback with
+        a truncated ``reset_display``. The regex bounds on the JSON string
+        delimiter (``"``), not the comma, so the full date survives.
+        """
+        from app.quota_handler import extract_reset_info
+
+        text = "resets Feb 5, 10am (Europe/Paris)"
+        result = extract_reset_info(text)
+        assert result == "resets Feb 5, 10am (Europe/Paris)"
+        assert "10am" in result
+
 
 class TestQuotaDebugSnippet:
     """quota_debug_snippet produces a bounded debug window for chat code blocks."""
@@ -462,12 +478,19 @@ class TestQuotaDebugSnippet:
         assert "stop_reason" in out
         assert "total_cost_usd" in out
 
-    def test_prefers_stderr_over_stdout(self):
+    def test_combines_stderr_and_stdout(self):
+        """Both streams are windowed together so the resets signal survives.
+
+        Mirrors ``handle_quota_exhaustion``'s combined scan: the resets line may
+        sit on either stream (Claude carries the quota JSON on stdout), so a
+        stderr-only window would omit it. With the resets line on stdout and
+        context on stderr, both appear in the snippet.
+        """
         from app.quota_handler import quota_debug_snippet
 
-        out = quota_debug_snippet("stdout noise", "stderr resets 10am (UTC)")
-        assert "stderr resets 10am" in out
-        assert "stdout noise" not in out
+        out = quota_debug_snippet("stdout resets 10am (UTC)", "stderr context here")
+        assert "resets 10am" in out
+        assert "stderr context here" in out
 
     def test_bounds_long_output(self):
         from app.quota_handler import quota_debug_snippet

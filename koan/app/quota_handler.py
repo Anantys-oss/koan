@@ -182,14 +182,18 @@ def _strict_quota_match(text: str) -> bool:
 # Claude: "resets 10am (Europe/Paris)"
 # Copilot/GitHub: "Retry-After: 60" or "retry after 60 seconds" or "try again in X minutes"
 #
-# The match is bounded: it stops at the first JSON/structural delimiter (``"``,
-# ``,``, ``}```, ``<``, ``>``, ``|``) or newline. The Claude CLI emits its result
-# as a *single-line* JSON object, so the quota message appears inline as
+# The match is bounded: it stops at the first JSON string delimiter (``"``),
+# object close (``}```), or newline. The Claude CLI emits its result as a
+# *single-line* JSON object, so the quota message appears inline as
 # ``...resets 8:40am (America/Denver)","stop_reason":"stop_sequence",...``. An
 # unbounded ``resets\s+.+`` greedily swallowed that whole JSON tail into
 # ``reset_display`` — which then leaked into the chat warning, the pause file
-# (``/status``), and the journal. Bounding here keeps only the reset phrase.
-_RESET_RE = re.compile(r"resets\s+[^\",\n\r}<>|]+", re.IGNORECASE)
+# (``/status``), and the journal. Bounding on the closing ``"`` keeps only the
+# reset phrase. The comma is *not* a delimiter: ``parse_reset_time`` accepts
+# comma-bearing date forms like ``resets Feb 5, 10am (Europe/Paris)``, and the
+# leaked JSON value is itself a string (delimited by ``"``), so excluding ``,``
+# would truncate those dates at the extraction layer and drop the time.
+_RESET_RE = re.compile(r'resets\s+[^"\n\r}]+', re.IGNORECASE)
 _RESETS_AT_RE = re.compile(r'"?resetsAt"?\s*:?\s*(\d{9,})', re.IGNORECASE)
 _RETRY_AFTER_RE = re.compile(
     r"(?:retry[\s-]+after[\s:]+(\d+))|(?:try again in\s+(\d+)\s*(seconds?|minutes?|hours?))",
@@ -331,11 +335,14 @@ def quota_debug_snippet(stdout_text: str = "", stderr_text: str = "",
     large and noisy to dump verbatim into a chat warning. Center a bounded
     window on the ``resets`` signal so the relevant fields stay visible.
 
-    Prefers stderr (the trusted CLI channel — usually a concise error) over
-    stdout. Returns ``""`` when no output is available, so callers can skip the
-    code block entirely.
+    Concatenates stderr then stdout (mirroring :func:`handle_quota_exhaustion`'s
+    ``combined`` scan), so the ``resets`` signal is found in whichever stream
+    carries it. For the Claude provider the quota result is a single-line JSON
+    object on **stdout**; a stderr-only window would omit the ``resets`` line
+    whenever stderr carried any unrelated text. Returns ``""`` when no output is
+    available, so callers can skip the code block entirely.
     """
-    text = (stderr_text or "").strip() or (stdout_text or "").strip()
+    text = ((stderr_text or "").strip() + "\n" + (stdout_text or "").strip()).strip()
     if not text:
         return ""
     match = _RESET_RE.search(text)
