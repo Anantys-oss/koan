@@ -31,6 +31,7 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 | `__init__.build_full_command()` | Assembles the provider-specific argv. |
 | `__init__.get_provider_display()` / `get_cli_binary_name()` | Display helpers. `get_provider_display()` returns `"<name>"` or `"<name> (<binary>)"` when `KOAN_CLAUDE_CLI_PATH` points at a different binary. Single source of truth for the provider line shown by the startup banner and `/status`. |
 | Provider resolution | Order: `KOAN_CLI_PROVIDER` env (fallback `CLI_PROVIDER`) → `projects.yaml`/`config.yaml` → default. Centralized in `utils.get_cli_provider_env()`. |
+| `ClaudeProvider.binary()` | Resolves `KOAN_CLAUDE_CLI_PATH`: absolute → as-is; relative → `normpath(join(KOAN_ROOT, …))`; bare name (no directory component) → PATH lookup; unset/empty → `"claude"`. Rooted at `KOAN_ROOT` (not CWD) because the agent runs from `KOAN_ROOT/koan`. |
 
 ## Invariants
 
@@ -38,6 +39,12 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   lock lives under `koan_tmp_dir()` (per-uid), not a fixed `/tmp` path.
 - **Provider resolution has a fixed precedence** (env → config → default). New
   resolution inputs slot into that order; do not add parallel resolution paths.
+- **`KOAN_CLAUDE_CLI_PATH` relative paths root at `KOAN_ROOT`, not CWD.** The
+  agent runs from `KOAN_ROOT/koan` (the Makefile does `cd koan`), so a naive
+  relative path would resolve to the wrong place. Joining against `KOAN_ROOT`
+  in `binary()` is what makes the portable `.env` form work; a future
+  simplification that re-targets the join at CWD silently breaks every such
+  setup. Bare command names stay PATH lookups and are never re-rooted.
 - **Tool-name vocabularies differ per provider.** Copilot maps its own names; the
   abstraction must translate, not leak provider-specific tool names upward.
 - **Quota/usage extraction is provider-specific.** Claude exposes usage in
