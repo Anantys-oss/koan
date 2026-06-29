@@ -865,6 +865,56 @@ def _commit_instance(instance: str, message: str = ""):
 # Update handler (graceful update + restart)
 # ---------------------------------------------------------------------------
 
+def _build_memory_monitor():
+    """Construct a MemoryMonitor from config, or None when disabled (#2232)."""
+    from app.config import get_memory_monitor_config
+    conf = get_memory_monitor_config()
+    if not conf.get("enabled"):
+        return None
+    from app.memory_monitor import MemoryMonitor
+    return MemoryMonitor(
+        threshold_mb=conf["threshold_mb"],
+        sustained_samples=conf["sustained_samples"],
+        tracemalloc_enabled=conf.get("tracemalloc", False),
+    )
+
+
+def _write_memory_restart_journal(koan_root, rss_mb, threshold_mb, count, top_allocations):
+    """Append a memory-restart record for post-hoc leak analysis."""
+    from datetime import datetime, timezone
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": "memory_restart",
+        "rss_mb": round(rss_mb, 1),
+        "threshold_mb": threshold_mb,
+        "runs": count,
+        "top_allocations": top_allocations,
+    }
+    path = Path(koan_root, "instance", ".memory-restarts.jsonl")
+    with suppress_logged(log, "warning", "Memory-restart journal write failed", OSError):
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+
+def _handle_memory_restart(koan_root, instance, monitor, count):
+    """Log, journal, notify, and exit with RESTART_EXIT_CODE to reclaim RSS."""
+    rss = monitor.last_rss_mb
+    log("koan",
+        f"Memory threshold exceeded: {rss:.0f} MB ≥ {monitor.threshold_mb} MB "
+        f"after {count} runs — restarting to reclaim.")
+    top = monitor.top_allocations(limit=10) if monitor.tracemalloc_enabled else []
+    _write_memory_restart_journal(koan_root, rss, monitor.threshold_mb, count, top)
+    with suppress_logged(log, "warning", "Memory-restart notify failed", Exception):
+        detail = "\n".join(top[:5]) if top else "(tracemalloc disabled)"
+        _notify(
+            instance,
+            f"♻️ Restarting to reclaim memory: RSS {rss:.0f} MB ≥ "
+            f"{monitor.threshold_mb} MB after {count} runs.\n"
+            f"Top allocations:\n{detail}",
+        )
+    sys.exit(RESTART_EXIT_CODE)
+
+
 def _handle_update(koan_root: str, instance: str, count: int) -> bool:
     """Handle /update: pull upstream updates, then trigger restart.
 
@@ -1126,6 +1176,8 @@ def main_loop():
         # racing with the Telegram bridge processing of /pause.
         _startup_delay(koan_root)
 
+        memory_monitor = _build_memory_monitor()
+
         while True:
             # --- Stop check ---
             stop_file = Path(koan_root, STOP_FILE)
@@ -1165,6 +1217,13 @@ def main_loop():
                 log("koan", "Restart requested. Exiting for re-launch...")
                 clear_restart(koan_root, target="run")
                 sys.exit(RESTART_EXIT_CODE)
+
+            # --- Memory watchdog (#2232) ---
+            if memory_monitor is not None:
+                from app.config import get_memory_monitor_config
+                min_runs = get_memory_monitor_config().get("min_runs_before_restart", 1)
+                if memory_monitor.sample() and count >= min_runs:
+                    _handle_memory_restart(koan_root, instance, memory_monitor, count)
 
             # --- Pause mode ---
             if Path(koan_root, PAUSE_FILE).exists():
