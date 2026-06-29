@@ -197,6 +197,9 @@ def _handle_skill_dispatch(
                 mission_title=mission_title,
                 count=run_num,
                 quota_info=skill_result.get("quota_info"),
+                raw_output=_run._quota_raw_snippet(
+                    stdout_text=_skill_stdout, stderr_text=_skill_stderr
+                ),
             )
             return True, mission_title
 
@@ -1372,6 +1375,9 @@ def _run_iteration(
                     mission_title=original_mission_title,
                     count=count,
                     quota_info=post_result.get("quota_info"),
+                    raw_output=_run._quota_raw_snippet(
+                        stdout_file=stdout_file, stderr_file=stderr_file
+                    ),
                 )
                 return True  # ran Claude before quota hit — productive
         except Exception as e:

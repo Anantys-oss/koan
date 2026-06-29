@@ -330,6 +330,68 @@ class TestBuildStartupStatus:
 
 
 # ---------------------------------------------------------------------------
+# Test: quota warning chat rendering (clean prose + raw-output code block)
+# ---------------------------------------------------------------------------
+
+class TestNotifyQuotaWarning:
+    """Quota warnings render clean prose inline and fence raw CLI output.
+
+    The raw CLI output (reset time, stop reason, cost, usage) is useful for
+    debugging but must be fenced so the chat stays readable. Fences require
+    _notify_raw — _notify runs the Claude reformatter which strips markdown.
+    """
+
+    def test_body_only_when_no_raw_output(self):
+        import app.run as run_module
+
+        with patch.object(run_module, "_notify_raw") as mock_raw:
+            run_module._notify_quota_warning("/i", "⚠️ quota exhausted. resets 10am")
+        msg = mock_raw.call_args[0][1]
+        assert msg == "⚠️ quota exhausted. resets 10am"
+        assert "```" not in msg
+
+    def test_appends_fenced_raw_output(self):
+        import app.run as run_module
+
+        with patch.object(run_module, "_notify_raw") as mock_raw:
+            run_module._notify_quota_warning(
+                "/i", "⚠️ quota exhausted. resets 10am", raw_output='{"stop_reason":"x"}'
+            )
+        msg = mock_raw.call_args[0][1]
+        assert msg.startswith("⚠️ quota exhausted. resets 10am")
+        assert msg.endswith("\n```")
+        assert '```\n{"stop_reason":"x"}\n```' in msg
+
+    def test_uses_notify_raw_not_notify(self):
+        """Code blocks survive only via _notify_raw; _notify strips them."""
+        import app.run as run_module
+
+        with patch.object(run_module, "_notify_raw") as mock_raw, \
+             patch.object(run_module, "_notify") as mock_notify:
+            run_module._notify_quota_warning("/i", "body", raw_output="raw")
+        assert mock_raw.called
+        mock_notify.assert_not_called()
+
+    def test_quota_raw_snippet_reads_output_files(self, tmp_path):
+        import app.run as run_module
+
+        stdout_file = tmp_path / "out.log"
+        stdout_file.write_text(
+            'noise resets 8:40am (America/Denver)","stop_reason":"stop_sequence"'
+        )
+        snippet = run_module._quota_raw_snippet(stdout_file=str(stdout_file))
+        assert "resets 8:40am" in snippet
+        assert "stop_reason" in snippet
+
+    def test_quota_raw_snippet_empty_when_nothing_readable(self, tmp_path):
+        import app.run as run_module
+
+        assert run_module._quota_raw_snippet(
+            stdout_file=str(tmp_path / "missing.log")
+        ) == ""
+
+
+# ---------------------------------------------------------------------------
 # Test: start_on_pause in run_startup
 # ---------------------------------------------------------------------------
 
@@ -5548,7 +5610,7 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
              patch("app.run.protected_phase", return_value=MagicMock(
                  __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
              )), \
-             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_raw") as mock_notify, \
              patch("app.run._notify_mission_end"), \
              patch("app.run._finalize_mission") as mock_finalize, \
              patch("app.run._requeue_mission_in_file") as mock_requeue, \
@@ -5604,7 +5666,7 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
              patch("app.run.protected_phase", return_value=MagicMock(
                  __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
              )), \
-             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_raw") as mock_notify, \
              patch("app.run._notify_mission_end"), \
              patch("app.run._finalize_mission") as mock_finalize, \
              patch("app.run._requeue_mission_in_file") as mock_requeue, \
@@ -5778,7 +5840,7 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
              patch("app.run.protected_phase", return_value=MagicMock(
                  __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
              )), \
-             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_raw") as mock_notify, \
              patch("app.run._notify_mission_end"), \
              patch("app.run._finalize_mission") as mock_finalize, \
              patch("app.run._requeue_mission_in_file") as mock_requeue, \
@@ -5904,7 +5966,7 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
              patch("app.run.protected_phase", return_value=MagicMock(
                  __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
              )), \
-             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_raw") as mock_notify, \
              patch("app.run._notify_mission_end"), \
              patch("app.run._finalize_mission") as mock_finalize, \
              patch("app.run._requeue_mission_in_file") as mock_requeue, \
