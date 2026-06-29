@@ -556,6 +556,26 @@ def _notify_raw(instance: str, message: str):
         log("error", f"Raw notification failed: {e}")
 
 
+def _format_quota_reset_for_chat(reset_display: str) -> str:
+    """Render a quota ``reset_display`` string for the chat layer.
+
+    A clean, parsed reset string (e.g. ``"resets 10am (Europe/Paris)"``) is
+    returned inline. When quota parsing falls back to raw CLI/JSON output —
+    which happens when the reset parser can't clean it (e.g. a
+    minute-precision ``"8:40am"``) — ``reset_display`` carries that whole
+    blob. That raw output is useful for debugging, but unreadable as a wall
+    of inline text, so wrap it in a code block instead. Bounded so a
+    pathological payload can't blow past Telegram's message limit.
+    """
+    if not reset_display:
+        return ""
+    blob = reset_display.strip()
+    # Raw CLI/JSON output leaks in (quotes/braces) when parsing can't clean it.
+    if any(c in blob for c in ('"', "{", "}")) or len(blob) > 60:
+        return f"\n```\n{blob[:2000]}\n```"
+    return f" {blob}"
+
+
 def _is_ci_check_mission(mission_title: str) -> bool:
     """Return True if *mission_title* is a CI-related mission.
 
@@ -1993,8 +2013,8 @@ def _handle_quota_error(
         reset_ts, reset_display = _compute_quota_reset_ts(instance)
         from app.pause_manager import create_pause
         create_pause(koan_root, "quota", reset_ts, reset_display)
-    _notify(instance, (
-        f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
+    _notify_raw(instance, (
+        f"⏸️ API quota exhausted.{_format_quota_reset_for_chat(reset_display)}\n"
         f"Mission '{mission_title[:60]}' moved back to Pending.\n"
         f"Use /resume after quota resets."
     ))
@@ -2187,8 +2207,8 @@ def _probe_exit0_quota(
     log("quota", f"Exit-0 quota probe matched. {reset_display}")
     _requeue_mission_in_file(instance, mission_title)
     _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-    _notify(instance, (
-        f"⏸️ {provider_label} quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
+    _notify_raw(instance, (
+        f"⏸️ {provider_label} quota exhausted.{_format_quota_reset_for_chat(reset_display)}\n"
         f"Mission '{mission_title[:60]}' moved back to Pending.\n"
         f"{resume_msg} or use /resume to restart manually."
     ))
@@ -2227,8 +2247,8 @@ def _handle_pipeline_quota_flag(
         _requeue_mission_in_file(instance, mission_title)
 
     _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-    _notify(instance, (
-        f"⚠️ {provider_label} quota exhausted. {reset_display}\n\n"
+    _notify_raw(instance, (
+        f"⚠️ {provider_label} quota exhausted.{_format_quota_reset_for_chat(reset_display)}\n"
         f"Mission '{mission_title[:60]}' moved back to Pending.\n"
         f"Kōan paused after {count} runs. {resume_msg} or use /resume to restart manually."
     ))

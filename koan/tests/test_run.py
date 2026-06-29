@@ -330,6 +330,59 @@ class TestBuildStartupStatus:
 
 
 # ---------------------------------------------------------------------------
+# Test: quota reset_display chat formatting
+# ---------------------------------------------------------------------------
+
+class TestFormatQuotaResetForChat:
+    """_format_quota_reset_for_chat decides inline vs code-block rendering.
+
+    A clean parsed reset stays inline; raw CLI/JSON output that leaks in when
+    parsing fails gets fenced so the chat warning stays readable.
+    """
+
+    def test_empty_returns_empty(self):
+        from app.run import _format_quota_reset_for_chat
+        assert _format_quota_reset_for_chat("") == ""
+
+    def test_clean_reset_is_inline(self):
+        from app.run import _format_quota_reset_for_chat
+        out = _format_quota_reset_for_chat("resets 10am (Europe/Paris)")
+        assert out == " resets 10am (Europe/Paris)"
+        assert "```" not in out
+
+    def test_raw_json_output_is_fenced(self):
+        from app.run import _format_quota_reset_for_chat
+        # The exact shape that leaked into chat: reset string followed by the
+        # CLI result JSON on the same line (parser couldn't clean minute-precision time).
+        blob = (
+            'resets 8:40am (America/Denver)","stop_reason":"stop_sequence",'
+            '"session_id":"50f936c3-ab9b-40e8-bcb3-e2c07f614c75",'
+            '"total_cost_usd":0.9823762500000001,"usage":{"input_tokens":"'
+        )
+        out = _format_quota_reset_for_chat(blob)
+        assert out.startswith("\n```\n")
+        assert out.endswith("\n```")
+        assert blob in out
+
+    def test_brace_only_blob_is_fenced(self):
+        from app.run import _format_quota_reset_for_chat
+        out = _format_quota_reset_for_chat('{"resetsAt": 1779937200}')
+        assert out.startswith("\n```\n")
+        assert out.endswith("\n```")
+
+    def test_long_blob_is_fenced_even_without_json_chars(self):
+        from app.run import _format_quota_reset_for_chat
+        out = _format_quota_reset_for_chat("x" * 200)
+        assert "```" in out
+
+    def test_blob_is_bounded(self):
+        from app.run import _format_quota_reset_for_chat
+        out = _format_quota_reset_for_chat('"' + "x" * 5000 + '"')
+        # 2000-char cap plus the fences — never the full 5000-char payload.
+        assert len(out) < 2100
+
+
+# ---------------------------------------------------------------------------
 # Test: start_on_pause in run_startup
 # ---------------------------------------------------------------------------
 
@@ -5548,7 +5601,7 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
              patch("app.run.protected_phase", return_value=MagicMock(
                  __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
              )), \
-             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_raw") as mock_notify, \
              patch("app.run._notify_mission_end"), \
              patch("app.run._finalize_mission") as mock_finalize, \
              patch("app.run._requeue_mission_in_file") as mock_requeue, \
@@ -5604,7 +5657,7 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
              patch("app.run.protected_phase", return_value=MagicMock(
                  __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
              )), \
-             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_raw") as mock_notify, \
              patch("app.run._notify_mission_end"), \
              patch("app.run._finalize_mission") as mock_finalize, \
              patch("app.run._requeue_mission_in_file") as mock_requeue, \
@@ -5904,7 +5957,7 @@ class TestSkillDispatchAuthQuota(TestRunSkillMissionEnv):
              patch("app.run.protected_phase", return_value=MagicMock(
                  __enter__=MagicMock(), __exit__=MagicMock(return_value=False)
              )), \
-             patch("app.run._notify") as mock_notify, \
+             patch("app.run._notify_raw") as mock_notify, \
              patch("app.run._notify_mission_end"), \
              patch("app.run._finalize_mission") as mock_finalize, \
              patch("app.run._requeue_mission_in_file") as mock_requeue, \
