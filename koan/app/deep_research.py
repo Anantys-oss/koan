@@ -94,6 +94,8 @@ class DeepResearch:
         self.project_path = project_path
         self.memory_dir = instance_dir / "memory" / "projects" / project_name
         self._pending_prs: list[dict] | None = None
+        self._pr_feedback: dict | None = None
+        self._open_issues: dict[int, list[dict]] = {}
 
     def get_priorities(self) -> dict:
         """Parse priorities.md into structured data."""
@@ -147,7 +149,13 @@ class DeepResearch:
         }
 
     def get_open_issues(self, limit: int = 10) -> list[dict]:
-        """Fetch open GitHub issues for the project."""
+        """Fetch open GitHub issues for the project.
+
+        Results are cached per ``limit`` for the lifetime of this instance to
+        avoid redundant gh calls when suggest_topics and to_json both ask.
+        """
+        if limit in self._open_issues:
+            return self._open_issues[limit]
         try:
             from app.github import run_gh
             output = run_gh(
@@ -157,10 +165,11 @@ class DeepResearch:
                 "--json", "number,title,labels,createdAt",
                 cwd=self.project_path,
             )
-            return json.loads(output)
+            self._open_issues[limit] = json.loads(output)
         except Exception as e:
             print(f"[deep_research] Issue fetch failed: {e}", file=sys.stderr)
-            return []
+            self._open_issues[limit] = []
+        return self._open_issues[limit]
 
     def get_pending_prs(self) -> list[dict]:
         """Fetch open PRs that might need attention.
@@ -296,18 +305,25 @@ class DeepResearch:
             Dict with keys:
             - alignment_summary: str (formatted for prompt)
             - category_boosts: dict (category → priority adjustment)
+
+        Cached for the lifetime of this instance: get_alignment_summary and
+        get_category_boost both shell out (git + gh), and suggest_topics plus
+        format_for_agent/to_json each request the feedback once.
         """
+        if self._pr_feedback is not None:
+            return self._pr_feedback
         try:
             from app.pr_feedback import get_alignment_summary, get_category_boost
             summary = get_alignment_summary(str(self.project_path))
             boosts = get_category_boost(str(self.project_path))
-            return {
+            self._pr_feedback = {
                 "alignment_summary": summary,
                 "category_boosts": boosts,
             }
         except Exception as e:
             print(f"[deep_research] PR feedback failed: {e}", file=sys.stderr)
-            return {"alignment_summary": "", "category_boosts": {}}
+            self._pr_feedback = {"alignment_summary": "", "category_boosts": {}}
+        return self._pr_feedback
 
     def _match_topic_to_category(self, topic: str) -> str:
         """Best-effort match a topic string to a PR work category.

@@ -267,6 +267,39 @@ class TestGitHubIntegration:
             assert len(result) == 1
             assert result[0]["headRefName"] == "koan/fix-typo"
 
+    def test_get_open_issues_cached_per_limit(self, research_env):
+        """Repeated calls with the same limit hit gh once; a new limit refetches."""
+        with patch("app.github.run_gh", return_value="[]") as mock_gh:
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            research.get_open_issues()
+            research.get_open_issues()
+            assert mock_gh.call_count == 1  # second call served from cache
+
+            research.get_open_issues(limit=3)
+            assert mock_gh.call_count == 2  # distinct limit refetches
+
+    def test_get_pr_feedback_cached(self, research_env):
+        """Repeated calls reuse the cached feedback instead of reshelling out."""
+        with patch("app.pr_feedback.get_alignment_summary", return_value="x") as mock_sum, \
+                patch("app.pr_feedback.get_category_boost", return_value={"fix": -1}) as mock_boost:
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            first = research.get_pr_feedback()
+            second = research.get_pr_feedback()
+
+            assert first == second == {"alignment_summary": "x", "category_boosts": {"fix": -1}}
+            assert mock_sum.call_count == 1
+            assert mock_boost.call_count == 1
+
 
 class TestJournalAnalysis:
     """Tests for recent journal topic extraction."""
