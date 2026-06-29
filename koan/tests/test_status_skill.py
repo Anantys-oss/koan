@@ -606,6 +606,22 @@ class TestGetServerIp:
             result = _handle_status(ctx)
         assert "(" not in result.split("claude")[-1][:3]
 
+    def test_provider_on_separate_line_from_ip(self, tmp_path, monkeypatch):
+        """Provider/model sits on its own line, not glued to the IP/hostname line."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/tools/my-claude")
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="192.168.1.42"), \
+                patch("app.provider.get_provider_name", return_value="claude"):
+            result = _handle_status(ctx)
+        # Provider line has the model-fitting prefix and the binary suffix
+        assert "🤖 claude (my-claude)" in result
+        # IP and provider are never on the same line
+        for line in result.splitlines():
+            assert not ("IP:" in line and "claude" in line)
+
     def test_service_manager_shown_when_set(self, tmp_path, monkeypatch):
         """Configured service manager is advertised in /status."""
         instance = tmp_path / "instance"
