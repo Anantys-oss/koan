@@ -2476,7 +2476,7 @@ def update_ci_item_attempt(content: str, pr_url: str) -> str:
 _GITHUB_ACTION_RE = re.compile(
     r"/(ask|audit|benchmark|brainstorm|check|check_need|ci_check"
     r"|dbg|debug|deeplan|deepplan|doc|docs|doit|explain|fix|gh_request"
-    r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile"
+    r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile|question"
     r"|rb|rc|rebase|recreate|refactor|review|reviewrebase|rf|rr|rv|xp"
     r"|secu|security|security_audit|sq|squash"
     r"|ultrareview|ultra_review|urv)\s+"
