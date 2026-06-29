@@ -534,6 +534,27 @@ def _safe_int(value, default: int) -> int:
         return default
 
 
+def get_memory_monitor_config() -> dict:
+    """Memory watchdog config (#2232). Disabled by default.
+
+    Uses the module-local _safe_int (defined above) to coerce string YAML
+    values; never raises on bad input.
+    """
+    config = _load_config()
+    section = config.get("memory_monitor", {})
+    if not isinstance(section, dict):
+        section = {}
+    return {
+        "enabled": bool(section.get("enabled", False)),
+        "threshold_mb": _safe_int(section.get("threshold_mb", 1200), 1200),
+        "sustained_samples": _safe_int(section.get("sustained_samples", 3), 3),
+        "tracemalloc": bool(section.get("tracemalloc", False)),
+        "min_runs_before_restart": _safe_int(
+            section.get("min_runs_before_restart", 1), 1
+        ),
+    }
+
+
 def get_start_on_pause() -> bool:
     """Check if start_on_pause is enabled in config.yaml.
 

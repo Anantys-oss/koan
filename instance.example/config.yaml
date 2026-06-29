@@ -722,6 +722,15 @@ auto_update:
   check_interval: 10      # Check every N iterations (default: 10)
   notify: true            # Notify on Telegram before/after update (default: true)
 
+# Memory watchdog (#2232): restart the agent loop to reclaim RSS after a
+# sustained overage. Restarts happen only between missions. Disabled by default.
+memory_monitor:
+  enabled: false            # Master switch (default: false)
+  threshold_mb: 1200        # Restart when RSS stays at/above this (MB)
+  sustained_samples: 3      # Consecutive over-threshold loop iterations required
+  min_runs_before_restart: 1  # Don't restart before completing N runs this session
+  tracemalloc: false        # Opt-in: capture top allocation sites at restart (adds overhead)
+
 # CI check: master switch for the entire CI monitoring pipeline.
 # Controls queue draining, auto-dispatch of fix missions, CI enqueue
 # after rebase, and the /ci_check skill command. Disable to save tokens
