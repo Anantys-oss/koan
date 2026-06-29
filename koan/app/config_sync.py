@@ -90,6 +90,16 @@ def _diff_keys(base: Dict[str, Any], cur: Dict[str, Any]) -> List[str]:
 def compute_status(koan_root: Path) -> Dict[str, Any]:
     """Return the config-sync status block for the SSE payload / API."""
     koan_root = Path(koan_root)
+
+    # Feature disabled -> suppress all UI feedback (badge/toast/modal).
+    if not _config.is_config_sync_enabled():
+        return {
+            "synced": True,
+            "restart_pending": False,
+            "changed_safe_keys": [],
+            "changed_unsafe_keys": [],
+        }
+
     baseline = _read_baseline(koan_root)
     current = _snapshot(koan_root)
 
