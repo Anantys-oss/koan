@@ -306,13 +306,13 @@ def _retry_chat_lite(text: str, chat_tools_list: list, models: dict):
         allowed_tools=chat_tools_list,
         model=models["chat"],
         fallback=models["fallback"],
-        max_turns=1,
+        max_turns=5,
     )
     try:
         result = run_cli(
             lite_cmd,
             capture_output=True, text=True, timeout=retry_timeout,
-            cwd=PROJECT_PATH or str(KOAN_ROOT),
+            cwd=str(KOAN_ROOT),
         )
         response = _clean_chat_response(result.stdout.strip(), text)
         if response:
@@ -324,11 +324,14 @@ def _retry_chat_lite(text: str, chat_tools_list: list, models: dict):
             )
             log("chat", f"Chat reply (lite retry): {response[:80]}...")
         else:
+            # Empty but successful (rc=0) — not a timeout. Surface the real
+            # condition and always log it, even when stderr is empty.
+            log("chat", "Lite retry returned an empty response.")
             if result.stderr:
                 log("error", f"Lite retry stderr: {result.stderr[:500]}")
-            timeout_msg = f"⏱ Timeout after {CHAT_TIMEOUT}s — try a shorter question, or send 'mission: ...' for complex tasks."
-            send_telegram(timeout_msg)
-            save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", timeout_msg)
+            empty_msg = "⚠️ I couldn't formulate a response — try rephrasing, or send 'mission: ...' for complex tasks."
+            send_telegram(empty_msg)
+            save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", empty_msg)
     except subprocess.TimeoutExpired:
         timeout_msg = f"Timeout after {CHAT_TIMEOUT}s — try a shorter question, or send 'mission: ...' for complex tasks."
         send_telegram(timeout_msg)

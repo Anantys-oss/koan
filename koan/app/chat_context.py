@@ -4,7 +4,6 @@ Extracted from awake.py to allow the dedicated chat process to build
 the same prompts without importing the full bridge module.
 """
 
-import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -59,7 +58,10 @@ def build_chat_prompt(
     prefs_context = ""
     prefs_path = instance_dir / "memory" / "global" / "human-preferences.md"
     if prefs_path.exists():
-        prefs_context = prefs_path.read_text().strip()
+        try:
+            prefs_context = prefs_path.read_text().strip()
+        except OSError as e:
+            print(f"[chat] Failed to read human-preferences.md: {e}", file=sys.stderr)
 
     # Load live progress from pending.md (run in progress)
     pending_context = ""
@@ -76,6 +78,7 @@ def build_chat_prompt(
 
     # Load current mission state (live sync with run loop)
     missions_context = ""
+    missions_read_failed = False
     if pending_context:
         missions_context = pending_context
     elif missions_file.exists():
@@ -85,6 +88,7 @@ def build_chat_prompt(
         except OSError as e:
             print(f"[chat] Failed to read missions.md: {e}", file=sys.stderr)
             sections = {}
+            missions_read_failed = True
         in_progress = sections.get("in_progress", [])
         pending = sections.get("pending", [])
         if in_progress or pending:
@@ -108,6 +112,8 @@ def build_chat_prompt(
 
     if missions_context:
         missions_context += run_loop_status
+    elif missions_read_failed:
+        missions_context = f"Mission state unavailable (could not read missions.md).{run_loop_status}"
     else:
         missions_context = f"No pending missions.{run_loop_status}"
 
@@ -139,7 +145,11 @@ def build_chat_prompt(
     if not lite:
         emotional_path = instance_dir / "memory" / "global" / "emotional-memory.md"
         if emotional_path.exists():
-            content = emotional_path.read_text().strip()
+            try:
+                content = emotional_path.read_text().strip()
+            except OSError as e:
+                print(f"[chat] Failed to read emotional-memory.md: {e}", file=sys.stderr)
+                content = ""
             if len(content) > 800:
                 emotional_context = "...\n" + content[-800:]
             else:
