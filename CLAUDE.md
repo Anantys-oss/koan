@@ -113,7 +113,7 @@ Communication between processes happens through shared files in `instance/` with
 
 **Bridge (Telegram):**
 
-- **`awake.py`** — Main bridge loop, Telegram polling, outbox flushing
+- **`awake.py`** — Main bridge loop, Telegram polling, outbox flushing. Classifies messages as "chat" (instant Claude reply with optional command suggestions) or "mission" (queued to `missions.md`)
 - **`command_handlers.py`** — Telegram command handlers extracted from awake.py; core commands (help, stop, pause, resume, skill) + skill dispatch
 - **`bridge_state.py`** — Shared module-level state for bridge (config, paths, registries); avoids circular imports
 - **`bridge_log.py`** — Colored log output for bridge process (mirrors run.py's `log()`)

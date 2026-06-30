@@ -6,6 +6,7 @@ emoji: 📋
 description: List current missions
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: list
     description: List current missions (pending + in progress)

@@ -6,6 +6,7 @@ emoji: 📂
 description: List configured projects
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: projects
     description: List configured projects

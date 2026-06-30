@@ -6,6 +6,7 @@ emoji: ✔️
 description: List merged and open PRs from the last 24 hours across all projects
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 worker: true
 commands:
   - name: done

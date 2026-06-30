@@ -6,6 +6,7 @@ emoji: 😴
 description: Passive mode — read-only, no missions or exploration. Use /active to resume.
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: passive
     description: Activate passive mode (read-only, no execution)

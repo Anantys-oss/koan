@@ -90,6 +90,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "thinking": _NESTED,
     "stagnation": _NESTED,
     "optimizations": _NESTED,
+    "chat": _NESTED,
 }
 
 # Top-level keys that are recognized but deprecated: they still work (honored
@@ -116,6 +117,10 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "chat": ("list", "str"),
         "mission": ("list", "str"),
         "description": "str",
+    },
+    "chat": {
+        "suggest_commands": "bool",
+        "confirm_commands": "bool",
     },
     "models": {
         "mission": "str",

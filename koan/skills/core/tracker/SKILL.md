@@ -6,6 +6,7 @@ emoji: 🧭
 description: Show or configure per-project issue tracker settings
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: tracker
     description: Show or set issue tracker routing for projects
