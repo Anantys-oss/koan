@@ -21,6 +21,7 @@ Package structure:
 """
 
 import contextlib
+import contextvars
 import json
 import os
 import re
@@ -202,6 +203,45 @@ def get_provider_display(name: str = "") -> str:
     if binary and binary != name:
         return f"{name} ({binary})"
     return name
+
+
+# ---------------------------------------------------------------------------
+# Review-scoped CLI binary override
+# ---------------------------------------------------------------------------
+
+# When active, ClaudeProvider.binary() prefers KOAN_CLAUDE_CLI_FOR_REVIEW_PATH
+# over KOAN_CLAUDE_CLI_PATH, so a review-specific Claude binary can be pinned
+# without affecting other missions. A ContextVar (not a plain flag) so the
+# override is confined to the review call subtree and auto-resets on exit, even
+# if reviews ever run concurrently. Activated only by review runners — see
+# review_runner._run_claude_review.
+_REVIEW_CLI_OVERRIDE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "koan_review_cli_override", default=False,
+)
+
+
+def review_cli_override_active() -> bool:
+    """True when the current context should use the review-specific CLI binary.
+
+    This is the gate ``ClaudeProvider.binary()`` checks: the review binary is
+    consulted only while a review is running, so ordinary missions are
+    unaffected even when ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`` is set.
+    """
+    return _REVIEW_CLI_OVERRIDE.get()
+
+
+@contextlib.contextmanager
+def review_cli_override():
+    """Within this block, the Claude provider prefers the review CLI binary.
+
+    No-op for non-Claude providers and when ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH``
+    is unset (binary() then falls through to its normal resolution).
+    """
+    token = _REVIEW_CLI_OVERRIDE.set(True)
+    try:
+        yield
+    finally:
+        _REVIEW_CLI_OVERRIDE.reset(token)
 
 
 # ---------------------------------------------------------------------------

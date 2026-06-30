@@ -28,6 +28,8 @@ from app.provider import (  # noqa: F401
     get_provider,
     get_cli_binary,
     reset_provider,
+    review_cli_override,
+    review_cli_override_active,
     # Convenience functions
     build_cli_flags,
     build_tool_flags,

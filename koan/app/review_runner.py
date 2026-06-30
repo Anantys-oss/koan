@@ -766,7 +766,7 @@ def _run_claude_review(
         (output, error) tuple. output is the provider's review text (empty on
         failure), error is the failure reason (empty on success).
     """
-    from app.cli_provider import run_command_streaming
+    from app.cli_provider import run_command_streaming, review_cli_override
     from app.config import get_model_config, get_skill_max_turns
 
     if model is None:
@@ -774,15 +774,20 @@ def _run_claude_review(
         model = models.get("review_mode") or models.get("mission", "")
 
     try:
-        output = run_command_streaming(
-            prompt=prompt,
-            project_path=project_path,
-            allowed_tools=["Read", "Glob", "Grep"],
-            model_key="mission",
-            model=model,
-            max_turns=get_skill_max_turns(),
-            timeout=timeout,
-        )
+        # Pin the review-specific Claude binary (KOAN_CLAUDE_CLI_FOR_REVIEW_PATH)
+        # for every review-path call — main pass, reflect, error-hunter, bot
+        # triage. The override is context-scoped, so it cannot leak into other
+        # missions or the write-capable fix step.
+        with review_cli_override():
+            output = run_command_streaming(
+                prompt=prompt,
+                project_path=project_path,
+                allowed_tools=["Read", "Glob", "Grep"],
+                model_key="mission",
+                model=model,
+                max_turns=get_skill_max_turns(),
+                timeout=timeout,
+            )
         return output, ""
     except RuntimeError as e:
         error = str(e) or "unknown error"

@@ -145,6 +145,25 @@ When a custom path is set, `/status` and the startup banner (`make` / `make rest
 show the binary name next to the provider (e.g. `claude (ollama-claude)`), so you can
 confirm which wrapper is in use.
 
+#### Review-specific CLI binary
+
+`KOAN_CLAUDE_CLI_PATH` replaces the Claude binary for **every** call. To swap it
+in for **reviews only** — e.g. run routine missions on a cheap wrapper but reviews
+on a paid Claude subscription — set `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`:
+
+```bash
+KOAN_CLAUDE_CLI_PATH=/path/to/cheap-claude           # all other missions
+KOAN_CLAUDE_CLI_FOR_REVIEW_PATH=/path/to/review-claude  # reviews only
+```
+
+This variable takes precedence over `KOAN_CLAUDE_CLI_PATH`, but **only while a
+review is running**. It applies to `/review` and `/ultrareview` (and every
+internal Claude call those skills make — the main pass, reflection, silent-failure
+hunter, bot-comment triage), and to private reviews. It is never consulted for
+other missions, so you can set both variables at once without affecting
+non-review work. When unset or empty inside a review, Kōan falls back to
+`KOAN_CLAUDE_CLI_PATH`, then `claude`.
+
 > **Running OpenRouter models through the Claude CLI?** See
 > [openrouter.md](openrouter.md) — it uses this wrapper mechanism plus a local
 > CCR router to make non-Anthropic OpenRouter models work in `-p` mode.

@@ -30,8 +30,9 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 | `__init__.run_command()` / `run_command_streaming()` | The single invocation entry points. Callers should not spawn provider subprocesses directly. |
 | `__init__.build_full_command()` | Assembles the provider-specific argv. |
 | `__init__.get_provider_display()` / `get_cli_binary_name()` | Display helpers. `get_provider_display()` returns `"<name>"` or `"<name> (<binary>)"` when `KOAN_CLAUDE_CLI_PATH` points at a different binary. Single source of truth for the provider line shown by the startup banner and `/status`. |
+| `__init__.review_cli_override()` / `review_cli_override_active()` | Context-scoped flag. While active, `ClaudeProvider.binary()` prefers `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH` over `KOAN_CLAUDE_CLI_PATH`, so a review-only binary can be pinned without affecting other missions. Activated solely by `review_runner._run_claude_review()` (the single review-path Claude chokepoint). |
 | Provider resolution | Order: `KOAN_CLI_PROVIDER` env (fallback `CLI_PROVIDER`) → `projects.yaml`/`config.yaml` → default. Centralized in `utils.get_cli_provider_env()`. |
-| `ClaudeProvider.binary()` | Resolves `KOAN_CLAUDE_CLI_PATH`: absolute → as-is; relative → `normpath(join(KOAN_ROOT, …))`; bare name (no directory component) → PATH lookup; unset/empty → `"claude"`. Rooted at `KOAN_ROOT` (not CWD) because the agent runs from `KOAN_ROOT/koan`. |
+| `ClaudeProvider.binary()` | Resolves the Claude binary: `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH` (only inside a `review_cli_override()` context — ignored otherwise so it never leaks into other missions) → then `KOAN_CLAUDE_CLI_PATH` handled as absolute → as-is / relative → `normpath(join(KOAN_ROOT, …))` / bare name → PATH lookup / unset-empty → `"claude"`. `KOAN_CLAUDE_CLI_PATH` relative paths root at `KOAN_ROOT` (not CWD — the agent runs from `KOAN_ROOT/koan`); bare names are never re-rooted. The review override is returned as-is. |
 
 ## Invariants
 
@@ -45,6 +46,10 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   in `binary()` is what makes the portable `.env` form work; a future
   simplification that re-targets the join at CWD silently breaks every such
   setup. Bare command names stay PATH lookups and are never re-rooted.
+- **Claude binary resolution is gated by review context.** `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`
+  wins over `KOAN_CLAUDE_CLI_PATH` *only* while `review_cli_override()` is active; outside
+  a review it is invisible. New per-call binary overrides must follow this context-gated
+  pattern (a `ContextVar` activated at the call site), never an unconditional env read.
 - **Tool-name vocabularies differ per provider.** Copilot maps its own names; the
   abstraction must translate, not leak provider-specific tool names upward.
 - **Quota/usage extraction is provider-specific.** Claude exposes usage in
