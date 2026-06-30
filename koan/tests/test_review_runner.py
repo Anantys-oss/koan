@@ -4649,6 +4649,80 @@ class TestReviewBinaryRouting:
         assert captured["provider"].name == "claude"
         assert captured["provider"].binary() == "/opt/review-claude"
 
+    def test_review_model_resolves_from_review_provider_section(self):
+        """The review --model comes from models.<review_provider>.review_mode,
+        not the global provider's section (PR #2251 comment-4848143029)."""
+        from unittest.mock import MagicMock, patch
+        import app.provider as provider
+        from app.review_runner import _run_claude_review
+
+        # Global codex; reviews pinned to Claude. The review model must be the
+        # Claude review_mode model (opus), NOT the codex one.
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "models": {
+                "default": {"review_mode": ""},
+                "codex": {"review_mode": "codex-WRONG"},
+                "claude": {"review_mode": "opus"},
+            },
+            "skip_permissions": False,
+        }
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["cmd"] = cmd
+            proc = MagicMock()
+            stdout = MagicMock()
+            stdout.__iter__.return_value = iter([])
+            proc.stdout = stdout
+            proc.stderr.read.return_value = ""
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc, (lambda: None)
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            _run_claude_review("review this", "/tmp/project")
+
+        cmd = captured["cmd"]
+        assert "--model" in cmd
+        assert cmd[cmd.index("--model") + 1] == "opus"
+        assert "codex-WRONG" not in cmd
+
+    def test_per_project_cli_review_mode_applies(self):
+        """A per-project cli.review_mode override routes the review binary."""
+        from unittest.mock import MagicMock, patch
+        import app.provider as provider
+        from app.review_runner import _run_claude_review
+
+        full = {"cli_provider": "codex", "skip_permissions": False}
+        project_overrides = {"cli": {"review_mode": "claude:/opt/proj-review-claude"}}
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["cmd"] = cmd
+            proc = MagicMock()
+            stdout = MagicMock()
+            stdout.__iter__.return_value = iter([])
+            proc.stdout = stdout
+            proc.stderr.read.return_value = ""
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc, (lambda: None)
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value=project_overrides), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            _run_claude_review("review this", "/tmp/project", project_name="myproj")
+
+        assert captured["cmd"][0] == "/opt/proj-review-claude"
+
 
 # ---------------------------------------------------------------------------
 # run_review reflection integration

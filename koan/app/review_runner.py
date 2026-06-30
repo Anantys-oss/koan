@@ -751,6 +751,7 @@ def _run_claude_review(
     project_path: str,
     timeout: int = 600,
     model: Optional[str] = None,
+    project_name: str = "",
 ) -> Tuple[str, str]:
     """Run provider CLI with read-only tools and return the output text.
 
@@ -759,18 +760,34 @@ def _run_claude_review(
         project_path: Path to the project for codebase context.
         timeout: Maximum seconds to wait (default 600s — large PRs need
                  more time than the old 300s default).
-        model: Optional model override. When None, uses models["review_mode"]
-               if configured, otherwise models["mission"].
+        model: Optional model override. When None, the review_mode model is
+               resolved against the review_mode PROVIDER's section (so it
+               matches the binary the review runs on), falling back to that
+               provider's mission model.
+        project_name: Project name for per-project ``cli.review_mode`` overrides.
 
     Returns:
         (output, error) tuple. output is the provider's review text (empty on
         failure), error is the failure reason (empty on success).
     """
-    from app.cli_provider import run_command_streaming
+    from app.cli_provider import resolve_role_provider, run_command_streaming
     from app.config import get_model_config, get_skill_max_turns
 
     if model is None:
-        models = get_model_config()
+        # Resolve the model against the SAME provider run_command_streaming will
+        # run on (resolve_role_provider — including any launch fallback swap),
+        # NOT the global provider. Otherwise a review pinned to a Claude binary
+        # (cli.review_mode: claude:...) under a global Codex would receive a
+        # Codex model name. Mirrors build_mission_command's role_providers; the
+        # mission model is kept as the fallback, matching the prior behavior.
+        review_provider = resolve_role_provider("review_mode", project_name)
+        models = get_model_config(
+            project_name,
+            role_providers={
+                "review_mode": review_provider.name,
+                "mission": review_provider.name,
+            },
+        )
         model = models.get("review_mode") or models.get("mission", "")
 
     try:
@@ -787,6 +804,7 @@ def _run_claude_review(
             model=model,
             max_turns=get_skill_max_turns(),
             timeout=timeout,
+            project_name=project_name,
         )
         return output, ""
     except RuntimeError as e:
@@ -875,6 +893,7 @@ def _reflect_findings(
     threshold: int,
     skill_dir: Optional[Path] = None,
     calibration_hints: str = "",
+    project_name: str = "",
 ) -> list:
     """Run a second-pass reflection on review findings and filter low-signal ones.
 
@@ -914,7 +933,9 @@ def _reflect_findings(
         print(f"[reflect] prompt build failed: {e}", file=sys.stderr)
         return findings
 
-    raw_output, error = _run_claude_review(prompt, project_path, model=model)
+    raw_output, error = _run_claude_review(
+        prompt, project_path, model=model, project_name=project_name,
+    )
     if not raw_output:
         return findings
 
@@ -2403,7 +2424,8 @@ def _run_review_analysis(
       - ``error``: short provider error string, set only when the provider
         produced no output at all.
     """
-    raw_output, error = _run_claude_review(prompt, project_path)
+    pname = project_name or ""
+    raw_output, error = _run_claude_review(prompt, project_path, project_name=pname)
     if not raw_output:
         return None, "", error
 
@@ -2415,13 +2437,23 @@ def _run_review_analysis(
             "You MUST respond with ONLY a valid JSON object matching the "
             "schema described above. No markdown, no text, just JSON."
         )
-        retry_output, _ = _run_claude_review(retry_prompt, project_path)
+        retry_output, _ = _run_claude_review(retry_prompt, project_path, project_name=pname)
         if retry_output:
             review_data = _parse_review_json(retry_output)
 
     if review_data is not None and review_data.get("file_comments"):
+        from app.cli_provider import resolve_role_provider
         from app.config import get_model_config, get_review_reflect_config
-        models = get_model_config()
+        # Resolve the reflect model against the review_mode PROVIDER's section,
+        # since the reflect pass runs on that same binary (see _run_claude_review).
+        review_provider = resolve_role_provider("review_mode", pname)
+        models = get_model_config(
+            pname,
+            role_providers={
+                "reflect": review_provider.name,
+                "lightweight": review_provider.name,
+            },
+        )
         reflect_cfg = get_review_reflect_config()
         reflect_model = models.get("reflect") or models.get("lightweight")
         reflect_threshold = reflect_cfg.get("threshold", 5)
@@ -2434,6 +2466,7 @@ def _run_review_analysis(
             reflect_threshold,
             skill_dir=skill_dir,
             calibration_hints=calibration_hints,
+            project_name=pname,
         )
 
     return review_data, raw_output, error
