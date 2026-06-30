@@ -182,6 +182,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`rename_project.py`** — CLI tool to rename a project across `projects.yaml` and all `instance/` files (missions, memory dir, journal files, JSON references). Dry-run by default, `--apply` to execute. Invoked via `make rename-project old=X new=Y [apply=1]`.
 - **`usage_service.py`** — Shared usage-payload builder (`build_usage_payload()` + week/month bucketing) used by both the dashboard and the REST API (`GET /v1/usage`).
 - **`log_reader.py`** — Shared log-tailing helpers (`tail_log()`, `read_logs()`) used by both the dashboard and the REST API (`GET /v1/logs`).
+- **`artifact_db.py`** — Unified artifact schema + migration harness. `ARTIFACT_SCHEMAS` (TableSpec/ColumnSpec dataclasses) for missions/journal_entries/memory_entries/outbox_messages/audit_log; `create_tables()`, `verify_schema()` (PRAGMA drift check), `dual_write()` (file authoritative + best-effort DB projection), `read_from_db_or_file()` (DB-first, file fallback, file-stable order). File stays source of truth (mirrors `memory_db`). Library only — downstream issues wire it into live artifact paths. See `docs/architecture/artifact-db.md`.
 
 **Web dashboard** (`koan/app/dashboard/`):
 
