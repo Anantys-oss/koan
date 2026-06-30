@@ -14,9 +14,10 @@ def read_rss_mb(pid: int | None = None) -> float:
     """Resident set size in MB for a process (current process by default).
 
     Prefers /proc/<pid>/status VmRSS (current RSS, decreases when freed).
-    Falls back to resource.ru_maxrss (peak; KB on Linux) only for the current
-    process when /proc is unavailable (e.g. non-Linux). Returns 0.0 if neither
-    is readable.
+    Falls back to resource.ru_maxrss (peak, not current) only for the current
+    process when /proc is unavailable (e.g. non-Linux). ru_maxrss units are
+    platform-dependent: KB on Linux, bytes on macOS/BSD — scaled accordingly.
+    Returns 0.0 if neither source is readable.
     """
     target = "self" if pid is None else str(pid)
     try:
@@ -31,7 +32,11 @@ def read_rss_mb(pid: int | None = None) -> float:
         return 0.0
     try:
         import resource
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # ru_maxrss is bytes on macOS/BSD, kilobytes on Linux.
+        if sys.platform == "darwin" or "bsd" in sys.platform:
+            return maxrss / (1024.0 * 1024.0)
+        return maxrss / 1024.0
     except Exception as exc:  # pragma: no cover - platform dependent
         print(f"[memory_monitor] read_rss_mb fallback failed: {exc}", file=sys.stderr)
         return 0.0
@@ -52,6 +57,7 @@ class MemoryMonitor:
         self.sustained_samples = max(1, int(sustained_samples))
         self.min_runs_before_restart = int(min_runs_before_restart)
         self.tracemalloc_enabled = bool(tracemalloc_enabled)
+        self.tracemalloc_error: str | None = None
         self._tracemalloc_frames = int(tracemalloc_frames)
         self._over_count = 0
         self._last_rss_mb = 0.0
@@ -64,6 +70,9 @@ class MemoryMonitor:
             if not tracemalloc.is_tracing():
                 tracemalloc.start(self._tracemalloc_frames)
         except Exception as exc:  # pragma: no cover - defensive
+            # Record the failure so callers can surface "diagnostics broken"
+            # distinctly from "diagnostics intentionally off".
+            self.tracemalloc_error = str(exc)
             print(f"[memory_monitor] tracemalloc start failed: {exc}", file=sys.stderr)
             self.tracemalloc_enabled = False
 
@@ -142,17 +151,23 @@ def get_memory_status(koan_root=None) -> dict:
         rss = read_rss_mb()
         source = "self"
 
+    config_error = False
     try:
         from app.config import get_memory_monitor_config
         conf = get_memory_monitor_config()
         threshold = conf.get("threshold_mb", 0)
-        enabled = conf.get("enabled", False)
+        enabled = bool(conf.get("enabled", False))
     except Exception as exc:  # pragma: no cover - defensive
         print(f"get_memory_status: config read failed: {exc}", file=sys.stderr)
-        threshold, enabled = 0, False
-    return {
+        # Don't fabricate a plausible "disabled" state; flag the failure so
+        # consumers can distinguish it from an intentionally-off watchdog.
+        threshold, enabled, config_error = None, None, True
+    status = {
         "rss_mb": round(rss, 1),
         "threshold_mb": threshold,
-        "watchdog_enabled": bool(enabled),
+        "watchdog_enabled": enabled,
         "source": source,
     }
+    if config_error:
+        status["config_error"] = True
+    return status

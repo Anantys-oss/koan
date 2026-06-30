@@ -1,3 +1,6 @@
+import os
+from unittest.mock import patch
+
 from app.memory_monitor import MemoryMonitor, read_rss_mb, get_memory_status
 
 
@@ -43,6 +46,43 @@ def test_get_memory_status_shape():
     status = get_memory_status()
     assert "rss_mb" in status
     assert status["rss_mb"] > 0
+
+
+def test_get_memory_status_resolves_run_pid():
+    """When the run PID resolves, status reports that process's RSS."""
+    with patch("app.memory_monitor._read_run_pid", lambda _root: os.getpid()):
+        status = get_memory_status("/tmp/whatever")
+    assert status["source"] == "agent_loop"
+    assert status["rss_mb"] > 0
+
+
+def test_get_memory_status_falls_back_to_self_when_no_run_pid():
+    """No run PID -> read this process's RSS, source 'self'."""
+    with patch("app.memory_monitor._read_run_pid", lambda _root: None):
+        status = get_memory_status("/tmp/whatever")
+    assert status["source"] == "self"
+    assert status["rss_mb"] > 0
+
+
+def test_get_memory_status_flags_config_error():
+    """A config-read failure surfaces config_error rather than a fake disabled state."""
+    def boom():
+        raise RuntimeError("config exploded")
+
+    with patch("app.config.get_memory_monitor_config", boom):
+        status = get_memory_status()
+    assert status.get("config_error") is True
+    assert status["watchdog_enabled"] is None
+    assert status["threshold_mb"] is None
+
+
+def test_tracemalloc_error_recorded_on_start_failure():
+    """A failed tracemalloc.start() is recorded, not silently swallowed."""
+    with patch("tracemalloc.start", side_effect=RuntimeError("no tracing")), \
+            patch("tracemalloc.is_tracing", lambda: False):
+        m = MemoryMonitor(threshold_mb=1, sustained_samples=1, tracemalloc_enabled=True)
+    assert m.tracemalloc_enabled is False
+    assert m.tracemalloc_error is not None
 
 
 def test_top_allocations_reflects_large_allocations():

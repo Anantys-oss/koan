@@ -8290,6 +8290,18 @@ class TestMemoryWatchdog:
         assert mon.threshold_mb == 900
         assert mon.sustained_samples == 5
 
+    def test_build_memory_monitor_disabled_when_threshold_below_baseline(self):
+        """A threshold at/below current RSS would restart-loop; disable it."""
+        from app import run
+        with patch(
+            "app.config.get_memory_monitor_config",
+            lambda: {"enabled": True, "threshold_mb": 1,
+                     "sustained_samples": 3, "tracemalloc": False,
+                     "min_runs_before_restart": 1},
+        ):
+            # 1 MB is below this process's real RSS -> guard disables.
+            assert run._build_memory_monitor() is None
+
     def test_handle_memory_restart_exits_with_restart_code(self, tmp_path):
         from app import run
         from app.memory_monitor import MemoryMonitor

@@ -22,10 +22,16 @@ Defaults: disabled, `threshold_mb: 1200`, `sustained_samples: 3`,
 All knobs are read once at agent-loop startup and frozen for the session — a
 live config edit takes effect on the next restart, consistently for every knob.
 
+If `threshold_mb` is at or below the agent loop's baseline RSS at startup, the
+watchdog disables itself for the session (and logs why) instead of restart-looping
+forever. Raise `threshold_mb` above baseline to re-enable it.
+
 ## How it works
 
 RSS is read from `/proc/self/status` (`VmRSS`, current RSS) with a
-`resource.getrusage` fallback — no new dependency. Sampling happens once per
+`resource.getrusage` fallback — no new dependency. The fallback is peak (not
+current) RSS and its units are platform-dependent (KB on Linux, bytes on
+macOS/BSD), so it is scaled per-platform. Sampling happens once per
 loop iteration, at the loop top, never mid-mission. After RSS stays at or above
 `threshold_mb` for `sustained_samples` consecutive iterations (and at least
 `min_runs_before_restart` runs have completed this session), the loop logs,
@@ -51,3 +57,8 @@ The dashboard runs in its own process, so it resolves the agent loop's (`run`)
 PID and reports *that* process's RSS (`source: "agent_loop"`) — the watchdog's
 actual subject. If the run PID can't be resolved (agent loop not running) it
 falls back to the dashboard's own RSS (`source: "self"`).
+
+If reading the config fails, the block sets `config_error: true` and reports
+`watchdog_enabled`/`threshold_mb` as `null` rather than a plausible-looking
+disabled state — so consumers can tell a real failure from an intentional
+disable.

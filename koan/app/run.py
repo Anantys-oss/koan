@@ -871,9 +871,19 @@ def _build_memory_monitor():
     conf = get_memory_monitor_config()
     if not conf.get("enabled"):
         return None
-    from app.memory_monitor import MemoryMonitor
+    from app.memory_monitor import MemoryMonitor, read_rss_mb
+    threshold_mb = conf["threshold_mb"]
+    # Misconfiguration guard: a threshold at or below the current baseline RSS
+    # would trip every session and restart-loop forever. Disable instead.
+    baseline = read_rss_mb()
+    if threshold_mb <= 0 or (baseline > 0 and threshold_mb <= baseline):
+        log("koan",
+            f"Memory watchdog disabled: threshold {threshold_mb} MB ≤ baseline "
+            f"RSS {baseline:.0f} MB would restart-loop. Raise "
+            "memory_monitor.threshold_mb above baseline.")
+        return None
     return MemoryMonitor(
-        threshold_mb=conf["threshold_mb"],
+        threshold_mb=threshold_mb,
         sustained_samples=conf["sustained_samples"],
         tracemalloc_enabled=conf.get("tracemalloc", False),
         min_runs_before_restart=conf.get("min_runs_before_restart", 1),
@@ -906,7 +916,12 @@ def _handle_memory_restart(koan_root, instance, monitor, count):
     top = monitor.top_allocations(limit=10) if monitor.tracemalloc_enabled else []
     _write_memory_restart_journal(koan_root, rss, monitor.threshold_mb, count, top)
     with suppress_logged(log, "warning", "Memory-restart notify failed", Exception):
-        detail = "\n".join(top[:5]) if top else "(tracemalloc disabled)"
+        if top:
+            detail = "\n".join(top[:5])
+        elif monitor.tracemalloc_error:
+            detail = f"(tracemalloc failed to start: {monitor.tracemalloc_error})"
+        else:
+            detail = "(tracemalloc disabled)"
         _notify(
             instance,
             f"♻️ Restarting to reclaim memory: RSS {rss:.0f} MB ≥ "
