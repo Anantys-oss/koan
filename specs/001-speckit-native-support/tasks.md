@@ -44,9 +44,9 @@ description: "Task list for the native /speckit mission orchestration feature"
 - [X] T006 Implement single-mission queuing (`[project:name]` tag, `model_key: mission`, via `insert_pending_mission`) and per-step outbox progress notes (via `append_to_outbox`) in koan/app/speckit_orchestration.py
 - [ ] T007 [P] Implement the quota start-gate: when the agent loop picks a `/speckit` mission and `remaining_budget() < get_speckit_config()['quota_threshold']`, leave it Pending and skip; proceed automatically on recovery in koan/app/mission_executor.py
 - [X] T008 Write foundational tests (config defaults/coercion, constitution-gate abort, token parsing, project resolution) in koan/tests/test_speckit_skill.py
-- [ ] T008a [P] Create the speckit runner module (modeled on `implement_runner`): build the Claude command carrying the orchestration prompt loaded via `load_skill_prompt`, project/branch args, and `model_key: mission` in koan/skills/core/speckit/speckit_runner.py *(plan-correction addition — do NOT create until functional; `_discover_runner_module` would auto-discover a stub)*
-- [ ] T008b Register `speckit` and `speckit_from_branch` in `_SKILL_RUNNERS` and add `_build_speckit_cmd` (+ from-branch variant) to `_COMMAND_BUILDERS` in koan/app/skill_dispatch.py *(plan-correction addition)*
-- [ ] T008c Add speckit arg validation (project-or-URL required; from-branch needs repo-id + branch) to `validate_skill_args()` in koan/app/skill_dispatch.py *(plan-correction addition)*
+- [X] T008a [P] Create the speckit runner module (modeled on `implement_runner`): build the Claude command carrying the orchestration prompt loaded via `load_skill_prompt`, project/branch args, and `model_key: mission` in koan/skills/core/speckit/speckit_runner.py *(done; auto-discovered via `_discover_runner_module`)*
+- [X] T008b ~~Register in `_SKILL_RUNNERS` + `_COMMAND_BUILDERS`~~ — **N/A**: `_discover_runner_module` + `_build_generic_runner_cmd` auto-discover the runner from its conventional path; no `skill_dispatch.py` registration needed *(plan-correction resolved by auto-discovery)*
+- [ ] T008c Add speckit arg validation (project-or-URL required; from-branch needs repo-id + branch) to `validate_skill_args()` in koan/app/skill_dispatch.py *(optional hardening; runner/handler already validate)*
 
 **Checkpoint**: Engine primitives ready — constitution gate, quota hold, resolution, queuing, progress notes, **runner + skill_dispatch registration**, all behavior-tested.
 
@@ -79,6 +79,7 @@ description: "Task list for the native /speckit mission orchestration feature"
 ### Implementation for User Story 2
 
 - [ ] T014 [P] [US2] Implement issue-URL recognition + goal assembly (fetch issue title + body + comments via the existing issue-tracker/thread-context path) and `repo:`/`branch:` override handling in koan/app/speckit_orchestration.py
+- [ ] T014b [US2] **Prompt-injection hardening (ant-review finding #2)**: before untrusted issue content flows into the speckit prompt, ensure the goal is substituted safely in `load_prompt_or_skill` (substitute `{GOAL}` last / sanitize brace-placeholder syntax) so crafted issue text cannot mangle `{BASE_BRANCH}`/`{BRANCH_PREFIX}` placeholders — in koan/app/prompts.py (shared) or speckit_runner.py
 - [ ] T015 [US2] Extend the `speckit` handler to route the issue-URL form to the issue-goal assembly (reusing the shared `dispatch`) in koan/skills/core/speckit/handler.py
 - [ ] T016 [US2] Write US2 tests (issue URL → goal from body + comments; `repo:`/`branch:` tokens parsed and stripped; Jira key accepted) in koan/tests/test_speckit_skill.py
 
