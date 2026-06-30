@@ -64,13 +64,18 @@ and never commit it.
 
 ## Wire Koan to the wrapper
 
-Point `KOAN_CLAUDE_CLI_PATH` at the committed wrapper in your `.env`:
+Point `KOAN_CLAUDE_CLI_PATH` at the committed wrapper in your `.env`. A path
+**relative to `KOAN_ROOT`** is recommended — it keeps the config portable
+across installs, copies, and machines (no hard-coded absolute path):
 
 ```bash
-KOAN_CLAUDE_CLI_PATH=/absolute/path/to/koan/bin/zai-claude
+KOAN_CLAUDE_CLI_PATH=bin/zai-claude
 ```
 
-The wrapper is resolved by the Claude provider (see
+The Claude provider resolves a relative value against `KOAN_ROOT`, so this
+finds `bin/zai-claude` inside your Koan checkout regardless of where it lives.
+An absolute path still works if you prefer it. The wrapper is resolved by the
+Claude provider (see
 [claude.md → Custom CLI Binary](claude.md#advanced-configuration)). No other
 Koan config changes are required.
 
@@ -134,41 +139,42 @@ ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.8
 These feed both the `--model` translation and the `ANTHROPIC_DEFAULT_*_MODEL`
 exports, so Claude Code's internal tier selection stays consistent.
 
-### Concurrency — tune the lightweight tier for headroom
+### Concurrency
 
 Z.ai enforces per-model concurrency caps (see the rate-limits page on your
-API-key dashboard). The defaults the wrapper ships with land on opposite
-sides of that (values are plan-dependent — confirm on your dashboard):
+API-key dashboard; values are plan-dependent). The shipped defaults both sit
+at the high end of the scale, so out-of-the-box throughput is balanced:
 
 | Tier | GLM model | Typical concurrency |
 |------|-----------|---------------------|
-| `haiku` (lightweight) | `glm-4.5` | low (~2) |
+| `haiku` (lightweight) | `glm-4.5` | high (~10) |
 | `sonnet` / `opus` (mission) | `glm-5.2[1m]` | high (~10) |
 
-The **lightweight tier is the bottleneck**: Claude Code reaches for it on
-background / small calls, so under load it trips `429` first. A single Kōan
-instance rarely exceeds a couple of concurrent lightweight calls, so the
-default is fine until you run multiple instances or parallel subagents.
+Kōan's agent loop is single-threaded (one mission, one `claude` subprocess at
+a time), so a single instance rarely stresses even a modest concurrency cap.
+You only need to think about it if you run **multiple Kōan instances** or
+**parallel subagents** against the same key.
 
-To raise headroom, point `haiku` at a higher-concurrency **text** model:
+If you do retune a tier, keep two things in mind:
+
+- Prefer a **text** model, not a `V` variant (e.g. `glm-4.6V`). The `V` means
+  vision/multimodal; the lightweight tier (formatting, mission picking,
+  contemplation — all text-only) never sends images, so a vision model just
+  adds cost and latency. `glm-4.5` is a good text choice; `glm-5.1` if you'd
+  trade cost for a smarter lightweight model.
+- Lower-tier "flash"/"air" variants (e.g. `glm-4.7-Flash`) trade concurrency
+  for price — check your dashboard's cap before swapping them in.
 
 ```bash
-# .env — glm-4.5 is a text model with a high concurrency cap (~10)
-ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5
+# .env — override any tier (here, a smarter lightweight model)
+ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-5.1
 ```
-
-Pick a **text** model here, not a `V` variant (e.g. `glm-4.6V`) — the `V`
-means vision/multimodal, and the lightweight tier (formatting, mission
-picking, contemplation — all text-only) never sends images, so you'd pay for
-capability and latency you don't use. Good text picks at a high concurrency
-cap: `glm-4.5` (default choice), or `glm-5.1` if you'd trade cost for a
-smarter lightweight model.
 
 ## Environment reference
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KOAN_CLAUDE_CLI_PATH` | — | Set to the wrapper path in `.env` to activate it. |
+| `KOAN_CLAUDE_CLI_PATH` | — | Path to the wrapper in `.env`. Relative (e.g. `bin/zai-claude`) resolves against `KOAN_ROOT`; absolute works too. |
 | `KOAN_ZAI_KEY` | — | Z.ai API key value (highest priority). |
 | `$KOAN_ROOT/.zai.key` | — | Fallback key file (read when `KOAN_ZAI_KEY` is unset). |
 | `KOAN_ZAI_CLAUDE_BIN` | `claude` | The backend binary to `exec`. Override if your `claude` lives elsewhere. |
