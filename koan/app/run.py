@@ -556,6 +556,41 @@ def _notify_raw(instance: str, message: str):
         log("error", f"Raw notification failed: {e}")
 
 
+def _quota_raw_snippet(stdout_text: str = "", stderr_text: str = "",
+                       stdout_file: str = "", stderr_file: str = "") -> str:
+    """Build a bounded debug snippet from quota-handler kwargs or output files.
+
+    Reads the file form of ``handle_quota_exhaustion`` kwargs when only paths
+    are available (the regular mission path); uses the pre-read text form when
+    the caller already has it in memory (the skill path). Delegates the actual
+    windowing to :func:`quota_handler.quota_debug_snippet`.
+    """
+    from app.quota_handler import quota_debug_snippet
+    if stdout_file and not stdout_text:
+        with contextlib.suppress(OSError):
+            stdout_text = Path(stdout_file).read_text()
+    if stderr_file and not stderr_text:
+        with contextlib.suppress(OSError):
+            stderr_text = Path(stderr_file).read_text()
+    return quota_debug_snippet(stdout_text, stderr_text)
+
+
+def _notify_quota_warning(instance: str, body: str, raw_output: str = "") -> None:
+    """Send a quota-exhaustion warning as verbatim text (code block preserved).
+
+    Quota warnings include the raw CLI output (reset time, stop reason, cost,
+    usage) in a fenced code block for debugging. ``_notify`` runs the Claude-CLI
+    personality reformatter, whose contract strips markdown fences — so the
+    block would never render. Route through ``_notify_raw`` instead:
+    ``send_telegram`` converts ``\\`\\`\\``` fences to ``<pre>`` for Telegram's
+    HTML parse mode. ``body`` is already-final prose; a non-empty ``raw_output``
+    is appended as a trailing fenced block.
+    """
+    snippet = (raw_output or "").strip()
+    message = f"{body}\n\n```\n{snippet}\n```" if snippet else body
+    _notify_raw(instance, message)
+
+
 def _is_ci_check_mission(mission_title: str) -> bool:
     """Return True if *mission_title* is a CI-related mission.
 
@@ -1993,10 +2028,15 @@ def _handle_quota_error(
         reset_ts, reset_display = _compute_quota_reset_ts(instance)
         from app.pause_manager import create_pause
         create_pause(koan_root, "quota", reset_ts, reset_display)
-    _notify(instance, (
+    _notify_quota_warning(instance, (
         f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
         f"Mission '{mission_title[:60]}' moved back to Pending.\n"
         f"Use /resume after quota resets."
+    ), raw_output=_quota_raw_snippet(
+        stdout_text=hqe_kwargs.get("stdout_text", ""),
+        stderr_text=hqe_kwargs.get("stderr_text", ""),
+        stdout_file=hqe_kwargs.get("stdout_file", ""),
+        stderr_file=hqe_kwargs.get("stderr_file", ""),
     ))
 
 
@@ -2187,10 +2227,15 @@ def _probe_exit0_quota(
     log("quota", f"Exit-0 quota probe matched. {reset_display}")
     _requeue_mission_in_file(instance, mission_title)
     _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-    _notify(instance, (
+    _notify_quota_warning(instance, (
         f"⏸️ {provider_label} quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
         f"Mission '{mission_title[:60]}' moved back to Pending.\n"
         f"{resume_msg} or use /resume to restart manually."
+    ), raw_output=_quota_raw_snippet(
+        stdout_text=hqe_kwargs.get("stdout_text", ""),
+        stderr_text=hqe_kwargs.get("stderr_text", ""),
+        stdout_file=hqe_kwargs.get("stdout_file", ""),
+        stderr_file=hqe_kwargs.get("stderr_file", ""),
     ))
     return True
 
@@ -2203,6 +2248,7 @@ def _handle_pipeline_quota_flag(
     mission_title: str,
     count: int,
     quota_info,
+    raw_output: str = "",
 ) -> bool:
     """Handle the ``quota_exhausted`` flag from :func:`run_post_mission`.
 
@@ -2227,11 +2273,11 @@ def _handle_pipeline_quota_flag(
         _requeue_mission_in_file(instance, mission_title)
 
     _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-    _notify(instance, (
+    _notify_quota_warning(instance, (
         f"⚠️ {provider_label} quota exhausted. {reset_display}\n\n"
         f"Mission '{mission_title[:60]}' moved back to Pending.\n"
         f"Kōan paused after {count} runs. {resume_msg} or use /resume to restart manually."
-    ))
+    ), raw_output=raw_output)
     return True
 
 
