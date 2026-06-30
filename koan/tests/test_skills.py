@@ -2250,14 +2250,18 @@ class TestGithubActionRegexSync:
 
 
 class TestClaudemdSkillListSync:
-    """Ensure the CLAUDE.md core skills list stays in sync with actual skills."""
+    """Ensure the core skills list stays in sync with actual skills.
+
+    The list lives in the skills-scoped memory file (``koan/skills/CLAUDE.md``),
+    moved out of the root ``CLAUDE.md`` to keep the always-loaded context small.
+    """
 
     def _get_claudemd_path(self):
         skills_dir = get_default_skills_dir()
-        return skills_dir.parent.parent / "CLAUDE.md"
+        return skills_dir / "CLAUDE.md"
 
     def _parse_claudemd_skills(self, claudemd_path):
-        """Extract the skill list from CLAUDE.md's core skills line."""
+        """Extract the skill list from the core skills line."""
         import re
         text = claudemd_path.read_text(encoding="utf-8")
         m = re.search(r"\*\*Core skills\*\*.*?\(([^)]+)\)", text)
