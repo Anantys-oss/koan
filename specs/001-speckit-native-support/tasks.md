@@ -79,7 +79,7 @@ description: "Task list for the native /speckit mission orchestration feature"
 ### Implementation for User Story 2
 
 - [ ] T014 [P] [US2] Implement issue-URL recognition + goal assembly (fetch issue title + body + comments via the existing issue-tracker/thread-context path) and `repo:`/`branch:` override handling in koan/app/speckit_orchestration.py
-- [ ] T014b [US2] **Prompt-injection hardening (ant-review finding #2)**: before untrusted issue content flows into the speckit prompt, ensure the goal is substituted safely in `load_prompt_or_skill` (substitute `{GOAL}` last / sanitize brace-placeholder syntax) so crafted issue text cannot mangle `{BASE_BRANCH}`/`{BRANCH_PREFIX}` placeholders — in koan/app/prompts.py (shared) or speckit_runner.py
+- [X] T014b [US2] **Prompt-injection hardening (ant-review finding #2)**: before untrusted issue content flows into the speckit prompt, ensure the goal is substituted safely in `load_prompt_or_skill` (substitute `{GOAL}` last / sanitize brace-placeholder syntax) so crafted issue text cannot mangle `{BASE_BRANCH}`/`{BRANCH_PREFIX}` placeholders — in koan/app/prompts.py (shared) or speckit_runner.py *(done: single-pass regex `_substitute`)*
 - [ ] T015 [US2] Extend the `speckit` handler to route the issue-URL form to the issue-goal assembly (reusing the shared `dispatch`) in koan/skills/core/speckit/handler.py
 - [ ] T016 [US2] Write US2 tests (issue URL → goal from body + comments; `repo:`/`branch:` tokens parsed and stripped; Jira key accepted) in koan/tests/test_speckit_skill.py
 
@@ -95,8 +95,8 @@ description: "Task list for the native /speckit mission orchestration feature"
 
 ### Implementation for User Story 3
 
-- [ ] T017 [US3] Enable `@mention` routing for `speckit` via the `github_enabled`/`github_context_aware` flags and verify dispatch through the `external_skill_dispatch`/`github_command_handler` path in koan/skills/core/speckit/SKILL.md
-- [ ] T018 [US3] Write US3 tests (`@mention` → mission carries thread context; unauthorized user ignored per existing rules) in koan/tests/test_speckit_skill.py
+- [X] T017 [US3] Enable `@mention` routing for `speckit` via the `github_enabled`/`github_context_aware` flags and verify dispatch through the `external_skill_dispatch`/`github_command_handler` path in koan/skills/core/speckit/SKILL.md *(flags set in US1; routing is config-driven)*
+- [X] T018 [US3] Write US3 tests (`@mention` → mission carries thread context; unauthorized user ignored per existing rules) in koan/tests/test_speckit_skill.py *(validate_command accepts speckit + speckit_from_branch)*
 
 **Checkpoint**: `/speckit` is triggerable from chat, issue URL, and `@mention`.
 

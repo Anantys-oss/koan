@@ -217,3 +217,19 @@ def test_substitute_leaves_unknown_placeholders(monkeypatch):
     monkeypatch.setattr(prompts, "_default_placeholders", lambda: {})
     out = prompts._substitute("hi {NAME} {UNKNOWN}", {"NAME": "koan"})
     assert out == "hi koan {UNKNOWN}"
+
+
+# --- US3: @mention routing ---------------------------------------------------
+
+def test_speckit_skills_are_github_enabled_for_mention():
+    """US3: the @mention path (github_command_handler.validate_command) accepts
+    /speckit and /speckit_from_branch because their SKILL.md set
+    github_enabled. Routing itself is config-driven; this pins it."""
+    from app.github_command_handler import validate_command
+    from app.skills import build_registry
+
+    registry = build_registry()
+    for cmd in ("speckit", "speckit_from_branch"):
+        skill = validate_command(cmd, registry)
+        assert skill is not None, f"/{cmd} is not github_enabled"
+        assert skill.github_enabled is True
