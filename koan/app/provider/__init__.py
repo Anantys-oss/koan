@@ -21,6 +21,7 @@ Package structure:
 """
 
 import contextlib
+import contextvars
 import json
 import os
 import re
@@ -185,23 +186,85 @@ def get_cli_binary_name() -> str:
     return path.rstrip("/").rsplit("/", 1)[-1] if path else ""
 
 
+def get_review_cli_binary_name() -> str:
+    """Return the binary basename from ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH``, or '' if unset.
+
+    Mirrors :func:`get_cli_binary_name` for the review-scoped override.
+    Surfacing its basename in banners and ``/status`` lets an operator confirm
+    a review-only binary is configured — the sibling ``KOAN_CLAUDE_CLI_PATH``
+    advertises itself the same way — rather than a silent config with no
+    feedback.
+    """
+    path = os.environ.get("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "").strip()
+    return path.rstrip("/").rsplit("/", 1)[-1] if path else ""
+
+
 def get_provider_display(name: str = "") -> str:
     """Provider name for display, with the custom CLI binary flavor appended.
 
     Returns ``"<name>"`` or ``"<name> (<binary>)"`` when
     ``KOAN_CLAUDE_CLI_PATH`` points at a binary whose basename differs from
-    the provider name (e.g. ``claude (ollama-claude)``). The flavor is
-    suppressed when unset or identical, so this is a no-op for non-Claude
-    providers. When *name* is empty the configured provider is resolved via
-    :func:`get_provider_name`. Single source of truth for the provider line
-    shown by the startup banner and ``/status``.
+    the provider name (e.g. ``claude (ollama-claude)``). When
+    ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`` is set, its basename is appended as a
+    ``review:`` hint (e.g. ``claude (ollama-claude, review: review-claude)``)
+    so a review-only binary is observable the same way as the default one.
+    Both flavors are suppressed when unset (or identical, for the default
+    binary), so this is a no-op for non-Claude providers. When *name* is empty
+    the configured provider is resolved via :func:`get_provider_name`. Single
+    source of truth for the provider line shown by the startup banner and
+    ``/status``.
     """
     if not name:
         name = get_provider_name()
+    parts: List[str] = []
     binary = get_cli_binary_name()
     if binary and binary != name:
-        return f"{name} ({binary})"
+        parts.append(binary)
+    review = get_review_cli_binary_name()
+    if review:
+        parts.append(f"review: {review}")
+    if parts:
+        return f"{name} ({', '.join(parts)})"
     return name
+
+
+# ---------------------------------------------------------------------------
+# Review-scoped CLI binary override
+# ---------------------------------------------------------------------------
+
+# When active, ClaudeProvider.binary() prefers KOAN_CLAUDE_CLI_FOR_REVIEW_PATH
+# over KOAN_CLAUDE_CLI_PATH, so a review-specific Claude binary can be pinned
+# without affecting other missions. A ContextVar (not a plain flag) so the
+# override is confined to the review call subtree and auto-resets on exit, even
+# if reviews ever run concurrently. Activated only by review runners — see
+# review_runner._run_claude_review.
+_REVIEW_CLI_OVERRIDE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "koan_review_cli_override", default=False,
+)
+
+
+def review_cli_override_active() -> bool:
+    """True when the current context should use the review-specific CLI binary.
+
+    This is the gate ``ClaudeProvider.binary()`` checks: the review binary is
+    consulted only while a review is running, so ordinary missions are
+    unaffected even when ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`` is set.
+    """
+    return _REVIEW_CLI_OVERRIDE.get()
+
+
+@contextlib.contextmanager
+def review_cli_override():
+    """Within this block, the Claude provider prefers the review CLI binary.
+
+    No-op for non-Claude providers and when ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH``
+    is unset (binary() then falls through to its normal resolution).
+    """
+    token = _REVIEW_CLI_OVERRIDE.set(True)
+    try:
+        yield
+    finally:
+        _REVIEW_CLI_OVERRIDE.reset(token)
 
 
 # ---------------------------------------------------------------------------

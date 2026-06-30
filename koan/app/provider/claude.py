@@ -12,6 +12,17 @@ class ClaudeProvider(CLIProvider):
     name = "claude"
 
     def binary(self) -> str:
+        # Review-specific binary wins *while a review is running*: it takes
+        # precedence over KOAN_CLAUDE_CLI_PATH, but only inside a
+        # review_cli_override() context, so other missions are untouched.
+        from app.provider import review_cli_override_active
+
+        if review_cli_override_active():
+            review_path = os.environ.get(
+                "KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "",
+            ).strip()
+            if review_path:
+                return review_path
         raw = os.environ.get("KOAN_CLAUDE_CLI_PATH", "").strip()
         if not raw:
             return "claude"

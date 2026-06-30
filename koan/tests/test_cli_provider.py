@@ -19,6 +19,7 @@ from app.cli_provider import (
     build_max_turns_flags,
     build_full_command,
     run_command,
+    review_cli_override,
     CLAUDE_TOOLS,
     TOOL_NAME_MAP,
 )
@@ -97,6 +98,8 @@ class TestClaudeProvider:
         assert cmd[0] == "/opt/bin/claude-proxy"
         assert cmd[1:] == ["-p", "hello"]
 
+    # -- Relative path resolution (KOAN_CLAUDE_CLI_PATH) --------------------
+
     def test_binary_relative_path_resolved_against_koan_root(self, monkeypatch):
         # Portable .env form: a relative path is joined to KOAN_ROOT.
         monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "bin/zai-claude")
@@ -126,6 +129,46 @@ class TestClaudeProvider:
         monkeypatch.setenv("KOAN_ROOT", "/srv/koan")
         cmd = self.provider.build_command(prompt="hello")
         assert cmd[0] == "/srv/koan/bin/zai-claude"
+        assert cmd[1:] == ["-p", "hello"]
+
+    # -- Review-scoped binary (KOAN_CLAUDE_CLI_FOR_REVIEW_PATH) -------------
+
+    def test_binary_review_override_used_when_active(self, monkeypatch):
+        """Inside review_cli_override(), the review-specific binary is used."""
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/bin/review-claude")
+        with review_cli_override():
+            assert self.provider.binary() == "/opt/bin/review-claude"
+
+    def test_binary_review_override_ignored_when_inactive(self, monkeypatch):
+        """Outside a review, the review var never affects other missions."""
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/bin/review-claude")
+        assert self.provider.binary() == "claude"
+
+    def test_binary_review_override_precedence(self, monkeypatch):
+        """Review binary wins over KOAN_CLAUDE_CLI_PATH while a review runs."""
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/bin/default-claude")
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/bin/review-claude")
+        with review_cli_override():
+            assert self.provider.binary() == "/opt/bin/review-claude"
+        # And falls back to the default binary once the review context exits.
+        assert self.provider.binary() == "/opt/bin/default-claude"
+
+    def test_binary_review_override_empty_falls_back(self, monkeypatch):
+        """An empty review var falls through to KOAN_CLAUDE_CLI_PATH."""
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/bin/default-claude")
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "   ")
+        with review_cli_override():
+            assert self.provider.binary() == "/opt/bin/default-claude"
+
+    def test_build_command_uses_review_binary_under_override(self, monkeypatch):
+        """The full command-building path resolves the review binary."""
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/bin/review-claude")
+        with review_cli_override():
+            cmd = self.provider.build_command(prompt="hello")
+        assert cmd[0] == "/opt/bin/review-claude"
         assert cmd[1:] == ["-p", "hello"]
 
     def test_name(self):

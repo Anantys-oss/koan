@@ -763,6 +763,25 @@ class TestGetCliBinaryName:
         assert get_cli_binary_name() == ""
 
 
+class TestGetReviewCliBinaryName:
+    """get_review_cli_binary_name: KOAN_CLAUDE_CLI_FOR_REVIEW_PATH basename, or ''."""
+
+    def test_returns_basename_when_set(self, monkeypatch):
+        from app.provider import get_review_cli_binary_name
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/koan/review-claude")
+        assert get_review_cli_binary_name() == "review-claude"
+
+    def test_strips_trailing_slash(self, monkeypatch):
+        from app.provider import get_review_cli_binary_name
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/usr/local/bin/my-review-claude/")
+        assert get_review_cli_binary_name() == "my-review-claude"
+
+    def test_empty_when_unset(self, monkeypatch):
+        from app.provider import get_review_cli_binary_name
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", raising=False)
+        assert get_review_cli_binary_name() == ""
+
+
 class TestGetProviderDisplay:
     """get_provider_display: '<name>' or '<name> (<binary>)' like /status."""
 
@@ -789,6 +808,27 @@ class TestGetProviderDisplay:
         monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/x/my-claude")
         # An explicit name (e.g. the "ollama" sentinel) is not overridden.
         assert get_provider_display("ollama") == "ollama (my-claude)"
+
+    def test_appends_review_hint(self, monkeypatch):
+        from app.provider import get_provider_display
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/koan/review-claude")
+        with patch("app.provider.get_provider_name", return_value="claude"):
+            assert get_provider_display() == "claude (review: review-claude)"
+
+    def test_appends_both_default_and_review(self, monkeypatch):
+        from app.provider import get_provider_display
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/koan/cheap-claude")
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/koan/review-claude")
+        with patch("app.provider.get_provider_name", return_value="claude"):
+            assert get_provider_display() == "claude (cheap-claude, review: review-claude)"
+
+    def test_no_review_hint_when_unset(self, monkeypatch):
+        from app.provider import get_provider_display
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/koan/ollama-claude")
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", raising=False)
+        with patch("app.provider.get_provider_name", return_value="claude"):
+            assert get_provider_display() == "claude (ollama-claude)"
 
 
 class TestRunCommand:
