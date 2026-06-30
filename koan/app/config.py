@@ -644,15 +644,20 @@ def get_api_token() -> str:
 
 
 def get_api_threads() -> int:
-    """Return the number of waitress worker threads (default: 8).
+    """Return the number of waitress worker threads (default: 2).
 
-    Config key: api.threads (default: 8)
+    Lowered from 8 to 2: the REST API is a low-traffic control plane, and
+    each idle waitress thread holds a stack + thread-local arena. Two threads
+    keep the resident footprint small on memory-constrained hosts (Railway)
+    while still serving concurrent requests. Operators can raise it via config.
+
+    Config key: api.threads (default: 2)
     """
     config = _load_config()
     api_cfg = config.get("api", {})
     if isinstance(api_cfg, dict):
-        return _safe_int(api_cfg.get("threads", 8), 8)
-    return 8
+        return _safe_int(api_cfg.get("threads", 2), 2)
+    return 2
 
 
 def get_cli_output_journal() -> bool:
