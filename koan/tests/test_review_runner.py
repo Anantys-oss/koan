@@ -4603,6 +4603,53 @@ class TestRunClaudeReviewModelOverride:
         assert kwargs.get("model_key") == "review_mode"
 
 
+class TestReviewBinaryRouting:
+    """End-to-end: the review subprocess binary follows cli.review_mode.
+
+    Closes the verification gap from PR #2251 review (Important #1): proves the
+    review *binary*, not just the model_key, routes through the review_mode
+    provider — replacing KOAN_CLAUDE_CLI_FOR_REVIEW_PATH.
+    """
+
+    def test_review_command_uses_cli_review_mode_binary(self):
+        from unittest.mock import MagicMock, patch
+        import app.provider as provider
+        from app.review_runner import _run_claude_review
+
+        # Global provider is codex; reviews are pinned to a custom claude binary.
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "skip_permissions": False,
+        }
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["cmd"] = cmd
+            captured["provider"] = provider
+            proc = MagicMock()
+            stdout = MagicMock()
+            stdout.__iter__.return_value = iter([])  # no stream output
+            proc.stdout = stdout
+            proc.stderr.read.return_value = ""
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc, (lambda: None)
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            _run_claude_review("review this", "/tmp/project")
+
+        # The command that ran is the cli.review_mode binary, and popen_cli
+        # received the matching review_mode provider instance.
+        assert captured["cmd"][0] == "/opt/review-claude"
+        assert captured["provider"].name == "claude"
+        assert captured["provider"].binary() == "/opt/review-claude"
+
+
 # ---------------------------------------------------------------------------
 # run_review reflection integration
 # ---------------------------------------------------------------------------

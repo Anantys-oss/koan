@@ -787,6 +787,17 @@ class TestPerInstanceBinaryOverride:
         assert CodexProvider().binary() == "codex"
         assert ClineProvider().binary() == "cline"
 
+    def test_copilot_init_calls_super(self):
+        """Regression (PR #2251 #2): CopilotProvider overrides __init__, so it
+        must call super().__init__ — otherwise binary() reading _binary_override
+        raises AttributeError on EVERY call, including the no-args parity path
+        that get_provider() uses."""
+        from app.provider import CopilotProvider
+        # Default construction (no cli: override) must not raise.
+        assert isinstance(CopilotProvider().binary(), str)
+        # And the override path resolves the custom binary.
+        assert CopilotProvider(binary_path="/opt/bin/cop").binary() == "/opt/bin/cop"
+
     def test_is_available_uses_overridden_binary(self):
         from app.provider import CodexProvider
         with patch("shutil.which", side_effect=lambda b: b if b == "/opt/bin/custom" else None):
