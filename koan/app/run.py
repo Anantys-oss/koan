@@ -266,6 +266,22 @@ def _start_stagnation_monitor(stdout_file: str, proc, project_name: str):
     if not cfg.get("enabled", True):
         return None
 
+    # Providers that emit only a final result envelope (no incremental
+    # stdout) cannot be judged by the stdout-tail stagnation heuristic — a
+    # legitimately silent run hashes identically sample-to-sample and would
+    # be killed mid-work. The wall-clock mission_timeout watchdog remains the
+    # authoritative timeout for these providers. Mechanism-based: keyed off a
+    # provider capability, never a hardcoded provider name.
+    try:
+        from app.provider import get_provider
+        if not get_provider().emits_incremental_progress():
+            return None
+    except Exception as e:
+        # Fail safe: skip the monitor rather than risk a false-kill on a
+        # non-incremental provider whose capability check transiently failed.
+        log("error", f"provider progress capability check failed; skipping stagnation monitor: {e}")
+        return None
+
     def _on_warn(count: int) -> None:
         log("koan", f"⚠️  Possible stagnation detected (identical output {count}x)")
 

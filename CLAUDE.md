@@ -134,6 +134,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`provider/cline.py`** — `ClineProvider` (Cline CLI)
 - **`provider/codex.py`** — `CodexProvider` (Codex CLI); quota surfaces only via the stream-json summary
 - **`provider/copilot.py`** — `CopilotProvider` (GitHub Copilot CLI) with tool name mapping
+- **`provider/haze.py`** — `HazeProvider` (Haze CLI; single-envelope `--output json`, exempt from the stagnation heuristic)
 - **`provider/__init__.py`** — Provider registry, resolution (env → config → default), cached singleton, and convenience functions (`run_command()`, `run_command_streaming()`, `build_full_command()`). Main entry point for the provider package.
 - **`cli_provider.py`** — Re-export facade (legacy); prefer importing from `provider` directly
 
