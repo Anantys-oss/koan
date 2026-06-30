@@ -164,6 +164,11 @@ other missions, so you can set both variables at once without affecting
 non-review work. When unset or empty inside a review, Kōan falls back to
 `KOAN_CLAUDE_CLI_PATH`, then `claude`.
 
+The review binary is also surfaced in `/status` and the startup banner — its
+basename is appended as a `review:` hint (e.g.
+`claude (cheap-claude, review: review-claude)`), so you can confirm a
+review-only binary is configured without running a review.
+
 > **Running OpenRouter models through the Claude CLI?** See
 > [openrouter.md](openrouter.md) — it uses this wrapper mechanism plus a local
 > CCR router to make non-Anthropic OpenRouter models work in `-p` mode.
