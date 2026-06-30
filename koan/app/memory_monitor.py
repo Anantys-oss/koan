@@ -17,7 +17,8 @@ def read_rss_mb(pid: int | None = None) -> float:
     Falls back to resource.ru_maxrss (peak, not current) only for the current
     process when /proc is unavailable (e.g. non-Linux). ru_maxrss units are
     platform-dependent: KB on Linux, bytes on macOS/BSD — scaled accordingly.
-    Returns 0.0 if neither source is readable.
+    Returns 0.0 if neither source is readable (treat 0.0 as "unknown", not
+    "this process uses no memory" — a real RSS is always positive).
     """
     target = "self" if pid is None else str(pid)
     try:
@@ -25,8 +26,15 @@ def read_rss_mb(pid: int | None = None) -> float:
             for line in f:
                 if line.startswith("VmRSS:"):
                     return int(line.split()[1]) / 1024.0
-    except (OSError, ValueError, IndexError):
-        pass
+    except (OSError, ValueError, IndexError) as exc:
+        if pid is not None:
+            # Surface why a foreign-process read failed so a stale/unreadable
+            # PID is diagnosable instead of silently degrading to self RSS.
+            print(
+                f"[memory_monitor] read_rss_mb: /proc/{target}/status "
+                f"unreadable: {exc}",
+                file=sys.stderr,
+            )
     if pid is not None:
         # Cannot use ru_maxrss for another process; report unknown.
         return 0.0
@@ -119,7 +127,14 @@ def _read_run_pid(koan_root) -> int | None:
         from pathlib import Path
         pid_path = Path(koan_root) / pid_file("run")
         return int(pid_path.read_text().strip())
-    except (OSError, ValueError, ImportError):
+    except ImportError as exc:
+        # app.signals is a required module; a broken import is a real fault,
+        # not the routine "run isn't active" case — surface it.
+        print(f"[memory_monitor] _read_run_pid: app.signals import failed: {exc}",
+              file=sys.stderr)
+        return None
+    except (OSError, ValueError):
+        # pid file missing/empty/stale — expected when the agent loop is down.
         return None
 
 

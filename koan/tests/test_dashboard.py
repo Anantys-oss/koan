@@ -1,6 +1,7 @@
 """Tests for koan/dashboard.py"""
 
 import json
+import os
 import shutil
 import subprocess
 
@@ -1871,6 +1872,16 @@ class TestApiHealth:
         assert "rss_mb" in data["memory"]
         assert data["memory"]["rss_mb"] > 0
         assert "watchdog_enabled" in data["memory"]
+
+    def test_api_health_memory_resolves_run_pid(self, app_client, tmp_path):
+        """With a valid run PID file, memory reports the agent loop's RSS."""
+        (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
+        with patch.object(dashboard.state, "KOAN_ROOT", tmp_path):
+            resp = app_client.get("/api/health")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["memory"]["source"] == "agent_loop"
+        assert data["memory"]["rss_mb"] > 0
 
     def test_api_health_no_pids(self, app_client, tmp_path):
         """With no PID files, run.alive and awake.alive are False."""

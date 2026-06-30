@@ -226,8 +226,13 @@ def api_health():
     run_health = _check_process_alive(state.KOAN_ROOT, "run")
     awake_health = _check_process_alive(state.KOAN_ROOT, "awake")
 
-    from app.memory_monitor import get_memory_status
-    memory = get_memory_status(state.KOAN_ROOT)
+    # Isolate the health endpoint from memory-status failures: a broken
+    # snapshot must not take down liveness reporting.
+    try:
+        from app.memory_monitor import get_memory_status
+        memory = get_memory_status(state.KOAN_ROOT)
+    except Exception as exc:  # pragma: no cover - defensive
+        memory = {"error": str(exc)}
 
     return jsonify({
         "disk": disk,

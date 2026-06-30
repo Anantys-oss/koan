@@ -873,10 +873,18 @@ def _build_memory_monitor():
         return None
     from app.memory_monitor import MemoryMonitor, read_rss_mb
     threshold_mb = conf["threshold_mb"]
+    # read_rss_mb() returns 0.0 on read failure (a real RSS is always positive).
+    # Without a readable baseline we can't tell a safe threshold from a
+    # restart-looping one, so disable rather than create an unverifiable monitor.
+    baseline = read_rss_mb()
+    if baseline <= 0:
+        log("koan",
+            "Memory watchdog disabled: baseline RSS unreadable, cannot verify "
+            "threshold is above baseline. Watchdog stays off this session.")
+        return None
     # Misconfiguration guard: a threshold at or below the current baseline RSS
     # would trip every session and restart-loop forever. Disable instead.
-    baseline = read_rss_mb()
-    if threshold_mb <= 0 or (baseline > 0 and threshold_mb <= baseline):
+    if threshold_mb <= 0 or threshold_mb <= baseline:
         log("koan",
             f"Memory watchdog disabled: threshold {threshold_mb} MB ≤ baseline "
             f"RSS {baseline:.0f} MB would restart-loop. Raise "
