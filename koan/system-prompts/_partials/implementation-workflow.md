@@ -3,6 +3,7 @@
 7. **Write tests that reproduce the issue** before fixing it. Follow existing test patterns (pytest, `tests/test_*.py`). The tests should FAIL before the fix.
 {@include test-guidance}
 8. If the issue cannot be reproduced in tests (infrastructure, config, etc.), note why and skip this step.
+9. **Skip tests for documentation-only changes.** If the change is purely documentation (markdown, POD, README, comments-only, config examples), do NOT write unit tests — just verify the files are well-formed and the content is correct.
 
 ### Phase 4 — Implement (repeat per phase)
 
