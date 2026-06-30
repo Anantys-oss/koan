@@ -1480,6 +1480,43 @@ class TestPrCoverage:
         assert 2131 in coverage["issue_numbers"]
         assert coverage["pr_issues"][400] == {2131}
 
+    def test_build_pr_coverage_body_closing_keyword_colon(self, research_env):
+        """GitHub's colon form ('Closes: #N') counts as coverage.
+
+        GitHub's own parser links the issue for both 'Closes #N' and
+        'Closes: #N'; the dedup must recognise both or it re-picks an
+        already-covered issue as an autonomous topic.
+        """
+        research = self._make_research(research_env, [
+            {
+                "number": 410,
+                "title": "feat: thing",
+                "headRefName": "koan0/thing",
+                "body": "Adds a thing.\n\nFixes: #777",
+            },
+        ])
+
+        coverage = research._build_pr_coverage()
+
+        assert 777 in coverage["issue_numbers"]
+        assert coverage["pr_issues"][410] == {777}
+
+    def test_build_pr_coverage_body_ignores_keyword_in_larger_word(self, research_env):
+        """A closing keyword embedded in a longer word is not coverage."""
+        research = self._make_research(research_env, [
+            {
+                "number": 411,
+                "title": "feat: thing",
+                "headRefName": "koan0/thing",
+                "body": "This prefixes #123 onto each line; suffixes #124 too.",
+            },
+        ])
+
+        coverage = research._build_pr_coverage()
+
+        assert 123 not in coverage["issue_numbers"]
+        assert 124 not in coverage["issue_numbers"]
+
     def test_build_pr_coverage_body_ignores_incidental_refs(self, research_env):
         """Non-closing '#N' mentions in the body are not treated as coverage."""
         research = self._make_research(research_env, [

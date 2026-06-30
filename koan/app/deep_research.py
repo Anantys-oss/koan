@@ -47,9 +47,11 @@ _BRANCH_ISSUE_RE = re.compile(r"(?:implement|fix|issue)[/-](\d+)")
 
 # GitHub's closing keywords — only these forms in a PR body reliably mean
 # "this PR resolves issue N". Restricting to them avoids treating incidental
-# "#123" mentions in prose as coverage.
+# "#123" mentions in prose as coverage. The leading \b prevents matching a
+# keyword embedded in a larger word ("prefixes #5"); the optional colon mirrors
+# GitHub's own parser, which accepts "Closes: #N" as well as "Closes #N".
 _CLOSING_ISSUE_RE = re.compile(
-    r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::|\s)\s*#(\d+)", re.IGNORECASE
 )
 
 
