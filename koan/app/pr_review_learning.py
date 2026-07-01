@@ -21,8 +21,10 @@ are automatically surfaced to the agent without additional wiring.
 import hashlib
 import json
 import logging
+import re
 import subprocess
 import sys
+import time as _time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -145,9 +147,12 @@ def _fetch_gh_jsonl(
     """
     try:
         from app.github import run_gh
+        # --paginate follows GitHub's Link headers so PRs with >30 reviews or
+        # comments aren't silently truncated at the default page size. gh runs
+        # --jq per page, so the JSONL output concatenates cleanly across pages.
         raw = run_gh(
-            "api", endpoint, "--jq", jq_filter,
-            cwd=project_path, timeout=10,
+            "api", endpoint, "--paginate", "--jq", jq_filter,
+            cwd=project_path, timeout=30,
         )
         if not raw.strip():
             return []
@@ -640,6 +645,30 @@ def learn_from_reviews(
     """
     result = {"fetched": 0, "analyzed": False, "lessons_added": 0, "skipped_reason": None}
 
+    # Process any review-findings sidecars for merged PRs
+    try:
+        _process_review_findings_sidecars(instance_dir, project_name, project_path)
+    except (OSError, json.JSONDecodeError, subprocess.SubprocessError, RuntimeError) as exc:
+        logging.exception("[pr_review_learning] sidecar processing failed: %s", exc)
+
+    try:
+        from app.config import get_review_calibration_config
+        cal_cfg = get_review_calibration_config()
+        _maybe_run_calibration_pass(
+            instance_dir, project_name, project_path,
+            batch_size=cal_cfg["batch_size"],
+        )
+    except (OSError, json.JSONDecodeError, RuntimeError, subprocess.SubprocessError) as exc:
+        logging.exception("[pr_review_learning] calibration failed: %s", exc)
+
+    try:
+        from app.config import get_review_calibration_config as _get_cal_cfg
+        _cleanup_stale_sidecars(
+            instance_dir, stale_days=_get_cal_cfg()["stale_days"],
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.exception("[pr_review_learning] stale sidecar cleanup failed: %s", exc)
+
     prs = fetch_pr_reviews(project_path, days=days, limit=limit)
     result["fetched"] = len(prs)
     if not prs:
@@ -795,4 +824,518 @@ def _parse_iso(dt_str: str) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
     except (ValueError, TypeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Review findings outcome tracking
+# ---------------------------------------------------------------------------
+
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_DIFF_FILE_RE = re.compile(r"^diff --git a/(.*) b/(.*)")
+_FINDING_WINDOW = 3
+
+
+def _parse_diff_touched_lines(diff: str) -> dict:
+    """Parse a unified diff and return {file: set(line_numbers)} of modified old-file lines.
+
+    Tracks old-file line positions so callers can compare against findings
+    that reference old-file line numbers.  Only added (+) and removed (-)
+    lines contribute; context lines are skipped.
+    """
+    touched: dict = {}
+    current_file = None
+    old_line_num = 0
+
+    for line in diff.splitlines():
+        m = _DIFF_FILE_RE.match(line)
+        if m:
+            current_file = m.group(2)
+            if current_file not in touched:
+                touched[current_file] = set()
+            old_line_num = 0
+            continue
+        m = _HUNK_RE.match(line)
+        if m and current_file is not None:
+            old_line_num = int(m.group(1))
+            continue
+        if current_file is None or old_line_num == 0:
+            continue
+        if line.startswith("+"):
+            touched[current_file].add(old_line_num)
+        elif line.startswith("-"):
+            touched[current_file].add(old_line_num)
+            old_line_num += 1
+        elif line.startswith(" "):
+            old_line_num += 1
+    return touched
+
+
+def _compute_finding_outcomes(
+    findings: list,
+    diff: str,
+) -> list:
+    """Match review findings against a merge diff to determine if each was addressed.
+
+    A finding is "addressed" if any hunk in the diff touches a line within
+    ±_FINDING_WINDOW of the finding's line range in the same file.
+    """
+    if not findings:
+        return []
+
+    touched = _parse_diff_touched_lines(diff)
+
+    results = []
+    for f in findings:
+        file_path = f.get("file", "")
+        if not file_path:
+            print(
+                "[pr_review_learning] finding has no file path; "
+                "skipping outcome to avoid skewing calibration",
+                file=sys.stderr,
+            )
+            continue
+        line_start = f.get("line_start", 0)
+        line_end = f.get("line_end", line_start)
+        low = line_start - _FINDING_WINDOW
+        high = line_end + _FINDING_WINDOW
+
+        if file_path not in touched:
+            print(
+                f"[pr_review_learning] finding file {file_path!r} absent from diff; "
+                f"recording as not addressed",
+                file=sys.stderr,
+            )
+        modified_lines = touched.get(file_path, set())
+        addressed = any(low <= ln <= high for ln in modified_lines)
+
+        results.append({
+            "severity": f.get("severity", ""),
+            "title": f.get("title", ""),
+            "file": file_path,
+            "line_start": line_start,
+            "addressed": addressed,
+        })
+    return results
+
+
+# Cap on review-outcomes.jsonl so it doesn't grow without bound across months
+# of merged PRs. Generously larger than _MAX_CALIBRATION_LINES (the CLI feed
+# cap) so calibration always has a full window to draw from, while keeping the
+# per-cycle full read and on-disk size bounded.
+_MAX_OUTCOMES_LINES = 1000
+
+
+def _trim_outcomes_file(outcomes_path: Path) -> None:
+    """Bound the outcomes log to the most recent _MAX_OUTCOMES_LINES entries.
+
+    Drops the oldest lines when the file exceeds the cap and keeps the
+    calibration marker consistent by subtracting the number of dropped lines
+    from ``last_processed_lines`` (floored at 0), so an already-processed
+    prefix that gets trimmed never makes the marker point past EOF.
+    """
+    if not outcomes_path.is_file():
+        return
+    try:
+        lines = outcomes_path.read_text().splitlines()
+    except OSError as exc:
+        print(
+            f"[pr_review_learning] failed to read outcomes for trim: {exc}",
+            file=sys.stderr,
+        )
+        return
+    if len(lines) <= _MAX_OUTCOMES_LINES:
+        return
+
+    dropped = len(lines) - _MAX_OUTCOMES_LINES
+    kept = lines[-_MAX_OUTCOMES_LINES:]
+    from app.utils import atomic_write, atomic_write_json
+    try:
+        atomic_write(outcomes_path, "\n".join(kept) + "\n")
+    except OSError as exc:
+        print(
+            f"[pr_review_learning] failed to trim outcomes file: {exc}",
+            file=sys.stderr,
+        )
+        return
+
+    marker_path = outcomes_path.parent / ".review-calibration-marker.json"
+    if not marker_path.is_file():
+        return
+    try:
+        marker = json.loads(marker_path.read_text())
+        last = int(marker.get("last_processed_lines", 0))
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        return
+    new_last = max(0, last - dropped)
+    if new_last != last:
+        try:
+            atomic_write_json(marker_path, {"last_processed_lines": new_last})
+        except OSError as exc:
+            print(
+                f"[pr_review_learning] failed to update calibration marker after "
+                f"trim (marker may over/under-count unprocessed lines): {exc}",
+                file=sys.stderr,
+            )
+
+
+def _process_review_findings_sidecars(
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+) -> int:
+    """Process sidecar JSON files for merged PRs and write finding outcomes.
+
+    Returns the number of sidecars successfully processed.
+    """
+    sidecar_dir = Path(instance_dir) / ".review-findings"
+    if not sidecar_dir.is_dir():
+        return 0
+
+    sidecar_files = list(sidecar_dir.glob("*.json"))
+    if not sidecar_files:
+        return 0
+
+    from app.github import run_gh
+
+    processed = 0
+    for sidecar_path in sidecar_files:
+        try:
+            data = json.loads(sidecar_path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            print(
+                f"[pr_review_learning] skipping unreadable sidecar {sidecar_path.name}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+
+        sidecar_project = data.get("project_name", "")
+        if sidecar_project != project_name:
+            continue
+
+        pr_key = data.get("pr_key", "")
+        if not pr_key or "#" not in pr_key:
+            print(
+                f"[pr_review_learning] skipping sidecar {sidecar_path.name}: "
+                f"invalid pr_key {pr_key!r}",
+                file=sys.stderr,
+            )
+            continue
+
+        repo_part, pr_number = pr_key.rsplit("#", 1)
+        if "/" not in repo_part:
+            print(
+                f"[pr_review_learning] skipping sidecar {sidecar_path.name}: "
+                f"malformed repo in pr_key {pr_key!r}",
+                file=sys.stderr,
+            )
+            continue
+
+        try:
+            merged_json = run_gh(
+                "pr", "view", pr_number,
+                "--repo", repo_part,
+                "--json", "mergedAt,headRefOid",
+            )
+        except (subprocess.SubprocessError, OSError, RuntimeError) as exc:
+            print(f"[pr_review_learning] gh pr view failed for {pr_key}: {exc}", file=sys.stderr)
+            continue
+
+        try:
+            pr_info = json.loads(merged_json)
+            merged_at = pr_info.get("mergedAt", "")
+        except (json.JSONDecodeError, TypeError):
+            print(
+                f"[pr_review_learning] malformed gh pr view response for {pr_key}",
+                file=sys.stderr,
+            )
+            continue
+
+        if not merged_at:
+            continue
+
+        final_head = pr_info.get("headRefOid", "")
+        review_head = data.get("head_sha", "")
+        file_comments = data.get("file_comments", [])
+
+        if not file_comments:
+            sidecar_path.unlink(missing_ok=True)
+            processed += 1
+            continue
+
+        if not final_head or not review_head:
+            missing = []
+            if not final_head:
+                missing.append("final_head")
+            if not review_head:
+                missing.append("review_head")
+            print(
+                f"[pr_review_learning] skipping sidecar {sidecar_path.name}: "
+                f"missing SHA(s): {', '.join(missing)}",
+                file=sys.stderr,
+            )
+            continue
+
+        if final_head == review_head:
+            outcomes_path = (
+                Path(instance_dir) / "memory" / "projects"
+                / project_name / "review-outcomes.jsonl"
+            )
+            outcomes_path.parent.mkdir(parents=True, exist_ok=True)
+            ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+            try:
+                with open(outcomes_path, "a") as f:
+                    for fc in file_comments:
+                        # Mirror _compute_finding_outcomes: skip file-less
+                        # findings so both paths handle them identically and
+                        # calibration is not skewed by un-locatable findings.
+                        if not fc.get("file"):
+                            print(
+                                "[pr_review_learning] finding has no file path; "
+                                "skipping outcome to avoid skewing calibration",
+                                file=sys.stderr,
+                            )
+                            continue
+                        f.write(json.dumps({
+                            "severity": fc.get("severity", ""),
+                            "title": fc.get("title", ""),
+                            "file": fc.get("file", ""),
+                            "line_start": fc.get("line_start", 0),
+                            "addressed": False,
+                            "pr_key": pr_key,
+                            "timestamp": ts,
+                        }) + "\n")
+            except OSError as exc:
+                print(
+                    f"[pr_review_learning] failed to write outcomes for {pr_key}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            sidecar_path.unlink(missing_ok=True)
+            processed += 1
+            continue
+
+        # Scope the diff to only the files referenced by findings.  A rebase
+        # between review and merge replays unrelated upstream commits into the
+        # review_head..final_head range; restricting to the finding files keeps
+        # those unrelated changes from being recorded as "addressed".
+        finding_files = sorted({
+            fc.get("file", "") for fc in file_comments if fc.get("file")
+        })
+        # `final_head` (the merged headRefOid from GitHub) is only guaranteed to
+        # be in the local object store if something fetched it. After branch
+        # cleanup + git gc the SHA can be pruned, which would make `git diff`
+        # exit non-zero and silently drop this PR — precisely the post-review
+        # PRs most useful for calibration. Ensure the commit is present (with a
+        # targeted fetch) before diffing, and surface an unresolvable SHA
+        # distinctly from a transient diff failure.
+        fetch_result = None
+        try:
+            present = subprocess.run(
+                ["git", "cat-file", "-e", final_head],
+                capture_output=True, text=True, cwd=project_path, timeout=30,
+            )
+            if present.returncode != 0:
+                fetch_result = subprocess.run(
+                    ["git", "fetch", "origin", final_head],
+                    capture_output=True, text=True, cwd=project_path, timeout=30,
+                )
+                present = subprocess.run(
+                    ["git", "cat-file", "-e", final_head],
+                    capture_output=True, text=True, cwd=project_path, timeout=30,
+                )
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(
+                f"[pr_review_learning] resolving final_head failed for {pr_key}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        if present.returncode != 0:
+            if fetch_result is not None and fetch_result.returncode != 0:
+                print(
+                    f"[pr_review_learning] git fetch for {final_head[:12]} exited "
+                    f"{fetch_result.returncode} for {pr_key} (remote/credentials issue, "
+                    f"not a pruned SHA): {fetch_result.stderr.strip()[:200]}",
+                    file=sys.stderr,
+                )
+            print(
+                f"[pr_review_learning] final_head {final_head[:12]} unresolvable "
+                f"for {pr_key} (pruned locally and not fetchable); dropping sidecar "
+                f"so it is not retried every cycle",
+                file=sys.stderr,
+            )
+            sidecar_path.unlink(missing_ok=True)
+            processed += 1
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "diff", f"{review_head}..{final_head}", "--", *finding_files],
+                capture_output=True, text=True, cwd=project_path,
+                timeout=30,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            print(f"[pr_review_learning] git diff failed for {pr_key}: {exc}", file=sys.stderr)
+            continue
+        if result.returncode != 0:
+            print(
+                f"[pr_review_learning] git diff exited {result.returncode} for {pr_key}: "
+                f"{result.stderr[:200]}",
+                file=sys.stderr,
+            )
+            continue
+
+        outcomes = _compute_finding_outcomes(file_comments, result.stdout)
+
+        outcomes_path = (
+            Path(instance_dir) / "memory" / "projects"
+            / project_name / "review-outcomes.jsonl"
+        )
+        outcomes_path.parent.mkdir(parents=True, exist_ok=True)
+        ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+        try:
+            with open(outcomes_path, "a") as f:
+                for outcome in outcomes:
+                    outcome["pr_key"] = pr_key
+                    outcome["timestamp"] = ts
+                    f.write(json.dumps(outcome) + "\n")
+        except OSError as exc:
+            print(
+                f"[pr_review_learning] failed to write outcomes for {pr_key}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+
+        sidecar_path.unlink(missing_ok=True)
+        processed += 1
+
+    # Bound the outcomes log so it doesn't grow without limit across months of
+    # merged PRs; the per-cycle full read in _maybe_run_calibration_pass and
+    # the on-disk size both depend on this staying capped.
+    outcomes_path = (
+        Path(instance_dir) / "memory" / "projects"
+        / project_name / "review-outcomes.jsonl"
+    )
+    _trim_outcomes_file(outcomes_path)
+
+    return processed
+
+
+def _cleanup_stale_sidecars(instance_dir: str, stale_days: int = 90) -> None:
+    """Remove sidecar files older than stale_days to prevent unbounded growth."""
+    sidecar_dir = Path(instance_dir) / ".review-findings"
+    if not sidecar_dir.is_dir():
+        return
+
+    cutoff = _time.time() - (stale_days * 86400)
+    for path in sidecar_dir.glob("*.json"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except OSError as exc:
+            print(
+                f"[pr_review_learning] stale sidecar cleanup failed for {path.name}: {exc}",
+                file=sys.stderr,
+            )
+
+
+def _maybe_run_calibration_pass(
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+    batch_size: int = 10,
+) -> bool:
+    """Run a calibration pass if enough unprocessed outcome entries exist.
+
+    Returns True if calibration was run and hints were appended to learnings.md.
+    """
+    mem_dir = Path(instance_dir) / "memory" / "projects" / project_name
+    outcomes_path = mem_dir / "review-outcomes.jsonl"
+    if not outcomes_path.is_file():
+        return False
+
+    _MAX_CALIBRATION_LINES = 200
+
+    lines = outcomes_path.read_text().strip().splitlines()
+    total_lines = len(lines)
+    if total_lines == 0:
+        return False
+
+    marker_path = mem_dir / ".review-calibration-marker.json"
+    last_processed = 0
+    if marker_path.is_file():
+        try:
+            marker = json.loads(marker_path.read_text())
+            last_processed = int(marker.get("last_processed_lines", 0))
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+            print(
+                f"[pr_review_learning] corrupt calibration marker for {project_name}, "
+                f"recalibrating: {exc}",
+                file=sys.stderr,
+            )
+
+    # Clamp a stale/corrupt marker that points past EOF so the window math
+    # below stays in range.
+    last_processed = max(0, min(last_processed, total_lines))
+
+    unprocessed = total_lines - last_processed
+    if unprocessed < batch_size:
+        return False
+
+    # Process unprocessed entries oldest-first, capped per pass. Feeding the
+    # forward window (rather than the file tail) guarantees every outcome is
+    # eventually analyzed even when more than _MAX_CALIBRATION_LINES accumulate
+    # between passes, instead of silently skipping the older unprocessed ones.
+    window = lines[last_processed:last_processed + _MAX_CALIBRATION_LINES]
+    new_marker = last_processed + len(window)
+    outcomes_text = "\n".join(window)
+    result = _run_calibration_cli(outcomes_text, project_path)
+    if result is None:
+        # CLI failure (distinct from an empty-but-successful result): leave the
+        # marker unadvanced so the batch is retried next cycle rather than
+        # silently dropped.
+        return False
+
+    added = _append_lessons_to_learnings(
+        instance_dir, project_name, result.strip(),
+        section_header="Review calibration",
+        project_path=project_path,
+    )
+
+    # Advance the marker by exactly the window we fed (not to EOF) so any
+    # entries beyond the per-pass cap remain unprocessed and are analyzed on a
+    # subsequent cycle. Advancing even when the pass produced no hints ("no
+    # adjustments needed") avoids reprocessing the same batch every cycle.
+    from app.utils import atomic_write_json
+    atomic_write_json(marker_path, {"last_processed_lines": new_marker})
+
+    return added > 0
+
+
+def _run_calibration_cli(outcomes_jsonl: str, project_path: str) -> Optional[str]:
+    """Run the review-calibration prompt via Claude CLI.
+
+    Returns the CLI output text on success (possibly an empty/"no adjustments"
+    string), or ``None`` on CLI failure so callers can distinguish a real
+    failure from a genuinely empty result.
+    """
+    from app.prompts import load_prompt
+    from app.provider import run_command
+
+    prompt_template = load_prompt("review-calibration")
+    date_str = _time.strftime("%Y-%m-%d")
+    prompt = prompt_template.replace("{OUTCOMES_JSONL}", outcomes_jsonl)
+    prompt = prompt.replace("{DATE}", date_str)
+
+    try:
+        return run_command(
+            prompt=prompt,
+            project_path=project_path,
+            allowed_tools=[],
+            model_key="lightweight",
+            max_turns=1,
+            timeout=60,
+            max_turns_source=None,
+        )
+    except RuntimeError as exc:
+        print(f"[pr_review_learning] calibration CLI failed: {exc}", file=sys.stderr)
         return None

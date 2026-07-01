@@ -243,6 +243,18 @@ skill_timeout: 7200
 # Default: 300 (5 minutes).
 # post_mission_timeout: 300
 
+# missions.md integrity and size bounds. The mission queue file is read/rewritten
+# every loop iteration; these caps keep it bounded and structurally healthy.
+# At startup the file is validated and conservatively self-healed (missing blank
+# lines around headers restored, missing canonical sections appended). Genuine
+# corruption is backed up to instance/.missions.md.bak-<ts> and surfaced to the
+# outbox before repair. Old completed history is pruned to the keeps below, then
+# further shed if the file still exceeds max_lines (Pending/In Progress untouched).
+# missions:
+#   done_keep: 50      # max Done items retained (default 50)
+#   failed_keep: 30    # max Failed items retained (default 30)
+#   max_lines: 500     # hard line cap; 0 disables (default 500)
+
 # Forward Claude's final result text to outbox.md when a mission's outcome is an
 # alert (SKIP / FAIL / ERROR / BLOCKED, "permission deadlock", "no PR opened",
 # etc.) or when the mission title matches a skill that opted in via SKILL.md
@@ -479,6 +491,9 @@ models:
   #   fallback: "sonnet"       # Fallback when primary is overloaded
   #   review_mode: "sonnet"    # Override model for REVIEW mode
   #   reflect: "sonnet"        # Model for review reflection pass
+  #
+  # Z.ai (GLM): no change needed here — bin/zai-claude maps these tier names
+  # (haiku/sonnet/opus) to GLM models. See docs/providers/zai.md.
 
   # Codex (OpenAI) provider overrides (uncomment to customize):
   # codex:
@@ -497,6 +512,34 @@ models:
   #   fallback: "minimax-m2.5:cloud"     # empty = use provider default
   #   review_mode: "glm-5:cloud"
   #   reflect: "glm-5:cloud"
+
+# Per-role CLI provider (optional) — parallel to `models:`.
+# Pick a DIFFERENT provider (and optionally a custom binary) for each mission
+# role. Each value is a flavor (claude/codex/copilot/cline/ollama-launch) or
+# `flavor:path`, where path is absolute or relative to KOAN_ROOT.
+#
+# The role's MODEL is read from that role's provider block above — e.g. with
+# `review_mode: claude`, the review model comes from `models.claude.review_mode`
+# (then `models.default.review_mode`). So `cli:` and `models:` compose.
+#
+# When this section is omitted, every role uses the global `cli_provider` /
+# KOAN_CLI_PROVIDER — exactly as before (no behavior change).
+#
+# Example: routine work on Codex, reviews on a pinned Claude binary, with a
+# single section-wide fallback used only when a role's CLI can't launch
+# (binary missing/misconfigured, or — on the mission path — an auth failure;
+# quota still pauses, transient errors still retry in place).
+# cli:
+#   default:
+#     mission: codex
+#     chat: codex
+#     lightweight: codex
+#     review_mode: claude:bin/zai-claude   # relative paths root at KOAN_ROOT
+#     reflect: claude
+#   fallback: claude
+# Per-project overrides live in projects.yaml as a flat `cli:` block, e.g.
+#   cli: {mission: claude, review_mode: claude:/opt/bin/review-claude}
+
 # Branch cleanup — automatic deletion of merged branches during git sync
 # Every git_sync_interval iterations, Kōan detects merged branches (both
 # regular merges via git ancestry and squash/rebase merges via GitHub API)
@@ -608,6 +651,7 @@ usage:
 #   enabled: true       # Run review loop after plan generation (default: true)
 #   max_rounds: 3       # Maximum re-generation rounds per plan (default: 3)
 #   implement_gate: true  # Run plan-review gate before /implement execution (default: true)
+#   assumptions_check: true  # Pressure-test plan assumptions before structural critic (default: true)
 
 # Private review gate for /fix, /implement, and /rebase — after a PR branch
 # is updated, privately run the /review analysis path, fix Blocking/Important
@@ -869,6 +913,14 @@ auto_update:
 #   bot_usernames:              # Extra usernames to treat as bots (case-insensitive)
 #     - coderabbitai
 #     - sourcery-ai
+
+# Review calibration — self-calibrate the reflect threshold by tracking
+# whether review findings were addressed in merge commits. After enough
+# outcomes accumulate, a lightweight Claude pass produces calibration hints
+# that flow into the reflect prompt via learnings.md.
+# review_calibration:
+#   batch_size: 10          # Min new outcomes before triggering calibration (default: 10)
+#   stale_days: 90          # Days after which unprocessed sidecar files are cleaned up (default: 90)
 
 # Review verdict — controls the formal APPROVE / REQUEST_CHANGES verdict
 # submitted via the GitHub Pull Request Reviews API.

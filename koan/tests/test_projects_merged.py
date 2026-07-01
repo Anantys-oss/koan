@@ -121,6 +121,20 @@ projects:
         assert "Duplicate" in warnings[0]
         assert "myproj" in warnings[0]
 
+    def test_refresh_warns_on_missing_path_without_dropping(self, koan_root):
+        """A configured project whose path is missing warns but stays in the list."""
+        missing = "/Users/yourname/workspace/myapp"
+        _write_projects_yaml(koan_root, f"""
+projects:
+  myapp:
+    path: "{missing}"
+""")
+        result = refresh_projects(str(koan_root))
+
+        assert ("myapp", missing) in result  # not dropped
+        warnings = get_warnings()
+        assert any("myapp" in w and "does not exist" in w for w in warnings)
+
     def test_no_warning_when_paths_identical(self, koan_root):
         """Duplicate with identical paths (yaml path == workspace path) emits no warning."""
         ws = koan_root / "workspace"

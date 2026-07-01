@@ -16,6 +16,21 @@ def _get_server_ip() -> str:
         return "unknown"
 
 
+def _get_hostname() -> str:
+    """Return the server's short hostname, or 'unknown' on failure."""
+    import socket
+    try:
+        return socket.gethostname().split(".")[0] or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _get_service_manager() -> str:
+    """Return the configured service manager from KOAN_SERVICE_MANAGER, or ''."""
+    import os
+    return os.environ.get("KOAN_SERVICE_MANAGER", "").strip()
+
+
 def _needs_ollama() -> bool:
     """Return True if the configured provider requires ollama serve."""
     try:
@@ -217,18 +232,26 @@ def _handle_status(ctx) -> str:
         except Exception:
             parts.append(f"  🟢 Active{queue_suffix}")
 
-    # System info: IP │ Provider on one compact line
+    # System info: IP │ hostname │ service manager on one compact line
     info_items = []
     server_ip = _get_server_ip()
     if server_ip != "unknown":
         info_items.append(f"🌐 IP: {server_ip}")
-    try:
-        from app.provider import get_provider_name
-        info_items.append(get_provider_name())
-    except Exception:
-        pass
+    hostname = _get_hostname()
+    if hostname != "unknown":
+        info_items.append(f"🖥️ {hostname}")
+    service_manager = _get_service_manager()
+    if service_manager:
+        info_items.append(f"⚙️ {service_manager}")
     if info_items:
         parts.append(f"  {' │ '.join(info_items)}")
+
+    # Provider/model on its own line — the AI powering this instance
+    try:
+        from app.provider import get_provider_display
+        parts.append(f"  🤖 {get_provider_display()}")
+    except Exception:
+        pass
 
     # Focus mode
     try:

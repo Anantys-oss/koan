@@ -262,6 +262,16 @@ def resolve_project_via_pr(
     return None, None
 
 
+def _mission_entry(
+    command: str, url: str, project_name: str, context: Optional[str] = None,
+) -> str:
+    """Build a project-tagged pending mission entry for a GitHub command."""
+    mission_text = f"/{command} {url}"
+    if context:
+        mission_text += f" {context}"
+    return f"- [project:{project_name}] {mission_text}"
+
+
 def queue_github_mission(
     ctx, command: str, url: str, project_name: str,
     context: Optional[str] = None, *, urgent: bool = False,
@@ -281,13 +291,30 @@ def queue_github_mission(
     """
     from app.utils import insert_pending_mission
 
-    mission_text = f"/{command} {url}"
-    if context:
-        mission_text += f" {context}"
-
-    mission_entry = f"- [project:{project_name}] {mission_text}"
+    mission_entry = _mission_entry(command, url, project_name, context)
     missions_path = ctx.instance_dir / "missions.md"
     return insert_pending_mission(missions_path, mission_entry, urgent=urgent)
+
+
+def queue_github_missions(
+    ctx, specs, *, urgent: bool = False,
+) -> list:
+    """Atomically queue several GitHub missions, preserving order.
+
+    Args:
+        ctx: Skill context
+        specs: Ordered list of (command, url, project_name, context) tuples.
+            The first spec ends up above the second in the pending queue.
+        urgent: If True, insert the block at the top of the queue.
+
+    Returns:
+        A per-spec list of bools — True if queued, False if it was a duplicate.
+    """
+    from app.utils import insert_pending_missions
+
+    entries = [_mission_entry(*spec) for spec in specs]
+    missions_path = ctx.instance_dir / "missions.md"
+    return insert_pending_missions(missions_path, entries, urgent=urgent)
 
 
 def queue_github_mission_once(

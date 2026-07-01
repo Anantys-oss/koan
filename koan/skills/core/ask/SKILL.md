@@ -13,5 +13,6 @@ commands:
   - name: ask
     description: "Ask a question about a PR or issue and get an AI reply posted to GitHub"
     usage: "/ask <github-comment-url>"
+    aliases: [question]
 handler: handler.py
 ---

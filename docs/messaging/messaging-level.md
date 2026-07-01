@@ -51,7 +51,8 @@ without rewriting YAML — handy for temporary debugging.
 |-------|----------|---------|
 | Mission start (`🚀 … Starting/Autonomous/Skill`) | log only | sent |
 | Skill-runner **progress** (`Reviewing PR…`, `Analyzing code changes…`, `Posting review…`, `🧠 Planning…`, `🔍 Checking…`) | log only | sent |
-| Tracked skill completion (`/review` `/fix` `/rebase` `/plan` `/implement`) | one short outcome line: `✅ Reviewed <pr-url>` | progress + verbose summary |
+| PR-producing tracked skill completion (`/review` `/fix` `/rebase` `/implement`) | one short outcome line: `✅ [project] 🔍 Reviewed <pr-url>` (emitted by the agent loop; the runner's own outcome line is suppressed to avoid a duplicate row) | progress + verbose summary (both lines) |
+| `/plan` completion | one outcome line from the **runner** carrying the issue/Jira URL or inline plan body (`✅ Plan created: <url>` / `✅ Plan generated inline:\n\n<body>`); the agent loop's bare `🧠 Planned` line is logged only | progress + verbose summary |
 | Operator-initiated mission success (a user/Telegram-queued task with a real title) | one short line: `✅ [project] Done: <title>` | sent with journal summary |
 | Autonomous-run success (no mission title) | log only | sent with journal summary |
 | Mission failure | sent (short form) | sent with failure context |
@@ -72,6 +73,26 @@ Skill runners (`/review`, `/rebase`, `/recreate`, `/squash`, `/checkup`, `/plan`
   on success (`✅ Reviewed https://github.com/o/r/pull/2098`) or a short context
   string on failure (`❌ Rebase failed https://github.com/o/r/pull/7: <reason>`).
   Always logged **and** sent, regardless of `messaging.level`.
+
+  Exception: for the **PR-producing tracked** skills (`/review`, `/fix`,
+  `/rebase`, `/implement`) dispatched through the agent loop, the loop already
+  emits a canonical completion line (`✅ [project] 🔍 Reviewed <pr-url>`) that
+  carries the same PR URL. To avoid two rows advertising the same result, the
+  agent loop sets `KOAN_SUPPRESS_RUNNER_OUTCOME=1` for the runner subprocess in
+  `normal` mode, so the runner's own success outcome line is logged only (not
+  sent). Failure outcome lines are still sent — the agent-loop replacement carries
+  only the mission title, so the runner's specific failure reason must still reach
+  chat. `debug` keeps both.
+
+  `/plan` is **not** suppressed: it never opens a PR, so the canonical line
+  (`✅ [project] 🧠 Planned`) cannot carry its result URL. The PR-only extraction
+  that builds the canonical line never matches a `/plan` outcome — which is an
+  *issue*/Jira URL (`✅ Plan created: <url>`, `✅ Plan posted as comment on …`) or
+  an inline plan body (`✅ Plan generated inline:\n\n<body>`). Suppressing the
+  runner here would drop that content entirely, so the runner's line is left to
+  reach chat and the agent loop logs its bare `🧠 Planned` line instead of sending
+  it (avoiding the duplicate from the other direction). `notify_outcome` keeps a
+  defensive single-line guard so only bare `✅` restatements are ever suppressed.
 
 So under `normal` a PR review produces a single chat line — the PR URL — instead
 of the four-line play-by-play. Switch to `debug` to see every step again; nothing

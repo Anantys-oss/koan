@@ -12,7 +12,7 @@ When enabled, the security review runs as part of the post-mission pipeline, bet
 4. **Logs to journal** — all findings are recorded in the project's daily journal
 5. **Optionally blocks auto-merge** — when configured in blocking mode with a severity threshold
 
-The review is designed to be fail-open: if it encounters an error (git failure, config issue), auto-merge proceeds normally.
+The review **fails closed**: if it crashes, times out, or otherwise produces no verdict (git failure, misconfigured `project_path`, malformed diff), auto-merge is **blocked** rather than allowed. A crashed safety gate is indistinguishable from a passed one, so the conservative outcome is to block and alert the operator. The block reason and exception class are written to `.security-audit.jsonl` (see [Audit Trail](#audit-trail)) and a Telegram alert is sent so the underlying failure can be diagnosed.
 
 ## Configuration
 
@@ -144,6 +144,17 @@ Review results are written to the project's daily journal (`instance/journal/YYY
 - **Auto-merge blocked** by security review
 ```
 
+## Audit Trail
+
+Every completed review (approved or blocked) and every crashed review appends one JSON line to `instance/.security-audit.jsonl`. This makes the safety gate's behavior auditable after the fact — a crashed review is no longer indistinguishable from a passed one.
+
+```json
+{"ts": "2026-06-27T18:40:00", "project": "myapp", "risk_level": "high", "score": 9, "approved": false, "block_reason": "risk=high score=9 >= high", "variant_count": 0, "changed_files": ["src/auth.py"]}
+{"ts": "2026-06-27T18:41:10", "project": "myapp", "risk_level": "unknown", "score": 0, "approved": false, "block_reason": "review error", "variant_count": 0, "changed_files": [], "error_class": "CalledProcessError", "error_msg": "git diff failed"}
+```
+
+The `error_class` / `error_msg` fields are present only on the exception path, letting operators distinguish "review crashed on a malformed diff" from "review ran and blocked". `GET /v1/metrics` exposes a `security_blocks_7d` count derived from this file (see [REST API](../operations/rest-api.md)).
+
 ## Pipeline Integration
 
 The security review runs in the post-mission pipeline in `mission_runner.py`:
@@ -153,7 +164,7 @@ The security review runs in the post-mission pipeline in `mission_runner.py`:
 3. **Security review** ← here
 4. Auto-merge (skipped if security review blocks)
 
-If the review itself fails (exception), it logs the error and returns "pass" to avoid blocking the pipeline on review infrastructure issues.
+If the review itself fails (exception or pipeline timeout), it **fails closed**: the error is logged to `.security-audit.jsonl`, auto-merge is blocked, and a Telegram alert is sent. This prevents a crashed safety gate from silently promoting an unreviewed mission to auto-merge. There is intentionally **no config flag** to restore fail-open behavior.
 
 ## Variant Analysis
 

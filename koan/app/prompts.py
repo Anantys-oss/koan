@@ -110,13 +110,27 @@ def _resolve_includes(
     return _INCLUDE_RE.sub(_replace_match, template)
 
 
+_PLACEHOLDER_RE = re.compile(r"\{([^{}]+)\}")
+
+
 def _substitute(template: str, kwargs: dict) -> str:
-    """Replace {KEY} placeholders in a template string."""
+    """Replace {KEY} placeholders in a template string (single pass).
+
+    A single regex pass is used deliberately: a value substituted for one
+    placeholder is NOT re-scanned for other placeholders. This prevents a value
+    (e.g. an operator goal, or untrusted issue text once /speckit supports issue
+    triggers) that happens to contain literal ``{OTHER_KEY}`` text from
+    contaminating or mangling other substitutions — a prompt-injection /
+    integrity concern (constitution Principle V).
+    """
     values = _default_placeholders()
     values.update(kwargs)
-    for key, value in values.items():
-        template = template.replace(f"{{{key}}}", str(value))
-    return template
+
+    def _replace(match):
+        key = match.group(1)
+        return str(values[key]) if key in values else match.group(0)
+
+    return _PLACEHOLDER_RE.sub(_replace, template)
 
 
 def _default_placeholders() -> dict:

@@ -74,6 +74,8 @@ class OllamaLaunchProvider(ClaudeProvider):
         )
 
     def binary(self) -> str:
+        if self._binary_override:
+            return self._resolve_binary_path(self._binary_override)
         return "ollama"
 
     def shell_command(self) -> str:
@@ -81,7 +83,7 @@ class OllamaLaunchProvider(ClaudeProvider):
 
     def is_available(self) -> bool:
         """Check that ollama binary exists and is v0.16.0+."""
-        return shutil.which("ollama") is not None
+        return shutil.which(self.binary()) is not None
 
     def build_model_args(self, model: str = "", fallback: str = "") -> List[str]:
         # Model is handled by ollama --model flag (before --), not Claude --model.

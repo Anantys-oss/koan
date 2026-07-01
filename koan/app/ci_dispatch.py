@@ -31,7 +31,11 @@ log = logging.getLogger(__name__)
 _DEFAULT_ENABLED = False
 _DEFAULT_COOLDOWN_MINUTES = 30
 _DEFAULT_LOG_SNIPPET_BYTES = 4096
+# Floor for a meaningful snippet; guards against a misconfigured (tiny/negative)
+# log_snippet_bytes that would otherwise break truncation slicing.
+_MIN_LOG_SNIPPET_BYTES = 64
 _DEFAULT_TRACKER_MAX_AGE_DAYS = 30
+_TRUNCATION_MARKER = "\n...(truncated)"
 
 
 def _get_ci_dispatch_config() -> dict:
@@ -42,7 +46,10 @@ def _get_ci_dispatch_config() -> dict:
         return {
             "enabled": bool(cd.get("enabled", _DEFAULT_ENABLED)),
             "cooldown_minutes": int(cd.get("cooldown_minutes", _DEFAULT_COOLDOWN_MINUTES)),
-            "log_snippet_bytes": int(cd.get("log_snippet_bytes", _DEFAULT_LOG_SNIPPET_BYTES)),
+            "log_snippet_bytes": max(
+                _MIN_LOG_SNIPPET_BYTES,
+                int(cd.get("log_snippet_bytes", _DEFAULT_LOG_SNIPPET_BYTES)),
+            ),
             "tracker_max_age_days": int(cd.get("tracker_max_age_days", _DEFAULT_TRACKER_MAX_AGE_DAYS)),
         }
     except (ImportError, OSError, ValueError):
@@ -230,7 +237,8 @@ def fetch_check_run_log_snippet(
 
     result = "\n".join(parts)
     if len(result) > max_bytes:
-        result = result[:max_bytes - 20] + "\n...(truncated)"
+        keep = max(0, max_bytes - len(_TRUNCATION_MARKER))
+        result = result[:keep] + _TRUNCATION_MARKER
     return result
 
 

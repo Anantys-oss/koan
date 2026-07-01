@@ -6,6 +6,7 @@ export
 .PHONY: awake run errand-run errand-awake dashboard koan api api-token webhook
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
+.PHONY: install-user-service uninstall-user-service
 .PHONY: install-launchd-service uninstall-launchd-service
 .PHONY: docker-setup docker-pull-up docker-up docker-down docker-logs docker-test docker-auth docker-gh-auth
 
@@ -51,21 +52,35 @@ endif
 
 # --- service manager detection ---
 # Default: foreground processes via pid_manager (no service manager)
-# Set KOAN_SERVICE_MANAGER=systemd or KOAN_SERVICE_MANAGER=launchd in .env to opt in
+# Set KOAN_SERVICE_MANAGER=systemd | systemd-user | launchd in .env to opt in.
+#   systemd      — system service in /etc/systemd/system (needs sudo)
+#   systemd-user — per-user service in ~/.config/systemd/user (no sudo; uses linger)
+#   launchd      — macOS LaunchAgents
 IS_LINUX := $(shell [ "$$(uname -s)" = "Linux" ] && echo 1)
 IS_MAC := $(shell [ "$$(uname -s)" = "Darwin" ] && echo 1)
 ifeq ($(KOAN_SERVICE_MANAGER),systemd)
   USE_SYSTEMD := 1
+  USE_SYSTEMD_USER :=
+  USE_LAUNCHD :=
+else ifeq ($(KOAN_SERVICE_MANAGER),systemd-user)
+  USE_SYSTEMD :=
+  USE_SYSTEMD_USER := 1
   USE_LAUNCHD :=
 else ifeq ($(KOAN_SERVICE_MANAGER),launchd)
   USE_SYSTEMD :=
+  USE_SYSTEMD_USER :=
   USE_LAUNCHD := 1
 else
   USE_SYSTEMD :=
+  USE_SYSTEMD_USER :=
   USE_LAUNCHD :=
 endif
 SERVICE_INSTALLED = $(shell [ -f /etc/systemd/system/koan.service ] && echo 1)
+USER_SERVICE_INSTALLED = $(shell [ -f ~/.config/systemd/user/koan.service ] && echo 1)
 LAUNCHD_INSTALLED = $(shell [ -f ~/Library/LaunchAgents/com.koan.run.plist ] && echo 1)
+# Bus-safe `systemctl --user` prefix: works from a normal login AND via `sudo -niu`
+# (where XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS are unset). Linger keeps /run/user/<uid> alive.
+SYSTEMCTL_USER = XDG_RUNTIME_DIR="$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}" DBUS_SESSION_BUS_ADDRESS="$${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$$(id -u)/bus}" systemctl --user
 
 setup: $(VENV)/.installed
 
@@ -121,7 +136,7 @@ migrate: setup
 	$(KOAN_RUN) app/migrate_memory.py
 
 dashboard: setup
-	$(KOAN_RUN) app/dashboard.py $(if $(KOAN_DASHBOARD_HOST),--host $(KOAN_DASHBOARD_HOST),) $(if $(KOAN_DASHBOARD_PORT),--port $(KOAN_DASHBOARD_PORT),)
+	$(KOAN_RUN) app/dashboard/__main__.py $(if $(KOAN_DASHBOARD_HOST),--host $(KOAN_DASHBOARD_HOST),) $(if $(KOAN_DASHBOARD_PORT),--port $(KOAN_DASHBOARD_PORT),)
 
 koan: setup
 	@$(KOAN_RUN) -m app.koan_cli $(PWD)
@@ -170,6 +185,26 @@ stop:
 
 status:
 	@sudo systemctl status koan koan-awake --no-pager || true
+
+else ifeq ($(USE_SYSTEMD_USER),1)
+
+start: setup
+	@if [ -n "$$SSH_AUTH_SOCK" ]; then \
+		ln -sf "$$SSH_AUTH_SOCK" "$(PWD)/.ssh-agent-sock"; \
+		echo "✓ SSH agent socket forwarded"; \
+	fi
+	@if [ -z "$(USER_SERVICE_INSTALLED)" ]; then \
+		echo "→ systemd (user) detected — installing Kōan user service (one-time setup)..."; \
+		bash koan/systemd/install-user-service.sh "$(PWD)" "$(PWD)/$(PYTHON)"; \
+	fi
+	@$(SYSTEMCTL_USER) start koan.service
+	@echo "✓ Kōan started via systemd --user"
+
+stop:
+	@$(SYSTEMCTL_USER) stop koan.service koan-awake.service 2>/dev/null || true
+
+status:
+	@$(SYSTEMCTL_USER) status koan.service koan-awake.service --no-pager || true
 
 else ifeq ($(USE_LAUNCHD),1)
 
@@ -281,6 +316,16 @@ uninstall-systemctl-service:
 	@if [ -z "$(IS_LINUX)" ]; then echo "Error: systemd is only available on Linux." >&2; exit 1; fi
 	@if [ -z "$(USE_SYSTEMD)" ]; then echo "Error: systemctl not found." >&2; exit 1; fi
 	sudo bash koan/systemd/uninstall-service.sh
+
+install-user-service: setup
+	@if [ -z "$(IS_LINUX)" ]; then echo "Error: systemd is only available on Linux." >&2; exit 1; fi
+	@command -v systemctl >/dev/null 2>&1 || (echo "Error: systemctl not found. systemd is required." >&2; exit 1)
+	bash koan/systemd/install-user-service.sh "$(PWD)" "$(PWD)/$(PYTHON)"
+
+uninstall-user-service:
+	@if [ -z "$(IS_LINUX)" ]; then echo "Error: systemd is only available on Linux." >&2; exit 1; fi
+	@command -v systemctl >/dev/null 2>&1 || (echo "Error: systemctl not found." >&2; exit 1)
+	bash koan/systemd/uninstall-user-service.sh $(if $(disable-linger),--disable-linger,)
 
 install-launchd-service: setup
 	@if [ -z "$(IS_MAC)" ]; then echo "Error: launchd is only available on macOS." >&2; exit 1; fi

@@ -125,11 +125,15 @@ You can point Koan at a custom Claude-compatible binary instead of the
 default `claude` command. Set `KOAN_CLAUDE_CLI_PATH` in your `.env`:
 
 ```bash
-KOAN_CLAUDE_CLI_PATH=/path/to/my-claude-wrapper
+KOAN_CLAUDE_CLI_PATH=bin/my-claude-wrapper   # relative to KOAN_ROOT (portable)
+# or
+KOAN_CLAUDE_CLI_PATH=/path/to/my-claude-wrapper   # absolute
 ```
 
-The custom binary must accept the same CLI interface as `claude`
-(e.g., `my-wrapper --model <model> -p "prompt"`). This is useful for:
+A relative value is resolved against `KOAN_ROOT`, so the config stays portable
+across installs/copies without a hard-coded path. The custom binary must
+accept the same CLI interface as `claude` (e.g., `my-wrapper --model <model>
+-p "prompt"`). This is useful for:
 
 - Using a custom `ANTHROPIC_BASE_URL` via a wrapper script
 - Adding default arguments or environment variables
@@ -137,9 +141,75 @@ The custom binary must accept the same CLI interface as `claude`
 
 When unset or empty, Koan uses the standard `claude` command from PATH.
 
+When a custom path is set, `/status` and the startup banner (`make` / `make restart`)
+show the binary name next to the provider (e.g. `claude (ollama-claude)`), so you can
+confirm which wrapper is in use.
+
+#### Per-role CLI provider (the `cli:` section)
+
+`KOAN_CLAUDE_CLI_PATH` replaces the Claude binary for **every** call. To use a
+**different provider or binary per mission role** — e.g. run routine work on
+Codex but reviews on a paid Claude subscription — add a `cli:` section to
+`config.yaml`, parallel to `models:`:
+
+```yaml
+cli:
+  default:
+    mission: codex                                  # routine missions → Codex
+    chat: codex
+    lightweight: codex
+    review_mode: claude:/path/to/review-claude      # reviews → a pinned Claude binary
+    reflect: claude
+  fallback: claude                                  # used only when a role's CLI can't run
+```
+
+Each value is a provider **flavor** (`claude`, `codex`, `copilot`, `cline`,
+`ollama-launch`) or `flavor:path`, where `path` is an absolute path or a path
+relative to `KOAN_ROOT` (same rule as `KOAN_CLAUDE_CLI_PATH`). The roles are the
+same as `models:`: `mission`, `chat`, `lightweight`, `review_mode`, `reflect`.
+
+- **`review_mode`** drives `/review`, `/ultrareview`, and every internal review
+  call (main pass, reflection, silent-failure hunter, bot-comment triage),
+  replacing the old `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`.
+- **Model coupling:** a role's *model* is read from that role's provider block —
+  e.g. with `review_mode: claude`, the review model comes from
+  `models.claude.review_mode` (falling back to `models.default.review_mode`). So
+  `cli:` and `models:` compose: the provider you pick for a role selects which
+  `models.<provider>.<role>` model applies.
+- **`fallback`** is a single section-wide provider used only when a role's chosen
+  CLI **can't run** — the binary is missing/misconfigured (and, on the mission
+  path, when the CLI reports an auth failure) and no work was produced yet. Quota
+  exhaustion still pauses Koan; transient errors still use the normal in-place retry.
+- **Per-project overrides:** set a flat `cli:` block under a project in
+  `projects.yaml` (e.g. `cli: {mission: claude}`) to override per project.
+- **Absence = unchanged:** with no `cli:` section, every role uses the global
+  provider (`cli_provider` / `KOAN_CLI_PROVIDER`), exactly as before.
+
+`KOAN_CLAUDE_CLI_PATH` remains the default binary for the `claude` flavor when a
+role selects `claude` without an explicit path, and `cli_provider` /
+`KOAN_CLI_PROVIDER` remain the global default provider.
+
+> Tip: the ready-made wrappers in `bin/` (`zai-claude`, `oc-claude`,
+> `ollama-claude`) make good `claude:path` targets when you want a role to run a
+> Claude-compatible backend.
+
 > **Running OpenRouter models through the Claude CLI?** See
 > [openrouter.md](openrouter.md) — it uses this wrapper mechanism plus a local
 > CCR router to make non-Anthropic OpenRouter models work in `-p` mode.
+
+> **Using an OpenCode Go subscription?** See [opencode.md](opencode.md) — it
+> ships a ready-made wrapper, `bin/oc-claude`, that routes the Claude CLI
+> through the `ocgo` proxy. Set `KOAN_CLAUDE_CLI_PATH` to that script.
+
+> **Running a local Ollama model through the Claude CLI?** See
+> [ollama-wrapper.md](ollama-wrapper.md) — it ships a ready-made wrapper,
+> `bin/ollama-claude`, that routes the Claude CLI through
+> `ollama launch claude`. Set `KOAN_CLAUDE_CLI_PATH` to that script.
+
+> **Using a Z.ai (GLM) subscription?** See [zai.md](zai.md) — it ships a
+> ready-made wrapper, `bin/zai-claude`, that points the Claude CLI at Z.ai's
+> Anthropic-compatible endpoint and maps Koan's model tiers (`haiku`/`sonnet`/
+> `opus`) to GLM models. Set `KOAN_CLAUDE_CLI_PATH` to that script.
 
 ### MCP (Model Context Protocol) Servers
 

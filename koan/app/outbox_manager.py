@@ -5,6 +5,7 @@ Encapsulates all outbox state (thread, lock, staging file) in a class
 instead of module-level globals.
 """
 
+import contextlib
 import fcntl
 import re
 import subprocess
@@ -153,6 +154,14 @@ class OutboxManager:
                     fcntl.flock(f, fcntl.LOCK_UN)
         except Exception as e:
             log("error", f"Outbox read error: {e}")
+            # If truncation failed after staging was written, the outbox still
+            # holds the content. Drop the staging copy so the next flush's
+            # recover_staged() doesn't re-queue it on top — that would deliver
+            # the same message twice. If the outbox WAS cleared (truncate ran,
+            # a later step failed), keep staging so recovery can resend.
+            with contextlib.suppress(OSError):
+                if staging.exists() and self._outbox_file.read_text().strip():
+                    staging.unlink(missing_ok=True)
             return
 
         if not content:

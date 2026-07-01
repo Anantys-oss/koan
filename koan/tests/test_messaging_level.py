@@ -90,6 +90,55 @@ def test_notify_outcome_always_logs_and_sends(monkeypatch):
     assert logged and logged[0][1].startswith("✅ Reviewed")
 
 
+def test_notify_outcome_suppressed_when_agent_loop_reports(monkeypatch):
+    """When the agent loop emits the canonical tracked-skill completion line,
+    KOAN_SUPPRESS_RUNNER_OUTCOME=1 suppresses the runner's duplicate outcome
+    line (still logged) so the user sees only one row."""
+    logged, sent = [], []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: logged.append((cat, msg)))
+    monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+    ml.notify_outcome("✅ Reviewed https://github.com/o/r/pull/1", lambda m: sent.append(m))
+    assert sent == []  # duplicate suppressed
+    assert logged and logged[0][1].startswith("✅ Reviewed")  # still logged
+
+
+def test_notify_outcome_failure_still_sent_when_flag_set(monkeypatch):
+    """Even with KOAN_SUPPRESS_RUNNER_OUTCOME=1, a failure outcome line is still
+    sent: the agent-loop replacement carries only the mission title, so the
+    runner's detailed failure reason must reach chat (#2153 regression)."""
+    logged, sent = [], []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: logged.append((cat, msg)))
+    monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+    ml.notify_outcome(
+        "❌ Review failed https://github.com/o/r/pull/1: lint errors",
+        lambda m: sent.append(m),
+    )
+    assert sent == ["❌ Review failed https://github.com/o/r/pull/1: lint errors"]
+    assert logged and logged[0][1].startswith("❌ Review failed")
+
+
+def test_notify_outcome_not_suppressed_when_flag_unset(monkeypatch):
+    sent = []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: None)
+    monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
+    ml.notify_outcome("✅ Recreated https://github.com/o/r/pull/2", lambda m: sent.append(m))
+    assert sent == ["✅ Recreated https://github.com/o/r/pull/2"]
+
+
+def test_notify_outcome_multiline_success_still_sent_when_flag_set(monkeypatch):
+    """A multi-line ✅ outcome carries content the canonical agent-loop line does
+    not (e.g. /plan's no-tracker '✅ Plan generated inline:\\n\\n<body>'). The
+    suppression flag must NOT drop it, otherwise the plan vanishes from chat in
+    normal mode (#2153 regression)."""
+    logged, sent = [], []
+    monkeypatch.setattr(ml, "_log", lambda cat, msg: logged.append((cat, msg)))
+    monkeypatch.setenv("KOAN_SUPPRESS_RUNNER_OUTCOME", "1")
+    body = "✅ Plan generated inline:\n\n# Plan\n1. Do the thing\n2. Verify it"
+    ml.notify_outcome(body, lambda m: sent.append(m))
+    assert sent == [body]  # content-bearing line reaches chat
+    assert logged and logged[0][1] == body
+
+
 # --- Phase 2: skill handler ---
 
 

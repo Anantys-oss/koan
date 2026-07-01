@@ -188,6 +188,24 @@ class TestFetchUnresolvedReviewComments:
 
         assert fetch_unresolved_review_comments("owner/repo", 1) == []
 
+    @patch("app.review_comment_dispatch.run_gh", return_value="")
+    def test_gh_api_invocation_has_no_invalid_limit_flag(self, mock_gh):
+        """`gh api` rejects --limit; pagination must use the per_page query param.
+
+        Regression: passing `--limit 100` to `gh api` made every fetch exit
+        non-zero, so run_gh raised, the comments list came back empty, and the
+        whole review-dispatch feature silently never fired. Pin the invocation
+        so the page size travels in the endpoint, not an unsupported flag.
+        """
+        from app.review_comment_dispatch import fetch_unresolved_review_comments
+
+        fetch_unresolved_review_comments("owner/repo", 1)
+        args = mock_gh.call_args.args
+        assert "--limit" not in args
+        endpoint = args[1]
+        assert endpoint.startswith("repos/owner/repo/pulls/1/comments")
+        assert "per_page=100" in endpoint
+
 
 class TestFetchReviewBodyComments:
     """fetch_review_body_comments filters approvals and empty bodies."""
@@ -220,6 +238,18 @@ class TestFetchReviewBodyComments:
         comments = fetch_review_body_comments("owner/repo", 1, bot_username="mybot")
 
         assert comments == [{"id": 21, "user": "alice", "body": "needs tests"}]
+
+    @patch("app.review_comment_dispatch.run_gh", return_value="")
+    def test_gh_api_invocation_has_no_invalid_limit_flag(self, mock_gh):
+        """`gh api` rejects --limit; the reviews fetch must page via per_page."""
+        from app.review_comment_dispatch import fetch_review_body_comments
+
+        fetch_review_body_comments("owner/repo", 1)
+        args = mock_gh.call_args.args
+        assert "--limit" not in args
+        endpoint = args[1]
+        assert endpoint.startswith("repos/owner/repo/pulls/1/reviews")
+        assert "per_page=100" in endpoint
 
 
 class TestReviewDispatchConfigHelpers:
@@ -269,6 +299,16 @@ class TestReviewDispatchConfigHelpers:
 
         assert _resolve_full_repo("/project") is None
 
+    def test_resolve_full_repo_handles_missing_cwd(self):
+        from app import review_comment_dispatch as rcd
+
+        def boom(*args, **kwargs):
+            raise FileNotFoundError(2, "No such file or directory",
+                                    "/Users/yourname/workspace/myapp")
+
+        with patch.object(rcd, "run_gh", boom):
+            assert rcd._resolve_full_repo("/Users/yourname/workspace/myapp") is None
+
 
 class TestCheckAndDispatch:
     """Integration test for the main dispatch orchestrator."""
@@ -289,6 +329,36 @@ class TestCheckAndDispatch:
     @patch("app.review_comment_dispatch._get_review_dispatch_config")
     @patch("app.projects_config.load_projects_config")
     @patch("app.projects_config.get_projects_from_config")
+    @patch("app.review_comment_dispatch.fetch_koan_open_prs", return_value=[])
+    @patch("app.review_comment_dispatch._get_bot_username", return_value="koan-bot")
+    def test_dispatch_skips_project_with_missing_path(
+        self, _, mock_prs, mock_projects, mock_projects_config, mock_config,
+        instance_dir, tmp_path,
+    ):
+        from app import review_comment_dispatch as rcd
+
+        real = tmp_path / "real_repo"
+        real.mkdir()
+        missing = "/Users/yourname/workspace/myapp"  # does not exist
+
+        mock_config.return_value = {
+            "enabled": True, "cooldown_minutes": 0, "tracker_max_age_days": 30,
+        }
+        mock_projects_config.return_value = {}
+        mock_projects.return_value = [("myapp", missing), ("real", str(real))]
+
+        seen = []
+        with patch.object(rcd, "_resolve_full_repo",
+                          lambda p: seen.append(p) or None):
+            result = rcd.check_and_dispatch_review_comments(instance_dir, "/koan")
+
+        assert result == 0
+        assert missing not in seen          # phantom skipped before any gh call
+        assert str(real) in seen            # real project still processed
+
+    @patch("app.review_comment_dispatch._get_review_dispatch_config")
+    @patch("app.projects_config.load_projects_config")
+    @patch("app.projects_config.get_projects_from_config")
     @patch("app.review_comment_dispatch._resolve_full_repo")
     @patch("app.review_comment_dispatch.fetch_koan_open_prs")
     @patch("app.review_comment_dispatch.fetch_unresolved_review_comments")
@@ -302,7 +372,7 @@ class TestCheckAndDispatch:
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
         mock_projects_config.return_value = {}
-        mock_projects.return_value = [("myproject", "/projects/myproject")]
+        mock_projects.return_value = [("myproject", instance_dir)]
         mock_repo.return_value = "owner/myproject"
         mock_prs.return_value = [
             {"number": 42, "title": "feat: add widget", "headRefName": "koan/add-widget", "updatedAt": "2026-01-01"},
@@ -339,7 +409,7 @@ class TestCheckAndDispatch:
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
         mock_projects_config.return_value = {}
-        mock_projects.return_value = [("myproject", "/projects/myproject")]
+        mock_projects.return_value = [("myproject", instance_dir)]
         mock_repo.return_value = "owner/myproject"
         mock_prs.return_value = [
             {"number": 42, "title": "feat: add widget", "headRefName": "koan/add-widget", "updatedAt": "2026-01-01"},
@@ -374,7 +444,7 @@ class TestCheckAndDispatch:
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
         mock_projects_config.return_value = {}
-        mock_projects.return_value = [("myproject", "/projects/myproject")]
+        mock_projects.return_value = [("myproject", instance_dir)]
         mock_repo.return_value = "owner/myproject"
         mock_prs.return_value = [
             {"number": 42, "title": "feat: add widget", "headRefName": "koan/add-widget", "updatedAt": "2026-01-01"},
@@ -408,7 +478,7 @@ class TestCheckAndDispatch:
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 60}
         mock_projects_config.return_value = {}
-        mock_projects.return_value = [("myproject", "/projects/myproject")]
+        mock_projects.return_value = [("myproject", instance_dir)]
 
         _save_tracker(instance_dir, {"cooldown:myproject": time.time()})
 
@@ -436,7 +506,7 @@ class TestCheckAndDispatch:
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
         mock_projects_config.return_value = {}
-        mock_projects.return_value = [("myproject", "/projects/myproject")]
+        mock_projects.return_value = [("myproject", instance_dir)]
         mock_repo.return_value = "owner/myproject"
         mock_prs.return_value = [
             {"number": 42, "title": "feat: add widget", "headRefName": "koan/add-widget", "updatedAt": "2026-01-01"},
@@ -467,7 +537,7 @@ class TestCheckAndDispatch:
 
         mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
         mock_projects_config.return_value = {}
-        mock_projects.return_value = [("myproject", "/projects/myproject")]
+        mock_projects.return_value = [("myproject", instance_dir)]
         mock_repo.return_value = "owner/myproject"
         mock_prs.return_value = []
 

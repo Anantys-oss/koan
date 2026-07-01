@@ -179,6 +179,23 @@ class TestInferCommitStyleFromHistory:
             result = _infer_commit_style_from_history(str(tmp_path), "HEAD")
         assert result == ""
 
+    def test_hyphenated_tokens_not_misread_as_tickets(self, tmp_path):
+        """Lowercase hyphen-number tokens (utf-8, python-3) must NOT count as
+        ticket references. The ticket-key pattern is uppercase-only by design;
+        a case-insensitive match would classify a plain repo as ticket-style
+        and inject bogus 'use ticket IDs' guidance into commit prompts.
+        """
+        log_lines = [
+            "abc1234 update to utf-8 everywhere",
+            "def5678 migrate to python-3 runtime",
+            "aaa9012 fix base64-decode helper",
+            "bbb3456 bump to v1-2 release",
+            "ccc7890 switch readme-2 layout",
+        ]
+        with patch("app.commit_conventions.subprocess.run", return_value=self._mock_git_log(log_lines)):
+            result = _infer_commit_style_from_history(str(tmp_path), "HEAD")
+        assert result == ""
+
     def test_git_error_returns_empty(self, tmp_path):
         mock_result = MagicMock()
         mock_result.returncode = 128

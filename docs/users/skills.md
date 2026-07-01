@@ -1,5 +1,7 @@
 # Skills Reference
 
+> **New here?** Start with the [Quickstart](quickstart.md) — a 5-minute, copy-paste guide to the most-used commands across GitHub, Jira, and your messaging app.
+>
 > **For a guided introduction**, see the [User Manual](user-manual.md) — organized by skill level with use cases and workflow examples.
 
 Complete reference for all Koan slash commands. Use these via Telegram, Slack, or GitHub @mentions.
@@ -87,9 +89,10 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 
 | Command | Aliases | Description | GitHub @mention |
 |---------|---------|-------------|:-:|
-| `/ask <comment-url>` | — | Ask a question about a PR/issue — posts AI reply to GitHub | Yes |
+| `/ask <comment-url>` | `/question` | Ask a question about a PR/issue — posts AI reply to GitHub | Yes |
 | `/reviewrebase <PR>` | `/rr` | Review then rebase a PR (combo: /review → /rebase) | Yes |
 | `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | Plan then implement an issue (combo: /plan → /implement) | Yes |
+| `/checkup` | `/checkprs` | Health-check all open PRs across projects — auto-queues `/rebase` on conflicts, `/check` on CI failures | — |
 | `/branches [project]` | `/br`, `/prs` | List koan branches + open PRs with merge order | — |
 | `/orphans <project>` | `/orphan` | Recover orphan branches — rebase onto main + draft PR | — |
 | `/done [project]` | `/merged` | List PRs merged in the last 24 hours | — |

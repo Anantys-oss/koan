@@ -23,9 +23,21 @@ Returns JSON with suggested topics and reasoning.
 
 import json
 import re
+import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from app.diff_triage import _GENERATED_PATTERNS, _LOCKFILE_NAMES
+
+# Below this many commits a churn ranking is statistical noise — skip entirely.
+_MIN_COMMITS_FOR_HOTSPOTS = 20
+# `gh pr list` defaults to 30 results; a busy review queue exceeds that and the
+# PR-coverage map would silently truncate, letting dedup miss covered topics and
+# re-pick them as duplicate autonomous work. Cap high enough to hold the queue.
+_MAX_OPEN_PRS_FOR_COVERAGE = 200
+# Test files are intentionally high-churn; they are not debt hotspots.
+_TEST_PATH_RE = re.compile(r"(?:^|/)(?:tests?|__tests__)/|(?:^|/)test_[^/]+\.[a-z]+$|_test\.[a-z]+$")
 
 
 _STOP_WORDS = frozenset({
@@ -36,6 +48,11 @@ _STOP_WORDS = frozenset({
 })
 
 _BRANCH_ISSUE_RE = re.compile(r"(?:implement|fix|issue)[/-](\d+)")
+
+# A technical-debt line a human has annotated as already finished. Humans strike
+# items off with a checkbox, a ✅, or a standalone "done"/"completed". Such items
+# should not surface as fresh high-priority work (\b avoids matching "undone").
+_COMPLETED_MARKER_RE = re.compile(r"✅|\[x\]|\bdone\b|\bcompleted\b", re.IGNORECASE)
 
 # GitHub's closing keywords — only these forms in a PR body reliably mean
 # "this PR resolves issue N". Restricting to them avoids treating incidental
@@ -86,6 +103,8 @@ class DeepResearch:
         self.project_path = project_path
         self.memory_dir = instance_dir / "memory" / "projects" / project_name
         self._pending_prs: list[dict] | None = None
+        self._pr_feedback: dict | None = None
+        self._open_issues: dict[int, list[dict]] = {}
 
     def get_priorities(self) -> dict:
         """Parse priorities.md into structured data."""
@@ -139,7 +158,13 @@ class DeepResearch:
         }
 
     def get_open_issues(self, limit: int = 10) -> list[dict]:
-        """Fetch open GitHub issues for the project."""
+        """Fetch open GitHub issues for the project.
+
+        Results are cached per ``limit`` for the lifetime of this instance to
+        avoid redundant gh calls when suggest_topics and to_json both ask.
+        """
+        if limit in self._open_issues:
+            return self._open_issues[limit]
         try:
             from app.github import run_gh
             output = run_gh(
@@ -149,10 +174,11 @@ class DeepResearch:
                 "--json", "number,title,labels,createdAt",
                 cwd=self.project_path,
             )
-            return json.loads(output)
+            self._open_issues[limit] = json.loads(output)
         except Exception as e:
             print(f"[deep_research] Issue fetch failed: {e}", file=sys.stderr)
-            return []
+            self._open_issues[limit] = []
+        return self._open_issues[limit]
 
     def get_pending_prs(self) -> list[dict]:
         """Fetch open PRs that might need attention.
@@ -167,6 +193,7 @@ class DeepResearch:
             output = run_gh(
                 "pr", "list",
                 "--state", "open",
+                "--limit", str(_MAX_OPEN_PRS_FOR_COVERAGE),
                 "--json", "number,title,createdAt,headRefName,body",
                 cwd=self.project_path,
             )
@@ -288,18 +315,25 @@ class DeepResearch:
             Dict with keys:
             - alignment_summary: str (formatted for prompt)
             - category_boosts: dict (category → priority adjustment)
+
+        Cached for the lifetime of this instance: get_alignment_summary and
+        get_category_boost both shell out (git + gh), and suggest_topics plus
+        format_for_agent/to_json each request the feedback once.
         """
+        if self._pr_feedback is not None:
+            return self._pr_feedback
         try:
             from app.pr_feedback import get_alignment_summary, get_category_boost
             summary = get_alignment_summary(str(self.project_path))
             boosts = get_category_boost(str(self.project_path))
-            return {
+            self._pr_feedback = {
                 "alignment_summary": summary,
                 "category_boosts": boosts,
             }
         except Exception as e:
             print(f"[deep_research] PR feedback failed: {e}", file=sys.stderr)
-            return {"alignment_summary": "", "category_boosts": {}}
+            self._pr_feedback = {"alignment_summary": "", "category_boosts": {}}
+        return self._pr_feedback
 
     def _match_topic_to_category(self, topic: str) -> str:
         """Best-effort match a topic string to a PR work category.
@@ -313,6 +347,78 @@ class DeepResearch:
         except Exception as e:
             print(f"[deep_research] Topic categorization failed: {e}", file=sys.stderr)
             return "other"
+
+    def _gather_file_hotspots(self, top_n: int = 10) -> list[dict]:
+        """Rank source files by git churn over the last 200 commits.
+
+        High-churn files are simultaneously the most likely to harbor tech
+        debt and the most likely to break under autonomous modification, so
+        they make good DEEP-mode investment targets.
+
+        Excludes test, lockfile, and generated files (same sets as
+        ``diff_triage``). Returns ``[]`` when git is unavailable, the project
+        is too young (< 20 commits), or no qualifying files are found.
+
+        Each entry: ``{"file": str, "churn": float (0-1), "hint": str}``.
+        """
+        try:
+            output = subprocess.run(
+                ["git", "log", "--numstat", "--format=%H", "-200"],
+                cwd=str(self.project_path),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"[deep_research] git churn unavailable: {e}", file=sys.stderr)
+            return []
+
+        if output.returncode != 0:
+            return []
+
+        commits = 0
+        counts: dict[str, int] = {}
+        for line in output.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Commit hash lines (40 hex chars, no tab) delimit each commit.
+            if "\t" not in line:
+                commits += 1
+                continue
+            # numstat line: "<added>\t<removed>\t<path>"
+            parts = line.split("\t")
+            if len(parts) != 3:
+                continue
+            path = parts[2]
+            # Binary files report "-\t-"; rename arrows make the path ambiguous.
+            if "=>" in path or not self._is_hotspot_candidate(path):
+                continue
+            counts[path] = counts.get(path, 0) + 1
+
+        if commits < _MIN_COMMITS_FOR_HOTSPOTS or not counts:
+            return []
+
+        max_count = max(counts.values())
+        ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+        return [
+            {
+                "file": path,
+                "churn": round(count / max_count, 2),
+                "hint": "High-churn file — consider test coverage or modularization",
+            }
+            for path, count in ranked
+        ]
+
+    @staticmethod
+    def _is_hotspot_candidate(path: str) -> bool:
+        """Reject test, lockfile, and generated paths from churn analysis."""
+        if _TEST_PATH_RE.search(path):
+            return False
+        if path.rsplit("/", 1)[-1] in _LOCKFILE_NAMES:
+            return False
+        return all(not pat.search(path) for pat in _GENERATED_PATTERNS)
 
     def suggest_topics(self) -> list[dict]:
         """
@@ -366,10 +472,31 @@ class DeepResearch:
             # Skip if recently worked on
             if any(item.lower() in t.lower() for t in recent_topics):
                 continue
+            # An item the human already annotated as finished (✅/[x]/"done")
+            # shouldn't compete for attention as fresh priority-2 work — drop it
+            # to priority 3 and flag it so the agent verifies before picking it.
+            done = bool(_COMPLETED_MARKER_RE.search(item))
             suggestions.append({
                 "topic": item,
                 "source": "priorities.md (Technical Debt)",
-                "reasoning": "Known tech debt item, good for DEEP mode",
+                "reasoning": (
+                    "Marked complete in priorities.md — verify it still needs work"
+                    if done
+                    else "Known tech debt item, good for DEEP mode"
+                ),
+                "priority": 3 if done else 2,
+            })
+
+        # Priority 2: Git-churn hotspots — structurally unstable files.
+        # Weighted below human priorities (1) but above journal recaps.
+        for spot in self._gather_file_hotspots():
+            topic = f"Investigate high-churn file: {spot['file']}"
+            if any(spot["file"].lower() in t.lower() for t in recent_topics):
+                continue
+            suggestions.append({
+                "topic": topic,
+                "source": "hotspot",
+                "reasoning": f"{spot['hint']} (churn score {spot['churn']})",
                 "priority": 2,
             })
 
@@ -409,10 +536,14 @@ class DeepResearch:
                 adjustment = boosts.get(category, 0)
                 if adjustment != 0:
                     old_prio = suggestion["priority"]
-                    suggestion["priority"] = max(1, min(3, old_prio + adjustment))
-                    if adjustment < 0:
+                    new_prio = max(1, min(3, old_prio + adjustment))
+                    suggestion["priority"] = new_prio
+                    # Only tag the reasoning when the clamp didn't absorb the
+                    # adjustment — a no-op boost on an already-top topic would
+                    # otherwise inject a misleading "(boosted)" into the agent prompt.
+                    if new_prio < old_prio:
                         suggestion["reasoning"] += " (boosted: this type of work gets merged quickly)"
-                    else:
+                    elif new_prio > old_prio:
                         suggestion["reasoning"] += " (deprioritized: this type of work tends to stay open)"
 
         # Sort by priority

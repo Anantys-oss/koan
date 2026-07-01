@@ -293,6 +293,7 @@ def build_mission_command(
     tier: Optional[str] = None,
     system_prompt_dir: Optional[str] = None,
     system_prompt_container_dir: Optional[str] = None,
+    provider_override: Optional["CLIProvider"] = None,
 ) -> Tuple[List[str], List[str]]:
     """Build the CLI command for mission execution (provider-agnostic).
 
@@ -321,7 +322,7 @@ def build_mission_command(
         from app.config import get_effort_for_mode
     except ImportError:
         get_effort_for_mode = lambda _mode="": ""  # noqa: E731
-    from app.provider import build_full_command_managed
+    from app.provider import build_full_command_managed, get_provider_for_role
 
     # Get mission tools (comma-separated list)
     # REVIEW mode: enforce read-only at tool level (no Bash/Write/Edit)
@@ -331,8 +332,22 @@ def build_mission_command(
         tools_str = get_mission_tools(project_name)
         tools_list = [t.strip() for t in tools_str.split(",") if t.strip()]
 
-    # Get model configuration with per-project overrides
-    models = get_model_config(project_name)
+    # Resolve the CLI provider for this mission's role (cli: section). A review
+    # runs on the review_mode provider; everything else on the mission provider.
+    # provider_override is supplied by the launch/auth fallback re-run.
+    effective_role = "review_mode" if autonomous_mode == "review" else "mission"
+    provider = provider_override or get_provider_for_role(effective_role, project_name)
+
+    # Get model configuration with per-project overrides, resolved against the
+    # role's provider (models.<provider>.<role>) so per-role CLI + model compose.
+    models = get_model_config(
+        project_name,
+        role_providers={
+            "mission": provider.name,
+            "review_mode": provider.name,
+            "fallback": provider.name,
+        },
+    )
     model = models["mission"]
     if autonomous_mode == "review" and models["review_mode"]:
         # REVIEW mode takes precedence over tier override (safety > cost)
@@ -389,13 +404,14 @@ def build_mission_command(
         effort=effort,
         system_prompt_dir=system_prompt_dir,
         system_prompt_container_dir=system_prompt_container_dir,
+        provider=provider,
     )
 
     # Append thinking args directly — kept outside build_full_command so
-    # the provider stack doesn't need thinking-specific parameters.
+    # the provider stack doesn't need thinking-specific parameters. Use the
+    # same role-resolved provider so the flag matches the binary being run.
     if thinking_enabled:
-        from app.provider import get_provider
-        cmd.extend(get_provider().build_thinking_args(
+        cmd.extend(provider.build_thinking_args(
             enabled=True, budget_tokens=thinking_budget,
         ))
 
@@ -1122,6 +1138,28 @@ def _notify_pipeline_failures(
         _log_runner("error", f"Pipeline failure notification failed: {e}")
 
 
+def _notify_security_review_inconclusive(instance_dir: str, project_name: str) -> None:
+    """Alert the operator that a security review crashed/timed out and blocked merge.
+
+    Fail-closed means the operator must know *why* a mission did not auto-merge
+    so they can diagnose the underlying review failure (often a misconfigured
+    project_path or unavailable git diff). Best-effort; never raises.
+    """
+    try:
+        from app.utils import append_to_outbox
+        from app.notify import NotificationPriority
+
+        msg = (
+            f"🔒 [{project_name}] Security review was inconclusive "
+            f"(crashed or timed out) — auto-merge blocked. "
+            f"Check .security-audit.jsonl and logs for the cause."
+        )
+        outbox_path = Path(instance_dir) / "outbox.md"
+        append_to_outbox(outbox_path, msg + "\n", priority=NotificationPriority.WARNING)
+    except Exception as e:
+        _log_runner("error", f"Security review notification failed: {e}")
+
+
 # --- Pipeline timeout rate alert ---
 _TIMEOUT_ALERT_STATE_FILE = ".pipeline-timeout-alert.json"
 
@@ -1407,8 +1445,12 @@ def check_security_review(
 
         return _check(instance_dir, project_name, project_path)
     except Exception as e:
+        # Fail CLOSED: a crashed review must not silently promote a mission to
+        # auto-merge. The crash is audited in .security-audit.jsonl by
+        # security_review.check_security_review before the exception propagates.
+        _log_runner("error", f"Security review crashed → blocking auto-merge: {e}")
         print(f"[mission_runner] Security review failed: {e}", file=sys.stderr)
-        return True  # Don't block on failures
+        return False
 
 
 _PR_URL_RE = re.compile(r'https?://[^/]*github[^\s)]+/pull/\d+')
@@ -1887,7 +1929,16 @@ def run_post_mission(
                 pipeline_expired=_pipeline_expired,
             )
             if security_passed is None:
-                security_passed = True
+                # Fail CLOSED: run_step returns None on exception OR pipeline
+                # timeout. Either way the safety gate did not produce a verdict,
+                # so block auto-merge rather than promote an unreviewed mission.
+                security_passed = False
+                _log_runner(
+                    "error",
+                    "Security review produced no verdict (crash/timeout) "
+                    "→ blocking auto-merge",
+                )
+                _notify_security_review_inconclusive(instance_dir, project_name)
             result["security_review_passed"] = security_passed
 
             # Auto-merge check (respects quality gate + lint gate + verification + security review)

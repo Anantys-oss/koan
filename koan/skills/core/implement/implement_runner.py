@@ -455,7 +455,10 @@ def _run_plan_review_gate(
         _GateImproved — proceed with improved plan + context about what was fixed.
         (False, msg) — block (only on catastrophic internal error).
     """
-    from app.plan_runner import improve_plan, is_simple_plan, review_plan
+    from app.plan_runner import (
+        ASSUMPTIONS_CRITICAL, ASSUMPTIONS_OK, ASSUMPTIONS_REVIEWER_ERROR,
+        improve_plan, is_simple_plan, review_plan, review_plan_assumptions,
+    )
 
     if is_simple_plan(plan):
         logger.debug("Plan is simple — skipping review gate")
@@ -471,6 +474,39 @@ def _run_plan_review_gate(
     if _is_plan_cache_fresh(project_path, current_hash, project_name):
         logger.info("Plan-review gate: cache hit — skipping review")
         return None
+
+    # Assumptions pressure-test: surface unverified critical assumptions
+    # before spending tokens on the structural critic loop.
+    if review_cfg.get("assumptions_check", True):
+        logger.info("Plan-review gate: running assumptions check...")
+        assumptions_status, assumptions_reason = review_plan_assumptions(
+            plan, project_path, _PLAN_SKILL_DIR,
+        )
+        if assumptions_status == ASSUMPTIONS_CRITICAL:
+            label = "critical unverified assumption"
+            logger.warning("Plan-review gate: %s — blocking", label)
+            if notify_fn:
+                try:
+                    notify_fn(
+                        f"🛑 Plan blocked — {label}:\n"
+                        f"{assumptions_reason}"
+                    )
+                except Exception:
+                    logger.warning("Failed to send assumption-block notification", exc_info=True)
+            return (False, f"{label.capitalize()}: {assumptions_reason}")
+        elif assumptions_status == ASSUMPTIONS_REVIEWER_ERROR:
+            logger.warning(
+                "Plan-review gate: assumptions reviewer error — failing open: %s",
+                assumptions_reason,
+            )
+            if notify_fn:
+                try:
+                    notify_fn(
+                        "⚠️ Assumptions check skipped — reviewer error "
+                        f"(proceeding without it):\n{assumptions_reason}"
+                    )
+                except Exception:
+                    logger.warning("Failed to send assumption-fail-open notification", exc_info=True)
 
     max_rounds = review_cfg.get("max_rounds", 3)
     current_plan = plan

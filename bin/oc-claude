@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# oc-claude — run the Claude CLI against an OpenCode Go subscription via ocgo.
+#
+# Koan invokes this as a drop-in `claude` replacement when
+#   KOAN_CLAUDE_CLI_PATH=/path/to/koan/bin/oc-claude
+# is set. Koan passes a Claude-style argument vector, e.g.:
+#   -p "<prompt>" --model <name> --output-format json --verbose ...
+#
+# This wrapper pulls the --model value out of that vector and re-issues the
+# call through the ocgo Anthropic-compatibility proxy:
+#   ocgo launch claude --model <model> -- <remaining args>
+#
+# --fallback-model is dropped: OpenCode has no fallback concept, and Koan's
+# default config emits an Anthropic tier name (`sonnet`) that ocgo cannot
+# resolve, which would turn a transient hiccup into a hard failure.
+#
+# Model resolution order:
+#   1. --model <name> / --model=<name> passed by Koan (per-project `models:`)
+#   2. $OC_CLAUDE_MODEL
+#   3. kimi-k2.7-code  (hard default)
+#
+# Prerequisites: `ocgo` installed and `ocgo setup` completed.
+# See docs/providers/opencode.md.
+
+set -euo pipefail
+
+if ! command -v ocgo >/dev/null 2>&1; then
+    echo "oc-claude: 'ocgo' not found on PATH. Install it and run 'ocgo setup' first." >&2
+    echo "oc-claude: see docs/providers/opencode.md" >&2
+    exit 127
+fi
+
+model=""
+args=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model)
+            model="${2:-}"
+            shift
+            [[ $# -gt 0 ]] && shift
+            ;;
+        --model=*)
+            model="${1#--model=}"
+            shift
+            ;;
+        --fallback-model)
+            # OpenCode has no fallback model; drop the flag and its value.
+            shift
+            [[ $# -gt 0 ]] && shift
+            ;;
+        --fallback-model=*)
+            shift
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$model" ]]; then
+    model="${OC_CLAUDE_MODEL:-kimi-k2.7-code}"
+fi
+
+# "${args[@]+...}" guards against set -u on bash 3.2 when args is empty.
+exec ocgo launch claude --model "$model" -- "${args[@]+"${args[@]}"}"

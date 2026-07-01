@@ -106,6 +106,17 @@ defaults:
   #   mission: ""
   #   chat: ""
 
+  # Per-role CLI provider overrides — pick a provider (and optional custom
+  # binary) per mission role for this project, overriding the global `cli:`
+  # section in config.yaml. Flat role -> `flavor` or `flavor:path` (path is
+  # absolute or relative to KOAN_ROOT). Plus an optional single `fallback`.
+  # The role's model still resolves against that provider's models.<provider>
+  # block. See docs/providers/claude.md.
+  # cli:
+  #   mission: codex
+  #   review_mode: claude:/opt/bin/review-claude
+  #   fallback: claude
+
   # Tool restrictions — control which tools are available per project.
   # Keys: mission (for autonomous work), chat (for Telegram conversations).
   # Useful for restricting write access on certain repos.
@@ -199,17 +210,21 @@ defaults:
   #   pvrs_threshold: high
 
 projects:
-  # Example: your main project (minimal config — inherits all defaults)
-  myapp:
-    path: "/Users/yourname/workspace/myapp"
-    # github_url: "yourname/myapp"  # Auto-detected from git remote; override if needed
-    # issue_tracker:
-    #   provider: github             # github | jira
-    #   repo: "yourname/myapp"       # Optional; defaults to github_url / git remote
-    #   default_branch: "main"       # Optional tracker-specific target branch
-    # git_auto_merge:
-    #   enabled: true
-    #   strategy: "merge"
+  # Example: your main project (minimal config — inherits all defaults).
+  # Uncomment and point `path` at a real local checkout, OR drop a project
+  # into workspace/ for zero-config auto-discovery (see header, option 1).
+  # NOTE: a path that does not exist on disk is skipped at runtime and
+  # surfaced as a warning via /projects — it will not create a usable project.
+  # myapp:
+  #   path: "/Users/yourname/workspace/myapp"
+  #   # github_url: "yourname/myapp"  # Auto-detected from git remote; override if needed
+  #   # issue_tracker:
+  #   #   provider: github             # github | jira
+  #   #   repo: "yourname/myapp"       # Optional; defaults to github_url / git remote
+  #   #   default_branch: "main"       # Optional tracker-specific target branch
+  #   # git_auto_merge:
+  #   #   enabled: true
+  #   #   strategy: "merge"
 
   # Example: a project whose issues live in Jira but whose PRs go to GitHub
   # jira-backed-app:

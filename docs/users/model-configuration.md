@@ -47,6 +47,28 @@ For each role, the first value found wins:
 When both a provider override and `models.default` set the same role, the
 provider value wins.
 
+## CLI provider per role (the `cli:` section)
+
+By default every role runs on the single global provider (`cli_provider` /
+`KOAN_CLI_PROVIDER`). To run a **different provider per role** — e.g. routine
+work on Codex but reviews on Claude — add a `cli:` section parallel to `models:`:
+
+```yaml
+cli:
+  default:
+    mission: codex
+    review_mode: claude:/path/to/review-claude   # flavor or flavor:path
+  fallback: claude                               # used only when a role's CLI can't launch
+```
+
+The role's **model** is then read from that role's provider block above. With
+`review_mode: claude`, the review model comes from `models.claude.review_mode`
+(then `models.default.review_mode`) — so `cli:` selects the provider and
+`models.<provider>.<role>` selects the model for it. Per-project overrides go in
+`projects.yaml` as a flat `cli:` block. Full details, including the single
+`cli.fallback` provider (launch/auth-failure recovery), are in
+[../providers/claude.md](../providers/claude.md).
+
 ## Migrating from the legacy layout
 
 Earlier versions used a flat `models:` block plus top-level `models_for_{provider}`

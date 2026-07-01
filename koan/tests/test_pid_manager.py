@@ -1411,15 +1411,29 @@ class TestShowStartupBanner:
             start_all(tmp_path, provider="copilot")
         mock_banner.assert_called_once_with(tmp_path, "copilot")
 
-    def test_show_startup_banner_uses_hero_art(self, tmp_path):
+    def test_show_startup_banner_uses_hero_art(self, tmp_path, monkeypatch):
         """The stack startup banner should use koan_hero.txt via the hero renderer."""
         from app.pid_manager import _show_startup_banner
 
+        # Banner provider line reads KOAN_CLAUDE_CLI_PATH; keep it deterministic.
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
         with patch("app.startup_info.gather_startup_info", return_value={"skills": "29 core"}), \
              patch("app.banners.print_hero_banner") as mock_banner:
             _show_startup_banner(tmp_path, "claude")
 
         mock_banner.assert_called_once_with({"skills": "29 core", "provider": "claude"})
+
+    def test_show_startup_banner_shows_cli_binary_flavor(self, tmp_path, monkeypatch):
+        """Banner advertises a custom KOAN_CLAUDE_CLI_PATH binary, like /status."""
+        from app.pid_manager import _show_startup_banner
+
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/koan/ollama-claude")
+        with patch("app.startup_info.gather_startup_info", return_value={}), \
+             patch("app.banners.print_hero_banner") as mock_banner:
+            _show_startup_banner(tmp_path, "claude")
+
+        sent = mock_banner.call_args.args[0]
+        assert sent["provider"] == "claude (ollama-claude)"
 
 
 class TestStartStack:

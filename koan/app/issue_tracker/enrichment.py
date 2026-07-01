@@ -34,14 +34,19 @@ _GITHUB_REF_RE = re.compile(
 MAX_EXCERPT_CHARS = 500
 MAX_TOTAL_CHARS = 1000
 # Upper bound on the number of tracker references fetched per review. Each ref
-# costs one bounded network/subprocess round-trip (up to *_TIMEOUT_SECONDS each),
-# so an uncapped PR body (a changelog listing dozens of tickets, or an adversarial
-# author seeding ``a/b#1 a/b#2 …``) could otherwise add N×5s of latency and burn
-# API quota / spawn dozens of ``gh`` subprocesses. Bounding the *fetch count*
-# (not just the output size) keeps worst-case review latency bounded at roughly
-# MAX_REFS × *_TIMEOUT_SECONDS regardless of PR body content. This bound only
-# holds because each ref is one bounded request: the Jira path uses the
-# title/body-only fetch (no comment pagination) with a JIRA_TIMEOUT_SECONDS cap.
+# costs one bounded network/subprocess round-trip, so an uncapped PR body (a
+# changelog listing dozens of tickets, or an adversarial author seeding
+# ``a/b#1 a/b#2 …``) could otherwise add large latency and burn API quota /
+# spawn dozens of ``gh`` subprocesses. Bounding the *fetch count* (not just the
+# output size) keeps worst-case review latency bounded regardless of PR body
+# content. The per-path bound differs:
+#   - Jira path: single-shot fetch (no retry), so MAX_REFS × JIRA_TIMEOUT_SECONDS
+#     (5 × 5 = 25s) worst case.
+#   - GitHub path: routed through ``run_gh``, which wraps each call in
+#     retry_with_backoff (up to 3 attempts, 1+2s backoff sleeps) on transient
+#     failures. A consistently-timing-out ref costs ~3 × GH_TIMEOUT_SECONDS + 3s
+#     ≈ 18s, so MAX_REFS × that ≈ 90s worst case. The retry buys resilience
+#     against network flaps at the cost of a looser latency bound on that path.
 MAX_REFS = 5
 JIRA_TIMEOUT_SECONDS = 5
 GH_TIMEOUT_SECONDS = 5
@@ -150,32 +155,26 @@ def fetch_github_issues(refs: List[Tuple[str, str, int]]) -> str:
         refs = refs[:MAX_REFS]
     import json
 
+    from app.github import run_gh
+
     lines: List[str] = []
     for owner, repo, number in refs:
         slug = f"{owner}/{repo}#{number}"
         try:
-            proc = subprocess.run(
-                [
-                    "gh", "issue", "view", str(number),
-                    "--repo", f"{owner}/{repo}",
-                    "--json", "title,body",
-                ],
-                capture_output=True,
-                text=True,
+            stdout = run_gh(
+                "issue", "view", str(number),
+                "--repo", f"{owner}/{repo}",
+                "--json", "title,body",
                 timeout=GH_TIMEOUT_SECONDS,
-                check=False,
             )
         except FileNotFoundError:
             logger.warning("[enrichment] gh CLI unavailable; skipping GitHub issue enrichment")
             return ""
-        except (OSError, subprocess.TimeoutExpired) as e:
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
             logger.debug("[enrichment] gh fetch failed for %s: %s", slug, e)
             continue
-        if proc.returncode != 0:
-            logger.debug("[enrichment] gh non-zero for %s: %s", slug, proc.stderr.strip())
-            continue
         try:
-            data = json.loads(proc.stdout)
+            data = json.loads(stdout)
         except (json.JSONDecodeError, TypeError):
             continue
         title = (data.get("title") or "").strip()

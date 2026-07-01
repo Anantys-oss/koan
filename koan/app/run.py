@@ -301,6 +301,7 @@ def run_claude_task(
     instance_dir: str = "",
     project_name: str = "",
     run_num: int = 0,
+    provider=None,
 ) -> int:
     """Run Claude CLI as a subprocess with SIGINT isolation and timeout.
 
@@ -342,16 +343,41 @@ def run_claude_task(
     mission_timeout = get_mission_timeout()
 
     exit_code = 1  # default if subprocess never completes
+    # Read once up front so the outer finally can always clear the liveness
+    # signal, even if an exception fires before the subprocess loop (#2086).
+    koan_root_active = os.environ.get("KOAN_ROOT", "")
     try:
         with open(stdout_file, "w") as out_f, open(stderr_file, "w") as err_f:
+            # provider is the role-resolved instance (cli: section); popen_cli
+            # uses it for stdin-rewrite + invocation lock so they match the
+            # binary the command was built for. None → global provider.
             proc, cleanup = popen_cli(
                 cmd,
+                provider=provider,
                 stdout=out_f,
                 stderr=err_f,
                 cwd=cwd,
                 start_new_session=True,
             )
             _sig.claude_proc = proc
+
+            # Record the live provider PID so status consumers can report
+            # observed runtime state instead of an inferred timestamp (#2086).
+            if koan_root_active:
+                from app.active_mission import write_active
+                try:
+                    write_active(
+                        koan_root_active,
+                        pid=proc.pid,
+                        project=project_name,
+                        run_num=run_num,
+                        stdout_file=stdout_file,
+                    )
+                except OSError as e:
+                    # A chronically failing write would make every status
+                    # consumer report the running mission as idle/zombie —
+                    # log it so the cause is diagnosable rather than invisible.
+                    log("error", f"liveness signal write failed: {e}")
 
             from app.subprocess_runner import ProcessWatchdog
 
@@ -429,6 +455,13 @@ def run_claude_task(
         elif _last_mission_stagnated.is_set():
             exit_code = 1
     finally:
+        # Clear the liveness signal on every exit path — including exceptions
+        # raised before the subprocess wait loop — so no stale .koan-active
+        # survives to be misread as a live (then zombie) mission (#2086).
+        if koan_root_active:
+            from app.active_mission import clear_active
+            with contextlib.suppress(OSError):
+                clear_active(koan_root_active)
         # Always stop journal streaming, even on exception
         if journal_stream:
             from app.cli_journal_streamer import stop_journal_stream
@@ -528,6 +561,41 @@ def _notify_raw(instance: str, message: str):
         log("error", f"Raw notification failed: {e}")
 
 
+def _quota_raw_snippet(stdout_text: str = "", stderr_text: str = "",
+                       stdout_file: str = "", stderr_file: str = "") -> str:
+    """Build a bounded debug snippet from quota-handler kwargs or output files.
+
+    Reads the file form of ``handle_quota_exhaustion`` kwargs when only paths
+    are available (the regular mission path); uses the pre-read text form when
+    the caller already has it in memory (the skill path). Delegates the actual
+    windowing to :func:`quota_handler.quota_debug_snippet`.
+    """
+    from app.quota_handler import quota_debug_snippet
+    if stdout_file and not stdout_text:
+        with contextlib.suppress(OSError):
+            stdout_text = Path(stdout_file).read_text()
+    if stderr_file and not stderr_text:
+        with contextlib.suppress(OSError):
+            stderr_text = Path(stderr_file).read_text()
+    return quota_debug_snippet(stdout_text, stderr_text)
+
+
+def _notify_quota_warning(instance: str, body: str, raw_output: str = "") -> None:
+    """Send a quota-exhaustion warning as verbatim text (code block preserved).
+
+    Quota warnings include the raw CLI output (reset time, stop reason, cost,
+    usage) in a fenced code block for debugging. ``_notify`` runs the Claude-CLI
+    personality reformatter, whose contract strips markdown fences — so the
+    block would never render. Route through ``_notify_raw`` instead:
+    ``send_telegram`` converts ``\\`\\`\\``` fences to ``<pre>`` for Telegram's
+    HTML parse mode. ``body`` is already-final prose; a non-empty ``raw_output``
+    is appended as a trailing fenced block.
+    """
+    snippet = (raw_output or "").strip()
+    message = f"{body}\n\n```\n{snippet}\n```" if snippet else body
+    _notify_raw(instance, message)
+
+
 def _is_ci_check_mission(mission_title: str) -> bool:
     """Return True if *mission_title* is a CI-related mission.
 
@@ -552,14 +620,38 @@ _SKILL_COMPLETION = {
     "implement": ("🔨", "Implemented"),
 }
 
+# Tracked skills whose canonical completion line carries the PR URL that the
+# runner's own outcome line would otherwise restate. For these the agent loop is
+# the sole reporter (the runner's duplicate line is suppressed). /plan is tracked
+# but deliberately excluded: it never opens a PR — it emits an *issue*/Jira URL or
+# an inline plan body that the PR-only canonical extraction cannot recover — so
+# its runner outcome line is the only place that content reaches the user and must
+# never be suppressed (#2153 follow-up).
+_PR_URL_SKILLS = {"review", "fix", "rebase", "implement"}
+
+
+def _skill_command_name(mission_title: str) -> str:
+    """Return the lowercased slash-command name of a mission, or "" if none."""
+    t = (mission_title or "").strip()
+    if not t.startswith("/"):
+        return ""
+    return t[1:].split(None, 1)[0].lower()
+
 
 def _tracked_skill(mission_title: str):
     """Return (emoji, past_tense) if the mission is a tracked skill, else None."""
-    t = (mission_title or "").strip()
-    if not t.startswith("/"):
-        return None
-    cmd = t[1:].split(None, 1)[0].lower()
-    return _SKILL_COMPLETION.get(cmd)
+    cmd = _skill_command_name(mission_title)
+    return _SKILL_COMPLETION.get(cmd) if cmd else None
+
+
+def _canonical_line_carries_url(mission_title: str) -> bool:
+    """True when the agent loop's canonical completion line carries the same URL
+    the runner's outcome line would, so the runner line can be safely suppressed.
+
+    Only the PR-producing tracked skills qualify. /plan is tracked but its URL
+    (issue/Jira) or inline body cannot be recovered by the PR-only canonical
+    extraction, so it is excluded — its runner line is the sole reporter (#2153)."""
+    return _skill_command_name(mission_title) in _PR_URL_SKILLS
 
 
 def _completion_pr_url(instance, project_name):
@@ -595,6 +687,18 @@ def _notify_mission_normal(
     # deleted); fall back to a best-effort re-read.
     if skill is not None:
         emoji, verb = skill
+        # /plan is tracked but the canonical line cannot carry its issue/Jira URL
+        # or inline body (PR-only extraction). The runner already emitted that
+        # content via notify_outcome (not suppressed), so emitting a bare
+        # "✅ [project] 🧠 Planned" here would just duplicate the row with less
+        # information. Log only and let the runner's line stand (#2153).
+        if not _canonical_line_carries_url(mission_title):
+            from app.run_log import log_safe
+            log_safe(
+                "mission",
+                f"[{project_name}] {verb} (runner emitted outcome line)",
+            )
+            return
         url = pr_url or _completion_pr_url(instance, project_name)
         _notify(instance, f"✅ [{project_name}] {emoji} {verb} {url}".rstrip())
         return
@@ -1291,6 +1395,169 @@ def _resolve_idle_wait_interval(
     return IDLE_LOOP_BREATH_SECONDS
 
 
+# Re-notify a sustained contemplative outage at most this often, so a 529
+# overload streak lasting hours produces one clear message per episode
+# instead of spamming every iteration.
+_CONTEMP_FAILURE_NOTIFY_COOLDOWN = 6 * 3600
+_CONTEMP_FAILURE_NOTIFY_FILE = ".contemplative-failure-notify.json"
+
+
+def _parse_result_object(stdout_text):
+    """Return the final ``{"type":"result"}`` dict from CLI stdout, or None.
+
+    Scoped to the result object so a failed ``tool_result`` inside a stream-json
+    session can never be mistaken for a session-level failure — the invariant
+    holds by construction, not by coincidence. Handles both the single-object
+    default output and the last result line of a stream-json transcript.
+    """
+    text = (stdout_text or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Stream-json: the result object is the last {"type":"result"} line.
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("type") == "result":
+            return data
+    return None
+
+
+def _classify_contemplative_failure(exit_code, stdout_text, stderr_text):
+    """Classify a contemplative session outcome.
+
+    Returns ``(failed, signature, reason)``:
+    - ``failed``: the session produced no usable reflection.
+    - ``signature``: stable throttle key (e.g. ``"overload:529"``).
+    - ``reason``: short human label for the notification.
+    """
+    stdout_text = stdout_text or ""
+    stderr_text = stderr_text or ""
+    combined = f"{stdout_text}\n{stderr_text}"
+
+    result_obj = _parse_result_object(stdout_text)
+    # ``is_error`` is the proven field the codebase already trusts
+    # (mission_runner.check_json_success). Keying failure on it — scoped to the
+    # parsed result object — means a gateway that returns {"is_error": true}
+    # without ``api_error_status`` still surfaces, and a failed ``tool_result``
+    # inside a stream-json session can never be misread as a session failure.
+    is_error = bool(result_obj and result_obj.get("is_error") is True)
+    # ``api_error_status`` is an optional label source for the HTTP code only;
+    # it is NOT the failure trigger, since not every gateway/proxy emits it.
+    api_status = ""
+    if result_obj:
+        raw_status = result_obj.get("api_error_status")
+        if isinstance(raw_status, int) and raw_status > 0:
+            api_status = str(raw_status)
+
+    failed = exit_code != 0 or is_error
+    if not failed:
+        return False, "", ""
+
+    from app.cli_errors import ErrorCategory, classify_cli_error
+
+    category = classify_cli_error(exit_code, stdout_text, stderr_text)
+    lowered = combined.lower()
+
+    if api_status or "temporarily overloaded" in lowered:
+        code = api_status or "5xx"
+        return True, f"overload:{code}", f"provider gateway overloaded (HTTP {code})"
+    if category == ErrorCategory.QUOTA:
+        return True, "quota", "API quota exhausted"
+    if category == ErrorCategory.AUTH:
+        return True, "auth", "not authenticated (provider login needed)"
+    if category == ErrorCategory.RETRYABLE:
+        return True, "transient", "transient provider/network error"
+    if exit_code != 0:
+        return True, f"exit:{exit_code}", f"CLI exited with code {exit_code}"
+    return True, "unknown", "session produced no output"
+
+
+def _notify_contemplative_failure(
+    instance, project_name, exit_code, stdout_file, stderr_file
+):
+    """Send ONE clear, throttled message when a contemplative session fails.
+
+    Without this the contemplative path swallows the CLI exit code entirely,
+    so a failed session (e.g. a provider 529) leaves the agent to emit generic
+    'Run failed / went sideways' text with no real cause. Re-notifies at most
+    every ``_CONTEMP_FAILURE_NOTIFY_COOLDOWN`` per failure type during a
+    sustained outage, and clears the tracker on success.
+    """
+    try:
+        stdout_text = Path(stdout_file).read_text(errors="replace") if stdout_file else ""
+    except OSError:
+        stdout_text = ""
+    try:
+        stderr_text = Path(stderr_file).read_text(errors="replace") if stderr_file else ""
+    except OSError:
+        stderr_text = ""
+
+    failed, signature, reason = _classify_contemplative_failure(
+        exit_code, stdout_text, stderr_text
+    )
+    tracker_path = Path(instance) / _CONTEMP_FAILURE_NOTIFY_FILE
+
+    if not failed:
+        # Session recovered — reset so the next outage notifies immediately.
+        with contextlib.suppress(OSError):
+            tracker_path.unlink(missing_ok=True)
+        return
+
+    now = int(time.time())
+    should_notify = True
+    try:
+        data = json.loads(tracker_path.read_text())
+        if (
+            data.get("signature") == signature
+            and now - int(data.get("last_notify", 0)) < _CONTEMP_FAILURE_NOTIFY_COOLDOWN
+        ):
+            should_notify = False
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+    prefix = f"[{project_name}] " if project_name else ""
+    if signature.startswith("overload"):
+        msg = (
+            f"🪷 {prefix}Contemplative session couldn't run — {reason}. "
+            "Transient server-side issue; retrying next iteration. No action needed."
+        )
+    elif signature == "quota":
+        msg = (
+            f"🪷 {prefix}Contemplative session paused — API quota exhausted. "
+            "Runs auto-resume once the quota resets."
+        )
+    elif signature == "auth":
+        msg = (
+            f"🪷 {prefix}Contemplative session couldn't run — provider not "
+            "authenticated. A re-login may be needed."
+        )
+    else:
+        msg = f"🪷 {prefix}Contemplative session ended early: {reason}."
+
+    if should_notify:
+        _notify(instance, msg)
+        try:
+            from app.utils import atomic_write_json
+
+            atomic_write_json(
+                tracker_path, {"signature": signature, "last_notify": now}
+            )
+        except OSError as e:
+            log("warn", f"Could not persist contemplative-failure tracker: {e}")
+    log("warn", f"Contemplative session failed ({signature}): {reason}")
+
+
 def _handle_contemplative(
     plan: dict,
     run_num: int,
@@ -1320,8 +1587,9 @@ def _handle_contemplative(
         fd_err, stderr_file = tempfile.mkstemp(prefix="koan-contemp-err-", dir=koan_tmp_dir())
         os.close(fd_err)
         cli_error = None
+        contemp_exit = 1
         try:
-            run_claude_task(
+            contemp_exit = run_claude_task(
                 cmd, stdout_file, stderr_file, cwd=koan_root,
                 instance_dir=instance, project_name=project_name, run_num=run_num,
             )
@@ -1361,6 +1629,14 @@ def _handle_contemplative(
             )
         except Exception as e:
             log("warn", f"Failed to record contemplative outcome: {e}")
+        # Surface a clear reason when the session failed instead of leaving
+        # the user with generic 'Run failed...' text. Read before cleanup.
+        try:
+            _notify_contemplative_failure(
+                instance, project_name, contemp_exit, stdout_file, stderr_file
+            )
+        except Exception as e:
+            log("warn", f"Contemplative failure notification failed: {e}")
         _cleanup_temp(stdout_file, stderr_file)
         if cli_error:
             log("error", f"Contemplative error:\n{cli_error}")
@@ -1929,10 +2205,15 @@ def _handle_quota_error(
         reset_ts, reset_display = _compute_quota_reset_ts(instance)
         from app.pause_manager import create_pause
         create_pause(koan_root, "quota", reset_ts, reset_display)
-    _notify(instance, (
+    _notify_quota_warning(instance, (
         f"⏸️ API quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
         f"Mission '{mission_title[:60]}' moved back to Pending.\n"
         f"Use /resume after quota resets."
+    ), raw_output=_quota_raw_snippet(
+        stdout_text=hqe_kwargs.get("stdout_text", ""),
+        stderr_text=hqe_kwargs.get("stderr_text", ""),
+        stdout_file=hqe_kwargs.get("stdout_file", ""),
+        stderr_file=hqe_kwargs.get("stderr_file", ""),
     ))
 
 
@@ -2123,10 +2404,15 @@ def _probe_exit0_quota(
     log("quota", f"Exit-0 quota probe matched. {reset_display}")
     _requeue_mission_in_file(instance, mission_title)
     _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-    _notify(instance, (
+    _notify_quota_warning(instance, (
         f"⏸️ {provider_label} quota exhausted.{(' ' + reset_display) if reset_display else ''}\n"
         f"Mission '{mission_title[:60]}' moved back to Pending.\n"
         f"{resume_msg} or use /resume to restart manually."
+    ), raw_output=_quota_raw_snippet(
+        stdout_text=hqe_kwargs.get("stdout_text", ""),
+        stderr_text=hqe_kwargs.get("stderr_text", ""),
+        stdout_file=hqe_kwargs.get("stdout_file", ""),
+        stderr_file=hqe_kwargs.get("stderr_file", ""),
     ))
     return True
 
@@ -2139,6 +2425,7 @@ def _handle_pipeline_quota_flag(
     mission_title: str,
     count: int,
     quota_info,
+    raw_output: str = "",
 ) -> bool:
     """Handle the ``quota_exhausted`` flag from :func:`run_post_mission`.
 
@@ -2163,11 +2450,11 @@ def _handle_pipeline_quota_flag(
         _requeue_mission_in_file(instance, mission_title)
 
     _commit_instance(instance, f"koan: quota exhausted {time.strftime('%Y-%m-%d-%H:%M')}")
-    _notify(instance, (
+    _notify_quota_warning(instance, (
         f"⚠️ {provider_label} quota exhausted. {reset_display}\n\n"
         f"Mission '{mission_title[:60]}' moved back to Pending.\n"
         f"Kōan paused after {count} runs. {resume_msg} or use /resume to restart manually."
-    ))
+    ), raw_output=raw_output)
     return True
 
 
@@ -2422,7 +2709,12 @@ def _prune_missions_history(instance: str) -> None:
     is logged and swallowed.
     """
     try:
-        from app.missions import prune_completed_sections
+        from app.config import (
+            get_missions_done_keep,
+            get_missions_failed_keep,
+            get_missions_max_lines,
+        )
+        from app.missions import enforce_size_bound
         from app.utils import modify_missions_file
         missions_path = Path(instance, "missions.md")
         if not missions_path.exists():
@@ -2431,7 +2723,12 @@ def _prune_missions_history(instance: str) -> None:
         pruned = [0]
 
         def _transform(content):
-            new_content, count = prune_completed_sections(content)
+            new_content, count = enforce_size_bound(
+                content,
+                max_lines=get_missions_max_lines(),
+                done_keep=get_missions_done_keep(),
+                failed_keep=get_missions_failed_keep(),
+            )
             pruned[0] = count
             return new_content
 
@@ -2753,6 +3050,16 @@ def _run_skill_mission(
     }
     if _mission_model_key:
         skill_env["KOAN_MISSION_MODEL_KEY"] = _mission_model_key
+    # For PR-producing tracked skills (/review, /fix, /rebase, /implement) the
+    # agent loop emits the canonical "✅ [project] 🔍 Reviewed <url>" completion
+    # line after the runner finishes (see _notify_mission_end). In normal mode the
+    # runner's own notify_outcome() line would advertise the same URL, producing a
+    # duplicate row in chat (#2153). Signal the subprocess to log-only its outcome
+    # line; debug mode keeps both for full verbosity. /plan is deliberately
+    # excluded — its canonical line cannot carry the issue/Jira URL or inline
+    # plan body, so suppressing the runner line would drop that content entirely.
+    if _canonical_line_carries_url(mission_title) and not is_debug():
+        skill_env["KOAN_SUPPRESS_RUNNER_OUTCOME"] = "1"
     stderr_fh = None
     out_fh = None
     try:

@@ -134,9 +134,44 @@ class TestFetchCheckRunLogSnippet:
         assert len(result) <= 100
         assert "truncated" in result
 
+    @patch("app.ci_dispatch.run_gh")
+    def test_tiny_max_bytes_never_returns_more_than_input(self, mock_gh):
+        """A tiny max_bytes must not inflate the snippet.
+
+        Previously `result[:max_bytes - 20]` produced a NEGATIVE slice index
+        when max_bytes < 20, so it returned all-but-the-last-N bytes of the
+        original content — i.e. far MORE than the caller asked for. The
+        truncation must never yield a string longer than the source.
+        """
+        source = "y" * 500
+        mock_gh.return_value = json.dumps({"summary": source, "text": "", "annotations": []})
+        result = fetch_check_run_log_snippet("owner/repo", 1, max_bytes=10)
+        assert len(result) <= len(source)
+        assert "y" * 100 not in result
+
     @patch("app.ci_dispatch.run_gh", side_effect=RuntimeError("err"))
     def test_returns_empty_on_error(self, _gh):
         assert fetch_check_run_log_snippet("owner/repo", 1) == ""
+
+
+class TestCiDispatchConfigBounds:
+    @patch("app.utils.load_config")
+    def test_log_snippet_bytes_floored(self, mock_load):
+        from app.ci_dispatch import _get_ci_dispatch_config, _MIN_LOG_SNIPPET_BYTES
+        mock_load.return_value = {"ci_dispatch": {"log_snippet_bytes": 5}}
+        assert _get_ci_dispatch_config()["log_snippet_bytes"] == _MIN_LOG_SNIPPET_BYTES
+
+    @patch("app.utils.load_config")
+    def test_log_snippet_bytes_negative_floored(self, mock_load):
+        from app.ci_dispatch import _get_ci_dispatch_config, _MIN_LOG_SNIPPET_BYTES
+        mock_load.return_value = {"ci_dispatch": {"log_snippet_bytes": -100}}
+        assert _get_ci_dispatch_config()["log_snippet_bytes"] == _MIN_LOG_SNIPPET_BYTES
+
+    @patch("app.utils.load_config")
+    def test_log_snippet_bytes_sane_value_preserved(self, mock_load):
+        from app.ci_dispatch import _get_ci_dispatch_config
+        mock_load.return_value = {"ci_dispatch": {"log_snippet_bytes": 2048}}
+        assert _get_ci_dispatch_config()["log_snippet_bytes"] == 2048
 
 
 class TestCheckAndDispatchCiFixes:

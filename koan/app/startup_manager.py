@@ -338,25 +338,113 @@ def cleanup_memory(instance: str):
             log("health", f"Global memory capped: {name} ({value} lines removed)")
 
 
-def prune_missions_done(instance: str):
-    """Prune old Done and Failed items from missions.md to keep file size bounded.
+def _prune_old_missions_backups(missions_path: Path, keep: int = 5) -> None:
+    """Keep only the most recent ``keep`` ``.missions.md.bak-*`` backups.
 
-    missions.md grows unbounded as completed missions accumulate. At 190KB+,
-    the agent wastes context tokens reading it. Keep only the last 50 Done
-    and 30 Failed items.
+    Backups are timestamped (``YYYYMMDD-HHMMSS``) so lexical sort is
+    chronological. Prevents a flapping/corrupt file from accumulating an
+    unbounded set of backups in ``instance/``.
+    """
+    backups = sorted(missions_path.parent.glob(".missions.md.bak-*"))
+    for old in backups[:-keep]:
+        try:
+            old.unlink()
+        except OSError as exc:
+            # Surface a recurring inability to prune backups instead of
+            # letting them silently accumulate (the exact failure this
+            # helper guards against).
+            log("warn", f"Could not prune old missions backup {old.name}: {exc}")
+
+
+def prune_missions_done(instance: str):
+    """Validate, self-heal, and size-bound missions.md at startup.
+
+    missions.md is the hot-path source of truth for the mission queue. In
+    production it has grown gigantic and structurally corrupted (see issue
+    #2085), silently degrading the agent loop. This startup task:
+
+    1. Validates structural invariants (canonical sections present, no
+       headers glued to preceding items).
+    2. On corruption, backs up the original to ``.missions.md.bak-<ts>``,
+       conservatively repairs it, and surfaces a loud warning.
+    3. Enforces configurable size bounds (done_keep / failed_keep /
+       max_lines under the ``missions:`` config section), shedding old
+       completed history first.
     """
     missions_path = Path(instance) / "missions.md"
     if not missions_path.exists():
         return
 
-    from app.missions import prune_completed_sections
+    from app.config import (
+        get_missions_done_keep,
+        get_missions_failed_keep,
+        get_missions_max_lines,
+    )
+    from app.missions import (
+        enforce_size_bound,
+        repair_missions_structure,
+        validate_missions_structure,
+    )
     from app.utils import atomic_write
 
     content = missions_path.read_text()
-    new_content, pruned = prune_completed_sections(content)
-    if pruned > 0:
+
+    # 1+2. Structural validation and conservative self-heal. A merely
+    # incomplete file (a missing canonical section, e.g. fresh installs
+    # without ## Failed) is healed silently; genuine corruption (headers
+    # glued to items, duplicate headers, orphan items) is backed up and
+    # surfaced loudly to the operator.
+    issues = validate_missions_structure(content)
+    if issues:
+        serious = [i for i in issues if "Missing required section" not in i]
+        if serious:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            backup = missions_path.with_name(f".missions.md.bak-{ts}")
+            backup_ok = False
+            try:
+                backup.write_text(content)
+                backup_ok = backup.exists()
+            except OSError as exc:
+                log("warn", f"Could not back up corrupt missions.md: {exc}")
+            if not backup_ok:
+                # Backup is the only safeguard before the destructive
+                # atomic_write below; without it, repairing would overwrite
+                # the sole copy of the data. Leave the file untouched and
+                # surface a hard error instead of silently destroying it.
+                log(
+                    "warn",
+                    "missions.md is corrupt but backup failed — leaving file "
+                    "untouched, skipping repair",
+                )
+                return
+            _prune_old_missions_backups(missions_path)
+            summary = "; ".join(serious[:5])
+            log("warn", f"missions.md structural corruption detected and repaired: {summary}")
+            try:
+                from app.notify import NotificationPriority
+                from app.utils import append_to_outbox
+                append_to_outbox(
+                    Path(instance) / "outbox.md",
+                    "⚠️ missions.md was structurally corrupt and has been auto-repaired "
+                    f"(backup: {backup.name}). Issues: {summary}\n",
+                    priority=NotificationPriority.WARNING,
+                )
+            except Exception as exc:
+                log("warn", f"Failed to notify about missions.md repair: {exc}")
+        content = repair_missions_structure(content)
+
+    # 3. Enforce configurable size bounds.
+    new_content, pruned = enforce_size_bound(
+        content,
+        max_lines=get_missions_max_lines(),
+        done_keep=get_missions_done_keep(),
+        failed_keep=get_missions_failed_keep(),
+    )
+
+    if issues or pruned > 0 or new_content != content:
         atomic_write(missions_path, new_content)
-        log("health", f"Pruned {pruned} old Done/Failed items from missions.md")
+        if pruned > 0:
+            log("health", f"Pruned {pruned} old Done/Failed items from missions.md")
 
 
 def cleanup_mission_history(instance: str):

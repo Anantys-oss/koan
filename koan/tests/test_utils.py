@@ -424,6 +424,54 @@ class TestInsertPendingMission:
         temp_files = list(tmp_path.glob(".missions-*"))
         assert temp_files == [], f"Temp files left behind: {temp_files}"
 
+    def test_batch_urgent_preserves_order_at_top(self, tmp_path):
+        """insert_pending_missions(urgent=True) keeps list order, all at top."""
+        from app.utils import insert_pending_missions
+        missions = tmp_path / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n- existing task\n\n## In Progress\n\n## Done\n"
+        )
+
+        results = insert_pending_missions(
+            missions, ["- /review url", "- /rebase url"], urgent=True,
+        )
+        assert results == [True, True]
+        content = missions.read_text()
+        # first entry above the second, both above the pre-existing task
+        assert content.index("/review url") < content.index("/rebase url") < content.index("existing task")
+
+    def test_batch_bottom_preserves_order(self, tmp_path):
+        """Default (non-urgent) batch appends in order at the bottom."""
+        from app.utils import insert_pending_missions
+        missions = tmp_path / "missions.md"
+        missions.write_text(
+            "# Missions\n\n## Pending\n- existing task\n\n## In Progress\n\n## Done\n"
+        )
+
+        insert_pending_missions(missions, ["- /review url", "- /rebase url"])
+        content = missions.read_text()
+        assert content.index("existing task") < content.index("/review url") < content.index("/rebase url")
+
+    def test_batch_flags_duplicates_per_entry(self, tmp_path):
+        """A duplicate entry returns False for its slot; the fresh one inserts."""
+        from app.utils import insert_pending_missions
+        missions = tmp_path / "missions.md"
+        url = "https://github.com/o/r/pull/1"
+        missions.write_text(
+            f"# Missions\n\n## Pending\n- [project:koan] /review {url}\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+
+        results = insert_pending_missions(
+            missions,
+            [f"- [project:koan] /review {url}", f"- [project:koan] /rebase {url}"],
+            urgent=True,
+        )
+        assert results == [False, True]
+        content = missions.read_text()
+        assert content.count(f"/review {url}") == 1
+        assert f"/rebase {url}" in content
+
     def test_atomic_write_preserves_content_on_transform_error(self, tmp_path):
         """If the transform raises, the original file should be untouched."""
         from app.utils import modify_missions_file

@@ -1,5 +1,6 @@
 """Base class and constants for CLI provider abstraction."""
 
+import os
 import shutil
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -47,6 +48,37 @@ class CLIProvider:
     """
 
     name: str = ""
+
+    def __init__(self, binary_path: str = ""):
+        """Optional per-instance binary path override.
+
+        When set, ``binary()`` resolves and returns this path instead of the
+        provider's default. Used by per-role provider selection (the ``cli:``
+        config section) to pin a specific CLI binary for one mission role
+        without touching the global provider. The path is resolved by
+        :meth:`_resolve_binary_path` (absolute as-is, bare name left for PATH
+        lookup, relative rooted at ``KOAN_ROOT``).
+        """
+        self._binary_override = (binary_path or "").strip()
+
+    def _resolve_binary_path(self, raw: str) -> str:
+        """Resolve a configured binary path the same way for every provider.
+
+        Absolute path → as-is. Bare command name (no directory component) →
+        left for PATH lookup. Relative path → resolved against ``KOAN_ROOT`` so
+        config stays portable (the agent runs from ``KOAN_ROOT/koan``, not
+        ``KOAN_ROOT``, so a naive relative path would resolve wrong). Single
+        source of truth for ``KOAN_CLAUDE_CLI_PATH`` and ``cli: flavor:path``.
+        """
+        raw = (raw or "").strip()
+        if not raw:
+            return ""
+        if os.path.isabs(raw) or not os.path.dirname(raw):
+            return raw
+        root = os.environ.get("KOAN_ROOT", "").strip()
+        if root:
+            return os.path.normpath(os.path.join(root, raw))
+        return raw
 
     def binary(self) -> str:
         """Return the CLI binary name or path."""

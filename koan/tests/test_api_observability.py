@@ -39,6 +39,29 @@ def test_metrics_ok(client):
     assert "by_project" in r.get_json()
 
 
+def test_metrics_reports_security_blocks(tmp_path, monkeypatch):
+    """Global metrics expose security_blocks_7d sourced from .security-audit.jsonl."""
+    import json
+
+    monkeypatch.setenv("KOAN_API_TOKEN", "secret123")
+    instance = tmp_path / "instance"
+    instance.mkdir()
+    (tmp_path / "logs").mkdir()
+    audit = instance / ".security-audit.jsonl"
+    from datetime import datetime
+    now = datetime.now().isoformat(timespec="seconds")
+    audit.write_text(
+        json.dumps({"ts": now, "approved": False, "project": "p"}) + "\n"
+        + json.dumps({"ts": now, "approved": True, "project": "p"}) + "\n",
+        encoding="utf-8",
+    )
+    app = create_app(koan_root=tmp_path, instance_dir=instance)
+    app.config["TESTING"] = True
+    r = app.test_client().get("/v1/metrics?days=30", headers=_auth())
+    assert r.status_code == 200
+    assert r.get_json()["security_blocks_7d"] == 1
+
+
 def test_logs_ok(client):
     r = client.get("/v1/logs?source=run&limit=100", headers=_auth())
     assert r.status_code == 200

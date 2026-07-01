@@ -731,10 +731,11 @@ class TestMissionRunnerIntegration:
         assert result is False
 
     @patch("app.security_review.check_security_review", side_effect=Exception("boom"))
-    def test_wrapper_returns_true_on_error(self, mock_check):
+    def test_wrapper_returns_false_on_error(self, mock_check):
+        """Fail CLOSED: a crashed review must block auto-merge, not promote it."""
         from app.mission_runner import check_security_review as wrapper
         result = wrapper("/instance", "myapp", "/tmp/myapp")
-        assert result is True  # Fail-open
+        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -1507,3 +1508,99 @@ class TestFingerprintIsolation:
         keys_a = set(tracker_a.keys())
         keys_b = set(tracker_b.keys())
         assert keys_a != keys_b
+
+
+# ---------------------------------------------------------------------------
+# Security audit log (.security-audit.jsonl) — fail-closed observability
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityAuditLog:
+    """log_security_event / count_security_blocks and review-path logging."""
+
+    def _read_audit(self, instance_dir):
+        import json
+        path = Path(instance_dir) / ".security-audit.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    @patch("app.post_mission_reflection.write_to_journal")
+    @patch("app.security_review.get_changed_files")
+    @patch("app.security_review.get_diff_against_base")
+    @patch("app.projects_config.load_projects_config")
+    def test_completed_review_writes_audit_entry(
+        self, mock_config, mock_diff, mock_files, mock_journal, tmp_path
+    ):
+        """A completed (approved) review appends a structured audit entry."""
+        mock_config.return_value = {
+            "defaults": {"security_review": {"enabled": True, "blocking": True}},
+            "projects": {"myapp": {"path": "/tmp/myapp"}},
+        }
+        mock_files.return_value = ["src/main.py"]
+        mock_diff.return_value = "+x = 1"
+        check_security_review(str(tmp_path), "myapp", "/tmp/myapp")
+        entries = self._read_audit(str(tmp_path))
+        assert len(entries) == 1
+        assert entries[0]["approved"] is True
+        assert entries[0]["project"] == "myapp"
+        assert entries[0]["changed_files"] == ["src/main.py"]
+
+    @patch("app.post_mission_reflection.write_to_journal")
+    @patch("app.security_review.get_changed_files")
+    @patch("app.security_review.get_diff_against_base")
+    @patch("app.projects_config.load_projects_config")
+    def test_blocked_review_writes_audit_entry(
+        self, mock_config, mock_diff, mock_files, mock_journal, tmp_path
+    ):
+        """A blocked review records approved=False plus a block_reason."""
+        mock_config.return_value = {
+            "defaults": {"security_review": {
+                "enabled": True, "blocking": True, "severity_threshold": "high",
+            }},
+            "projects": {"myapp": {"path": "/tmp/myapp"}},
+        }
+        mock_files.return_value = [".env", "Dockerfile", "src/auth.py"] + [f"f{i}.py" for i in range(20)]
+        mock_diff.return_value = "\n".join([
+            "+eval(x)", "+os.system('cmd')", "+subprocess.run(x, shell=True)",
+        ])
+        check_security_review(str(tmp_path), "myapp", "/tmp/myapp")
+        entries = self._read_audit(str(tmp_path))
+        assert len(entries) == 1
+        assert entries[0]["approved"] is False
+        assert entries[0]["block_reason"]
+
+    @patch("app.post_mission_reflection.write_to_journal")
+    @patch("app.security_review.get_changed_files")
+    @patch("app.security_review.get_diff_against_base")
+    @patch("app.projects_config.load_projects_config")
+    def test_crashed_review_audits_error_and_reraises(
+        self, mock_config, mock_diff, mock_files, mock_journal, tmp_path
+    ):
+        """A crash during review records error_class and propagates the exception."""
+        mock_config.return_value = {
+            "defaults": {"security_review": {"enabled": True, "blocking": True}},
+            "projects": {"myapp": {"path": "/tmp/myapp"}},
+        }
+        mock_files.side_effect = RuntimeError("git diff exploded")
+        with pytest.raises(RuntimeError):
+            check_security_review(str(tmp_path), "myapp", "/tmp/myapp")
+        entries = self._read_audit(str(tmp_path))
+        assert len(entries) == 1
+        assert entries[0]["approved"] is False
+        assert entries[0]["error_class"] == "RuntimeError"
+        assert "exploded" in entries[0]["error_msg"]
+
+    def test_count_security_blocks_counts_recent_blocks_only(self, tmp_path):
+        from app.security_review import log_security_event, count_security_blocks
+
+        blocked = SecurityReviewResult(approved=False, risk_level="high", score=9)
+        approved = SecurityReviewResult(approved=True, risk_level="low", score=0)
+        log_security_event(str(tmp_path), "p", blocked, block_reason="x")
+        log_security_event(str(tmp_path), "p", blocked, block_reason="y")
+        log_security_event(str(tmp_path), "p", approved)
+        assert count_security_blocks(str(tmp_path), days=7) == 2
+
+    def test_count_security_blocks_missing_file_returns_zero(self, tmp_path):
+        from app.security_review import count_security_blocks
+        assert count_security_blocks(str(tmp_path), days=7) == 0

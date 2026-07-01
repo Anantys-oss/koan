@@ -746,11 +746,36 @@ def build_review_prompt(
     return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
 
 
+def _review_attribution(project_name: str = "") -> Tuple[str, str]:
+    """Return ``(provider_name, model)`` the review actually runs on.
+
+    Resolves the ``review_mode`` role against the same provider the review CLI
+    uses (``resolve_role_provider`` — including any launch-fallback swap) and
+    reads that provider's model section (``review_mode`` then ``mission``).
+    Single source of truth for both the review invocation and the footer
+    attribution, so the displayed provider/model can never drift from the
+    binary/model actually used.
+    """
+    from app.cli_provider import resolve_role_provider
+    from app.config import get_model_config
+
+    provider = resolve_role_provider("review_mode", project_name)
+    models = get_model_config(
+        project_name,
+        role_providers={
+            "review_mode": provider.name,
+            "mission": provider.name,
+        },
+    )
+    return provider.name, (models.get("review_mode") or models.get("mission", ""))
+
+
 def _run_claude_review(
     prompt: str,
     project_path: str,
     timeout: int = 600,
     model: Optional[str] = None,
+    project_name: str = "",
 ) -> Tuple[str, str]:
     """Run provider CLI with read-only tools and return the output text.
 
@@ -759,29 +784,40 @@ def _run_claude_review(
         project_path: Path to the project for codebase context.
         timeout: Maximum seconds to wait (default 600s — large PRs need
                  more time than the old 300s default).
-        model: Optional model override. When None, uses models["review_mode"]
-               if configured, otherwise models["mission"].
+        model: Optional model override. When None, the review_mode model is
+               resolved against the review_mode PROVIDER's section (so it
+               matches the binary the review runs on), falling back to that
+               provider's mission model.
+        project_name: Project name for per-project ``cli.review_mode`` overrides.
 
     Returns:
         (output, error) tuple. output is the provider's review text (empty on
         failure), error is the failure reason (empty on success).
     """
     from app.cli_provider import run_command_streaming
-    from app.config import get_model_config, get_skill_max_turns
+    from app.config import get_skill_max_turns
 
     if model is None:
-        models = get_model_config()
-        model = models.get("review_mode") or models.get("mission", "")
+        # Resolve the model against the review_mode provider (not the global
+        # one) so it matches the binary the review runs on — see
+        # _review_attribution, shared with the footer attribution below.
+        _, model = _review_attribution(project_name)
 
     try:
+        # Resolve the review-path CLI via the "review_mode" role (the cli:
+        # config section). This pins a review-specific provider/binary — e.g.
+        # cli.review_mode: claude:/path/to/review-claude — for every review
+        # call (main pass, reflect, error-hunter, bot triage) without affecting
+        # other missions or the write-capable fix step.
         output = run_command_streaming(
             prompt=prompt,
             project_path=project_path,
             allowed_tools=["Read", "Glob", "Grep"],
-            model_key="mission",
+            model_key="review_mode",
             model=model,
             max_turns=get_skill_max_turns(),
             timeout=timeout,
+            project_name=project_name,
         )
         return output, ""
     except RuntimeError as e:
@@ -793,6 +829,75 @@ def _run_claude_review(
         return "", error
 
 
+def _write_review_findings_sidecar(
+    instance_dir: str,
+    owner: str,
+    repo: str,
+    pr_number: str,
+    file_comments: list,
+    *,
+    base_ref: str,
+    head_sha: str,
+    project_name: str = "",
+) -> None:
+    """Write structured review findings to a sidecar JSON for post-merge outcome tracking."""
+    try:
+        import time as _time
+        sidecar_dir = Path(instance_dir) / ".review-findings"
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        sidecar_path = sidecar_dir / f"{owner}_{repo}_{pr_number}.json"
+        data = {
+            "pr_key": f"{owner}/{repo}#{pr_number}",
+            "project_name": project_name,
+            "base_ref": base_ref,
+            "head_sha": head_sha,
+            "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+            "file_comments": file_comments,
+        }
+        from app.utils import atomic_write_json
+        atomic_write_json(sidecar_path, data, indent=2)
+    except (OSError, TypeError, ValueError) as exc:
+        print(
+            f"[review_runner] failed to write review findings sidecar: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _load_calibration_hints(project_name: Optional[str]) -> str:
+    """Load calibration hints from learnings.md for the given project."""
+    if not project_name:
+        return ""
+    try:
+        learnings_path = (
+            KOAN_ROOT / "instance" / "memory" / "projects"
+            / project_name / "learnings.md"
+        )
+        if not learnings_path.is_file():
+            return ""
+        text = learnings_path.read_text()
+        last_section: list = []
+        in_section = False
+        for line in text.splitlines():
+            # Writer (_append_lessons_to_learnings) emits a level-2 heading:
+            # "## Review calibration (YYYY-MM-DD)". Match that, and end the
+            # section at the next level-2 heading.
+            if line.startswith("## Review calibration"):
+                in_section = True
+                last_section = [line]
+            elif in_section:
+                if line.startswith("## "):
+                    in_section = False
+                else:
+                    last_section.append(line)
+        return "\n".join(last_section).strip()
+    except OSError as exc:
+        print(
+            f"[review_runner] failed to load calibration hints: {exc}",
+            file=sys.stderr,
+        )
+        return ""
+
+
 def _reflect_findings(
     findings: list,
     diff: str,
@@ -800,6 +905,8 @@ def _reflect_findings(
     model: Optional[str],
     threshold: int,
     skill_dir: Optional[Path] = None,
+    calibration_hints: str = "",
+    project_name: str = "",
 ) -> list:
     """Run a second-pass reflection on review findings and filter low-signal ones.
 
@@ -813,6 +920,7 @@ def _reflect_findings(
         project_path: Path to the project for codebase context.
         model: Model override for the reflection call (uses lightweight default).
         threshold: Minimum score (0-10) for a finding to be kept.
+        calibration_hints: Optional calibration hints from outcome tracking.
 
     Returns:
         Filtered list of findings.
@@ -832,12 +940,15 @@ def _reflect_findings(
             skill_dir, "reflect",
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
+            CALIBRATION_HINTS=calibration_hints or "(no calibration data available)",
         )
     except Exception as e:
         print(f"[reflect] prompt build failed: {e}", file=sys.stderr)
         return findings
 
-    raw_output, error = _run_claude_review(prompt, project_path, model=model)
+    raw_output, error = _run_claude_review(
+        prompt, project_path, model=model, project_name=project_name,
+    )
     if not raw_output:
         return findings
 
@@ -895,6 +1006,7 @@ def _should_run_error_hunter(diff: str) -> bool:
 def _run_error_hunter(
     diff: str, project_path: str, skill_dir: Optional[Path],
     owner: str = "", repo: str = "", head_sha: str = "",
+    project_name: str = "",
 ) -> str:
     """Run the silent-failure-hunter pass and return formatted markdown section.
 
@@ -905,7 +1017,7 @@ def _run_error_hunter(
     else:
         prompt = load_prompt("silent-failure-hunter", DIFF=diff)
 
-    raw_output, error = _run_claude_review(prompt, project_path)
+    raw_output, error = _run_claude_review(prompt, project_path, project_name=project_name)
     if not raw_output:
         print(
             f"[review_runner] silent-failure-hunter pass failed: {error}",
@@ -1039,6 +1151,7 @@ def _run_bot_comment_triage(
     diff: str,
     skill_dir: Optional[Path],
     project_path: str = "",
+    project_name: str = "",
 ) -> List[dict]:
     """Run Claude triage on bot inline comments.
 
@@ -1068,7 +1181,7 @@ def _run_bot_comment_triage(
         return []
 
     try:
-        raw_output, error = _run_claude_review(prompt, project_path)
+        raw_output, error = _run_claude_review(prompt, project_path, project_name=project_name)
         if not raw_output:
             print(f"[review_runner] bot comment triage failed: {error}", file=sys.stderr)
             return []
@@ -2190,6 +2303,19 @@ def _resolve_verdict_config(project_name: Optional[str] = None) -> dict:
     return cfg
 
 
+def _is_self_review_error(error: Exception) -> bool:
+    """True when a verdict POST failed because the bot authored the PR.
+
+    GitHub returns HTTP 422 with a message like "Can not approve your own
+    pull request" (and the equivalent for request-changes). Matching the
+    422 status plus "own pull request" avoids treating unrelated 422s
+    (e.g. invalid commit_id, no commits between base and head) as
+    self-reviews.
+    """
+    msg = str(error).lower()
+    return "422" in msg and "own pull request" in msg
+
+
 def _submit_review_verdict(
     owner: str, repo: str, pr_number: str,
     approve: bool, head_sha: str,
@@ -2211,10 +2337,10 @@ def _submit_review_verdict(
         "No blocking issues found." if approve
         else "Blocking issues found — see the review comment above."
     )
+    reviews_path = f"repos/{owner}/{repo}/pulls/{pr_number}/reviews"
     try:
         run_gh(
-            "api",
-            f"repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+            "api", reviews_path,
             "-X", "POST",
             "-f", f"event={event}",
             "-f", f"body={review_body}",
@@ -2223,6 +2349,24 @@ def _submit_review_verdict(
         log("review", f"Submitted {event} verdict on PR #{pr_number}")
         return True
     except RuntimeError as e:
+        # GitHub forbids APPROVE / REQUEST_CHANGES on a PR you authored
+        # (HTTP 422). When the bot reviews its own PR, fall back to a COMMENT
+        # review so the verdict body still lands in the Reviewers panel
+        # instead of being lost to a misleading "failed to submit" error.
+        if _is_self_review_error(e):
+            try:
+                run_gh(
+                    "api", reviews_path,
+                    "-X", "POST",
+                    "-f", "event=COMMENT",
+                    "-f", f"body={review_body}",
+                    "-f", f"commit_id={head_sha}",
+                )
+                log("review", f"Posted {event} verdict as COMMENT on own PR #{pr_number}")
+                return True
+            except RuntimeError as e2:
+                log("review", f"Failed to submit {event} verdict on PR #{pr_number}: {e2}")
+                return False
         log("review", f"Failed to submit {event} verdict on PR #{pr_number}: {e}")
         return False
 
@@ -2279,6 +2423,7 @@ def _run_review_analysis(
     project_path: str,
     diff: str,
     skill_dir: Optional[Path] = None,
+    project_name: Optional[str] = None,
 ) -> Tuple[Optional[dict], str, Optional[str]]:
     """Run the provider review and parse it into structured review data.
 
@@ -2294,7 +2439,8 @@ def _run_review_analysis(
       - ``error``: short provider error string, set only when the provider
         produced no output at all.
     """
-    raw_output, error = _run_claude_review(prompt, project_path)
+    pname = project_name or ""
+    raw_output, error = _run_claude_review(prompt, project_path, project_name=pname)
     if not raw_output:
         return None, "", error
 
@@ -2306,16 +2452,27 @@ def _run_review_analysis(
             "You MUST respond with ONLY a valid JSON object matching the "
             "schema described above. No markdown, no text, just JSON."
         )
-        retry_output, _ = _run_claude_review(retry_prompt, project_path)
+        retry_output, _ = _run_claude_review(retry_prompt, project_path, project_name=pname)
         if retry_output:
             review_data = _parse_review_json(retry_output)
 
     if review_data is not None and review_data.get("file_comments"):
+        from app.cli_provider import resolve_role_provider
         from app.config import get_model_config, get_review_reflect_config
-        models = get_model_config()
+        # Resolve the reflect model against the review_mode PROVIDER's section,
+        # since the reflect pass runs on that same binary (see _run_claude_review).
+        review_provider = resolve_role_provider("review_mode", pname)
+        models = get_model_config(
+            pname,
+            role_providers={
+                "reflect": review_provider.name,
+                "lightweight": review_provider.name,
+            },
+        )
         reflect_cfg = get_review_reflect_config()
         reflect_model = models.get("reflect") or models.get("lightweight")
         reflect_threshold = reflect_cfg.get("threshold", 5)
+        calibration_hints = _load_calibration_hints(project_name)
         review_data["file_comments"] = _reflect_findings(
             review_data["file_comments"],
             diff,
@@ -2323,6 +2480,8 @@ def _run_review_analysis(
             reflect_model,
             reflect_threshold,
             skill_dir=skill_dir,
+            calibration_hints=calibration_hints,
+            project_name=pname,
         )
 
     return review_data, raw_output, error
@@ -2406,6 +2565,7 @@ def run_private_review(
     notify_fn(f"Analyzing code changes on `{context['branch']}` privately...")
     review_data, raw_output, error = _run_review_analysis(
         prompt, project_path, context.get("diff", ""), skill_dir=skill_dir,
+        project_name=project_name,
     )
     if not raw_output:
         detail = f" ({error})" if error else ""
@@ -2584,6 +2744,7 @@ def run_review(
                 triage_replies = _run_bot_comment_triage(
                     bot_inline, context.get("diff", ""), skill_dir,
                     project_path=project_path,
+                    project_name=project_name or "",
                 )
                 if triage_replies:
                     bot_reply_results = _post_comment_replies(
@@ -2617,20 +2778,16 @@ def run_review(
         prior_review=prior_review_text,
     )
 
-    # Resolve provider/model for footer attribution
-    from app.config import get_model_config as _get_model_config
-    from app.provider import get_provider_name
-    _review_models = _get_model_config()
-    review_model = (
-        _review_models.get("review_mode")
-        or _review_models.get("mission", "")
-    )
-    review_provider_name = get_provider_name()
+    # Resolve provider/model for footer attribution against the review_mode
+    # provider (the one the review actually runs on), so the footer reflects the
+    # binary/model used rather than the global provider.
+    review_provider_name, review_model = _review_attribution(project_name or "")
 
     # Step 3: Run provider review (read-only)
     notify_fn(f"Analyzing code changes on `{context['branch']}`...")
     review_data, raw_output, error = _run_review_analysis(
         prompt, project_path, context.get("diff", ""), skill_dir=skill_dir,
+        project_name=project_name,
     )
     if not raw_output:
         detail = f" ({error})" if error else ""
@@ -2695,6 +2852,7 @@ def run_review(
             triage_replies = _run_bot_comment_triage(
                 bot_inline, context.get("diff", ""), skill_dir,
                 project_path=project_path,
+                project_name=project_name or "",
             )
             if triage_replies:
                 bot_reply_results = _post_comment_replies(
@@ -2715,6 +2873,7 @@ def run_review(
             diff, project_path, skill_dir,
             owner=owner, repo=repo,
             head_sha=(current_shas[-1] if current_shas else ""),
+            project_name=project_name or "",
         )
         if error_section:
             review_body = review_body + "\n\n---\n\n" + error_section
@@ -2760,6 +2919,27 @@ def run_review(
             notify_fn(
                 f"Inline posting failed: 0 of {inline_attempted} comment(s) "
                 f"posted on PR #{pr_number}."
+            )
+
+    # Step 7a: Persist structured findings for post-merge outcome tracking
+    # Only written after review was successfully posted so we track
+    # findings that were actually delivered to the author.
+    if posted and review_data is not None:
+        _sidecar_head = current_shas[-1] if current_shas else ""
+        _sidecar_base = context.get("base", "main")
+        if _sidecar_head:
+            _write_review_findings_sidecar(
+                str(KOAN_ROOT / "instance"),
+                owner, repo, pr_number,
+                review_data.get("file_comments", []),
+                base_ref=_sidecar_base,
+                head_sha=_sidecar_head,
+                project_name=project_name or "",
+            )
+        else:
+            print(
+                "[review_runner] skipping outcome sidecar: no head SHA captured",
+                file=sys.stderr,
             )
 
     # Step 7b: Submit formal review verdict (APPROVE / REQUEST_CHANGES)

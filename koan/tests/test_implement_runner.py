@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 from app.github import fetch_issue_with_comments, detect_parent_repo
 from app.issue_tracker.types import IssueContent, IssueRef
 from app.issue_tracker import UnresolvedJiraProjectError
+from app.plan_runner import ASSUMPTIONS_OK, ASSUMPTIONS_CRITICAL
 from app.projects_config import get_project_submit_to_repository
 from skills.core.implement.implement_runner import (
     run_implement,
@@ -214,6 +215,7 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan", return_value=(True, "")), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
              patch(f"{_IMPL_MODULE}._write_plan_cache"):
@@ -227,6 +229,7 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan",
                     side_effect=[(False, issues), (True, "")]), \
              patch("app.plan_runner.improve_plan", return_value=improved), \
@@ -245,6 +248,7 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan",
                     side_effect=[(False, issues), (True, "")]), \
              patch("app.plan_runner.improve_plan", return_value="improved"), \
@@ -264,6 +268,7 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan",
                     side_effect=[(False, issues), (True, "")]), \
              patch("app.plan_runner.improve_plan", return_value=improved), \
@@ -286,6 +291,7 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan",
                     side_effect=[(False, "issues"), (True, "")]), \
              patch("app.plan_runner.improve_plan", return_value="improved"), \
@@ -303,6 +309,7 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan",
                     side_effect=[(False, "issues"), (True, "")]), \
              patch("app.plan_runner.improve_plan", return_value="improved"), \
@@ -341,6 +348,7 @@ class TestPlanReviewGate:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan", return_value=(True, "")), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
              patch(f"{_IMPL_MODULE}._write_plan_cache"):
@@ -395,6 +403,137 @@ class TestPlanReviewGate:
 
 
 # ---------------------------------------------------------------------------
+# Plan assumptions check (grill-me gate)
+# ---------------------------------------------------------------------------
+
+class TestPlanAssumptionsGate:
+    """Tests for the assumptions pressure-test phase in _run_plan_review_gate."""
+
+    _PLAN = "## Phase 1\nDo stuff\n" * 10
+
+    def test_critical_assumption_blocks_gate(self):
+        """When assumptions check finds a critical unverified assumption, gate blocks."""
+        reason = "3. [UNVERIFIED/CRITICAL] The timeout is caused by a socket leak"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "assumptions_check": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_CRITICAL, reason)), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch("app.plan_runner.review_plan") as mock_review:
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert isinstance(result, tuple)
+            assert result[0] is False
+            assert "socket leak" in result[1]
+            assert "critical unverified assumption" in result[1].lower()
+            mock_review.assert_not_called()
+
+    def test_assumptions_ok_proceeds_to_structural_critic(self):
+        """When assumptions pass, gate continues to structural critic."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "assumptions_check": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_OK, "")), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert result is None
+
+    def test_assumptions_check_disabled_skips(self):
+        """When assumptions_check is False, skip directly to structural critic."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "assumptions_check": False}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions") as mock_assumptions, \
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert result is None
+            mock_assumptions.assert_not_called()
+
+    def test_assumptions_default_enabled(self):
+        """When assumptions_check key is absent from config, check still runs."""
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_OK, "")) as mock_assumptions, \
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
+            _run_plan_review_gate(self._PLAN, "/project")
+            mock_assumptions.assert_called_once()
+
+    def test_critical_assumption_notifies_user(self):
+        """When a critical assumption blocks, notify_fn is called."""
+        notify = MagicMock()
+        reason = "Plan assumes API endpoint /v2/users exists but this is unverified"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_CRITICAL, reason)), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
+            result = _run_plan_review_gate(
+                self._PLAN, "/project", notify_fn=notify,
+            )
+            assert result[0] is False
+            notify.assert_called_once()
+            assert "critical unverified assumption" in notify.call_args[0][0].lower()
+
+    def test_reviewer_error_fails_open(self):
+        """Reviewer infrastructure failure falls through to structural critic (fail-open)."""
+        from app.plan_runner import ASSUMPTIONS_REVIEWER_ERROR
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_REVIEWER_ERROR, "assumptions subagent failed: model unavailable")), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")) as mock_review, \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert result is None
+            mock_review.assert_called_once()
+
+    def test_reviewer_error_notifies_user(self):
+        """Reviewer-error fail-open notifies the operator so degradation is visible."""
+        from app.plan_runner import ASSUMPTIONS_REVIEWER_ERROR
+        notify = MagicMock()
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_REVIEWER_ERROR, "model unavailable")), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
+            result = _run_plan_review_gate(
+                self._PLAN, "/project", notify_fn=notify,
+            )
+            assert result is None
+            notify.assert_called_once()
+            assert "reviewer error" in notify.call_args[0][0].lower()
+
+    def test_notify_failure_does_not_prevent_blocking(self):
+        """notify_fn exception doesn't prevent gate from blocking."""
+        notify = MagicMock(side_effect=RuntimeError("send failed"))
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_CRITICAL, "bad assumption")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
+            result = _run_plan_review_gate(
+                self._PLAN, "/project", notify_fn=notify,
+            )
+            assert result[0] is False
+
+
+# ---------------------------------------------------------------------------
 # Plan review improvement loop
 # ---------------------------------------------------------------------------
 
@@ -409,6 +548,7 @@ class TestPlanReviewImprovementLoop:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan",
                     side_effect=[(False, "missing paths"), (True, "")]), \
              patch("app.plan_runner.improve_plan", return_value=improved), \
@@ -427,6 +567,7 @@ class TestPlanReviewImprovementLoop:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 2}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
              patch("app.plan_runner.improve_plan", return_value="better but not perfect"), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
@@ -443,6 +584,7 @@ class TestPlanReviewImprovementLoop:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 2}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
              patch("app.plan_runner.improve_plan", return_value=self._PLAN), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
@@ -459,6 +601,7 @@ class TestPlanReviewImprovementLoop:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 3}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan",
                     side_effect=[(False, issues), (True, "")]), \
              patch("app.plan_runner.improve_plan",
@@ -485,6 +628,7 @@ class TestPlanReviewImprovementLoop:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 2}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
              patch("app.plan_runner.improve_plan", side_effect=counting_improve), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
@@ -499,6 +643,7 @@ class TestPlanReviewImprovementLoop:
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 2}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
              patch("app.plan_runner.improve_plan", return_value="improved"), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
@@ -583,6 +728,7 @@ class TestPlanReviewCache:
              patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan", return_value=(True, "")), \
              patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_write:
             _run_plan_review_gate("## Phase 1\nDo stuff", "/project")
@@ -594,6 +740,7 @@ class TestPlanReviewCache:
              patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "max_rounds": 2}), \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions", return_value=(ASSUMPTIONS_OK, "")), \
              patch("app.plan_runner.review_plan", return_value=(False, "issues")), \
              patch("app.plan_runner.improve_plan", return_value="still bad"), \
              patch(f"{_IMPL_MODULE}._write_plan_cache") as mock_write, \

@@ -508,6 +508,36 @@ class TestRunPostMission:
         assert result["usage_updated"] is True
         assert result["quota_exhausted"] is False
 
+    @patch("app.mission_runner.commit_instance")
+    @patch("app.mission_runner.check_security_review", side_effect=Exception("review crashed"))
+    @patch("app.mission_runner.check_auto_merge", return_value="koan0/x")
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_security_review_crash_fails_closed(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_sec, mock_commit, tmp_path,
+    ):
+        """A crashed security review blocks auto-merge (fail-closed)."""
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+        )
+
+        assert result["security_review_passed"] is False
+        mock_merge.assert_not_called()
+
     @patch("app.mission_runner.check_auto_merge", return_value=None)
     @patch("app.mission_runner.trigger_reflection", return_value=False)
     @patch("app.mission_runner.archive_pending", return_value=False)
@@ -1727,7 +1757,9 @@ class TestBuildMissionCommandProjectOverrides:
                 "mission": "sonnet", "review_mode": "", "fallback": "haiku",
             }
             build_mission_command(prompt="test", project_name="backend")
-            mock_models.assert_called_once_with("backend")
+            # project_name is forwarded as the first positional arg; the
+            # role_providers kwarg is an implementation detail.
+            assert mock_models.call_args.args[0] == "backend"
 
     @patch("app.cli_provider.get_provider_name", return_value="claude")
     def test_multiple_plugin_dirs(self, mock_provider):

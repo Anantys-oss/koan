@@ -21,6 +21,36 @@ Configuration via environment:
 The dashboard reads shared state from `instance/` (missions, journal, signals, memory,
 config) and exposes a JSON/SSE API under `/api/*`.
 
+## Architecture
+
+The dashboard is a Flask **blueprint package** at `koan/app/dashboard/`, built by a
+`create_app()` factory that mirrors the REST-API factory (`koan/app/api/__init__.py`).
+Routes are grouped by domain into one blueprint per file:
+
+| Blueprint | Owns |
+|-----------|------|
+| `core` | `/`, `/login`, `/logout`, `/api/forecast`, `/api/status`, `/api/health`, `/api/provider` |
+| `missions` | `/missions*`, `/api/missions*`, `/api/projects`, `/api/attention*` |
+| `chat` | `/chat*`, `/progress`, `/api/progress*`, `/api/state/stream` |
+| `usage` | `/usage`, `/api/usage*`, `/api/metrics`, `/api/efficiency`, `/api/skill-metrics`, `/journal`, `/api/journal/<day>`, `/logs`, `/api/logs` |
+| `agent` | `/agent`, `/skills`, `/api/agent/*` |
+| `config` | `/config`, `/api/config/*`, `/api/nickname`, `/rules`, `/api/rules*`, `/recurring`, `/api/recurring*` |
+| `prs` | `/prs`, `/api/prs*`, `/plans`, `/api/plans*` |
+
+Supporting modules:
+
+- **`dashboard/state.py`** — patchable module globals (paths, `CHAT_TIMEOUT`, `DASHBOARD_PWD`,
+  caches, regexes). Route handlers read `state.X` at request time so a single patch target
+  affects everything.
+- **`dashboard/_helpers.py`** — passphrase gate, static cache-buster, context processor, and
+  template filters, attached via `register_helpers(app)`.
+- **`dashboard_service/`** — pure business logic (mission parsing, journal/rule-history readers,
+  plan-progress parsing, forecast & metric computation), unit-testable without a Flask client.
+
+Templates live under `koan/templates/dashboard/`; static assets under `koan/static/`. The
+runnable entry point is `koan/app/dashboard/__main__.py` (invoked by `make dashboard` and
+`pid_manager.start_dashboard()`).
+
 ### Passphrase gate
 
 By default the dashboard is unauthenticated and meant for local-only use
@@ -48,6 +78,7 @@ dashboard starts automatically on `0.0.0.0:5000` and **requires** the passphrase
 | `/logs` | Recent log lines with source filter and search |
 | `/agent` | Read-only introspection: soul, memory, skills, config |
 | `/rules` | Automation rules CRUD |
+| `/projects` | Project registry / welcome screen — one card per project (mission counts, GitHub link, provider/model, config checklist) + add-project modal. `/` redirects here when 2+ projects are configured |
 
 ### Usage activity backfill
 
@@ -66,6 +97,35 @@ python -m app.backfill_usage --start 2026-05-30 --apply
 Synthetic rows carry a `"backfill": true` marker (zero tokens/cost — counts only, since token
 data is unrecoverable) and the tool is idempotent: re-running writes nothing already present and
 credits any real rows so days are never over-counted.
+
+### Projects page
+
+`/projects` is the multi-project welcome screen. Each configured project (from
+`projects.yaml`, falling back to `KOAN_PROJECTS`) renders as a card showing:
+
+- Name and clickable GitHub URL (shown only when `github_url` is set)
+- Pending / in-progress mission counts (from `missions.md`, grouped by `[project:name]` tag)
+- Last activity — the newest mtime among that project's `instance/journal/YYYY-MM-DD/<project>.md`
+  files, or **N/A** when none exist (best-effort; no subprocess, so nothing can hang)
+- CLI provider and `mission` model from the merged per-project config
+- A **configuration checklist** that flags a missing `github_url` (and notes when no
+  `cli_provider` is set), each linking to `/config` for an inline fix
+- Quick actions: **PRs** (`/prs?project=…`), **Add mission** (`/missions?project=…`),
+  **Settings** (`/config`)
+
+`GET /api/projects/<name>/status` returns a single project's card as JSON for async refresh.
+The add-project modal validates the GitHub URL client-side, then `POST`s to `/projects/add`,
+which runs the `add_project` skill in-process and appends the project to `projects.yaml`.
+
+> **Global pause caveat:** the card's **"Pause agent (global)"** button calls
+> `/api/agent/pause`, which pauses the **entire agent** via `pause_manager.create_pause()`.
+> Kōan has no per-project pause; the label is explicit so this is not mistaken for pausing
+> a single project. Resume from the agent controls or `/api/agent/resume`.
+
+Routing note: `/` (the `core.index` route) redirects to `/projects` when 2+ projects are
+configured; a single-project install keeps the classic single-project dashboard at `/`.
+An explicit `?project=<name>` bypasses the redirect, so the classic single-project view
+stays reachable on multi-project installs (e.g. the registry's per-project links).
 
 ## Layout
 

@@ -117,8 +117,8 @@ def fetch_unresolved_review_comments(
     results: List[dict] = []
     try:
         raw = run_gh(
-            "api", f"repos/{full_repo}/pulls/{pr_number}/comments",
-            "--limit", "100", "--jq",
+            "api", f"repos/{full_repo}/pulls/{pr_number}/comments?per_page=100",
+            "--jq",
             r'.[] | {id: .id, user: .user.login, body: .body, path: .path, user_type: .user.type}',
             timeout=15,
         )
@@ -161,8 +161,8 @@ def fetch_review_body_comments(
     results: List[dict] = []
     try:
         raw = run_gh(
-            "api", f"repos/{full_repo}/pulls/{pr_number}/reviews",
-            "--limit", "100", "--jq",
+            "api", f"repos/{full_repo}/pulls/{pr_number}/reviews?per_page=100",
+            "--jq",
             r'.[] | {id: .id, user: .user.login, body: .body, state: .state, user_type: .user.type}',
             timeout=15,
         )
@@ -265,6 +265,14 @@ def _resolve_full_repo(project_path: str) -> Optional[str]:
         )
         return raw.strip() or None
     except RuntimeError:
+        # gh non-zero exit (no repo, auth, etc.) — expected, stay quiet.
+        return None
+    except FileNotFoundError:
+        # project_path no longer exists on disk (stale config / unmounted volume).
+        return None
+    except OSError as e:
+        # Permission denied, ENOTDIR, I/O fault — unexpected; surface it.
+        log.warning("Failed to resolve repo for %s: %s", project_path, e)
         return None
 
 
@@ -325,6 +333,15 @@ def check_and_dispatch_review_comments(
     tracker_changed = pruned > 0
 
     for project_name, project_path in projects:
+        # Match projects_merged's expanduser()-based check so a '~'-style
+        # path is resolved identically in both layers (no false skip).
+        if not Path(project_path).expanduser().is_dir():
+            log.debug(
+                "Skipping project '%s': path does not exist: %s",
+                project_name, project_path,
+            )
+            continue
+
         project_key = f"cooldown:{project_name}"
         last_check = tracker.get(project_key, 0)
         if now - last_check < cooldown_secs:

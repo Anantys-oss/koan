@@ -369,6 +369,7 @@ def run_cli_with_retry(
     *,
     max_attempts: int = CLI_RETRY_MAX_ATTEMPTS,
     backoff: Sequence[float] = CLI_RETRY_BACKOFF,
+    provider: Optional[CLIProvider] = None,
     **kwargs,
 ) -> subprocess.CompletedProcess:
     """Run a CLI command with automatic retry on transient errors.
@@ -386,6 +387,10 @@ def run_cli_with_retry(
         cmd: Command list for subprocess.
         max_attempts: Maximum number of attempts (default 3).
         backoff: Sleep durations between retries.
+        provider: Explicit provider instance (per-role CLI). Forwarded to
+            :func:`run_cli` for stdin-rewrite / invocation-lock, and its name
+            drives provider-specific error classification. ``None`` uses the
+            global provider.
         **kwargs: Passed through to :func:`run_cli`.
 
     Returns:
@@ -397,9 +402,11 @@ def run_cli_with_retry(
     kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)
 
+    provider_name = provider.name if provider is not None else ""
+
     last_result = None
     for attempt in range(max_attempts):
-        result = run_cli(cmd, **kwargs)
+        result = run_cli(cmd, provider=provider, **kwargs)
         last_result = result
 
         if result.returncode == 0:
@@ -409,6 +416,7 @@ def run_cli_with_retry(
             result.returncode,
             stdout=result.stdout or "",
             stderr=result.stderr or "",
+            provider_name=provider_name,
         )
 
         if category != ErrorCategory.RETRYABLE:

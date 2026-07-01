@@ -12,7 +12,7 @@ sub_commands: [review, rebase]
 commands:
   - name: reviewrebase
     description: "Queue /review then /rebase for a PR — review insights feed the rebase"
-    usage: "/reviewrebase <github-pr-url>"
+    usage: "/reviewrebase [--now] <github-pr-url>"
     aliases: [rr]
 handler: handler.py
 ---

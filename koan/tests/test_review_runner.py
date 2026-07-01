@@ -32,6 +32,8 @@ from app.review_runner import (
     _fix_nested_fences,
     _github_blob_url,
     _parse_line_hint,
+    _write_review_findings_sidecar,
+    _load_calibration_hints,
 )
 
 
@@ -4580,7 +4582,8 @@ class TestRunClaudeReviewModelOverride:
 
         _, kwargs = mock_run.call_args
         assert kwargs.get("model") == "review-model"
-        assert kwargs.get("model_key") == "mission"
+        # The review path resolves its CLI via the "review_mode" role (cli:).
+        assert kwargs.get("model_key") == "review_mode"
 
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "", "mission": "mission-model"})
@@ -4596,7 +4599,152 @@ class TestRunClaudeReviewModelOverride:
 
         _, kwargs = mock_run.call_args
         assert kwargs.get("model") == "mission-model"
-        assert kwargs.get("model_key") == "mission"
+        # The review path resolves its CLI via the "review_mode" role (cli:).
+        assert kwargs.get("model_key") == "review_mode"
+
+
+class TestReviewBinaryRouting:
+    """End-to-end: the review subprocess binary follows cli.review_mode.
+
+    Closes the verification gap from PR #2251 review (Important #1): proves the
+    review *binary*, not just the model_key, routes through the review_mode
+    provider — replacing KOAN_CLAUDE_CLI_FOR_REVIEW_PATH.
+    """
+
+    def test_review_command_uses_cli_review_mode_binary(self):
+        from unittest.mock import MagicMock, patch
+        import app.provider as provider
+        from app.review_runner import _run_claude_review
+
+        # Global provider is codex; reviews are pinned to a custom claude binary.
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "skip_permissions": False,
+        }
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["cmd"] = cmd
+            captured["provider"] = provider
+            proc = MagicMock()
+            stdout = MagicMock()
+            stdout.__iter__.return_value = iter([])  # no stream output
+            proc.stdout = stdout
+            proc.stderr.read.return_value = ""
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc, (lambda: None)
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            _run_claude_review("review this", "/tmp/project")
+
+        # The command that ran is the cli.review_mode binary, and popen_cli
+        # received the matching review_mode provider instance.
+        assert captured["cmd"][0] == "/opt/review-claude"
+        assert captured["provider"].name == "claude"
+        assert captured["provider"].binary() == "/opt/review-claude"
+
+    def test_review_model_resolves_from_review_provider_section(self):
+        """The review --model comes from models.<review_provider>.review_mode,
+        not the global provider's section (PR #2251 comment-4848143029)."""
+        from unittest.mock import MagicMock, patch
+        import app.provider as provider
+        from app.review_runner import _run_claude_review
+
+        # Global codex; reviews pinned to Claude. The review model must be the
+        # Claude review_mode model (opus), NOT the codex one.
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "models": {
+                "default": {"review_mode": ""},
+                "codex": {"review_mode": "codex-WRONG"},
+                "claude": {"review_mode": "opus"},
+            },
+            "skip_permissions": False,
+        }
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["cmd"] = cmd
+            proc = MagicMock()
+            stdout = MagicMock()
+            stdout.__iter__.return_value = iter([])
+            proc.stdout = stdout
+            proc.stderr.read.return_value = ""
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc, (lambda: None)
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            _run_claude_review("review this", "/tmp/project")
+
+        cmd = captured["cmd"]
+        assert "--model" in cmd
+        assert cmd[cmd.index("--model") + 1] == "opus"
+        assert "codex-WRONG" not in cmd
+
+    def test_review_attribution_uses_review_provider(self):
+        """The footer attribution (provider + model) reflects the review_mode
+        provider, not the global one (PR #2251 comment-4848512613)."""
+        from unittest.mock import patch
+        import app.provider as provider
+        from app.review_runner import _review_attribution
+
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "models": {
+                "codex": {"review_mode": "codex-WRONG"},
+                "claude": {"review_mode": "opus"},
+            },
+        }
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full):
+            provider.reset_provider()
+            name, model = _review_attribution()
+        assert name == "claude"
+        assert model == "opus"
+
+    def test_per_project_cli_review_mode_applies(self):
+        """A per-project cli.review_mode override routes the review binary."""
+        from unittest.mock import MagicMock, patch
+        import app.provider as provider
+        from app.review_runner import _run_claude_review
+
+        full = {"cli_provider": "codex", "skip_permissions": False}
+        project_overrides = {"cli": {"review_mode": "claude:/opt/proj-review-claude"}}
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["cmd"] = cmd
+            proc = MagicMock()
+            stdout = MagicMock()
+            stdout.__iter__.return_value = iter([])
+            proc.stdout = stdout
+            proc.stderr.read.return_value = ""
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc, (lambda: None)
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value=project_overrides), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            _run_claude_review("review this", "/tmp/project", project_name="myproj")
+
+        assert captured["cmd"][0] == "/opt/proj-review-claude"
 
 
 # ---------------------------------------------------------------------------
@@ -4677,6 +4825,142 @@ class TestRunReviewReflectionIntegration:
         )
 
         mock_reflect.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Calibration hints: _load_calibration_hints + threading into reflect pass
+# ---------------------------------------------------------------------------
+
+
+class TestLoadCalibrationHints:
+    """_load_calibration_hints extracts the calibration section from learnings.md."""
+
+    def _write_learnings(self, koan_root, project_name, body):
+        path = (
+            koan_root / "instance" / "memory" / "projects"
+            / project_name / "learnings.md"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+
+    def test_returns_empty_without_project_name(self):
+        assert _load_calibration_hints(None) == ""
+        assert _load_calibration_hints("") == ""
+
+    def test_returns_empty_when_no_learnings_file(self, tmp_path):
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            assert _load_calibration_hints("proj") == ""
+
+    def test_returns_empty_when_no_calibration_section(self, tmp_path):
+        self._write_learnings(tmp_path, "proj", "## Other lessons\n- be careful\n")
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            assert _load_calibration_hints("proj") == ""
+
+    def test_extracts_calibration_section(self, tmp_path):
+        body = (
+            "## Other lessons\n- unrelated\n\n"
+            "## Review calibration (2026-06-01)\n"
+            "- raise threshold to 6\n\n"
+            "## Later section\n- ignore me\n"
+        )
+        self._write_learnings(tmp_path, "proj", body)
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            hints = _load_calibration_hints("proj")
+        assert "## Review calibration (2026-06-01)" in hints
+        assert "raise threshold to 6" in hints
+        # Bounded to the calibration section: neighbours excluded.
+        assert "unrelated" not in hints
+        assert "ignore me" not in hints
+
+
+class TestCalibrationHintsThreadedToReflect:
+    """Regression: calibration hints must reach _reflect_findings (dead loop bug)."""
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._reflect_findings")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.config.get_review_reflect_config", return_value={"threshold": 5})
+    @patch("app.config.get_model_config", return_value={
+        "mission": "m", "fallback": "f", "reflect": "haiku", "lightweight": "haiku",
+    })
+    @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
+    def test_reflect_receives_calibration_hints_from_learnings(
+        self, _mock_ignore, _mock_models, _mock_reflect_cfg,
+        mock_fetch, mock_claude, mock_reflect, mock_gh, _mock_repliable, _mock_shas,
+        review_skill_dir, tmp_path,
+    ):
+        """When learnings.md has a calibration section, reflect gets it (non-empty)."""
+        learnings = (
+            tmp_path / "instance" / "memory" / "projects" / "myproj" / "learnings.md"
+        )
+        learnings.parent.mkdir(parents=True, exist_ok=True)
+        learnings.write_text(
+            "## Review calibration (2026-06-01)\n- lower threshold to 4\n"
+        )
+
+        pr_ctx = {
+            "title": "t", "body": "", "branch": "b", "base": "main",
+            "state": "OPEN", "author": "a", "url": "u",
+            "diff": "some diff",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        mock_fetch.return_value = pr_ctx
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+        mock_reflect.return_value = []
+
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            run_review(
+                "owner", "repo", "1", "/tmp/project",
+                notify_fn=MagicMock(),
+                skill_dir=review_skill_dir,
+                project_name="myproj",
+            )
+
+        mock_reflect.assert_called_once()
+        hints = mock_reflect.call_args.kwargs.get("calibration_hints", "")
+        assert hints
+        assert "lower threshold to 4" in hints
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._reflect_findings")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.config.get_review_reflect_config", return_value={"threshold": 5})
+    @patch("app.config.get_model_config", return_value={
+        "mission": "m", "fallback": "f", "reflect": "haiku", "lightweight": "haiku",
+    })
+    @patch("app.config.get_review_ignore_config", return_value={"glob": [], "regex": []})
+    def test_reflect_hints_empty_without_calibration_section(
+        self, _mock_ignore, _mock_models, _mock_reflect_cfg,
+        mock_fetch, mock_claude, mock_reflect, mock_gh, _mock_repliable, _mock_shas,
+        review_skill_dir, tmp_path,
+    ):
+        """No calibration section → reflect gets empty hints (graceful default)."""
+        pr_ctx = {
+            "title": "t", "body": "", "branch": "b", "base": "main",
+            "state": "OPEN", "author": "a", "url": "u",
+            "diff": "some diff",
+            "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        mock_fetch.return_value = pr_ctx
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+        mock_reflect.return_value = []
+
+        with patch("app.review_runner.KOAN_ROOT", tmp_path):
+            run_review(
+                "owner", "repo", "1", "/tmp/project",
+                notify_fn=MagicMock(),
+                skill_dir=review_skill_dir,
+                project_name="myproj",
+            )
+
+        mock_reflect.assert_called_once()
+        assert mock_reflect.call_args.kwargs.get("calibration_hints", "") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -5241,6 +5525,64 @@ class TestSubmitReviewVerdict:
         result = _submit_review_verdict("owner", "repo", "42", approve=True, head_sha="abc")
         assert result is False
 
+    def test_self_approve_falls_back_to_comment(self):
+        """GitHub forbids approving your own PR (HTTP 422). The verdict body
+        must still land as a COMMENT review instead of being lost."""
+        from app.review_runner import _submit_review_verdict
+
+        self_err = RuntimeError(
+            "gh failed: gh api repos/owner/repo... — gh: Unprocessable Entity "
+            '(HTTP 422)\n{"message":"Unprocessable Entity","errors":'
+            '["Can not approve your own pull request"]}'
+        )
+        calls = []
+
+        def fake_gh(*args, **kwargs):
+            calls.append(args)
+            if any(a == "event=APPROVE" for a in args):
+                raise self_err
+            return ""
+
+        with patch("app.review_runner.run_gh", side_effect=fake_gh):
+            result = _submit_review_verdict(
+                "owner", "repo", "42", approve=True, head_sha="abc",
+            )
+        assert result is True
+        # First attempt APPROVE, second attempt COMMENT with the same body.
+        assert any("event=APPROVE" in a for a in calls[0])
+        assert any("event=COMMENT" in a for a in calls[1])
+
+    def test_self_request_changes_falls_back_to_comment(self):
+        """REQUEST_CHANGES on your own PR is also rejected with 422."""
+        from app.review_runner import _submit_review_verdict
+
+        self_err = RuntimeError(
+            "gh: Unprocessable Entity (HTTP 422) "
+            "Can not request changes on your own pull request"
+        )
+
+        def fake_gh(*args, **kwargs):
+            if any(a == "event=REQUEST_CHANGES" for a in args):
+                raise self_err
+            return ""
+
+        with patch("app.review_runner.run_gh", side_effect=fake_gh):
+            result = _submit_review_verdict(
+                "owner", "repo", "42", approve=False, head_sha="abc",
+            )
+        assert result is True
+
+    @patch("app.review_runner.run_gh",
+           side_effect=RuntimeError("gh: Unprocessable Entity (HTTP 422) "
+                                    "No commits between base and head"))
+    def test_unrelated_422_does_not_fall_back(self, mock_gh):
+        """A 422 that is not a self-review limitation must not be silently
+        retried as a COMMENT — it returns False so the failure stays visible."""
+        from app.review_runner import _submit_review_verdict
+        result = _submit_review_verdict("owner", "repo", "42", approve=True, head_sha="abc")
+        assert result is False
+        assert mock_gh.call_count == 1
+
     @patch("app.review_runner.run_gh")
     def test_custom_body(self, mock_gh):
         from app.review_runner import _submit_review_verdict
@@ -5783,6 +6125,37 @@ class TestRunBotCommentTriage:
         replies = _run_bot_comment_triage(bot_comments, "diff", skill_dir)
         assert replies == []
 
+    @patch("app.review_runner._run_claude_review")
+    def test_forwards_project_name_to_claude_review(self, mock_claude):
+        """Per-project cli.review_mode is honored: project_name reaches the review CLI."""
+        from app.review_runner import _run_bot_comment_triage
+        mock_claude.return_value = ("[]", "")
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+        _run_bot_comment_triage(
+            [{"id": 1, "body": "x", "path": "a.py", "line": 1}],
+            "diff", skill_dir, project_name="my-toolkit",
+        )
+        _, kwargs = mock_claude.call_args
+        assert kwargs["project_name"] == "my-toolkit"
+
+
+# ---------------------------------------------------------------------------
+# Silent-failure-hunter pass — project_name threading
+# ---------------------------------------------------------------------------
+
+class TestRunErrorHunter:
+    """Tests for _run_error_hunter (silent-failure-hunter pass)."""
+
+    @patch("app.review_runner._run_claude_review")
+    def test_forwards_project_name_to_claude_review(self, mock_claude):
+        """Per-project cli.review_mode is honored on the error-hunter pass too."""
+        from app.review_runner import _run_error_hunter
+        mock_claude.return_value = ("", "boom")
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+        _run_error_hunter("diff", "/tmp/proj", skill_dir, project_name="my-toolkit")
+        _, kwargs = mock_claude.call_args
+        assert kwargs["project_name"] == "my-toolkit"
+
 
 # ---------------------------------------------------------------------------
 # Bot comment triage — run_review integration
@@ -5990,3 +6363,128 @@ class TestMaybePostInlineComments:
             assert _maybe_post_inline_comments(
                 "o", "r", "42", {"file_comments": []}, "abc123") == (0, 0)
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Review findings sidecar: _write_review_findings_sidecar
+# ---------------------------------------------------------------------------
+
+class TestWriteReviewFindingsSidecar:
+    def test_writes_sidecar_file(self, tmp_path):
+        """Sidecar JSON is written with correct structure."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        findings = [
+            {"file": "auth.py", "line_start": 10, "line_end": 12,
+             "severity": "warning", "title": "Mutable default",
+             "comment": "Use None instead", "code_snippet": ""},
+        ]
+        _write_review_findings_sidecar(
+            str(instance_dir), "owner", "repo", "42",
+            findings, base_ref="main", head_sha="abc123",
+            project_name="my-proj",
+        )
+        sidecar_path = instance_dir / ".review-findings" / "owner_repo_42.json"
+        assert sidecar_path.exists()
+        data = json.loads(sidecar_path.read_text())
+        assert data["base_ref"] == "main"
+        assert data["head_sha"] == "abc123"
+        assert data["pr_key"] == "owner/repo#42"
+        assert data["project_name"] == "my-proj"
+        assert len(data["file_comments"]) == 1
+        assert data["file_comments"][0]["file"] == "auth.py"
+        assert "timestamp" in data
+
+    def test_creates_directory_if_missing(self, tmp_path):
+        """The .review-findings directory is auto-created."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        _write_review_findings_sidecar(
+            str(instance_dir), "o", "r", "1",
+            [], base_ref="main", head_sha="def456",
+        )
+        assert (instance_dir / ".review-findings" / "o_r_1.json").exists()
+
+    def test_empty_findings_still_writes(self, tmp_path):
+        """Even with zero findings, a sidecar is written (records clean reviews)."""
+        instance_dir = tmp_path / "instance"
+        instance_dir.mkdir()
+        _write_review_findings_sidecar(
+            str(instance_dir), "o", "r", "1",
+            [], base_ref="main", head_sha="aaa",
+        )
+        data = json.loads(
+            (instance_dir / ".review-findings" / "o_r_1.json").read_text()
+        )
+        assert data["file_comments"] == []
+
+    def test_survives_write_error(self, tmp_path):
+        """Write failures are swallowed (no exception raised)."""
+        _write_review_findings_sidecar(
+            "/nonexistent/path", "o", "r", "1",
+            [], base_ref="main", head_sha="bbb",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Review calibration config: get_review_calibration_config
+# ---------------------------------------------------------------------------
+
+class TestReviewCalibrationConfig:
+    """Tests for get_review_calibration_config() in app.config."""
+
+    def test_defaults_when_no_config(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={}):
+            cfg = get_review_calibration_config()
+        assert cfg == {"batch_size": 10, "stale_days": 90}
+
+    def test_reads_custom_values(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"batch_size": 20, "stale_days": 30},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["batch_size"] == 20
+        assert cfg["stale_days"] == 30
+
+    def test_non_dict_returns_defaults(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": "invalid",
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg == {"batch_size": 10, "stale_days": 90}
+
+    def test_invalid_batch_size_type(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"batch_size": "not_a_number"},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["batch_size"] == 10
+
+    def test_zero_batch_size_clamped_to_one(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"batch_size": 0},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["batch_size"] == 1
+
+    def test_negative_stale_days_clamped_to_one(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"stale_days": -5},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["stale_days"] == 1
+
+    def test_partial_config_uses_defaults(self):
+        from app.config import get_review_calibration_config
+        with patch("app.config._load_config", return_value={
+            "review_calibration": {"batch_size": 15},
+        }):
+            cfg = get_review_calibration_config()
+        assert cfg["batch_size"] == 15
+        assert cfg["stale_days"] == 90

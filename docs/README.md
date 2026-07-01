@@ -8,12 +8,18 @@ the same baseline.
 When code and docs disagree, treat code as the immediate source of truth, then
 update the relevant docs in the same change.
 
+For **design contracts** (why a component exists, the invariants it upholds, what
+breaks if you change it), see [`specs/`](../specs/README.md) — the single source of
+truth for design. Specs drive implementation and refactoring; these docs explain how
+to operate Koan. Most non-trivial changes update both.
+
 ## Start Here
 
+- [Quickstart](users/quickstart.md) - the 5-minute zero-to-hero guide: what to type from GitHub, Jira, and your messaging app.
 - [User Manual](users/user-manual.md) - daily use, workflows, and command guide.
 - [Onboarding](users/onboarding.md) - first-run setup and configuration flow.
 - [Skills Reference](users/skills.md) - built-in command reference.
-- [Provider Setup](providers/) - Claude, Cline, Codex, Copilot, and Ollama Launch (local models) providers; plus [OpenRouter via the Claude CLI](providers/openrouter.md).
+- [Provider Setup](providers/) - Claude, Cline, Codex, Copilot, and Ollama Launch (local models) providers; plus [OpenRouter via the Claude CLI](providers/openrouter.md), [OpenCode Go via the Claude CLI](providers/opencode.md), [Local Ollama via the Claude CLI](providers/ollama-wrapper.md), and [Z.ai (GLM) via the Claude CLI](providers/zai.md).
 - [Messaging Setup](messaging/) - Telegram, Slack, Matrix, Discord, GitHub, and Jira.
 - [Troubleshooting](operations/troubleshooting.md) - common issues and how to fix them.
 
@@ -38,7 +44,7 @@ memory, or integration changes:
 ## Directory Map
 
 - `users/` - user manual, onboarding, and command references.
-- `setup/` - installation and host runtime setup (see [Deploy on Railway](setup/railway.md)).
+- `setup/` - installation and host runtime setup (see [Deploy on Railway](setup/railway.md), [systemd `--user` service](setup/systemd-user.md), [launchd service](setup/launchd.md)).
 - `providers/` - CLI and local model provider setup and behavior.
 - `messaging/` - messaging and issue-tracker integration setup.
 - `operations/` - maintenance, troubleshooting, self-update, and optional operational tools (dashboard, REST API, auto-update, RTK).

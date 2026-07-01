@@ -307,6 +307,63 @@ class TestFlush:
 
         assert staging_existed == [True]
 
+    @patch("app.outbox_manager.log")
+    def test_flush_truncate_failure_does_not_duplicate(self, mock_log, outbox_env):
+        """A failed truncation must not cause the message to be sent twice.
+
+        Bug: in phase 1, ``atomic_write(staging)`` succeeds and then
+        ``f.truncate()`` raises (e.g. transient I/O error). The outbox file
+        still holds the content AND staging holds a copy. On the next flush,
+        ``recover_staged()`` re-queues the staged copy on top of the
+        un-cleared outbox content, so the same message is delivered twice.
+        """
+        mgr, outbox_file, _ = outbox_env
+        outbox_file.write_text("hello world")
+
+        real_open = open
+
+        class _NoTruncateFile:
+            """Proxy that delegates everything to a real file but fails on
+            truncate(), simulating a transient I/O error mid-clear."""
+
+            def __init__(self, real):
+                self._real = real
+
+            def truncate(self, *a):
+                raise OSError("disk full")
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+            def __enter__(self):
+                self._real.__enter__()
+                return self
+
+            def __exit__(self, *a):
+                return self._real.__exit__(*a)
+
+        def faulty_open(*args, **kwargs):
+            return _NoTruncateFile(real_open(*args, **kwargs))
+
+        # First flush: truncation fails after staging is written.
+        with patch("app.outbox_manager.open", faulty_open, create=True):
+            mgr.flush()
+
+        # Subsequent flushes: count how many times the content is sent.
+        sent = []
+        with patch("app.outbox_manager.scan_and_log",
+                   return_value=MagicMock(blocked=False)), \
+             patch("app.outbox_manager.send_telegram",
+                   side_effect=lambda msg, **kw: sent.append(msg) or True), \
+             patch.object(mgr, "_format_message", side_effect=lambda c: c), \
+             patch.object(mgr, "_expand_github_refs", side_effect=lambda f, c: f), \
+             patch("app.outbox_manager.save_conversation_message"), \
+             patch.object(mgr, "_get_last_message_id", return_value=0):
+            mgr.flush()
+            mgr.flush()
+
+        assert "".join(sent).count("hello world") == 1
+
 
 class TestFlushAsync:
     """Background thread management."""

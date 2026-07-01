@@ -733,6 +733,87 @@ def _write_journal_entry(
         print(f"[security_review] Journal write failed: {e}", file=sys.stderr)
 
 
+_AUDIT_LOG_NAME = ".security-audit.jsonl"
+
+
+def log_security_event(
+    instance_dir: str,
+    project_name: str,
+    result: Optional["SecurityReviewResult"],
+    *,
+    changed_files: Optional[List[str]] = None,
+    block_reason: str = "",
+    error_class: str = "",
+    error_msg: str = "",
+) -> None:
+    """Append a structured security-review outcome to ``.security-audit.jsonl``.
+
+    Written on every completed review (approved or blocked) and on the
+    exception path so a crashed review is auditable rather than invisible.
+    Best-effort: a write failure is logged to stderr and swallowed.
+    """
+    from datetime import datetime
+
+    changed = changed_files or []
+    entry = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "project": project_name,
+        "risk_level": result.risk_level if result else "unknown",
+        "score": result.score if result else 0,
+        "approved": bool(result.approved) if result else False,
+        "block_reason": block_reason,
+        "variant_count": len(result.variant_hits) if result else 0,
+        "changed_files": changed,
+    }
+    if error_class:
+        entry["error_class"] = error_class
+        entry["error_msg"] = error_msg[:500]
+    try:
+        from app.locked_file import locked_jsonl_append
+        locked_jsonl_append(Path(instance_dir) / _AUDIT_LOG_NAME, entry)
+    except OSError as e:
+        print(f"[security_review] Audit log write failed: {e}", file=sys.stderr)
+
+
+def count_security_blocks(instance_dir: str, days: int = 7) -> int:
+    """Count blocked (approved=False) security reviews in the last ``days``.
+
+    Reads ``.security-audit.jsonl``. Returns 0 when the file is absent or
+    unreadable — observability must never fail the request.
+    """
+    from datetime import datetime, timedelta
+
+    path = Path(instance_dir) / _AUDIT_LOG_NAME
+    if not path.exists():
+        return 0
+    cutoff = datetime.now() - timedelta(days=days)
+    count = 0
+    try:
+        from app.locked_file import locked_jsonl_read
+        for line in locked_jsonl_read(path):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = _json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("approved", True):
+                continue
+            ts = rec.get("ts", "")
+            try:
+                when = datetime.fromisoformat(ts)
+            except (ValueError, TypeError):
+                # Undated entry: count it rather than silently drop a block.
+                count += 1
+                continue
+            if when >= cutoff:
+                count += 1
+    except OSError:
+        return 0
+    return count
+
+
 def check_security_review(
     instance_dir: str,
     project_name: str,
@@ -763,8 +844,37 @@ def check_security_review(
     merge_config = get_project_auto_merge(config, project_name)
     base_branch = merge_config.get("base_branch", "main")
 
+    changed_files: List[str] = []
+    try:
+        return _run_review(
+            instance_dir, project_name, project_path, base_branch,
+            sr_config, lambda files: changed_files.extend(files),
+        )
+    except Exception as e:
+        # Audit the crash so a failed review is distinguishable from a passed
+        # one. Re-raise: the caller (mission_runner) fails closed on exception.
+        log_security_event(
+            instance_dir, project_name, None,
+            changed_files=changed_files,
+            block_reason="review error",
+            error_class=type(e).__name__,
+            error_msg=str(e),
+        )
+        raise
+
+
+def _run_review(
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+    base_branch: str,
+    sr_config: dict,
+    record_files,
+) -> SecurityReviewResult:
+    """Core review logic. Wrapped by ``check_security_review`` for audit."""
     # Gather data
     changed_files = get_changed_files(project_path, base_branch)
+    record_files(changed_files)
     if not changed_files:
         return SecurityReviewResult(approved=True, risk_level="low", score=0)
 
@@ -820,11 +930,17 @@ def check_security_review(
             f"[security_review] Blocking auto-merge: "
             f"risk={risk_level} score={score} threshold={threshold}",
         )
-        return SecurityReviewResult(
+        blocked_result = SecurityReviewResult(
             approved=False, risk_level=risk_level, score=score,
             variant_patterns=variant_patterns,
             variant_hits=variant_hits,
         )
+        log_security_event(
+            instance_dir, project_name, blocked_result,
+            changed_files=changed_files,
+            block_reason=f"risk={risk_level} score={score} >= {threshold}",
+        )
+        return blocked_result
 
     if risk_level in ("high", "critical"):
         print(
@@ -832,8 +948,13 @@ def check_security_review(
             f"risk={risk_level} score={score} (non-blocking)",
         )
 
-    return SecurityReviewResult(
+    approved_result = SecurityReviewResult(
         approved=True, risk_level=risk_level, score=score,
         variant_patterns=variant_patterns,
         variant_hits=variant_hits,
     )
+    log_security_event(
+        instance_dir, project_name, approved_result,
+        changed_files=changed_files,
+    )
+    return approved_result

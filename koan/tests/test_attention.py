@@ -417,7 +417,7 @@ class TestAttentionRoutes:
         (tmp_path / "instance").mkdir(parents=True)
         from app import dashboard as dash_mod
         dash_mod.app.config["TESTING"] = True
-        with patch.object(dash_mod, "KOAN_ROOT", tmp_path):
+        with patch.object(dash_mod.state, "KOAN_ROOT", tmp_path):
             with dash_mod.app.test_client() as c:
                 yield c, str(tmp_path)
 

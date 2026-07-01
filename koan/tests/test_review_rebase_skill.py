@@ -83,26 +83,85 @@ class TestComboQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_missions", return_value=[True, True]) as mock_insert:
             result = handler.handle(ctx)
 
-            assert mock_insert.call_count == 2
+            assert mock_insert.call_count == 1
+            entries = mock_insert.call_args[0][1]
+            assert len(entries) == 2
 
-            # First call: /review
-            first_entry = mock_insert.call_args_list[0][0][1]
-            assert "/review https://github.com/sukria/koan/pull/42" in first_entry
-            assert "[project:koan]" in first_entry
+            # First entry: /review
+            assert "/review https://github.com/sukria/koan/pull/42" in entries[0]
+            assert "[project:koan]" in entries[0]
 
-            # Second call: /rebase
-            second_entry = mock_insert.call_args_list[1][0][1]
-            assert "/rebase https://github.com/sukria/koan/pull/42" in second_entry
-            assert "[project:koan]" in second_entry
+            # Second entry: /rebase
+            assert "/rebase https://github.com/sukria/koan/pull/42" in entries[1]
+            assert "[project:koan]" in entries[1]
+
+    def test_default_queued_at_end_of_pending(self, handler, ctx):
+        """By default the combo appends at the end of the queue, not the top."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_missions", return_value=[True, True]) as mock_insert:
+            handler.handle(ctx)
+            assert mock_insert.call_args.kwargs.get("urgent") is False
+
+    def test_now_flag_queues_at_top_of_pending(self, handler, ctx):
+        """--now jumps the queue: missions land at the top."""
+        ctx.args = "--now https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_missions", return_value=[True, True]) as mock_insert:
+            handler.handle(ctx)
+            assert mock_insert.call_args.kwargs.get("urgent") is True
+            # The --now flag must not leak into the queued mission entries.
+            entries = mock_insert.call_args[0][1]
+            assert all("--now" not in e for e in entries)
+
+    def test_default_review_above_rebase_at_end_of_file(self, handler, ctx):
+        """Observable: review above rebase, both after the pre-existing task."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        missions_path = ctx.instance_dir / "missions.md"
+        missions_path.write_text(
+            "## Pending\n\n- [project:koan] /existing earlier task\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
+            handler.handle(ctx)
+
+        content = missions_path.read_text()
+        review_idx = content.index("/review https://github.com/sukria/koan/pull/42")
+        rebase_idx = content.index("/rebase https://github.com/sukria/koan/pull/42")
+        existing_idx = content.index("/existing earlier task")
+        # pre-existing task first, then review, then rebase
+        assert existing_idx < review_idx < rebase_idx
+
+    def test_now_review_above_rebase_at_top_of_file(self, handler, ctx):
+        """--now: review above rebase, both ahead of the pre-existing task."""
+        ctx.args = "--now https://github.com/sukria/koan/pull/42"
+        missions_path = ctx.instance_dir / "missions.md"
+        missions_path.write_text(
+            "## Pending\n\n- [project:koan] /existing earlier task\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]):
+            handler.handle(ctx)
+
+        content = missions_path.read_text()
+        review_idx = content.index("/review https://github.com/sukria/koan/pull/42")
+        rebase_idx = content.index("/rebase https://github.com/sukria/koan/pull/42")
+        existing_idx = content.index("/existing earlier task")
+        # review first, then rebase, both ahead of the pre-existing task
+        assert review_idx < rebase_idx < existing_idx
 
     def test_returns_combo_ack(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission"):
+             patch("app.utils.insert_pending_missions", return_value=[True, True]):
             result = handler.handle(ctx)
             assert "Review + rebase combo queued" in result
             assert "#42" in result
@@ -113,11 +172,11 @@ class TestComboQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42 focus on security"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_missions", return_value=[True, True]) as mock_insert:
             handler.handle(ctx)
 
-            review_entry = mock_insert.call_args_list[0][0][1]
-            rebase_entry = mock_insert.call_args_list[1][0][1]
+            entries = mock_insert.call_args[0][1]
+            review_entry, rebase_entry = entries
             assert "focus on security" in review_entry
             assert "focus on security" not in rebase_entry
 
@@ -125,19 +184,18 @@ class TestComboQueuing:
         ctx.args = "https://github.com/sukria/koan/pull/42#discussion_r123"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_missions", return_value=[True, True]) as mock_insert:
             result = handler.handle(ctx)
-            assert mock_insert.call_count == 2
+            assert len(mock_insert.call_args[0][1]) == 2
             assert "combo queued" in result.lower()
 
     def test_missions_path_uses_instance_dir(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/42"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
              patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
-             patch("app.utils.insert_pending_mission") as mock_insert:
+             patch("app.utils.insert_pending_missions", return_value=[True, True]) as mock_insert:
             handler.handle(ctx)
-            for c in mock_insert.call_args_list:
-                assert c[0][0] == ctx.instance_dir / "missions.md"
+            assert mock_insert.call_args[0][0] == ctx.instance_dir / "missions.md"
 
 
 # ---------------------------------------------------------------------------

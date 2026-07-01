@@ -195,6 +195,101 @@ class TestMaybeRetryMission:
 
 
 # ---------------------------------------------------------------------------
+# _maybe_fallback_provider_rerun
+# ---------------------------------------------------------------------------
+
+class TestMaybeFallbackProviderRerun:
+
+    @pytest.fixture(autouse=True)
+    def _reset_state(self):
+        import app.run as _run
+        _run._last_mission_timed_out = False
+        _run._last_mission_aborted = False
+        _run._last_mission_stagnated.clear()
+        yield
+        _run._last_mission_timed_out = False
+        _run._last_mission_aborted = False
+        _run._last_mission_stagnated.clear()
+
+    def _call(self, **overrides):
+        from app.mission_executor import _maybe_fallback_provider_rerun
+        kwargs = dict(
+            claude_exit=127,
+            stdout_file="/tmp/nonexistent-out",
+            stderr_file="/tmp/nonexistent-err",
+            project_path="/tmp/proj",
+            pre_head="head1",
+            instance="/tmp/inst",
+            project_name="koan",
+            run_num=1,
+            has_mission=True,
+            autonomous_mode="implement",
+            prompt="do it",
+            plugin_dirs=None,
+            system_prompt="",
+            tier=None,
+            host_tmp_dir=None,
+            container_tmp_dir=None,
+        )
+        kwargs.update(overrides)
+        return _maybe_fallback_provider_rerun(**kwargs)
+
+    @staticmethod
+    def _provider(name, binary, available=True):
+        from unittest.mock import MagicMock
+        p = MagicMock()
+        p.name = name
+        p.binary.return_value = binary
+        p.is_available.return_value = available
+        return p
+
+    def test_skips_when_fallback_binary_unavailable(self):
+        """The fix: a fallback whose own binary is missing is not re-run."""
+        fb = self._provider("codex", "/bad/codex", available=False)
+        role = self._provider("claude", "claude")
+        with patch("app.run.log"), \
+             patch("app.provider.get_fallback_provider", return_value=fb), \
+             patch("app.provider.get_provider_for_role", return_value=role), \
+             patch("app.run.run_claude_task") as mock_run_task:
+            exit_code, _, _ = self._call()
+        assert exit_code == 127
+        mock_run_task.assert_not_called()
+
+    def test_reruns_on_available_fallback(self, tmp_path):
+        """Launch failure + available, different fallback + no commits → re-run."""
+        from app.cli_errors import ErrorCategory
+        out = tmp_path / "out"; out.write_text("not authenticated")
+        err = tmp_path / "err"; err.write_text("")
+        fb = self._provider("codex", "codex")
+        role = self._provider("claude", "claude")
+        with patch("app.run.log"), \
+             patch("app.provider.get_fallback_provider", return_value=fb), \
+             patch("app.provider.get_provider_for_role", return_value=role), \
+             patch("app.cli_errors.classify_cli_error", return_value=ErrorCategory.AUTH), \
+             patch("app.run._get_git_head", return_value="head1"), \
+             patch("app.mission_runner.build_mission_command", return_value=(["codex"], [])), \
+             patch("app.run.run_claude_task", return_value=0) as mock_run_task:
+            exit_code, _, _ = self._call(
+                stdout_file=str(out), stderr_file=str(err),
+            )
+        assert exit_code == 0
+        # Re-run executed under the fallback provider.
+        assert mock_run_task.call_args.kwargs["provider"] is fb
+
+    def test_skips_when_fallback_same_binary(self):
+        """Same binary as the role that failed → nothing to gain, skip."""
+        fb = self._provider("claude", "claude")
+        role = self._provider("claude", "claude")
+        with patch("app.run.log"), \
+             patch("app.provider.get_fallback_provider", return_value=fb), \
+             patch("app.provider.get_provider_for_role", return_value=role), \
+             patch("app.run.run_claude_task") as mock_run_task:
+            exit_code, _, _ = self._call()
+        assert exit_code == 127
+        mock_run_task.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _handle_skill_dispatch — cli_skill translation branches (no skill_cmd match)
 # ---------------------------------------------------------------------------
 

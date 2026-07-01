@@ -72,6 +72,12 @@ def tick(instance_dir: str) -> List[str]:
             run_at = datetime.fromisoformat(run_at_str)
         except ValueError:
             continue
+        # ISO strings may carry a 'Z' or offset (tz-aware); 'now' is naive-local.
+        # Comparing the two raises TypeError, which would crash the tick and leave
+        # the file un-archived — poisoning every subsequent iteration. Normalize
+        # any aware value to the equivalent naive local wall-clock.
+        if run_at.tzinfo is not None:
+            run_at = run_at.astimezone().replace(tzinfo=None)
 
         if run_at > now:
             continue
@@ -111,9 +117,15 @@ def parse_at_arg(arg: str, now: Optional[datetime] = None) -> Optional[datetime]
 
     # ISO datetime
     try:
-        return datetime.fromisoformat(arg)
+        dt = datetime.fromisoformat(arg)
     except ValueError:
         pass
+    else:
+        # Stored events are naive-local (write_event_file drops tzinfo). Convert an
+        # aware input to local wall-clock so the offset is honored, not discarded.
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
 
     # HH:MM
     m = _HHMM_RE.match(arg)

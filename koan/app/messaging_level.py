@@ -170,8 +170,31 @@ def notify_outcome(msg: str, send_fn=None) -> None:
     delivered through its un-gated underlying sink so passing the runner's
     progress notifier here does the right thing. A plain callable is invoked
     directly; None falls back to ``send_telegram``.
+
+    When ``KOAN_SUPPRESS_RUNNER_OUTCOME=1`` is set in the environment (by the
+    agent loop for the PR-producing tracked skills /review, /fix, /rebase,
+    /implement in normal mode), a runner *success* outcome line is logged only and
+    not sent — the agent loop emits the canonical "✅ [project] 🔍 Reviewed <url>"
+    completion line instead, so sending here too would duplicate the same URL to
+    the user (#2153). The flag is *not* set for /plan: its canonical line cannot
+    carry the issue/Jira URL or inline plan body, so the runner's line is the sole
+    reporter and must reach chat.
+
+    Only a *single-line* ``✅`` outcome is suppressed (defensive guard): those are
+    bare URL restatements the canonical line fully replaces. A multi-line ``✅``
+    outcome carries content the canonical line does NOT, so it is always sent.
+    Failure outcome lines are still sent too: the agent-loop replacement carries
+    only the mission title ("❌ ... Failed: /review <url>"), so suppressing the
+    runner's failure line would drop the specific reason from chat.
     """
     _log("outcome", msg)
+    stripped = msg.strip()
+    if (
+        os.environ.get("KOAN_SUPPRESS_RUNNER_OUTCOME") == "1"
+        and stripped.startswith("✅")
+        and "\n" not in stripped
+    ):
+        return
     if isinstance(send_fn, _ProgressNotifier):
         send_fn = send_fn.raw_send
     if send_fn is None:

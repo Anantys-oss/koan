@@ -12,7 +12,16 @@ class ClaudeProvider(CLIProvider):
     name = "claude"
 
     def binary(self) -> str:
-        return os.environ.get("KOAN_CLAUDE_CLI_PATH", "").strip() or "claude"
+        # Per-role override (cli: flavor:path) wins when this instance was
+        # constructed with one — see provider.get_provider_for_role().
+        if self._binary_override:
+            return self._resolve_binary_path(self._binary_override)
+        # Otherwise the global custom binary, then the bare command. Both go
+        # through the shared resolver so KOAN_ROOT-relative paths stay portable.
+        raw = os.environ.get("KOAN_CLAUDE_CLI_PATH", "").strip()
+        if not raw:
+            return "claude"
+        return self._resolve_binary_path(raw)
 
     def supports_session_resume(self) -> bool:
         return True

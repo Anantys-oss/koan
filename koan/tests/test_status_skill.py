@@ -557,6 +557,98 @@ class TestGetServerIp:
             result = _handle_status(ctx)
         assert "IP:" not in result
 
+    def test_hostname_shown_in_status(self, tmp_path):
+        """Server hostname appears in /status output alongside the IP."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="192.168.1.42"), \
+                patch("skills.core.status.handler._get_hostname", return_value="myhost"):
+            result = _handle_status(ctx)
+        assert "🖥️ myhost" in result
+
+    def test_hostname_hidden_when_unknown(self, tmp_path):
+        """When hostname can't be determined, no hostname shown."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="unknown"), \
+                patch("skills.core.status.handler._get_hostname", return_value="unknown"):
+            result = _handle_status(ctx)
+        assert "🖥️" not in result
+
+    def test_get_hostname_returns_unknown_on_failure(self):
+        from skills.core.status.handler import _get_hostname
+        with patch("socket.gethostname", side_effect=OSError("boom")):
+            assert _get_hostname() == "unknown"
+
+    def test_cli_binary_name_shown_when_path_set(self, tmp_path, monkeypatch):
+        """Custom CLI binary name appears next to the provider in /status."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/tools/my-claude")
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("app.provider.get_provider_name", return_value="claude"):
+            result = _handle_status(ctx)
+        assert "claude (my-claude)" in result
+
+    def test_cli_binary_name_hidden_when_path_unset(self, tmp_path, monkeypatch):
+        """No binary suffix when KOAN_CLAUDE_CLI_PATH is unset."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("app.provider.get_provider_name", return_value="claude"):
+            result = _handle_status(ctx)
+        assert "(" not in result.split("claude")[-1][:3]
+
+    def test_provider_on_separate_line_from_ip(self, tmp_path, monkeypatch):
+        """Provider/model sits on its own line, not glued to the IP/hostname line."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/tools/my-claude")
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        with patch("skills.core.status.handler._get_server_ip", return_value="192.168.1.42"), \
+                patch("app.provider.get_provider_name", return_value="claude"):
+            result = _handle_status(ctx)
+        # Provider line has the model-fitting prefix and the binary suffix
+        assert "🤖 claude (my-claude)" in result
+        # IP and provider are never on the same line
+        for line in result.splitlines():
+            assert not ("IP:" in line and "claude" in line)
+
+    def test_service_manager_shown_when_set(self, tmp_path, monkeypatch):
+        """Configured service manager is advertised in /status."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        monkeypatch.setenv("KOAN_SERVICE_MANAGER", "systemd-user")
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "⚙️ systemd-user" in result
+
+    def test_service_manager_hidden_when_unset(self, tmp_path, monkeypatch):
+        """No service manager item when KOAN_SERVICE_MANAGER is unset."""
+        instance = tmp_path / "instance"
+        instance.mkdir()
+        monkeypatch.delenv("KOAN_SERVICE_MANAGER", raising=False)
+        from skills.core.status.handler import _handle_status
+        ctx = _make_ctx("status", instance, tmp_path)
+        result = _handle_status(ctx)
+        assert "⚙️" not in result
+
+    def test_get_cli_binary_name_strips_path(self, monkeypatch):
+        from app.provider import get_cli_binary_name
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/usr/local/bin/claude-wrapper/")
+        assert get_cli_binary_name() == "claude-wrapper"
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        assert get_cli_binary_name() == ""
+
 
 # ---------------------------------------------------------------------------
 # _handle_ping()

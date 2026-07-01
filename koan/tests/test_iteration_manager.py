@@ -4065,6 +4065,66 @@ class TestMaybeWarnBurnRate:
         mock_snap_cls.assert_not_called()
 
 
+class TestMaybeWarnBurnRateNaiveTimezone:
+    """Naive session_start must be localized, not relabeled UTC.
+
+    Writers persist session_start via datetime.now() (naive, system-local
+    clock); last_warned comes from burn_rate._now_utc() (genuine UTC). A
+    warning fired 5 min into the current session belongs to it and must not
+    be cleared. Relabeling the naive local start as UTC shifts it by the
+    host's offset, so in a +offset zone the start appears to be in the
+    future, the warning looks stale, gets cleared, and re-fires (duplicate
+    alert). Localizing with astimezone() compares both in the same frame.
+    """
+
+    @patch("app.burn_rate.clear_warning")
+    @patch("app.utils.append_to_outbox")
+    @patch("app.burn_rate.mark_warned")
+    @patch("app.burn_rate.BurnRateSnapshot")
+    @patch("app.iteration_manager._read_session_pct_and_reset")
+    def test_naive_session_start_localized_not_relabeled_utc(
+        self, mock_pct, mock_snap_cls, mock_mark, mock_outbox, mock_clear,
+        tmp_path,
+    ):
+        import os
+        import time as _time
+        from datetime import datetime, timezone, timedelta
+
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Asia/Kolkata"  # UTC+5:30, no DST
+        _time.tzset()
+        try:
+            real_start = datetime.now(timezone.utc) - timedelta(minutes=10)
+            # Naive local wall-clock representation, as a writer would store it.
+            naive_local = real_start.astimezone().replace(tzinfo=None)
+            # Warning fired 5 min ago — after the real session start.
+            last_warned = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+            mock_pct.return_value = (
+                60.0, 300.0, {"session_start": naive_local.isoformat()},
+            )
+            mock_snap = MagicMock()
+            mock_snap.last_warned_at = last_warned
+            mock_snap.time_to_exhaustion.return_value = 10.0
+            mock_snap.burn_rate_pct_per_minute.return_value = 0.8
+            mock_snap_cls.return_value = mock_snap
+
+            inst = tmp_path / "inst"
+            inst.mkdir()
+            _maybe_warn_burn_rate(inst, tmp_path / "usage.json")
+
+            # Warning belongs to the current session → not stale → not cleared,
+            # and the function returns early without re-firing.
+            mock_clear.assert_not_called()
+            mock_outbox.assert_not_called()
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            _time.tzset()
+
+
 class TestDowngradeIfBurningFastUnlimitedQuota:
 
     @patch("app.config.is_unlimited_quota", return_value=True)

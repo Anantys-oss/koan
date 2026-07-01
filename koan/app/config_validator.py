@@ -65,6 +65,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "budget": _NESTED,
     "tools": _NESTED,
     "models": _NESTED,
+    "cli": _NESTED,
     "git_auto_merge": _NESTED,
     "github": _NESTED,
     "jira": _NESTED,
@@ -124,6 +125,15 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "fallback": "str",
         "reflect": "str",
         "review_mode": "str",
+    },
+    # cli: routes each mission role to a provider (flavor or flavor:path).
+    # The global form is `cli.default.<role>` plus a single `cli.fallback`;
+    # the per-role values live in the `default` mapping so only `default`
+    # (dict) and `fallback` (str) appear at the section level. Per-project
+    # overrides (flat `cli.<role>`) live in projects.yaml, not here.
+    "cli": {
+        "default": "dict",
+        "fallback": "str",
     },
     "git_auto_merge": {
         "enabled": "bool",

@@ -138,6 +138,8 @@ When executing a mission, follow this sequence:
    Follow existing patterns and conventions from the project's CLAUDE.md.
 4. **Test**: Run the project's test suite. Fix failures before committing.
    If the module lacks tests, add coverage for what you changed.
+   **Exception**: For purely documentation changes (markdown, POD, README, comments-only,
+   config examples), do NOT write unit tests — just verify the files are well-formed.
 {@include test-guidance}
    **IMPORTANT — redirect test output to avoid token waste:**
    ```bash

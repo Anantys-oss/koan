@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+#
+# zai-claude — run the Claude CLI against a Z.ai (GLM) subscription.
+#
+# Koan invokes this as a drop-in `claude` replacement when
+#   KOAN_CLAUDE_CLI_PATH=/path/to/koan/bin/zai-claude
+# is set. Koan passes a Claude-style argument vector, e.g.:
+#   -p "<prompt>" --model <name> --output-format json --verbose ...
+#
+# Unlike bin/oc-claude and bin/ollama-claude (which re-dispatch through a
+# proxy/launcher), the backend here IS the real `claude` binary. So this
+# wrapper sets the Z.ai endpoint + auth via env vars and execs `claude`
+# directly — Claude Code's own tier machinery does the work.
+#
+# Model handling — the "keep Koan config unchanged" story:
+#   Koan emits Anthropic tier names from `models:` (haiku / sonnet / opus).
+#   This wrapper translates those to Z.ai GLM model ids on --model and
+#   --fallback-model, and exports ANTHROPIC_DEFAULT_*_MODEL so Claude Code's
+#   internal tier selection also resolves to GLM. A customer's Koan config
+#   therefore stays identical to a standard Claude setup — switching to Z.ai
+#   is just pointing KOAN_CLAUDE_CLI_PATH here.
+#
+#   Any value that is NOT a tier alias (a real Z.ai model id like glm-5.2[1m]
+#   or glm-4.5) passes through unchanged, so customers may also name GLM models
+#   directly in config.yaml.
+#
+# Model mapping (each overridable via its ANTHROPIC_DEFAULT_*_MODEL env var):
+#   haiku  -> glm-4.5
+#   sonnet -> glm-5.2[1m]
+#   opus   -> glm-5.2[1m]
+#
+# Z.ai key resolution order:
+#   1. $KOAN_ZAI_KEY          (key value, e.g. from .env)
+#   2. $KOAN_ROOT/.zai.key    (file contents, newline-trimmed)
+#
+# Prerequisites: the Claude Code CLI installed and on PATH.
+# See docs/providers/zai.md.
+
+set -euo pipefail
+
+# --- Z.ai model tiers (single source of truth; env-overridable) --------------
+ZAI_HAIKU="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-glm-4.5}"
+ZAI_SONNET="${ANTHROPIC_DEFAULT_SONNET_MODEL:-glm-5.2[1m]}"
+ZAI_OPUS="${ANTHROPIC_DEFAULT_OPUS_MODEL:-glm-5.2[1m]}"
+
+# --- resolve the Z.ai API key ------------------------------------------------
+ZAI_KEY=""
+if [[ -n "${KOAN_ZAI_KEY:-}" ]]; then
+    ZAI_KEY="$KOAN_ZAI_KEY"
+elif [[ -n "${KOAN_ROOT:-}" && -r "$KOAN_ROOT/.zai.key" ]]; then
+    ZAI_KEY="$(tr -d '\r\n' < "$KOAN_ROOT/.zai.key")"
+else
+    echo "zai-claude: no Z.ai key found." >&2
+    echo "zai-claude: set KOAN_ZAI_KEY in your .env, or create \$KOAN_ROOT/.zai.key" >&2
+    echo "zai-claude: see docs/providers/zai.md" >&2
+    exit 1
+fi
+
+if [[ -z "$ZAI_KEY" ]]; then
+    echo "zai-claude: Z.ai key is empty (KOAN_ZAI_KEY / \$KOAN_ROOT/.zai.key)." >&2
+    exit 1
+fi
+
+# --- map a Koan tier name to a Z.ai model id; real ids pass through ----------
+map_model() {
+    case "$1" in
+        haiku)  printf '%s' "$ZAI_HAIKU" ;;
+        sonnet) printf '%s' "$ZAI_SONNET" ;;
+        opus)   printf '%s' "$ZAI_OPUS" ;;
+        *)      printf '%s' "$1" ;;
+    esac
+}
+
+# --- rewrite the arg vector: translate --model / --fallback-model ------------
+args=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model)
+            # Emit only when a value follows; drop a bare trailing --model
+            # so we never forward an empty --model "" (Koan always supplies one).
+            if [[ $# -ge 2 ]]; then
+                args+=("--model" "$(map_model "$2")")
+            fi
+            shift
+            [[ $# -gt 0 ]] && shift
+            ;;
+        --model=*)
+            val="${1#--model=}"
+            [[ -n "$val" ]] && args+=("--model=$(map_model "$val")")
+            shift
+            ;;
+        --fallback-model)
+            if [[ $# -ge 2 ]]; then
+                args+=("--fallback-model" "$(map_model "$2")")
+            fi
+            shift
+            [[ $# -gt 0 ]] && shift
+            ;;
+        --fallback-model=*)
+            val="${1#--fallback-model=}"
+            [[ -n "$val" ]] && args+=("--fallback-model=$(map_model "$val")")
+            shift
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# --- resolve the backend binary ----------------------------------------------
+ZAI_CLAUDE_BIN="${KOAN_ZAI_CLAUDE_BIN:-claude}"
+if ! command -v "$ZAI_CLAUDE_BIN" >/dev/null 2>&1; then
+    echo "zai-claude: '$ZAI_CLAUDE_BIN' not found on PATH." >&2
+    echo "zai-claude: set KOAN_ZAI_CLAUDE_BIN, or install the Claude Code CLI (npm i -g @anthropic-ai/claude-code)." >&2
+    echo "zai-claude: see docs/providers/claude.md" >&2
+    exit 127
+fi
+
+# --- export Z.ai env and exec ------------------------------------------------
+export ANTHROPIC_AUTH_TOKEN="$ZAI_KEY"
+export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-https://api.z.ai/api/anthropic}"
+export API_TIMEOUT_MS="${API_TIMEOUT_MS:-9000000}"
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-1000000}"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$ZAI_HAIKU"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$ZAI_SONNET"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$ZAI_OPUS"
+
+# "${args[@]+...}" guards against set -u on bash 3.2 when args is empty.
+exec "$ZAI_CLAUDE_BIN" "${args[@]+"${args[@]}"}"

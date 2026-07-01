@@ -24,6 +24,7 @@ koan/htmlcov/
 # Environment & secrets
 .env
 .envrc
+.zai.key
 
 # OS
 .DS_Store

@@ -29,6 +29,7 @@ RESET_COUNTER_FILE = ".koan-reset-counter"
 STATUS_FILE = ".koan-status"
 HEARTBEAT_FILE = ".koan-heartbeat"
 RUN_HEARTBEAT_FILE = ".koan-run-heartbeat"
+ACTIVE_FILE = ".koan-active"
 
 # -- Mode flags ----------------------------------------------------------------
 

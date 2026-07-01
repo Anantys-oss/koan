@@ -1777,6 +1777,212 @@ def prune_completed_sections(
 
 
 # ---------------------------------------------------------------------------
+# Structural integrity: validation, conservative self-heal, size bounds
+# ---------------------------------------------------------------------------
+
+# Sections that must exist (in this order) for a healthy missions.md.
+# CI is optional (migrated lazily) so it is not required here.
+_REQUIRED_SECTIONS = ("pending", "in_progress", "done", "failed")
+_CANONICAL_HEADERS = {
+    "pending": "## Pending",
+    "in_progress": "## In Progress",
+    "done": "## Done",
+    "failed": "## Failed",
+}
+
+
+def validate_missions_structure(content: str) -> List[str]:
+    """Check structural invariants of missions.md content.
+
+    Returns a list of human-readable issue descriptions. An empty list
+    means the file is structurally healthy. This is a read-only check —
+    it never mutates content.
+
+    Invariants checked:
+    - Each required canonical section is present exactly once.
+    - No ``## `` header is glued to a preceding non-blank line (the
+      production corruption mode from issue #2085).
+    - Every ``- `` item line falls under some section header.
+
+    Content inside ```` ``` ```` code fences is treated as mission body
+    text, never structure — fenced ``## `` / ``- `` lines are ignored.
+    Items under non-canonical sections (e.g. ``## Ideas``) are not flagged
+    as orphans; only items appearing before any section header are.
+    """
+    issues: List[str] = []
+
+    if not content.strip():
+        # Empty file is not corrupt — startup recreates the skeleton.
+        return issues
+
+    lines = content.splitlines()
+    seen: Dict[str, int] = {}
+    seen_any_header = False
+    in_code_fence = False
+    prev_line = None
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+            prev_line = line
+            continue
+        if in_code_fence:
+            prev_line = line
+            continue
+        if stripped.startswith("## "):
+            prev_stripped = prev_line.strip() if prev_line is not None else ""
+            # The ``# Missions`` H1 title sitting directly above the first
+            # section is not corruption — only an item glued to a header is.
+            is_h1_title = prev_stripped.startswith("# ") and not prev_stripped.startswith("## ")
+            if prev_stripped != "" and not is_h1_title:
+                issues.append(
+                    f"Section header glued to preceding item (missing blank line): {stripped!r}"
+                )
+            key = classify_section(stripped[3:].strip())
+            seen_any_header = True
+            if key:
+                seen[key] = seen.get(key, 0) + 1
+        elif stripped.startswith("- ") and not seen_any_header:
+            issues.append(f"Item line outside any section: {stripped[:60]!r}")
+        prev_line = line
+
+    for key in _REQUIRED_SECTIONS:
+        count = seen.get(key, 0)
+        if count == 0:
+            issues.append(f"Missing required section: {_CANONICAL_HEADERS[key]}")
+        elif count > 1:
+            issues.append(f"Duplicate section header ({count}x): {_CANONICAL_HEADERS[key]}")
+
+    return issues
+
+
+def repair_missions_structure(content: str) -> str:
+    """Conservatively repair structural corruption in missions.md content.
+
+    Repairs applied (all content-preserving):
+    - Restore the blank line before any ``## `` header glued to a
+      preceding item, so section boundaries are unambiguous.
+    - Merge duplicate canonical sections into their first occurrence
+      (later bodies appended), so a section appears exactly once.
+    - Re-home orphan ``- `` items that appear before any section header
+      under ``## Pending``.
+    - Append any missing required canonical section headers at the end.
+    - Collapse runaway blank lines via :func:`normalize_content`.
+
+    This converges: every issue ``validate_missions_structure`` classifies
+    as serious is resolved, so re-validating the output yields no issues.
+    Items, ideas, and any non-canonical content are preserved verbatim;
+    this never drops mission lines. ``## `` lines inside ```` ``` ````
+    code fences are mission body text and are left untouched. Returns the
+    repaired content.
+    """
+    if not content.strip():
+        return DEFAULT_SKELETON
+
+    # Parse into a preamble (lines before the first header) plus an ordered
+    # list of section blocks, fence-aware so fenced bodies are never read as
+    # structure.
+    preamble: List[str] = []
+    blocks: List[dict] = []
+    current = None
+    in_code_fence = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+            (blocks[current]["body"] if current is not None else preamble).append(line)
+            continue
+        if not in_code_fence and stripped.startswith("## "):
+            blocks.append(
+                {"key": classify_section(stripped[3:].strip()), "header": line, "body": []}
+            )
+            current = len(blocks) - 1
+            continue
+        (blocks[current]["body"] if current is not None else preamble).append(line)
+
+    # Split the preamble: keep the title/blank/comment lines, lift any orphan
+    # item lines (and their continuations) out to re-home under Pending.
+    kept_preamble: List[str] = []
+    orphans: List[str] = []
+    for line in preamble:
+        stripped = line.strip()
+        if stripped.startswith("- ") or stripped.startswith("### "):
+            orphans.append(line)
+        elif stripped == "" or stripped.startswith("#"):
+            kept_preamble.append(line)
+        elif orphans:
+            orphans.append(line)  # continuation of an orphan item
+        else:
+            kept_preamble.append(line)
+
+    # Merge duplicate canonical sections into their first occurrence.
+    merged: List[dict] = []
+    index_by_key: Dict[str, int] = {}
+    for block in blocks:
+        key = block["key"]
+        if key is not None and key in index_by_key:
+            merged[index_by_key[key]]["body"].extend(block["body"])
+        else:
+            merged.append(block)
+            if key is not None:
+                index_by_key[key] = len(merged) - 1
+
+    # Re-home orphan items under Pending (creating the section if absent).
+    if orphans:
+        if "pending" not in index_by_key:
+            merged.insert(0, {"key": "pending", "header": _CANONICAL_HEADERS["pending"], "body": []})
+            index_by_key = {b["key"]: i for i, b in enumerate(merged) if b["key"] is not None}
+        merged[index_by_key["pending"]]["body"].extend(orphans)
+
+    # Append any missing required canonical sections.
+    for key in _REQUIRED_SECTIONS:
+        if key not in index_by_key:
+            merged.append({"key": key, "header": _CANONICAL_HEADERS[key], "body": []})
+            index_by_key[key] = len(merged) - 1
+
+    out: List[str] = list(kept_preamble)
+    for block in merged:
+        out.append("")  # guarantee a blank line before every header
+        out.append(block["header"])
+        out.append("")
+        out.extend(block["body"])
+
+    return normalize_content("\n".join(out))
+
+
+def enforce_size_bound(
+    content: str,
+    max_lines: int,
+    done_keep: int,
+    failed_keep: int,
+) -> Tuple[str, int]:
+    """Prune completed sections so the file stays within ``max_lines``.
+
+    First prunes Done/Failed to the configured keeps. If the file is still
+    over the line cap, progressively shrinks the keeps (Done first, then
+    Failed) until under the cap or nothing left to prune. Pending and
+    In Progress items are never touched — only completed history is shed.
+
+    Returns (new_content, total_pruned).
+    """
+    content, total_pruned = prune_completed_sections(content, done_keep, failed_keep)
+    if max_lines <= 0:
+        return content, total_pruned
+
+    keep_done, keep_failed = done_keep, failed_keep
+    while len(content.splitlines()) > max_lines and (keep_done > 0 or keep_failed > 0):
+        if keep_done >= keep_failed and keep_done > 0:
+            keep_done = max(0, keep_done - 5)
+        else:
+            keep_failed = max(0, keep_failed - 5)
+        content, pruned = prune_completed_sections(content, keep_done, keep_failed)
+        total_pruned += pruned
+
+    return content, total_pruned
+
+
+# ---------------------------------------------------------------------------
 # Parallel session support
 # ---------------------------------------------------------------------------
 
@@ -2270,10 +2476,10 @@ def update_ci_item_attempt(content: str, pr_url: str) -> str:
 _GITHUB_ACTION_RE = re.compile(
     r"/(ask|audit|benchmark|brainstorm|check|check_need|ci_check"
     r"|dbg|debug|deeplan|deepplan|doc|docs|doit|explain|fix|gh_request"
-    r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile"
+    r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile|question"
     r"|rb|rc|rebase|recreate|refactor|review|reviewrebase|rf|rr|rv|xp"
     r"|secu|security|security_audit|sq|squash"
-    r"|ultrareview|ultra_review|urv)\s+"
+    r"|ultrareview|ultra_review|urv|speckit|speckit_from_branch)\s+"
     r"(https://github\.com/[^\s]+)"
 )
 

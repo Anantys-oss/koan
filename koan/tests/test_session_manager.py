@@ -353,6 +353,74 @@ class TestKillSession:
         assert mock_killpg.call_args_list[1].args == (22222, signal.SIGKILL)
 
 
+class TestSpawnSessionProviderThreading:
+    """spawn_session must execute under the role's CLI provider (cli: section)."""
+
+    @patch("app.session_manager.inject_worktree_claude_md")
+    @patch("app.session_manager.create_worktree")
+    def test_role_provider_threaded_into_popen_cli(
+        self, mock_create_wt, mock_inject, registry, tmp_path,
+    ):
+        """cli.mission: codex under a global claude → popen_cli gets the codex
+        provider, and build_mission_command gets the same provider_override."""
+        import app.provider as provider
+
+        wt = MagicMock()
+        wt.session_id = "test-prov"
+        wt.path = str(tmp_path / "worktree")
+        wt.branch = "koan/session-test-prov"
+        mock_create_wt.return_value = wt
+
+        full = {
+            "cli_provider": "claude",  # global
+            "cli": {"default": {"mission": "codex"}},
+            "skip_permissions": False,
+        }
+        captured = {}
+
+        def fake_build(*args, **kwargs):
+            captured["build_provider"] = kwargs.get("provider_override")
+            return (["codex", "-p", "x"], [])
+
+        opened = []
+        real_open = open
+
+        def tracking_open(path, mode="r", **kwargs):
+            f = real_open(path, mode, **kwargs)
+            opened.append(f)
+            return f
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["popen_provider"] = provider
+            return MagicMock(pid=4321), MagicMock()
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.mission_runner.build_mission_command", side_effect=fake_build), \
+             patch("builtins.open", side_effect=tracking_open), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            spawn_session(
+                mission_text="do it",
+                project_name="p",
+                project_path=str(tmp_path),
+                instance_dir=registry.instance_dir,
+                registry=registry,
+                autonomous_mode="implement",
+            )
+
+        for f in opened:
+            f.close()
+
+        # popen_cli received a provider, it is the codex role provider, and it
+        # is the SAME instance passed to build_mission_command (not the global
+        # claude singleton).
+        assert captured["popen_provider"] is not None
+        assert captured["popen_provider"].name == "codex"
+        assert captured["popen_provider"] is captured["build_provider"]
+
+
 class TestSpawnSessionFileHandleLeak:
     """Verify file handles are closed when spawn_session fails."""
 

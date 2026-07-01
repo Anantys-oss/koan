@@ -40,11 +40,14 @@ class CopilotProvider(CLIProvider):
 
     name = "copilot"
 
-    def __init__(self):
+    def __init__(self, binary_path: str = ""):
+        super().__init__(binary_path)
         self._has_copilot = shutil.which("copilot") is not None
         self._has_gh = shutil.which("gh") is not None
 
     def binary(self) -> str:
+        if self._binary_override:
+            return self._resolve_binary_path(self._binary_override)
         # Prefer standalone 'copilot' binary, fallback to 'gh'
         if self._has_copilot:
             return "copilot"

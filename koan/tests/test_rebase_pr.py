@@ -609,6 +609,35 @@ class TestBuildRebaseComment:
         assert "review feedback could not be applied automatically" in result
         assert "## Rebase with requested adjustments" not in result
 
+    def test_feedback_failed_renders_prominent_warning_callout(self):
+        # The reason must be surfaced in a non-collapsed warning callout (not
+        # only buried inside the <details> Actions block), and appear before it.
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            [
+                "Rebased onto origin/main",
+                "Review feedback timed out; restored clean rebased state and continuing with rebase-only push",
+            ],
+            {"title": "Fix bug", "review_comments": "please fix the typo"},
+            feedback_failed=True,
+            feedback_reason="the feedback step timed out",
+        )
+        assert "[!WARNING]" in result
+        assert "Review feedback was NOT applied" in result
+        assert "the feedback step timed out" in result
+        # Callout comes before the collapsed Actions section.
+        assert result.index("[!WARNING]") < result.index("<details>")
+
+    def test_feedback_failed_warning_has_default_reason(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main"],
+            {"title": "Fix bug"},
+            feedback_failed=True,
+        )
+        assert "[!WARNING]" in result
+        assert "Review feedback was NOT applied" in result
+
     def test_feedback_failure_label_drives_summary_not_log_prose(self):
         # Detection comes from the structured status the caller passes, not
         # from substring-matching log lines.  A failure marker left in the
@@ -1410,6 +1439,32 @@ class TestRunRebase:
             )
             assert success is True
             assert "Rebased" in summary
+
+    @patch("app.rebase_pr._run_rebase_impl")
+    @patch("app.messaging_level.notify_outcome")
+    def test_outcome_warns_when_feedback_unapplied(self, mock_outcome, mock_impl):
+        """A rebase that succeeds but drops feedback must surface a warning
+        outcome (not a green check) so the dropped feedback is noticed."""
+        def impl(*args, **kwargs):
+            kwargs["outcome_meta"]["feedback_unapplied"] = "timed out"
+            return True, "PR #42 rebased."
+        mock_impl.side_effect = impl
+        run_rebase("o", "r", "42", "/p", notify_fn=MagicMock())
+        msg = mock_outcome.call_args.args[0]
+        assert "⚠️" in msg
+        assert "feedback NOT applied" in msg
+        assert "timed out" in msg
+
+    @patch("app.rebase_pr._run_rebase_impl")
+    @patch("app.messaging_level.notify_outcome")
+    def test_outcome_green_check_when_feedback_ok(self, mock_outcome, mock_impl):
+        def impl(*args, **kwargs):
+            return True, "PR #42 rebased."
+        mock_impl.side_effect = impl
+        run_rebase("o", "r", "42", "/p", notify_fn=MagicMock())
+        msg = mock_outcome.call_args.args[0]
+        assert msg.startswith("✅")
+        assert "NOT applied" not in msg
 
     @patch("app.rebase_pr.fetch_pr_context")
     def test_fetch_failure(self, mock_ctx):

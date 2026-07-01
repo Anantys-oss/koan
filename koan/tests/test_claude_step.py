@@ -4,6 +4,7 @@ Tests _run_git, truncate_text, _rebase_onto_target, run_claude,
 commit_if_changes, and run_claude_step.
 """
 
+import json
 import subprocess
 from unittest.mock import MagicMock, call, patch
 
@@ -657,6 +658,125 @@ class TestRunClaude:
         assert result["success"] is True
 
 
+class TestRunClaudeStreamJson:
+    """run_claude(use_stream_json=True) parses JSONL events into clean text.
+
+    Each event is one stdout line, so the inner idle watchdog resets on
+    genuine per-event progress (the codex silent-tool-use fix), while the
+    returned ``output`` is the final assistant text — not raw JSONL.
+    """
+
+    @staticmethod
+    def _jsonl(*events):
+        return [json.dumps(e) + "\n" for e in events]
+
+    @patch("app.claude_step.popen_cli")
+    def test_result_event_is_clean_output(self, mock_popen):
+        lines = self._jsonl(
+            {"type": "system", "subtype": "init", "model": "gpt-5.5"},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read"},
+            ]}},
+            {"type": "result", "subtype": "success",
+             "result": "COMMIT_SUBJECT: fix the thing\n\nApplied the fix."},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["claude", "-p", "x"], "/project", use_stream_json=True,
+        )
+        assert result["success"] is True
+        # Clean final text, not raw JSONL.
+        assert result["output"] == (
+            "COMMIT_SUBJECT: fix the thing\n\nApplied the fix."
+        )
+        assert '"type"' not in result["output"]
+
+    @patch("app.claude_step.popen_cli")
+    def test_summarized_events_printed_not_raw_json(self, mock_popen, capsys):
+        lines = self._jsonl(
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Grep"},
+            ]}},
+            {"type": "result", "subtype": "success", "result": "done"},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        run_claude(["claude", "-p", "x"], "/project", use_stream_json=True)
+        captured = capsys.readouterr()
+        # Human-readable summaries are printed (these reset the idle watchdog),
+        # not the raw JSON lines.
+        assert "[cli]" in captured.out
+        assert "tool_use: Grep" in captured.out
+        assert '{"type"' not in captured.out
+
+    @patch("app.claude_step.popen_cli")
+    def test_falls_back_to_assistant_chunks_without_result(self, mock_popen):
+        """If the stream dies before a result event, accumulated assistant
+        text is still returned instead of empty/raw JSONL."""
+        lines = self._jsonl(
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "partial answer"},
+            ]}},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["claude", "-p", "x"], "/project", use_stream_json=True,
+        )
+        assert result["output"] == "partial answer"
+
+    @patch("app.claude_step.popen_cli")
+    def test_last_message_file_takes_precedence(self, mock_popen, tmp_path):
+        last_msg = tmp_path / "last.txt"
+        last_msg.write_text("definitive final text")
+        lines = self._jsonl(
+            {"type": "result", "subtype": "success", "result": "streamed text"},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["claude", "-p", "x"], "/project",
+            use_stream_json=True, last_message_path=str(last_msg),
+        )
+        # File content wins over the result event.
+        assert result["output"] == "definitive final text"
+
+    @patch("app.claude_step.popen_cli")
+    def test_plain_text_path_unchanged(self, mock_popen):
+        """Default (use_stream_json=False) is byte-for-byte the old behavior."""
+        proc = _fake_proc(["plain line one\n", "plain line two\n"], returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(["claude", "-p", "x"], "/project")
+        assert result["output"] == "plain line one\nplain line two"
+
+    @patch("app.claude_step.popen_cli")
+    def test_rejected_rate_limit_surfaces_in_stream_summary(self, mock_popen):
+        """A rejected ``rate_limit_event`` is collapsed to the summarizer marker
+        and exposed via ``stream_summary`` — never leaking into clean ``output``.
+
+        codex surfaces quota exhaustion as a stdout JSONL ``rate_limit_event``
+        (not on stderr), so the caller relies on this channel to classify it.
+        """
+        lines = self._jsonl(
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "working on it"},
+            ]}},
+            {"type": "rate_limit_event", "rate_limit_info": {
+                "status": "rejected", "rateLimitType": "five_hour",
+            }},
+        )
+        proc = _fake_proc(lines, returncode=1)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["claude", "-p", "x"], "/project", use_stream_json=True,
+        )
+        # Marker reaches the runtime-trusted channel...
+        assert "[cli] rate_limit_rejected" in result["stream_summary"]
+        # ...but not the clean assistant text used for commit subjects.
+        assert "rate_limit_rejected" not in result["output"]
+
+
 # ---------- commit_if_changes ----------
 
 
@@ -1020,6 +1140,77 @@ class TestIsHookRejection:
 # ---------- run_claude_step ----------
 
 
+class TestRunClaudeStepStreaming:
+    """run_claude_step opts into stream-json when the provider supports it,
+    so codex (silent in plain-text mode) emits per-event lines that keep the
+    inner idle watchdog alive. See the codex /rebase feedback-timeout fix."""
+
+    def _fake_provider(self, *, stream_json, last_message):
+        provider = MagicMock()
+        provider.supports_stream_json.return_value = stream_json
+        provider.supports_last_message_file.return_value = last_message
+        provider.add_last_message_file_args.side_effect = (
+            lambda cmd, path: [*cmd[:-1], "--output-last-message", path, cmd[-1]]
+        )
+        return provider
+
+    @patch("app.provider.get_provider")
+    @patch("app.claude_step.commit_if_changes", return_value=False)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["codex", "exec", "p"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "gpt-5.5", "fallback": "gpt-5.5", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_codex_like_provider_requests_streaming_and_cleans_tempfile(
+        self, mock_config, mock_flags, mock_claude, mock_commit, mock_provider,
+    ):
+        mock_provider.return_value = self._fake_provider(
+            stream_json=True, last_message=True,
+        )
+        mock_claude.return_value = {"success": True, "output": "ok", "error": ""}
+        run_claude_step(
+            prompt="apply feedback", project_path="/project",
+            commit_msg="rebase: apply", success_label="ok", failure_label="no",
+            actions_log=[],
+        )
+        # build_full_command asked for stream-json output.
+        assert mock_flags.call_args.kwargs["output_format"] == "stream-json"
+        # run_claude told to parse events, with a last-message sidecar path.
+        ck = mock_claude.call_args.kwargs
+        assert ck["use_stream_json"] is True
+        last_path = ck["last_message_path"]
+        assert last_path
+        # Caller-owned temp file is cleaned up after the run.
+        import os as _os
+        assert not _os.path.exists(last_path)
+
+    @patch("app.provider.get_provider")
+    @patch("app.claude_step.commit_if_changes", return_value=False)
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["copilot", "-p", "x"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_nonstreaming_provider_keeps_plain_text(
+        self, mock_config, mock_flags, mock_claude, mock_commit, mock_provider,
+    ):
+        mock_provider.return_value = self._fake_provider(
+            stream_json=False, last_message=False,
+        )
+        mock_claude.return_value = {"success": True, "output": "ok", "error": ""}
+        run_claude_step(
+            prompt="x", project_path="/project",
+            commit_msg="m", success_label="ok", failure_label="no",
+            actions_log=[],
+        )
+        assert mock_flags.call_args.kwargs["output_format"] == ""
+        ck = mock_claude.call_args.kwargs
+        assert ck["use_stream_json"] is False
+        assert ck["last_message_path"] is None
+
+
 class TestRunClaudeStep:
     """Tests for run_claude_step — orchestrator."""
 
@@ -1169,6 +1360,45 @@ class TestRunClaudeStep:
         )
 
         assert result.quota_exhausted is False
+
+    @patch("app.provider.get_provider_name", return_value="codex")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch(
+        "app.claude_step.get_model_config",
+        return_value={"mission": "", "fallback": "", "chat": "", "lightweight": "", "review_mode": ""},
+    )
+    def test_codex_quota_in_stream_summary_detected(
+        self, mock_config, mock_flags, mock_claude, mock_provider,
+    ):
+        """codex quota exhaustion arrives as a stdout JSONL ``rate_limit_event``
+        that the summarizer collapses into ``stream_summary`` — not into the
+        clean ``output`` nor onto stderr. The step must still classify it as a
+        quota stop so the feedback_quota backoff fires instead of pushing
+        feedback-less.
+        """
+        mock_claude.return_value = {
+            "success": False,
+            # Clean assistant text carries no quota phrase.
+            "output": "Drafting the review feedback...",
+            "error": "Exit code 1: no stderr",
+            "stderr": "",
+            "stream_summary": (
+                "[cli] assistant — text: Drafting the review feedback\n"
+                "[cli] rate_limit_rejected (five_hour) resetsAt 1893456000"
+            ),
+            "exit_code": 1,
+        }
+        result = run_claude_step(
+            prompt="review feedback",
+            project_path="/project",
+            commit_msg="chore: feedback",
+            success_label="Done",
+            failure_label="Feedback failed",
+            actions_log=[],
+        )
+
+        assert result.quota_exhausted is True
 
     @patch("app.provider.get_provider_name", return_value="claude")
     @patch("app.claude_step.run_claude")
@@ -1655,6 +1885,119 @@ class TestBuildPrPrompt:
         _, kwargs = mock_lp.call_args
         assert "+small change" in kwargs["DIFF"]
         assert "BEGIN EXTERNAL DATA" in kwargs["DIFF"]
+
+
+# ---------- _force_push / _owner_token_push ----------
+
+
+class TestOwnerTokenPush:
+    """Force-push falls back to the owning gh account's token on a 403.
+
+    Reproduces the rebase failure on PR #2105: the PR branch lived on a fork
+    owned by a *different* logged-in gh account than the active one, so git's
+    credential helper served the wrong token and every remote 403'd.
+    """
+
+    def test_force_push_lease_success_skips_fallback(self):
+        from app.claude_step import _force_push
+        with patch("app.claude_step._run_git", return_value="") as mock_git, \
+             patch("app.claude_step._owner_token_push") as mock_fallback:
+            _force_push("origin", "koan/fix", "/project")
+        assert mock_git.call_count == 1  # only --force-with-lease ran
+        mock_fallback.assert_not_called()
+
+    def test_force_push_retries_with_owner_token_on_permission_failure(self):
+        """Both plain pushes 403; owner-token push rescues it (no raise)."""
+        from app.claude_step import _force_push
+        with patch("app.claude_step._run_git",
+                   side_effect=RuntimeError("Permission to Koan-Bot/koan.git denied to Master-Koan")), \
+             patch("app.claude_step._owner_token_push", return_value=True) as mock_fallback:
+            _force_push("origin", "koan/fix", "/project")  # must not raise
+        mock_fallback.assert_called_once_with("origin", "koan/fix", "/project")
+
+    def test_force_push_raises_when_owner_token_fallback_also_fails(self):
+        from app.claude_step import _force_push
+        with patch("app.claude_step._run_git",
+                   side_effect=RuntimeError("403 denied")), \
+             patch("app.claude_step._owner_token_push", return_value=False):
+            with pytest.raises(RuntimeError, match="403 denied"):
+                _force_push("origin", "koan/fix", "/project")
+
+    def test_owner_token_push_uses_owning_accounts_token(self):
+        """Resolves the remote owner and pushes with `gh auth token --user`."""
+        from app.claude_step import _owner_token_push
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("app.github._get_remote_url",
+                   return_value="https://github.com/Koan-Bot/koan.git"), \
+             patch("app.github._parse_remote_url", return_value="Koan-Bot/koan"), \
+             patch("app.claude_step.run_gh", return_value="ght_secret123") as mock_gh, \
+             patch("app.claude_step.subprocess.run", side_effect=fake_run):
+            ok = _owner_token_push("origin", "koan/fix", "/project")
+
+        assert ok is True
+        assert mock_gh.call_args.args == ("auth", "token", "--user", "Koan-Bot")
+        # Pushes to the owner's repo with the embedded token.
+        assert "https://x-access-token:ght_secret123@github.com/Koan-Bot/koan.git" in captured["cmd"]
+
+    def test_owner_token_push_skips_ssh_remote(self):
+        """SSH remotes have no token URL to build — bail out, do not call gh."""
+        from app.claude_step import _owner_token_push
+        with patch("app.github._get_remote_url",
+                   return_value="git@github.com:Anantys-oss/koan.git"), \
+             patch("app.claude_step.run_gh") as mock_gh:
+            assert _owner_token_push("upstream", "koan/fix", "/project") is False
+        mock_gh.assert_not_called()
+
+    def test_owner_token_push_returns_false_when_no_token(self):
+        from app.claude_step import _owner_token_push
+        with patch("app.github._get_remote_url",
+                   return_value="https://github.com/Koan-Bot/koan.git"), \
+             patch("app.github._parse_remote_url", return_value="Koan-Bot/koan"), \
+             patch("app.claude_step.run_gh", return_value=""), \
+             patch("app.claude_step.subprocess.run") as mock_run:
+            assert _owner_token_push("origin", "koan/fix", "/project") is False
+        mock_run.assert_not_called()  # no token → never attempts the push
+
+    def test_owner_token_push_redacts_token_on_timeout(self, capsys):
+        """A push timeout must not leak the token through the logged command."""
+        from app.claude_step import _owner_token_push
+        token = "ght_secret123"
+        with patch("app.github._get_remote_url",
+                   return_value="https://github.com/Koan-Bot/koan.git"), \
+             patch("app.github._parse_remote_url", return_value="Koan-Bot/koan"), \
+             patch("app.claude_step.run_gh", return_value=token), \
+             patch("app.claude_step.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(
+                       cmd=["git", "push",
+                            f"https://x-access-token:{token}@github.com/Koan-Bot/koan.git",
+                            "koan/fix", "--force"],
+                       timeout=120)):
+            assert _owner_token_push("origin", "koan/fix", "/project") is False
+        err = capsys.readouterr().err
+        assert token not in err
+        assert "***" in err
+
+    def test_owner_token_push_redacts_token_on_push_failure(self, capsys):
+        """A non-zero push must not leak the token if it echoes in stderr."""
+        from app.claude_step import _owner_token_push
+        token = "ght_secret123"
+        with patch("app.github._get_remote_url",
+                   return_value="https://github.com/Koan-Bot/koan.git"), \
+             patch("app.github._parse_remote_url", return_value="Koan-Bot/koan"), \
+             patch("app.claude_step.run_gh", return_value=token), \
+             patch("app.claude_step.subprocess.run",
+                   return_value=MagicMock(
+                       returncode=128,
+                       stderr=f"fatal: https://x-access-token:{token}@github.com/... rejected")):
+            assert _owner_token_push("origin", "koan/fix", "/project") is False
+        err = capsys.readouterr().err
+        assert token not in err
+        assert "***" in err
 
 
 # ---------- _push_with_pr_fallback ----------

@@ -80,7 +80,7 @@ All responses are JSON. Errors use a uniform envelope:
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/v1/status` | yes | Agent state, mode, mission counts, signal flags, attention count |
+| `GET` | `/v1/status` | yes | Agent state, mode, mission counts, signal flags, attention count, live execution truth |
 
 Response:
 ```json
@@ -93,7 +93,16 @@ Response:
     "focus": false,
     "status_text": "Run 12/20 — executing",
     "pause": {},
-    "elapsed_seconds": 42
+    "elapsed_seconds": 42,
+    "execution": {
+      "state": "idle|working|stalled|zombie",
+      "pid": 12345,
+      "project": "my-project",
+      "run_num": 12,
+      "elapsed": 42,
+      "last_output_age": 3.1,
+      "sessions": 0
+    }
   },
   "missions": {
     "pending": 3,
@@ -106,9 +115,34 @@ Response:
     "quota_paused": false,
     "paused": false
   },
-  "attention_count": 2
+  "attention_count": 2,
+  "execution": {
+    "provider_state": "idle|working|stalled|zombie",
+    "in_progress_lines": 1,
+    "zombie": false
+  }
 }
 ```
+
+The `execution` block reports **observed** runtime state — backed by the live
+provider PID in `.koan-active` and provider-output recency — not the
+declarative `missions.md` ▶ timestamp, which can silently diverge (#2086):
+
+- `working` — a live provider PID with recent (or not-yet-produced) output, or
+  a live parallel worktree session (tracked in `sessions.json`).
+- `stalled` — a live PID but no output for over 120s (hung session). A recorded
+  stdout file that has vanished is treated as stalled, never as `working`.
+- `zombie` — a recorded PID that is no longer alive.
+- `idle` — no provider running.
+
+The top-level `execution.zombie` is `true` when an *In Progress* mission line
+exists but no live provider process backs it. To avoid flapping during the
+brief start/stop windows where the `missions.md` line and the `.koan-active`
+signal momentarily disagree, the orphan check requires that the run-loop
+heartbeat (`.koan-run-heartbeat`) has gone stale before flagging the `idle`
+case — a recorded-but-dead PID is always flagged immediately. Live parallel
+sessions also suppress the flag. The same cross-check backs the `make status`
+`execution:` line.
 
 ### Missions
 
@@ -241,6 +275,8 @@ Secret fields (keys containing `token`, `password`, `secret`, `api_key`) are rep
 |---|---|---|
 | `days` | `30` | Lookback window, clamped to `[0, 365]` |
 | `project` | _(all)_ | Per-project metrics + trend; omit for global metrics with per-project trends |
+
+The global (no `project`) response includes `security_blocks_7d` — the count of auto-merge blocks recorded in `.security-audit.jsonl` over the last 7 days (see [Security Review](../security/security-review.md#audit-trail)).
 
 **GET /v1/logs** query params:
 

@@ -5,6 +5,8 @@
 This manual is organized in three progressive tiers. Start with the basics, then unlock more advanced workflows as you grow comfortable.
 
 > **New here?** Make sure you've completed the [Quick Start](../../README.md#quick-start) or [Full Install Guide](../../INSTALL.md) first. This manual assumes Kōan is already running.
+>
+> **Just want the commands?** The [Quickstart](quickstart.md) is a 5-minute, copy-paste guide to driving Kōan from GitHub, Jira, and your messaging app.
 
 ---
 
@@ -639,6 +641,7 @@ Produces a pedagogical walkthrough of the PR: what problem it solves (with examp
 **`/ask`** — Ask a question about a GitHub PR or issue and get an AI-generated reply posted directly to the thread.
 
 - **Usage:** `/ask <github-comment-url>`
+- **Aliases:** `/question` (also a bare-keyword trigger — `question <url>` runs `/ask`)
 - **GitHub @mention:** `@koan-bot ask <your question>` on any PR or issue
 
 <details>
@@ -708,7 +711,8 @@ After completion, Kōan posts a structured comment on the PR with these sections
 <details>
 <summary>Use cases</summary>
 
-- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase` in sequence
+- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase` at the **end** of the queue (review stays ahead of rebase)
+- `/rr --now https://github.com/org/repo/pull/42` — Jumps the queue: inserts the combo at the **top** so it runs next
 - Extra context after the URL is passed to the review step (e.g., `/rr <url> focus on error handling`)
 </details>
 
@@ -769,6 +773,17 @@ After completion, Kōan posts a structured comment on the PR with these sections
 
 - `/branches` — Show all koan branches for the default project with merge recommendations
 - `/branches koan` — Show branches for a specific project
+</details>
+
+**`/checkup`** — Health-check every open PR you authored across all projects. For each PR with merge conflicts it queues a `/rebase`; for each with failing CI it queues a `/check`. Results are deduplicated against already-queued missions and skipped when a PR is unchanged since the last checkup.
+
+- **Usage:** `/checkup`
+- **Aliases:** `/checkprs`
+
+<details>
+<summary>Use cases</summary>
+
+- `/checkup` — Sweep all open PRs and auto-queue fixes for conflicts and CI failures
 </details>
 
 **`/orphans`** — Recover orphan branches by rebasing onto the default branch and creating draft PRs.
@@ -1596,6 +1611,8 @@ projects:
 
 When `approved: false`, the bot still posts review comments and PR feedback but skips the formal GitHub review status (green check / red X in the Reviewers panel). Configuration errors are fail-closed: if loading project overrides fails, or if the `review_verdict` section is malformed (non-dict value or non-boolean entries for known keys), the verdict is skipped to preserve operator intent.
 
+GitHub forbids APPROVE / REQUEST_CHANGES on a PR you authored (HTTP 422). When Kōan reviews its own PR, the verdict body is automatically posted as a `COMMENT` review instead, so the feedback still appears in the Reviewers panel rather than being lost to a submission error.
+
 **Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in `config.yaml` to also post each finding as an inline PR comment anchored to its code location, in addition to the bucketed summary comment (which is unchanged). Each inline thread shows the same severity marker (🔴/🟡/🟢) and the full finding detail, so reviewers can react or resolve in place. Cap the volume with `review_inline_comments.max_comments` (default 25). Disabled by default; findings without a resolvable line, or reviews with no head SHA, are skipped. Re-running `/review` is idempotent — findings already anchored on the PR are not re-posted. Multi-line findings anchor to their full range. If findings exist but every inline post fails, Kōan notifies you instead of failing silently.
 
 ```yaml
@@ -1895,7 +1912,7 @@ Kōan can automatically create fix missions when CI fails on its own PRs. When e
 ci_dispatch:
   enabled: true              # Master switch (default: false)
   cooldown_minutes: 30       # Min time between checks per project (default: 30)
-  log_snippet_bytes: 4096    # Max CI log snippet in mission text (default: 4096)
+  log_snippet_bytes: 4096    # Max CI log snippet in mission text (default: 4096, floored at 64)
   tracker_max_age_days: 30   # Prune dedup entries older than this (default: 30)
 ```
 
@@ -2230,7 +2247,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review one or more pull requests |
 | `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
-| `/ask <comment-url>` | — | I | Ask a question about a PR/issue — posts AI reply to GitHub |
+| `/ask <comment-url>` | `/question` | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase <PR> [focus area]` | `/rb` | I | Rebase a PR onto its base branch; trailing text becomes focus context |
 | `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo) |
 | `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | I | Plan then implement an issue (combo) |
@@ -2238,6 +2255,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
 | `/pr <PR>` | — | I | Review and update a GitHub PR |
 | `/branches [project]` | `/br`, `/prs` | B | List koan branches + PRs with merge order |
+| `/checkup` | `/checkprs` | B | Health-check all open PRs — auto-queue /rebase + /check |
 | `/orphans <project>` | `/orphan` | B | Recover orphan branches — rebase + draft PR |
 | `/check <url>` | `/inspect` | I | Run project health checks on a PR/issue |
 | `/check_need <url>` | `/need`, `/needs` | I | Analyze if a PR/issue is still needed |

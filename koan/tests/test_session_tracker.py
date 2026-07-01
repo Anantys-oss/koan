@@ -512,6 +512,17 @@ class TestClassifySessionEdgeCases:
         content = "All branches pending. Blocked on merge reviews."
         assert classify_session(content) == "blocked"
 
+    def test_canonical_blocked_phrasing_is_blocked_not_empty(self):
+        """Regression: blocked-trigger phrases must not double-count into
+        empty_score. The canonical blocked journal repeats the same idea
+        ('all work blocked', 'blocked on merge queue') which previously
+        pushed empty_score >= 3 and misclassified the session as 'empty'."""
+        content = (
+            "All work blocked. Blocked on merge queue. "
+            "No actionable work this session."
+        )
+        assert classify_session(content) == "blocked"
+
     def test_blocked_with_weak_productive(self):
         """Blocked + weak productive signal → productive (implemented beats blocked)."""
         content = "Blocked on merge for old PRs, but implemented a new module."

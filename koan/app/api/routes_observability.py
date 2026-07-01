@@ -76,6 +76,8 @@ def metrics():
     for proj, pdata in data.get("by_project", {}).items():
         if isinstance(pdata, dict):
             pdata["trend"] = compute_project_trend(instance, proj, days=days)
+    from app.security_review import count_security_blocks
+    data["security_blocks_7d"] = count_security_blocks(instance, days=7)
     return jsonify(data)
 
 

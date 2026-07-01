@@ -242,7 +242,7 @@ def validate_project_paths(config: dict) -> Optional[str]:
     Projects without a path (workspace-only overrides) are skipped.
     Separated from _validate_config() so tests can skip filesystem checks.
     """
-    projects = config.get("projects", {})
+    projects = config.get("projects") or {}
     for name, project in projects.items():
         if project is None:
             continue
@@ -259,8 +259,12 @@ def get_projects_from_config(config: dict) -> List[Tuple[str, str]]:
 
     Same format as get_known_projects() returns — enables drop-in replacement.
     Projects without a path (workspace-only overrides) are skipped.
+
+    A ``projects:`` key present but empty (e.g. all entries commented out)
+    parses to ``None``; coerce to ``{}`` so iteration never crashes the
+    GitHub-notification loop.
     """
-    projects = config.get("projects", {})
+    projects = config.get("projects") or {}
     result = []
     for name, proj in projects.items():
         if proj is None:
@@ -429,6 +433,21 @@ def get_project_tools(config: dict, project_name: str) -> dict:
     if not isinstance(tools, dict):
         return {}
     return tools
+
+
+def get_project_cli(config: dict, project_name: str) -> dict:
+    """Get per-role CLI provider overrides for a project from projects.yaml.
+
+    Returns a flat dict of role -> ``flavor[:path]`` (mission, chat, lightweight,
+    review_mode, reflect) plus optional ``fallback``. Only includes keys that
+    are explicitly set — caller (``config.get_cli_config``) merges with the
+    global ``cli:`` section and the global provider default.
+    """
+    project_cfg = get_project_config(config, project_name)
+    cli = project_cfg.get("cli", {})
+    if not isinstance(cli, dict):
+        return {}
+    return cli
 
 
 def get_project_rtk_enabled(config: dict, project_name: str) -> bool:

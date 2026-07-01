@@ -29,9 +29,12 @@ _CONVENTIONAL_RE = re.compile(
     r"(?:\([^)]+\))?!?:\s"
 )
 
-# Ticket/case reference patterns.
+# Ticket/case reference patterns. Ticket keys are uppercase by convention
+# (e.g. JIRA-123), so this is case-sensitive on purpose — IGNORECASE would
+# match lowercase hyphen-number tokens like "utf-8" or "python-3" and
+# misclassify a plain repo as ticket-style.
 _TICKET_RE = re.compile(
-    r"^[a-f0-9]+\s+.*?(?:Case\s+)?([A-Z][A-Z0-9_]+-\d+)", re.IGNORECASE
+    r"^[a-f0-9]+\s+.*?(?:Case\s+)?([A-Z][A-Z0-9_]+-\d+)"
 )
 
 # Matches file references in markdown: backtick-quoted paths or bare paths

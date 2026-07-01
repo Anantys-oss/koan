@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# ollama-claude — run the Claude CLI against a local Ollama model via
+# `ollama launch claude`.
+#
+# Koan invokes this as a drop-in `claude` replacement when
+#   KOAN_CLAUDE_CLI_PATH=/path/to/koan/bin/ollama-claude
+# is set. Koan passes a Claude-style argument vector, e.g.:
+#   -p "<prompt>" --model <name> --output-format json --verbose ...
+#
+# This wrapper pulls the --model value out of that vector and re-issues the
+# call through Ollama's Anthropic-compatible launcher:
+#   ollama launch claude --model <model> -- <remaining args>
+#
+# --fallback-model is dropped: Ollama forwards post-`--` args to the real
+# claude CLI, and Koan's default config emits an Anthropic tier name
+# (`sonnet`) that the local Ollama server cannot serve — which would turn a
+# transient hiccup into a hard failure.
+#
+# Model resolution order:
+#   1. --model <name> / --model=<name> passed by Koan (per-project `models:`)
+#   2. $OLLAMA_CLAUDE_MODEL
+#   3. qwen2.5-coder:14b  (hard default)
+#
+# Prerequisites: Ollama v0.16.0+ installed (`ollama launch claude --help`).
+# See docs/providers/ollama-wrapper.md.
+
+set -euo pipefail
+
+if ! command -v ollama >/dev/null 2>&1; then
+    echo "ollama-claude: 'ollama' not found on PATH. Install Ollama v0.16.0+ first." >&2
+    echo "ollama-claude: see docs/providers/ollama-wrapper.md" >&2
+    exit 127
+fi
+
+model=""
+args=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model)
+            model="${2:-}"
+            shift
+            [[ $# -gt 0 ]] && shift
+            ;;
+        --model=*)
+            model="${1#--model=}"
+            shift
+            ;;
+        --fallback-model)
+            # Ollama has no Anthropic fallback tier; drop the flag and value.
+            shift
+            [[ $# -gt 0 ]] && shift
+            ;;
+        --fallback-model=*)
+            shift
+            ;;
+        *)
+            args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "$model" ]]; then
+    model="${OLLAMA_CLAUDE_MODEL:-qwen2.5-coder:14b}"
+fi
+
+# "${args[@]+...}" guards against set -u on bash 3.2 when args is empty.
+exec ollama launch claude --model "$model" -- "${args[@]+"${args[@]}"}"

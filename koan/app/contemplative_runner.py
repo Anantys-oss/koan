@@ -69,18 +69,22 @@ def build_contemplative_command(
         github_nickname=github_nickname,
     )
 
-    from app.cli_provider import build_full_command
+    from app.cli_provider import build_full_command, get_provider_for_role
     from app.config import get_contemplative_max_turns, get_contemplative_tools, get_mcp_configs
 
     tools_str = get_contemplative_tools(project_name=project_name)
     allowed_tools = [t.strip() for t in tools_str.split(",") if t.strip()]
     mcp_configs = get_mcp_configs(project_name)
 
+    # Contemplative sessions run on the lightweight role's provider (cli:
+    # section); extra_flags supplies the matching lightweight model.
+    provider = get_provider_for_role("lightweight", project_name)
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
         mcp_configs=mcp_configs,
         max_turns=get_contemplative_max_turns(),
+        provider=provider,
     )
     if extra_flags:
         cmd.extend(extra_flags)
@@ -88,15 +92,22 @@ def build_contemplative_command(
     return cmd
 
 
-def get_contemplative_flags() -> List[str]:
+def get_contemplative_flags(project_name: str = "") -> List[str]:
     """Get CLI flags for contemplative role from config.
+
+    Args:
+        project_name: Optional project name for per-project ``cli.lightweight``
+            overrides. The contemplative binary is already resolved against the
+            project's lightweight provider (``build_contemplative_command``); the
+            model flag must resolve the same way so a project-pinned binary
+            receives a matching model.
 
     Returns:
         List of CLI flag strings (may be empty).
     """
     from app.config import get_claude_flags_for_role
 
-    flags_str = get_claude_flags_for_role("contemplative")
+    flags_str = get_claude_flags_for_role("contemplative", project_name=project_name)
     if not flags_str.strip():
         return []
     return flags_str.split()
@@ -123,7 +134,7 @@ def run_contemplative_session(
     """
     from app.claude_step import run_claude
 
-    flags = get_contemplative_flags()
+    flags = get_contemplative_flags(project_name=project_name)
     cmd = build_contemplative_command(
         instance=instance,
         project_name=project_name,

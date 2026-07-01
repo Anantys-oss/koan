@@ -66,10 +66,12 @@ class ClineProvider(CLIProvider):
     name = "cline"
 
     def binary(self) -> str:
+        if self._binary_override:
+            return self._resolve_binary_path(self._binary_override)
         return "cline"
 
     def is_available(self) -> bool:
-        return shutil.which("cline") is not None
+        return shutil.which(self.binary()) is not None
 
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
         # Cline uses --auto-approve for unattended execution.

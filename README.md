@@ -368,7 +368,7 @@ KOAN_DASHBOARD_PORT=5001      # Custom port (optional)
 
 **Via command-line arguments**:
 ```bash
-python3 koan/app/dashboard.py --host 0.0.0.0 --port 8080
+python3 koan/app/dashboard/__main__.py --host 0.0.0.0 --port 8080
 ```
 
 **Security note**: The dashboard has no authentication. Only expose it to trusted networks.

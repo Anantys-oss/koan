@@ -57,6 +57,30 @@ class TestAskSkillMd:
 
 
 # ---------------------------------------------------------------------------
+# Alias registration
+# ---------------------------------------------------------------------------
+
+
+class TestAskSkillAlias:
+    """Verify the /question alias resolves to the ask skill."""
+
+    def test_question_alias_in_skill_md(self):
+        from app.skills import parse_skill_md
+
+        skill_md = Path(__file__).parent.parent / "skills" / "core" / "ask" / "SKILL.md"
+        skill = parse_skill_md(skill_md)
+        assert "question" in skill.commands[0].aliases
+
+    def test_question_alias_resolves_in_registry(self):
+        from app.skills import build_registry
+
+        registry = build_registry()
+        skill = registry.find_by_command("question")
+        assert skill is not None, "/question alias not registered in skill registry"
+        assert skill.name == "ask"
+
+
+# ---------------------------------------------------------------------------
 # URL parsing helpers
 # ---------------------------------------------------------------------------
 
