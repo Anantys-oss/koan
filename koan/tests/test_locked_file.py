@@ -200,3 +200,29 @@ class TestLockedJsonlRead:
         lines = locked_jsonl_read(path)
         # Lines include trailing newline
         assert lines[0].endswith("\n")
+
+
+# ---------------------------------------------------------------------------
+# locked_jsonl_append_capped
+# ---------------------------------------------------------------------------
+
+class TestLockedJsonlAppendCapped:
+    def test_append_capped_creates_and_caps(self, tmp):
+        from app.locked_file import locked_jsonl_append_capped
+
+        path = tmp / ".prov.jsonl"
+        for i in range(5):
+            locked_jsonl_append_capped(path, {"n": i}, max_lines=3)
+
+        lines = [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+        # Only the newest 3 survive, oldest-first order preserved.
+        assert [r["n"] for r in lines] == [2, 3, 4]
+
+    def test_append_capped_below_cap_keeps_all(self, tmp):
+        from app.locked_file import locked_jsonl_append_capped
+
+        path = tmp / ".prov.jsonl"
+        locked_jsonl_append_capped(path, {"n": 0}, max_lines=10)
+        locked_jsonl_append_capped(path, {"n": 1}, max_lines=10)
+        lines = [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
+        assert [r["n"] for r in lines] == [0, 1]
