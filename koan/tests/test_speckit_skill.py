@@ -277,3 +277,46 @@ def test_runner_applies_branch_override_and_strips_tokens(monkeypatch, tmp_path)
     )
     assert captured["GOAL"] == "add CSV export"  # branch: stripped from the prompt goal
     assert captured["BASE_BRANCH"] == "feat-x"   # branch: applied as base override
+
+
+# --- speckit_from_branch handler (US5 trigger; runner pending) ---------------
+
+def test_from_branch_handler_usage_on_empty_args(tmp_path):
+    from skills.core.speckit_from_branch.handler import handle
+
+    assert "Usage" in handle(_ctx("", tmp_path))
+
+
+def test_from_branch_handler_aborts_without_constitution(tmp_path, monkeypatch):
+    import app.speckit_orchestration as orch
+
+    monkeypatch.setattr(orch, "resolve_target", lambda arg: (str(tmp_path), "myrepo"))
+    monkeypatch.setattr(orch, "has_constitution", lambda path: False)
+    queued = []
+    monkeypatch.setattr(orch, "queue_mission", lambda *a, **k: queued.append(a) or True)
+    from skills.core.speckit_from_branch.handler import handle
+
+    reply = handle(_ctx("myrepo my-spec-branch", tmp_path))
+    assert "constitution" in reply
+    assert queued == []
+
+
+def test_from_branch_handler_queues_with_repo_and_branch(tmp_path, monkeypatch):
+    import app.speckit_orchestration as orch
+
+    monkeypatch.setattr(orch, "resolve_target", lambda arg: (str(tmp_path), "myrepo"))
+    monkeypatch.setattr(orch, "has_constitution", lambda path: True)
+    seen = {}
+
+    def fake_queue(instance_dir, command, project_name, goal, **k):
+        seen.update(command=command, project_name=project_name, goal=goal)
+        return True
+
+    monkeypatch.setattr(orch, "queue_mission", fake_queue)
+    from skills.core.speckit_from_branch.handler import handle
+
+    reply = handle(_ctx("myrepo my-spec-branch", tmp_path))
+    assert "Queued" in reply
+    assert seen["command"] == "speckit_from_branch"
+    assert seen["project_name"] == "myrepo"
+    assert seen["goal"] == "myrepo my-spec-branch"

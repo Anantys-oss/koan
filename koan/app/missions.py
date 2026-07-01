@@ -2479,7 +2479,7 @@ _GITHUB_ACTION_RE = re.compile(
     r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile|question"
     r"|rb|rc|rebase|recreate|refactor|review|reviewrebase|rf|rr|rv|xp"
     r"|secu|security|security_audit|sq|squash"
-    r"|ultrareview|ultra_review|urv)\s+"
+    r"|ultrareview|ultra_review|urv|speckit|speckit_from_branch)\s+"
     r"(https://github\.com/[^\s]+)"
 )
 

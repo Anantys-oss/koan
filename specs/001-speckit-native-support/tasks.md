@@ -128,7 +128,7 @@ description: "Task list for the native /speckit mission orchestration feature"
 ### Implementation for User Story 5
 
 - [ ] T023 [P] [US5] Write the from-branch orchestration prompt (skip `specify`, cut a prefixed `koan/*` branch off `branch-name`, run `plan → tasks → implement → review → CI → PR`) in koan/skills/core/speckit_from_branch/prompts/speckit.md
-- [ ] T024 [US5] Implement the from-branch handler: parse `<repo-id> <branch-name>`, set `entry_mode="from_branch"` + `base_branch`, call shared `dispatch` in koan/skills/core/speckit_from_branch/handler.py
+- [X] T024 [US5] Implement the from-branch handler: parse `<repo-id> <branch-name>`, set `entry_mode="from_branch"` + `base_branch`, call shared `dispatch` in koan/skills/core/speckit_from_branch/handler.py *(handler done — parses repo-id + branch, constitution gate, queues mission; the dedicated runner T023/T025 remains US5)*
 - [ ] T025 [US5] Implement the branch-off-human-branch git flow (new `koan/*` from `branch-name`; never commit to the human's branch) and the missing-spec abort at `plan` in koan/app/speckit_orchestration.py
 - [ ] T026 [US5] Write US5 tests (specify skipped, base branch recorded, missing spec on branch → abort at `plan`, prefixed branch off human branch) in koan/tests/test_speckit_skill.py
 
