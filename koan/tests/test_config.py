@@ -1053,6 +1053,41 @@ class TestGetMissionTimeout:
             assert get_mission_timeout() == 0
 
 
+# --- get_bash_foreground_timeout_ms ---
+
+
+class TestGetBashForegroundTimeoutMs:
+    def test_default(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({}):
+            # Default 900s (15 min) with default mission_timeout 3600s.
+            assert get_bash_foreground_timeout_ms() == 900_000
+
+    def test_custom_honored(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({"mission_timeout": 3600,
+                           "bash_foreground_timeout": 600}):
+            assert get_bash_foreground_timeout_ms() == 600_000
+
+    def test_clamped_below_mission_timeout(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        # Requested 3600s must clamp strictly under mission_timeout 600s.
+        with _mock_config({"mission_timeout": 600,
+                           "bash_foreground_timeout": 3600}):
+            ms = get_bash_foreground_timeout_ms()
+            assert ms > 0
+            assert ms < 600 * 1000
+
+    def test_zero_disables(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({"bash_foreground_timeout": 0}):
+            assert get_bash_foreground_timeout_ms() == 0
+
+
 # --- get_post_mission_timeout ---
 
 

@@ -990,6 +990,28 @@ def get_mission_timeout() -> int:
     return _safe_int(config.get("mission_timeout", 3600), 3600)
 
 
+def get_bash_foreground_timeout_ms() -> int:
+    """Max Bash-tool foreground timeout (ms) for mission subprocesses.
+
+    Lets the agent block on a long-but-bounded command in the foreground
+    instead of backgrounding it (which orphans the child when the one-shot
+    session ends). Clamped strictly below ``mission_timeout`` so the model
+    keeps a buffer to read the result and write its conclusion before the
+    mission watchdog SIGTERMs the process group.
+
+    Config key: bash_foreground_timeout (seconds, default: 900 — 15 min).
+    Returns 0 to signal "leave the CLI default" when explicitly disabled.
+    """
+    config = _load_config()
+    requested_s = _safe_int(config.get("bash_foreground_timeout", 900), 900)
+    if requested_s <= 0:
+        return 0
+    mission_s = get_mission_timeout()
+    # Keep a 120s reporting buffer under the mission watchdog; never exceed it.
+    ceiling_s = max(60, mission_s - 120)
+    return min(requested_s, ceiling_s) * 1000
+
+
 def get_first_output_timeout() -> int:
     """Get timeout in seconds for first output from CLI subprocesses.
 
