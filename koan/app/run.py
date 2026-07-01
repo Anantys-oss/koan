@@ -612,6 +612,18 @@ def _is_ci_check_mission(mission_title: str) -> bool:
     return False
 
 
+def _mission_fail_icon(mission_title: str) -> str:
+    """Emoji prefix for a mission-failure notification.
+
+    CI-related missions use 🚦 (a status signal, not an alarm); everything
+    else uses ❌. Centralised so every failure-notification path stays
+    consistent — this was scattered across call sites and kept regressing
+    (a /ci_check mission whose start transition or devcontainer setup
+    failed still surfaced ❌). See issues #1883, #2027.
+    """
+    return "🚦" if _is_ci_check_mission(mission_title) else "❌"
+
+
 _SKILL_COMPLETION = {
     "review": ("🔍", "Reviewed"),
     "fix": ("🐞", "Fixed"),
@@ -677,7 +689,7 @@ def _notify_mission_normal(
     # Failures always surface (short form).
     if exit_code != 0:
         emoji = (skill[0] + " ") if skill else ""
-        prefix = "🚦" if _is_ci_check_mission(mission_title) else "❌"
+        prefix = _mission_fail_icon(mission_title)
         label = mission_title or "Run"
         _notify(instance, f"{prefix} [{project_name}] {emoji}Failed: {label}")
         return
@@ -759,7 +771,7 @@ def _notify_mission_end(
         except Exception as e:
             log("error", f"Mission summary extraction failed: {e}")
     else:
-        prefix = "🚦" if _is_ci_check_mission(mission_title) else "❌"
+        prefix = _mission_fail_icon(mission_title)
         label = mission_title if mission_title else "Run"
         msg = f"{prefix} [{project_name}] Run {run_num}/{max_runs} — Failed: {label}"
         # Try to attach error context from the journal
