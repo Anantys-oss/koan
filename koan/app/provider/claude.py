@@ -27,13 +27,12 @@ class ClaudeProvider(CLIProvider):
         # Per-role path (cli.review_mode: claude:/path) wins; otherwise the
         # global KOAN_CLAUDE_CLI_PATH is the second override channel — both
         # are real user-pinned binaries worth surfacing in the signature.
-        raw = (self._binary_override or "").strip()
-        if not raw:
-            raw = os.environ.get("KOAN_CLAUDE_CLI_PATH", "").strip()
-        if not raw:
-            return ""
-        base = raw.rstrip("/").rsplit("/", 1)[-1]
-        return base if base and base != self.name else ""
+        # Basename extraction + the flavor-collapse guard are shared with the
+        # base via _override_basename so the rule lives in one place.
+        raw = (self._binary_override or "").strip() or os.environ.get(
+            "KOAN_CLAUDE_CLI_PATH", ""
+        ).strip()
+        return self._override_basename(raw) if raw else ""
 
     def supports_session_resume(self) -> bool:
         return True

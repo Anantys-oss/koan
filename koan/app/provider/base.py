@@ -95,10 +95,22 @@ class CLIProvider:
         global env override (e.g. Claude's ``KOAN_CLAUDE_CLI_PATH``) surface
         that channel too. Only differs from a vanilla default: a bare
         ``flavor`` with no path yields '', never the flavor name.
+
+        Basename extraction and the "basename equals flavor → collapse" guard
+        are delegated to :meth:`_override_basename` so subclasses share one
+        copy of the rule.
         """
         raw = (self._binary_override or "").strip()
-        if not raw:
-            return ""
+        return self._override_basename(raw) if raw else ""
+
+    def _override_basename(self, raw: str) -> str:
+        """Basename of a pinned binary path, '' when it equals the flavor.
+
+        Shared by :meth:`custom_binary_name` and subclasses (e.g. Claude's
+        ``KOAN_CLAUDE_CLI_PATH`` channel) so the path slice and the
+        "basename equals flavor → not a meaningfully different binary"
+        collapse live in exactly one place.
+        """
         base = raw.rstrip("/").rsplit("/", 1)[-1]
         return base if base and base != self.name else ""
 
