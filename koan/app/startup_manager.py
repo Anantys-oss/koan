@@ -460,6 +460,17 @@ def check_health(koan_root: str, max_age: int = 120):
     check_and_alert(koan_root, max_age=max_age)
 
 
+def write_config_baseline(koan_root: str):
+    """Snapshot config.yaml/projects.yaml as the post-restart baseline.
+
+    Lets the dashboard distinguish hot-reloadable (safe) edits from those
+    needing a restart. Re-runs on every (re)start so "restart pending"
+    clears once the agent has actually reloaded.
+    """
+    from app import config_sync
+    config_sync.write_baseline(Path(koan_root))
+
+
 def check_self_reflection(instance: str):
     """Trigger periodic self-reflection if due and enabled in config.
 
@@ -729,6 +740,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Missions pruning", prune_missions_done, instance)
         _safe_run("Mission history cleanup", cleanup_mission_history, instance)
         _safe_run("Health check", check_health, koan_root)
+        _safe_run("Config baseline", write_config_baseline, koan_root)
 
     with protected_phase("Self-reflection check"):
         _safe_run("Self-reflection check", check_self_reflection, instance)

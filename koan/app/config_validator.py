@@ -91,6 +91,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "thinking": _NESTED,
     "stagnation": _NESTED,
     "optimizations": _NESTED,
+    "config_sync": _NESTED,
 }
 
 # Top-level keys that are recognized but deprecated: they still work (honored
@@ -283,6 +284,9 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "rtk": "dict",
         "review_compressor": "dict",
         "ponytail": "dict",
+    },
+    "config_sync": {
+        "enabled": "bool",
     },
 }
 

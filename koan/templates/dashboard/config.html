@@ -2,7 +2,28 @@
 {% block title_suffix %} — Config{% endblock %}
 {% block page_title %}Config{% endblock %}
 {% block content %}
-<p class="k-body-sm k-text-muted k-mb-4">View and edit instance configuration files.</p>
+<div class="k-row k-gap-2 k-mb-4" style="align-items:center;">
+    <p class="k-body-sm k-text-muted" style="margin:0;">View and edit instance configuration files.</p>
+    <span id="config-sync-badge" class="k-badge" data-state="synced" hidden>
+        <span class="dot"></span><span class="label">Synced</span>
+    </span>
+</div>
+
+<!-- Restart-required modal (shown by dashboard.js when an unsafe change is detected) -->
+<div id="config-restart-modal" class="k-modal" hidden>
+    <div class="k-modal__body">
+        <h3>Restart required</h3>
+        <p>Some changed settings need a restart to take effect:</p>
+        <ul id="config-restart-keys"></ul>
+        <p id="config-restart-busy" class="k-text-muted" hidden>
+            Agent is busy — try again when it is idle.
+        </p>
+        <div class="k-row k-gap-2">
+            <button id="config-restart-now" class="k-btn k-btn--primary k-btn--sm">Restart now</button>
+            <button id="config-restart-dismiss" class="k-btn k-btn--ghost k-btn--sm">Later</button>
+        </div>
+    </div>
+</div>
 
 <!-- Tab bar -->
 <div style="display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:1rem;">

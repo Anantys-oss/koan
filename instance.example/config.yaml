@@ -1092,3 +1092,14 @@ auto_update:
 #       rtk: false          # never inject awareness for this project
 #                           # (e.g. its test runner emits JSON that rtk's
 #                           #  filter would clobber)
+
+# --- Real-time config sync (optional) ---
+# When the dashboard is running, edits to config.yaml / projects.yaml are
+# reflected in the UI within ~2s. Safe settings (dashboard.nickname, tools.*,
+# automation_rules.*, messaging_level, verbose) take effect immediately; unsafe
+# settings (cli_provider, models, anything in projects.yaml) show a
+# "Restart required" modal that only restarts when the agent is idle.
+# Set enabled: false to suppress the UI feedback entirely. Default: true.
+#
+# config_sync:
+#   enabled: true           # bool — show config-sync badge/toast/modal

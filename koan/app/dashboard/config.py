@@ -17,6 +17,7 @@ from app.automation_rules import (
 from app.dashboard import state
 from app.dashboard_service import journal as journal_svc
 from app.dashboard_service import missions as missions_svc
+from app.dashboard_service import stats as stats_svc
 from app.dashboard_service import validate_yaml
 from app.recurring import (
     _locked_modify as _recurring_locked_modify,
@@ -33,9 +34,7 @@ from app.recurring import (
 config_bp = Blueprint("config", __name__)
 
 
-# ---------------------------------------------------------------------------
 # Config page
-# ---------------------------------------------------------------------------
 
 @config_bp.route("/config")
 def config_page():
@@ -92,6 +91,32 @@ def api_config_restart():
         return jsonify({"ok": False, "error": "Failed to send restart signal"}), 500
 
 
+@config_bp.route("/api/config/sync", methods=["GET"])
+def api_config_sync():
+    """Non-SSE poll fallback for config-sync status."""
+    from app import config_sync
+    return jsonify(config_sync.compute_status(state.KOAN_ROOT))
+
+
+@config_bp.route("/api/config/restart-if-idle", methods=["POST"])
+def api_config_restart_if_idle():
+    """Restart the agent only when idle (no in-flight mission); 409 if busy."""
+    import sys
+    agent_state = stats_svc.get_agent_state()
+    # Only an in-flight mission ("working") blocks a restart. The normal
+    # between-runs states (idle, sleeping, paused, stopped) are all safe.
+    if agent_state.get("state") == "working":
+        return jsonify({"ok": False, "error": "agent_busy",
+                        "state": agent_state.get("state")}), 409
+    from app.restart_manager import request_restart
+    try:
+        request_restart(str(state.KOAN_ROOT))
+    except Exception as e:
+        print(f"[dashboard] restart-if-idle failed: {e}", file=sys.stderr)
+        return jsonify({"ok": False, "error": "restart_failed"}), 500
+    return jsonify({"ok": True, "status": "restart_signaled"})
+
+
 @config_bp.route("/api/nickname", methods=["GET"])
 def api_nickname_get():
     """Return the current instance nickname."""
@@ -115,9 +140,7 @@ def api_nickname_set():
     return jsonify({"ok": True, "nickname": nickname})
 
 
-# ---------------------------------------------------------------------------
 # Automation rules
-# ---------------------------------------------------------------------------
 
 @config_bp.route("/rules")
 def rules_page():
@@ -189,9 +212,7 @@ def api_rules_delete(rule_id):
     return jsonify({"ok": True})
 
 
-# ---------------------------------------------------------------------------
 # Recurring tasks
-# ---------------------------------------------------------------------------
 
 @config_bp.route("/recurring")
 def recurring_page():
