@@ -131,14 +131,9 @@ def _recover_one(branch: str, project_path: str, default_branch: str) -> Dict:
         result["error"] = f"push failed: {stderr[:200]}"
         return result
 
-    rebase_note = "Rebased onto" if result["rebased"] else "Could not rebase onto"
-    body = (
-        f"Recovered orphan branch `{branch}`.\n\n"
-        f"{rebase_note} `{default_branch}` — branch pushed as-is."
+    title, body = _build_pr_title_body(
+        branch, project_path, default_branch, result["rebased"],
     )
-
-    short_branch = branch.split("/", 1)[-1] if "/" in branch else branch
-    title = f"fix: recover orphan {short_branch}"
 
     try:
         pr_url = pr_create(
@@ -153,6 +148,47 @@ def _recover_one(branch: str, project_path: str, default_branch: str) -> Dict:
         result["error"] = f"PR creation failed: {str(exc)[:200]}"
 
     return result
+
+
+def _build_pr_title_body(
+    branch: str, project_path: str, default_branch: str, rebased: bool,
+) -> Tuple[str, str]:
+    """Derive PR title and body from the branch's own commits.
+
+    Title = subject line of the first commit. Single commit → body is that
+    commit's full message; multiple commits → body lists the first three commit
+    messages. Falls back to a generic recovery message when no commits can be
+    read (e.g. git failure), so recovery still produces a usable PR.
+    """
+    from app.git_utils import get_commit_messages
+
+    commits = get_commit_messages(project_path, f"origin/{default_branch}", "HEAD")
+    rebase_note = "Rebased onto" if rebased else "Could not rebase onto"
+
+    if not commits:
+        short_branch = branch.split("/", 1)[-1] if "/" in branch else branch
+        return (
+            f"fix: recover orphan {short_branch}",
+            f"Recovered orphan branch `{branch}`.\n\n"
+            f"{rebase_note} `{default_branch}` — branch pushed as-is.",
+        )
+
+    first = commits[0]
+    title = first.splitlines()[0].strip() if first.strip() else f"recover orphan {branch}"
+
+    shown = commits[:3]
+    if len(shown) == 1:
+        commit_section = first.strip()
+    else:
+        commit_section = "\n\n".join(c.strip() for c in shown)
+
+    body = (
+        f"{commit_section}\n\n"
+        f"---\n"
+        f"Recovered orphan branch `{branch}`. "
+        f"{rebase_note} `{default_branch}`."
+    )
+    return title, body
 
 
 def _format_results(project_name: str, results: List[Dict]) -> str:

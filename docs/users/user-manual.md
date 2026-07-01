@@ -796,6 +796,7 @@ After completion, Kōan posts a structured comment on the PR with these sections
 
 - `/orphans koan` — Find orphan branches in the koan project, rebase each onto main, and create draft PRs
 - Orphan branches are automatically detected during git sync — use this to recover them in one step
+- Each PR's title and description are derived from the branch's own commits (no AI call): the title is the first commit's subject, the body is that commit's full message (single commit) or the first three commit messages (multiple commits)
 </details>
 
 **`/check`** — Run project health checks on a PR or issue (rebase, review, plan as needed).

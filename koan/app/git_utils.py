@@ -141,6 +141,35 @@ def get_commit_subjects(
     return [s for s in stdout.splitlines() if s.strip()]
 
 
+def get_commit_messages(
+    cwd: str,
+    base_branch: str = "main",
+    branch: str = "HEAD",
+) -> List[str]:
+    """Return full commit messages between *base_branch* and *branch*, oldest first.
+
+    Each entry is the full message (subject + body), stripped of surrounding
+    whitespace. The ``--reverse`` ordering makes ``[0]`` the first commit on the
+    branch, which is what callers want for PR titles/descriptions. Returns an
+    empty list on failure.
+
+    Args:
+        cwd: Working directory for the git command.
+        base_branch: The base ref (e.g. ``"origin/main"``).
+        branch: The tip ref (default ``"HEAD"``).
+
+    Returns:
+        List of full commit-message strings, oldest first, empty on failure.
+    """
+    rc, stdout, _ = run_git(
+        "log", f"{base_branch}..{branch}", "--reverse", "--format=%B%x00",
+        cwd=cwd,
+    )
+    if rc != 0:
+        return []
+    return [m.strip() for m in stdout.split("\0") if m.strip()]
+
+
 def _list_remotes(cwd: Optional[str] = None) -> Optional[List[str]]:
     """Return configured git remotes for *cwd* preserving git's output order.
 
