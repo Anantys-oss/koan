@@ -8264,3 +8264,52 @@ class TestClassifyTrustStdout:
         assert handled is False
         auth.assert_not_called()
         quota.assert_not_called()
+
+
+class TestMemoryWatchdog:
+    def test_build_memory_monitor_disabled_returns_none(self):
+        from app import run
+        with patch(
+            "app.config.get_memory_monitor_config",
+            lambda: {"enabled": False, "threshold_mb": 1200,
+                     "sustained_samples": 3, "tracemalloc": False,
+                     "min_runs_before_restart": 1},
+        ):
+            assert run._build_memory_monitor() is None
+
+    def test_build_memory_monitor_enabled_returns_monitor(self):
+        from app import run
+        with patch(
+            "app.config.get_memory_monitor_config",
+            lambda: {"enabled": True, "threshold_mb": 900,
+                     "sustained_samples": 5, "tracemalloc": False,
+                     "min_runs_before_restart": 1},
+        ):
+            mon = run._build_memory_monitor()
+        assert mon is not None
+        assert mon.threshold_mb == 900
+        assert mon.sustained_samples == 5
+
+    def test_build_memory_monitor_disabled_when_threshold_below_baseline(self):
+        """A threshold at/below current RSS would restart-loop; disable it."""
+        from app import run
+        with patch(
+            "app.config.get_memory_monitor_config",
+            lambda: {"enabled": True, "threshold_mb": 1,
+                     "sustained_samples": 3, "tracemalloc": False,
+                     "min_runs_before_restart": 1},
+        ):
+            # 1 MB is below this process's real RSS -> guard disables.
+            assert run._build_memory_monitor() is None
+
+    def test_handle_memory_restart_exits_with_restart_code(self, tmp_path):
+        from app import run
+        from app.memory_monitor import MemoryMonitor
+        from app.restart_manager import RESTART_EXIT_CODE
+
+        with patch.object(run, "_notify", lambda *a, **k: None):
+            mon = MemoryMonitor(threshold_mb=1, sustained_samples=1)
+            mon.sample()  # populate last_rss_mb
+            with pytest.raises(SystemExit) as exc:
+                run._handle_memory_restart(str(tmp_path), "test-instance", mon, count=3)
+        assert exc.value.code == RESTART_EXIT_CODE

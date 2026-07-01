@@ -865,6 +865,97 @@ def _commit_instance(instance: str, message: str = ""):
 # Update handler (graceful update + restart)
 # ---------------------------------------------------------------------------
 
+def _build_memory_monitor(koan_root=None):
+    """Construct a MemoryMonitor from config, or None when disabled (#2232).
+
+    Persists the runtime enabled/disabled decision (and reason) via
+    write_watchdog_status when koan_root is given, so observability reports what
+    the loop is actually doing rather than raw config.
+    """
+    from app.config import get_memory_monitor_config
+    from app.memory_monitor import write_watchdog_status
+    conf = get_memory_monitor_config()
+
+    def _record(enabled, threshold_mb, reason):
+        if koan_root is not None:
+            write_watchdog_status(
+                koan_root, enabled=enabled, threshold_mb=threshold_mb, reason=reason,
+            )
+
+    if not conf.get("enabled"):
+        _record(False, conf.get("threshold_mb"), "disabled in config")
+        return None
+    from app.memory_monitor import MemoryMonitor, read_rss_mb
+    threshold_mb = conf["threshold_mb"]
+    # read_rss_mb() returns 0.0 on read failure (a real RSS is always positive).
+    # Without a readable baseline we can't tell a safe threshold from a
+    # restart-looping one, so disable rather than create an unverifiable monitor.
+    baseline = read_rss_mb()
+    if baseline <= 0:
+        log("koan",
+            "Memory watchdog disabled: baseline RSS unreadable, cannot verify "
+            "threshold is above baseline. Watchdog stays off this session.")
+        _record(False, threshold_mb, "baseline RSS unreadable")
+        return None
+    # Misconfiguration guard: a threshold at or below the current baseline RSS
+    # would trip every session and restart-loop forever. Disable instead.
+    if threshold_mb <= 0 or threshold_mb <= baseline:
+        log("koan",
+            f"Memory watchdog disabled: threshold {threshold_mb} MB ≤ baseline "
+            f"RSS {baseline:.0f} MB would restart-loop. Raise "
+            "memory_monitor.threshold_mb above baseline.")
+        _record(False, threshold_mb, "threshold <= baseline RSS")
+        return None
+    _record(True, threshold_mb, "")
+    return MemoryMonitor(
+        threshold_mb=threshold_mb,
+        sustained_samples=conf["sustained_samples"],
+        tracemalloc_enabled=conf.get("tracemalloc", False),
+        min_runs_before_restart=conf.get("min_runs_before_restart", 1),
+    )
+
+
+def _write_memory_restart_journal(koan_root, rss_mb, threshold_mb, count, top_allocations):
+    """Append a memory-restart record for post-hoc leak analysis."""
+    from datetime import datetime, timezone
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": "memory_restart",
+        "rss_mb": round(rss_mb, 1),
+        "threshold_mb": threshold_mb,
+        "runs": count,
+        "top_allocations": top_allocations,
+    }
+    path = Path(koan_root, "instance", ".memory-restarts.jsonl")
+    with suppress_logged(log, "warning", "Memory-restart journal write failed", OSError):
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+
+def _handle_memory_restart(koan_root, instance, monitor, count):
+    """Log, journal, notify, and exit with RESTART_EXIT_CODE to reclaim RSS."""
+    rss = monitor.last_rss_mb
+    log("koan",
+        f"Memory threshold exceeded: {rss:.0f} MB ≥ {monitor.threshold_mb} MB "
+        f"after {count} runs — restarting to reclaim.")
+    top = monitor.top_allocations(limit=10) if monitor.tracemalloc_enabled else []
+    _write_memory_restart_journal(koan_root, rss, monitor.threshold_mb, count, top)
+    with suppress_logged(log, "warning", "Memory-restart notify failed", Exception):
+        if top:
+            detail = "\n".join(top[:5])
+        elif monitor.tracemalloc_error:
+            detail = f"(tracemalloc failed to start: {monitor.tracemalloc_error})"
+        else:
+            detail = "(tracemalloc disabled)"
+        _notify(
+            instance,
+            f"♻️ Restarting to reclaim memory: RSS {rss:.0f} MB ≥ "
+            f"{monitor.threshold_mb} MB after {count} runs.\n"
+            f"Top allocations:\n{detail}",
+        )
+    sys.exit(RESTART_EXIT_CODE)
+
+
 def _handle_update(koan_root: str, instance: str, count: int) -> bool:
     """Handle /update: pull upstream updates, then trigger restart.
 
@@ -1126,6 +1217,8 @@ def main_loop():
         # racing with the Telegram bridge processing of /pause.
         _startup_delay(koan_root)
 
+        memory_monitor = _build_memory_monitor(koan_root)
+
         while True:
             # --- Stop check ---
             stop_file = Path(koan_root, STOP_FILE)
@@ -1165,6 +1258,17 @@ def main_loop():
                 log("koan", "Restart requested. Exiting for re-launch...")
                 clear_restart(koan_root, target="run")
                 sys.exit(RESTART_EXIT_CODE)
+
+            # --- Memory watchdog (#2232) ---
+            # All knobs are frozen at startup in _build_memory_monitor() — a
+            # live config edit takes effect on the next restart, consistently
+            # for every knob (no per-iteration YAML re-read).
+            if memory_monitor is not None:
+                if (
+                    memory_monitor.sample()
+                    and count >= memory_monitor.min_runs_before_restart
+                ):
+                    _handle_memory_restart(koan_root, instance, memory_monitor, count)
 
             # --- Pause mode ---
             if Path(koan_root, PAUSE_FILE).exists():

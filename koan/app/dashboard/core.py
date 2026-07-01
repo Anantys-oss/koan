@@ -226,4 +226,26 @@ def api_health():
     run_health = _check_process_alive(state.KOAN_ROOT, "run")
     awake_health = _check_process_alive(state.KOAN_ROOT, "awake")
 
-    return jsonify({"disk": disk, "run": run_health, "awake": awake_health})
+    # Isolate the health endpoint from memory-status failures: a broken
+    # snapshot must not take down liveness reporting.
+    try:
+        from app.memory_monitor import get_memory_status
+        memory = get_memory_status(state.KOAN_ROOT)
+    except Exception as exc:  # pragma: no cover - defensive
+        # Return a schema-consistent block, not a bare {"error": ...}: a missing
+        # watchdog_enabled reads as falsy and is indistinguishable from an
+        # intentionally-disabled watchdog. Flag the failure explicitly.
+        memory = {
+            "config_error": True,
+            "watchdog_enabled": None,
+            "threshold_mb": None,
+            "source": "unknown",
+            "error": str(exc),
+        }
+
+    return jsonify({
+        "disk": disk,
+        "run": run_health,
+        "awake": awake_health,
+        "memory": memory,
+    })

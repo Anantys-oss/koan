@@ -1872,3 +1872,41 @@ class TestReviewInlineCommentsConfig:
         with _mock_config({"review_inline_comments": {"enabled": True, "max_comments": -3}}):
             cfg = get_review_inline_comments_config()
         assert cfg["max_comments"] == 25
+
+
+class TestMemoryMonitorConfig:
+    def test_defaults(self):
+        from app.config import get_memory_monitor_config
+        with _mock_config({}):
+            conf = get_memory_monitor_config()
+        assert conf["enabled"] is False
+        assert conf["threshold_mb"] == 1200
+        assert conf["sustained_samples"] == 3
+        assert conf["tracemalloc"] is False
+        assert conf["min_runs_before_restart"] == 1
+
+    def test_overrides(self):
+        from app.config import get_memory_monitor_config
+        raw = {
+            "memory_monitor": {
+                "enabled": True,
+                "threshold_mb": "900",
+                "sustained_samples": "5",
+                "tracemalloc": True,
+                "min_runs_before_restart": "2",
+            }
+        }
+        with _mock_config(raw):
+            conf = get_memory_monitor_config()
+        assert conf["enabled"] is True
+        assert conf["threshold_mb"] == 900
+        assert conf["sustained_samples"] == 5
+        assert conf["tracemalloc"] is True
+        assert conf["min_runs_before_restart"] == 2
+
+    def test_malformed_section_disabled(self):
+        from app.config import get_memory_monitor_config
+        with _mock_config({"memory_monitor": "nonsense"}):
+            conf = get_memory_monitor_config()
+        assert conf["enabled"] is False
+        assert conf["threshold_mb"] == 1200
