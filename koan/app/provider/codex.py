@@ -12,7 +12,7 @@ from app.provider.base import CLIProvider, PROVIDER_ERROR_EVENT_TYPES
 
 
 _CODEX_QUOTA_PATTERNS = [
-    r"rate[_\s-]?limit(?:ed|_error| exceeded)?",
+    r"rate[_\s-]?limit(?:ed|[_\s-]?(?:error|exceeded|reached|rejected))",
     r"insufficient[_\s-]?quota",
     r"\bquota\b.*(?:exceeded|reached|exhausted|insufficient)",
     r"(?:exceeded|reached|exhausted|insufficient).*\bquota\b",

@@ -229,6 +229,12 @@ though it carries no generic error marker. Token accounting failures and quota
 detection are separate: if usage extraction fails for a mission, Koan still
 runs quota detection for that mission.
 
+Codex may also print healthy quota telemetry such as `rate_limit_ok: allowed`
+or a `Monthly credit limit ... left` meter. Those lines are informational and
+do not mean the provider refused work. Kōan treats only rejected/exceeded rate
+limit signals, spend-cap errors, HTTP 429s, or structured provider error events
+as hard quota exhaustion.
+
 Quota detection is reactive and is **not** disabled by
 `usage.unlimited_quota: true` — that flag only skips proactive budget gating.
 A real spend-cap or rate-limit error from Codex still pauses the daemon.
