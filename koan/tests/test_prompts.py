@@ -741,6 +741,20 @@ class TestLoadPromptWithIncludes:
         unresolved = re.findall(r"\{@include\s+[\w-]+\}", result)
         assert unresolved == [], f"Unresolved includes in agent.md: {unresolved}"
 
+    def test_agent_prompt_includes_cli_execution_model(self):
+        """The one-shot execution-model partial resolves into the agent prompt."""
+        text = load_prompt(
+            "agent",
+            MISSION_INSTRUCTION="do the thing",
+            PROJECT_NAME="my-toolkit",
+            BRANCH_PREFIX="koan/",
+        )
+        lower = text.lower()
+        assert "one-shot" in lower
+        assert "never end your turn" in lower
+        assert "poll" in lower
+        assert "{@include cli-execution-model}" not in text
+
     def test_all_skill_prompts_resolve_includes(self):
         """Every skill prompt with {@include} directives must resolve completely."""
         import re
