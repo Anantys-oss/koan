@@ -13,6 +13,19 @@ Do not hand-edit released entries — they are the source for `changes/stable.md
 
 ## Unreleased
 
+### Merged 2026-07-01 — main @ 3d9508ed (1 commit)
+
+**Features**
+
+- **Memory RSS watchdog** (#2232/#2233) — new `koan/app/memory_monitor.py`
+  monitors process RSS, self-restarts on threshold breach, with `tracemalloc`
+  diagnostics. Wired into `run.py`, surfaced in the dashboard, and configurable
+  via new `config.py` / `instance.example/config.yaml` knobs.
+
+**Docs / tests** — new `docs/operations/memory-watchdog.md` + README index
+entry; coverage added in `test_memory_monitor.py`, `test_run.py`,
+`test_config.py`, `test_dashboard.py`.
+
 ### Merged 2026-07-01 — main @ c38dd873 (168 commits)
 
 **Features**
