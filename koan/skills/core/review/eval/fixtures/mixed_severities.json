@@ -1,0 +1,53 @@
+{
+  "file_comments": [
+    {
+      "file": "src/db.py",
+      "line_start": 42,
+      "line_end": 42,
+      "severity": "critical",
+      "title": "SQL injection via string interpolation",
+      "comment": "The query is built with an f-string from user input, allowing injection. Use a parameterized query instead.",
+      "code_snippet": "cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")"
+    },
+    {
+      "file": "src/auth.py",
+      "line_start": 10,
+      "line_end": 10,
+      "severity": "warning",
+      "title": "Missing null check on email",
+      "comment": "user.email is dereferenced without a guard; will raise AttributeError when a user has no email.",
+      "code_snippet": "send_to(user.email.lower())"
+    },
+    {
+      "file": "src/utils.py",
+      "line_start": 5,
+      "line_end": 5,
+      "severity": "suggestion",
+      "title": "Rename loop variable",
+      "comment": "`x` is opaque; `user_id` reads better here.",
+      "code_snippet": ""
+    }
+  ],
+  "review_summary": {
+    "lgtm": false,
+    "summary": "Blocks on a SQL-injection bug. Two smaller items to address before merge.",
+    "checklist": [
+      {
+        "item": "No hardcoded secrets",
+        "passed": true,
+        "finding_refs": []
+      },
+      {
+        "item": "Input validation at boundaries",
+        "passed": false,
+        "finding_refs": [0]
+      },
+      {
+        "item": "Error handling",
+        "passed": false,
+        "finding_refs": [1]
+      }
+    ]
+  },
+  "comment_replies": []
+}
