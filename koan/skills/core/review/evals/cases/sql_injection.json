@@ -1,0 +1,20 @@
+{
+  "id": "sql_injection",
+  "name": "User input interpolated into a SQL query",
+  "skill": "review",
+  "description": "Replaces a parameterized query with an f-string built from raw user input — a textbook SQL injection.",
+  "diff": "--- a/db.py\n+++ b/db.py\n@@ -42,7 +42,11 @@ def get_user(name):\n-    cursor.execute(\n-        \"SELECT * FROM users WHERE name = ?\",\n-        (name,),\n-    )\n+    query = f\"SELECT * FROM users WHERE name = '{name}'\"\n+    cursor.execute(query)\n     return cursor.fetchone()\n",
+  "expect": {
+    "expect_lgtm": false,
+    "min_findings": 1,
+    "require_valid_json": true,
+    "expect_findings": [
+      {
+        "file": "db.py",
+        "severity_in": ["critical", "warning"],
+        "keywords": ["inject", "sql", "parameteriz", "sanit", "escap", "queri"]
+      }
+    ],
+    "forbidden_files": []
+  }
+}

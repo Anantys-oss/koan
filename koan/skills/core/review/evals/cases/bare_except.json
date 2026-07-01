@@ -1,0 +1,20 @@
+{
+  "id": "bare_except",
+  "name": "Bare except swallows all errors",
+  "skill": "review",
+  "description": "Adds a bare 'except: pass' that silently swallows every exception, including KeyboardInterrupt and SystemExit, hiding real failures.",
+  "diff": "--- a/worker.py\n+++ b/worker.py\n@@ -10,6 +10,9 @@ def run_job(job):\n     try:\n         job.process()\n+    except:\n+        pass\n     finally:\n         job.cleanup()\n",
+  "expect": {
+    "expect_lgtm": false,
+    "min_findings": 1,
+    "require_valid_json": true,
+    "expect_findings": [
+      {
+        "file": "worker.py",
+        "severity_in": ["warning", "critical"],
+        "keywords": ["except", "swallow", "silent", "bare", "error", "exception"]
+      }
+    ],
+    "forbidden_files": []
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "benign_style",
+  "name": "Loop rewritten as an equivalent list comprehension",
+  "skill": "review",
+  "description": "Precision / false-positive trap: a correct, behaviour-preserving rewrite of a loop into a list comprehension. There is no bug here; flagging it as one is a precision miss.",
+  "diff": "--- a/report.py\n+++ b/report.py\n@@ -8,7 +8,5 @@ def top_items(items, n):\n-    result = []\n-    for item in items:\n-        if item.score > 0:\n-            result.append(item)\n-    return result[:n]\n+    return [item for item in items if item.score > 0][:n]\n",
+  "expect": {
+    "expect_lgtm": true,
+    "min_findings": 0,
+    "require_valid_json": true,
+    "expect_findings": [],
+    "forbidden_files": ["report.py"]
+  }
+}
