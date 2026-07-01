@@ -17,13 +17,6 @@ from pathlib import Path
 from typing import List, Optional
 
 
-# ---------------------------------------------------------------------------
-# Mission retry constants
-# ---------------------------------------------------------------------------
-
-_MISSION_MAX_RETRIES = 1
-_MISSION_RETRY_DELAY = 10  # seconds
-
 _last_idle_msg = ""  # dedup consecutive identical idle-wait log lines
 
 
@@ -334,22 +327,41 @@ def _maybe_retry_mission(
     provider_name: str = "",
     provider=None,
 ) -> tuple:
-    """Attempt a single retry if the CLI error is transient.
+    """Retry a mission whose CLI error is transient, on a cooldown backoff.
 
-    Returns ``(exit_code, stdout_file, stderr_file)`` — the files may
-    be replaced if a retry was performed (old files are truncated to
-    avoid double-counting output).
+    Returns ``(exit_code, stdout_file, stderr_file)`` — the files may be
+    replaced across retries (old files are truncated to avoid double-counting
+    output).
 
-    Only retries if:
-    - The error is classified as RETRYABLE
-    - No commits were produced (HEAD didn't move)
-    - This is a mission (not autonomous), since missions are higher-value
+    A run is worth retrying when either:
+    - The error is classified as ``RETRYABLE`` (non-zero exit, transient
+      server/network pattern), or
+    - The CLI exited 0 but the output carries a high-confidence transient
+      API-overload marker (e.g. ``API Error: 529``) — an exit-0 "false
+      success": some flaky gateways return 529 in the stream and still exit 0.
+
+    Retries up to ``cli_retry.max_attempts`` times on the
+    ``cli_retry.backoff_seconds`` schedule. Only retries missions (not
+    autonomous runs) and only when no commits were produced (HEAD unmoved).
+    Watchdog timeouts, user aborts, and stagnation are hard stops.
+
+    On exhaustion (still transient after the full schedule) sets
+    ``_run._last_mission_transient_exhausted`` so the caller requeues the
+    mission to Pending instead of finalizing it as Failed.
     """
     import app.run as _run
     log = _run.log
     suppress_logged = _run.suppress_logged
 
-    from app.cli_errors import ErrorCategory, classify_cli_error
+    from app.cli_errors import (
+        ErrorCategory,
+        classify_cli_error,
+        detect_transient_api_error,
+    )
+    from app.config import get_cli_retry_config
+
+    _run._last_mission_transient_exhausted = False
+    pname = provider.name if provider is not None else provider_name
 
     # Watchdog timeouts are NOT transient — don't retry a session that ran
     # for the full timeout duration.  Without this guard, "timeout" in the
@@ -373,53 +385,88 @@ def _maybe_retry_mission(
         log("koan", "Skipping retry — mission was killed by stagnation monitor")
         return claude_exit, stdout_file, stderr_file
 
-    # Read output for classification
-    try:
-        stdout_text = Path(stdout_file).read_text()
-    except OSError:
-        stdout_text = ""
-    try:
-        stderr_text = Path(stderr_file).read_text()
-    except OSError:
-        stderr_text = ""
+    cfg = get_cli_retry_config(project_name)
+    max_attempts = cfg["max_attempts"]
+    backoff = cfg["backoff_seconds"]
+    attempt = 0
 
-    category = classify_cli_error(
-        claude_exit,
-        stdout_text,
-        stderr_text,
-        provider_name=(provider.name if provider is not None else provider_name),
-    )
-    log("error", f"CLI error classified as {category.value} (exit={claude_exit})")
+    while True:
+        # Classify the current run's output — the original on the first pass,
+        # the most recent retry's output on subsequent passes.
+        try:
+            stdout_text = Path(stdout_file).read_text()
+        except OSError:
+            stdout_text = ""
+        try:
+            stderr_text = Path(stderr_file).read_text()
+        except OSError:
+            stderr_text = ""
 
-    if category != ErrorCategory.RETRYABLE:
-        return claude_exit, stdout_file, stderr_file
+        category = classify_cli_error(
+            claude_exit, stdout_text, stderr_text, provider_name=pname,
+        )
+        # Exit-0 false success: a transient overload marker in the output
+        # even though the CLI exited 0. detect_transient_api_error is narrow
+        # by design (no "timeout") to avoid false-positive retries on
+        # arbitrary mission output.
+        transient_label = (
+            detect_transient_api_error(stdout_text, stderr_text)
+            if claude_exit == 0
+            else None
+        )
+        if category != ErrorCategory.RETRYABLE and not transient_label:
+            log("error", f"CLI error classified as {category.value} (exit={claude_exit})")
+            return claude_exit, stdout_file, stderr_file
 
-    if not has_mission:
-        log("koan", "Skipping retry for autonomous run (lower priority)")
-        return claude_exit, stdout_file, stderr_file
+        if not has_mission:
+            log("koan", "Skipping retry for autonomous run (lower priority)")
+            return claude_exit, stdout_file, stderr_file
 
-    # Safety: don't retry if Claude already produced commits
-    post_head = _run._get_git_head(project_path)
-    if pre_head and post_head and pre_head != post_head:
-        log("koan", "Skipping retry — commits were produced before the error")
-        return claude_exit, stdout_file, stderr_file
+        # Safety: don't retry if Claude already produced commits.
+        post_head = _run._get_git_head(project_path)
+        if pre_head and post_head and pre_head != post_head:
+            log("koan", "Skipping retry — commits were produced before the error")
+            return claude_exit, stdout_file, stderr_file
 
-    log("koan", f"Transient CLI error — retrying mission in {_MISSION_RETRY_DELAY}s")
-    with _run.protected_phase("Mission retry backoff"):
-        time.sleep(_MISSION_RETRY_DELAY)
+        if attempt >= max_attempts:
+            break  # retry schedule exhausted and the error is still transient
 
-    # Clear output files before retry to avoid double-counting
-    with suppress_logged(log, "debug", "Output file clear before retry failed", OSError):
-        open(stdout_file, "w").close()
-        open(stderr_file, "w").close()
+        delay = backoff[min(attempt, len(backoff) - 1)]
+        log("koan", (
+            f"Transient CLI error ({transient_label or category.value}, exit={claude_exit}) "
+            f"— retry {attempt + 1}/{max_attempts} in {delay}s"
+        ))
+        with _run.protected_phase("Mission transient retry backoff"):
+            time.sleep(delay)
 
-    retry_exit = _run.run_claude_task(
-        cmd, stdout_file, stderr_file, cwd=project_path,
-        instance_dir=instance, project_name=project_name, run_num=run_num,
-        provider=provider,
-    )
-    log("koan", f"Mission retry exit_code={retry_exit}")
-    return retry_exit, stdout_file, stderr_file
+        # Clear output files before retry to avoid double-counting.
+        with suppress_logged(log, "debug", "Output file clear before retry failed", OSError):
+            open(stdout_file, "w").close()
+            open(stderr_file, "w").close()
+
+        claude_exit = _run.run_claude_task(
+            cmd, stdout_file, stderr_file, cwd=project_path,
+            instance_dir=instance, project_name=project_name, run_num=run_num,
+            provider=provider,
+        )
+        log("koan", f"Mission retry {attempt + 1}/{max_attempts} exit_code={claude_exit}")
+
+        # Hard stops after the retry — an aborted / timed-out / stagnated
+        # retry must not be retried again. These flags are reset by run_claude_task.
+        if (
+            _run._last_mission_aborted
+            or _run._last_mission_timed_out
+            or _run._last_mission_stagnated.is_set()
+        ):
+            return claude_exit, stdout_file, stderr_file
+        attempt += 1
+
+    log("koan", (
+        f"Transient CLI error persisted after {max_attempts} retries — "
+        f"flagging for requeue"
+    ))
+    _run._last_mission_transient_exhausted = True
+    return claude_exit, stdout_file, stderr_file
 
 
 def _maybe_fallback_provider_rerun(
@@ -1349,23 +1396,36 @@ def _run_iteration(
         log("koan", f"{provider_label} CLI finished (exit={claude_exit}, {elapsed_min:.1f}min)")
 
         # --- Mission retry on transient CLI errors ---
-        # One retry for missions, zero for autonomous (they're lower-priority).
-        # Only retry if HEAD didn't move (no commits produced).
-        if claude_exit != 0:
-            claude_exit, stdout_file, stderr_file = _run._maybe_retry_mission(
-                claude_exit=claude_exit,
-                stdout_file=stdout_file,
-                stderr_file=stderr_file,
-                cmd=cmd,
-                project_path=project_path,
-                pre_head=pre_head,
-                instance=instance,
-                project_name=project_name,
-                run_num=run_num,
-                has_mission=bool(mission_title),
-                provider_name=provider_name,
-                provider=mission_cli_provider,
+        # Run on ANY outcome: a transient overload (e.g. "API Error: 529") can
+        # surface in the output while the CLI still exits 0 (false success).
+        # _maybe_retry_mission decides internally whether to retry; only
+        # missions (not autonomous) and only when HEAD didn't move.
+        claude_exit, stdout_file, stderr_file = _run._maybe_retry_mission(
+            claude_exit=claude_exit,
+            stdout_file=stdout_file,
+            stderr_file=stderr_file,
+            cmd=cmd,
+            project_path=project_path,
+            pre_head=pre_head,
+            instance=instance,
+            project_name=project_name,
+            run_num=run_num,
+            has_mission=bool(mission_title),
+            provider_name=provider_name,
+            provider=mission_cli_provider,
+        )
+
+        # Transient error persisted across the full retry schedule — requeue
+        # the mission to Pending so a later iteration retries once the provider
+        # has recovered, instead of finalizing it as Failed.
+        if _run._last_mission_transient_exhausted and original_mission_title:
+            _run._requeue_mission_in_file(instance, original_mission_title)
+            _run._notify(
+                instance,
+                f"🔁 [{project_name}] Provider still overloaded after retries — "
+                f"requeued: {original_mission_title[:60]}",
             )
+            return True
 
         # --- Launch/auth fallback to the cli.fallback provider ---
         # If the role's CLI couldn't run at all (binary missing / not

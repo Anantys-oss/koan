@@ -1374,6 +1374,61 @@ def get_stagnation_config(project_name: str = "") -> dict:
     }
 
 
+def get_cli_retry_config(project_name: str = "") -> dict:
+    """Get the transient-API-error retry policy for CLI runs.
+
+    Some unstable provider gateways return a transient error (e.g.
+    ``API Error: 529`` / "temporarily overloaded") inside the streamed output
+    while still exiting 0. The mission and streaming runners retry such runs a
+    few times with a growing cooldown before giving up.
+
+    Config keys (under ``cli_retry:`` in ``config.yaml``), all optional:
+        max_attempts (int): total attempts per run (default 5). Must be >= 1.
+        backoff_seconds (list[int]): cooldown between attempts, applied as
+            ``backoff[min(attempt, len-1)]``. Default ``(10, 20, 40, 60, 90)``.
+
+    Per-project overrides via ``projects.yaml`` ``cli_retry:`` take precedence.
+
+    Args:
+        project_name: Optional project name for per-project overrides.
+
+    Returns:
+        Dict with ``max_attempts`` (int >= 1) and ``backoff_seconds`` (list
+        of ints, non-empty, ascending-positive values preserved).
+    """
+    from app.constants import TRANSIENT_RETRY_BACKOFF, TRANSIENT_RETRY_MAX_ATTEMPTS
+
+    defaults = {
+        "max_attempts": TRANSIENT_RETRY_MAX_ATTEMPTS,
+        "backoff_seconds": list(TRANSIENT_RETRY_BACKOFF),
+    }
+    config = _load_config()
+    base = config.get("cli_retry", {})
+    if not isinstance(base, dict):
+        base = {}
+    project_overrides = _load_project_overrides(project_name)
+    proj = project_overrides.get("cli_retry", {})
+    if not isinstance(proj, dict):
+        proj = {}
+    merged = {**defaults, **base, **proj}
+
+    max_attempts = _safe_int(merged.get("max_attempts"), defaults["max_attempts"])
+    if max_attempts < 1:
+        max_attempts = defaults["max_attempts"]
+
+    raw_backoff = merged.get("backoff_seconds", defaults["backoff_seconds"])
+    backoff_seconds = []
+    if isinstance(raw_backoff, (list, tuple)):
+        for value in raw_backoff:
+            seconds = _safe_int(value, -1)
+            if seconds >= 0:
+                backoff_seconds.append(seconds)
+    if not backoff_seconds:
+        backoff_seconds = list(defaults["backoff_seconds"])
+
+    return {"max_attempts": max_attempts, "backoff_seconds": backoff_seconds}
+
+
 def get_autonomous_health_config() -> dict:
     """Get autonomous health diagnostic configuration.
 

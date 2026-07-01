@@ -69,6 +69,27 @@ The role's **model** is then read from that role's provider block above. With
 `cli.fallback` provider (launch/auth-failure recovery), are in
 [../providers/claude.md](../providers/claude.md).
 
+## Transient API-error retry (`cli_retry:`)
+
+Some provider gateways (e.g. Z.ai) are unstable and return a transient error like
+`API Error: 529 [The service may be temporarily overloaded…]` *inside the output
+while still exiting 0* — so the run looks successful but produced no real result.
+Kōan detects this and retries mission and streaming runs (reviews, plans) on a
+cooldown schedule before giving up (requeueing a mission to Pending, or raising
+for a streaming caller). The schedule is optional and defaults to 5 attempts with
+a `10s → 20s → 40s → 60s → 90s` backoff; override it in `config.yaml`:
+
+```yaml
+cli_retry:
+  max_attempts: 5                            # retries after the initial run
+  backoff_seconds: [10, 20, 40, 60, 90]      # cooldown between attempts
+```
+
+Per-project overrides go in `projects.yaml` under `cli_retry:`. Detection is
+deliberately narrow (only clear overload markers like `API Error: 5xx` /
+`temporarily overloaded` / `529`), so normal output that merely mentions
+"timeouts" is not retried.
+
 ## Migrating from the legacy layout
 
 Earlier versions used a flat `models:` block plus top-level `models_for_{provider}`

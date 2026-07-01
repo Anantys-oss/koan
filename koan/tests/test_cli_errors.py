@@ -356,3 +356,39 @@ class TestClassifyCliError:
         """Loose patterns should still match when they appear in stderr."""
         result = classify_cli_error(1, stderr="rate limit exceeded")
         assert result == ErrorCategory.QUOTA
+
+
+class TestDetectTransientApiError:
+    """detect_transient_api_error() — narrow exit-0 false-success detector."""
+
+    @pytest.mark.parametrize("text", [
+        "API Error: 529 [1305][The service may be temporarily overloaded]",
+        "The service may be temporarily overloaded, please try again",
+        "provider gateway returned HTTP 529",
+        "upstream: 529 Overloaded",
+    ])
+    def test_matches_overload_markers(self, text):
+        from app.cli_errors import detect_transient_api_error
+        assert detect_transient_api_error(stdout=text) is not None
+        # Also works when the marker is only in stderr.
+        assert detect_transient_api_error(stderr=text) is not None
+
+    @pytest.mark.parametrize("text", [
+        "Done. Committed the change and added tests.",
+        "the HTTP client raised a timeout on the third attempt",   # no "529"
+        "connection reset by peer was handled by the retry layer",
+        "DNS resolution failed for example.com",                   # broad-only
+        "",                                                        # empty
+    ])
+    def test_does_not_match_clean_or_broad_only(self, text):
+        """Narrow by design: no 'timeout'/'connection reset'/'dns' false positives."""
+        from app.cli_errors import detect_transient_api_error
+        assert detect_transient_api_error(stdout=text) is None
+
+    def test_returns_matched_label(self):
+        from app.cli_errors import detect_transient_api_error
+        assert detect_transient_api_error(stdout="API Error: 529") == "API Error: 529"
+
+    def test_transient_cli_error_is_runtime_error(self):
+        from app.cli_errors import TransientCliError
+        assert issubclass(TransientCliError, RuntimeError)

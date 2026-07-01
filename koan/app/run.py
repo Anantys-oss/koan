@@ -320,9 +320,11 @@ def run_claude_task(
     """
     global _last_mission_timed_out, _last_mission_aborted
     global _stagnation_pattern_type, _stagnation_pattern_excerpt
+    global _last_mission_transient_exhausted
     _last_mission_timed_out = False
     _last_mission_aborted = False
     _last_mission_stagnated.clear()
+    _last_mission_transient_exhausted = False
     _stagnation_pattern_type = ""
     _stagnation_pattern_excerpt = ""
 
@@ -1749,6 +1751,10 @@ _last_mission_aborted = False
 # Uses threading.Event for explicit cross-thread signaling between the
 # stagnation daemon (writer) and the main loop's _finalize_mission (reader).
 _last_mission_stagnated = threading.Event()
+# Set by _maybe_retry_mission when a transient API error (e.g. a 529 "service
+# overloaded" surfaced in the output) still persists after the full retry
+# schedule. Read by _run_iteration to requeue the mission to Pending.
+_last_mission_transient_exhausted = False
 _stagnation_pattern_type = ""
 _stagnation_pattern_excerpt = ""
 
@@ -2031,8 +2037,6 @@ from app.mission_executor import (  # noqa: F401 — re-exported for backward co
     _get_git_head,
     _handle_skill_dispatch,
     _maybe_retry_mission,
-    _MISSION_MAX_RETRIES,
-    _MISSION_RETRY_DELAY,
     _run_iteration,
 )
 

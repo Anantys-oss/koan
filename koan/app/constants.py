@@ -37,6 +37,18 @@ CI_QUEUE_SLEEP_INTERVAL = 30
 IDLE_LOOP_BREATH_SECONDS = 10
 
 # ---------------------------------------------------------------------------
+# CLI transient-error retry  (mission_executor.py, provider/__init__.py)
+# ---------------------------------------------------------------------------
+
+# Retry policy for transient API errors detected in CLI output — including the
+# exit-0 "false success" case where a flaky gateway returns ``API Error: 529``
+# in the stream but exits 0. Distinct names from ``cli_exec.CLI_RETRY_*`` (which
+# cover only short-lived calls on non-zero exits). Configurable via the optional
+# ``cli_retry:`` section in config.yaml. Worst-case total cooldown ≈ 220s.
+TRANSIENT_RETRY_MAX_ATTEMPTS = 5
+TRANSIENT_RETRY_BACKOFF = (10, 20, 40, 60, 90)  # seconds
+
+# ---------------------------------------------------------------------------
 # GitHub notifications  (loop_manager.py)
 # ---------------------------------------------------------------------------
 

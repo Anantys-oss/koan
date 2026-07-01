@@ -6,6 +6,7 @@ These modules had zero test coverage despite being used throughout the codebase.
 
 import json
 import os
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -911,6 +912,61 @@ class TestRunCommandStreaming:
             out = run_command_streaming("hi", "/tmp", [])
         assert "line1" in out and "line2" in out
         cleanup.assert_called_once()
+
+    @contextmanager
+    def _stream_retry_patches(self, once_side):
+        """Patches for testing the retry loop around _stream_once."""
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.provider._stream_once", side_effect=once_side) as mock_once, \
+             patch("app.provider.time.sleep") as mock_sleep:
+            yield mock_once, mock_sleep
+
+    def test_transient_then_success_retries(self):
+        """A transient 529 (e.g. exit-0 false success) is retried, then succeeds."""
+        from app.provider import run_command_streaming
+        from app.cli_errors import TransientCliError
+        with self._stream_retry_patches(
+            [TransientCliError("API Error: 529"), "ok output"]
+        ) as (mock_once, mock_sleep):
+            out = run_command_streaming("hi", "/tmp", [])
+        assert out == "ok output"
+        assert mock_once.call_count == 2
+        assert mock_sleep.call_count == 1
+
+    def test_transient_persists_raises_after_schedule(self):
+        """Persistently transient → RuntimeError after the full retry schedule."""
+        from app.provider import run_command_streaming
+        from app.cli_errors import TransientCliError
+        with self._stream_retry_patches(
+            TransientCliError("API Error: 529")
+        ) as (mock_once, mock_sleep):
+            with pytest.raises(RuntimeError, match="transient API error persisted"):
+                run_command_streaming("hi", "/tmp", [])
+        from app.config import get_cli_retry_config
+        cfg = get_cli_retry_config()
+        # 1 initial invocation + max_attempts retries
+        assert mock_once.call_count == cfg["max_attempts"] + 1
+        assert mock_sleep.call_count == cfg["max_attempts"]
+        assert [c.args[0] for c in mock_sleep.call_args_list] == cfg["backoff_seconds"]
+
+    def test_clean_success_not_retried(self):
+        """A clean run returns immediately — no retry, no sleep."""
+        from app.provider import run_command_streaming
+        with self._stream_retry_patches(["ok output"]) as (mock_once, mock_sleep):
+            out = run_command_streaming("hi", "/tmp", [])
+        assert out == "ok output"
+        mock_once.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    def test_non_transient_error_not_retried(self):
+        """A plain (non-transient) RuntimeError propagates immediately, no retry."""
+        from app.provider import run_command_streaming
+        with self._stream_retry_patches(RuntimeError("boom")) as (mock_once, mock_sleep):
+            with pytest.raises(RuntimeError, match="boom"):
+                run_command_streaming("hi", "/tmp", [])
+        mock_once.assert_called_once()
+        mock_sleep.assert_not_called()
 
     def test_popen_uses_errors_replace(self):
         """popen_cli must be called with errors='replace' to survive non-UTF-8."""

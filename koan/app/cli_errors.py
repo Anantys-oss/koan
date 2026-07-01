@@ -15,6 +15,7 @@ Categories:
 import re
 import sys
 from enum import Enum
+from typing import Optional
 
 
 class ErrorCategory(Enum):
@@ -83,6 +84,47 @@ _AUTH_PATTERNS = [
 _AUTH_RE = re.compile("|".join(_AUTH_PATTERNS), re.IGNORECASE)
 _RETRYABLE_RE = re.compile("|".join(_RETRYABLE_PATTERNS), re.IGNORECASE)
 _TERMINAL_RE = re.compile("|".join(_TERMINAL_PATTERNS), re.IGNORECASE)
+
+# High-confidence API-overload markers that some unstable CLI gateways surface
+# INSIDE the streamed output while still exiting 0 ("false success") — e.g.
+# ``API Error: 529 [..][The service may be temporarily overloaded...]`` followed
+# by ``result: success``. ``classify_cli_error`` skips exit-0 runs, so this is
+# checked separately by the retry loops.
+#
+# Deliberately NARROW: mission/review output is arbitrary text, so broad terms
+# like ``timeout`` are excluded — they would cause false-positive retries on any
+# mission whose output merely discusses timeouts (see the warning in
+# ``_maybe_retry_mission``'s watchdog-timeout guard).
+_EXIT0_TRANSIENT_PATTERNS = [
+    r"api\s+error:\s*5\d\d",
+    r"service\s+may\s+be\s+temporarily\s+overloaded",
+    r"temporarily\s+overloaded",
+    r"\b529\b",
+    r"http\s+5\d\d",
+]
+_EXIT0_TRANSIENT_RE = re.compile(
+    "|".join(_EXIT0_TRANSIENT_PATTERNS), re.IGNORECASE
+)
+
+
+class TransientCliError(RuntimeError):
+    """Raised by the streaming runner when output carries a transient API error.
+
+    Distinct from a plain ``RuntimeError`` (non-zero exit) so the runner's retry
+    loop can catch it specifically and apply the backoff schedule.
+    """
+
+
+def detect_transient_api_error(stdout: str = "", stderr: str = "") -> Optional[str]:
+    """Return the matched marker if the output contains a high-confidence
+    transient API-overload signal, else ``None``.
+
+    Checked even on exit-0 "false successes" (the use case: a flaky gateway
+    returns ``API Error: 529`` in the stream but exits 0). Narrow on purpose —
+    see ``_EXIT0_TRANSIENT_PATTERNS``.
+    """
+    m = _EXIT0_TRANSIENT_RE.search(f"{stdout or ''}\n{stderr or ''}")
+    return m.group(0) if m else None
 
 
 def _detect_auth_for_provider(

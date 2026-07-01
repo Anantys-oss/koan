@@ -27,6 +27,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1018,10 +1019,18 @@ def run_command_streaming(
     original raw text path; lines that fail to parse as JSON are still
     printed and contribute to the return value.
 
+    Transient API errors (e.g. ``API Error: 529`` "service overloaded")
+    surfaced in the output — including the exit-0 "false success" case —
+    are retried on the ``cli_retry`` cooldown schedule before giving up.
+
     Raises:
         RuntimeError: If the command exits with non-zero code (except
-            max-turns, which returns partial output).
+            max-turns, which returns partial output), or if a transient
+            error persists after the retry schedule.
     """
+    from app.cli_errors import TransientCliError
+    from app.config import get_cli_retry_config
+
     # Resolve the CLI provider for this role (cli: section), swapping to the
     # cli.fallback up front if the role's binary is unavailable. An explicit
     # `model` arg still wins over the role-derived model.
@@ -1050,6 +1059,64 @@ def run_command_streaming(
 
     print(f"[cli] Starting {provider.name or 'provider'} CLI session", flush=True)
 
+    cfg = get_cli_retry_config(project_name)
+    max_attempts = cfg["max_attempts"]
+    backoff = cfg["backoff_seconds"]
+    attempt = 0
+    last_err: Optional[BaseException] = None
+    try:
+        while True:
+            try:
+                return _stream_once(
+                    cmd, provider, project_path, timeout,
+                    max_turns, max_turns_source, last_message_path,
+                )
+            except TransientCliError as e:
+                last_err = e
+                if attempt >= max_attempts:
+                    break  # retry schedule exhausted and still transient
+                delay = backoff[min(attempt, len(backoff) - 1)]
+                print(
+                    f"[cli] transient API error ({e}) — "
+                    f"retry {attempt + 1}/{max_attempts} in {delay}s",
+                    flush=True,
+                )
+                # Keep the parent watchdog alive during the cooldown.
+                time.sleep(delay)
+                attempt += 1
+        raise RuntimeError(
+            f"transient API error persisted after {max_attempts} retries: {last_err}"
+        )
+    finally:
+        if last_message_path:
+            with contextlib.suppress(OSError):
+                os.unlink(last_message_path)
+
+
+def _stream_once(
+    cmd: List[str],
+    provider,
+    project_path: str,
+    timeout: int,
+    max_turns: int,
+    max_turns_source: Optional[str],
+    last_message_path: Optional[str],
+) -> str:
+    """Run one streaming CLI invocation; return its text or raise.
+
+    - Max-turns is a graceful limit: returns partial output (no retry).
+    - A transient API-overload marker (e.g. ``API Error: 529``) in the raw
+      output raises ``TransientCliError`` regardless of exit code, so the
+      caller's retry loop can back off and re-run. This catches the exit-0
+      "false success" where a flaky gateway returns 529 in the stream but
+      still exits 0.
+    - Any other non-zero exit raises ``RuntimeError``.
+
+    Raises:
+        TransientCliError: output carries a transient API-overload marker.
+        RuntimeError: non-zero exit (non max-turns) or watchdog timeout.
+    """
+    from app.cli_errors import TransientCliError, detect_transient_api_error
     from app.cli_exec import popen_cli
 
     # raw_lines is scanned only for error/max-turns detection, never returned,
@@ -1064,102 +1131,100 @@ def run_command_streaming(
     usage_snapshot: Optional[Dict[str, Any]] = None
     saw_max_turns_event = False
     stderr_text = ""
+    use_stream_json = provider.supports_stream_json()
+    proc, cleanup = popen_cli(
+        cmd,
+        provider=provider,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        errors="replace",
+        cwd=project_path,
+    )
+    # Every print() in this loop is the load-bearing watchdog signal —
+    # run.py's skill-runner liveness watchdog (600s) resets on each line
+    # emitted to stdout. Do not silence these prints; doing so reintroduces
+    # the silent-CLI hang this PR fixes (see PR #1372).
     try:
-        proc, cleanup = popen_cli(
-            cmd,
-            provider=provider,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
-            cwd=project_path,
-        )
-        # Every print() in this loop is the load-bearing watchdog signal —
-        # run.py's skill-runner liveness watchdog (600s) resets on each line
-        # emitted to stdout. Do not silence these prints; doing so reintroduces
-        # the silent-CLI hang this PR fixes (see PR #1372).
-        try:
-            for line in proc.stdout:
-                stripped = line.rstrip("\n")
-                raw_lines.append(stripped)
-                if not stripped:
-                    continue
-                event: Optional[Dict[str, Any]] = None
-                if use_stream_json:
-                    try:
-                        parsed = json.loads(stripped)
-                        if isinstance(parsed, dict):
-                            event = parsed
-                    except (json.JSONDecodeError, ValueError):
-                        event = None
-                if event is not None:
-                    print(_summarize_stream_event(event), flush=True)
-                    event_usage = _usage_snapshot_from_event(event)
-                    if event_usage is not None:
-                        usage_snapshot = event_usage
-                    # Accumulate assistant text blocks so a stream that dies
-                    # before the final ``result`` event (timeout, watchdog
-                    # kill, SIGPIPE) still returns whatever the provider managed
-                    # to print, instead of silently returning "".
-                    text_lines.extend(_extract_assistant_text_chunks(event))
-                    result_text = _extract_result_text(event)
-                    if result_text is not None:
-                        final_result = result_text
-                    if _is_stream_json_max_turns(event):
-                        saw_max_turns_event = True
-                else:
-                    # Non-JSON: provider doesn't speak stream-json or a stray
-                    # warning slipped in. Print and remember for the fallback.
-                    print(stripped, flush=True)
-                    text_lines.append(stripped)
-            stderr_text = proc.stderr.read() if proc.stderr else ""
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired as e:
-            proc.kill()
-            proc.wait()
-            raise RuntimeError(f"CLI invocation timed out after {timeout}s") from e
-        finally:
-            if proc.stdout:
-                proc.stdout.close()
-            if proc.stderr:
-                proc.stderr.close()
-            cleanup()
+        for line in proc.stdout:
+            stripped = line.rstrip("\n")
+            raw_lines.append(stripped)
+            if not stripped:
+                continue
+            event: Optional[Dict[str, Any]] = None
+            if use_stream_json:
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, dict):
+                        event = parsed
+                except (json.JSONDecodeError, ValueError):
+                    event = None
+            if event is not None:
+                print(_summarize_stream_event(event), flush=True)
+                event_usage = _usage_snapshot_from_event(event)
+                if event_usage is not None:
+                    usage_snapshot = event_usage
+                # Accumulate assistant text blocks so a stream that dies
+                # before the final ``result`` event (timeout, watchdog
+                # kill, SIGPIPE) still returns whatever the provider managed
+                # to print, instead of silently returning "".
+                text_lines.extend(_extract_assistant_text_chunks(event))
+                result_text = _extract_result_text(event)
+                if result_text is not None:
+                    final_result = result_text
+                if _is_stream_json_max_turns(event):
+                    saw_max_turns_event = True
+            else:
+                # Non-JSON: provider doesn't speak stream-json or a stray
+                # warning slipped in. Print and remember for the fallback.
+                print(stripped, flush=True)
+                text_lines.append(stripped)
+        stderr_text = proc.stderr.read() if proc.stderr else ""
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        proc.kill()
+        proc.wait()
+        raise RuntimeError(f"CLI invocation timed out after {timeout}s") from e
+    finally:
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+        cleanup()
 
-        raw_stdout = "\n".join(raw_lines)
-        # The legacy regex still fires on non-stream-json output (codex,
-        # warnings printed before the stream begins) and on stream-json
-        # results whose subtype encodes the limit.
-        hit_max_turns = saw_max_turns_event or _is_max_turns_error(raw_stdout)
-        last_message_text = ""
-        if last_message_path:
-            with contextlib.suppress(OSError, UnicodeDecodeError):
-                last_message_text = Path(last_message_path).read_text()
-        if last_message_text.strip():
-            return_text = last_message_text
-        elif final_result is not None:
-            return_text = final_result
-        else:
-            return_text = "\n".join(text_lines)
+    raw_stdout = "\n".join(raw_lines)
+    # The legacy regex still fires on non-stream-json output (codex,
+    # warnings printed before the stream begins) and on stream-json
+    # results whose subtype encodes the limit.
+    hit_max_turns = saw_max_turns_event or _is_max_turns_error(raw_stdout)
+    last_message_text = ""
+    if last_message_path:
+        with contextlib.suppress(OSError, UnicodeDecodeError):
+            last_message_text = Path(last_message_path).read_text()
+    if last_message_text.strip():
+        return_text = last_message_text
+    elif final_result is not None:
+        return_text = final_result
+    else:
+        return_text = "\n".join(text_lines)
 
-        if proc.returncode != 0:
-            # Max-turns is a graceful limit — return partial output so callers
-            # can extract useful results from an incomplete session.
-            if hit_max_turns:
-                _warn_max_turns(max_turns, max_turns_source)
-                from app.claude_step import strip_cli_noise
-                _persist_stream_usage_snapshot(usage_snapshot)
-                return strip_cli_noise(return_text.strip())
-            raise RuntimeError(
-                _format_cli_error(proc.returncode, raw_stdout, stderr_text)
-            )
+    from app.claude_step import strip_cli_noise
 
-        if hit_max_turns:
-            _warn_max_turns(max_turns, max_turns_source)
-
-        from app.claude_step import strip_cli_noise
+    # Max-turns is a graceful limit — return partial output, don't retry.
+    if hit_max_turns:
+        _warn_max_turns(max_turns, max_turns_source)
         _persist_stream_usage_snapshot(usage_snapshot)
         return strip_cli_noise(return_text.strip())
-    finally:
-        if last_message_path:
-            with contextlib.suppress(OSError):
-                os.unlink(last_message_path)
+
+    # Transient API error (e.g. 529 overload) in the output — even on an
+    # exit-0 false success. Raise so the outer loop backs off and retries.
+    transient = detect_transient_api_error(raw_stdout, stderr_text)
+    if transient:
+        _persist_stream_usage_snapshot(usage_snapshot)
+        raise TransientCliError(transient)
+
+    if proc.returncode != 0:
+        raise RuntimeError(_format_cli_error(proc.returncode, raw_stdout, stderr_text))
+
+    _persist_stream_usage_snapshot(usage_snapshot)
+    return strip_cli_noise(return_text.strip())

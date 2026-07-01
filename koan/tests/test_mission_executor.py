@@ -66,10 +66,13 @@ class TestMaybeRetryMission:
         _run._last_mission_timed_out = False
         _run._last_mission_aborted = False
         _run._last_mission_stagnated.clear()
-        yield
+        _run._last_mission_transient_exhausted = False
+        with patch("app.mission_executor.time.sleep"):
+            yield
         _run._last_mission_timed_out = False
         _run._last_mission_aborted = False
         _run._last_mission_stagnated.clear()
+        _run._last_mission_transient_exhausted = False
 
     def _call(self, **overrides):
         from app.mission_executor import _maybe_retry_mission
@@ -161,10 +164,11 @@ class TestMaybeRetryMission:
         out.write_text("transient")
         err = tmp_path / "err"
         err.write_text("")
+        # First classification is RETRYABLE (the failing run); after the
+        # successful retry the cleared output is no longer transient.
         with patch("app.run.log"), \
-             patch("app.mission_executor.time.sleep"), \
              patch("app.cli_errors.classify_cli_error",
-                   return_value=ErrorCategory.RETRYABLE), \
+                   side_effect=[ErrorCategory.RETRYABLE, ErrorCategory.UNKNOWN]), \
              patch("app.run._get_git_head", return_value="head1"), \
              patch("app.run.run_claude_task", return_value=0) as mock_run:
             exit_code, _, _ = self._call(
@@ -173,6 +177,102 @@ class TestMaybeRetryMission:
             )
         assert exit_code == 0
         mock_run.assert_called_once()
+        import app.run as _run
+        assert _run._last_mission_transient_exhausted is False
+
+    def test_retries_exit0_false_success(self, tmp_path):
+        """Exit-0 output carrying 'API Error: 529' is a false success → retried."""
+        out = tmp_path / "out"
+        out.write_text("API Error: 529 [1305][The service may be temporarily overloaded]")
+        err = tmp_path / "err"
+        err.write_text("")
+        # After the retry the file is cleared → no transient marker → success.
+        with patch("app.run.log"), \
+             patch("app.run._get_git_head", return_value="head1"), \
+             patch("app.run.run_claude_task", return_value=0) as mock_run:
+            exit_code, _, _ = self._call(
+                claude_exit=0,
+                stdout_file=str(out), stderr_file=str(err),
+                pre_head="head1",
+            )
+        assert exit_code == 0
+        mock_run.assert_called_once()
+
+    def test_does_not_retry_clean_exit0(self, tmp_path):
+        """Clean exit-0 output (no overload marker) is not retried."""
+        out = tmp_path / "out"
+        out.write_text("Done. Committed the change.")
+        err = tmp_path / "err"
+        err.write_text("")
+        with patch("app.run.log"), \
+             patch("app.run.run_claude_task") as mock_run:
+            exit_code, _, _ = self._call(
+                claude_exit=0,
+                stdout_file=str(out), stderr_file=str(err),
+            )
+        assert exit_code == 0
+        mock_run.assert_not_called()
+
+    def test_does_not_retry_timeout_only_output(self, tmp_path):
+        """Narrow detection: 'timeout' in exit-0 output must NOT trigger a retry
+        (avoids false positives on missions that merely discuss timeouts)."""
+        out = tmp_path / "out"
+        out.write_text("The HTTP client raised a timeout on the third attempt.")
+        err = tmp_path / "err"
+        err.write_text("")
+        with patch("app.run.log"), \
+             patch("app.run.run_claude_task") as mock_run:
+            exit_code, _, _ = self._call(
+                claude_exit=0,
+                stdout_file=str(out), stderr_file=str(err),
+            )
+        assert exit_code == 0
+        mock_run.assert_not_called()
+
+    def test_exhaustion_sets_flag_after_max_attempts(self, tmp_path):
+        """A persistently transient error is retried max_attempts times, then
+        flags exhaustion so the caller requeues."""
+        from app.cli_errors import ErrorCategory
+        out = tmp_path / "out"
+        out.write_text("API Error: 529 [overloaded]")
+        err = tmp_path / "err"
+        err.write_text("")
+        # classify always RETRYABLE (non-zero) and every retry keeps failing
+        # with the same transient error.
+        with patch("app.run.log"), \
+             patch("app.cli_errors.classify_cli_error",
+                   return_value=ErrorCategory.RETRYABLE), \
+             patch("app.run._get_git_head", return_value="head1"), \
+             patch("app.run.run_claude_task", return_value=1) as mock_run:
+            exit_code, _, _ = self._call(
+                stdout_file=str(out), stderr_file=str(err),
+                pre_head="head1",
+            )
+        from app.config import get_cli_retry_config
+        expected = get_cli_retry_config()["max_attempts"]
+        assert mock_run.call_count == expected
+        assert exit_code == 1
+        import app.run as _run
+        assert _run._last_mission_transient_exhausted is True
+
+    def test_backoff_schedule_honored(self, tmp_path):
+        """The configured cooldown schedule is applied between retries."""
+        from app.cli_errors import ErrorCategory
+        out = tmp_path / "out"
+        out.write_text("API Error: 529 [overloaded]")
+        err = tmp_path / "err"
+        err.write_text("")
+        with patch("app.run.log"), \
+             patch("app.cli_errors.classify_cli_error",
+                   return_value=ErrorCategory.RETRYABLE), \
+             patch("app.run._get_git_head", return_value="head1"), \
+             patch("app.run.run_claude_task", return_value=1), \
+             patch("app.mission_executor.time.sleep") as mock_sleep:
+            self._call(stdout_file=str(out), stderr_file=str(err), pre_head="head1")
+        from app.config import get_cli_retry_config
+        expected_backoff = get_cli_retry_config()["backoff_seconds"]
+        actual = [c.args[0] for c in mock_sleep.call_args_list]
+        assert actual == expected_backoff
 
     def test_read_failure_falls_back_to_empty(self, tmp_path):
         """Missing stdout/stderr files yield empty text passed to classifier."""

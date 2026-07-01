@@ -34,6 +34,7 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 | `cli:` config / `config.get_cli_config()` / `get_cli_fallback()` | New config section parallel to `models:`. `cli.default.<role>` (+ per-project flat `cli.<role>`) maps a mission role (`mission`/`chat`/`lightweight`/`review_mode`/`reflect`) to a `flavor` or `flavor:path`; a single `cli.fallback` provider is used on launch/auth failure. The role's MODEL resolves against that provider's `models.<provider>.<role>` block (`get_model_config(role_providers=…)`). Replaces the removed `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`. |
 | Provider resolution | Order: `KOAN_CLI_PROVIDER` env (fallback `CLI_PROVIDER`) → `projects.yaml`/`config.yaml` → default. Centralized in `utils.get_cli_provider_env()`. This resolves the GLOBAL provider; `cli.<role>` layers per-role selection on top via `get_provider_for_role`. |
 | `CLIProvider(binary_path="")` / `ClaudeProvider.binary()` | The base class takes an optional per-instance `binary_path` override (the replacement for the removed review ContextVar); `_resolve_binary_path()` is the shared resolver (absolute → as-is / relative → `normpath(join(KOAN_ROOT, …))` / bare name → PATH lookup). `ClaudeProvider.binary()`: `_binary_override` if set → else `KOAN_CLAUDE_CLI_PATH` → else `"claude"`. Every provider's `binary()` honors the override so `flavor:path` works uniformly. Relative paths root at `KOAN_ROOT` (not CWD — the agent runs from `KOAN_ROOT/koan`); bare names are never re-rooted. |
+| `cli_errors.detect_transient_api_error()` / `TransientCliError` / `config.get_cli_retry_config()` | Transient API-error retry. `detect_transient_api_error` matches a **narrow**, high-confidence set of overload markers (`API Error: 5\d\d`, `temporarily overloaded`, bare `529`, `HTTP 5\d\d`) — checked even on exit-0 "false successes" that `classify_cli_error` skips (it returns `UNKNOWN` for exit 0). `TransientCliError` is raised by `provider._stream_once` so `run_command_streaming`'s loop can back off and re-run. `get_cli_retry_config()` returns `{max_attempts, backoff_seconds}` (defaults `5`, `(10,20,40,60,90)`, overridable via `cli_retry:`). |
 
 ## Invariants
 
@@ -69,6 +70,18 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   `modelUsage` (no top-level `model` field); codex surfaces quota only via the
   stream-json summary (`rate_limit_rejected`, stdout JSONL — never stderr). Detectors
   read the summary stream, not assistant text.
+- **Transient-API-error retry uses a NARROW exit-0 detector, never the broad
+  `_RETRYABLE_PATTERNS`.** Some flaky gateways return `API Error: 529` in the
+  stream while exiting 0 ("false success"), which `classify_cli_error` (exit-0
+  → `UNKNOWN`) misses. `detect_transient_api_error` is the separate, deliberately
+  narrow check (no `"timeout"`/`"connection reset"` — mission/review output is
+  arbitrary text, so broad patterns would cause false-positive retries; see the
+  warning in `_maybe_retry_mission`'s watchdog-timeout guard). Two loops consume
+  it on the same `cli_retry` schedule (`config.get_cli_retry_config()`):
+  `mission_executor._maybe_retry_mission` (which, on exhaustion, sets
+  `_last_mission_transient_exhausted` so `_run_iteration` requeues the mission to
+  Pending) and `provider.run_command_streaming` (which raises `RuntimeError` after
+  exhaustion). Keep the detector narrow and the two loops on one schedule.
 
 ## Integration points
 

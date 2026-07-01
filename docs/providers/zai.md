@@ -198,6 +198,14 @@ ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-5.1
   at best for GLM models. Treat cost numbers as unreliable here.
 - **Re-apply exec bit after clone if needed.** Git preserves `+x`, but a
   restrictive umask may strip it: `chmod +x bin/zai-claude`.
+- **Transient `529 "overloaded"` responses are retried automatically.** Z.ai's
+  gateway is sometimes unstable and returns `API Error: 529 [The service may be
+  temporarily overloaded…]` *inside the streamed output while still exiting 0*
+  (so it looks like a success). Kōan detects this and retries the run on the
+  `cli_retry` schedule (default 5 attempts, cooldown `10s → 20s → 40s → 60s → 90s`).
+  On a mission, exhaustion requeues it to Pending; on a review/plan/streaming run
+  it raises after the schedule. Tune via the optional `cli_retry:` section in
+  `config.yaml`. This applies to every provider, not just Z.ai.
 
 ## Verify
 

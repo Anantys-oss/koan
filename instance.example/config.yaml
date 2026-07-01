@@ -540,6 +540,17 @@ models:
 # Per-project overrides live in projects.yaml as a flat `cli:` block, e.g.
 #   cli: {mission: claude, review_mode: claude:/opt/bin/review-claude}
 
+# Transient API-error retry for CLI runs. Some unstable provider gateways
+# return a transient error (e.g. "API Error: 529" / "service may be temporarily
+# overloaded") inside the streamed output while still exiting 0 ("false
+# success"). Mission and streaming runs (reviews, plans) detect this and retry
+# on the cooldown schedule below before giving up (requeueing a mission, or
+# raising for streaming callers). Omit the section to use the defaults shown.
+# Per-project overrides go in projects.yaml under ``cli_retry:``.
+# cli_retry:
+#   max_attempts: 5                   # retry attempts after the initial run
+#   backoff_seconds: [10, 20, 40, 60, 90]  # cooldown between attempts
+
 # Branch cleanup — automatic deletion of merged branches during git sync
 # Every git_sync_interval iterations, Kōan detects merged branches (both
 # regular merges via git ancestry and squash/rebase merges via GitHub API)

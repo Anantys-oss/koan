@@ -1872,3 +1872,42 @@ class TestReviewInlineCommentsConfig:
         with _mock_config({"review_inline_comments": {"enabled": True, "max_comments": -3}}):
             cfg = get_review_inline_comments_config()
         assert cfg["max_comments"] == 25
+
+
+# --- get_cli_retry_config ---
+
+
+class TestGetCliRetryConfig:
+    """Transient-API-error retry policy accessor."""
+
+    def test_defaults_when_absent(self):
+        from app.config import get_cli_retry_config
+        with _mock_config({}):
+            cfg = get_cli_retry_config()
+        from app.constants import TRANSIENT_RETRY_BACKOFF, TRANSIENT_RETRY_MAX_ATTEMPTS
+        assert cfg == {
+            "max_attempts": TRANSIENT_RETRY_MAX_ATTEMPTS,
+            "backoff_seconds": list(TRANSIENT_RETRY_BACKOFF),
+        }
+
+    def test_override(self):
+        from app.config import get_cli_retry_config
+        raw = {"cli_retry": {"max_attempts": 3, "backoff_seconds": [5, 15]}}
+        with _mock_config(raw):
+            cfg = get_cli_retry_config()
+        assert cfg == {"max_attempts": 3, "backoff_seconds": [5, 15]}
+
+    def test_malformed_section_falls_back(self):
+        from app.config import get_cli_retry_config
+        with _mock_config({"cli_retry": "nonsense"}):
+            cfg = get_cli_retry_config()
+        assert cfg["max_attempts"] >= 1
+        assert cfg["backoff_seconds"]  # non-empty
+
+    def test_invalid_values_fall_back(self):
+        from app.config import get_cli_retry_config
+        with _mock_config({"cli_retry": {"max_attempts": 0, "backoff_seconds": []}}):
+            cfg = get_cli_retry_config()
+        from app.constants import TRANSIENT_RETRY_MAX_ATTEMPTS
+        assert cfg["max_attempts"] == TRANSIENT_RETRY_MAX_ATTEMPTS
+        assert len(cfg["backoff_seconds"]) >= 1
