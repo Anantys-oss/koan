@@ -194,6 +194,69 @@ class TestRecoverOne:
         assert len(push_call) == 1
         assert "--force-with-lease" in push_call[0]
 
+    def test_commit_derived_title_and_body_reach_pr(self, handler):
+        """Integration: _recover_one feeds commit-derived title/body to pr_create."""
+        msg = "feat: cool thing\n\nBody text explaining the change."
+        with patch("app.git_utils.run_git", return_value=(0, "", "")):
+            with patch("app.git_utils.get_commit_messages", return_value=[msg]):
+                with patch("app.github.pr_create", return_value="https://pr/1") as mock_pr:
+                    result = handler._recover_one("koan/x", "/project", "main")
+        assert result["pr_url"] == "https://pr/1"
+        kwargs = mock_pr.call_args.kwargs
+        assert kwargs["title"] == "feat: cool thing"
+        assert "Body text explaining the change." in kwargs["body"]
+
+
+class TestBuildPrTitleBody:
+    """PR title/body derivation from the orphan branch's own commits."""
+
+    def test_single_commit_uses_full_message_and_subject_title(self, handler):
+        msg = "fix: handle empty token in notify\n\nGuard so notify() no longer crashes."
+        with patch("app.git_utils.get_commit_messages", return_value=[msg]):
+            title, body = handler._build_pr_title_body("koan/x", "/p", "main", True)
+        assert title == "fix: handle empty token in notify"
+        assert msg in body
+        assert "koan/x" in body
+        assert "Rebased onto" in body
+
+    def test_multiple_commits_title_from_first_and_body_lists_first_three(self, handler):
+        msgs = [
+            "feat: add orphan recovery\n\nFirst commit body.",
+            "fix: typo",
+            "docs: update readme",
+            "chore: unrelated and should be dropped",
+        ]
+        with patch("app.git_utils.get_commit_messages", return_value=msgs):
+            title, body = handler._build_pr_title_body("koan/x", "/p", "main", False)
+        assert title == "feat: add orphan recovery"
+        assert "feat: add orphan recovery" in body
+        assert "fix: typo" in body
+        assert "docs: update readme" in body
+        assert "chore: unrelated and should be dropped" not in body
+        assert "Could not rebase onto" in body
+
+    def test_no_commits_falls_back_to_generic_recovery(self, handler):
+        with patch("app.git_utils.get_commit_messages", return_value=[]):
+            title, body = handler._build_pr_title_body(
+                "koan/my-fix", "/p", "main", True,
+            )
+        assert title == "fix: recover orphan my-fix"
+        assert "Rebased onto" in body
+        assert "koan/my-fix" in body
+
+    def test_rebase_failure_reflected_in_footer(self, handler):
+        with patch("app.git_utils.get_commit_messages", return_value=["fix: thing"]):
+            _, body = handler._build_pr_title_body("koan/x", "/p", "main", False)
+        assert "Could not rebase onto" in body
+
+    def test_overlong_subject_title_truncated(self, handler):
+        long_subject = "x" * 300
+        with patch("app.git_utils.get_commit_messages", return_value=[long_subject]):
+            title, body = handler._build_pr_title_body("koan/x", "/p", "main", True)
+        assert len(title) <= handler.PR_TITLE_MAX_LEN
+        assert title.endswith("…")
+        assert long_subject in body  # full message preserved in body
+
 
 class TestFormatResults:
     def test_all_success(self, handler):
