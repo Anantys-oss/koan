@@ -7,7 +7,11 @@ Optional tracemalloc mode captures top allocation sites for diagnosis.
 """
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
+
+_STATUS_FILENAME = ".memory-watchdog-status.json"
 
 
 def read_rss_mb(pid: int | None = None) -> float:
@@ -69,6 +73,7 @@ class MemoryMonitor:
         self._tracemalloc_frames = int(tracemalloc_frames)
         self._over_count = 0
         self._last_rss_mb = 0.0
+        self._rss_read_failed = False
         if self.tracemalloc_enabled:
             self._start_tracemalloc()
 
@@ -95,6 +100,21 @@ class MemoryMonitor:
         """Record current RSS; return True if a restart is warranted."""
         rss = read_rss_mb()
         self._last_rss_mb = rss
+        if rss <= 0:
+            # 0.0 means "unknown" (read failed), not "no memory". Treating it as
+            # below-threshold would silently reset _over_count and render the
+            # watchdog inert. Leave the counter unchanged and log once so a
+            # mid-session RSS-read failure degrades loudly instead of disabling
+            # protection.
+            if not self._rss_read_failed:
+                print(
+                    "[memory_monitor] sample: RSS read returned 0.0 (unknown); "
+                    "leaving overage counter unchanged",
+                    file=sys.stderr,
+                )
+                self._rss_read_failed = True
+            return self._over_count >= self.sustained_samples
+        self._rss_read_failed = False
         if self.threshold_mb > 0 and rss >= self.threshold_mb:
             self._over_count += 1
         else:
@@ -118,6 +138,44 @@ class MemoryMonitor:
         except Exception as exc:  # pragma: no cover - defensive
             print(f"[memory_monitor] top_allocations failed: {exc}", file=sys.stderr)
             return []
+
+
+def _status_path(koan_root) -> Path:
+    return Path(koan_root, "instance", _STATUS_FILENAME)
+
+
+def write_watchdog_status(koan_root, *, enabled, threshold_mb, reason="") -> None:
+    """Persist the agent loop's *runtime* watchdog decision (#2232).
+
+    _build_memory_monitor may disable the watchdog at startup (unreadable
+    baseline, or threshold <= baseline) even when config says enabled. Writing
+    the actual decision here lets observability report runtime state instead of
+    raw config, so the dashboard can't falsely advertise protection.
+    """
+    try:
+        path = _status_path(koan_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "enabled": bool(enabled),
+                    "threshold_mb": threshold_mb,
+                    "reason": reason,
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:  # pragma: no cover - defensive
+        print(f"[memory_monitor] write_watchdog_status failed: {exc}", file=sys.stderr)
+
+
+def read_watchdog_status(koan_root) -> dict | None:
+    """Read the persisted runtime watchdog decision, or None if unavailable."""
+    try:
+        data = json.loads(_status_path(koan_root).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
 
 
 def _read_run_pid(koan_root) -> int | None:
@@ -167,16 +225,24 @@ def get_memory_status(koan_root=None) -> dict:
         source = "self"
 
     config_error = False
-    try:
-        from app.config import get_memory_monitor_config
-        conf = get_memory_monitor_config()
-        threshold = conf.get("threshold_mb", 0)
-        enabled = bool(conf.get("enabled", False))
-    except Exception as exc:  # pragma: no cover - defensive
-        print(f"get_memory_status: config read failed: {exc}", file=sys.stderr)
-        # Don't fabricate a plausible "disabled" state; flag the failure so
-        # consumers can distinguish it from an intentionally-off watchdog.
-        threshold, enabled, config_error = None, None, True
+    # Prefer the agent loop's persisted runtime decision over raw config: the
+    # watchdog can be disabled at startup even when config says enabled, and the
+    # dashboard must reflect what the loop is actually doing.
+    runtime = read_watchdog_status(koan_root) if koan_root is not None else None
+    if runtime is not None:
+        threshold = runtime.get("threshold_mb")
+        enabled = bool(runtime.get("enabled", False))
+    else:
+        try:
+            from app.config import get_memory_monitor_config
+            conf = get_memory_monitor_config()
+            threshold = conf.get("threshold_mb", 0)
+            enabled = bool(conf.get("enabled", False))
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"get_memory_status: config read failed: {exc}", file=sys.stderr)
+            # Don't fabricate a plausible "disabled" state; flag the failure so
+            # consumers can distinguish it from an intentionally-off watchdog.
+            threshold, enabled, config_error = None, None, True
     status = {
         "rss_mb": round(rss, 1),
         "threshold_mb": threshold,

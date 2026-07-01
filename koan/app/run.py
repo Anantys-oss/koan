@@ -865,11 +865,25 @@ def _commit_instance(instance: str, message: str = ""):
 # Update handler (graceful update + restart)
 # ---------------------------------------------------------------------------
 
-def _build_memory_monitor():
-    """Construct a MemoryMonitor from config, or None when disabled (#2232)."""
+def _build_memory_monitor(koan_root=None):
+    """Construct a MemoryMonitor from config, or None when disabled (#2232).
+
+    Persists the runtime enabled/disabled decision (and reason) via
+    write_watchdog_status when koan_root is given, so observability reports what
+    the loop is actually doing rather than raw config.
+    """
     from app.config import get_memory_monitor_config
+    from app.memory_monitor import write_watchdog_status
     conf = get_memory_monitor_config()
+
+    def _record(enabled, threshold_mb, reason):
+        if koan_root is not None:
+            write_watchdog_status(
+                koan_root, enabled=enabled, threshold_mb=threshold_mb, reason=reason,
+            )
+
     if not conf.get("enabled"):
+        _record(False, conf.get("threshold_mb"), "disabled in config")
         return None
     from app.memory_monitor import MemoryMonitor, read_rss_mb
     threshold_mb = conf["threshold_mb"]
@@ -881,6 +895,7 @@ def _build_memory_monitor():
         log("koan",
             "Memory watchdog disabled: baseline RSS unreadable, cannot verify "
             "threshold is above baseline. Watchdog stays off this session.")
+        _record(False, threshold_mb, "baseline RSS unreadable")
         return None
     # Misconfiguration guard: a threshold at or below the current baseline RSS
     # would trip every session and restart-loop forever. Disable instead.
@@ -889,7 +904,9 @@ def _build_memory_monitor():
             f"Memory watchdog disabled: threshold {threshold_mb} MB ≤ baseline "
             f"RSS {baseline:.0f} MB would restart-loop. Raise "
             "memory_monitor.threshold_mb above baseline.")
+        _record(False, threshold_mb, "threshold <= baseline RSS")
         return None
+    _record(True, threshold_mb, "")
     return MemoryMonitor(
         threshold_mb=threshold_mb,
         sustained_samples=conf["sustained_samples"],
@@ -1200,7 +1217,7 @@ def main_loop():
         # racing with the Telegram bridge processing of /pause.
         _startup_delay(koan_root)
 
-        memory_monitor = _build_memory_monitor()
+        memory_monitor = _build_memory_monitor(koan_root)
 
         while True:
             # --- Stop check ---

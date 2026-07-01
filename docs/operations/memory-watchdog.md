@@ -52,13 +52,27 @@ memory overhead — enable it only while investigating, then turn it off.
 ## Observability
 
 `GET /api/health` on the dashboard includes a `memory` block with current
-`rss_mb`, the configured `threshold_mb`, `watchdog_enabled`, and `source`.
+`rss_mb`, `threshold_mb`, `watchdog_enabled`, and `source`.
 The dashboard runs in its own process, so it resolves the agent loop's (`run`)
 PID and reports *that* process's RSS (`source: "agent_loop"`) — the watchdog's
 actual subject. If the run PID can't be resolved (agent loop not running) it
 falls back to the dashboard's own RSS (`source: "self"`).
 
+`watchdog_enabled`/`threshold_mb` reflect the *runtime* decision, not raw
+config. The agent loop writes its actual enabled/disabled state (and reason) to
+`instance/.memory-watchdog-status.json` at startup, and the health endpoint
+reads that. So a watchdog that config-enables but startup-disables itself
+(unreadable baseline, or `threshold_mb` ≤ baseline RSS) correctly reports
+`watchdog_enabled: false` — the dashboard never falsely advertises protection.
+Only when no runtime status file exists does it fall back to raw config.
+
 If reading the config fails, the block sets `config_error: true` and reports
 `watchdog_enabled`/`threshold_mb` as `null` rather than a plausible-looking
 disabled state — so consumers can tell a real failure from an intentional
-disable.
+disable. A read failure that takes down the whole snapshot returns the same
+`config_error: true` shape from the endpoint itself, not a bare `error` object.
+
+A mid-session RSS read failure (`read_rss_mb` returns `0.0`, meaning "unknown")
+does **not** reset the overage counter — treating unknown as below-threshold
+would silently disable protection. The counter is held and the failure is
+logged to stderr once.
