@@ -820,6 +820,65 @@ class TestGetProviderDisplay:
         with patch("app.provider.get_provider_name", return_value="claude"):
             assert get_provider_display() == "claude"
 
+
+class TestProviderCliDisplay:
+    """provider_cli_display: custom binary basename, else the provider name.
+
+    The review footer attribution uses this so a pinned review CLI
+    (cli.review_mode: claude:/root/.local/bin/claude-deep) surfaces its
+    basename (claude-deep) instead of the provider flavor.
+    """
+
+    def test_per_role_path_basename(self, monkeypatch):
+        from app.provider import ClaudeProvider, provider_cli_display
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        provider = ClaudeProvider(binary_path="/root/.local/bin/claude-deep")
+        assert provider_cli_display(provider) == "claude-deep"
+
+    def test_global_env_basename_when_no_path(self, monkeypatch):
+        from app.provider import ClaudeProvider, provider_cli_display
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/koan/ollama-claude")
+        assert provider_cli_display(ClaudeProvider()) == "ollama-claude"
+
+    def test_per_role_path_wins_over_env(self, monkeypatch):
+        from app.provider import ClaudeProvider, provider_cli_display
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/koan/ollama-claude")
+        provider = ClaudeProvider(binary_path="/root/.local/bin/claude-deep")
+        assert provider_cli_display(provider) == "claude-deep"
+
+    def test_falls_back_to_flavor_when_no_override(self, monkeypatch):
+        from app.provider import ClaudeProvider, provider_cli_display
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        assert provider_cli_display(ClaudeProvider()) == "claude"
+
+    def test_non_claude_path_override(self, monkeypatch):
+        from app.provider import CodexProvider, provider_cli_display
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        provider = CodexProvider(binary_path="/opt/bin/my-codex")
+        assert provider_cli_display(provider) == "my-codex"
+
+    def test_non_claude_default_ignores_env(self, monkeypatch):
+        """KOAN_CLAUDE_CLI_PATH is claude-only; codex default stays 'codex'."""
+        from app.provider import CodexProvider, provider_cli_display
+        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/koan/ollama-claude")
+        assert provider_cli_display(CodexProvider()) == "codex"
+
+    def test_copilot_default_not_its_gh_fallback(self, monkeypatch):
+        """Copilot's binary() falls back to 'gh' with no standalone binary,
+        but that's not a user-pinned override — the display must stay the
+        flavor name so the footer never reads 'gh'."""
+        from app.provider import CopilotProvider, provider_cli_display
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        with patch("shutil.which", return_value=None):
+            assert provider_cli_display(CopilotProvider()) == "copilot"
+
+    def test_override_basename_equal_to_flavor_returns_flavor(self, monkeypatch):
+        """A path whose basename equals the flavor (e.g. '/usr/bin/claude')
+        is not a meaningfully different binary — show the flavor name."""
+        from app.provider import ClaudeProvider, provider_cli_display
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        assert provider_cli_display(ClaudeProvider(binary_path="/usr/bin/claude")) == "claude"
+
     def test_no_flavor_when_identical(self, monkeypatch):
         from app.provider import get_provider_display
         monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/usr/bin/claude")

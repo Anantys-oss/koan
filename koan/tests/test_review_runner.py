@@ -4695,14 +4695,42 @@ class TestReviewBinaryRouting:
 
     def test_review_attribution_uses_review_provider(self):
         """The footer attribution (provider + model) reflects the review_mode
-        provider, not the global one (PR #2251 comment-4848512613)."""
+        provider, not the global one (PR #2251 comment-4848512613).
+
+        With a ``cli.review_mode: flavor:path`` override the attribution is the
+        binary basename (``claude-deep``), so the signature shows the CLI that
+        actually ran, not the provider flavor."""
         from unittest.mock import patch
         import app.provider as provider
         from app.review_runner import _review_attribution
 
         full = {
             "cli_provider": "codex",
-            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "cli": {"default": {"review_mode": "claude:/root/.local/bin/claude-deep"}},
+            "models": {
+                "codex": {"review_mode": "codex-WRONG"},
+                "claude": {"review_mode": "opus"},
+            },
+        }
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full):
+            provider.reset_provider()
+            name, model = _review_attribution()
+        assert name == "claude-deep"
+        assert model == "opus"
+
+    def test_review_attribution_falls_back_to_flavor(self, monkeypatch):
+        """Without a custom path (``cli.review_mode: claude``) the attribution
+        is the provider flavor name, not a binary basename."""
+        from unittest.mock import patch
+        import app.provider as provider
+        from app.review_runner import _review_attribution
+
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude"}},
             "models": {
                 "codex": {"review_mode": "codex-WRONG"},
                 "claude": {"review_mode": "opus"},

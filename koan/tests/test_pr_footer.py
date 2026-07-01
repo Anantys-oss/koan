@@ -50,6 +50,18 @@ class TestBuildKoanFooter:
         result = build_koan_footer(provider_name="ollama-launch")
         assert "Ollama-launch" in result
 
+    def test_custom_binary_name_not_title_cased(self):
+        """A custom CLI binary basename (e.g. from cli.review_mode:
+        claude:/root/.local/bin/claude-deep) is shown verbatim — it is a
+        technical identifier, not a brand flavor — so reviewers see exactly
+        which binary ran."""
+        result = build_koan_footer(
+            action="Automated review by", provider_name="claude-deep", model="opus",
+        )
+        assert "claude-deep" in result
+        assert "Claude-deep" not in result
+        assert "_(claude-deep · model opus)_" in result
+
     def test_review_footer_compat(self):
         result = build_koan_footer(
             action="Automated review by",
