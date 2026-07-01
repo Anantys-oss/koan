@@ -50,6 +50,19 @@ class TestReviewPromptContract:
     prompt prose — only on the load-bearing structure.
     """
 
+    def test_prompt_files_collected(self):
+        """Guard against a vacuous contract eval.
+
+        ``PROMPT_FILES`` is computed at collection time, so a missing/empty
+        prompts dir collects zero parametrized cases — the in-body skip would
+        never fire and the eval would silently pass with nothing checked. Fail
+        loudly instead so a misconfigured/renamed prompts dir surfaces.
+        """
+        assert PROMPT_FILES, (
+            f"no prompts found in {PROMPTS_DIR} — the prompt-contract eval "
+            "ran zero cases"
+        )
+
     @pytest.mark.parametrize("prompt_file", PROMPT_FILES, ids=lambda p: p.stem)
     def test_all_includes_resolve(self, prompt_file):
         """Every ``{@include}`` directive resolves to non-empty content.
@@ -57,8 +70,6 @@ class TestReviewPromptContract:
         A broken partial (rename, deletion, typo) is the most common silent
         regression — the prompt still loads but ships degraded instructions.
         """
-        if not PROMPTS_DIR.exists():
-            pytest.skip("review skill prompts not found")
         rendered = load_skill_prompt(REVIEW_SKILL_DIR, prompt_file.stem)
         leftovers = _INCLUDE_RE.findall(rendered)
         assert not leftovers, (
@@ -110,10 +121,18 @@ class TestGoldenReviews:
     anchors that make 'confirm improvements over iterations' meaningful.
     """
 
-    @pytest.fixture(autouse=True)
-    def _require_fixtures(self):
-        if not FIXTURES_DIR.exists() or not any(FIXTURES_DIR.glob("*.json")):
-            pytest.skip("review eval fixtures not found")
+    def test_fixtures_collected(self):
+        """Guard against a vacuous golden eval.
+
+        The golden tests are parametrized over the fixture glob at collection
+        time, so a missing/empty fixtures dir collects zero cases — the eval
+        would silently pass with nothing checked. Fail loudly instead so a lost
+        fixtures directory is a loud failure.
+        """
+        assert sorted(FIXTURES_DIR.glob("*.json")), (
+            f"no fixtures found in {FIXTURES_DIR} — the golden-output eval "
+            "ran zero cases"
+        )
 
     @pytest.mark.parametrize(
         "fixture", sorted(FIXTURES_DIR.glob("*.json")), ids=lambda p: p.stem
