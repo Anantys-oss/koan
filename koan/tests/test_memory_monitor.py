@@ -1,7 +1,12 @@
 import os
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from app.memory_monitor import MemoryMonitor, read_rss_mb, get_memory_status
+
+_HAS_PROC = Path("/proc/self/status").exists()
 
 
 def test_read_rss_mb_positive():
@@ -48,6 +53,9 @@ def test_get_memory_status_shape():
     assert status["rss_mb"] > 0
 
 
+@pytest.mark.skipif(
+    not _HAS_PROC, reason="foreign-PID RSS resolution needs /proc (Linux-only)"
+)
 def test_get_memory_status_resolves_run_pid():
     """When the run PID resolves, status reports that process's RSS."""
     with patch("app.memory_monitor._read_run_pid", lambda _root: os.getpid()):

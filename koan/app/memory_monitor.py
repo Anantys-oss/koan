@@ -39,6 +39,18 @@ def read_rss_mb(pid: int | None = None) -> float:
                 f"unreadable: {exc}",
                 file=sys.stderr,
             )
+        elif Path("/proc").exists():
+            # Log the self-read failure before falling back to ru_maxrss:
+            # that fallback silently switches from current RSS to *peak* RSS
+            # (a monotonically non-decreasing metric), so make the switch
+            # observable instead of degrading the watchdog without a trace.
+            # Gated on /proc existing so non-Linux (where absence is the
+            # documented normal fallback path) doesn't spam stderr each sample.
+            print(
+                f"[memory_monitor] read_rss_mb: /proc/self/status unreadable "
+                f"({exc}); falling back to ru_maxrss (peak, not current RSS)",
+                file=sys.stderr,
+            )
     if pid is not None:
         # Cannot use ru_maxrss for another process; report unknown.
         return 0.0

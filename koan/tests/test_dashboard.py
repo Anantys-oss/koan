@@ -1873,6 +1873,10 @@ class TestApiHealth:
         assert data["memory"]["rss_mb"] > 0
         assert "watchdog_enabled" in data["memory"]
 
+    @pytest.mark.skipif(
+        not Path("/proc/self/status").exists(),
+        reason="foreign-PID RSS resolution needs /proc (Linux-only)",
+    )
     def test_api_health_memory_resolves_run_pid(self, app_client, tmp_path):
         """With a valid run PID file, memory reports the agent loop's RSS."""
         (tmp_path / ".koan-pid-run").write_text(str(os.getpid()))
