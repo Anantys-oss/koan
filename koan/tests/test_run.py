@@ -8264,3 +8264,95 @@ class TestClassifyTrustStdout:
         assert handled is False
         auth.assert_not_called()
         quota.assert_not_called()
+
+
+class TestFinalizeVerifyRequeue:
+    """_finalize_mission re-queues verify-failed missions under cap, completes at cap."""
+
+    def test_verify_requeue_does_not_complete(self, tmp_path):
+        from app import run
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file") as requeue, \
+             patch.object(run, "_notify_verify_requeue") as notify, \
+             patch("app.config.get_verify_requeue_max", return_value=2):
+            run._finalize_mission(
+                inst, title, "my-toolkit", 0,
+                verify_requeue=True, verify_summary="no tests; no PR",
+            )
+        complete.assert_not_called()        # did NOT fall through to completion
+        requeue.assert_called_once()
+        notify.assert_called_once()
+        # The re-queue carries the verify-failed context tag.
+        assert "verify-failed" in requeue.call_args.kwargs["append_tag"]
+
+    def test_verify_requeue_completes_at_cap(self, tmp_path):
+        from app import run
+        from app import stagnation_monitor as sm
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        sm.increment_verify_count(inst, title)
+        sm.increment_verify_count(inst, title)   # at cap (2)
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file") as requeue, \
+             patch.object(run, "_notify_verify_requeue"), \
+             patch("app.config.get_verify_requeue_max", return_value=2):
+            run._finalize_mission(
+                inst, title, "my-toolkit", 0,
+                verify_requeue=True, verify_summary="no tests; no PR",
+            )
+        complete.assert_called_once()        # falls through to normal completion (Done)
+        requeue.assert_not_called()
+
+    def test_no_verify_requeue_completes_normally(self, tmp_path):
+        from app import run
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file") as requeue:
+            run._finalize_mission(inst, title, "my-toolkit", 0)
+        complete.assert_called_once()
+
+    def test_verify_requeue_aborts_when_counter_not_persisted(self, tmp_path):
+        """If the counter can't be persisted (-1), skip the re-queue and complete
+        normally — never re-queue without bumping the on-disk count (unbounded loop)."""
+        from app import run
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file") as requeue, \
+             patch.object(run, "_notify_verify_requeue") as notify, \
+             patch("app.stagnation_monitor.increment_verify_count", return_value=-1), \
+             patch("app.config.get_verify_requeue_max", return_value=2):
+            run._finalize_mission(
+                inst, title, "my-toolkit", 0,
+                verify_requeue=True, verify_summary="no tests; no PR",
+            )
+        requeue.assert_not_called()
+        notify.assert_not_called()
+        complete.assert_called_once()        # falls through to normal completion
+
+    def test_verify_requeue_completes_when_write_fails(self, tmp_path):
+        """If the missions.md re-queue write fails, do not notify — complete normally
+        instead of telling the user a re-queue landed while it is stuck In Progress."""
+        from app import run
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file", return_value=False) as requeue, \
+             patch.object(run, "_notify_verify_requeue") as notify, \
+             patch("app.config.get_verify_requeue_max", return_value=2):
+            run._finalize_mission(
+                inst, title, "my-toolkit", 0,
+                verify_requeue=True, verify_summary="no tests; no PR",
+            )
+        requeue.assert_called_once()
+        notify.assert_not_called()
+        complete.assert_called_once()        # falls through to normal completion
+        requeue.assert_not_called()

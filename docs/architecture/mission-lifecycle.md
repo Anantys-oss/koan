@@ -83,6 +83,32 @@ Crash recovery moves stale In Progress work back to a safe state. Stagnation
 retries are tracked separately so a stuck provider session can be retried a
 limited number of times before regular failure handling and user notification.
 
+### Verification re-queue (verify-before-completion)
+
+After a mission exits successfully, the RARV Verify phase
+(`mission_verifier.py`) checks that the work actually matches the mission title
+(meaningful changes, tests added, a PR created). When verification fails,
+`run_post_mission()` signals a re-queue and `_finalize_mission()` moves the
+mission back to **Pending** with a `[verify-failed: <summary>]` context tag
+instead of completing it. On a successful (exit 0) mission the only check that
+can FAIL is `check_diff_coherence` (an empty branch) — the other checks only
+PASS/WARN/SKIP — so a single failure is already a strong, unambiguous signal,
+and requiring two would make the re-queue unreachable.
+
+- The cap is `verification.max_requeue` in `config.yaml` (default **2**); `0`
+  disables the verify re-queue entirely.
+- Re-queues use a dedicated `verify_count` sub-counter in
+  `instance/.mission-retries.json`, isolated from the stagnation `count` and
+  crash-recovery `crash_count`, but still feeding the shared `total_attempts`
+  so the `max_total_retries` ceiling applies across all retry systems.
+- The `[verify-failed: …]` tag is stripped by `canonical_mission_key()`, so the
+  counter stays attached to the same logical mission across cycles, and the tag
+  never stacks (a prior tag is replaced on re-queue).
+- At the cap (or when `max_total_retries` is hit), the mission **completes
+  normally (Done)** — the auto-merge gate (`verify_blocking`) already kept the
+  draft PR out of `main`, so a human reviews the draft rather than the work
+  being marked Failed. Each re-queue sends a Telegram notification.
+
 ## File Integrity And Size Bounds
 
 `missions.md` is on the hot path of every loop iteration, so a malformed write
