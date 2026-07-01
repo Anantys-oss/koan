@@ -49,6 +49,11 @@ _STOP_WORDS = frozenset({
 
 _BRANCH_ISSUE_RE = re.compile(r"(?:implement|fix|issue)[/-](\d+)")
 
+# A technical-debt line a human has annotated as already finished. Humans strike
+# items off with a checkbox, a ✅, or a standalone "done"/"completed". Such items
+# should not surface as fresh high-priority work (\b avoids matching "undone").
+_COMPLETED_MARKER_RE = re.compile(r"✅|\[x\]|\bdone\b|\bcompleted\b", re.IGNORECASE)
+
 # GitHub's closing keywords — only these forms in a PR body reliably mean
 # "this PR resolves issue N". Restricting to them avoids treating incidental
 # "#123" mentions in prose as coverage.
@@ -467,11 +472,19 @@ class DeepResearch:
             # Skip if recently worked on
             if any(item.lower() in t.lower() for t in recent_topics):
                 continue
+            # An item the human already annotated as finished (✅/[x]/"done")
+            # shouldn't compete for attention as fresh priority-2 work — drop it
+            # to priority 3 and flag it so the agent verifies before picking it.
+            done = bool(_COMPLETED_MARKER_RE.search(item))
             suggestions.append({
                 "topic": item,
                 "source": "priorities.md (Technical Debt)",
-                "reasoning": "Known tech debt item, good for DEEP mode",
-                "priority": 2,
+                "reasoning": (
+                    "Marked complete in priorities.md — verify it still needs work"
+                    if done
+                    else "Known tech debt item, good for DEEP mode"
+                ),
+                "priority": 3 if done else 2,
             })
 
         # Priority 2: Git-churn hotspots — structurally unstable files.

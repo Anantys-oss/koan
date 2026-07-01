@@ -441,6 +441,44 @@ class TestTopicSuggestions:
             assert not any("Test coverage" in t for t in titles)
             assert any("#2" in t for t in titles)
 
+    def test_completed_debt_deprioritized(self, research_env):
+        """A tech-debt item self-marked done drops to priority 3, not 2."""
+        priorities_content = """## Technical Debt
+
+- Refactor the payment module
+- atoomic PRs cleanup done (session 12)
+- Migrate undone helpers to OO
+"""
+        priorities_file = (
+            research_env["instance"]
+            / "memory"
+            / "projects"
+            / research_env["project_name"]
+            / "priorities.md"
+        )
+        priorities_file.write_text(priorities_content)
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1)  # gh fails
+
+            research = DeepResearch(
+                research_env["instance"],
+                research_env["project_name"],
+                research_env["project_path"],
+            )
+
+            result = research.suggest_topics()
+            by_topic = {s["topic"]: s for s in result}
+
+            # The "done"-annotated item is demoted and flagged.
+            done_item = by_topic["atoomic PRs cleanup done (session 12)"]
+            assert done_item["priority"] == 3
+            assert "verify" in done_item["reasoning"].lower()
+
+            # A real item stays priority 2; "undone" must not trigger the marker.
+            assert by_topic["Refactor the payment module"]["priority"] == 2
+            assert by_topic["Migrate undone helpers to OO"]["priority"] == 2
+
 
 class TestOutputFormatting:
     """Tests for output formatting."""
