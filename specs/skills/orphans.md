@@ -36,7 +36,10 @@ oldest-first) — no LLM call:
 | ≥2 | first commit's subject line | first three commit messages |
 
 Every body ends with a `---` footer recording the branch name and rebase status
-(`Rebased onto` / `Could not rebase onto`).
+(`Rebased onto` / `Could not rebase onto`). The title is capped at
+`PR_TITLE_MAX_LEN` (200) chars and ellipsized so a verbose first-commit subject
+can never exceed GitHub's 256-char title limit and fail `gh pr create`; the full
+message is always preserved in the body.
 
 ## Error cases
 
@@ -52,6 +55,7 @@ Every body ends with a `---` footer recording the branch name and rebase status
 
 - Recovery of one orphan must not abort recovery of the others — errors are per-branch.
 - Title/body must never depend on an LLM; commit messages are the source of truth.
+- Title length is capped (`PR_TITLE_MAX_LEN`, 200) so recovery never fails on an over-long subject.
 - `git fetch --prune` runs before detection so stale refs don't mask orphans.
 
 ## Integration hooks

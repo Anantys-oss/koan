@@ -249,6 +249,14 @@ class TestBuildPrTitleBody:
             _, body = handler._build_pr_title_body("koan/x", "/p", "main", False)
         assert "Could not rebase onto" in body
 
+    def test_overlong_subject_title_truncated(self, handler):
+        long_subject = "x" * 300
+        with patch("app.git_utils.get_commit_messages", return_value=[long_subject]):
+            title, body = handler._build_pr_title_body("koan/x", "/p", "main", True)
+        assert len(title) <= handler.PR_TITLE_MAX_LEN
+        assert title.endswith("…")
+        assert long_subject in body  # full message preserved in body
+
 
 class TestFormatResults:
     def test_all_success(self, handler):

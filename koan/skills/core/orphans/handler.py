@@ -5,6 +5,10 @@ from typing import Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
+# GitHub caps PR titles at 256 chars. Stay comfortably under so a verbose
+# first-commit subject never fails `gh pr create` (and thus recovery itself).
+PR_TITLE_MAX_LEN = 200
+
 
 def handle(ctx):
     """Handle /orphans command.
@@ -174,7 +178,15 @@ def _build_pr_title_body(
         )
 
     first = commits[0]
-    title = first.splitlines()[0].strip() if first.strip() else f"recover orphan {branch}"
+    # `first` is already a stripped, non-empty message (filtered upstream in
+    # get_commit_messages), so splitlines()[0] is always the real subject — the
+    # old `else` fallback here was unreachable. Cap the title length so an
+    # over-long subject can't make `gh pr create` fail and strand the branch;
+    # the full message is preserved in the body below.
+    subject = first.splitlines()[0].strip()
+    if len(subject) > PR_TITLE_MAX_LEN:
+        subject = subject[: PR_TITLE_MAX_LEN - 1].rstrip() + "…"
+    title = subject
 
     shown = commits[:3]
     if len(shown) == 1:
