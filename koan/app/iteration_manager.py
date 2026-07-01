@@ -45,6 +45,11 @@ from app.run_log import log_safe, suppress_logged
 # Set to True when running as CLI subprocess (stdout carries JSON).
 _cli_mode = False
 
+# Throttle the count-path self-heal reconcile so a wedged mirror doesn't
+# trigger a full rebuild attempt on every trip through the fallback extract.
+_RECONCILE_THROTTLE_S = 60.0
+_last_reconcile_at: dict = {}
+
 # Track projects already reported this session (log once, not every iteration)
 _branch_saturated_logged: set = set()
 _no_github_url_logged: set = set()
@@ -395,6 +400,7 @@ def _fallback_mission_extract(instance_dir: Path, projects_str: str,
         (project_name, mission_title) or (None, None)
     """
     try:
+        from app import missions_db
         from app.missions import count_pending
         from app.pick_mission import fallback_extract
 
@@ -404,7 +410,34 @@ def _fallback_mission_extract(instance_dir: Path, projects_str: str,
         except FileNotFoundError:
             return None, None
 
-        pending_count = count_pending(content)
+        # DB-first count (constant time). The DB count is authoritative only
+        # when > 0; during the dual-write transition a lagging mirror could
+        # read 0 while the file still has work, so fall back to the file parse
+        # and self-heal the DB via reconcile().
+        pending_count = missions_db.mission_count_by_state(str(instance_dir), "pending")
+        if pending_count <= 0:
+            file_count = count_pending(content)
+            if file_count > 0:
+                pending_count = file_count
+                # Self-heal the lagging mirror, but throttled so a persistently
+                # wedged DB doesn't trigger a full rebuild on every fallback
+                # trip. Surface failures (matching the other mirror call sites)
+                # instead of swallowing them silently.
+                import time
+                key = str(instance_dir)
+                now = time.monotonic()
+                last = _last_reconcile_at.get(key, 0.0)
+                if now - last >= _RECONCILE_THROTTLE_S:
+                    _last_reconcile_at[key] = now
+                    try:
+                        report = missions_db.reconcile(key)
+                        if not report.get("ok", True):
+                            _log_iteration("warning",
+                                "[missions_db] self-heal reconcile did not "
+                                "complete cleanly")
+                    except Exception as e:
+                        _log_iteration("warning",
+                            f"[missions_db] self-heal reconcile skipped: {e}")
         if pending_count <= 0:
             return None, None
 
