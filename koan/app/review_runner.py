@@ -1006,6 +1006,7 @@ def _should_run_error_hunter(diff: str) -> bool:
 def _run_error_hunter(
     diff: str, project_path: str, skill_dir: Optional[Path],
     owner: str = "", repo: str = "", head_sha: str = "",
+    project_name: str = "",
 ) -> str:
     """Run the silent-failure-hunter pass and return formatted markdown section.
 
@@ -1016,7 +1017,7 @@ def _run_error_hunter(
     else:
         prompt = load_prompt("silent-failure-hunter", DIFF=diff)
 
-    raw_output, error = _run_claude_review(prompt, project_path)
+    raw_output, error = _run_claude_review(prompt, project_path, project_name=project_name)
     if not raw_output:
         print(
             f"[review_runner] silent-failure-hunter pass failed: {error}",
@@ -1150,6 +1151,7 @@ def _run_bot_comment_triage(
     diff: str,
     skill_dir: Optional[Path],
     project_path: str = "",
+    project_name: str = "",
 ) -> List[dict]:
     """Run Claude triage on bot inline comments.
 
@@ -1179,7 +1181,7 @@ def _run_bot_comment_triage(
         return []
 
     try:
-        raw_output, error = _run_claude_review(prompt, project_path)
+        raw_output, error = _run_claude_review(prompt, project_path, project_name=project_name)
         if not raw_output:
             print(f"[review_runner] bot comment triage failed: {error}", file=sys.stderr)
             return []
@@ -2742,6 +2744,7 @@ def run_review(
                 triage_replies = _run_bot_comment_triage(
                     bot_inline, context.get("diff", ""), skill_dir,
                     project_path=project_path,
+                    project_name=project_name or "",
                 )
                 if triage_replies:
                     bot_reply_results = _post_comment_replies(
@@ -2849,6 +2852,7 @@ def run_review(
             triage_replies = _run_bot_comment_triage(
                 bot_inline, context.get("diff", ""), skill_dir,
                 project_path=project_path,
+                project_name=project_name or "",
             )
             if triage_replies:
                 bot_reply_results = _post_comment_replies(
@@ -2869,6 +2873,7 @@ def run_review(
             diff, project_path, skill_dir,
             owner=owner, repo=repo,
             head_sha=(current_shas[-1] if current_shas else ""),
+            project_name=project_name or "",
         )
         if error_section:
             review_body = review_body + "\n\n---\n\n" + error_section

@@ -6125,6 +6125,37 @@ class TestRunBotCommentTriage:
         replies = _run_bot_comment_triage(bot_comments, "diff", skill_dir)
         assert replies == []
 
+    @patch("app.review_runner._run_claude_review")
+    def test_forwards_project_name_to_claude_review(self, mock_claude):
+        """Per-project cli.review_mode is honored: project_name reaches the review CLI."""
+        from app.review_runner import _run_bot_comment_triage
+        mock_claude.return_value = ("[]", "")
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+        _run_bot_comment_triage(
+            [{"id": 1, "body": "x", "path": "a.py", "line": 1}],
+            "diff", skill_dir, project_name="my-toolkit",
+        )
+        _, kwargs = mock_claude.call_args
+        assert kwargs["project_name"] == "my-toolkit"
+
+
+# ---------------------------------------------------------------------------
+# Silent-failure-hunter pass — project_name threading
+# ---------------------------------------------------------------------------
+
+class TestRunErrorHunter:
+    """Tests for _run_error_hunter (silent-failure-hunter pass)."""
+
+    @patch("app.review_runner._run_claude_review")
+    def test_forwards_project_name_to_claude_review(self, mock_claude):
+        """Per-project cli.review_mode is honored on the error-hunter pass too."""
+        from app.review_runner import _run_error_hunter
+        mock_claude.return_value = ("", "boom")
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+        _run_error_hunter("diff", "/tmp/proj", skill_dir, project_name="my-toolkit")
+        _, kwargs = mock_claude.call_args
+        assert kwargs["project_name"] == "my-toolkit"
+
 
 # ---------------------------------------------------------------------------
 # Bot comment triage — run_review integration
