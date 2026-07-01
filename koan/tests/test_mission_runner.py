@@ -1757,7 +1757,9 @@ class TestBuildMissionCommandProjectOverrides:
                 "mission": "sonnet", "review_mode": "", "fallback": "haiku",
             }
             build_mission_command(prompt="test", project_name="backend")
-            mock_models.assert_called_once_with("backend")
+            # project_name is forwarded as the first positional arg; the
+            # role_providers kwarg is an implementation detail.
+            assert mock_models.call_args.args[0] == "backend"
 
     @patch("app.cli_provider.get_provider_name", return_value="claude")
     def test_multiple_plugin_dirs(self, mock_provider):

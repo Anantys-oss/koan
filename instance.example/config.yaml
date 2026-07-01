@@ -512,6 +512,34 @@ models:
   #   fallback: "minimax-m2.5:cloud"     # empty = use provider default
   #   review_mode: "glm-5:cloud"
   #   reflect: "glm-5:cloud"
+
+# Per-role CLI provider (optional) — parallel to `models:`.
+# Pick a DIFFERENT provider (and optionally a custom binary) for each mission
+# role. Each value is a flavor (claude/codex/copilot/cline/ollama-launch) or
+# `flavor:path`, where path is absolute or relative to KOAN_ROOT.
+#
+# The role's MODEL is read from that role's provider block above — e.g. with
+# `review_mode: claude`, the review model comes from `models.claude.review_mode`
+# (then `models.default.review_mode`). So `cli:` and `models:` compose.
+#
+# When this section is omitted, every role uses the global `cli_provider` /
+# KOAN_CLI_PROVIDER — exactly as before (no behavior change).
+#
+# Example: routine work on Codex, reviews on a pinned Claude binary, with a
+# single section-wide fallback used only when a role's CLI can't launch
+# (binary missing/misconfigured, or — on the mission path — an auth failure;
+# quota still pauses, transient errors still retry in place).
+# cli:
+#   default:
+#     mission: codex
+#     chat: codex
+#     lightweight: codex
+#     review_mode: claude:bin/zai-claude   # relative paths root at KOAN_ROOT
+#     reflect: claude
+#   fallback: claude
+# Per-project overrides live in projects.yaml as a flat `cli:` block, e.g.
+#   cli: {mission: claude, review_mode: claude:/opt/bin/review-claude}
+
 # Branch cleanup — automatic deletion of merged branches during git sync
 # Every git_sync_interval iterations, Kōan detects merged branches (both
 # regular merges via git ancestry and squash/rebase merges via GitHub API)

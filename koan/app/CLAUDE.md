@@ -67,7 +67,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`provider/cline.py`** — `ClineProvider` (Cline CLI)
 - **`provider/codex.py`** — `CodexProvider` (Codex CLI); quota surfaces only via the stream-json summary
 - **`provider/copilot.py`** — `CopilotProvider` (GitHub Copilot CLI) with tool name mapping
-- **`provider/__init__.py`** — Provider registry, resolution (env → config → default), cached singleton, and convenience functions (`run_command()`, `run_command_streaming()`, `build_full_command()`). Main entry point for the provider package.
+- **`provider/__init__.py`** — Provider registry, resolution (env → config → default), cached singleton, and convenience functions (`run_command()`, `run_command_streaming()`, `build_full_command()`). Also per-role provider selection for the `cli:` config section: `get_provider_for_role()` (fresh path-bearing instance, never poisons the singleton), `get_fallback_provider()`, `resolve_role_provider()` (pre-flight fallback), and `describe_cli_roles()` (status/banner summary). Main entry point for the provider package.
 - **`cli_provider.py`** — Re-export facade (legacy); prefer importing from `provider` directly
 
 **Git & GitHub:**

@@ -301,6 +301,7 @@ def run_claude_task(
     instance_dir: str = "",
     project_name: str = "",
     run_num: int = 0,
+    provider=None,
 ) -> int:
     """Run Claude CLI as a subprocess with SIGINT isolation and timeout.
 
@@ -347,8 +348,12 @@ def run_claude_task(
     koan_root_active = os.environ.get("KOAN_ROOT", "")
     try:
         with open(stdout_file, "w") as out_f, open(stderr_file, "w") as err_f:
+            # provider is the role-resolved instance (cli: section); popen_cli
+            # uses it for stdin-rewrite + invocation lock so they match the
+            # binary the command was built for. None → global provider.
             proc, cleanup = popen_cli(
                 cmd,
+                provider=provider,
                 stdout=out_f,
                 stderr=err_f,
                 cwd=cwd,

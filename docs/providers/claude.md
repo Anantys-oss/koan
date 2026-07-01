@@ -145,29 +145,53 @@ When a custom path is set, `/status` and the startup banner (`make` / `make rest
 show the binary name next to the provider (e.g. `claude (ollama-claude)`), so you can
 confirm which wrapper is in use.
 
-#### Review-specific CLI binary
+#### Per-role CLI provider (the `cli:` section)
 
-`KOAN_CLAUDE_CLI_PATH` replaces the Claude binary for **every** call. To swap it
-in for **reviews only** — e.g. run routine missions on a cheap wrapper but reviews
-on a paid Claude subscription — set `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`:
+`KOAN_CLAUDE_CLI_PATH` replaces the Claude binary for **every** call. To use a
+**different provider or binary per mission role** — e.g. run routine work on
+Codex but reviews on a paid Claude subscription — add a `cli:` section to
+`config.yaml`, parallel to `models:`:
 
-```bash
-KOAN_CLAUDE_CLI_PATH=/path/to/cheap-claude           # all other missions
-KOAN_CLAUDE_CLI_FOR_REVIEW_PATH=/path/to/review-claude  # reviews only
+```yaml
+cli:
+  default:
+    mission: codex                                  # routine missions → Codex
+    chat: codex
+    lightweight: codex
+    review_mode: claude:/path/to/review-claude      # reviews → a pinned Claude binary
+    reflect: claude
+  fallback: claude                                  # used only when a role's CLI can't run
 ```
 
-This variable takes precedence over `KOAN_CLAUDE_CLI_PATH`, but **only while a
-review is running**. It applies to `/review` and `/ultrareview` (and every
-internal Claude call those skills make — the main pass, reflection, silent-failure
-hunter, bot-comment triage), and to private reviews. It is never consulted for
-other missions, so you can set both variables at once without affecting
-non-review work. When unset or empty inside a review, Kōan falls back to
-`KOAN_CLAUDE_CLI_PATH`, then `claude`.
+Each value is a provider **flavor** (`claude`, `codex`, `copilot`, `cline`,
+`ollama-launch`) or `flavor:path`, where `path` is an absolute path or a path
+relative to `KOAN_ROOT` (same rule as `KOAN_CLAUDE_CLI_PATH`). The roles are the
+same as `models:`: `mission`, `chat`, `lightweight`, `review_mode`, `reflect`.
 
-The review binary is also surfaced in `/status` and the startup banner — its
-basename is appended as a `review:` hint (e.g.
-`claude (cheap-claude, review: review-claude)`), so you can confirm a
-review-only binary is configured without running a review.
+- **`review_mode`** drives `/review`, `/ultrareview`, and every internal review
+  call (main pass, reflection, silent-failure hunter, bot-comment triage),
+  replacing the old `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`.
+- **Model coupling:** a role's *model* is read from that role's provider block —
+  e.g. with `review_mode: claude`, the review model comes from
+  `models.claude.review_mode` (falling back to `models.default.review_mode`). So
+  `cli:` and `models:` compose: the provider you pick for a role selects which
+  `models.<provider>.<role>` model applies.
+- **`fallback`** is a single section-wide provider used only when a role's chosen
+  CLI **can't run** — the binary is missing/misconfigured (and, on the mission
+  path, when the CLI reports an auth failure) and no work was produced yet. Quota
+  exhaustion still pauses Koan; transient errors still use the normal in-place retry.
+- **Per-project overrides:** set a flat `cli:` block under a project in
+  `projects.yaml` (e.g. `cli: {mission: claude}`) to override per project.
+- **Absence = unchanged:** with no `cli:` section, every role uses the global
+  provider (`cli_provider` / `KOAN_CLI_PROVIDER`), exactly as before.
+
+`KOAN_CLAUDE_CLI_PATH` remains the default binary for the `claude` flavor when a
+role selects `claude` without an explicit path, and `cli_provider` /
+`KOAN_CLI_PROVIDER` remain the global default provider.
+
+> Tip: the ready-made wrappers in `bin/` (`zai-claude`, `oc-claude`,
+> `ollama-claude`) make good `claude:path` targets when you want a role to run a
+> Claude-compatible backend.
 
 > **Running OpenRouter models through the Claude CLI?** See
 > [openrouter.md](openrouter.md) — it uses this wrapper mechanism plus a local

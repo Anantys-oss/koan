@@ -19,7 +19,9 @@ from app.cli_provider import (
     build_max_turns_flags,
     build_full_command,
     run_command,
-    review_cli_override,
+    get_provider_for_role,
+    get_fallback_provider,
+    resolve_role_provider,
     CLAUDE_TOOLS,
     TOOL_NAME_MAP,
 )
@@ -131,44 +133,31 @@ class TestClaudeProvider:
         assert cmd[0] == "/srv/koan/bin/zai-claude"
         assert cmd[1:] == ["-p", "hello"]
 
-    # -- Review-scoped binary (KOAN_CLAUDE_CLI_FOR_REVIEW_PATH) -------------
+    # -- Per-instance binary override (cli: flavor:path) -------------------
 
-    def test_binary_review_override_used_when_active(self, monkeypatch):
-        """Inside review_cli_override(), the review-specific binary is used."""
+    def test_binary_override_absolute(self, monkeypatch):
+        """A constructor binary_path overrides env resolution (absolute)."""
         monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
-        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/bin/review-claude")
-        with review_cli_override():
-            assert self.provider.binary() == "/opt/bin/review-claude"
+        p = ClaudeProvider(binary_path="/opt/bin/deep-claude")
+        assert p.binary() == "/opt/bin/deep-claude"
 
-    def test_binary_review_override_ignored_when_inactive(self, monkeypatch):
-        """Outside a review, the review var never affects other missions."""
-        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
-        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/bin/review-claude")
-        assert self.provider.binary() == "claude"
+    def test_binary_override_relative_rooted_at_koan_root(self, monkeypatch):
+        """A relative override path resolves against KOAN_ROOT, like the env path."""
+        monkeypatch.setenv("KOAN_ROOT", "/srv/koan")
+        p = ClaudeProvider(binary_path="bin/deep-claude")
+        assert p.binary() == "/srv/koan/bin/deep-claude"
 
-    def test_binary_review_override_precedence(self, monkeypatch):
-        """Review binary wins over KOAN_CLAUDE_CLI_PATH while a review runs."""
+    def test_binary_override_wins_over_env(self, monkeypatch):
+        """The per-instance override beats KOAN_CLAUDE_CLI_PATH."""
         monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/bin/default-claude")
-        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/bin/review-claude")
-        with review_cli_override():
-            assert self.provider.binary() == "/opt/bin/review-claude"
-        # And falls back to the default binary once the review context exits.
-        assert self.provider.binary() == "/opt/bin/default-claude"
+        p = ClaudeProvider(binary_path="/opt/bin/deep-claude")
+        assert p.binary() == "/opt/bin/deep-claude"
 
-    def test_binary_review_override_empty_falls_back(self, monkeypatch):
-        """An empty review var falls through to KOAN_CLAUDE_CLI_PATH."""
-        monkeypatch.setenv("KOAN_CLAUDE_CLI_PATH", "/opt/bin/default-claude")
-        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "   ")
-        with review_cli_override():
-            assert self.provider.binary() == "/opt/bin/default-claude"
-
-    def test_build_command_uses_review_binary_under_override(self, monkeypatch):
-        """The full command-building path resolves the review binary."""
+    def test_binary_override_flows_into_build_command(self, monkeypatch):
         monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
-        monkeypatch.setenv("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "/opt/bin/review-claude")
-        with review_cli_override():
-            cmd = self.provider.build_command(prompt="hello")
-        assert cmd[0] == "/opt/bin/review-claude"
+        p = ClaudeProvider(binary_path="/opt/bin/deep-claude")
+        cmd = p.build_command(prompt="hello")
+        assert cmd[0] == "/opt/bin/deep-claude"
         assert cmd[1:] == ["-p", "hello"]
 
     def test_name(self):
@@ -1172,3 +1161,150 @@ class TestSessionResume:
              patch("app.config.get_skip_permissions", return_value=True):
             cmd = build_full_command(prompt="test")
             assert "--resume" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Per-role provider selection (cli: section)
+# ---------------------------------------------------------------------------
+
+class TestRoleProviderSelection:
+    """Tests for get_provider_for_role / get_fallback_provider / resolve_role_provider."""
+
+    def setup_method(self):
+        reset_provider()
+
+    def teardown_method(self):
+        reset_provider()
+
+    def _patch_config(self, full_config):
+        """Patch every config-loading seam to return *full_config*."""
+        return [
+            patch("app.config._load_config", return_value=full_config),
+            patch("app.config._load_project_overrides", return_value={}),
+            patch("app.utils.load_config", return_value=full_config),
+        ]
+
+    def _run(self, full_config, fn):
+        patches = self._patch_config(full_config)
+        for p in patches:
+            p.start()
+        try:
+            return fn()
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_unset_role_returns_global_singleton(self):
+        """No cli: section → role provider IS the global singleton (parity)."""
+        cfg = {"cli_provider": "codex"}
+
+        def check():
+            glob = get_provider()
+            role = get_provider_for_role("mission")
+            assert role is glob
+            assert role.name == "codex"
+        self._run(cfg, check)
+
+    def test_custom_flavor_and_path(self):
+        """cli.review_mode: claude:/path → fresh claude instance with that binary."""
+        cfg = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/p/deep-claude"}},
+        }
+
+        def check():
+            rev = get_provider_for_role("review_mode")
+            assert rev.name == "claude"
+            assert rev.binary() == "/p/deep-claude"
+        self._run(cfg, check)
+
+    def test_does_not_poison_global_singleton(self):
+        """A path-bearing role instance must never replace the global singleton."""
+        cfg = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/p/deep-claude"}},
+        }
+
+        def check():
+            glob_before = get_provider()
+            rev = get_provider_for_role("review_mode")
+            assert rev is not glob_before
+            # Global identity + binary unchanged after the role call.
+            assert get_provider() is glob_before
+            assert get_provider().name == "codex"
+            assert get_provider().binary() == "codex"
+        self._run(cfg, check)
+
+    def test_same_flavor_no_path_reuses_singleton(self):
+        """A role naming the global flavor with no path reuses the singleton."""
+        cfg = {"cli_provider": "codex", "cli": {"default": {"mission": "codex"}}}
+
+        def check():
+            assert get_provider_for_role("mission") is get_provider()
+        self._run(cfg, check)
+
+    def test_fallback_provider_unset_returns_none(self):
+        cfg = {"cli_provider": "codex"}
+        self._run(cfg, lambda: None)
+        assert self._run(cfg, get_fallback_provider) is None
+
+    def test_fallback_provider_configured(self):
+        cfg = {"cli_provider": "codex", "cli": {"fallback": "claude:/p/deep-claude"}}
+
+        def check():
+            fb = get_fallback_provider()
+            assert fb is not None
+            assert fb.name == "claude"
+            assert fb.binary() == "/p/deep-claude"
+        self._run(cfg, check)
+
+    def test_resolve_role_provider_swaps_when_unavailable(self):
+        """Pre-flight: a missing role binary swaps to an available fallback."""
+        cfg = {
+            "cli_provider": "codex",
+            "cli": {
+                "default": {"review_mode": "claude:/nonexistent/deep-claude"},
+                "fallback": "codex",
+            },
+        }
+
+        def check():
+            with patch("shutil.which", side_effect=lambda b: None if "deep-claude" in b else "/usr/bin/" + b):
+                resolved = resolve_role_provider("review_mode")
+            assert resolved.name == "codex"
+        self._run(cfg, check)
+
+    def test_resolve_role_provider_unchanged_without_fallback(self):
+        """No fallback configured → return the (unavailable) role provider as-is."""
+        cfg = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/nonexistent/deep-claude"}},
+        }
+
+        def check():
+            with patch("shutil.which", side_effect=lambda b: None if "deep-claude" in b else "/usr/bin/" + b):
+                resolved = resolve_role_provider("review_mode")
+            assert resolved.name == "claude"
+            assert resolved.binary() == "/nonexistent/deep-claude"
+        self._run(cfg, check)
+
+    def test_describe_cli_roles_empty_when_unset(self):
+        """No cli: section → empty summary (no-op for the default setup)."""
+        from app.provider import describe_cli_roles
+        cfg = {"cli_provider": "codex"}
+        assert self._run(cfg, describe_cli_roles) == ""
+
+    def test_describe_cli_roles_lists_overrides_and_fallback(self):
+        from app.provider import describe_cli_roles
+        cfg = {
+            "cli_provider": "codex",
+            "cli": {
+                "default": {"review_mode": "claude:/opt/bin/deep-claude"},
+                "fallback": "claude",
+            },
+        }
+        summary = self._run(cfg, describe_cli_roles)
+        # Only the differing role is listed (mission/chat/etc stay on codex).
+        assert "review_mode→claude(deep-claude)" in summary
+        assert "fallback→claude" in summary
+        assert "mission→" not in summary

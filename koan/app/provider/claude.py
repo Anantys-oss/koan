@@ -12,31 +12,16 @@ class ClaudeProvider(CLIProvider):
     name = "claude"
 
     def binary(self) -> str:
-        # Review-specific binary wins *while a review is running*: it takes
-        # precedence over KOAN_CLAUDE_CLI_PATH, but only inside a
-        # review_cli_override() context, so other missions are untouched.
-        from app.provider import review_cli_override_active
-
-        if review_cli_override_active():
-            review_path = os.environ.get(
-                "KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "",
-            ).strip()
-            if review_path:
-                return review_path
+        # Per-role override (cli: flavor:path) wins when this instance was
+        # constructed with one — see provider.get_provider_for_role().
+        if self._binary_override:
+            return self._resolve_binary_path(self._binary_override)
+        # Otherwise the global custom binary, then the bare command. Both go
+        # through the shared resolver so KOAN_ROOT-relative paths stay portable.
         raw = os.environ.get("KOAN_CLAUDE_CLI_PATH", "").strip()
         if not raw:
             return "claude"
-        # Absolute path → as-is. Bare command name (no directory component)
-        # → leave for PATH lookup. Relative path → resolve against KOAN_ROOT
-        # so .env config is portable across installs/copies. Note the process
-        # CWD is KOAN_ROOT/koan (Makefile runs `cd koan`), not KOAN_ROOT, so a
-        # naive relative path would resolve to the wrong place.
-        if os.path.isabs(raw) or not os.path.dirname(raw):
-            return raw
-        root = os.environ.get("KOAN_ROOT", "").strip()
-        if root:
-            return os.path.normpath(os.path.join(root, raw))
-        return raw
+        return self._resolve_binary_path(raw)
 
     def supports_session_resume(self) -> bool:
         return True

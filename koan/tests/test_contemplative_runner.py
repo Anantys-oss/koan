@@ -211,7 +211,15 @@ class TestGetContemplativeFlags:
         mock_flags.return_value = "--model claude-sonnet-4-5-20250929"
         result = get_contemplative_flags()
         assert result == ["--model", "claude-sonnet-4-5-20250929"]
-        mock_flags.assert_called_once_with("contemplative")
+        mock_flags.assert_called_once_with("contemplative", project_name="")
+
+    @patch("app.config.get_claude_flags_for_role")
+    def test_forwards_project_name(self, mock_flags):
+        """Per-project cli.lightweight: project_name reaches the flag builder so
+        the contemplative model matches its (project-aware) binary."""
+        mock_flags.return_value = "--model sonnet"
+        get_contemplative_flags(project_name="my-toolkit")
+        mock_flags.assert_called_once_with("contemplative", project_name="my-toolkit")
 
     @patch("app.config.get_claude_flags_for_role")
     def test_empty_flags(self, mock_flags):
@@ -262,6 +270,26 @@ class TestRunContemplativeSession:
         assert result["output"] == "session output"
         mock_run_claude.assert_called_once_with(
             ["claude", "-p", "prompt"], cwd="/path/instance", timeout=300
+        )
+
+    @patch("app.claude_step.run_claude")
+    @patch("app.contemplative_runner.build_contemplative_command")
+    @patch("app.config.get_claude_flags_for_role", return_value="")
+    def test_session_threads_project_name_to_flags(
+        self, mock_role_flags, mock_cmd, mock_run_claude,
+    ):
+        """run_contemplative_session forwards project_name so the model flag
+        resolves against the project's lightweight provider (cli.lightweight),
+        matching the project-aware binary."""
+        mock_cmd.return_value = ["claude", "-p", "p"]
+        mock_run_claude.return_value = {"success": True, "output": "", "error": ""}
+        run_contemplative_session(
+            instance="/path/instance",
+            project_name="my-toolkit",
+            session_info="test",
+        )
+        mock_role_flags.assert_called_once_with(
+            "contemplative", project_name="my-toolkit"
         )
 
     @patch("app.claude_step.run_claude")

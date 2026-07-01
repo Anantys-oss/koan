@@ -225,6 +225,7 @@ def spawn_session(
         Session with subprocess started and registered.
     """
     from app.mission_runner import build_mission_command
+    from app.provider import get_provider_for_role
 
     # Create worktree
     wt = create_worktree(project_path, base_branch=base_branch)
@@ -236,11 +237,20 @@ def spawn_session(
     # Inject mission context into worktree CLAUDE.md
     inject_worktree_claude_md(wt.path, mission_text)
 
+    # Resolve the role's CLI provider (cli: section) once, so the command is
+    # BUILT and EXECUTED under the same provider — otherwise popen_cli would
+    # fall back to the global provider for stdin-rewrite and the invocation
+    # lock, mismatching a cross-provider role (e.g. cli.mission: codex under a
+    # global claude). Mirrors mission_executor._run_iteration.
+    effective_role = "review_mode" if autonomous_mode == "review" else "mission"
+    session_cli_provider = get_provider_for_role(effective_role, project_name)
+
     # Build CLI command
     cmd, cmd_cleanup_paths = build_mission_command(
         prompt=mission_text,
         autonomous_mode=autonomous_mode,
         project_name=project_name,
+        provider_override=session_cli_provider,
     )
 
     # Create temp files for stdout/stderr
@@ -276,6 +286,7 @@ def spawn_session(
         err_f = open(stderr_file, "w")  # noqa: SIM115
         proc, cli_cleanup = popen_cli(
             cmd,
+            provider=session_cli_provider,
             stdout=out_f,
             stderr=err_f,
             cwd=wt.path,

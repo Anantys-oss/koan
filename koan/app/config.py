@@ -15,7 +15,7 @@ Functions here call it via import to ensure mocks propagate correctly.
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 def _load_config() -> dict:
@@ -229,7 +229,10 @@ def _normalize_model_config(config: dict) -> dict:
     return normalized
 
 
-def get_model_config(project_name: str = "") -> dict:
+def get_model_config(
+    project_name: str = "",
+    role_providers: Optional[Dict[str, str]] = None,
+) -> dict:
     """Get model configuration from config.yaml with per-project overrides.
 
     Resolution order for each key:
@@ -245,6 +248,13 @@ def get_model_config(project_name: str = "") -> dict:
 
     Args:
         project_name: Optional project name for per-project overrides.
+        role_providers: Optional ``{role: provider_flavor}`` map. When ``None``
+            (the default), every role resolves its provider-specific section
+            against the single global provider — byte-for-byte the historical
+            behavior. When provided, each role's model resolves against ITS
+            provider's section (``models.<that-provider>.<role>``), so per-role
+            CLI selection (the ``cli:`` section) composes with per-provider model
+            blocks. Roles absent from the map fall back to the global provider.
 
     Returns:
         Dict with keys: mission, chat, lightweight, fallback, review_mode, reflect.
@@ -275,23 +285,33 @@ def get_model_config(project_name: str = "") -> dict:
     # Start with defaults, then apply default models
     result = {k: default_models.get(k, v) for k, v in defaults.items()}
 
-    # Apply provider-specific section per key
+    # Apply provider-specific section per key.
+    #   role_providers is None  → one global provider section for every key
+    #                             (historical behavior, exact parity).
+    #   role_providers given     → each role's model resolves against ITS
+    #                             provider's section (cli: per-role selection).
     try:
         from app.provider import get_provider_name
 
-        provider_name = get_provider_name()
-        # Try both hyphenated and underscored versions of the provider name
-        # Users can write nested keys as either "ollama-launch" or "ollama_launch"
-        provider_models = models_section.get(provider_name, {}) or {}
-        if not provider_models or not isinstance(provider_models, dict):
-            # Try underscore version if hyphenated didn't work
-            provider_key = provider_name.replace("-", "_")
-            provider_models = models_section.get(provider_key, {}) or {}
+        def _provider_section(pname: str) -> dict:
+            # Try both hyphenated and underscored forms of the provider name;
+            # users may write nested keys as "ollama-launch" or "ollama_launch".
+            section = models_section.get(pname, {}) or {}
+            if not section or not isinstance(section, dict):
+                section = models_section.get(pname.replace("-", "_"), {}) or {}
+            return section if isinstance(section, dict) else {}
 
-        if isinstance(provider_models, dict):
+        global_provider = get_provider_name()
+        if role_providers is None:
+            provider_models = _provider_section(global_provider)
             for key in defaults:
                 if key in provider_models:
                     result[key] = provider_models[key]
+        else:
+            for key in defaults:
+                section = _provider_section(role_providers.get(key, global_provider))
+                if key in section:
+                    result[key] = section[key]
     except Exception as e:
         print(f"[config] provider model section lookup failed: {e}", file=sys.stderr)
 
@@ -304,6 +324,107 @@ def get_model_config(project_name: str = "") -> dict:
                 result[key] = project_models[key]
 
     return result
+
+
+# Mission roles that the `cli:` section can route to a specific provider.
+# (`fallback` is a single section-wide provider, resolved separately.)
+_CLI_ROLES = ("mission", "chat", "lightweight", "review_mode", "reflect")
+
+
+def _parse_cli_value(raw: str) -> Tuple[str, str]:
+    """Parse a ``cli:`` value (``flavor`` or ``flavor:path``) into ``(flavor, path)``.
+
+    Splits on the FIRST colon so absolute paths containing extra colons survive.
+    The flavor is validated against the provider registry; an unknown flavor
+    logs a warning and returns ``("", "")`` so the caller falls through to the
+    global provider (a typo must never crash the agent loop). The path is
+    returned RAW — the provider resolves it (absolute / KOAN_ROOT-relative /
+    bare) in ``binary()`` via the shared ``_resolve_binary_path`` helper.
+    """
+    raw = str(raw or "").strip()
+    if not raw:
+        return ("", "")
+    flavor, sep, path = raw.partition(":")
+    flavor = flavor.strip().lower()
+    path = path.strip() if sep else ""
+    from app.provider import is_known_provider
+
+    if not is_known_provider(flavor):
+        print(
+            f"[config] cli: unknown provider flavor {flavor!r} (value {raw!r}); "
+            "ignoring and using the global provider",
+            file=sys.stderr,
+        )
+        return ("", "")
+    return (flavor, path)
+
+
+def get_cli_config(project_name: str = "") -> Dict[str, Tuple[str, str]]:
+    """Resolve the CLI provider for each mission role from the ``cli:`` section.
+
+    Returns ``{role: (flavor, path)}`` for every role in :data:`_CLI_ROLES`.
+
+    Resolution per role (highest priority first):
+      1. ``projects.yaml`` ``cli.<role>`` (per-project override, flat)
+      2. ``config.yaml`` ``cli.default.<role>``
+      3. the global provider (``get_provider_name()``) with no path
+
+    Absence parity: when no ``cli:`` section is configured, every role resolves
+    to ``(get_provider_name(), "")`` — byte-for-byte today's single-global-provider
+    behavior. This is the backward-compat contract.
+    """
+    from app.provider import get_provider_name
+
+    global_provider = get_provider_name()
+
+    config = _load_config()
+    cli_section = config.get("cli", {})
+    if not isinstance(cli_section, dict):
+        cli_section = {}
+    default_section = cli_section.get("default", {})
+    if not isinstance(default_section, dict):
+        default_section = {}
+
+    project_overrides = _load_project_overrides(project_name)
+    project_cli = project_overrides.get("cli", {})
+    if not isinstance(project_cli, dict):
+        project_cli = {}
+
+    result: Dict[str, Tuple[str, str]] = {}
+    for role in _CLI_ROLES:
+        if role in project_cli:
+            raw = project_cli[role]
+        elif role in default_section:
+            raw = default_section[role]
+        else:
+            raw = ""
+        flavor, path = _parse_cli_value(raw)
+        result[role] = (flavor, path) if flavor else (global_provider, "")
+    return result
+
+
+def get_cli_fallback(project_name: str = "") -> Tuple[str, str]:
+    """Resolve the single section-wide fallback provider (``cli.fallback``).
+
+    Returns ``(flavor, path)``, or ``("", "")`` when no fallback is configured
+    (meaning: no provider-fallback behavior). A per-project ``cli.fallback``
+    overrides the global one. Both ``cli.fallback`` and ``cli.default.fallback``
+    are accepted for forgiveness.
+    """
+    project_overrides = _load_project_overrides(project_name)
+    project_cli = project_overrides.get("cli", {})
+    if isinstance(project_cli, dict) and project_cli.get("fallback"):
+        return _parse_cli_value(project_cli["fallback"])
+
+    config = _load_config()
+    cli_section = config.get("cli", {})
+    if isinstance(cli_section, dict):
+        if cli_section.get("fallback"):
+            return _parse_cli_value(cli_section["fallback"])
+        default_section = cli_section.get("default", {})
+        if isinstance(default_section, dict) and default_section.get("fallback"):
+            return _parse_cli_value(default_section["fallback"])
+    return ("", "")
 
 
 def get_mcp_configs(project_name: str = "") -> List[str]:
@@ -1555,19 +1676,36 @@ def get_claude_flags_for_role(
     Returns:
         Space-separated CLI flags string (may be empty)
     """
-    from app.cli_provider import get_provider
+    from app.cli_provider import get_provider_for_role
 
-    models = get_model_config(project_name)
-    provider = get_provider()
+    # Map the flag-builder role to a cli: role for provider selection.
+    # A mission in REVIEW mode is driven by the review_mode provider; a
+    # contemplative session by the lightweight provider.
+    if role == "mission" and autonomous_mode == "review":
+        cli_role = "review_mode"
+    elif role == "contemplative":
+        cli_role = "lightweight"
+    else:
+        cli_role = role
+
+    provider = get_provider_for_role(cli_role, project_name)
+    # Resolve models against the role's provider section (and the fallback
+    # model against the same provider). When no cli: section is configured this
+    # resolves every key against the global provider — identical to before.
+    models = get_model_config(
+        project_name,
+        role_providers={cli_role: provider.name, "fallback": provider.name},
+    )
 
     model = ""
     fallback = ""
     disallowed: Optional[List[str]] = None
 
     if role == "mission":
-        model = models["mission"]
         if autonomous_mode == "review" and models["review_mode"]:
             model = models["review_mode"]
+        else:
+            model = models["mission"]
         fallback = models["fallback"]
         if autonomous_mode == "review":
             disallowed = ["Bash", "Edit", "Write"]

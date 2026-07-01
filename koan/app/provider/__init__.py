@@ -21,7 +21,6 @@ Package structure:
 """
 
 import contextlib
-import contextvars
 import json
 import os
 import re
@@ -117,6 +116,11 @@ def reset_provider():
     _cached_provider_name = ""
 
 
+def is_known_provider(name: str) -> bool:
+    """True if *name* is a registered provider flavor (claude, codex, ...)."""
+    return str(name or "").strip().lower() in _PROVIDERS
+
+
 def get_provider_name() -> str:
     """Determine which CLI provider to use.
 
@@ -166,6 +170,96 @@ def get_provider_by_name(name: str) -> CLIProvider:
     return _PROVIDERS[provider_name]()
 
 
+def get_provider_for_role(role: str, project_name: str = "") -> CLIProvider:
+    """Return the provider instance for a mission role (the ``cli:`` section).
+
+    When the role resolves to the global provider with no custom binary path
+    (the parity case — including when no ``cli:`` section is configured), the
+    GLOBAL cached singleton is returned, so role-less behavior is byte-for-byte
+    unchanged. When the role names a different flavor and/or a ``flavor:path``,
+    a FRESH instance of that flavor is constructed carrying the path as a
+    per-instance binary override.
+
+    Role-bearing instances are NEVER written to ``_cached_provider`` — the
+    global singleton's identity must not be poisoned by a path-bearing instance.
+    """
+    from app.config import get_cli_config
+
+    try:
+        flavor, path = get_cli_config(project_name).get(role, ("", ""))
+    except Exception as e:  # never let config resolution break execution
+        print(f"[provider] cli role resolution failed for {role!r}: {e}", file=sys.stderr)
+        return get_provider()
+
+    if not flavor or flavor not in _PROVIDERS:
+        return get_provider()
+    # Same flavor as the global default and no custom path → reuse the singleton.
+    if flavor == get_provider_name() and not path:
+        return get_provider()
+    return _PROVIDERS[flavor](binary_path=path)
+
+
+def get_fallback_provider(project_name: str = "") -> Optional[CLIProvider]:
+    """Return the configured ``cli.fallback`` provider instance, or ``None``.
+
+    Used only for launch/auth-failure recovery (see ``mission_executor`` and the
+    ``run_command*`` helpers). Returns ``None`` when no fallback is configured.
+    Like :func:`get_provider_for_role`, never writes the global cache.
+    """
+    from app.config import get_cli_fallback
+
+    try:
+        flavor, path = get_cli_fallback(project_name)
+    except Exception as e:
+        print(f"[provider] cli fallback resolution failed: {e}", file=sys.stderr)
+        return None
+    if not flavor or flavor not in _PROVIDERS:
+        return None
+    return _PROVIDERS[flavor](binary_path=path)
+
+
+def resolve_role_provider(model_key: str, project_name: str = "") -> CLIProvider:
+    """Provider for a role, pre-flight-swapped to ``cli.fallback`` if unavailable.
+
+    Used by the stateless ``run_command*`` helpers: when the role's CLI binary
+    is not installed/resolvable (the dominant "cli not working" case — e.g. a
+    wrong ``flavor:path``), and a different, available ``cli.fallback`` is
+    configured, return the fallback up front. When no fallback applies, returns
+    the role provider unchanged so the call fails normally. (The stateful
+    mission path additionally recovers from auth failures post-run via
+    ``mission_executor._maybe_fallback_provider_rerun``.)
+    """
+    provider = get_provider_for_role(model_key, project_name)
+    if provider.is_available():
+        return provider
+    fb = get_fallback_provider(project_name)
+    if fb is not None and fb.binary() != provider.binary() and fb.is_available():
+        print(
+            f"[provider] role {model_key!r} CLI {provider.name!r} "
+            f"({provider.binary()}) unavailable — using fallback {fb.name!r}",
+            file=sys.stderr,
+        )
+        return fb
+    return provider
+
+
+def _resolve_role_provider_and_models(model_key: str, project_name: str):
+    """Resolve a role's provider (with launch-fallback) plus its model dict.
+
+    Shared by the stateless ``run_command`` / ``run_command_streaming`` helpers:
+    returns ``(provider, models)`` where ``models`` is resolved against that
+    provider's section for ``model_key`` and the fallback model.
+    """
+    from app.config import get_model_config
+
+    provider = resolve_role_provider(model_key, project_name)
+    models = get_model_config(
+        project_name,
+        role_providers={model_key: provider.name, "fallback": provider.name},
+    )
+    return provider, models
+
+
 def get_cli_binary() -> str:
     """Get the CLI binary command for the configured provider.
 
@@ -186,33 +280,18 @@ def get_cli_binary_name() -> str:
     return path.rstrip("/").rsplit("/", 1)[-1] if path else ""
 
 
-def get_review_cli_binary_name() -> str:
-    """Return the binary basename from ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH``, or '' if unset.
-
-    Mirrors :func:`get_cli_binary_name` for the review-scoped override.
-    Surfacing its basename in banners and ``/status`` lets an operator confirm
-    a review-only binary is configured — the sibling ``KOAN_CLAUDE_CLI_PATH``
-    advertises itself the same way — rather than a silent config with no
-    feedback.
-    """
-    path = os.environ.get("KOAN_CLAUDE_CLI_FOR_REVIEW_PATH", "").strip()
-    return path.rstrip("/").rsplit("/", 1)[-1] if path else ""
-
-
 def get_provider_display(name: str = "") -> str:
     """Provider name for display, with the custom CLI binary flavor appended.
 
-    Returns ``"<name>"`` or ``"<name> (<binary>)"`` when
-    ``KOAN_CLAUDE_CLI_PATH`` points at a binary whose basename differs from
-    the provider name (e.g. ``claude (ollama-claude)``). When
-    ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`` is set, its basename is appended as a
-    ``review:`` hint (e.g. ``claude (ollama-claude, review: review-claude)``)
-    so a review-only binary is observable the same way as the default one.
-    Both flavors are suppressed when unset (or identical, for the default
-    binary), so this is a no-op for non-Claude providers. When *name* is empty
-    the configured provider is resolved via :func:`get_provider_name`. Single
-    source of truth for the provider line shown by the startup banner and
-    ``/status``.
+    Returns ``"<name>"`` or ``"<name> (<binary>)"`` when ``KOAN_CLAUDE_CLI_PATH``
+    points at a binary whose basename differs from the provider name (e.g.
+    ``claude (ollama-claude)``). Suppressed when unset or identical, so this is
+    a no-op for non-Claude providers. When *name* is empty the configured
+    provider is resolved via :func:`get_provider_name`. Single source of truth
+    for the global provider line shown by the startup banner and ``/status``.
+
+    Per-role provider overrides (the ``cli:`` config section) are summarized
+    separately by :func:`describe_cli_roles`.
     """
     if not name:
         name = get_provider_name()
@@ -220,51 +299,45 @@ def get_provider_display(name: str = "") -> str:
     binary = get_cli_binary_name()
     if binary and binary != name:
         parts.append(binary)
-    review = get_review_cli_binary_name()
-    if review:
-        parts.append(f"review: {review}")
     if parts:
         return f"{name} ({', '.join(parts)})"
     return name
 
 
-# ---------------------------------------------------------------------------
-# Review-scoped CLI binary override
-# ---------------------------------------------------------------------------
+def describe_cli_roles(project_name: str = "") -> str:
+    """Compact summary of per-role provider overrides for ``/status`` and the banner.
 
-# When active, ClaudeProvider.binary() prefers KOAN_CLAUDE_CLI_FOR_REVIEW_PATH
-# over KOAN_CLAUDE_CLI_PATH, so a review-specific Claude binary can be pinned
-# without affecting other missions. A ContextVar (not a plain flag) so the
-# override is confined to the review call subtree and auto-resets on exit, even
-# if reviews ever run concurrently. Activated only by review runners — see
-# review_runner._run_claude_review.
-_REVIEW_CLI_OVERRIDE: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "koan_review_cli_override", default=False,
-)
-
-
-def review_cli_override_active() -> bool:
-    """True when the current context should use the review-specific CLI binary.
-
-    This is the gate ``ClaudeProvider.binary()`` checks: the review binary is
-    consulted only while a review is running, so ordinary missions are
-    unaffected even when ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`` is set.
+    Returns e.g. ``"mission→codex, review_mode→deep-claude, fallback→claude"`` listing
+    only roles whose resolved provider/binary differs from the global default, plus
+    the ``cli.fallback`` provider if set. Empty string when no ``cli:`` section is
+    configured, so it stays a no-op for the default setup.
     """
-    return _REVIEW_CLI_OVERRIDE.get()
-
-
-@contextlib.contextmanager
-def review_cli_override():
-    """Within this block, the Claude provider prefers the review CLI binary.
-
-    No-op for non-Claude providers and when ``KOAN_CLAUDE_CLI_FOR_REVIEW_PATH``
-    is unset (binary() then falls through to its normal resolution).
-    """
-    token = _REVIEW_CLI_OVERRIDE.set(True)
     try:
-        yield
-    finally:
-        _REVIEW_CLI_OVERRIDE.reset(token)
+        from app.config import get_cli_config, get_cli_fallback
+
+        resolved = get_cli_config(project_name)
+    except Exception:
+        return ""
+
+    def _label(flavor: str, path: str) -> str:
+        if not path:
+            return flavor
+        return f"{flavor}({path.rstrip('/').rsplit('/', 1)[-1]})"
+
+    global_name = get_provider_name()
+    parts: List[str] = []
+    for role in ("mission", "chat", "lightweight", "review_mode", "reflect"):
+        flavor, path = resolved.get(role, (global_name, ""))
+        if flavor == global_name and not path:
+            continue
+        parts.append(f"{role}→{_label(flavor, path)}")
+    try:
+        fb_flavor, fb_path = get_cli_fallback(project_name)
+    except Exception:
+        fb_flavor, fb_path = "", ""
+    if fb_flavor:
+        parts.append(f"fallback→{_label(fb_flavor, fb_path)}")
+    return ", ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +401,7 @@ def build_full_command(
     system_prompt_file: str = "",
     effort: str = "",
     resume_session_id: str = "",
+    provider: Optional[CLIProvider] = None,
 ) -> List[str]:
     """Build a complete CLI command for the configured provider.
 
@@ -344,13 +418,17 @@ def build_full_command(
         resume_session_id: When set and the provider supports session
             resumption, continues the given session instead of starting
             fresh.
+        provider: Explicit provider instance to build for. ``None`` (default)
+            uses the global :func:`get_provider`. Pass a per-role instance
+            (from :func:`get_provider_for_role`) to build a command for a
+            specific mission role's CLI / custom binary.
 
     Automatically reads ``skip_permissions`` from config.yaml so all
     callers get the flag without needing changes.
     """
     from app.config import get_skip_permissions
 
-    return get_provider().build_command(
+    return (provider or get_provider()).build_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
@@ -429,6 +507,7 @@ def build_full_command_managed(
     resume_session_id: str = "",
     system_prompt_dir: Optional[str] = None,
     system_prompt_container_dir: Optional[str] = None,
+    provider: Optional[CLIProvider] = None,
 ) -> Tuple[List[str], List[str]]:
     """Build a CLI command, routing large system prompts through a temp file.
 
@@ -458,8 +537,9 @@ def build_full_command_managed(
         plugin_dirs=plugin_dirs,
         effort=effort,
         resume_session_id=resume_session_id,
+        provider=provider,
     )
-    if system_prompt and get_provider().supports_system_prompt_file():
+    if system_prompt and (provider or get_provider()).supports_system_prompt_file():
         host_path, cmd_path = _write_system_prompt_file(
             system_prompt,
             host_dir=system_prompt_dir,
@@ -521,12 +601,18 @@ def run_command(
     max_turns: int = 10,
     timeout: int = 300,
     max_turns_source: Optional[str] = "skill_max_turns",
+    project_name: str = "",
 ) -> str:
     """Build and run a CLI command, returning stripped stdout.
 
     Higher-level helper for runner modules that need to invoke the
     configured CLI provider with a prompt and get back text output.
     Combines build_full_command + subprocess execution + error handling.
+
+    The provider is resolved per role: ``model_key`` selects both the model and
+    the CLI provider (the ``cli:`` section). Pass ``project_name`` to honor
+    per-project ``cli:`` overrides; omitting it uses the section/global
+    resolution (which matches the historical behavior for these helpers).
 
     When the CLI hits its max-turns limit, the partial output is returned
     instead of raising — the caller can still extract useful results from
@@ -536,21 +622,21 @@ def run_command(
         RuntimeError: If the command exits with non-zero code (except
             max-turns, which returns partial output).
     """
-    from app.config import get_model_config
-
-    models = get_model_config()
+    provider, models = _resolve_role_provider_and_models(model_key, project_name)
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
         model=models.get(model_key, ""),
         fallback=models.get("fallback", ""),
         max_turns=max_turns,
+        provider=provider,
     )
 
     from app.cli_exec import run_cli_with_retry
 
     result = run_cli_with_retry(
         cmd,
+        provider=provider,
         capture_output=True, text=True, timeout=timeout,
         cwd=project_path,
     )
@@ -912,6 +998,7 @@ def run_command_streaming(
     max_turns: int = 10,
     timeout: int = 300,
     max_turns_source: Optional[str] = "skill_max_turns",
+    project_name: str = "",
 ) -> str:
     """Build and run a CLI command, streaming progress to stdout in real time.
 
@@ -935,10 +1022,10 @@ def run_command_streaming(
         RuntimeError: If the command exits with non-zero code (except
             max-turns, which returns partial output).
     """
-    from app.config import get_model_config
-
-    models = get_model_config()
-    provider = get_provider()
+    # Resolve the CLI provider for this role (cli: section), swapping to the
+    # cli.fallback up front if the role's binary is unavailable. An explicit
+    # `model` arg still wins over the role-derived model.
+    provider, models = _resolve_role_provider_and_models(model_key, project_name)
     use_stream_json = provider.supports_stream_json()
     cmd = build_full_command(
         prompt=prompt,
@@ -947,6 +1034,7 @@ def run_command_streaming(
         fallback=models.get("fallback", ""),
         max_turns=max_turns,
         output_format="stream-json" if use_stream_json else "",
+        provider=provider,
     )
     last_message_path: Optional[str] = None
     if provider.supports_last_message_file():

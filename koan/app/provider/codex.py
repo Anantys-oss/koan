@@ -87,10 +87,12 @@ class CodexProvider(CLIProvider):
     name = "codex"
 
     def binary(self) -> str:
+        if self._binary_override:
+            return self._resolve_binary_path(self._binary_override)
         return "codex"
 
     def is_available(self) -> bool:
-        return shutil.which("codex") is not None
+        return shutil.which(self.binary()) is not None
 
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
         # Codex equivalent: bypass approvals and sandbox entirely.

@@ -293,6 +293,7 @@ def build_mission_command(
     tier: Optional[str] = None,
     system_prompt_dir: Optional[str] = None,
     system_prompt_container_dir: Optional[str] = None,
+    provider_override: Optional["CLIProvider"] = None,
 ) -> Tuple[List[str], List[str]]:
     """Build the CLI command for mission execution (provider-agnostic).
 
@@ -321,7 +322,7 @@ def build_mission_command(
         from app.config import get_effort_for_mode
     except ImportError:
         get_effort_for_mode = lambda _mode="": ""  # noqa: E731
-    from app.provider import build_full_command_managed
+    from app.provider import build_full_command_managed, get_provider_for_role
 
     # Get mission tools (comma-separated list)
     # REVIEW mode: enforce read-only at tool level (no Bash/Write/Edit)
@@ -331,8 +332,22 @@ def build_mission_command(
         tools_str = get_mission_tools(project_name)
         tools_list = [t.strip() for t in tools_str.split(",") if t.strip()]
 
-    # Get model configuration with per-project overrides
-    models = get_model_config(project_name)
+    # Resolve the CLI provider for this mission's role (cli: section). A review
+    # runs on the review_mode provider; everything else on the mission provider.
+    # provider_override is supplied by the launch/auth fallback re-run.
+    effective_role = "review_mode" if autonomous_mode == "review" else "mission"
+    provider = provider_override or get_provider_for_role(effective_role, project_name)
+
+    # Get model configuration with per-project overrides, resolved against the
+    # role's provider (models.<provider>.<role>) so per-role CLI + model compose.
+    models = get_model_config(
+        project_name,
+        role_providers={
+            "mission": provider.name,
+            "review_mode": provider.name,
+            "fallback": provider.name,
+        },
+    )
     model = models["mission"]
     if autonomous_mode == "review" and models["review_mode"]:
         # REVIEW mode takes precedence over tier override (safety > cost)
@@ -389,13 +404,14 @@ def build_mission_command(
         effort=effort,
         system_prompt_dir=system_prompt_dir,
         system_prompt_container_dir=system_prompt_container_dir,
+        provider=provider,
     )
 
     # Append thinking args directly — kept outside build_full_command so
-    # the provider stack doesn't need thinking-specific parameters.
+    # the provider stack doesn't need thinking-specific parameters. Use the
+    # same role-resolved provider so the flag matches the binary being run.
     if thinking_enabled:
-        from app.provider import get_provider
-        cmd.extend(get_provider().build_thinking_args(
+        cmd.extend(provider.build_thinking_args(
             enabled=True, budget_tokens=thinking_budget,
         ))
 

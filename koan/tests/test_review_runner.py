@@ -4582,7 +4582,8 @@ class TestRunClaudeReviewModelOverride:
 
         _, kwargs = mock_run.call_args
         assert kwargs.get("model") == "review-model"
-        assert kwargs.get("model_key") == "mission"
+        # The review path resolves its CLI via the "review_mode" role (cli:).
+        assert kwargs.get("model_key") == "review_mode"
 
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "", "mission": "mission-model"})
@@ -4598,7 +4599,152 @@ class TestRunClaudeReviewModelOverride:
 
         _, kwargs = mock_run.call_args
         assert kwargs.get("model") == "mission-model"
-        assert kwargs.get("model_key") == "mission"
+        # The review path resolves its CLI via the "review_mode" role (cli:).
+        assert kwargs.get("model_key") == "review_mode"
+
+
+class TestReviewBinaryRouting:
+    """End-to-end: the review subprocess binary follows cli.review_mode.
+
+    Closes the verification gap from PR #2251 review (Important #1): proves the
+    review *binary*, not just the model_key, routes through the review_mode
+    provider — replacing KOAN_CLAUDE_CLI_FOR_REVIEW_PATH.
+    """
+
+    def test_review_command_uses_cli_review_mode_binary(self):
+        from unittest.mock import MagicMock, patch
+        import app.provider as provider
+        from app.review_runner import _run_claude_review
+
+        # Global provider is codex; reviews are pinned to a custom claude binary.
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "skip_permissions": False,
+        }
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["cmd"] = cmd
+            captured["provider"] = provider
+            proc = MagicMock()
+            stdout = MagicMock()
+            stdout.__iter__.return_value = iter([])  # no stream output
+            proc.stdout = stdout
+            proc.stderr.read.return_value = ""
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc, (lambda: None)
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            _run_claude_review("review this", "/tmp/project")
+
+        # The command that ran is the cli.review_mode binary, and popen_cli
+        # received the matching review_mode provider instance.
+        assert captured["cmd"][0] == "/opt/review-claude"
+        assert captured["provider"].name == "claude"
+        assert captured["provider"].binary() == "/opt/review-claude"
+
+    def test_review_model_resolves_from_review_provider_section(self):
+        """The review --model comes from models.<review_provider>.review_mode,
+        not the global provider's section (PR #2251 comment-4848143029)."""
+        from unittest.mock import MagicMock, patch
+        import app.provider as provider
+        from app.review_runner import _run_claude_review
+
+        # Global codex; reviews pinned to Claude. The review model must be the
+        # Claude review_mode model (opus), NOT the codex one.
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "models": {
+                "default": {"review_mode": ""},
+                "codex": {"review_mode": "codex-WRONG"},
+                "claude": {"review_mode": "opus"},
+            },
+            "skip_permissions": False,
+        }
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["cmd"] = cmd
+            proc = MagicMock()
+            stdout = MagicMock()
+            stdout.__iter__.return_value = iter([])
+            proc.stdout = stdout
+            proc.stderr.read.return_value = ""
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc, (lambda: None)
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            _run_claude_review("review this", "/tmp/project")
+
+        cmd = captured["cmd"]
+        assert "--model" in cmd
+        assert cmd[cmd.index("--model") + 1] == "opus"
+        assert "codex-WRONG" not in cmd
+
+    def test_review_attribution_uses_review_provider(self):
+        """The footer attribution (provider + model) reflects the review_mode
+        provider, not the global one (PR #2251 comment-4848512613)."""
+        from unittest.mock import patch
+        import app.provider as provider
+        from app.review_runner import _review_attribution
+
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "models": {
+                "codex": {"review_mode": "codex-WRONG"},
+                "claude": {"review_mode": "opus"},
+            },
+        }
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full):
+            provider.reset_provider()
+            name, model = _review_attribution()
+        assert name == "claude"
+        assert model == "opus"
+
+    def test_per_project_cli_review_mode_applies(self):
+        """A per-project cli.review_mode override routes the review binary."""
+        from unittest.mock import MagicMock, patch
+        import app.provider as provider
+        from app.review_runner import _run_claude_review
+
+        full = {"cli_provider": "codex", "skip_permissions": False}
+        project_overrides = {"cli": {"review_mode": "claude:/opt/proj-review-claude"}}
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["cmd"] = cmd
+            proc = MagicMock()
+            stdout = MagicMock()
+            stdout.__iter__.return_value = iter([])
+            proc.stdout = stdout
+            proc.stderr.read.return_value = ""
+            proc.returncode = 0
+            proc.wait.return_value = 0
+            return proc, (lambda: None)
+
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value=project_overrides), \
+             patch("app.utils.load_config", return_value=full), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            provider.reset_provider()
+            _run_claude_review("review this", "/tmp/project", project_name="myproj")
+
+        assert captured["cmd"][0] == "/opt/proj-review-claude"
 
 
 # ---------------------------------------------------------------------------
@@ -5978,6 +6124,37 @@ class TestRunBotCommentTriage:
         skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
         replies = _run_bot_comment_triage(bot_comments, "diff", skill_dir)
         assert replies == []
+
+    @patch("app.review_runner._run_claude_review")
+    def test_forwards_project_name_to_claude_review(self, mock_claude):
+        """Per-project cli.review_mode is honored: project_name reaches the review CLI."""
+        from app.review_runner import _run_bot_comment_triage
+        mock_claude.return_value = ("[]", "")
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+        _run_bot_comment_triage(
+            [{"id": 1, "body": "x", "path": "a.py", "line": 1}],
+            "diff", skill_dir, project_name="my-toolkit",
+        )
+        _, kwargs = mock_claude.call_args
+        assert kwargs["project_name"] == "my-toolkit"
+
+
+# ---------------------------------------------------------------------------
+# Silent-failure-hunter pass — project_name threading
+# ---------------------------------------------------------------------------
+
+class TestRunErrorHunter:
+    """Tests for _run_error_hunter (silent-failure-hunter pass)."""
+
+    @patch("app.review_runner._run_claude_review")
+    def test_forwards_project_name_to_claude_review(self, mock_claude):
+        """Per-project cli.review_mode is honored on the error-hunter pass too."""
+        from app.review_runner import _run_error_hunter
+        mock_claude.return_value = ("", "boom")
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+        _run_error_hunter("diff", "/tmp/proj", skill_dir, project_name="my-toolkit")
+        _, kwargs = mock_claude.call_args
+        assert kwargs["project_name"] == "my-toolkit"
 
 
 # ---------------------------------------------------------------------------

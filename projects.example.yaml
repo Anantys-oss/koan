@@ -106,6 +106,17 @@ defaults:
   #   mission: ""
   #   chat: ""
 
+  # Per-role CLI provider overrides — pick a provider (and optional custom
+  # binary) per mission role for this project, overriding the global `cli:`
+  # section in config.yaml. Flat role -> `flavor` or `flavor:path` (path is
+  # absolute or relative to KOAN_ROOT). Plus an optional single `fallback`.
+  # The role's model still resolves against that provider's models.<provider>
+  # block. See docs/providers/claude.md.
+  # cli:
+  #   mission: codex
+  #   review_mode: claude:/opt/bin/review-claude
+  #   fallback: claude
+
   # Tool restrictions — control which tools are available per project.
   # Keys: mission (for autonomous work), chat (for Telegram conversations).
   # Useful for restricting write access on certain repos.

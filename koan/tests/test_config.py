@@ -1198,6 +1198,8 @@ class TestGetContemplativeChanceInvalidConfig:
 
 
 class TestGetClaudeFlagsForRole:
+    # The role provider is resolved via get_provider_for_role (cli: section);
+    # patch that and inspect the resolved provider's build_extra_flags call.
     def test_mission_role(self):
         from app.config import get_claude_flags_for_role
         with _mock_config({}), \
@@ -1205,7 +1207,7 @@ class TestGetClaudeFlagsForRole:
                  "mission": "sonnet", "chat": "haiku", "lightweight": "haiku",
                  "fallback": "opus", "review_mode": "",
              }), \
-             patch("app.cli_provider.get_provider") as mock_prov:
+             patch("app.cli_provider.get_provider_for_role") as mock_prov:
             mock_prov.return_value.build_extra_flags.return_value = ["--model", "sonnet", "--fallback", "opus"]
             result = get_claude_flags_for_role("mission")
             mock_prov.return_value.build_extra_flags.assert_called_once_with(
@@ -1220,7 +1222,7 @@ class TestGetClaudeFlagsForRole:
                  "mission": "sonnet", "chat": "haiku", "lightweight": "haiku",
                  "fallback": "opus", "review_mode": "haiku",
              }), \
-             patch("app.cli_provider.get_provider") as mock_prov:
+             patch("app.cli_provider.get_provider_for_role") as mock_prov:
             mock_prov.return_value.build_extra_flags.return_value = []
             get_claude_flags_for_role("mission", autonomous_mode="review")
             call_kwargs = mock_prov.return_value.build_extra_flags.call_args[1]
@@ -1234,7 +1236,7 @@ class TestGetClaudeFlagsForRole:
                  "mission": "sonnet", "chat": "haiku", "lightweight": "haiku",
                  "fallback": "opus", "review_mode": "",
              }), \
-             patch("app.cli_provider.get_provider") as mock_prov:
+             patch("app.cli_provider.get_provider_for_role") as mock_prov:
             mock_prov.return_value.build_extra_flags.return_value = ["--model", "haiku"]
             get_claude_flags_for_role("contemplative")
             call_kwargs = mock_prov.return_value.build_extra_flags.call_args[1]
@@ -1248,7 +1250,7 @@ class TestGetClaudeFlagsForRole:
                  "mission": "sonnet", "chat": "opus", "lightweight": "haiku",
                  "fallback": "sonnet", "review_mode": "",
              }), \
-             patch("app.cli_provider.get_provider") as mock_prov:
+             patch("app.cli_provider.get_provider_for_role") as mock_prov:
             mock_prov.return_value.build_extra_flags.return_value = []
             get_claude_flags_for_role("chat")
             call_kwargs = mock_prov.return_value.build_extra_flags.call_args[1]
@@ -1263,7 +1265,7 @@ class TestGetClaudeFlagsForRole:
                  "mission": "sonnet", "chat": "haiku", "lightweight": "haiku",
                  "fallback": "opus", "review_mode": "",
              }), \
-             patch("app.cli_provider.get_provider") as mock_prov:
+             patch("app.cli_provider.get_provider_for_role") as mock_prov:
             mock_prov.return_value.build_extra_flags.return_value = []
             result = get_claude_flags_for_role("lightweight")
             call_kwargs = mock_prov.return_value.build_extra_flags.call_args[1]
@@ -1278,10 +1280,12 @@ class TestGetClaudeFlagsForRole:
                  "mission": "sonnet", "chat": "haiku", "lightweight": "haiku",
                  "fallback": "", "review_mode": "",
              }) as mock_models, \
-             patch("app.cli_provider.get_provider") as mock_prov:
+             patch("app.cli_provider.get_provider_for_role") as mock_prov:
             mock_prov.return_value.build_extra_flags.return_value = []
             get_claude_flags_for_role("mission", project_name="myapp")
-            mock_models.assert_called_once_with("myapp")
+            # project_name is forwarded as the first positional arg (the
+            # role_providers kwarg is an implementation detail).
+            assert mock_models.call_args.args[0] == "myapp"
 
     def test_mission_review_mode_empty_uses_mission_model(self):
         from app.config import get_claude_flags_for_role
@@ -1290,7 +1294,7 @@ class TestGetClaudeFlagsForRole:
                  "mission": "sonnet", "chat": "haiku", "lightweight": "haiku",
                  "fallback": "opus", "review_mode": "",
              }), \
-             patch("app.cli_provider.get_provider") as mock_prov:
+             patch("app.cli_provider.get_provider_for_role") as mock_prov:
             mock_prov.return_value.build_extra_flags.return_value = []
             get_claude_flags_for_role("mission", autonomous_mode="review")
             call_kwargs = mock_prov.return_value.build_extra_flags.call_args[1]

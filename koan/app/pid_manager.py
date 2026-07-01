@@ -710,12 +710,16 @@ def _show_startup_banner(koan_root: Path, provider: str) -> None:
     """
     try:
         from app.banners import print_hero_banner
-        from app.provider import get_provider_display
+        from app.provider import describe_cli_roles, get_provider_display
         from app.startup_info import gather_startup_info
         info = gather_startup_info(koan_root)
         # Show the alternate CLI binary flavor (KOAN_CLAUDE_CLI_PATH) next to
         # the provider, mirroring /status — e.g. "claude (ollama-claude)".
         info["provider"] = get_provider_display(provider)
+        # Append per-role provider overrides (cli: section) when configured.
+        roles = describe_cli_roles()
+        if roles:
+            info["provider"] += f" [{roles}]"
         print_hero_banner(info)
     except Exception as e:
         # Banner is cosmetic — log but don't block startup

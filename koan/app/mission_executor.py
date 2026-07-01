@@ -332,6 +332,7 @@ def _maybe_retry_mission(
     run_num: int,
     has_mission: bool,
     provider_name: str = "",
+    provider=None,
 ) -> tuple:
     """Attempt a single retry if the CLI error is transient.
 
@@ -386,7 +387,7 @@ def _maybe_retry_mission(
         claude_exit,
         stdout_text,
         stderr_text,
-        provider_name=provider_name,
+        provider_name=(provider.name if provider is not None else provider_name),
     )
     log("error", f"CLI error classified as {category.value} (exit={claude_exit})")
 
@@ -415,9 +416,149 @@ def _maybe_retry_mission(
     retry_exit = _run.run_claude_task(
         cmd, stdout_file, stderr_file, cwd=project_path,
         instance_dir=instance, project_name=project_name, run_num=run_num,
+        provider=provider,
     )
     log("koan", f"Mission retry exit_code={retry_exit}")
     return retry_exit, stdout_file, stderr_file
+
+
+def _maybe_fallback_provider_rerun(
+    *,
+    claude_exit: int,
+    stdout_file: str,
+    stderr_file: str,
+    project_path: str,
+    pre_head: str,
+    instance: str,
+    project_name: str,
+    run_num: int,
+    has_mission: bool,
+    autonomous_mode: str,
+    prompt: str,
+    plugin_dirs,
+    system_prompt: str,
+    tier,
+    host_tmp_dir,
+    container_tmp_dir,
+    dc=None,
+) -> tuple:
+    """Re-run the mission on the ``cli.fallback`` provider after a launch/auth failure.
+
+    Distinct from :func:`_maybe_retry_mission` (which handles transient RETRYABLE
+    errors on the SAME provider). This fires only when the role's CLI could not
+    run at all, and swaps to the single section-wide ``cli.fallback`` provider.
+
+    Guards (all must hold):
+      - the role CLI failed to launch (exit 127 / binary unavailable) or auth failed,
+      - a ``cli.fallback`` is configured and resolves to a different binary,
+      - this is a mission (not a lower-priority autonomous run),
+      - no commits were produced (HEAD unmoved),
+      - the mission was not timed out / aborted / stagnated.
+
+    Quota and generic transient errors never reach here. Returns
+    ``(exit_code, stdout_file, stderr_file)``.
+    """
+    import app.run as _run
+    log = _run.log
+
+    if claude_exit == 0 or not has_mission:
+        return claude_exit, stdout_file, stderr_file
+    if (
+        _run._last_mission_timed_out
+        or _run._last_mission_aborted
+        or _run._last_mission_stagnated.is_set()
+    ):
+        return claude_exit, stdout_file, stderr_file
+
+    from app.provider import get_fallback_provider, get_provider_for_role
+
+    fb = get_fallback_provider(project_name)
+    if fb is None:
+        return claude_exit, stdout_file, stderr_file
+
+    effective_role = "review_mode" if autonomous_mode == "review" else "mission"
+    role_provider = get_provider_for_role(effective_role, project_name)
+    # Nothing to gain if the fallback resolves to the same binary that just failed.
+    if fb.binary() == role_provider.binary():
+        return claude_exit, stdout_file, stderr_file
+    # A fallback whose own binary is unavailable would just fail the same way —
+    # skip the wasted re-run (mirrors provider.resolve_role_provider's guard).
+    if not fb.is_available():
+        log("koan", f"Skipping fallback to '{fb.name}' — its binary is unavailable")
+        return claude_exit, stdout_file, stderr_file
+
+    # Only a launch/auth failure warrants a provider swap.
+    from app.cli_errors import ErrorCategory, classify_cli_error
+
+    try:
+        stdout_text = Path(stdout_file).read_text()
+    except OSError:
+        stdout_text = ""
+    try:
+        stderr_text = Path(stderr_file).read_text()
+    except OSError:
+        stderr_text = ""
+    category = classify_cli_error(
+        claude_exit, stdout_text, stderr_text, provider_name=role_provider.name,
+    )
+    launch_failed = (
+        claude_exit == 127
+        or category == ErrorCategory.AUTH
+        or not role_provider.is_available()
+    )
+    if not launch_failed:
+        return claude_exit, stdout_file, stderr_file
+
+    # Don't re-run if the failed session already produced commits.
+    post_head = _run._get_git_head(project_path)
+    if pre_head and post_head and pre_head != post_head:
+        return claude_exit, stdout_file, stderr_file
+
+    log(
+        "koan",
+        f"Role CLI '{role_provider.name}' failed to launch (exit={claude_exit}) — "
+        f"falling back to provider '{fb.name}'",
+    )
+
+    from app.mission_runner import build_mission_command
+    from app.provider import cleanup_managed_paths
+
+    cmd, cleanup_paths = build_mission_command(
+        prompt=prompt,
+        autonomous_mode=autonomous_mode,
+        extra_flags="",
+        project_name=project_name,
+        plugin_dirs=plugin_dirs,
+        system_prompt=system_prompt,
+        tier=tier,
+        system_prompt_dir=host_tmp_dir,
+        system_prompt_container_dir=container_tmp_dir,
+        provider_override=fb,
+    )
+    if dc is not None:
+        cmd = dc.wrap_command(
+            cmd, project_path,
+            host_tmp_dir=host_tmp_dir or "",
+            container_tmp_dir=container_tmp_dir or "",
+        )
+
+    # Clear output files before re-run to avoid double-counting output.
+    try:
+        open(stdout_file, "w").close()
+        open(stderr_file, "w").close()
+    except OSError:
+        pass
+
+    try:
+        fb_exit = _run.run_claude_task(
+            cmd, stdout_file, stderr_file, cwd=project_path,
+            instance_dir=instance, project_name=project_name, run_num=run_num,
+            provider=fb,
+        )
+    finally:
+        cleanup_managed_paths(cleanup_paths)
+    log("koan", f"Fallback provider '{fb.name}' exit_code={fb_exit}")
+    return fb_exit, stdout_file, stderr_file
 
 
 # ---------------------------------------------------------------------------
@@ -1145,6 +1286,14 @@ def _run_iteration(
         except Exception as e:
             _debug_log(f"[run] plugin dir generation skipped: {e}")
 
+        # Resolve the role's CLI provider (cli: section) so the EXECUTION path
+        # (stdin-rewrite + invocation lock in run_claude_task) matches the
+        # binary build_mission_command builds the command for. Same call →
+        # same instance the builder uses internally.
+        from app.provider import get_provider_for_role
+        _mission_role = "review_mode" if autonomous_mode == "review" else "mission"
+        mission_cli_provider = get_provider_for_role(_mission_role, project_name)
+
         cmd, cmd_cleanup_paths = build_mission_command(
             prompt=prompt,
             autonomous_mode=autonomous_mode,
@@ -1155,6 +1304,7 @@ def _run_iteration(
             tier=mission_tier,
             system_prompt_dir=_host_tmp_dir,
             system_prompt_container_dir=_container_tmp_dir,
+            provider_override=mission_cli_provider,
         )
 
         cmd_display = [c[:100] + '...' if len(c) > 100 else c for c in cmd[:6]]
@@ -1191,6 +1341,7 @@ def _run_iteration(
         claude_exit = _run.run_claude_task(
             cmd, stdout_file, stderr_file, cwd=project_path,
             instance_dir=instance, project_name=project_name, run_num=run_num,
+            provider=mission_cli_provider,
         )
 
         _debug_log(f"[run] cli: exit_code={claude_exit}")
@@ -1213,6 +1364,33 @@ def _run_iteration(
                 run_num=run_num,
                 has_mission=bool(mission_title),
                 provider_name=provider_name,
+                provider=mission_cli_provider,
+            )
+
+        # --- Launch/auth fallback to the cli.fallback provider ---
+        # If the role's CLI couldn't run at all (binary missing / not
+        # authenticated) and no work was produced, rebuild against the single
+        # section-wide cli.fallback provider and run once more. Quota still
+        # pauses; transient errors already used the in-place retry above.
+        if claude_exit != 0:
+            claude_exit, stdout_file, stderr_file = _maybe_fallback_provider_rerun(
+                claude_exit=claude_exit,
+                stdout_file=stdout_file,
+                stderr_file=stderr_file,
+                project_path=project_path,
+                pre_head=pre_head,
+                instance=instance,
+                project_name=project_name,
+                run_num=run_num,
+                has_mission=bool(mission_title),
+                autonomous_mode=autonomous_mode,
+                prompt=prompt,
+                plugin_dirs=plugin_dirs,
+                system_prompt=system_prompt,
+                tier=mission_tier,
+                host_tmp_dir=_host_tmp_dir,
+                container_tmp_dir=_container_tmp_dir,
+                dc=_dc if _dc_present else None,
             )
 
         # --- JSON success override ---
