@@ -52,7 +52,9 @@ existing helpers instead of ad hoc file reads.
 it uses two-phase retrieval: (1) FTS5-matched entries ranked by BM25, (2) recency
 fill for remaining slots. When empty, it falls back to JSONL tail.
 
-Learnings filtering uses FTS5 via `search_learnings()` with Jaccard fallback
+Learnings filtering uses FTS5 via `search_learnings()` (memoized per identical
+`(content, query, max_k)` call to skip the ~50ms transient-table rebuild on the
+per-iteration hot path) with Jaccard fallback
 when SQLite is unavailable.
 
 ### Observability
@@ -93,6 +95,13 @@ in SQLite and are treated as having no skill, no tags, no expiry.
 `source_skill` enables skill-aware retrieval: `read_memory_window(current_skill="review")`
 boosts entries from the same skill. `expires_at` is enforced by both `prune_memory_log()`
 (JSONL side) and `search_entries()`/`recent_entries()` (SQLite side).
+
+`prune_memory_log()`'s SQLite mirror runs `delete_before()` (prunes by `ts`) **and**
+`vacuum_expired()`. The latter is required because an entry can expire while its `ts`
+is still recent — `delete_before` would leave that row in the FTS5 index after the
+JSONL truth log drops it, a silent divergence that grows the DB and skews BM25 stats.
+`vacuum_expired()` mirrors `_is_expired` semantics exactly (malformed `expires_at`
+is kept, never deleted).
 
 ## Write Paths
 

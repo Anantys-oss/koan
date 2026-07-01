@@ -1520,12 +1520,15 @@ class MemoryManager:
         # Mirror deletion to SQLite FTS5 index (best-effort)
         if removed > 0:
             try:
-                from app.memory_db import ensure_db, delete_before
+                from app.memory_db import ensure_db, delete_before, vacuum_expired
                 conn = ensure_db(str(self.instance_dir))
                 if conn is not None:
                     try:
                         cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
                         delete_before(conn, cutoff_iso)
+                        # delete_before only prunes by ts; expired-but-recent
+                        # rows would otherwise linger, diverging from the JSONL.
+                        vacuum_expired(conn)
                     finally:
                         conn.close()
             except Exception as e:
