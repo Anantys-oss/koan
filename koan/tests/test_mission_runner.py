@@ -477,6 +477,50 @@ class TestCheckAutoMerge:
         result = check_auto_merge(str(tmp_path), "project", str(tmp_path))
         assert result is None
 
+    @patch("app.git_auto_merge.auto_merge_branch", return_value=0)
+    @patch("app.git_sync.run_git", return_value="koan/my-feature")
+    @patch("app.config.get_branch_prefix", return_value="koan/")
+    def test_merge_runs_against_merge_path_not_worktree(
+        self, mock_prefix, mock_git, mock_merge, tmp_path
+    ):
+        """Under worktree isolation the branch is resolved from the worktree
+        (project_path) but the base-branch checkout/merge runs in the main repo
+        (merge_path), so the merge never collides with the worktree."""
+        from app.mission_runner import check_auto_merge
+
+        worktree = str(tmp_path / "worktree")
+        main_repo = str(tmp_path / "main")
+        config = {"projects": {"project": {"git_auto_merge": {
+            "enabled": True, "rules": [{"pattern": "koan/*", "auto_merge": True}],
+        }}}}
+
+        result = check_auto_merge(
+            str(tmp_path), "project", worktree,
+            projects_config=config, merge_path=main_repo,
+        )
+
+        assert result == "koan/my-feature"
+        # Branch resolved from the worktree.
+        assert mock_git.call_args[0][0] == worktree
+        # Merge performed against the main repo, not the worktree.
+        mock_merge.assert_called_once_with(str(tmp_path), "project", main_repo, "koan/my-feature")
+
+    @patch("app.git_auto_merge.auto_merge_branch", return_value=0)
+    @patch("app.git_sync.run_git", return_value="koan/my-feature")
+    @patch("app.config.get_branch_prefix", return_value="koan/")
+    def test_merge_path_defaults_to_project_path(
+        self, mock_prefix, mock_git, mock_merge, tmp_path
+    ):
+        """When merge_path is omitted (non-worktree runs) the merge uses project_path."""
+        from app.mission_runner import check_auto_merge
+
+        config = {"projects": {"project": {"git_auto_merge": {
+            "enabled": True, "rules": [{"pattern": "koan/*", "auto_merge": True}],
+        }}}}
+        result = check_auto_merge(str(tmp_path), "project", str(tmp_path), projects_config=config)
+        assert result == "koan/my-feature"
+        mock_merge.assert_called_once_with(str(tmp_path), "project", str(tmp_path), "koan/my-feature")
+
 
 class TestRunPostMission:
     """Test run_post_mission orchestration function."""

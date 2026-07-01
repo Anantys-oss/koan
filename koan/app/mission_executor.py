@@ -1041,6 +1041,7 @@ def _run_iteration(
     # fail there, so skip it for the org-wide sentinel.
     from app.constants import ORG_WIDE_PROJECT
     is_org_wide = project_name == ORG_WIDE_PROJECT
+    prep = None
     if is_org_wide:
         log("git", f"Org-wide mission — running at workspace root ({project_path}); "
                     "skipping branch prep (mission manages git per repo)")
@@ -1237,6 +1238,8 @@ def _run_iteration(
     plugin_dir = None  # generated plugin dir for Skill tool (cleaned up in finally)
     cmd_cleanup_paths: List[str] = []  # temp files created by build_mission_command
     _dc_container_id = ""  # set inside try if devcontainer is used; referenced in finally
+    _worktree_info = None  # set inside try if worktree isolation is used; cleaned up in finally
+    _auto_merged_branch = ""  # branch auto-merge landed; cleanup must not re-push it
     try:
         provider_name, provider_label = _run._provider_identity()
         # Build CLI command (provider-agnostic with per-project overrides)
@@ -1331,15 +1334,52 @@ def _run_iteration(
                 container_tmp_dir=_container_tmp_dir or "",
             )
 
-        # Capture git HEAD before execution for retry safety check
-        pre_head = _run._get_git_head(project_path)
+        # --- Worktree isolation ---
+        execution_cwd = project_path
+        if not _dc_present:
+            try:
+                from app.config import get_worktree_isolation
+                if get_worktree_isolation():
+                    from app.worktree_manager import create_worktree, setup_shared_deps
+                    # Base the worktree on the SAME branch every other pipeline
+                    # step resolved (prep.base_branch — config/auto-detected),
+                    # not a hardcoded "main". Otherwise a repo on master/develop
+                    # gets a worktree off the wrong commit and the PR diff is
+                    # computed against the wrong base. prep is None only for the
+                    # org-wide sentinel (branch prep skipped); fall back to "main".
+                    _wt_base_branch = prep.base_branch if prep else "main"
+                    _worktree_info = create_worktree(project_path, base_branch=_wt_base_branch)
+                    execution_cwd = _worktree_info.path
+                    # Match the parallel-session provisioning: symlink heavy
+                    # dependency dirs so dep-heavy missions can build in the
+                    # isolated worktree without re-installing.
+                    from app.projects_config import get_project_shared_deps
+                    _shared_deps = get_project_shared_deps(_dc_projects_config, project_name)
+                    if _shared_deps:
+                        setup_shared_deps(execution_cwd, project_path, _shared_deps)
+                    log("worktree", f"Mission running in isolated worktree: {execution_cwd}")
+            except Exception as e:
+                # Isolation was explicitly requested but could not be set up —
+                # surface the degraded (unisolated) run to the operator, don't
+                # just bury it in the log.
+                log("error", f"Worktree creation failed, falling back to project dir: {e}")
+                _run._notify(
+                    instance,
+                    f"⚠️ [{project_name}] Worktree isolation requested but setup failed "
+                    f"({e}) — mission running in the shared project dir.",
+                )
 
-        # Snapshot core files before execution for integrity check
+        # Capture git HEAD before execution for retry safety check
+        pre_head = _run._get_git_head(execution_cwd)
+
+        # Snapshot core files before execution for integrity check.
+        # Use execution_cwd so the check covers where the agent actually works
+        # (the worktree when isolation is on; identical to project_path otherwise).
         from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
-        core_snapshot = snapshot_core_files(koan_root, project_path)
+        core_snapshot = snapshot_core_files(koan_root, execution_cwd)
 
         claude_exit = _run.run_claude_task(
-            cmd, stdout_file, stderr_file, cwd=project_path,
+            cmd, stdout_file, stderr_file, cwd=execution_cwd,
             instance_dir=instance, project_name=project_name, run_num=run_num,
             provider=mission_cli_provider,
         )
@@ -1357,7 +1397,9 @@ def _run_iteration(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 cmd=cmd,
-                project_path=project_path,
+                # Retry runs where the mission ran (worktree when isolated) so
+                # the pre_head/post_head safety check and retry cwd stay consistent.
+                project_path=execution_cwd,
                 pre_head=pre_head,
                 instance=instance,
                 project_name=project_name,
@@ -1408,11 +1450,11 @@ def _run_iteration(
 
         # Verify core files survived the mission (after retry, so result is final)
         log("koan", "Running core file integrity check...")
-        integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
+        integrity_warnings = check_core_files(koan_root, core_snapshot, execution_cwd)
         if integrity_warnings:
             from app.core_files import recover_project_files
-            missing = core_snapshot - snapshot_core_files(koan_root, project_path)
-            recovered, unrecoverable = recover_project_files(missing, project_path)
+            missing = core_snapshot - snapshot_core_files(koan_root, execution_cwd)
+            recovered, unrecoverable = recover_project_files(missing, execution_cwd)
             if recovered:
                 log("core_files", f"Auto-recovered {len(recovered)} file(s): {', '.join(recovered)}")
             if unrecoverable:
@@ -1443,7 +1485,7 @@ def _run_iteration(
                     update_checkpoint, update_from_pending, update_from_stdout,
                 )
                 from app.git_sync import run_git as _cp_run_git
-                _cp_branch = _cp_run_git(project_path, "rev-parse", "--abbrev-ref", "HEAD")
+                _cp_branch = _cp_run_git(execution_cwd, "rev-parse", "--abbrev-ref", "HEAD")
                 if _cp_branch:
                     update_checkpoint(instance, original_mission_title, branch=_cp_branch)
                 update_from_pending(instance, original_mission_title)
@@ -1524,7 +1566,15 @@ def _run_iteration(
             post_result = run_post_mission(
                 instance_dir=instance,
                 project_name=project_name,
-                project_path=project_path,
+                # Post-mission git work (pending archival, reflection, quality)
+                # runs where the mission ran — the worktree when isolation is on.
+                project_path=execution_cwd,
+                # Auto-merge is the exception: it checks out base_branch, which
+                # cannot be done in the worktree while the main checkout already
+                # holds base_branch (git forbids the same branch in two
+                # worktrees). Run the merge against the main repo instead — the
+                # feature branch ref is shared, so the merge resolves there.
+                merge_path=project_path,
                 run_num=run_num,
                 exit_code=claude_exit,
                 stdout_file=stdout_file,
@@ -1543,7 +1593,8 @@ def _run_iteration(
             if post_result.get("pending_archived"):
                 log("health", f"pending.md archived to journal ({provider_label} didn't clean up)")
             if post_result.get("auto_merge_branch"):
-                log("git", f"Auto-merge checked for {post_result['auto_merge_branch']}")
+                _auto_merged_branch = post_result["auto_merge_branch"]
+                log("git", f"Auto-merge checked for {_auto_merged_branch}")
 
             if post_result.get("quota_exhausted"):
                 _run._handle_pipeline_quota_flag(
@@ -1577,6 +1628,11 @@ def _run_iteration(
             except Exception as e:
                 log("error", f"Checkpoint cleanup failed (non-blocking): {e}")
     finally:
+        if _worktree_info:
+            _run._cleanup_worktree(
+                _worktree_info, project_path, instance=instance,
+                merged_branch=_auto_merged_branch,
+            )
         if _dc_container_id:
             log("devcontainer", f"Stopping container {_dc_container_id[:12]} after mission")
             _dc.stop_container(_dc_container_id)

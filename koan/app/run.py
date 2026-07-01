@@ -3271,6 +3271,81 @@ def _cleanup_temp(*files):
             Path(f).unlink(missing_ok=True)
 
 
+def _cleanup_worktree(worktree_info, project_path: str, instance: str = "", merged_branch: str = ""):
+    """Push branches from worktree and remove it.
+
+    After a mission runs in an isolated worktree, any new branches
+    need to be pushed to the remote before the worktree is destroyed.
+
+    Args:
+        merged_branch: When non-empty, auto-merge already landed this branch's
+            work into the base branch (and, with ``delete_after_merge``, removed
+            the remote branch). The cleanup push is skipped so it cannot
+            resurrect the just-deleted remote branch; instead the now-freed
+            local branch — which the merge step could not delete while it was
+            checked out in this worktree — is removed from the main repo.
+    """
+    wt_path = worktree_info.path
+
+    # If worktree directory is already gone, just clean up git refs
+    if not Path(wt_path).is_dir():
+        try:
+            from app.worktree_manager import remove_worktree
+            remove_worktree(project_path, session_id=worktree_info.session_id, force=True)
+        except Exception as e:
+            log("error", f"Worktree ref cleanup failed: {e}")
+        return
+
+    # Auto-merge already merged (and possibly deleted) the branch — pushing here
+    # would recreate the remote branch the merge step just removed. Remove the
+    # worktree and tidy up the local branch instead of re-pushing.
+    if merged_branch:
+        log("worktree", f"Auto-merge landed {merged_branch}; skipping cleanup push")
+        try:
+            from app.worktree_manager import remove_worktree
+            remove_worktree(project_path, session_id=worktree_info.session_id, force=True)
+            log("worktree", f"Worktree cleaned up: {wt_path}")
+        except Exception as e:
+            log("error", f"Worktree removal failed: {e}")
+            return
+        # The branch is no longer checked out anywhere — delete the stale local
+        # ref the auto-merge step could not remove while the worktree held it.
+        with suppress_logged(log, "debug", f"Local branch cleanup failed ({merged_branch})", Exception):
+            subprocess.run(
+                ["git", "branch", "-D", merged_branch],
+                cwd=project_path, capture_output=True, text=True, timeout=30,
+            )
+        return
+
+    # Push any branches the agent created in the worktree, using the shared
+    # fail-safe helper (also used by startup orphan recovery) so both paths
+    # apply the same data-loss protection.
+    from app.worktree_manager import push_worktree_branch_or_preserve
+    log("worktree", "Pushing any worktree branch before cleanup...")
+    safe_to_remove, detail = push_worktree_branch_or_preserve(
+        wt_path, initial_commit=worktree_info.commit,
+    )
+    log("worktree", f"Worktree push check: {detail}")
+
+    # Remove the worktree — but preserve it if push failed to avoid data loss
+    if not safe_to_remove:
+        log("error", f"Worktree preserved at {wt_path} — {detail}, manual intervention needed")
+        if instance:
+            _notify(instance, f"⚠️ Worktree push failed ({detail}) — preserved at {wt_path}. Manual intervention needed.")
+        return
+
+    try:
+        from app.worktree_manager import remove_worktree
+        remove_worktree(
+            project_path,
+            session_id=worktree_info.session_id,
+            force=True,
+        )
+        log("worktree", f"Worktree cleaned up: {wt_path}")
+    except Exception as e:
+        log("error", f"Worktree removal failed: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Entry point with restart wrapper
 # ---------------------------------------------------------------------------

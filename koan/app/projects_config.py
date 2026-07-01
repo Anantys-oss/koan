@@ -499,6 +499,21 @@ def get_project_mcp(config: dict, project_name: str) -> list:
     return mcp
 
 
+def get_project_shared_deps(config: dict, project_name: str) -> list:
+    """Get dependency dirs to symlink into worktrees for a project.
+
+    Heavy dependency directories (e.g. ``node_modules``, ``.venv``) are
+    symlinked from the main project into each worktree so dep-heavy missions
+    can build without re-installing. Returns a list of relative path strings;
+    empty when unset. Mirrors the provisioning used by the parallel session
+    path (``session_manager.spawn_session``).
+    """
+    shared = get_project_config(config, project_name).get("shared_deps", [])
+    if not isinstance(shared, list):
+        return []
+    return [str(d) for d in shared]
+
+
 def get_project_devcontainer_enabled(config: dict, project_name: str) -> bool:
     """Return whether devcontainer execution mode is enabled for a project."""
     return bool(get_project_config(config, project_name).get("devcontainer", False))

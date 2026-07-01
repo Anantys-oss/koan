@@ -94,6 +94,74 @@ def recover_crashed_missions(instance: str):
     recover_missions(instance)
 
 
+def recover_orphaned_worktrees(koan_root: str, projects: list, instance: str = ""):
+    """Push unpushed branches and prune worktrees left behind by crashed sessions.
+
+    Always runs regardless of worktree_isolation config — orphaned worktrees
+    may exist from a previous run when isolation was enabled.
+
+    Worktrees whose branches cannot be pushed (push failure, or detached HEAD
+    with commits) are PRESERVED to avoid losing unpushed work — only worktrees
+    that are safe to remove (pushed successfully, or no new commits) are pruned.
+    """
+    log("health", "Checking for orphaned worktrees...")
+    from app.worktree_manager import (
+        cleanup_stale_worktrees,
+        push_worktree_branch_or_preserve,
+    )
+    cleaned = 0
+    for name, path in projects:
+        wt_dir = Path(path) / ".worktrees"
+        if not wt_dir.exists():
+            continue
+        try:
+            entries = list(wt_dir.iterdir())
+        except OSError as e:
+            # A recovery skip means orphaned worktrees holding unpushed branches
+            # are never recovered — make the skip visible instead of silent.
+            log("error", f"  Could not scan worktrees in {name}: {e}")
+            continue
+        if not entries:
+            continue
+
+        # Decide per-worktree whether it is safe to remove. Preserved session
+        # ids are passed as "active" so cleanup_stale_worktrees keeps them.
+        preserved_ids: list = []
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            safe_to_remove, detail = push_worktree_branch_or_preserve(str(entry))
+            if not safe_to_remove:
+                preserved_ids.append(entry.name)
+                log("error", f"  Orphaned worktree preserved in {name} ({entry.name}): {detail}")
+                if instance:
+                    _notify_orphan_preserved(instance, name, str(entry), detail)
+            else:
+                log("health", f"  Orphaned worktree in {name} ({entry.name}): {detail}")
+
+        try:
+            cleanup_stale_worktrees(path, active_session_ids=preserved_ids)
+            cleaned += 1
+            log("health", f"  Cleaned orphaned worktrees in {name}")
+        except Exception as e:
+            log("error", f"  Worktree cleanup failed for {name}: {e}")
+    if cleaned:
+        log("health", f"Recovered worktrees in {cleaned} project(s)")
+
+
+def _notify_orphan_preserved(instance: str, project: str, wt_path: str, detail: str):
+    """Notify the operator that an orphaned worktree was preserved (best-effort)."""
+    try:
+        from app.run import _notify
+        _notify(
+            instance,
+            f"⚠️ [{project}] Orphaned worktree push failed ({detail}) — "
+            f"preserved at {wt_path}. Manual intervention needed.",
+        )
+    except Exception as e:
+        log("error", f"  Orphan-preserved notification failed: {e}")
+
+
 def run_migrations(koan_root: str):
     """Auto-migrate env vars to projects.yaml (one-shot, idempotent)."""
     from app.projects_migration import run_migration
@@ -723,6 +791,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
             projects = result
 
         _safe_run("Renamed remote detection", detect_renamed_remotes, koan_root, projects)
+        _safe_run("Orphaned worktrees", recover_orphaned_worktrees, koan_root, projects, instance)
 
         _safe_run("Sanity checks", run_sanity_checks, instance)
         _safe_run("Memory cleanup", cleanup_memory, instance)

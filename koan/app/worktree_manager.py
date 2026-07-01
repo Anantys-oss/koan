@@ -70,6 +70,7 @@ def git_retry(
     max_retries: int = GIT_RETRY_MAX,
     min_delay: float = GIT_RETRY_MIN_DELAY,
     max_delay: float = GIT_RETRY_MAX_DELAY,
+    timeout: int = 60,
 ) -> subprocess.CompletedProcess:
     """Run a git command with retry logic for lock contention.
 
@@ -87,6 +88,7 @@ def git_retry(
                 capture_output=True,
                 text=True,
                 check=True,
+                timeout=timeout,
             )
         except subprocess.CalledProcessError as e:
             last_error = e
@@ -277,6 +279,117 @@ def remove_worktree(
                 f"[worktree_manager] git branch -D failed for {branch}: {stderr}",
                 file=sys.stderr,
             )
+
+
+def push_worktree_branch_or_preserve(
+    worktree_path: str,
+    initial_commit: str = "",
+    timeout: int = 60,
+) -> tuple:
+    """Push any new branch/commits from a worktree before it is removed.
+
+    Shared fail-safe used by both the per-mission cleanup (run.py) and the
+    startup orphan recovery (startup_manager.py) so the two paths cannot drift
+    out of sync on data-loss behavior.
+
+    Args:
+        worktree_path: Path to the worktree working directory.
+        initial_commit: The commit the worktree was created at, if known.
+            Used to detect whether HEAD moved. When empty, commit count
+            against the upstream (``@{u}..HEAD``) is used instead.
+        timeout: Timeout (seconds) for the push.
+
+    Returns:
+        ``(safe_to_remove, detail)`` — ``safe_to_remove`` is True when the
+        worktree can be removed without losing work (push succeeded, or there
+        were no new commits). It is False when commits exist that could not be
+        pushed (push failed, or detached HEAD with no resolvable branch); the
+        caller MUST preserve the worktree to avoid data loss. ``detail`` is a
+        short human-readable explanation for logging.
+    """
+    def _run_git(args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=worktree_path,
+            capture_output=True, text=True, timeout=timeout,
+        )
+
+    try:
+        branch_result = _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+        # A directory that is not a valid git worktree (corrupt or non-git
+        # leftover) cannot be holding unpushed commits — prune it rather than
+        # preserving + re-notifying the operator on every startup forever.
+        if branch_result.returncode != 0:
+            return True, "not a valid git worktree"
+        current_branch = branch_result.stdout.strip()
+
+        # Determine whether the worktree HEAD advanced past its starting point.
+        has_commits = False
+        if initial_commit:
+            head = _run_git(["rev-parse", "HEAD"])
+            # On any error, assume commits exist (fail-safe toward preserving).
+            has_commits = head.returncode != 0 or head.stdout.strip() != initial_commit
+        else:
+            # No known starting commit (startup orphan recovery). Compare HEAD
+            # against the repo's base branch rather than @{u}: a freshly-created
+            # session branch has no upstream, so @{u}..HEAD would error and
+            # falsely report new commits — pushing an empty branch to the remote
+            # every startup.
+            has_commits = _head_ahead_of_base(_run_git)
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
+        # Could not determine state — preserve to be safe.
+        return False, f"branch/commit check failed: {e}"
+
+    if not has_commits:
+        return True, "no new commits"
+
+    # Commits exist but the branch is unresolvable (e.g. detached HEAD) —
+    # we cannot push them safely, so preserve the worktree.
+    if not current_branch or current_branch == "HEAD":
+        return False, f"commits present but branch unresolvable (got '{current_branch}')"
+
+    try:
+        push = _run_git(["push", "-u", "origin", current_branch])
+    except (subprocess.SubprocessError, OSError) as e:
+        return False, f"push error: {e}"
+
+    if push.returncode != 0:
+        return False, f"push failed: {(push.stderr or '').strip()}"
+    return True, f"pushed {current_branch}"
+
+
+def _head_ahead_of_base(_run_git) -> bool:
+    """Return True if the worktree HEAD has commits beyond the repo base branch.
+
+    Resolves the repo's actual default branch first (``origin/HEAD``, e.g.
+    ``develop``), then falls back to the common ``main``/``master`` names, and
+    counts commits in ``base..HEAD``. An unmodified session branch sits exactly
+    at its base, so the count is 0 and the worktree is genuinely empty. Resolving
+    the real default branch lets recovery converge on repos whose base is neither
+    main nor master — otherwise an empty session worktree branched from
+    ``develop`` would report commits forever and be preserved on every startup.
+    When no base branch can be resolved, conservatively reports True so unpushed
+    work is never silently dropped.
+    """
+    candidates = []
+    # origin's default branch, e.g. "refs/remotes/origin/develop" -> "origin/develop"
+    head_ref = _run_git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+    if head_ref.returncode == 0:
+        default = head_ref.stdout.strip().removeprefix("refs/remotes/")
+        if default:
+            candidates.append(default)
+    candidates.extend(("origin/main", "main", "origin/master", "master"))
+
+    for base in candidates:
+        verify = _run_git(["rev-parse", "--verify", "--quiet", base])
+        if verify.returncode != 0:
+            continue
+        count = _run_git(["rev-list", "--count", f"{base}..HEAD"])
+        if count.returncode != 0:
+            continue
+        return int(count.stdout.strip() or "0") > 0
+    # No base branch resolvable — be conservative and assume there are commits.
+    return True
 
 
 def list_worktrees(project_path: str) -> List[WorktreeInfo]:

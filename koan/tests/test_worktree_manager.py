@@ -18,6 +18,7 @@ from app.worktree_manager import (
     git_retry,
     inject_worktree_claude_md,
     prune_worktrees,
+    push_worktree_branch_or_preserve,
     setup_shared_deps,
     WORKTREE_DIR,
 )
@@ -93,6 +94,31 @@ class TestCreateWorktree:
     def test_custom_branch_name(self, git_repo):
         wt = create_worktree(git_repo, branch_name="feature/custom")
         assert wt.branch == "feature/custom"
+
+    def test_bases_worktree_on_requested_base_branch(self, git_repo):
+        """A non-main base_branch is honored: the worktree starts from that
+        branch's commit, not from main. Guards against the call site defaulting
+        to 'main' and ignoring a repo's configured/detected base branch."""
+        # Create a 'develop' branch with its own commit, distinct from main.
+        subprocess.run(
+            ["git", "checkout", "-b", "develop"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        (Path(git_repo) / "dev.txt").write_text("develop\n")
+        subprocess.run(["git", "add", "."], cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "develop commit"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        develop_sha = subprocess.run(
+            ["git", "rev-parse", "develop"],
+            cwd=git_repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # Move back to main so it is not the current branch.
+        subprocess.run(["git", "checkout", "main"], cwd=git_repo, capture_output=True, check=True)
+
+        wt = create_worktree(git_repo, base_branch="develop")
+        assert wt.commit == develop_sha
 
     def test_concurrent_creation(self, git_repo):
         """Multiple worktrees can be created for the same project."""
@@ -451,6 +477,42 @@ class TestWorktreeErrorPaths:
         with patch("app.worktree_manager.subprocess.run",
                    side_effect=FileNotFoundError("git")):
             prune_worktrees(git_repo)
+
+    def test_orphan_recovery_converges_on_non_main_base(self, git_repo):
+        """An empty session worktree branched from the repo's real default
+        branch (develop, ahead of main) is reported as having no new commits, so
+        startup orphan recovery can remove it instead of preserving it forever.
+
+        Regression guard: base resolution must follow origin/HEAD, not blindly
+        diff against origin/main when the default branch is something else.
+        """
+        # develop sits ahead of main and is origin's default branch.
+        subprocess.run(["git", "checkout", "-b", "develop"], cwd=git_repo,
+                       capture_output=True, check=True)
+        (Path(git_repo) / "dev.txt").write_text("develop\n")
+        subprocess.run(["git", "add", "."], cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "develop commit"], cwd=git_repo,
+                       capture_output=True, check=True)
+        subprocess.run(["git", "checkout", "main"], cwd=git_repo, capture_output=True, check=True)
+
+        # Synthesize remote-tracking refs with origin/HEAD -> develop.
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "main"],
+                       cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(["git", "update-ref", "refs/remotes/origin/develop", "develop"],
+                       cwd=git_repo, capture_output=True, check=True)
+        subprocess.run(["git", "symbolic-ref", "refs/remotes/origin/HEAD",
+                        "refs/remotes/origin/develop"], cwd=git_repo,
+                       capture_output=True, check=True)
+
+        # Empty session worktree branched from develop (HEAD == develop tip).
+        wt = create_worktree(git_repo, base_branch="develop")
+
+        # Startup orphan recovery path: no known initial_commit.
+        safe_to_remove, detail = push_worktree_branch_or_preserve(
+            wt.path, initial_commit="",
+        )
+        assert safe_to_remove is True
+        assert detail == "no new commits"
 
     def test_setup_shared_deps_creates_symlink(self, tmp_path):
         proj = tmp_path / "proj"
