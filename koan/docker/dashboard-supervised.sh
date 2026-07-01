@@ -6,14 +6,9 @@
 # program alive with `sleep infinity` so supervisord does not treat the missing
 # dashboard as a crash-loop.
 #
-# On Railway the dashboard binds to 0.0.0.0:5000 so the platform router can
-# reach it. Point the Railway public domain at port 5000 (Settings →
-# Networking). It MUST be gated by KOAN_DASHBOARD_PWD (a shared passphrase)
-# before it is exposed publicly — refuse to start otherwise.
-#
-# NOTE: we deliberately ignore Railway's injected $PORT and pin 5000 (override
-# with KOAN_DASHBOARD_PORT). $PORT is unpredictable across deploys, which makes
-# the public domain's target port a moving target.
+# On Railway the dashboard binds to 0.0.0.0 so the platform router can reach it.
+# It MUST be gated by KOAN_DASHBOARD_PWD (a shared passphrase) before it is
+# exposed publicly — refuse to start otherwise.
 
 if [ "${KOAN_DEPLOY:-}" != "railway" ]; then
     echo "[dashboard] KOAN_DEPLOY != railway — dashboard disabled"
@@ -28,6 +23,6 @@ if ! python3 -c "import sys; from app.railway import dashboard_allowed; sys.exit
     exec sleep infinity
 fi
 
-DASH_PORT="${KOAN_DASHBOARD_PORT:-5000}"
-echo "[dashboard] starting on 0.0.0.0:${DASH_PORT} (passphrase-gated)"
-exec /app/koan/docker/supervised-run.sh python3 app/dashboard.py --host 0.0.0.0 --port "${DASH_PORT}"
+PORT="${KOAN_DASHBOARD_PORT:-${PORT:-5000}}"
+echo "[dashboard] starting on 0.0.0.0:${PORT} (passphrase-gated)"
+exec /app/koan/docker/supervised-run.sh python3 app/dashboard.py --host 0.0.0.0 --port "${PORT}"

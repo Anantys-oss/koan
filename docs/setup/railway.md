@@ -59,10 +59,8 @@ On every boot, `KOAN_DEPLOY=railway` makes the entrypoint:
   no SSH key.
 - **Start the web dashboard** on `0.0.0.0:5000` (supervisord `dashboard`
   program). On Railway the dashboard is the primary UI; on every other deploy
-  the program stays idle. The port is pinned to `5000` (override with
-  `KOAN_DASHBOARD_PORT`); Railway's injected `$PORT` is intentionally ignored
-  so the public domain's target port stays stable across deploys. Point the
-  Railway public domain at port `5000`.
+  the program stays idle. The port is overridable via `KOAN_DASHBOARD_PORT`
+  (falls back to `PORT`, then `5000`).
 - **Refuse to start `ollama serve`.** The hosted profile defaults to the Claude
   provider, and `ollama serve` is the single largest idle RAM consumer in the
   stack. Even if the resolved provider is `ollama`, the launcher refuses to
