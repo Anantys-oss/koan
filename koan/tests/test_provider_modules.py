@@ -16,6 +16,14 @@ from app.provider.copilot import CopilotProvider
 from app.provider.ollama_launch import OllamaLaunchProvider
 
 
+@pytest.fixture(autouse=True)
+def _non_root_euid():
+    """ClaudeProvider drops --dangerously-skip-permissions under root; pin a
+    non-root euid so assertions don't depend on who runs the suite."""
+    with patch("app.provider.claude.os.geteuid", return_value=1000):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

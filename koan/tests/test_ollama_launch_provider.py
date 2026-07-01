@@ -8,6 +8,15 @@ import pytest
 from app.provider.ollama_launch import OllamaLaunchProvider
 
 
+@pytest.fixture(autouse=True)
+def _non_root_euid():
+    """OllamaLaunchProvider inherits ClaudeProvider's root handling (the flag
+    is dropped under root); pin a non-root euid so assertions don't depend on
+    who runs the suite."""
+    with patch("app.provider.claude.os.geteuid", return_value=1000):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Basic properties
 # ---------------------------------------------------------------------------

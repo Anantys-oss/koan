@@ -642,6 +642,12 @@ def get_skip_permissions() -> bool:
 
     When True, ``--dangerously-skip-permissions`` is added to Claude CLI
     invocations — required for MCP tools to work in autonomous mode.
+
+    Root handling is deliberately NOT done here: the root/sudo refusal of
+    ``--dangerously-skip-permissions`` is Claude-CLI-specific, so
+    ``ClaudeProvider.build_permission_args()`` drops the flag (with a
+    one-time warning) while other providers keep honoring this setting
+    when running as root.
     """
     config = _load_config()
     return bool(config.get("skip_permissions", False))

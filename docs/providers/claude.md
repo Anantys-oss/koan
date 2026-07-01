@@ -245,7 +245,11 @@ Claude CLI cannot prompt for tool approval. MCP tools will be
 
 > **Note:** `skip_permissions: true` does **not** work when Koan runs
 > as root — Claude CLI rejects `--dangerously-skip-permissions` with
-> root/sudo privileges. You must use the allowlist approach below.
+> root/sudo privileges. Koan detects this and drops the flag from
+> Claude CLI invocations, logging a warning (once per process) so you
+> know the config value is not being honored. Other CLI providers are
+> unaffected and honor the setting as usual. You must use the allowlist
+> approach below.
 
 To pre-approve MCP tools, create a `.claude/settings.local.json` file
 **in the target project's root directory** (the `path` from

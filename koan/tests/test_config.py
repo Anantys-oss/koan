@@ -574,6 +574,8 @@ class TestGetSkipPermissions:
         from app.config import get_skip_permissions
 
         with _mock_config({"skip_permissions": True}):
+            # Pure config read even under root: root handling is
+            # provider-specific (ClaudeProvider.build_permission_args).
             assert get_skip_permissions() is True
 
     def test_explicit_false(self):
