@@ -60,27 +60,6 @@ make release   # on main, will fast-forward stable
 
 Do not commit directly to `stable`. It must only ever be a fast-forward of a tagged commit on `main`.
 
-## Skill evals (CI)
-
-Prompt-driven skills (like `/review`) produce stochastic LLM output, so their
-*quality* can't be unit-tested directly. Instead they ship a **contract eval**
-that runs in the normal `fast` CI group as plain pytest — no API token needed.
-
-For `/review` (`tests/test_review_eval.py`, design in
-`skills/core/review/eval/PLAN.md`):
-
-- **Prompt-contract** — catches prompt drift: broken `{@include}` partials, or a
-  JSON-output prompt that lost its `valid JSON` directive / severity vocabulary.
-- **Golden-output anchors** — curated fixtures in `skills/core/review/eval/fixtures/`
-  that must stay schema-valid and semantically consistent.
-- **Semantic invariants** — `app/review_eval.evaluate_review()` enforces cross-field
-  rules (`critical`/`warning` ⇒ `lgtm:false`, `finding_refs` in range) the JSON
-  schema can't express.
-
-A model-driven *quality* eval (golden diffs with planted bugs, scored by rubric)
-is designed but not built — it needs an API key and so can't run in CI. See the
-plan doc.
-
 ## Recovery
 
 - **Bad tag pushed** — `git tag -d vX.Y && git push origin :refs/tags/vX.Y && gh release delete vX.Y`. Then re-run `make release`.
