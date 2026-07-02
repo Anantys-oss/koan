@@ -231,6 +231,12 @@ class TestRunEval:
         with pytest.raises(ValueError):
             run_eval([c1, c2], lambda c: _review([], lgtm=True))
 
+    def test_empty_cases_returns_empty_report(self):
+        rep = run_eval([], lambda c: None)
+        assert rep.total == 0
+        assert rep.results == []
+        assert rep.mean_recall == 0.0
+
 
 class TestScorerRegistry:
     def test_unknown_skill_raises(self):

@@ -375,6 +375,9 @@ def run_eval(cases: list, review_fn: Callable[[EvalCase], Optional[dict]]) -> Ev
     of ``None`` or a raised exception records the case as ``errored`` and the
     run continues — a single failure never aborts the eval (FR-007).
     """
+    if not cases:
+        return EvalReport(skill="mixed", results=[])
+
     results: list = []
     for case in cases:
         scorer = get_scorer(case.skill)
@@ -385,9 +388,8 @@ def run_eval(cases: list, review_fn: Callable[[EvalCase], Optional[dict]]) -> Ev
             continue
         results.append(scorer(case, review))
 
-    if cases:
-        skills = {c.skill for c in cases}
-        skill = next(iter(skills)) if len(skills) == 1 else "mixed"
+    skills = {c.skill for c in cases}
+    skill = next(iter(skills)) if len(skills) == 1 else "mixed"
     return EvalReport(skill=skill, results=results)
 
 
