@@ -14,17 +14,27 @@ from app import skill_evals
 from app.skill_evals import (
     CaseExpect,
     CaseResult,
+    EVAL_EXEMPT_SKILLS,
     EvalCase,
     EvalReport,
     FindingExpect,
+    brainstorm_live_fn,
     compare_to_baseline,
+    fix_live_fn,
     format_report,
+    get_live_fn,
     get_scorer,
     load_cases,
     main,
+    plan_live_fn,
+    rebase_live_fn,
     register_scorer,
     review_live_fn,
     run_eval,
+    score_brainstorm,
+    score_fix,
+    score_plan,
+    score_rebase,
     score_review,
     write_baseline,
 )
@@ -610,3 +620,440 @@ def test_live_eval_against_real_pipeline():
     assert report.valid_json_rate == 1.0
     # Regression guard: seeded bugs should be caught at least most of the time.
     assert report.mean_recall >= 0.5
+
+
+# ===========================================================================
+# Multi-skill: generalisation (US2) — review behaviour preserved + input/raw
+# ===========================================================================
+
+
+class TestGeneralization:
+    def test_review_case_has_empty_input_and_raw_expect(self):
+        cases = {c.id: c for c in load_cases("review")}
+        c = cases["sql_injection"]
+        assert c.input == {}  # review carries its input in `diff`, not `input`
+        assert c.diff.strip()
+        assert isinstance(c.expect.raw, dict)
+        assert c.expect.raw.get("expect_lgtm") is False
+
+    def test_non_review_case_populates_input(self, tmp_path):
+        d = tmp_path / "cases"
+        d.mkdir()
+        (d / "x.json").write_text(json.dumps({
+            "id": "x", "skill": "fix",
+            "issue_title": "T", "issue_body": "B",
+            "expect": {"expected_confidence": "HIGH"},
+        }))
+        c = load_cases(str(d))[0]
+        assert c.diff == ""
+        assert c.input == {"issue_title": "T", "issue_body": "B"}
+        assert c.expect.raw == {"expected_confidence": "HIGH"}
+
+    def test_case_needs_diff_or_input(self, tmp_path):
+        d = tmp_path / "cases"
+        d.mkdir()
+        (d / "a.json").write_text(json.dumps({"id": "a", "expect": {}}))
+        with pytest.raises(ValueError):
+            load_cases(str(d))
+
+    def test_dispatch_uses_skill_scorer(self):
+        case = EvalCase(
+            id="f", skill="fix",
+            input={"issue_title": "t"},
+            expect=CaseExpect(raw={"expected_confidence": "HIGH"}),
+        )
+        rep = run_eval([case], lambda c: {"confidence": "HIGH", "hypothesis": "h"})
+        assert rep.skill == "fix"
+        assert rep.results[0].passed is True
+
+
+# ===========================================================================
+# score_fix
+# ===========================================================================
+
+
+def _fix_case(**raw):
+    return EvalCase(
+        id="f", skill="fix",
+        input={"issue_title": "t", "issue_body": "b"},
+        expect=CaseExpect(raw=raw),
+    )
+
+
+class TestScoreFix:
+    def test_high_confidence_match_passes(self):
+        case = _fix_case(expected_confidence="HIGH",
+                         hypothesis_keywords=["null", "parser"],
+                         code_path_keywords=["parser"])
+        out = {
+            "confidence": "HIGH",
+            "hypothesis": "A null dereference in the parser",
+            "code_paths": "src/parser.py",
+            "analysis": "",
+        }
+        r = score_fix(case, out)
+        assert r.passed is True
+        assert r.valid_json is True
+        assert r.recall == 1.0
+        assert isinstance(r.score, float)
+
+    def test_wrong_confidence_fails(self):
+        case = _fix_case(expected_confidence="HIGH")
+        r = score_fix(case, {"confidence": "LOW", "hypothesis": "h"})
+        assert r.passed is False
+        assert {c.name for c in r.checks if not c.passed} == {"confidence_match"}
+
+    def test_missing_hypothesis_fails(self):
+        case = _fix_case()
+        r = score_fix(case, {"confidence": "LOW", "hypothesis": ""})
+        assert r.passed is False
+        assert any(c.name == "hypothesis_present" and not c.passed for c in r.checks)
+
+    def test_malformed_input_is_invalid_not_raise(self):
+        case = _fix_case()
+        r = score_fix(case, "not a dict")
+        assert r.valid_json is False
+        assert r.passed is False
+
+    def test_vague_case_expects_low(self):
+        case = _fix_case(expected_confidence="LOW")
+        r = score_fix(case, {"confidence": "LOW", "hypothesis": "cannot localise"})
+        assert r.passed is True
+
+
+# ===========================================================================
+# score_plan
+# ===========================================================================
+
+
+_GOOD_PLAN = (
+    "Add a settings page\n\n"
+    "### Summary\nDoes the thing.\n\n"
+    "### Alternatives Considered\n- A (chosen)\n\n"
+    "### File Map\n| Create | x.py | y |\n\n"
+    "#### Phase 1: Build UI\n**Files**: x.py\n- step\n\n"
+    "#### Phase 2: Persist\n**Files**: y.py\n- step\n\n"
+    "### Verification Criteria\n- Given X when Y then Z.\n"
+)
+
+
+def _plan_case(**raw):
+    return EvalCase(id="p", skill="plan", input={"idea": "x"}, expect=CaseExpect(raw=raw))
+
+
+class TestScorePlan:
+    def test_well_formed_plan_passes(self):
+        r = score_plan(_plan_case(), _GOOD_PLAN)
+        assert r.passed is True
+        assert r.valid_json is True
+        names = {c.name for c in r.checks}
+        assert {"required_sections", "min_phases", "no_banned_placeholders", "title_present"} <= names
+
+    def test_banned_placeholder_fails_even_with_sections(self):
+        r = score_plan(_plan_case(), "Title\n### Summary\nx\nTODO: finish\n#### Phase 1: p\n")
+        assert r.passed is False
+        assert any(c.name == "no_banned_placeholders" and not c.passed for c in r.checks)
+
+    def test_missing_section_fails(self):
+        r = score_plan(_plan_case(), "Title\n### Summary\nx\n#### Phase 1: p\n")
+        assert r.passed is False
+        assert any(c.name == "required_sections" and not c.passed for c in r.checks)
+
+    def test_too_few_phases_fails(self):
+        case = _plan_case(min_phases=2)
+        r = score_plan(case, "Title\n### Summary\nx\n### File Map\nf\n#### Phase 1: only\n")
+        assert r.passed is False
+        assert any(c.name == "min_phases" and not c.passed for c in r.checks)
+
+    def test_accepts_dict_with_text(self):
+        r = score_plan(_plan_case(), {"text": _GOOD_PLAN})
+        assert r.passed is True
+
+    def test_first_line_heading_is_not_a_title(self):
+        r = score_plan(_plan_case(), "# A heading\n### Summary\nx\n#### Phase 1: p\n")
+        assert any(c.name == "title_present" and not c.passed for c in r.checks)
+
+
+# ===========================================================================
+# score_brainstorm
+# ===========================================================================
+
+
+_GOOD_BODY = (
+    "## Why This Matters\nx\n## Approach\nx\n## Acceptance Criteria\nx\n"
+    "## Risks & Caveats\nx\n## Scores\nImpact: h\nDifficulty: m\n"
+    "Short-Term ROI: l\nLong-Term Value: h\n## Priority\nImmediate\n"
+    "## Dependencies\nx\n"
+)
+
+
+def _issue(title, body=_GOOD_BODY):
+    return {"title": title, "body": body}
+
+
+def _decomp(titles, **kw):
+    data = {"issues": [_issue(t) for t in titles]}
+    data.update(kw)
+    return data
+
+
+def _brain_case(**raw):
+    return EvalCase(id="b", skill="brainstorm", input={"topic": "x"}, expect=CaseExpect(raw=raw))
+
+
+class TestScoreBrainstorm:
+    def test_clean_decomposition_passes(self):
+        case = _brain_case(min_issues=3, max_issues=8, theme_keywords=["login", "session"])
+        data = _decomp(["login throttling", "session expiry", "token refresh"])
+        r = score_brainstorm(case, json.dumps(data))
+        assert r.passed is True
+        assert r.valid_json is True
+
+    def test_too_few_issues_fails(self):
+        case = _brain_case(min_issues=3)
+        r = score_brainstorm(case, json.dumps(_decomp(["only one"])))
+        assert r.passed is False
+        assert any(c.name == "issue_count" and not c.passed for c in r.checks)
+
+    def test_missing_section_fails(self):
+        case = _brain_case()
+        data = _decomp(["a", "b", "c"])
+        data["issues"][0]["body"] = data["issues"][0]["body"].replace("## Priority\nImmediate\n", "")
+        r = score_brainstorm(case, json.dumps(data))
+        assert r.passed is False
+        assert any(c.name == "sections_per_issue" and not c.passed for c in r.checks)
+
+    def test_invalid_json_is_invalid(self):
+        r = score_brainstorm(_brain_case(), "not json at all")
+        assert r.valid_json is False
+        assert r.passed is False
+
+    def test_accepts_already_parsed_dict(self):
+        case = _brain_case(min_issues=3)
+        r = score_brainstorm(case, _decomp(["a", "b", "c"]))
+        assert r.passed is True
+
+    def test_fenced_json_is_parsed(self):
+        case = _brain_case(min_issues=3)
+        fenced = "```json\n" + json.dumps(_decomp(["a", "b", "c"])) + "\n```"
+        r = score_brainstorm(case, fenced)
+        assert r.valid_json is True
+
+
+# ===========================================================================
+# score_rebase
+# ===========================================================================
+
+
+def _rebase_case(**raw):
+    return EvalCase(id="r", skill="rebase", input={"pr_title": "t"}, expect=CaseExpect(raw=raw))
+
+
+class TestScoreRebase:
+    def test_solved_high_confidence_passes(self):
+        case = _rebase_case(expect_solved=True)
+        r = score_rebase(case, '{"already_solved": true, "confidence": "high", "reasoning": "commit x adds it"}')
+        assert r.passed is True
+        assert r.recall == 1.0
+
+    def test_solved_medium_confidence_fails_production_rule(self):
+        case = _rebase_case(expect_solved=True)
+        r = score_rebase(case, '{"already_solved": true, "confidence": "medium", "reasoning": "maybe"}')
+        assert r.passed is False
+        assert any(c.name == "decision_correct" and not c.passed for c in r.checks)
+
+    def test_not_solved_when_expected_solved(self):
+        case = _rebase_case(expect_solved=True)
+        r = score_rebase(case, '{"already_solved": false, "confidence": "low", "reasoning": "no match"}')
+        assert r.passed is False
+
+    def test_negative_case_passes(self):
+        case = _rebase_case(expect_solved=False)
+        r = score_rebase(case, '{"already_solved": false, "confidence": "low", "reasoning": "not present"}')
+        assert r.passed is True
+
+    def test_malformed_does_not_raise(self):
+        r = score_rebase(_rebase_case(), "no json here")
+        assert r.valid_json is False
+        assert r.passed is False
+
+    def test_accepts_dict(self):
+        case = _rebase_case(expect_solved=True)
+        r = score_rebase(case, {"already_solved": True, "confidence": "high", "reasoning": "r"})
+        assert r.passed is True
+
+
+# ===========================================================================
+# Datasets (US1) — validity + offline CLI for the four skills
+# ===========================================================================
+
+
+class TestMultiSkillDatasets:
+    @pytest.mark.parametrize("skill", ["fix", "plan", "brainstorm", "rebase"])
+    def test_dataset_loads_with_valid_cases(self, skill):
+        cases = load_cases(skill)
+        assert len(cases) >= 3
+        for c in cases:
+            assert c.skill == skill
+            assert c.diff.strip() or c.input, c.id
+            assert isinstance(c.expect.raw, dict) and c.expect.raw, c.id
+
+    @pytest.mark.parametrize("skill", ["fix", "plan", "brainstorm", "rebase"])
+    def test_offline_cli_lists_cases(self, skill, capsys):
+        rc = main([skill])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Offline mode" in out
+
+    def test_each_evaluable_skill_has_a_scorer(self):
+        for skill in ("fix", "plan", "brainstorm", "rebase", "review"):
+            assert get_scorer(skill) is not None
+
+
+# ===========================================================================
+# CLI dispatch (US2/US3)
+# ===========================================================================
+
+
+class TestCliDispatch:
+    def test_live_for_skill_without_adapter_reports_no_adapter(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv("KOAN_EVAL_LIVE", "1")
+        # A skill with a scorer + cases but NO live adapter must report honestly.
+        register_scorer(
+            "my_team_nolive",
+            lambda case, out: CaseResult(case_id=case.id, skill=case.skill),
+        )
+        try:
+            d = tmp_path / "cases"
+            d.mkdir()
+            (d / "a.json").write_text(json.dumps(
+                {"id": "a", "skill": "my_team_nolive", "idea": "x", "expect": {}}
+            ))
+            rc = main([str(d), "--live"])
+            out = capsys.readouterr().out
+            assert rc == 2
+            assert "no live adapter" in out.lower()
+        finally:
+            skill_evals.SCORERS.pop("my_team_nolive", None)
+
+    def test_get_live_fn_none_for_excluded_skill(self):
+        assert get_live_fn("implement") is None
+        assert get_live_fn("mission") is None
+
+
+# ===========================================================================
+# Live adapters (US3) — injected seams, no LLM
+# ===========================================================================
+
+
+class TestLiveAdapters:
+    def test_fix_live_pulls_issue_fields_from_input(self):
+        case = EvalCase(
+            id="f", skill="fix",
+            input={"issue_title": "Crash", "issue_body": "Steps"},
+            expect=CaseExpect(raw={}),
+        )
+        captured = {}
+
+        def diag(pp, url, title, body, ctx, skill_dir=None):
+            captured.update(title=title, body=body)
+            return {"confidence": "HIGH", "hypothesis": "h", "code_paths": ""}
+
+        out = fix_live_fn(case, "/repo", _diagnose=diag)
+        assert out["confidence"] == "HIGH"
+        assert captured["title"] == "Crash"
+        assert captured["body"] == "Steps"
+
+    def test_brainstorm_live_composes_seams(self):
+        case = EvalCase(id="b", skill="brainstorm", input={"topic": "auth"}, expect=CaseExpect(raw={}))
+        out = brainstorm_live_fn(
+            case, "/repo",
+            _build=lambda t, sd: f"P[{t}]",
+            _run=lambda p, pp: "RAW",
+            _parse=lambda r: {"issues": [_issue("x")]},
+        )
+        assert out["issues"][0]["title"] == "x"
+
+    def test_plan_live_returns_cli_markdown(self):
+        case = EvalCase(id="p", skill="plan", input={"idea": "dark mode"}, expect=CaseExpect(raw={}))
+        seen = {}
+
+        def run(prompt, pp):
+            seen["prompt"] = prompt
+            return "Title\n### Summary\nx"
+
+        out = plan_live_fn(case, "/repo", _run=run)
+        assert out.startswith("Title")
+        assert "dark mode" in seen["prompt"]
+
+    def test_rebase_live_extracts_first_json(self):
+        case = EvalCase(
+            id="r", skill="rebase",
+            input={"pr_title": "T", "pr_body": "B", "pr_diff": "D", "recent_commits": "C"},
+            expect=CaseExpect(raw={}),
+        )
+        out = rebase_live_fn(
+            case, "/repo",
+            _run=lambda p, pp: 'noise {"already_solved": true, "confidence": "high"} tail',
+        )
+        assert out["already_solved"] is True
+        assert out["confidence"] == "high"
+
+
+# ===========================================================================
+# Exemption guard (US4)
+# ===========================================================================
+
+
+class TestEvalExemption:
+    """implement and mission are intentionally NOT evaluable.
+
+    They have no LLM-driven, checkable structured-output contract:
+      - implement is orchestration (returns (success, summary), no parse/schema).
+      - mission is a pure-Python queue utility (no LLM at all).
+    Fabricating a dataset would measure nothing real (constitution VII). Their
+    quality bar is upheld by behavioural unit tests instead. This test pins the
+    exclusion so it is not silently "fixed".
+    """
+
+    def test_exempt_set_is_documented(self):
+        assert set(EVAL_EXEMPT_SKILLS) == {"implement", "mission"}
+
+    def test_exempt_skills_have_no_scorer_or_live_fn(self):
+        for skill in EVAL_EXEMPT_SKILLS:
+            assert skill not in skill_evals.SCORERS, skill
+            assert skill not in skill_evals.LIVE_FNS, skill
+            assert get_live_fn(skill) is None
+
+    def test_evaluable_core_skills_are_covered(self):
+        # The LLM-driven skills with checkable output that this feature covers.
+        covered = {"review", "fix", "plan", "brainstorm", "rebase"}
+        for skill in covered:
+            assert skill in skill_evals.SCORERS, skill
+
+
+# ---------------------------------------------------------------------------
+# Opt-in live evals for the four new skills (real LLM) — skipped by default
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("skill", ["fix", "plan", "brainstorm", "rebase"])
+def test_live_eval_for_skill(skill):
+    """Run the real pipeline for a skill over its golden dataset.
+
+    SKIPPED unless ``KOAN_EVAL_LIVE=1`` is set. Default suite never invokes the
+    Claude subprocess.
+    """
+    import os
+
+    if not os.environ.get(skill_evals.LIVE_ENV):
+        pytest.skip(f"set {skill_evals.LIVE_ENV}=1 to run the live eval")
+
+    project_path = os.getcwd()
+    cases = load_cases(skill)
+    live_fn = get_live_fn(skill)
+    report = run_eval(cases, lambda c: live_fn(c, project_path))
+    assert report.total == len(cases)
+    # The skill's output contract must hold for every case at least structurally.
+    assert report.valid_json_rate >= 0.5
