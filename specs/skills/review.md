@@ -56,3 +56,34 @@ focus passes (architecture, silent-failure hunting, comment quality, plan alignm
 
 - Focus flags compose; stacking many passes multiplies token cost.
 - Plan-alignment (`--plan-url`) depends on the tracker being reachable.
+
+## Eval
+
+`/review` is prompt-driven, so its output is stochastic LLM text — traditional
+unit tests can't capture review *quality*. The eval is therefore split into two
+tiers (full rationale in `skills/core/review/eval/PLAN.md`):
+
+- **Tier 1 — CI-safe contract eval (shipped).** Plain pytest, no model, runs in
+  the `fast` CI group via `tests/test_review_eval.py`. Three dimensions:
+  1. **Prompt-contract** — every review prompt keeps its load-bearing structure:
+     all `{@include}` partials resolve, and the JSON-output prompts still carry
+     the `valid JSON` directive + full severity vocabulary when rendered. This is
+     the regression net for prompt drift (the #1 unprotected risk).
+  2. **Golden-output anchors** — curated fixtures in
+     `skills/core/review/eval/fixtures/` must stay schema-valid AND pass the
+     semantic eval. Anchors that make "confirm improvements over iterations"
+     meaningful.
+  3. **Semantic invariants** — `app/review_eval.evaluate_review()` layers
+     cross-field rules the schema can't express (blocking finding ⇒ `lgtm:false`,
+     `finding_refs` in range, empty `file_comments` + not-LGTM ⇒ warning). Fed an
+     adversarial corpus of schema-valid-but-broken reviews to prove it flags what
+     `validate_review()` alone misses.
+- **Tier 2 — model-driven quality eval (designed, not built).** Golden diffs
+  (planted bug, clean diff for false-positive rate) run through the review prompt
+  against a real model, scored by a deterministic rubric. Needs an API key →
+  never runs in CI (`tests.yml` has no token); invoked manually via a future
+  `make eval-review`. Shares `evaluate_review()` with Tier 1.
+
+Invariant contract: `evaluate_review()` returns `passed=True` only when a review
+is both structurally valid (`validate_review`) and semantically consistent. Any
+loosening of the invariants must update the golden fixtures or the eval fails.
