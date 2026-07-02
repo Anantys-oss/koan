@@ -59,6 +59,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "enable_multiple_instances": "bool",
     "focus": "bool",
     "skip_permissions": "bool",
+    "strip_co_authored_by": "bool",
     "cli_provider": "str",
     "mcp": "list",
     "telegram": _NESTED,

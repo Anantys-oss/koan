@@ -126,6 +126,7 @@ class TestValidConfigProducesNoWarnings:
             "contemplative_chance": 10,
             "start_on_pause": False,
             "skip_permissions": False,
+            "strip_co_authored_by": True,
             "cli_provider": "claude",
             "telegram": {"bot_token": "tok", "chat_id": "123"},
             "budget": {"warn_at_percent": 70, "stop_at_percent": 85},
@@ -200,6 +201,15 @@ class TestValidConfigProducesNoWarnings:
     def test_unlimited_quota_is_known_under_usage(self):
         # The code reads usage.unlimited_quota — not a top-level key.
         assert validate_config({"usage": {"unlimited_quota": True}}) == []
+
+    def test_strip_co_authored_by_is_known(self):
+        # Read by config.is_strip_co_authored_by_enabled() — must validate clean.
+        assert validate_config({"strip_co_authored_by": True}) == []
+
+    def test_strip_co_authored_by_rejects_non_bool(self):
+        warnings = validate_config({"strip_co_authored_by": "yes"})
+        assert len(warnings) == 1
+        assert "strip_co_authored_by" in warnings[0][1]
 
 
 # ---------------------------------------------------------------------------
