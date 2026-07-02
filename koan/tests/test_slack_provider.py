@@ -2,6 +2,7 @@
 
 from unittest.mock import patch, MagicMock, PropertyMock
 import queue
+import time
 
 import pytest
 
@@ -134,6 +135,66 @@ class TestPollUpdates:
         provider._socket_client.connect.side_effect = Exception("connection failed")
         updates = provider.poll_updates()
         assert updates == []
+
+    def test_reconnects_when_socket_died(self, provider):
+        """A dropped socket (is_connected→False) is re-dialed on next poll.
+
+        Reproduces the 'Slack goes deaf during idle' symptom: the connection
+        drops mid-session, slack_sdk's monitor fails to recover, and without a
+        liveness check the bridge never reconnects.
+        """
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider.poll_updates()
+        provider._socket_client.connect.assert_called_once()
+        assert provider._connected is True
+
+    def test_reconnect_disconnects_dead_socket_first(self, provider):
+        """Reconnect tears down the dead client before re-dialing.
+
+        Re-calling connect() without disconnect() can leak the old WebSocket
+        monitor/receiver threads over long uptime.
+        """
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider.poll_updates()
+        provider._socket_client.disconnect.assert_called_once()
+        provider._socket_client.connect.assert_called_once()
+
+    def test_reconnects_when_liveness_probe_raises(self, provider):
+        """A probe that raises is treated as dead, biasing toward reconnect."""
+        provider._connected = True
+        provider._socket_client.is_connected.side_effect = Exception("boom")
+        provider.poll_updates()
+        provider._socket_client.connect.assert_called_once()
+
+    def test_no_reconnect_when_socket_alive(self, provider):
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = True
+        provider.poll_updates()
+        provider._socket_client.connect.assert_not_called()
+
+    def test_reconnect_held_within_cooldown(self, provider):
+        """A dead socket is not re-dialed again until the cooldown elapses.
+
+        Without the cooldown, a persistently-unreachable workspace would be
+        re-dialed on every 3s drain (connect() is blocking under the lock).
+        """
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider._last_connect_attempt = time.time()
+        provider.poll_updates()
+        provider._socket_client.connect.assert_not_called()
+        provider._socket_client.disconnect.assert_not_called()
+
+    def test_reconnects_again_after_cooldown(self, provider):
+        """Once the cooldown window has passed, the dead socket is re-dialed."""
+        from app.messaging.slack import SLACK_RECONNECT_COOLDOWN_SECONDS
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider._last_connect_attempt = time.time() - SLACK_RECONNECT_COOLDOWN_SECONDS - 1
+        provider.poll_updates()
+        provider._socket_client.connect.assert_called_once()
 
 
 class TestHandleSocketEvent:
