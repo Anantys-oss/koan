@@ -363,7 +363,7 @@ def search_learnings(
     if not fts_query:
         return []
 
-    cache_key = (hash(learnings_content), fts_query, max_k)
+    cache_key = (learnings_content, fts_query, max_k)
     cached = _learnings_cache.get(cache_key)
     if cached is not None:
         return list(cached)
@@ -469,8 +469,11 @@ def vacuum_expired(conn: sqlite3.Connection, now_iso: Optional[str] = None) -> i
     ``ts`` is still recent lingers in the FTS5 index after the JSONL truth log
     drops it — a silent divergence that grows the DB and skews BM25 stats.
     This mirrors ``_is_expired`` semantics exactly (malformed ``expires_at``
-    is kept, never deleted) by filtering candidates in Python before deleting
-    by rowid.
+    is kept, never deleted), but scans candidates inline rather than calling
+    ``_is_expired`` per row: that function warns on every malformed value, and
+    a persistently malformed row would otherwise re-log the same warning on
+    every prune run. Malformed rows are instead summarized in one aggregate
+    warning.
     """
     if now_iso is None:
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -478,7 +481,21 @@ def vacuum_expired(conn: sqlite3.Connection, now_iso: Optional[str] = None) -> i
         rows = conn.execute(
             "SELECT rowid, expires_at FROM entries WHERE expires_at != ''"
         ).fetchall()
-        expired_ids = [rowid for rowid, exp in rows if _is_expired(exp, now_iso)]
+        expired_ids = []
+        malformed_count = 0
+        for rowid, exp in rows:
+            try:
+                datetime.strptime(exp, "%Y-%m-%dT%H:%M:%SZ")
+            except ValueError:
+                malformed_count += 1
+                continue
+            if exp < now_iso:
+                expired_ids.append(rowid)
+        if malformed_count:
+            logger.warning(
+                "[memory_db] vacuum_expired: %d row(s) with malformed expires_at kept",
+                malformed_count,
+            )
         if not expired_ids:
             return 0
         conn.executemany(

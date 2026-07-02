@@ -96,12 +96,16 @@ in SQLite and are treated as having no skill, no tags, no expiry.
 boosts entries from the same skill. `expires_at` is enforced by both `prune_memory_log()`
 (JSONL side) and `search_entries()`/`recent_entries()` (SQLite side).
 
-`prune_memory_log()`'s SQLite mirror runs `delete_before()` (prunes by `ts`) **and**
-`vacuum_expired()`. The latter is required because an entry can expire while its `ts`
-is still recent — `delete_before` would leave that row in the FTS5 index after the
+`prune_memory_log()`'s SQLite mirror runs `delete_before()` (prunes by `ts`, only when
+this pass's JSONL scan removed something) **and** `vacuum_expired()` (runs on every
+call, unconditionally). The latter is required because an entry can expire while its
+`ts` is still recent — `delete_before` would leave that row in the FTS5 index after the
 JSONL truth log drops it, a silent divergence that grows the DB and skews BM25 stats.
+Running `vacuum_expired()` unconditionally — not gated on this run's JSONL delta — lets
+it repair divergence left behind by an earlier prune, not just the current one.
 `vacuum_expired()` mirrors `_is_expired` semantics exactly (malformed `expires_at`
-is kept, never deleted).
+is kept, never deleted), summarizing malformed rows in one aggregate warning instead
+of re-logging per row on every run.
 
 ## Write Paths
 
