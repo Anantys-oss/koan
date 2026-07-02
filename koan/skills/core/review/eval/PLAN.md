@@ -66,13 +66,8 @@ encodes the *contract* we want to assert (stable, deterministic, token-free).
 `review_eval.evaluate_review()` layers cross-field rules `validate_review()` can't express:
 - Any `critical`/`warning` finding ⇒ `lgtm` must be `false`.
 - `finding_refs` must be in range of `file_comments`.
-- `file_comments` empty + `lgtm:false` is suspicious: the review flags the PR
-  without any actionable finding (soft warning).
-
-(Severity validity is already enforced structurally by `validate_review`, which
-rejects unknown severities; `evaluate_review` returns early on schema failure, so
-re-checking severities here would be unreachable. The list above is the complete
-implemented surface.)
+- `file_comments` empty ⇒ `lgtm` should be `true` (an LGTM with phantom comments is wrong).
+- Severities all valid (belt-and-suspenders over the schema check).
 
 Fed an **adversarial corpus** of *schema-valid-but-semantically-broken* reviews — these pass
 `validate_review()` but must be flagged by `evaluate_review()`. This guards the eval itself
