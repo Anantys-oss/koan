@@ -69,6 +69,31 @@ koan/skills/core/<name>/
 4. Update `docs/users/user-manual.md` and `docs/users/skills.md`.
 5. Add the per-skill spec in `specs/skills/<name>.md`.
 6. `TestCoreSkillGroupEnforcement` must pass (fails if `group:` is missing).
+7. If the skill is LLM-driven and has a checkable output contract, add eval cases
+   (see "Skill evaluation harness" below).
+
+## Skill evaluation harness
+
+**Module:** `koan/app/skill_evals.py` — a deterministic framework for evaluating
+LLM-driven skills against a checked-in golden dataset, so quality regressions
+are caught in CI and improvements are measurable across prompt iterations.
+
+- **Per-skill data** lives with the skill: `koan/skills/core/<name>/evals/cases/*.json`
+  (golden inputs + expectations) + `evals/baseline.json` (last-known-good live
+  scores).
+- **Scorer dispatch** is keyed by skill name via the `SCORERS` registry
+  (`register_scorer`/`get_scorer`). `review` is registered by default; adding a
+  skill's evals does **not** require editing `run_eval`.
+- **Two modes:** offline (default, CI-safe — scores canned outputs, never calls
+  the Claude subprocess) and live (opt-in via `KOAN_EVAL_LIVE`, composes the
+  skill's real pipeline seams, compares to `baseline.json`, exits non-zero on
+  regression).
+- **Single source of truth:** the review scorer reuses
+  `app.review_schema.validate_review` for validity rather than re-implementing
+  the schema. Other skills reuse their own existing validators the same way.
+
+**Design contract:** `specs/002-review-skill-evals/`. **Operator runbook:**
+`docs/operations/skill-evals.md`.
 
 ## Integration points
 
