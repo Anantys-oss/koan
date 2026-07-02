@@ -22,6 +22,7 @@ Design contract: ``specs/002-review-skill-evals/`` (spec / plan / research).
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -376,6 +377,344 @@ def score_review(case: EvalCase, review: object) -> CaseResult:
 
 # Register the review scorer (default skill).
 register_scorer("review", score_review)
+
+
+# ---------------------------------------------------------------------------
+# Multi-skill scorers (fix / plan / brainstorm / rebase)
+# ---------------------------------------------------------------------------
+#
+# Each scorer reuses its skill's existing validator/parser as the single source
+# of truth (constitution VI) and never raises — every output shape returns a
+# CaseResult. ``valid_json`` generalises to "structurally valid output for this
+# skill's contract"; ``recall`` carries the skill's dominant quality fraction.
+# ``lgtm_correct`` stays None (review-only concept) so it is excluded from
+# lgtm_accuracy.
+
+_VALID_CONFIDENCES = ("HIGH", "MEDIUM", "LOW")
+_VALID_PRIORITIES = ("Immediate", "Prototype First", "Research Further", "Skip")
+_SCORE_AXES = ("Impact", "Difficulty", "Short-Term ROI", "Long-Term Value")
+
+# Canonical headers a well-formed plan MUST contain (see plan-phases-format.md /
+# plan-tail-sections.md). Cases may override via expect.required_sections.
+_DEFAULT_PLAN_SECTIONS = (
+    "### Summary",
+    "### Alternatives Considered",
+    "### File Map",
+    "### Verification Criteria",
+)
+# Placeholders that indicate a non-specific, template-y plan (plan.md "No
+# Placeholders" section). Cases may override via expect.banned_patterns.
+_DEFAULT_BANNED_PLACEHOLDERS = (
+    "TODO", "TBD", "FIXME", "<your", "[project name", "XXX", "lorem ipsum",
+)
+
+
+def _coerce_text(output: object) -> str:
+    """Coerce any scorer output to text (markdown / fenced JSON / etc.)."""
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+    if isinstance(output, dict):
+        for key in ("text", "output", "body", "raw", "plan", "markdown"):
+            v = output.get(key)
+            if isinstance(v, str):
+                return v
+        return json.dumps(output)
+    return str(output)
+
+
+def _extract_first_json(text: str) -> Optional[dict]:
+    """Return the first ``{...}`` JSON object in ``text``, or ``None``."""
+    if not text:
+        return None
+    match = re.search(r"\{[\s\S]*\}", text)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _keyword_recall(text: str, keywords) -> tuple:
+    """Return (matched_count, total) for lowercased keyword stems in text."""
+    kws = [k.lower() for k in (keywords or [])]
+    if not kws:
+        return 0, 0
+    lowered = (text or "").lower()
+    matched = sum(1 for k in kws if k in lowered)
+    return matched, len(kws)
+
+
+def _mean_score(checks: list) -> float:
+    """Equal-weight mean of check pass-states, clamped to [0, 1]."""
+    if not checks:
+        return 0.0
+    return max(0.0, min(1.0, sum(1.0 for c in checks if c.passed) / len(checks)))
+
+
+def score_fix(case: EvalCase, output: object) -> CaseResult:
+    """Score a fix diagnostic dict against the case's expectations.
+
+    ``output`` is the parsed diagnostic from ``fix_diagnose._parse_diagnostic``
+    (``{confidence, hypothesis, code_paths, analysis, raw}``), or malformed.
+    """
+    checks: list = []
+    exp = case.expect.raw or {}
+
+    valid = isinstance(output, dict)
+    checks.append(CaseCheck("valid_output", valid, "diagnostic dict" if valid else "not a dict"))
+
+    confidence = hypothesis = code_paths = ""
+    if valid:
+        confidence = str(output.get("confidence", "") or "").strip().upper()
+        hypothesis = str(output.get("hypothesis", "") or "").strip()
+        code_paths = str(output.get("code_paths", "") or "").strip()
+
+    conf_ok = confidence in _VALID_CONFIDENCES
+    checks.append(CaseCheck("confidence_valid", conf_ok, f"confidence={confidence or '?'}"))
+
+    expected_conf = str(exp.get("expected_confidence", "") or "").upper() or None
+    conf_match = True
+    if expected_conf:
+        conf_match = confidence == expected_conf
+        checks.append(CaseCheck("confidence_match", conf_match, f"expected {expected_conf}"))
+
+    hyp_present = bool(hypothesis)
+    checks.append(CaseCheck("hypothesis_present", hyp_present, f"{len(hypothesis)} chars"))
+
+    hyp_matched, hyp_total = _keyword_recall(hypothesis, exp.get("hypothesis_keywords"))
+    if hyp_total:
+        checks.append(
+            CaseCheck("hypothesis_recall", hyp_matched == hyp_total, f"{hyp_matched}/{hyp_total}")
+        )
+    cp_matched, cp_total = _keyword_recall(code_paths, exp.get("code_path_keywords"))
+    if cp_total:
+        checks.append(
+            CaseCheck("code_path_recall", cp_matched == cp_total, f"{cp_matched}/{cp_total}")
+        )
+
+    recall = (hyp_matched / hyp_total) if hyp_total else (
+        (cp_matched / cp_total) if cp_total else 1.0
+    )
+    passed = valid and conf_ok and hyp_present and conf_match and all(c.passed for c in checks)
+    return CaseResult(
+        case_id=case.id,
+        skill=case.skill,
+        valid_json=valid,
+        recall=round(recall, 4),
+        checks=checks,
+        score=round(_mean_score(checks), 4),
+        passed=passed,
+    )
+
+
+def score_plan(case: EvalCase, output: object) -> CaseResult:
+    """Score plan markdown against the case's expectations.
+
+    ``output`` is the plan markdown (str), or a dict carrying it. Reuses
+    ``parse_plan_progress`` for phase detection (single source of truth).
+    """
+    from app.dashboard_service.plans import parse_plan_progress
+
+    checks: list = []
+    exp = case.expect.raw or {}
+    text = _coerce_text(output)
+
+    required = tuple(exp.get("required_sections") or _DEFAULT_PLAN_SECTIONS)
+    missing = [h for h in required if h not in text]
+    checks.append(
+        CaseCheck("required_sections", not missing, f"{len(required) - len(missing)}/{len(required)}")
+    )
+
+    min_phases = int(exp.get("min_phases", 1) or 0)
+    progress = parse_plan_progress(text)
+    n_phases = progress.get("total", 0)
+    checks.append(CaseCheck("min_phases", n_phases >= min_phases, f"{n_phases}>={min_phases}"))
+
+    banned = tuple(b.lower() for b in (exp.get("banned_patterns") or _DEFAULT_BANNED_PLACEHOLDERS))
+    found_banned = [b for b in banned if b in text.lower()]
+    checks.append(CaseCheck("no_banned_placeholders", not found_banned, f"{len(found_banned)} banned"))
+
+    # A plan's first line is its title (plan-title-instruction.md).
+    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    has_title = bool(first_line) and not first_line.startswith("#")
+    checks.append(CaseCheck("title_present", has_title, "first non-blank line is a title"))
+
+    section_recall = (len(required) - len(missing)) / len(required) if required else 1.0
+    valid = has_title and not missing
+    passed = valid and not found_banned and n_phases >= min_phases
+    return CaseResult(
+        case_id=case.id,
+        skill=case.skill,
+        valid_json=valid,
+        recall=round(section_recall, 4),
+        checks=checks,
+        score=round(_mean_score(checks), 4),
+        passed=passed,
+    )
+
+
+def score_brainstorm(case: EvalCase, output: object) -> CaseResult:
+    """Score a brainstorm decomposition (str or dict) against expectations.
+
+    Reuses ``REQUIRED_ISSUE_SECTIONS`` + ``_validate_issue_bodies`` (single
+    source of truth for the per-issue body contract) and ``_parse_decomposition``
+    for JSON extraction.
+    """
+    from skills.core.brainstorm.brainstorm_runner import (
+        REQUIRED_ISSUE_SECTIONS,
+        _parse_decomposition,
+        _validate_issue_bodies,
+    )
+
+    checks: list = []
+    exp = case.expect.raw or {}
+
+    # Normalize to a parsed decomposition dict.
+    data: Optional[dict]
+    if isinstance(output, dict) and isinstance(output.get("issues"), list):
+        data = output
+    else:
+        raw = _coerce_text(output)
+        try:
+            data = _parse_decomposition(raw) if raw.strip() else None
+        except ValueError:
+            data = None
+    issues_list = data.get("issues") if isinstance(data, dict) else None
+    valid = isinstance(issues_list, list) and bool(issues_list)
+    checks.append(CaseCheck("valid_json", valid, "decomposition parsed" if valid else "unparseable"))
+
+    issues = issues_list if valid else []
+    min_issues = int(exp.get("min_issues", 3) or 0)
+    max_issues = int(exp.get("max_issues", 8) or 0)
+    count_ok = bool(issues) and (not min_issues or len(issues) >= min_issues) and (
+        not max_issues or len(issues) <= max_issues
+    )
+    checks.append(CaseCheck("issue_count", count_ok, f"{len(issues)} issues"))
+
+    # Per-issue required-section coverage (single source of truth).
+    diagnostics = _validate_issue_bodies(issues) if issues else ["no issues"]
+    sections_ok = valid and not diagnostics
+    checks.append(
+        CaseCheck("sections_per_issue", sections_ok, f"{len(diagnostics)} diagnostic(s)")
+    )
+
+    # Priority enum + score bars are content checks inside each issue body.
+    priority_ok = True
+    bars_ok = True
+    for issue in issues:
+        body = str(issue.get("body", "") or "")
+        prio_line = _section_line(body, "## Priority")
+        if not any(p.lower() in prio_line.lower() for p in _VALID_PRIORITIES):
+            priority_ok = False
+        scores_section = _section_text(body, "## Scores")
+        if not all(ax.lower() in scores_section.lower() for ax in _SCORE_AXES):
+            bars_ok = False
+    if issues:
+        checks.append(CaseCheck("priority_valid", priority_ok, "each issue names a priority"))
+        checks.append(CaseCheck("score_bars_present", bars_ok, "4 score axes per issue"))
+
+    # Theme recall across issue titles.
+    titles = " ".join(str(i.get("title", "")) for i in issues)
+    t_matched, t_total = _keyword_recall(titles, exp.get("theme_keywords"))
+    if t_total:
+        checks.append(
+            CaseCheck("theme_recall", t_matched == t_total, f"{t_matched}/{t_total} themes")
+        )
+
+    section_recall = 1.0 - (len(diagnostics) / (len(issues) * len(REQUIRED_ISSUE_SECTIONS))) if (
+        valid and issues
+    ) else 0.0
+    recall = (t_matched / t_total) if t_total else section_recall
+    passed = valid and count_ok and sections_ok and priority_ok and bars_ok and all(
+        c.passed for c in checks
+    )
+    return CaseResult(
+        case_id=case.id,
+        skill=case.skill,
+        valid_json=valid,
+        recall=round(recall, 4),
+        checks=checks,
+        score=round(_mean_score(checks), 4),
+        passed=passed,
+    )
+
+
+def score_rebase(case: EvalCase, output: object) -> CaseResult:
+    """Score a rebase already-solved decision (str or dict) against expectations.
+
+    Honors the production rule in ``rebase_pr._check_if_already_solved``: a PR
+    is "solved" only when ``already_solved`` is true AND ``confidence == "high"``.
+    """
+    checks: list = []
+    exp = case.expect.raw or {}
+
+    if isinstance(output, dict):
+        data = output
+    else:
+        data = _extract_first_json(_coerce_text(output)) or {}
+    valid = bool(data) and "already_solved" in data
+    checks.append(CaseCheck("valid_json", valid, "decision JSON parsed" if valid else "unparseable"))
+
+    already_solved = bool(data.get("already_solved", False))
+    confidence = str(data.get("confidence", "") or "").strip().lower()
+    reasoning = str(data.get("reasoning", "") or "").strip()
+    conf_ok = confidence in ("high", "medium", "low")
+    checks.append(CaseCheck("confidence_valid", conf_ok, f"confidence={confidence or '?'}"))
+
+    # The production decision: high-confidence positive.
+    decided_solved = already_solved and confidence == "high"
+    expect_solved = exp.get("expect_solved")
+    if expect_solved is not None:
+        decision_correct = decided_solved == bool(expect_solved)
+        checks.append(
+            CaseCheck("decision_correct", decision_correct, f"expected_solved={expect_solved}")
+        )
+    else:
+        decision_correct = True
+
+    reasoning_ok = bool(reasoning)
+    checks.append(CaseCheck("reasoning_present", reasoning_ok, f"{len(reasoning)} chars"))
+
+    recall = 1.0 if decision_correct else 0.0
+    passed = valid and conf_ok and reasoning_ok and decision_correct and all(
+        c.passed for c in checks
+    )
+    return CaseResult(
+        case_id=case.id,
+        skill=case.skill,
+        valid_json=valid,
+        recall=round(recall, 4),
+        checks=checks,
+        score=round(_mean_score(checks), 4),
+        passed=passed,
+    )
+
+
+def _section_text(body: str, header: str) -> str:
+    """Return the content under a ``## Header`` until the next ``## `` heading."""
+    idx = body.find(header)
+    if idx < 0:
+        return ""
+    start = idx + len(header)
+    nxt = body.find("\n## ", start)
+    return body[start:] if nxt < 0 else body[start:nxt]
+
+
+def _section_line(body: str, header: str) -> str:
+    """Return the first non-empty content line under a ``## Header``."""
+    return next(
+        (ln.strip() for ln in _section_text(body, header).splitlines() if ln.strip()),
+        "",
+    )
+
+
+register_scorer("fix", score_fix)
+register_scorer("plan", score_plan)
+register_scorer("brainstorm", score_brainstorm)
+register_scorer("rebase", score_rebase)
 
 
 # ---------------------------------------------------------------------------
