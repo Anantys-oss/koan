@@ -1,0 +1,13 @@
+{
+  "id": "null_pointer",
+  "name": "NullPointerException when parsing empty payload",
+  "skill": "fix",
+  "description": "A clear, reproducible crash: the parser dereferences a field that is absent on an empty payload. A high-confidence diagnostic should localize the null dereference to the parser.",
+  "issue_title": "App crashes with NullPointerException on empty upload",
+  "issue_body": "When a user uploads an empty file, the app crashes with a NullPointerException. Stack trace points at the parser reading a field without a null check. Repro: upload a 0-byte file, hit /import.",
+  "expect": {
+    "expected_confidence": "HIGH",
+    "hypothesis_keywords": ["null", "parser"],
+    "code_path_keywords": ["parser"]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "id": "auth_decomposition",
+  "name": "Brainstorm: improve authentication security",
+  "skill": "brainstorm",
+  "description": "A broad topic that should decompose into 3-8 sub-issues covering login, session, and credential rotation. Each issue body must carry all seven required sections, a valid priority, and the four score axes.",
+  "topic": "Improve authentication security across login, session management, and credential handling.",
+  "expect": {
+    "min_issues": 3,
+    "max_issues": 8,
+    "theme_keywords": ["login", "session", "password", "credential", "mfa", "token"]
+  }
+}
