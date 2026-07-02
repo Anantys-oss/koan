@@ -589,7 +589,9 @@ def test_live_eval_against_real_pipeline():
         KOAN_EVAL_LIVE=1 pytest koan/tests/test_skill_evals.py \\
             -m slow -p no:timeout
     """
-    if not skill_evals._is_live_enabled():
+    import os
+
+    if not os.environ.get(skill_evals.LIVE_ENV):
         pytest.skip(f"set {skill_evals.LIVE_ENV}=1 to run the live eval")
 
     import os

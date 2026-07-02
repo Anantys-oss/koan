@@ -216,6 +216,7 @@ For implementation details, see the [architecture reference](docs/architecture/o
 - **Web dashboard** — Local Flask UI for status, missions, chat, and journal browsing
 - **Setup wizard** — Terminal guided setup (`make install`)
 - **4500+ tests** — Comprehensive test suite with `make test`
+- **Skill evals** — Golden-dataset evaluation harness that catches LLM-skill quality regressions in CI and measures improvements across prompt iterations (`docs/operations/skill-evals.md`)
 
 ## Skills
 
