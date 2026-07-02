@@ -79,6 +79,25 @@ def _extract_closing_issue_numbers(body: str) -> set[int]:
     return {int(m) for m in _CLOSING_ISSUE_RE.findall(body)}
 
 
+def _recently_covered(candidate: str, recent_topics: list[str]) -> bool:
+    """True if ``candidate`` appears as a whole phrase in any recent topic.
+
+    Replaces raw substring containment (``candidate in topic``) for the
+    "skip if recently worked on" dedup. Raw containment has two failure modes:
+    a blank candidate matches every topic (``"" in t`` is always True), and a
+    short candidate matches inside a longer word (``"auth"`` in
+    ``"authentication"``). Word-boundary lookarounds (not ``\\b``, which
+    misbehaves when the candidate starts/ends with non-word chars like a file
+    path) require the match to be flanked by non-word characters or string
+    edges, so only genuine whole-phrase overlaps dedup a suggestion.
+    """
+    needle = candidate.strip().lower()
+    if not needle:
+        return False
+    pattern = re.compile(rf"(?<!\w){re.escape(needle)}(?!\w)")
+    return any(pattern.search(t.lower()) for t in recent_topics)
+
+
 def _extract_branch_issue_numbers(branch: str) -> set[int]:
     """Extract issue numbers from branch naming patterns like 'implement-1042'."""
     return {int(m) for m in _BRANCH_ISSUE_RE.findall(branch)}
@@ -449,7 +468,7 @@ class DeepResearch:
             labels = [l.get("name", "") for l in issue.get("labels", [])]
 
             # Skip if recently worked on
-            if any(title.lower() in t.lower() for t in recent_topics):
+            if _recently_covered(title, recent_topics):
                 continue
 
             priority = 2
@@ -470,7 +489,7 @@ class DeepResearch:
         # Priority 2-3: Technical debt items
         for item in priorities.get("technical_debt", []):
             # Skip if recently worked on
-            if any(item.lower() in t.lower() for t in recent_topics):
+            if _recently_covered(item, recent_topics):
                 continue
             # An item the human already annotated as finished (✅/[x]/"done")
             # shouldn't compete for attention as fresh priority-2 work — drop it
@@ -491,7 +510,7 @@ class DeepResearch:
         # Weighted below human priorities (1) but above journal recaps.
         for spot in self._gather_file_hotspots():
             topic = f"Investigate high-churn file: {spot['file']}"
-            if any(spot["file"].lower() in t.lower() for t in recent_topics):
+            if _recently_covered(spot["file"], recent_topics):
                 continue
             suggestions.append({
                 "topic": topic,
