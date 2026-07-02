@@ -1012,6 +1012,10 @@ def get_bash_foreground_timeout_ms() -> int:
     if requested_s <= 0:
         return 0
     mission_s = get_mission_timeout()
+    if mission_s <= 0:
+        # Mission watchdog disabled (unlimited mission time) — no ceiling to
+        # keep a buffer under, so honor the requested value as-is.
+        return requested_s * 1000
     # Keep a 120s reporting buffer under the mission watchdog; never exceed it.
     ceiling_s = max(60, mission_s - 120)
     return min(requested_s, ceiling_s) * 1000

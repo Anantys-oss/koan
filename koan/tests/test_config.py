@@ -1087,6 +1087,15 @@ class TestGetBashForegroundTimeoutMs:
         with _mock_config({"bash_foreground_timeout": 0}):
             assert get_bash_foreground_timeout_ms() == 0
 
+    def test_mission_timeout_zero_is_unbounded(self):
+        """mission_timeout: 0 disables the watchdog — the Bash foreground
+        timeout must honor the requested value as-is, not clamp to 60s."""
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({"mission_timeout": 0,
+                           "bash_foreground_timeout": 900}):
+            assert get_bash_foreground_timeout_ms() == 900_000
+
 
 # --- get_post_mission_timeout ---
 
