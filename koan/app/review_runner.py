@@ -755,9 +755,15 @@ def _review_attribution(project_name: str = "") -> Tuple[str, str]:
     Single source of truth for both the review invocation and the footer
     attribution, so the displayed provider/model can never drift from the
     binary/model actually used.
+
+    ``provider_name`` is the binary basename when the review_mode role pins a
+    custom CLI path (e.g. ``claude-deep`` from ``cli.review_mode:
+    claude:/root/.local/bin/claude-deep``), else the provider flavor name — so
+    the footer advertises the binary that actually ran, not just its flavor.
     """
     from app.cli_provider import resolve_role_provider
     from app.config import get_model_config
+    from app.provider import provider_cli_display
 
     provider = resolve_role_provider("review_mode", project_name)
     models = get_model_config(
@@ -767,7 +773,10 @@ def _review_attribution(project_name: str = "") -> Tuple[str, str]:
             "mission": provider.name,
         },
     )
-    return provider.name, (models.get("review_mode") or models.get("mission", ""))
+    return (
+        provider_cli_display(provider),
+        (models.get("review_mode") or models.get("mission", "")),
+    )
 
 
 def _run_claude_review(

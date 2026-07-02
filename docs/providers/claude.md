@@ -171,6 +171,12 @@ same as `models:`: `mission`, `chat`, `lightweight`, `review_mode`, `reflect`.
 - **`review_mode`** drives `/review`, `/ultrareview`, and every internal review
   call (main pass, reflection, silent-failure hunter, bot-comment triage),
   replacing the old `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`.
+- **Review footer attribution:** the signature Kōan appends to each review
+  (`Automated review by Kōan (… · model …)`) names the CLI that actually ran.
+  With `review_mode: claude:/root/.local/bin/claude-deep` it reads
+  `claude-deep`, not `Claude`; with no custom path it falls back to the
+  provider flavor. The same applies when `KOAN_CLAUDE_CLI_PATH` points the
+  `claude` flavor at a wrapper.
 - **Model coupling:** a role's *model* is read from that role's provider block —
   e.g. with `review_mode: claude`, the review model comes from
   `models.claude.review_mode` (falling back to `models.default.review_mode`). So
