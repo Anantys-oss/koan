@@ -1,0 +1,11 @@
+{
+  "id": "refactor",
+  "name": "Plan: consolidate config loading into one module",
+  "skill": "plan",
+  "description": "A refactoring plan: collapse several scattered config readers into a single accessor with a migration. Expects the same canonical structure; phases may be fewer but at least one.",
+  "idea": "Consolidate the three scattered config-loading paths into one module with a single read path per concern, migrating existing callers.",
+  "expect": {
+    "min_phases": 1,
+    "banned_patterns": ["TODO", "TBD", "FIXME", "<your", "[project name", "XXX", "lorem ipsum"]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "dashboard_feature",
+  "name": "Plan: add a user settings page with persistence",
+  "skill": "plan",
+  "description": "A typical feature plan: a settings page backed by a persistence layer. A well-formed plan must carry the canonical sections, at least two implementation phases, a file map, and no placeholders.",
+  "idea": "Add a user settings page that persists theme, notification, and language preferences, with a migration for the new preferences table.",
+  "expect": {
+    "required_sections": [
+      "### Summary",
+      "### Alternatives Considered",
+      "### File Map",
+      "### Verification Criteria"
+    ],
+    "min_phases": 2,
+    "banned_patterns": ["TODO", "TBD", "FIXME", "<your", "[project name", "XXX", "lorem ipsum"]
+  }
+}
