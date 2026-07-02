@@ -52,6 +52,29 @@ focus passes (architecture, silent-failure hunting, comment quality, plan alignm
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
 
+## Evaluation
+
+The review skill is the first skill covered by the deterministic eval harness
+(`koan/app/skill_evals.py`; design in `specs/002-review-skill-evals/`).
+
+- **Golden dataset:** `koan/skills/core/review/evals/cases/*.json` — seeded-bug
+  cases (`sql_injection`, `bare_except`, `hardcoded_secret`) that must produce a
+  finding at the right severity, and precision cases (`clean_refactor`,
+  `benign_style`) that must LGTM without false positives.
+- **Scored dimensions:** JSON/schema validity (via `validate_review`), recall of
+  seeded findings (file + keyword-stem + severity-band match), LGTM correctness,
+  and precision (no flags on `forbidden_files`).
+- **CI:** the offline scorer + dataset-validity tests run in the `fast` group on
+  every PR — they never call the Claude subprocess.
+- **Live:** `KOAN_EVAL_LIVE=1 python -m app.skill_evals review --live` invokes
+  the real review pipeline over the dataset and compares against
+  `evals/baseline.json`; run this before/after a prompt change to confirm an
+  improvement (or catch a regression, which exits non-zero).
+
+**Contract:** changing the review output schema (`review_schema.py`) or the
+prompt (`review.md`) MUST be reflected in the golden cases / baseline so the eval
+keeps measuring real behaviour.
+
 ## Known debt / watch-outs
 
 - Focus flags compose; stacking many passes multiplies token cost.

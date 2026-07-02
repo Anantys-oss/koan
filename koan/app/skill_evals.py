@@ -1,0 +1,723 @@
+"""Kōan — skill evaluation harness.
+
+A lightweight, deterministic framework for evaluating LLM-driven skills against
+a checked-in golden dataset. Shipped first for the ``review`` skill; extensible
+to other skills via the :data:`SCORERS` registry.
+
+Two modes:
+
+- **Offline (default, CI-safe):** :func:`score_review` / :func:`run_eval` score
+  canned outputs against :class:`EvalCase` expectations. Never calls the Claude
+  subprocess — the offline tests exercise the scorer directly with inline
+  fixtures, so they run in the ``fast`` CI group.
+- **Live (opt-in, ``KOAN_EVAL_LIVE``):** :func:`review_live_fn` invokes the real
+  review pipeline through the *existing* seams (``build_review_prompt`` →
+  ``_run_claude_review`` → ``_parse_review_json``), scores every case, and
+  compares against a checked-in ``baseline.json`` so review-quality regressions
+  are caught and improvements are measurable across prompt iterations.
+
+Design contract: ``specs/002-review-skill-evals/`` (spec / plan / research).
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Optional
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+_APP_DIR = Path(__file__).resolve().parent
+_SKILLS_CORE_DIR = _APP_DIR.parent / "skills" / "core"
+_REVIEW_EVALS_DIR = _SKILLS_CORE_DIR / "review" / "evals"
+
+# Env var that must be set to allow any live (LLM-touching) eval. Default
+# operation is fully offline so CI never invokes the Claude subprocess.
+LIVE_ENV = "KOAN_EVAL_LIVE"
+
+# Severity bands the review schema permits (mirror of review_schema.py). Kept
+# here only to validate case expectations at load time, not to re-implement the
+# schema (FR-002: validate_review stays the single source of truth).
+_VALID_SEVERITIES = ("critical", "warning", "suggestion")
+
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FindingExpect:
+    """One expected finding the review SHOULD surface for a case.
+
+    A review ``file_comments`` entry *matches* this expectation when:
+
+    - its ``file`` equals ``file`` (exact — diffs pin paths), AND
+    - its lowercased ``comment`` contains any ``keywords`` stem (when any are
+      given), AND
+    - its ``severity`` is in ``severity_in`` (when the band is constrained).
+    """
+
+    file: str
+    keywords: tuple = ()
+    severity_in: Optional[tuple] = None
+
+
+@dataclass
+class CaseExpect:
+    """Ground-truth expectations for a case's review output."""
+
+    expect_lgtm: Optional[bool] = None
+    min_findings: int = 0
+    require_valid_json: bool = True
+    expect_findings: list = field(default_factory=list)
+    forbidden_files: list = field(default_factory=list)
+
+
+@dataclass
+class EvalCase:
+    """A single golden eval case."""
+
+    id: str
+    diff: str
+    expect: CaseExpect
+    name: str = ""
+    skill: str = "review"
+    description: str = ""
+
+
+@dataclass
+class CaseCheck:
+    """One named pass/fail check within a scored case."""
+
+    name: str
+    passed: bool
+    detail: str = ""
+
+
+@dataclass
+class CaseResult:
+    """The scored outcome for one case."""
+
+    case_id: str
+    skill: str
+    valid_json: bool = False
+    schema_errors: list = field(default_factory=list)
+    recall: float = 0.0
+    lgtm_correct: Optional[bool] = None
+    precision_penalty: int = 0
+    checks: list = field(default_factory=list)
+    score: float = 0.0
+    passed: bool = False
+    errored: bool = False
+    error: str = ""
+
+
+@dataclass
+class EvalReport:
+    """Aggregate outcome over a set of scored cases."""
+
+    skill: str
+    results: list = field(default_factory=list)
+
+    # -- aggregate views -------------------------------------------------
+
+    @property
+    def total(self) -> int:
+        return len(self.results)
+
+    @property
+    def scored(self) -> list:
+        """Non-errored results (the ones with meaningful metrics)."""
+        return [r for r in self.results if not r.errored]
+
+    @property
+    def errored(self) -> list:
+        return [r for r in self.results if r.errored]
+
+    @property
+    def pass_rate(self) -> float:
+        if not self.results:
+            return 0.0
+        return sum(1 for r in self.results if r.passed) / len(self.results)
+
+    @property
+    def valid_json_rate(self) -> float:
+        s = self.scored
+        if not s:
+            return 0.0
+        return sum(1 for r in s if r.valid_json) / len(s)
+
+    @property
+    def mean_recall(self) -> float:
+        s = self.scored
+        if not s:
+            return 0.0
+        return sum(r.recall for r in s) / len(s)
+
+    @property
+    def mean_score(self) -> float:
+        s = self.scored
+        if not s:
+            return 0.0
+        return sum(r.score for r in s) / len(s)
+
+    @property
+    def lgtm_accuracy(self) -> float:
+        """Fraction of constrained cases that got ``lgtm`` right.
+
+        Only counts cases whose expectation sets ``expect_lgtm``; unconstrained
+        cases are excluded. Returns 0.0 when no case constrains it.
+        """
+        constrained = [r for r in self.scored if r.lgtm_correct is not None]
+        if not constrained:
+            return 0.0
+        return sum(1 for r in constrained if r.lgtm_correct) / len(constrained)
+
+    def metrics(self) -> dict:
+        """Numeric metrics dict (for baseline comparison / JSON dump)."""
+        return {
+            "valid_json_rate": round(self.valid_json_rate, 4),
+            "mean_recall": round(self.mean_recall, 4),
+            "lgtm_accuracy": round(self.lgtm_accuracy, 4),
+            "mean_score": round(self.mean_score, 4),
+            "pass_rate": round(self.pass_rate, 4),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Scorer registry (extensibility seam — FR-011, US3)
+# ---------------------------------------------------------------------------
+
+ScorerFn = Callable[[EvalCase, Optional[dict]], CaseResult]
+
+SCORERS: dict = {}
+
+
+def register_scorer(skill: str, fn: ScorerFn) -> None:
+    """Register a scorer for a skill name."""
+    SCORERS[skill] = fn
+
+
+def get_scorer(skill: str) -> ScorerFn:
+    try:
+        return SCORERS[skill]
+    except KeyError as exc:
+        raise ValueError(
+            f"no scorer registered for skill {skill!r}; "
+            f"known: {sorted(SCORERS)}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Scoring (deterministic, pure) — research.md §6
+# ---------------------------------------------------------------------------
+
+# Blend weights for the continuous score. Validity and recall weighted highest
+# because those are the regressions that matter most; ``lgtm`` is neutral (0.5)
+# when a case does not constrain it.
+_W_VALID = 0.4
+_W_RECALL = 0.4
+_W_LGTM = 0.2
+_PENALTY_FORBIDDEN = 0.25
+
+
+def _finding_matched(fexp: FindingExpect, comments: list) -> bool:
+    """True if any comment entry satisfies this finding expectation."""
+    for c in comments:
+        if not isinstance(c, dict):
+            continue
+        if c.get("file") != fexp.file:
+            continue
+        if fexp.severity_in and c.get("severity") not in fexp.severity_in:
+            continue
+        if fexp.keywords:
+            text = str(c.get("comment", "")).lower()
+            if not any(k in text for k in fexp.keywords):
+                continue
+        return True
+    return False
+
+
+def score_review(case: EvalCase, review: object) -> CaseResult:
+    """Score a review-output dict against a case's expectations.
+
+    ``review`` may be a dict, ``None``, or any non-dict (malformed); all paths
+    return a :class:`CaseResult` and never raise.
+    """
+    checks: list = []
+
+    # -- validity (single source of truth: review_schema.validate_review) --
+    if isinstance(review, dict):
+        from app.review_schema import validate_review
+
+        valid_json, errors = validate_review(review)
+    else:
+        valid_json, errors = False, ["review output is not a JSON object"]
+    checks.append(
+        CaseCheck("valid_json", valid_json, "; ".join(errors) if errors else "ok")
+    )
+
+    comments = []
+    if valid_json and isinstance(review, dict):
+        comments = review.get("file_comments") or []
+
+    # -- recall --
+    expected = case.expect.expect_findings or []
+    if expected:
+        matched = sum(1 for fexp in expected if _finding_matched(fexp, comments))
+        recall = matched / len(expected)
+    else:
+        # No findings expected: recall is vacuously satisfied.
+        matched, recall = 0, 1.0
+    checks.append(
+        CaseCheck("recall", recall >= 1.0, f"{matched}/{len(expected)} matched")
+    )
+
+    # -- lgtm correctness --
+    if case.expect.expect_lgtm is None:
+        lgtm_correct: Optional[bool] = None
+    elif valid_json and isinstance(review, dict):
+        actual = bool(
+            (review.get("review_summary") or {}).get("lgtm", False)
+        )
+        lgtm_correct = actual == case.expect.expect_lgtm
+    else:
+        # An invalid review can never match a concrete lgtm expectation.
+        lgtm_correct = False
+    if case.expect.expect_lgtm is not None:
+        checks.append(
+            CaseCheck(
+                "lgtm",
+                bool(lgtm_correct),
+                f"expected lgtm={case.expect.expect_lgtm}",
+            )
+        )
+
+    # -- precision (forbidden files flagged as buggy) --
+    flagged_files = {c.get("file") for c in comments if isinstance(c, dict)}
+    penalty = sum(
+        1 for ff in (case.expect.forbidden_files or []) if ff in flagged_files
+    )
+    checks.append(
+        CaseCheck("precision", penalty == 0, f"{penalty} forbidden flag(s)")
+    )
+
+    # -- min_findings --
+    n_findings = len(comments)
+    if case.expect.min_findings:
+        checks.append(
+            CaseCheck(
+                "min_findings",
+                n_findings >= case.expect.min_findings,
+                f"{n_findings}>={case.expect.min_findings}",
+            )
+        )
+
+    # -- continuous score --
+    lgtm_component = {True: 1.0, False: 0.0, None: 0.5}[lgtm_correct]
+    score = (
+        _W_VALID * (1.0 if valid_json else 0.0)
+        + _W_RECALL * recall
+        + _W_LGTM * lgtm_component
+        - _PENALTY_FORBIDDEN * penalty
+    )
+    score = max(0.0, min(1.0, score))
+
+    passed = (
+        valid_json
+        and recall >= 1.0
+        and lgtm_correct in (None, True)
+        and penalty == 0
+        and n_findings >= case.expect.min_findings
+    )
+
+    return CaseResult(
+        case_id=case.id,
+        skill=case.skill,
+        valid_json=valid_json,
+        schema_errors=list(errors),
+        recall=round(recall, 4),
+        lgtm_correct=lgtm_correct,
+        precision_penalty=penalty,
+        checks=checks,
+        score=round(score, 4),
+        passed=passed,
+    )
+
+
+# Register the review scorer (default skill).
+register_scorer("review", score_review)
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
+
+
+def _errored_result(case: EvalCase, error: str) -> CaseResult:
+    return CaseResult(
+        case_id=case.id,
+        skill=case.skill,
+        errored=True,
+        error=error,
+        checks=[CaseCheck("invoke", False, error)],
+    )
+
+
+def run_eval(cases: list, review_fn: Callable[[EvalCase], Optional[dict]]) -> EvalReport:
+    """Score every case via ``review_fn`` and aggregate a report.
+
+    ``review_fn(case)`` must return a review-output dict (or ``None``). A return
+    of ``None`` or a raised exception records the case as ``errored`` and the
+    run continues — a single failure never aborts the eval (FR-007).
+    """
+    if not cases:
+        return EvalReport(skill="mixed", results=[])
+
+    results: list = []
+    for case in cases:
+        scorer = get_scorer(case.skill)
+        try:
+            review = review_fn(case)
+        except Exception as exc:  # eval must survive any review_fn failure
+            results.append(_errored_result(case, str(exc)))
+            continue
+        results.append(scorer(case, review))
+
+    skills = {c.skill for c in cases}
+    skill = next(iter(skills)) if len(skills) == 1 else "mixed"
+    return EvalReport(skill=skill, results=results)
+
+
+# ---------------------------------------------------------------------------
+# Case loading
+# ---------------------------------------------------------------------------
+
+
+def _resolve_cases_dir(skill_or_dir: str) -> Path:
+    """Resolve a skill name or explicit dir to its ``cases/`` directory."""
+    candidate = Path(skill_or_dir)
+    if candidate.is_dir():
+        return candidate
+    # Treat as a skill name under skills/core/<name>/evals/cases.
+    return _SKILLS_CORE_DIR / skill_or_dir / "evals" / "cases"
+
+
+def _case_from_dict(data: dict, source: str) -> EvalCase:
+    """Build an :class:`EvalCase` from parsed JSON, validating structure."""
+    cid = data.get("id")
+    if not cid:
+        raise ValueError(f"{source}: missing required 'id'")
+    if not isinstance(data.get("diff"), str) or not data["diff"].strip():
+        raise ValueError(f"{source} ({cid}): 'diff' must be a non-empty string")
+    raw_expect = data.get("expect")
+    if not isinstance(raw_expect, dict):
+        raise ValueError(f"{source} ({cid}): 'expect' must be an object")
+
+    expect = CaseExpect(
+        expect_lgtm=raw_expect.get("expect_lgtm"),
+        min_findings=int(raw_expect.get("min_findings", 0) or 0),
+        require_valid_json=bool(raw_expect.get("require_valid_json", True)),
+        forbidden_files=list(raw_expect.get("forbidden_files") or []),
+    )
+
+    findings: list = []
+    for i, f in enumerate(raw_expect.get("expect_findings") or []):
+        if not isinstance(f, dict) or not f.get("file"):
+            raise ValueError(
+                f"{source} ({cid}): expect_findings[{i}] needs a 'file'"
+            )
+        sev = f.get("severity_in")
+        if sev is not None:
+            sev_list = list(sev)
+            bad = [s for s in sev_list if s not in _VALID_SEVERITIES]
+            if bad:
+                raise ValueError(
+                    f"{source} ({cid}): expect_findings[{i}] invalid "
+                    f"severity_in {bad}; allowed {list(_VALID_SEVERITIES)}"
+                )
+        keywords = tuple(k.lower() for k in (f.get("keywords") or []))
+        findings.append(
+            FindingExpect(
+                file=f["file"], keywords=keywords, severity_in=tuple(sev) if sev else None
+            )
+        )
+    expect.expect_findings = findings
+
+    return EvalCase(
+        id=cid,
+        diff=data["diff"],
+        expect=expect,
+        name=data.get("name") or cid,
+        skill=data.get("skill") or "review",
+        description=data.get("description") or "",
+    )
+
+
+def load_cases(skill_or_dir: str) -> list:
+    """Discover and parse all ``cases/*.json`` for a skill (FR-006).
+
+    ``skill_or_dir`` is either a skill name (resolved to
+    ``skills/core/<name>/evals/cases``) or an explicit directory path. Raises
+    ``ValueError`` with the offending file + reason on any malformed case.
+    """
+    cases_dir = _resolve_cases_dir(skill_or_dir)
+    if not cases_dir.is_dir():
+        raise ValueError(f"cases directory not found: {cases_dir}")
+    files = sorted(cases_dir.glob("*.json"))
+    # baseline.json (and other non-case JSON) live in the parent evals/ dir,
+    # not cases/, so we don't filter it out here.
+    if not files:
+        raise ValueError(f"no *.json cases found in {cases_dir}")
+    cases: list = []
+    for fp in files:
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ValueError(f"{fp.name}: invalid JSON ({exc})") from exc
+        cases.append(_case_from_dict(data, source=fp.name))
+    return cases
+
+
+# ---------------------------------------------------------------------------
+# Live adapter (opt-in) — composes the existing review seams (FR-008)
+# ---------------------------------------------------------------------------
+
+
+def build_minimal_review_context(case: EvalCase) -> dict:
+    """Build the PR-context dict ``build_review_prompt`` requires from a case."""
+    return {
+        "title": case.name or case.id,
+        "author": "eval",
+        "branch": "eval-branch",
+        "base": "main",
+        "body": case.description or "",
+        "diff": case.diff,
+        "review_comments": "",
+        "reviews": "",
+        "issue_comments": "",
+    }
+
+
+def review_live_fn(
+    case: EvalCase,
+    project_path: str,
+    *,
+    _build=None,
+    _run=None,
+    _parse=None,
+) -> Optional[dict]:
+    """Invoke the real review pipeline on a case and return its review dict.
+
+    Composes ``build_review_prompt`` → ``_run_claude_review`` →
+    ``_parse_review_json``. The three seams are injectable (``_build``/``_run``
+    /``_parse``) so the logic is unit-testable without the Claude subprocess;
+    in live mode they default to the real functions.
+
+    ``project_path`` is passed to ``_run_claude_review`` (the CLI cwd, so the
+    reviewer can Read/Grep the codebase like a real review) but NOT to
+    ``build_review_prompt`` (memory injection disabled), keeping the eval
+    hermetic — it does not depend on the operator's ``learnings.md``.
+    """
+    from app.review_runner import (
+        _parse_review_json,
+        _run_claude_review,
+        build_review_prompt,
+    )
+
+    build = _build or build_review_prompt
+    run = _run or _run_claude_review
+    parse = _parse or _parse_review_json
+
+    skill_dir = _SKILLS_CORE_DIR / case.skill
+    context = build_minimal_review_context(case)
+    prompt = build(context, skill_dir=skill_dir, project_path=None)
+    raw, error = run(prompt, project_path)
+    if error:
+        raise RuntimeError(f"review invocation failed: {error}")
+    return parse(raw)
+
+
+# ---------------------------------------------------------------------------
+# Baseline comparison (FR-009)
+# ---------------------------------------------------------------------------
+
+_EPS = 1e-9
+
+
+def _metric_status(current: float, baseline: object) -> str:
+    if baseline is None:
+        return "new"
+    try:
+        b = float(baseline)
+    except (TypeError, ValueError):
+        return "new"
+    if current > b + _EPS:
+        return "improved"
+    if current < b - _EPS:
+        return "regressed"
+    return "unchanged"
+
+
+def compare_to_baseline(report: EvalReport, baseline_path: Optional[str]) -> dict:
+    """Compare a report's metrics to a checked-in baseline.
+
+    Returns ``{status, per_metric, current, baseline}``. A missing/malformed
+    baseline yields ``status="no_baseline"`` (the caller may write the current
+    run as the new baseline via :func:`write_baseline`).
+    """
+    current = report.metrics()
+    if not baseline_path or not Path(baseline_path).exists():
+        return {"status": "no_baseline", "per_metric": {}, "current": current, "baseline": {}}
+    try:
+        data = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"status": "no_baseline", "per_metric": {}, "current": current, "baseline": {}}
+    base = data.get("metrics", {}) if isinstance(data, dict) else {}
+    per_metric = {k: _metric_status(v, base.get(k)) for k, v in current.items()}
+    if any(s == "regressed" for s in per_metric.values()):
+        status = "regressed"
+    elif any(s == "improved" for s in per_metric.values()):
+        status = "improved"
+    else:
+        status = "unchanged"
+    return {"status": status, "per_metric": per_metric, "current": current, "baseline": base}
+
+
+def write_baseline(report: EvalReport, baseline_path: str) -> None:
+    """Persist a report's metrics as the new baseline."""
+    payload = {"skill": report.skill, "metrics": report.metrics(), "updated": _today()}
+    Path(baseline_path).write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def _today() -> str:
+    """ISO date string (factored out so tests can monkeypatch)."""
+    import datetime
+
+    return datetime.date.today().isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
+
+
+def format_report(report: EvalReport, comparison: Optional[dict] = None) -> str:
+    """Render a human-readable eval report."""
+    lines = [f"# Eval report — skill: {report.skill}"]
+    lines.append(f"cases: {report.total}  passed: {sum(1 for r in report.results if r.passed)}")
+    if report.errored:
+        lines.append(f"errored: {len(report.errored)}")
+    lines.append("")
+    lines.append("## Aggregate metrics")
+    for k, v in report.metrics().items():
+        lines.append(f"  {k}: {v}")
+    if comparison:
+        lines.append("")
+        lines.append(f"## Baseline: {comparison.get('status')}")
+        for k, s in (comparison.get("per_metric") or {}).items():
+            lines.append(f"  {k}: {s}")
+    lines.append("")
+    lines.append("## Per-case")
+    for r in report.results:
+        if r.errored:
+            lines.append(f"  [{r.case_id}] ERRORED — {r.error}")
+            continue
+        flag = "PASS" if r.passed else "FAIL"
+        checks = ", ".join(
+            f"{c.name}={'y' if c.passed else 'n'}" for c in r.checks
+        )
+        lines.append(
+            f"  [{r.case_id}] {flag}  score={r.score}  recall={r.recall}  ({checks})"
+        )
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _is_live_enabled() -> bool:
+    import os
+
+    return bool(os.environ.get(LIVE_ENV))
+
+
+def main(argv: Optional[list] = None) -> int:
+    """CLI entry: ``python -m app.skill_evals <skill> [--live] [...]``."""
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(
+        prog="app.skill_evals",
+        description="Evaluate an LLM skill against its golden dataset.",
+    )
+    parser.add_argument("skill", help="skill name (e.g. review) or a cases/ dir")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="invoke the real review pipeline (requires KOAN_EVAL_LIVE)",
+    )
+    parser.add_argument(
+        "--project-path",
+        default=None,
+        help="project path passed to the review CLI (codebase context)",
+    )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        help="path to baseline.json (default: <skill>/evals/baseline.json)",
+    )
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="write the current run's metrics as the new baseline",
+    )
+    args = parser.parse_args(argv)
+
+    cases = load_cases(args.skill)
+    skill = cases[0].skill if cases else args.skill
+
+    if not args.live:
+        # Offline: validate the dataset and report its shape (the scorer itself
+        # is exercised by the pytest suite with inline fixtures).
+        print(f"Loaded {len(cases)} case(s) for skill '{skill}'.")
+        for c in cases:
+            print(f"  - {c.id}: {c.name}")
+        print("Offline mode: dataset valid. Use --live (KOAN_EVAL_LIVE) to score.")
+        return 0
+
+    if not _is_live_enabled():
+        print(
+            f"Refusing --live without {LIVE_ENV}=1: live eval calls the Claude "
+            "subprocess and must be opt-in."
+        )
+        return 2
+
+    project_path = args.project_path or os.getcwd()
+    baseline = args.baseline or str(_SKILLS_CORE_DIR / skill / "evals" / "baseline.json")
+
+    report = run_eval(cases, lambda c: review_live_fn(c, project_path))
+    comparison = compare_to_baseline(report, baseline)
+
+    if args.update_baseline:
+        write_baseline(report, baseline)
+        print(f"Baseline written to {baseline}")
+
+    print(format_report(report, comparison))
+
+    # Exit non-zero on regression (FR-009) or any hard error.
+    if comparison.get("status") == "regressed":
+        return 1
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

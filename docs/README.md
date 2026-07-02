@@ -39,6 +39,7 @@ memory, or integration changes:
 - [GitHub Webhooks](messaging/github-webhooks.md)
 - [PR Activity Reports](operations/pr-reports.md)
 - [Memory Watchdog](operations/memory-watchdog.md)
+- [Skill Evaluation Harness](operations/skill-evals.md) — golden-dataset evals for LLM skills (regression detection + improvement measurement)
 - [Messaging Level (bridge verbosity)](messaging/messaging-level.md)
 - [Design Decisions](design/decisions.md)
 
