@@ -959,6 +959,15 @@ memory_monitor:
 #   enabled: false        # Master switch (default: false)
 #   max_comments: 25      # Cap inline threads posted per review (default: 25)
 
+# Review draft-PR gate — when the bot is attached as a PR reviewer, defer the
+# automatic /review while the PR is in draft state (the author marked it not
+# ready). Off by default: draft PRs are reviewed as today. When enabled, the
+# review fires once GitHub re-fires review_requested after the PR is marked
+# ready for review. This only gates the "bot attached as reviewer" path — an
+# explicit /review (chat or GitHub @mention) is ALWAYS honored regardless.
+# review_draft_skip:
+#   enabled: false          # Defer auto-review of draft PRs (default: false)
+
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention
 # notifications (reason: mention or review_requested). Requires github_url

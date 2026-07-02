@@ -1637,6 +1637,13 @@ review_history:
   preserve_previous: false   # Keep the previous review comment intact (default: false)
 ```
 
+**Draft-PR review gate (opt-in):** By default Kōan reviews a PR as soon as it is attached as a reviewer, whether or not the PR is a draft. Set `review_draft_skip.enabled: true` to defer that automatic review while a PR is in draft state — the author has marked it not-ready, so the bot waits. When the PR is later marked ready for review, GitHub re-fires the review request and Kōan reviews it on the next poll. This gates **only** the "bot attached as reviewer" path: an explicit `/review` from chat or a GitHub `@mention` is always honored immediately, regardless of this flag or the PR's draft state. A deferred review sends one info message so you know it was intentionally postponed (not dropped).
+
+```yaml
+review_draft_skip:
+  enabled: false          # Defer auto-review of draft PRs (default: false)
+```
+
 ### Custom Skills
 
 Kōan's skill system is fully extensible. Install skills from Git repos or create your own.
