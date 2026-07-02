@@ -513,6 +513,22 @@ models:
   #   review_mode: "glm-5:cloud"
   #   reflect: "glm-5:cloud"
 
+# Reasoning effort (optional) — sets the Claude Code `--effort` flag
+# (low/medium/high/max). Omit the section to keep the DYNAMIC default: effort
+# is then picked from the current budget mode (review→low, deep→high, else
+# none) so cheap audits and deep reasoning cost what they should.
+#
+# Keys below are MISSION TYPES (plan/review/rebase/recreate/implement/refactor/
+# audit/check/maintenance/pr/chat/incident), not budget modes. A pinned type
+# wins over the dynamic default regardless of the mode the mission runs in —
+# so `review: low` keeps every /review cheap even when budget is flush.
+#
+# A single string applies to all missions; an empty value disables the flag.
+# effort:
+#   review: low          # always review cheaply
+#   plan: high           # think hard when planning
+#   implement: medium
+
 # Per-role CLI provider (optional) — parallel to `models:`.
 # Pick a DIFFERENT provider (and optionally a custom binary) for each mission
 # role. Each value is a flavor (claude/codex/copilot/cline/ollama-launch) or

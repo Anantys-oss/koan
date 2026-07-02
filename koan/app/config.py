@@ -1204,6 +1204,9 @@ def get_notify_mission_results() -> bool:
 # Keys are autonomous modes, values are Claude CLI --effort levels.
 # "medium" is the provider default when no flag is passed — omitted here
 # so no flag is emitted unless the user configures an override.
+# This is the *dynamic* default: when ``effort:`` is absent from config.yaml,
+# effort is picked from the current budget mode — review reads cheap, deep
+# reasons hard. Per-mission-type overrides (see get_effort) layer on top.
 _DEFAULT_EFFORT_MAP = {
     "review": "low",
     "implement": "",
@@ -1214,25 +1217,70 @@ _DEFAULT_EFFORT_MAP = {
 _VALID_EFFORT_LEVELS = {"low", "medium", "high", "max", ""}
 
 
-def get_effort_for_mode(autonomous_mode: str = "") -> str:
-    """Get the reasoning effort level for the given autonomous mode.
+def _resolve_effort_dict(
+    effort_config: dict, autonomous_mode: str, mission_type: str
+) -> Optional[str]:
+    """Resolve an effort level from a mapping ``effort:`` config.
 
-    Reads ``effort:`` section from config.yaml. Supports per-mode overrides:
+    Returns the level string when a config match is found, or ``None`` when
+    nothing in config applies (caller falls back to the dynamic default).
 
+    Resolution order:
+      1. ``effort.<mission_type>`` — explicit per-mission-type pin. A present
+         key wins even when empty ("" disables the flag for that type); an
+         *invalid* value is ignored so the pin silently no-ops.
+      2. ``effort.<autonomous_mode>`` — legacy per-budget-mode override.
+    """
+    # 1. Per-mission-type override (the user-facing axis).
+    if mission_type and mission_type in effort_config:
+        level = str(effort_config.get(mission_type, "")).strip().lower()
+        if level in _VALID_EFFORT_LEVELS:
+            return level
+    # 2. Legacy per-mode override (e.g. effort.deep / effort.wait).
+    if autonomous_mode and autonomous_mode in effort_config:
+        level = str(effort_config.get(autonomous_mode, "")).strip().lower()
+        if level in _VALID_EFFORT_LEVELS:
+            return level
+    return None
+
+
+def get_effort(autonomous_mode: str = "", mission_type: str = "") -> str:
+    """Get the reasoning effort level for a mission.
+
+    Reads the ``effort:`` section from config.yaml. The *dynamic* default —
+    effort picked from the current budget mode via ``_DEFAULT_EFFORT_MAP`` —
+    is preserved unless config pins a value.
+
+    Config shapes (mapping keys are **mission types**, matching
+    ``session_tracker.classify_mission_type``: plan/review/rebase/implement/
+    refactor/audit/check/maintenance/pr/chat/incident/freetext/autonomous):
+
+        # Per mission type — wins over the dynamic default
         effort:
           review: low
+          plan: high
           implement: medium
-          deep: high
 
-    Or a single value to apply to all modes:
-
+        # Single value applied to every mission
         effort: high
 
-    Set ``effort: ""`` or omit the section entirely to disable effort
-    control (no ``--effort`` flag will be emitted).
+        # Empty string disables the --effort flag entirely
+        effort: ""
+
+    Resolution order:
+      1. ``effort.<mission_type>`` when set (e.g. all /review missions → low,
+         regardless of the budget mode they happen to run in).
+      2. ``effort.<autonomous_mode>`` when set (legacy per-budget-mode pin).
+      3. ``_DEFAULT_EFFORT_MAP[autonomous_mode]`` — the dynamic default.
+
+    A single-string config is validated whole: an invalid value (not
+    low/medium/high/max/"") disables the flag, matching the legacy behavior.
 
     Args:
-        autonomous_mode: Current mode (review/implement/deep/wait).
+        autonomous_mode: Current budget mode (review/implement/deep/wait).
+        mission_type: Mission category from classify_mission_type. Optional;
+            when empty, only the mode-based paths apply (preserving the
+            pre-mission-type behavior).
 
     Returns:
         Effort level string (e.g. "low", "high", "max") or empty string.
@@ -1241,23 +1289,31 @@ def get_effort_for_mode(autonomous_mode: str = "") -> str:
     effort_config = config.get("effort")
 
     if effort_config is None:
-        # No config — use defaults
+        # No config — dynamic default by budget mode.
         return _DEFAULT_EFFORT_MAP.get(autonomous_mode, "")
 
     if isinstance(effort_config, str):
-        # Single value for all modes
+        # Single value for everything; invalid → disable (legacy behavior).
         level = effort_config.strip().lower()
         return level if level in _VALID_EFFORT_LEVELS else ""
 
     if isinstance(effort_config, dict):
-        # Per-mode overrides
-        level = str(effort_config.get(autonomous_mode, "")).strip().lower()
-        if level in _VALID_EFFORT_LEVELS:
-            return level
-        # Fall back to defaults if mode not in config
-        return _DEFAULT_EFFORT_MAP.get(autonomous_mode, "")
+        resolved = _resolve_effort_dict(effort_config, autonomous_mode, mission_type)
+        if resolved is not None:
+            return resolved
 
-    return ""
+    # Mapping with no applicable key — dynamic default by budget mode.
+    return _DEFAULT_EFFORT_MAP.get(autonomous_mode, "")
+
+
+def get_effort_for_mode(autonomous_mode: str = "") -> str:
+    """Get the reasoning effort level for the given autonomous mode.
+
+    Backward-compatible wrapper around :func:`get_effort` for callers that
+    do not know the mission type. Prefer ``get_effort(...)`` at mission build
+    time so per-mission-type config is honored.
+    """
+    return get_effort(autonomous_mode, mission_type="")
 
 
 # -- Thinking / extended reasoning configuration ----------------------------

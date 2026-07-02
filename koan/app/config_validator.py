@@ -16,6 +16,16 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.run_log import log
 
+# Valid effort levels for the Claude Code --effort flag (empty disables).
+# Shared with config.py; mirrored here to keep the validator dependency-free.
+_EFFORT_LEVEL_VALUES = {"low", "medium", "high", "max"}
+
+# Top-level keys whose nested contents are validated inline (not via
+# SECTION_SCHEMAS), because the sub-key set is open. ``effort`` keys are
+# mission types — an open set that grows as new skills land — so each key
+# is accepted and only its value (an effort level) is checked.
+_INLINE_VALIDATED_NESTED_KEYS = {"effort"}
+
 
 # ---------------------------------------------------------------------------
 # Schema definition
@@ -264,11 +274,6 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "automation_rules": {
         "max_fires_per_minute": "int",
     },
-    "effort": {
-        "review": "str",
-        "implement": "str",
-        "deep": "str",
-    },
     "thinking": {
         "enabled": "bool",
         "budget_tokens": "int",
@@ -392,6 +397,30 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                 if key == "effort" and isinstance(value, str):
                     continue
                 warnings.append((key, f"'{key}' should be a mapping, got {type(value).__name__}"))
+                continue
+            # effort: keys are mission types (plan/review/implement/…) plus
+            # legacy budget modes (deep/wait) — an open set that grows as new
+            # skills land. Accept any key; validate the VALUE is a real effort
+            # level (low/medium/high/max, or "" to disable the flag).
+            if key == "effort":
+                for sub_key, sub_value in value.items():
+                    path = f"effort.{sub_key}"
+                    if sub_value is None:
+                        continue
+                    if not isinstance(sub_value, str):
+                        warnings.append((
+                            path,
+                            f"'{path}' should be one of low/medium/high/max, "
+                            f"got {type(sub_value).__name__}",
+                        ))
+                        continue
+                    level = sub_value.strip().lower()
+                    if level and level not in _EFFORT_LEVEL_VALUES:
+                        warnings.append((
+                            path,
+                            f"'{path}' invalid effort '{sub_value}' "
+                            f"(expected low/medium/high/max)",
+                        ))
                 continue
             section_schema = SECTION_SCHEMAS.get(key)
             if section_schema:

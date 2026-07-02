@@ -246,11 +246,17 @@ def spawn_session(
     session_cli_provider = get_provider_for_role(effective_role, project_name)
 
     # Build CLI command
+    try:
+        from app.session_tracker import classify_mission_type
+        _mission_type = classify_mission_type(mission_text)
+    except Exception:
+        _mission_type = ""
     cmd, cmd_cleanup_paths = build_mission_command(
         prompt=mission_text,
         autonomous_mode=autonomous_mode,
         project_name=project_name,
         provider_override=session_cli_provider,
+        mission_type=_mission_type,
     )
 
     # Create temp files for stdout/stderr

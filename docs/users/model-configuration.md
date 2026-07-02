@@ -77,6 +77,36 @@ The role's **model** is then read from that role's provider block above. With
 `cli.fallback` provider (launch/auth-failure recovery), are in
 [../providers/claude.md](../providers/claude.md).
 
+## Reasoning effort per mission type (the `effort:` section)
+
+The Claude provider accepts an `--effort` flag (`low`/`medium`/`high`/`max`)
+that trades cost for reasoning depth. By default Kōan picks effort **dynamically
+from the current budget mode**: `review` → `low`, `deep` → `high`, otherwise no
+flag (provider default). This keeps cheap audits cheap and deep reasoning deep,
+and is left untouched when you omit the `effort:` section.
+
+To pin effort **per mission type**, add an `effort:` section. Keys are mission
+types — the `/command` categories Kōan classifies internally (`plan`, `review`,
+`rebase`, `recreate`, `implement`, `refactor`, `audit`, `check`, `maintenance`,
+`pr`, `chat`, `incident`) — not budget modes:
+
+```yaml
+effort:
+  review: low          # always review cheaply, even when budget is flush
+  plan: high           # think hard when planning
+  implement: medium
+```
+
+A pinned type wins over the dynamic default regardless of the budget mode the
+mission happens to run in — so `review: low` keeps every `/review` cheap.
+Resolution order: `effort.<mission_type>` → `effort.<budget_mode>` (legacy) →
+dynamic default. A single string (`effort: high`) applies to all missions; an
+empty value (`effort: ""` or `effort: { review: "" }`) disables the flag.
+
+> Note: effort is a no-op when extended thinking is active for a mission
+> (thinking already implies max effort) and is ignored by providers whose CLI
+> has no `--effort` flag.
+
 ## Migrating from the legacy layout
 
 Earlier versions used a flat `models:` block plus top-level `models_for_{provider}`
