@@ -1581,11 +1581,23 @@ class TestCodexProvider:
 
     def test_check_quota_exhausted(self):
         from app.provider.codex import CodexProvider
-        r = MagicMock(stdout="", stderr="rate limit", returncode=1)
+        r = MagicMock(stdout="", stderr="rate limit exceeded", returncode=1)
         with patch("app.provider.codex.subprocess.run", return_value=r), \
              patch("app.quota_handler.detect_quota_exhaustion", return_value=True):
             ok, msg = CodexProvider().check_quota_available("/tmp")
         assert ok is False
+
+    def test_check_quota_ignores_healthy_rate_limit_telemetry(self):
+        """A bare 'rate limit' mention is healthy telemetry, not exhaustion.
+
+        Regression for the codex quota regex tightening: plain 'rate limit'
+        (without exceeded/reached/rejected/error) must not pause the daemon.
+        """
+        from app.provider.codex import CodexProvider
+        r = MagicMock(stdout="", stderr="rate limit", returncode=1)
+        with patch("app.provider.codex.subprocess.run", return_value=r):
+            ok, _ = CodexProvider().check_quota_available("/tmp")
+        assert ok is True
 
     def test_check_quota_timeout_optimistic(self):
         import subprocess as sp
