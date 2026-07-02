@@ -1912,6 +1912,32 @@ class TestReviewInlineCommentsConfig:
         assert cfg["max_comments"] == 25
 
 
+class TestReviewDraftSkipConfig:
+    def test_disabled_by_default(self):
+        from app.config import get_review_draft_skip_config
+        with _mock_config({}):
+            cfg = get_review_draft_skip_config()
+        assert cfg["enabled"] is False
+
+    def test_opt_in(self):
+        from app.config import get_review_draft_skip_config
+        with _mock_config({"review_draft_skip": {"enabled": True}}):
+            cfg = get_review_draft_skip_config()
+        assert cfg["enabled"] is True
+
+    def test_malformed_section_disabled(self):
+        from app.config import get_review_draft_skip_config
+        with _mock_config({"review_draft_skip": "nonsense"}):
+            cfg = get_review_draft_skip_config()
+        assert cfg["enabled"] is False
+
+    def test_non_bool_enabled_disabled(self):
+        from app.config import get_review_draft_skip_config
+        with _mock_config({"review_draft_skip": {"enabled": "yes"}}):
+            cfg = get_review_draft_skip_config()
+        assert cfg["enabled"] is False
+
+
 class TestMemoryMonitorConfig:
     def test_defaults(self):
         from app.config import get_memory_monitor_config
