@@ -43,6 +43,25 @@ batch-queue fix missions for all open issues in a repo.
 - PR-URL redirect must keep `ctx` intact so `--now` and post-URL context survive.
 - Always draft PR on `<prefix>/*`.
 
+## Evaluation
+
+The `fix` skill is covered by the eval harness (`koan/app/skill_evals.py`;
+design in `specs/003-core-skill-evals/`).
+
+- **What's scored:** the pre-fix diagnostic's structured output
+  (`fix_diagnose._parse_diagnostic` → `{confidence, hypothesis, code_paths}`):
+  confidence validity + match, hypothesis presence + keyword recall, code-path
+  keyword recall.
+- **Golden dataset:** `koan/skills/core/fix/evals/cases/*.json` — `null_pointer`
+  (HIGH), `race_condition` (MEDIUM), `vague_report` (LOW precision trap).
+- **CI:** offline scorer + dataset-validity tests run in the `fast` group and
+  never call the Claude subprocess.
+- **Live:** `KOAN_EVAL_LIVE=1 python -m app.skill_evals fix --live` runs the real
+  diagnostic over the dataset and compares to `evals/baseline.json`.
+
+**Contract:** changing the diagnostic output shape (`fix_diagnose.py`) or its
+prompt MUST be reflected in the golden cases / baseline.
+
 ## Known debt / watch-outs
 
 - The issue-vs-PR branch is URL-shape-driven; `github_url_parser` is the single

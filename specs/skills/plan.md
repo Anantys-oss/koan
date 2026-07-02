@@ -43,6 +43,25 @@ existing issue. Plans become the contract `implement`/`fix` work against.
 - Only the final iteration is posted — intermediate critic passes are internal.
 - `find_existing_plan_issue()` is consulted before creating a duplicate plan issue.
 
+## Evaluation
+
+The `plan` skill is covered by the eval harness (`koan/app/skill_evals.py`;
+design in `specs/003-core-skill-evals/`).
+
+- **What's scored:** the plan markdown — required-section presence (`### Summary`,
+  `### Alternatives Considered`, `### File Map`, `### Verification Criteria`),
+  min-phase count via `parse_plan_progress` (`#### Phase N:`), banned-placeholder
+  absence (`TODO`/`TBD`/`FIXME`/…), and a title first line.
+- **Golden dataset:** `koan/skills/core/plan/evals/cases/*.json` —
+  `dashboard_feature`, `refactor`, `bugfix_plan`.
+- **CI:** offline scorer + dataset-validity tests run in the `fast` group and
+  never call the Claude subprocess.
+- **Live:** `KOAN_EVAL_LIVE=1 python -m app.skill_evals plan --live` builds the
+  plan prompt and runs it over the dataset, comparing to `evals/baseline.json`.
+
+**Contract:** changing the plan output format (`prompts/plan.md` or the
+`_partials/plan-*` sections) MUST be reflected in the golden cases / baseline.
+
 ## Known debt / watch-outs
 
 - Iteration cost scales linearly; surface the cost expectation to users.
