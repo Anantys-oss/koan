@@ -443,6 +443,20 @@ class TestCodexQuotaDetection:
             exit_code=1,
         ) is True
 
+    def test_ignores_allowed_rate_limit_marker(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="",
+            stderr_text="[cli] rate_limit_ok: allowed (five_hour)",
+            exit_code=0,
+        ) is False
+
+    def test_ignores_monthly_credit_remaining_meter(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text="",
+            stderr_text="Monthly credit limit:   [###################.] 94% left",
+            exit_code=0,
+        ) is False
+
     def test_detects_structured_error_event(self):
         stdout = json.dumps({
             "type": "error",
