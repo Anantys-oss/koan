@@ -944,6 +944,139 @@ def get_live_fn(skill: str) -> Optional[Callable]:
     return globals().get(name)
 
 
+def _default_run(prompt: str, project_path: str, *, allowed_tools=None,
+                 model_key: str = "chat", max_turns: int = 5,
+                 timeout: int = 120) -> str:
+    """Live-mode default CLI runner (only invoked under KOAN_EVAL_LIVE).
+
+    Thin wrapper over ``run_command_streaming`` so each adapter states its
+    tool/model needs explicitly instead of duplicating the call. Never reached
+    by the offline suite.
+    """
+    from app.cli_provider import run_command_streaming
+
+    return run_command_streaming(
+        prompt,
+        project_path,
+        allowed_tools=list(allowed_tools or []),
+        model_key=model_key,
+        max_turns=max_turns,
+        timeout=timeout,
+    )
+
+
+def fix_live_fn(case: EvalCase, project_path: str, *, _diagnose=None) -> Optional[dict]:
+    """Invoke the real fix diagnostic on a case, returning the parsed dict.
+
+    Composes ``fix_diagnose.run_diagnostic``. ``_diagnose`` is injectable so the
+    wiring (issue fields pulled from ``case.input``) is unit-testable without
+    the Claude subprocess; in live mode it defaults to the real function, which
+    returns a LOW-confidence diagnostic on any CLI failure (never raises).
+    """
+    from skills.core.fix.fix_diagnose import run_diagnostic
+
+    inp = case.input
+    issue_title = inp.get("issue_title") or case.name or case.id
+    issue_body = inp.get("issue_body") or case.description or ""
+    diagnose = _diagnose or run_diagnostic
+    return diagnose(
+        project_path, "", issue_title, issue_body, "",
+        skill_dir=_SKILLS_CORE_DIR / "fix",
+    )
+
+
+def brainstorm_live_fn(
+    case: EvalCase, project_path: str, *, _build=None, _run=None, _parse=None
+) -> Optional[dict]:
+    """Invoke the real brainstorm decomposition on a case, returning parsed JSON.
+
+    Composes ``_build_decompose_prompt`` → ``_call_claude_with_prompt`` →
+    ``_parse_decomposition``. All three seams are injectable for offline tests.
+    A parse failure raises ``ValueError`` (recorded as an errored case by
+    :func:`run_eval`).
+    """
+    from skills.core.brainstorm.brainstorm_runner import (
+        _build_decompose_prompt,
+        _call_claude_with_prompt,
+        _parse_decomposition,
+    )
+
+    skill_dir = _SKILLS_CORE_DIR / "brainstorm"
+    topic = case.input.get("topic") or case.description or case.name
+    build = _build or _build_decompose_prompt
+    run = _run or _call_claude_with_prompt
+    parse = _parse or _parse_decomposition
+    prompt = build(topic, skill_dir)
+    raw = run(prompt, project_path)
+    return parse(raw or "")
+
+
+def plan_live_fn(case: EvalCase, project_path: str, *, _run=None) -> str:
+    """Invoke the real plan pipeline on a case, returning the plan markdown.
+
+    Builds the plan prompt via ``load_prompt_or_skill`` and runs the CLI.
+    ``_run`` is injectable for offline tests; in live mode it defaults to a
+    read-only planning invocation.
+    """
+    from app.prompts import load_prompt_or_skill
+
+    skill_dir = _SKILLS_CORE_DIR / "plan"
+    idea = case.input.get("idea") or case.description or case.name
+    prompt = load_prompt_or_skill(
+        skill_dir, "plan", IDEA=idea, CONTEXT="", PROJECT_MEMORY=""
+    )
+    run = _run or _default_run
+    if _run is not None:
+        return run(prompt, project_path)
+    return run(
+        prompt, project_path,
+        allowed_tools=["Glob", "Grep", "Read"],
+        model_key="mission", max_turns=8, timeout=180,
+    )
+
+
+def rebase_live_fn(
+    case: EvalCase, project_path: str, *, _run=None, _parse=None
+) -> Optional[dict]:
+    """Invoke the real rebase already-solved check on a case, returning the JSON.
+
+    Builds the ``already_solved`` prompt and runs the CLI (no tools, matching
+    ``rebase_pr._check_if_already_solved``), then extracts the first JSON
+    object. ``_run``/``_parse`` are injectable for offline tests.
+    """
+    from app.prompts import load_prompt_or_skill
+
+    skill_dir = _SKILLS_CORE_DIR / "rebase"
+    inp = case.input
+    prompt = load_prompt_or_skill(
+        skill_dir, "already_solved",
+        TITLE=inp.get("pr_title") or case.name or "",
+        BRANCH=inp.get("pr_branch") or "eval-branch",
+        BASE=inp.get("pr_base") or "main",
+        BODY=inp.get("pr_body") or case.description or "",
+        DIFF=inp.get("pr_diff") or "",
+        RECENT_COMMITS=inp.get("recent_commits") or "",
+    )
+    run = _run or _default_run
+    parse = _parse or _extract_first_json
+    if _run is not None:
+        raw = run(prompt, project_path)
+    else:
+        raw = run(prompt, project_path, allowed_tools=[], model_key="review",
+                  max_turns=3, timeout=120)
+    return parse(raw or "")
+
+
+# Register the live adapters. Values are attribute names resolved at call time
+# by get_live_fn (see LIVE_FNS comment above).
+LIVE_FNS.update({
+    "fix": "fix_live_fn",
+    "plan": "plan_live_fn",
+    "brainstorm": "brainstorm_live_fn",
+    "rebase": "rebase_live_fn",
+})
+
+
 # ---------------------------------------------------------------------------
 # Baseline comparison (FR-009)
 # ---------------------------------------------------------------------------
