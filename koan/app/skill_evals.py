@@ -43,6 +43,16 @@ LIVE_ENV = "KOAN_EVAL_LIVE"
 # schema (FR-002: validate_review stays the single source of truth).
 _VALID_SEVERITIES = ("critical", "warning", "suggestion")
 
+# Core skills deliberately NOT covered by golden-dataset evals, with the reason.
+# These have no LLM-driven, checkable structured-output contract:
+#   - `implement` is orchestration: run_implement() returns (success, summary),
+#     mutates files + opens a PR — there is no structured artifact to score.
+#   - `mission` is a pure-Python queue utility (no LLM at all).
+# Fabricating a dataset for them would measure nothing real (constitution VII).
+# Their quality bar is upheld by behavioural unit tests instead. Pinned by a
+# guard test so the exclusion is intentional, not silently absent.
+EVAL_EXEMPT_SKILLS = ("implement", "mission")
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -68,22 +78,37 @@ class FindingExpect:
 
 @dataclass
 class CaseExpect:
-    """Ground-truth expectations for a case's review output."""
+    """Ground-truth expectations for a case's output.
+
+    The typed fields below describe the ``review`` skill's contract. Other
+    skills carry their own expectations in :attr:`raw` (the original parsed
+    ``expect`` JSON), which each per-skill scorer reads directly — this avoids a
+    new dataclass per skill while keeping review's typed access.
+    """
 
     expect_lgtm: Optional[bool] = None
     min_findings: int = 0
     require_valid_json: bool = True
     expect_findings: list = field(default_factory=list)
     forbidden_files: list = field(default_factory=list)
+    raw: dict = field(default_factory=dict)
 
 
 @dataclass
 class EvalCase:
-    """A single golden eval case."""
+    """A single golden eval case.
+
+    ``diff`` is the ``review`` skill's input (a code diff). Other skills carry
+    their inputs in :attr:`input` — e.g. ``issue_title``/``issue_body`` for
+    ``fix``, ``idea`` for ``plan``, ``topic`` for ``brainstorm``, PR-context
+    keys (``pr_title``/``pr_body``/``pr_diff``/``recent_commits``) for ``rebase``.
+    A case MUST carry at least one of ``diff`` or ``input`` (enforced at load).
+    """
 
     id: str
-    diff: str
     expect: CaseExpect
+    diff: str = ""
+    input: dict = field(default_factory=dict)
     name: str = ""
     skill: str = "review"
     description: str = ""
@@ -192,7 +217,7 @@ class EvalReport:
 # Scorer registry (extensibility seam — FR-011, US3)
 # ---------------------------------------------------------------------------
 
-ScorerFn = Callable[[EvalCase, Optional[dict]], CaseResult]
+ScorerFn = Callable[[EvalCase, object], CaseResult]
 
 SCORERS: dict = {}
 
@@ -412,8 +437,19 @@ def _case_from_dict(data: dict, source: str) -> EvalCase:
     cid = data.get("id")
     if not cid:
         raise ValueError(f"{source}: missing required 'id'")
-    if not isinstance(data.get("diff"), str) or not data["diff"].strip():
-        raise ValueError(f"{source} ({cid}): 'diff' must be a non-empty string")
+    diff = data.get("diff", "")
+    if not isinstance(diff, str):
+        raise ValueError(f"{source} ({cid}): 'diff' must be a string")
+    # Skill-specific inputs: every top-level key that is not reserved flows into
+    # EvalCase.input (e.g. issue_title/issue_body for fix, idea for plan, topic
+    # for brainstorm, pr_* keys for rebase). review uses `diff` and has none.
+    reserved = {"id", "name", "skill", "description", "diff", "expect"}
+    inputs = {k: v for k, v in data.items() if k not in reserved}
+    if not diff.strip() and not inputs:
+        raise ValueError(
+            f"{source} ({cid}): a case needs a non-empty 'diff' and/or at "
+            f"least one skill-input key (found neither)"
+        )
     raw_expect = data.get("expect")
     if not isinstance(raw_expect, dict):
         raise ValueError(f"{source} ({cid}): 'expect' must be an object")
@@ -423,6 +459,7 @@ def _case_from_dict(data: dict, source: str) -> EvalCase:
         min_findings=int(raw_expect.get("min_findings", 0) or 0),
         require_valid_json=bool(raw_expect.get("require_valid_json", True)),
         forbidden_files=list(raw_expect.get("forbidden_files") or []),
+        raw=dict(raw_expect),
     )
 
     findings: list = []
@@ -450,7 +487,8 @@ def _case_from_dict(data: dict, source: str) -> EvalCase:
 
     return EvalCase(
         id=cid,
-        diff=data["diff"],
+        diff=diff,
+        input=inputs,
         expect=expect,
         name=data.get("name") or cid,
         skill=data.get("skill") or "review",
@@ -540,6 +578,31 @@ def review_live_fn(
     if error:
         raise RuntimeError(f"review invocation failed: {error}")
     return parse(raw)
+
+
+# ---------------------------------------------------------------------------
+# Live-adapter registry (FR-005, US3)
+# ---------------------------------------------------------------------------
+
+# Maps skill → the live-adapter attribute name on THIS module. Values are names
+# (not bound functions) resolved via get_live_fn at call time, so a test can
+# monkeypatch ``skill_evals.<adapter>`` and the CLI observes the stub — matching
+# the existing review live-fn test. Adapters are added per skill below.
+LIVE_FNS: dict = {
+    "review": "review_live_fn",
+}
+
+
+def get_live_fn(skill: str) -> Optional[Callable]:
+    """Resolve a skill's live adapter at call time, or ``None`` if it has none.
+
+    Returning ``None`` (rather than guessing) lets the CLI report "no live
+    adapter" honestly for skills without one (FR-005).
+    """
+    name = LIVE_FNS.get(skill)
+    if name is None:
+        return None
+    return globals().get(name)
 
 
 # ---------------------------------------------------------------------------
@@ -663,12 +726,12 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument(
         "--live",
         action="store_true",
-        help="invoke the real review pipeline (requires KOAN_EVAL_LIVE)",
+        help="invoke the skill's real pipeline via its live adapter (requires KOAN_EVAL_LIVE)",
     )
     parser.add_argument(
         "--project-path",
         default=None,
-        help="project path passed to the review CLI (codebase context)",
+        help="project path passed to the live adapter (codebase context)",
     )
     parser.add_argument(
         "--baseline",
@@ -704,7 +767,14 @@ def main(argv: Optional[list] = None) -> int:
     project_path = args.project_path or os.getcwd()
     baseline = args.baseline or str(_SKILLS_CORE_DIR / skill / "evals" / "baseline.json")
 
-    report = run_eval(cases, lambda c: review_live_fn(c, project_path))
+    live_fn = get_live_fn(skill)
+    if live_fn is None:
+        print(
+            f"No live adapter for skill {skill!r}; this skill is offline-only "
+            f"(evaluates canned outputs via its scorer)."
+        )
+        return 2
+    report = run_eval(cases, lambda c: live_fn(c, project_path))
     comparison = compare_to_baseline(report, baseline)
 
     if args.update_baseline:
