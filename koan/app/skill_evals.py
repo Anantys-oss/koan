@@ -425,16 +425,22 @@ def _coerce_text(output: object) -> str:
 
 
 def _extract_first_json(text: str) -> Optional[dict]:
-    """Return the first ``{...}`` JSON object in ``text``, or ``None``."""
+    """Return the first JSON object in ``text``, or ``None``.
+
+    Tries the flat-object regex first (``\\{[^{}]*\\}``) to mirror production
+    ``rebase_pr._check_if_already_solved`` extraction (single source of truth),
+    then falls back to a greedy object scan for robustness. Returns the first
+    match that parses; ``None`` if none do.
+    """
     if not text:
         return None
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        return None
-    try:
-        return json.loads(match.group(0))
-    except (json.JSONDecodeError, ValueError):
-        return None
+    for pattern in (r"\{[^{}]*\}", r"\{[\s\S]*\}"):
+        for match in re.finditer(pattern, text):
+            try:
+                return json.loads(match.group(0))
+            except (json.JSONDecodeError, ValueError):
+                continue
+    return None
 
 
 def _keyword_recall(text: str, keywords) -> tuple:
@@ -559,9 +565,12 @@ def score_plan(case: EvalCase, output: object) -> CaseResult:
 def score_brainstorm(case: EvalCase, output: object) -> CaseResult:
     """Score a brainstorm decomposition (str or dict) against expectations.
 
-    Reuses ``REQUIRED_ISSUE_SECTIONS`` + ``_validate_issue_bodies`` (single
-    source of truth for the per-issue body contract) and ``_parse_decomposition``
-    for JSON extraction.
+    Reuses ``REQUIRED_ISSUE_SECTIONS`` + ``_validate_issue_bodies`` as the single
+    source of truth for the per-issue body *section* contract, and
+    ``_parse_decomposition`` for JSON extraction. The priority-enum and
+    score-axis content checks are eval-only — production has no validator for
+    them (only the prompt + retry reminder document them), so this scorer is
+    their first mechanical check.
     """
     from skills.core.brainstorm.brainstorm_runner import (
         REQUIRED_ISSUE_SECTIONS,
@@ -587,6 +596,10 @@ def score_brainstorm(case: EvalCase, output: object) -> CaseResult:
     checks.append(CaseCheck("valid_json", valid, "decomposition parsed" if valid else "unparseable"))
 
     issues = issues_list if valid else []
+    # Non-dict issue items are malformed data — coerce before the validator
+    # (which calls .get on each item) so the scorer never raises. They count
+    # against section coverage instead.
+    safe_issues = [i for i in issues if isinstance(i, dict)]
     min_issues = int(exp.get("min_issues", 3) or 0)
     max_issues = int(exp.get("max_issues", 8) or 0)
     count_ok = bool(issues) and (not min_issues or len(issues) >= min_issues) and (
@@ -595,16 +608,21 @@ def score_brainstorm(case: EvalCase, output: object) -> CaseResult:
     checks.append(CaseCheck("issue_count", count_ok, f"{len(issues)} issues"))
 
     # Per-issue required-section coverage (single source of truth).
-    diagnostics = _validate_issue_bodies(issues) if issues else ["no issues"]
+    malformed = len(issues) - len(safe_issues)
+    diagnostics = _validate_issue_bodies(safe_issues) if safe_issues else ["no issues"]
+    if malformed:
+        diagnostics = [*diagnostics, f"{malformed} malformed issue(s)"]
     sections_ok = valid and not diagnostics
     checks.append(
         CaseCheck("sections_per_issue", sections_ok, f"{len(diagnostics)} diagnostic(s)")
     )
 
     # Priority enum + score bars are content checks inside each issue body.
+    # NOTE: production has no validator for these (only the prompt + retry
+    # reminder document them), so these are eval-only content checks.
     priority_ok = True
     bars_ok = True
-    for issue in issues:
+    for issue in safe_issues:
         body = str(issue.get("body", "") or "")
         prio_line = _section_line(body, "## Priority")
         if not any(p.lower() in prio_line.lower() for p in _VALID_PRIORITIES):
@@ -617,7 +635,7 @@ def score_brainstorm(case: EvalCase, output: object) -> CaseResult:
         checks.append(CaseCheck("score_bars_present", bars_ok, "4 score axes per issue"))
 
     # Theme recall across issue titles.
-    titles = " ".join(str(i.get("title", "")) for i in issues)
+    titles = " ".join(str(i.get("title", "")) for i in safe_issues)
     t_matched, t_total = _keyword_recall(titles, exp.get("theme_keywords"))
     if t_total:
         checks.append(
@@ -750,7 +768,13 @@ def run_eval(cases: list, review_fn: Callable[[EvalCase], Optional[dict]]) -> Ev
         except Exception as exc:  # eval must survive any review_fn failure
             results.append(_errored_result(case, str(exc)))
             continue
-        results.append(scorer(case, review))
+        try:
+            # A scorer must never raise (never-raise contract), but wrap it so a
+            # bug in one scorer records one errored case instead of aborting the
+            # whole run (FR-007: a single failure never aborts the eval).
+            results.append(scorer(case, review))
+        except Exception as exc:  # pragma: no cover - defensive
+            results.append(_errored_result(case, f"scorer raised: {exc}"))
 
     skills = {c.skill for c in cases}
     skill = next(iter(skills)) if len(skills) == 1 else "mixed"

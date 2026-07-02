@@ -247,6 +247,24 @@ class TestRunEval:
         assert rep.results == []
         assert rep.mean_recall == 0.0
 
+    def test_scorer_exception_is_isolated_not_abort(self):
+        # A scorer that raises must record one errored case, not abort the run.
+        def boom(case, out):
+            raise RuntimeError("scorer blew up")
+
+        register_scorer("boom_skill", boom)
+        try:
+            rep = run_eval(
+                [EvalCase(id="x", skill="boom_skill", expect=CaseExpect(raw={})),
+                 _sqli_case()],
+                lambda c: {},
+            )
+            assert len(rep.errored) == 1
+            assert "scorer raised" in rep.errored[0].error
+            assert rep.total == 2  # the review case still ran
+        finally:
+            skill_evals.SCORERS.pop("boom_skill", None)
+
 
 class TestScorerRegistry:
     def test_unknown_skill_raises(self):
@@ -882,6 +900,14 @@ class TestScoreRebase:
         r = score_rebase(case, {"already_solved": True, "confidence": "high", "reasoning": "r"})
         assert r.passed is True
 
+    def test_nested_json_extracts_flat_like_production(self):
+        # Production's flat-object regex grabs the inner object (no
+        # already_solved key) from nested JSON → treated as a negative. The
+        # scorer matches that extraction (single source of truth).
+        case = _rebase_case(expect_solved=False)
+        r = score_rebase(case, 'noise {"already_solved": true, "meta": {"x": 1}} tail')
+        assert r.valid_json is False
+
 
 class TestScorerRobustness:
     """Every scorer must return a CaseResult (never raise) on any input shape."""
@@ -904,6 +930,15 @@ class TestScorerRobustness:
     def test_fix_none_input_is_invalid(self):
         r = score_fix(EvalCase(id="x", skill="fix", expect=CaseExpect(raw={})), None)
         assert r.valid_json is False
+
+    def test_brainstorm_non_dict_issues_never_raises(self):
+        case = EvalCase(id="b", skill="brainstorm", input={"topic": "x"},
+                        expect=CaseExpect(raw={}))
+        for bad in ({"issues": ["str"]}, {"issues": [1, 2]},
+                    {"issues": [{"title": "t"}, "bad"]}):
+            r = score_brainstorm(case, bad)
+            assert isinstance(r, CaseResult)
+            assert r.passed is False  # malformed issue items fail section coverage
 
 
 # ===========================================================================

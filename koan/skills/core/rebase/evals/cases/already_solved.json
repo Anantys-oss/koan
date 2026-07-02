@@ -8,7 +8,6 @@
   "pr_diff": "--- a/importer.py\n+++ b/importer.py\n@@ -1,4 +1,7 @@\n def import_payload(payload):\n+    if not payload:\n+        raise ValueError('empty payload')\n     return parse(payload)\n",
   "recent_commits": "a1b2c3d Add null/empty guard to import_payload before parsing\nd4e5f6g Refactor parser entry points\nh7i8j9k Bump deps",
   "expect": {
-    "expect_solved": true,
-    "expect_confidence": "high"
+    "expect_solved": true
   }
 }

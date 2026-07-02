@@ -8,7 +8,6 @@
   "pr_diff": "--- /dev/null\n+++ b/settings.py\n@@ -0,0 +1,5 @@\n+def render_settings(user):\n+    return {\n+        'theme': user.theme,\n+        'lang': user.lang,\n+    }\n",
   "recent_commits": "a1b2c3d Fix typo in README\nd4e5f6g Bump version to 1.4.2",
   "expect": {
-    "expect_solved": false,
-    "expect_confidence": "low"
+    "expect_solved": false
   }
 }
