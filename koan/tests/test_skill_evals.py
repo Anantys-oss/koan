@@ -883,6 +883,29 @@ class TestScoreRebase:
         assert r.passed is True
 
 
+class TestScorerRobustness:
+    """Every scorer must return a CaseResult (never raise) on any input shape."""
+
+    @pytest.mark.parametrize("fn", [score_fix, score_plan, score_brainstorm, score_rebase])
+    def test_none_input_does_not_raise(self, fn):
+        case = EvalCase(id="x", skill="x", input={"idea": "i"}, expect=CaseExpect(raw={}))
+        r = fn(case, None)
+        assert isinstance(r, CaseResult)
+        assert r.passed is False
+        assert r.valid_json is False
+
+    @pytest.mark.parametrize("fn", [score_plan, score_rebase])
+    def test_empty_string_does_not_raise(self, fn):
+        case = EvalCase(id="x", skill="x", input={"idea": "i"}, expect=CaseExpect(raw={}))
+        r = fn(case, "")
+        assert isinstance(r, CaseResult)
+        assert r.passed is False
+
+    def test_fix_none_input_is_invalid(self):
+        r = score_fix(EvalCase(id="x", skill="fix", expect=CaseExpect(raw={})), None)
+        assert r.valid_json is False
+
+
 # ===========================================================================
 # Datasets (US1) — validity + offline CLI for the four skills
 # ===========================================================================
