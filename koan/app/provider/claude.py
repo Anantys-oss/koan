@@ -1,9 +1,12 @@
 """Claude Code CLI provider implementation."""
 
 import os
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.provider.base import CLIProvider
+
+_ROOT_SKIP_PERMISSIONS_WARNED = False  # Module-level guard to warn once per process
 
 
 class ClaudeProvider(CLIProvider):
@@ -35,9 +38,27 @@ class ClaudeProvider(CLIProvider):
         return True
 
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
-        if skip_permissions:
-            return ["--dangerously-skip-permissions"]
-        return []
+        if not skip_permissions:
+            return []
+        # The Claude CLI refuses --dangerously-skip-permissions under
+        # root/sudo (a security boundary), so drop the flag and warn the
+        # operator once that skip_permissions: true is not being honored.
+        # Root handling lives here, not in config.get_skip_permissions():
+        # the restriction is Claude-CLI-specific, and other providers must
+        # keep honoring the setting when running as root.
+        if os.geteuid() == 0:
+            global _ROOT_SKIP_PERMISSIONS_WARNED
+            if not _ROOT_SKIP_PERMISSIONS_WARNED:
+                _ROOT_SKIP_PERMISSIONS_WARNED = True
+                print(
+                    f"[{self.name}] skip_permissions: true is ignored when "
+                    "running as root (the Claude CLI refuses "
+                    "--dangerously-skip-permissions under root/sudo); "
+                    "continuing without the flag.",
+                    file=sys.stderr,
+                )
+            return []
+        return ["--dangerously-skip-permissions"]
 
     def build_system_prompt_args(self, system_prompt: str) -> List[str]:
         if system_prompt:

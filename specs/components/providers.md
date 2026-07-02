@@ -63,6 +63,13 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   when no commits were produced. Quota still pauses; transient errors still use
   the in-place retry. Do not widen this to quota — that would double-spend across
   subscriptions and change the pause contract.
+- **Root handling for `skip_permissions` is Claude-specific.** The Claude CLI
+  refuses `--dangerously-skip-permissions` under root/sudo, so
+  `ClaudeProvider.build_permission_args()` (inherited by `OllamaLaunchProvider`)
+  drops the flag under euid 0 with a once-per-process warning.
+  `config.get_skip_permissions()` stays a pure config read — moving the root
+  check there would silently strip Codex full access and Cline auto-approve
+  for root deployments, whose CLIs accept the setting.
 - **Tool-name vocabularies differ per provider.** Copilot maps its own names; the
   abstraction must translate, not leak provider-specific tool names upward.
 - **Quota/usage extraction is provider-specific.** Claude exposes usage in

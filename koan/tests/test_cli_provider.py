@@ -27,6 +27,14 @@ from app.cli_provider import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _non_root_euid():
+    """ClaudeProvider drops --dangerously-skip-permissions under root; pin a
+    non-root euid so assertions don't depend on who runs the suite."""
+    with patch("app.provider.claude.os.geteuid", return_value=1000):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Package structure
 # ---------------------------------------------------------------------------
@@ -261,6 +269,25 @@ class TestClaudeProvider:
     def test_build_command_without_skip_permissions(self):
         cmd = self.provider.build_command(prompt="hello", skip_permissions=False)
         assert "--dangerously-skip-permissions" not in cmd
+
+    def test_permission_args_under_root_drop_flag_and_warn_once(self, capsys, monkeypatch):
+        import app.provider.claude as claude_module
+
+        monkeypatch.setattr(claude_module, "_ROOT_SKIP_PERMISSIONS_WARNED", False)
+        with patch("app.provider.claude.os.geteuid", return_value=0):
+            assert self.provider.build_permission_args(True) == []
+            assert "skip_permissions" in capsys.readouterr().err
+            # Still no flag on subsequent calls, but the warning is not repeated
+            assert self.provider.build_permission_args(True) == []
+            assert capsys.readouterr().err == ""
+
+    def test_permission_args_under_root_disabled_does_not_warn(self, capsys, monkeypatch):
+        import app.provider.claude as claude_module
+
+        monkeypatch.setattr(claude_module, "_ROOT_SKIP_PERMISSIONS_WARNED", False)
+        with patch("app.provider.claude.os.geteuid", return_value=0):
+            assert self.provider.build_permission_args(False) == []
+            assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------
