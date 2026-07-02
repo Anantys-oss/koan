@@ -383,7 +383,7 @@ def run_eval(cases: list, review_fn: Callable[[EvalCase], Optional[dict]]) -> Ev
         scorer = get_scorer(case.skill)
         try:
             review = review_fn(case)
-        except Exception as exc:  # noqa: BLE001 — eval must survive any failure
+        except Exception as exc:  # eval must survive any review_fn failure
             results.append(_errored_result(case, str(exc)))
             continue
         results.append(scorer(case, review))
