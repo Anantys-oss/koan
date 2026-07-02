@@ -189,11 +189,16 @@ def fetch_merged_prs(
     return results
 
 
-def fetch_open_prs(project_path: str) -> List[dict]:
+def fetch_open_prs(project_path: str, limit: int = 200) -> List[dict]:
     """Fetch currently open koan/* PRs.
 
     Args:
         project_path: Path to the git repo.
+        limit: Maximum PRs to fetch. ``gh pr list`` defaults to 30 and
+            truncates silently; because open PRs across all branch prefixes
+            are fetched before the koan/* filter runs, a low cap can drop
+            matching PRs past the 30th raw result — including the oldest
+            (lowest-numbered) ones that carry the strongest aging signal.
 
     Returns:
         List of PR dicts with: number, title, createdAt, headRefName,
@@ -215,6 +220,7 @@ def fetch_open_prs(project_path: str) -> List[dict]:
         raw = run_gh(
             "pr", "list",
             "--state", "open",
+            "--limit", str(limit),
             "--json", "number,title,createdAt,headRefName",
             cwd=project_path,
             timeout=15,

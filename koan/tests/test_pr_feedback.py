@@ -413,6 +413,18 @@ class TestFetchOpenPrs:
         result = fetch_open_prs("/fake/path")
         assert result == []
 
+    @patch("app.config.get_branch_prefix", return_value="koan/")
+    @patch("subprocess.run")
+    def test_passes_limit_to_gh(self, mock_run, _prefix):
+        # gh pr list defaults to 30 and truncates silently; the fetch must
+        # pass an explicit --limit so aging koan/* PRs past the 30th raw
+        # result are not dropped before the prefix filter runs.
+        mock_run.return_value = _mock_gh_success([])
+        fetch_open_prs("/fake/path", limit=200)
+        argv = mock_run.call_args[0][0]
+        assert "--limit" in argv
+        assert argv[argv.index("--limit") + 1] == "200"
+
 
 # ─── get_alignment_summary ───────────────────────────────────────────────
 
