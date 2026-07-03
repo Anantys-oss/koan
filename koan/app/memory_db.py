@@ -23,6 +23,13 @@ _fts5_available: Optional[bool] = None
 _insert_failure_count: int = 0
 _INSERT_FAILURE_WARN_THRESHOLD: int = 5
 
+# Memoization for search_learnings: rebuilding the transient FTS5 table costs
+# ~50ms per call and prompt_builder invokes it every iteration. Key on the
+# exact inputs (content + query + max_k) so a repeated identical call skips the
+# rebuild while any change to the learnings file or query misses the cache.
+_learnings_cache: "Dict[tuple, List[str]]" = {}
+_LEARNINGS_CACHE_MAX = 32
+
 
 def _check_fts5(conn: sqlite3.Connection) -> bool:
     """Test whether FTS5 is available in this Python build.
@@ -356,6 +363,11 @@ def search_learnings(
     if not fts_query:
         return []
 
+    cache_key = (learnings_content, fts_query, max_k)
+    cached = _learnings_cache.get(cache_key)
+    if cached is not None:
+        return list(cached)
+
     mem_conn = None
     try:
         mem_conn = sqlite3.connect(":memory:")
@@ -389,7 +401,11 @@ def search_learnings(
         ).fetchall()
 
         idx_to_line = {int(row[1]): row[0] for row in rows}
-        return [idx_to_line[i] for i in sorted(idx_to_line)]
+        result = [idx_to_line[i] for i in sorted(idx_to_line)]
+        if len(_learnings_cache) >= _LEARNINGS_CACHE_MAX:
+            _learnings_cache.clear()
+        _learnings_cache[cache_key] = result
+        return list(result)
     except sqlite3.DatabaseError as e:
         logger.warning("[memory_db] search_learnings failed: %s", e)
         return []
@@ -443,6 +459,54 @@ def delete_before(conn: sqlite3.Connection, cutoff_iso: str) -> int:
         return cursor.rowcount
     except sqlite3.DatabaseError as e:
         logger.warning("[memory_db] delete_before failed: %s", e)
+        return 0
+
+
+def vacuum_expired(conn: sqlite3.Connection, now_iso: Optional[str] = None) -> int:
+    """Delete rows whose ``expires_at`` is in the past. Returns count removed.
+
+    ``delete_before`` only prunes by ``ts``, so an entry that expired while its
+    ``ts`` is still recent lingers in the FTS5 index after the JSONL truth log
+    drops it — a silent divergence that grows the DB and skews BM25 stats.
+    This mirrors ``_is_expired`` semantics exactly (malformed ``expires_at``
+    is kept, never deleted), but scans candidates inline rather than calling
+    ``_is_expired`` per row: that function warns on every malformed value, and
+    a persistently malformed row would otherwise re-log the same warning on
+    every prune run. Malformed rows are instead summarized in one aggregate
+    warning.
+    """
+    if now_iso is None:
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        rows = conn.execute(
+            "SELECT rowid, expires_at FROM entries WHERE expires_at != ''"
+        ).fetchall()
+        expired_ids = []
+        malformed_count = 0
+        for rowid, exp in rows:
+            try:
+                datetime.strptime(exp, "%Y-%m-%dT%H:%M:%SZ")
+            except ValueError:
+                malformed_count += 1
+                continue
+            if exp < now_iso:
+                expired_ids.append(rowid)
+        if malformed_count:
+            logger.warning(
+                "[memory_db] vacuum_expired: %d row(s) with malformed expires_at kept",
+                malformed_count,
+            )
+        if not expired_ids:
+            return 0
+        conn.executemany(
+            "DELETE FROM entries WHERE rowid = ?",
+            [(rowid,) for rowid in expired_ids],
+        )
+        conn.commit()
+        logger.info("[memory_db] vacuum_expired removed %d expired rows", len(expired_ids))
+        return len(expired_ids)
+    except sqlite3.DatabaseError as e:
+        logger.warning("[memory_db] vacuum_expired failed: %s", e)
         return 0
 
 

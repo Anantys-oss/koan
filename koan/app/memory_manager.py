@@ -1517,19 +1517,26 @@ class MemoryManager:
         finally:
             f.close()
 
-        # Mirror deletion to SQLite FTS5 index (best-effort)
-        if removed > 0:
-            try:
-                from app.memory_db import ensure_db, delete_before
-                conn = ensure_db(str(self.instance_dir))
-                if conn is not None:
-                    try:
+        # Mirror deletion to SQLite FTS5 index (best-effort). vacuum_expired
+        # runs unconditionally on every call, not just when this pass's JSONL
+        # scan removed something: its job is to repair rows that expired
+        # during an *earlier* prune (or before this repair existed) and were
+        # left behind in SQLite — gating it on `removed` would skip that
+        # repair on every run where the JSONL side happens to have nothing
+        # new to drop.
+        try:
+            from app.memory_db import ensure_db, delete_before, vacuum_expired
+            conn = ensure_db(str(self.instance_dir))
+            if conn is not None:
+                try:
+                    if removed > 0:
                         cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
                         delete_before(conn, cutoff_iso)
-                    finally:
-                        conn.close()
-            except Exception as e:
-                logger.warning("[memory_manager] SQLite prune mirror failed: %s", e)
+                    vacuum_expired(conn)
+                finally:
+                    conn.close()
+        except Exception as e:
+            logger.warning("[memory_manager] SQLite prune mirror failed: %s", e)
 
         return removed
 
