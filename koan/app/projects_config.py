@@ -727,6 +727,31 @@ def get_project_review_verdict(config: dict, project_name: str) -> dict:
     return result
 
 
+def get_project_review_history(config: dict, project_name: str) -> dict:
+    """Get review_history overrides for a project from projects.yaml.
+
+    Per-project review_history settings (merged from defaults + project
+    overrides via get_project_config) override global config.yaml values.
+    Caller should merge the result with get_review_history_config().
+
+    Fails closed: if review_history.preserve_previous is present but
+    non-boolean (or review_history is non-dict), returns
+    ``preserve_previous=False`` (the historical collapse behavior) so a
+    misconfigured project never surprises the reviewer by leaving stale
+    duplicate review comments on the PR.
+    """
+    project_cfg = get_project_config(config, project_name)
+    rh = project_cfg.get("review_history", {}) or {}
+    if not isinstance(rh, dict):
+        return {"preserve_previous": False}
+    if "preserve_previous" not in rh:
+        return {}
+    val = rh["preserve_previous"]
+    if isinstance(val, bool):
+        return {"preserve_previous": val}
+    return {"preserve_previous": False}
+
+
 def get_project_submit_to_repository(config: dict, project_name: str) -> dict:
     """Get submit_to_repository config for a project from projects.yaml.
 

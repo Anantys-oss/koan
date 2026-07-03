@@ -27,7 +27,7 @@ from typing import List, Optional, Tuple
 from urllib.parse import quote
 
 from app.claude_step import resolve_pr_location
-from app.config import get_review_bot_triage_config, get_review_inline_comments_config, get_review_reply_config, get_review_verdict_config, is_review_compressor_enabled
+from app.config import get_review_bot_triage_config, get_review_history_config, get_review_inline_comments_config, get_review_reply_config, get_review_verdict_config, is_review_compressor_enabled
 from app.run_log import log
 from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
@@ -2312,6 +2312,34 @@ def _resolve_verdict_config(project_name: Optional[str] = None) -> dict:
     return cfg
 
 
+def _resolve_history_config(project_name: Optional[str] = None) -> dict:
+    """Merge global review_history config with project-level overrides.
+
+    On a project-config load error, returns ``cfg`` unchanged — i.e. the
+    already-loaded global value is preserved, not forced to False. This is
+    intentional: the global config.yaml loaded fine, so only the per-project
+    override failed to apply. (This diverges from _resolve_verdict_config,
+    which force-resets on error because an approved verdict is unsafe if
+    uncertain.)
+    """
+    cfg = get_review_history_config()
+    if project_name:
+        try:
+            import os
+            from app.projects_config import (
+                load_projects_config, get_project_review_history,
+            )
+            koan_root = os.environ.get("KOAN_ROOT", "")
+            if koan_root:
+                projects_cfg = load_projects_config(koan_root)
+                if projects_cfg:
+                    overrides = get_project_review_history(projects_cfg, project_name)
+                    cfg.update(overrides)
+        except Exception as exc:
+            log("review", f"Failed to load project review_history overrides: {exc}")
+    return cfg
+
+
 def _is_self_review_error(error: Exception) -> bool:
     """True when a verdict POST failed because the bot authored the PR.
 
@@ -2901,7 +2929,15 @@ def run_review(
     post_target = existing_comment
     new_commits = prior_shas and current_shas and set(current_shas) != set(prior_shas)
     if existing_comment and (new_commits or review_was_requested):
-        _collapse_old_review(owner, repo, existing_comment)
+        # Preserve the prior review comment when configured (review_history.
+        # preserve_previous). Default (False) collapses the old comment to a
+        # short "superseded" pointer so the timeline stays tidy. Either way a
+        # fresh comment is posted below, since GitHub does not notify on edits.
+        if _resolve_history_config(project_name)["preserve_previous"]:
+            log("review", "Preserving previous review comment "
+                "(review_history.preserve_previous=true)")
+        else:
+            _collapse_old_review(owner, repo, existing_comment)
         post_target = None
 
     notify_fn(f"Posting review on PR #{pr_number}...")

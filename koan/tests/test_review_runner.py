@@ -5883,6 +5883,147 @@ class TestResolveVerdictConfig:
         assert cfg["approved"] is False
 
 
+class TestResolveHistoryConfig:
+    """_resolve_history_config merges global review_history with project overrides."""
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": False})
+    def test_returns_global_default(self, _mock_cfg):
+        from app.review_runner import _resolve_history_config
+        cfg = _resolve_history_config()
+        assert cfg["preserve_previous"] is False
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": False})
+    def test_returns_global_when_no_koan_root(self, _mock_cfg, monkeypatch):
+        from app.review_runner import _resolve_history_config
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        cfg = _resolve_history_config("myproject")
+        assert cfg["preserve_previous"] is False
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": False})
+    def test_project_override_merges(self, _mock_cfg, monkeypatch):
+        from app.review_runner import _resolve_history_config
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        with patch("app.projects_config.load_projects_config") as mock_load, \
+             patch("app.projects_config.get_project_review_history") as mock_proj:
+            mock_load.return_value = {"projects": {}}
+            mock_proj.return_value = {"preserve_previous": True}
+            cfg = _resolve_history_config("myproject")
+        assert cfg["preserve_previous"] is True
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": False})
+    def test_config_error_keeps_default(self, _mock_cfg, monkeypatch):
+        """A project-config load failure falls back to the global default
+        rather than surprising the reviewer with preserved stale comments."""
+        from app.review_runner import _resolve_history_config
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        with patch("app.projects_config.load_projects_config",
+                   side_effect=RuntimeError("bad config")):
+            cfg = _resolve_history_config("myproject")
+        assert cfg["preserve_previous"] is False
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": True})
+    def test_config_error_preserves_global_true(self, _mock_cfg, monkeypatch):
+        """A project-config load failure preserves the already-loaded global
+        value rather than force-resetting it. Pins the intentional asymmetry
+        vs _resolve_verdict_config (which force-resets on error): only the
+        per-project override failed to apply, the global loaded fine, so an
+        operator's explicit global preserve_previous=true survives."""
+        from app.review_runner import _resolve_history_config
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        with patch("app.projects_config.load_projects_config",
+                   side_effect=RuntimeError("bad config")):
+            cfg = _resolve_history_config("myproject")
+        assert cfg["preserve_previous"] is True
+
+
+class TestPreservePreviousReview:
+    """review_history.preserve_previous gates whether the prior review comment
+    is collapsed on a re-review (default: collapse it)."""
+
+    @patch("app.review_runner._resolve_history_config",
+           return_value={"preserve_previous": True})
+    @patch("app.review_runner._collapse_old_review")
+    @patch("app.review_runner.get_review_verdict_config",
+           return_value={"approved": True, "body_enabled": True, "include_blockers": True})
+    @patch("app.review_runner._is_review_requested", return_value=True)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_preserve_previous_leaves_old_comment_intact(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        mock_find_bot, _shas, _verdict, _req, _vcfg,
+        mock_collapse, _history, pr_context, review_skill_dir,
+    ):
+        """preserve_previous=True: the prior review comment is NOT collapsed."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {
+            "id": 99,
+            "body": f"{SUMMARY_TAG}\n## Review\n\n{sha_block}",
+            "user": "koan-bot",
+        }
+        mock_find_bot.return_value = prior_comment
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, _, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        mock_collapse.assert_not_called()
+
+    @patch("app.review_runner._resolve_history_config",
+           return_value={"preserve_previous": False})
+    @patch("app.review_runner._collapse_old_review")
+    @patch("app.review_runner.get_review_verdict_config",
+           return_value={"approved": True, "body_enabled": True, "include_blockers": True})
+    @patch("app.review_runner._is_review_requested", return_value=True)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_default_collapses_old_comment(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        mock_find_bot, _shas, _verdict, _req, _vcfg,
+        mock_collapse, _history, pr_context, review_skill_dir,
+    ):
+        """preserve_previous=False (default): the prior comment is collapsed."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {
+            "id": 99,
+            "body": f"{SUMMARY_TAG}\n## Review\n\n{sha_block}",
+            "user": "koan-bot",
+        }
+        mock_find_bot.return_value = prior_comment
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, _, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        mock_collapse.assert_called_once_with("owner", "repo", prior_comment)
+
+
 class TestReRequestBypassesIncrementalSkip:
     """When the bot has a pending review request (re-request via Refresh),
     the incremental SHA check is bypassed so a fresh review runs."""
