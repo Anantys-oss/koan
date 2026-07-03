@@ -856,7 +856,7 @@ def _persist_and_cache_remotes(
     try:
         from app.projects_config import load_projects_config, save_projects_config
         config = load_projects_config(str(KOAN_ROOT))
-        if config and name in config.get("projects", {}):
+        if config and name in (config.get("projects") or {}):
             proj = config["projects"][name]
             if isinstance(proj, dict) and proj.get("path"):
                 if primary and not proj.get("github_url"):

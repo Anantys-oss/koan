@@ -40,7 +40,7 @@ def _load_project_overrides(project_name: str) -> dict:
         projects_config = load_projects_config(koan_root)
         if not projects_config:
             return {}
-        if project_name not in projects_config.get("projects", {}):
+        if project_name not in (projects_config.get("projects") or {}):
             return {}
         return get_project_config(projects_config, project_name)
     except Exception as e:
@@ -1784,7 +1784,7 @@ def get_auto_merge_config(config: dict, project_name: str) -> dict:
         from app.projects_config import load_projects_config, get_project_auto_merge
         koan_root = os.environ.get("KOAN_ROOT", "")
         projects_config = load_projects_config(koan_root) if koan_root else None
-        if projects_config and project_name in projects_config.get("projects", {}):
+        if projects_config and project_name in (projects_config.get("projects") or {}):
             return get_project_auto_merge(projects_config, project_name)
     except Exception as e:
         print(f"[config] Auto-merge config load error for {project_name}: {e}", file=sys.stderr)

@@ -32,7 +32,7 @@ def _get_all_github_repos(koan_root: str) -> List[Dict]:
         return []
 
     results = []
-    projects = config.get("projects", {})
+    projects = config.get("projects") or {}
     for name, proj in projects.items():
         if proj is None:
             continue
