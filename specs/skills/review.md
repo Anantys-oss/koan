@@ -51,6 +51,14 @@ focus passes (architecture, silent-failure hunting, comment quality, plan alignm
 
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
+- **Verdict follows severity, not vibes.** `lgtm` (the merge verdict that drives
+  the GitHub APPROVE / request-changes) is `true` whenever no `critical` or
+  `warning` finding exists. `suggestion`-only findings are non-blocking — a PR
+  with only nits is merge-ready and must NOT be rejected. `lgtm: false` requires
+  at least one `critical`/`warning`. If a concern truly blocks merge, it is not a
+  `suggestion`; promote it before blocking. This mirrors the code-level fallback
+  in `_normalize_review_data` (`blocking iff any critical/warning`) and the
+  verdict body builder's definition of "blockers".
 
 ## Evaluation
 
@@ -59,8 +67,10 @@ The review skill is the first skill covered by the deterministic eval harness
 
 - **Golden dataset:** `koan/skills/core/review/evals/cases/*.json` — seeded-bug
   cases (`sql_injection`, `bare_except`, `hardcoded_secret`) that must produce a
-  finding at the right severity, and precision cases (`clean_refactor`,
-  `benign_style`) that must LGTM without false positives.
+  finding at the right severity, precision cases (`clean_refactor`,
+  `benign_style`) that must LGTM without false positives, and `suggestion_only`,
+  which carries a legitimate low-severity nit that must be surfaced *and* still
+  yield `lgtm: true` (guards the verdict-follows-severity invariant).
 - **Scored dimensions:** JSON/schema validity (via `validate_review`), recall of
   seeded findings (file + keyword-stem + severity-band match), LGTM correctness,
   and precision (no flags on `forbidden_files`).

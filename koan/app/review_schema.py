@@ -81,8 +81,11 @@ REVIEW_SUMMARY_SCHEMA = {
         "lgtm": {
             "type": "boolean",
             "description": (
-                "True if the PR is merge-ready with no blocking issues. "
-                "False if there are critical or warning-level findings."
+                "Merge verdict, derived from finding severities. True when no "
+                "'critical' or 'warning' finding is present — suggestion-only "
+                "reviews are merge-ready and must NOT be blocked. False only "
+                "when at least one 'critical' (must-fix) or 'warning' "
+                "(should-fix) finding is present."
             ),
         },
         "summary": {
