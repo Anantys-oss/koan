@@ -156,6 +156,19 @@ def get_cli_provider_env() -> str:
     return ""
 
 
+def get_telegram_chat_id() -> str:
+    """Return KOAN_TELEGRAM_CHAT_ID, stripped of stray whitespace/newlines.
+
+    Railway (and copy-paste) can inject a trailing newline that makes Telegram
+    return "Bad Request: chat not found". Numeric IDs (incl. negative group IDs)
+    are returned as-is once stripped; Telegram accepts numeric strings.
+
+    Returns:
+        The stripped environment value, or empty string if unset.
+    """
+    return os.environ.get("KOAN_TELEGRAM_CHAT_ID", "").strip()
+
+
 def parse_project(text: str) -> Tuple[Optional[str], str]:
     """Extract [project:name] or [projet:name] from text.
 

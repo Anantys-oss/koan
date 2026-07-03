@@ -12,12 +12,12 @@ from pathlib import Path
 from typing import Optional
 
 from app.skills import SkillRegistry, build_registry
-from app.utils import load_dotenv
+from app.utils import get_telegram_chat_id, load_dotenv
 
 load_dotenv()
 
 BOT_TOKEN = os.environ.get("KOAN_TELEGRAM_TOKEN", "")
-CHAT_ID = os.environ.get("KOAN_TELEGRAM_CHAT_ID", "")
+CHAT_ID = get_telegram_chat_id()
 POLL_INTERVAL = int(os.environ.get("KOAN_BRIDGE_INTERVAL", "3"))
 CHAT_TIMEOUT = int(os.environ.get("KOAN_CHAT_TIMEOUT", "180"))
 

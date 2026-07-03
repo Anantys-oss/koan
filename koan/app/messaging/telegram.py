@@ -93,11 +93,11 @@ class TelegramProvider(MessagingProvider):
     # -- MessagingProvider interface ------------------------------------------
 
     def configure(self) -> bool:
-        from app.utils import load_dotenv
+        from app.utils import get_telegram_chat_id, load_dotenv
         load_dotenv()
 
         self._bot_token = os.environ.get("KOAN_TELEGRAM_TOKEN", "")
-        self._chat_id = os.environ.get("KOAN_TELEGRAM_CHAT_ID", "")
+        self._chat_id = get_telegram_chat_id()
 
         if not self._bot_token or not self._chat_id:
             print(
