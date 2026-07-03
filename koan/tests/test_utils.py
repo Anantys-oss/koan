@@ -1804,3 +1804,25 @@ class TestKoanTmpDir:
 
         with pytest.raises(RuntimeError, match="owned by uid"):
             koan_tmp_dir()
+
+
+class TestGetTelegramChatId:
+    def test_strips_trailing_newline(self, monkeypatch):
+        from app.utils import get_telegram_chat_id
+        monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "-1001234567890\n")
+        assert get_telegram_chat_id() == "-1001234567890"
+
+    def test_strips_surrounding_whitespace(self, monkeypatch):
+        from app.utils import get_telegram_chat_id
+        monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "  123456  ")
+        assert get_telegram_chat_id() == "123456"
+
+    def test_clean_value_unchanged(self, monkeypatch):
+        from app.utils import get_telegram_chat_id
+        monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "-1001234567890")
+        assert get_telegram_chat_id() == "-1001234567890"
+
+    def test_empty_when_unset(self, monkeypatch):
+        from app.utils import get_telegram_chat_id
+        monkeypatch.delenv("KOAN_TELEGRAM_CHAT_ID", raising=False)
+        assert get_telegram_chat_id() == ""

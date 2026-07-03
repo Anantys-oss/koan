@@ -41,6 +41,10 @@ awake.py (loop, ~3s poll)
   *how* the agent behaves.
 - **Command parsing is hyphen-hostile.** Skill names/aliases use underscores; Telegram
   treats `-` as a word boundary and truncates the command.
+- **The chat ID is normalized at read time.** All reads of `KOAN_TELEGRAM_CHAT_ID` go
+  through `utils.get_telegram_chat_id()`, which `.strip()`s stray whitespace/newlines
+  (Railway/copy-paste inject a trailing newline that makes Telegram answer
+  `chat not found`). Never read the env var raw into an API payload.
 
 ## Integration points
 
