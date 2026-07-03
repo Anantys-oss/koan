@@ -2595,7 +2595,8 @@ def _notify_draft_pr_skipped(
         url_part = f"\n{web_url}" if web_url else ""
         send_telegram(
             f"💤 Draft PR review deferred: {owner}/{repo} — {subject_title}{url_part}\n"
-            "Mark the PR ready for review to trigger it, or send /review to review now.",
+            "Send /review when you want it reviewed; it may also resume "
+            "automatically once the PR is marked ready for review.",
             priority=NotificationPriority.INFO,
         )
     except Exception as e:

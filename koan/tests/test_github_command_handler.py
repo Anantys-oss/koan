@@ -24,6 +24,7 @@ from app.github_command_handler import (
     _is_subject_closed,
     _load_reply_timestamps,
     _notify_closed_subject_skipped,
+    _notify_draft_pr_skipped,
     _notify_github_question,
     _notify_github_reply,
     _post_help_reply,
@@ -4822,6 +4823,33 @@ class TestNotifyClosedSubjectSkipped:
             _notify_closed_subject_skipped(
                 "owner", "repo", "Title", "closed", notification,
             )
+
+
+class TestNotifyDraftPRSkipped:
+    """Tests for _notify_draft_pr_skipped helper."""
+
+    def test_sends_telegram_notification(self):
+        notification = {
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/owner/repo/pulls/88",
+            },
+        }
+        with patch("app.notify.send_telegram") as mock_send:
+            _notify_draft_pr_skipped("owner", "repo", "WIP feature", notification)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert "owner/repo" in msg
+            assert "WIP feature" in msg
+            assert "/review" in msg
+            # Web URL built from the API subject URL.
+            assert "github.com/owner/repo/pull/88" in msg
+
+    def test_handles_send_failure_gracefully(self):
+        notification = {"subject": {"type": "PullRequest", "url": ""}}
+        with patch("app.notify.send_telegram", side_effect=Exception("boom")):
+            # Should not raise.
+            _notify_draft_pr_skipped("owner", "repo", "Title", notification)
 
 
 class TestProcessSingleNotificationClosedSubject:
