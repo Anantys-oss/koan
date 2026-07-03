@@ -2271,6 +2271,36 @@ def get_review_verdict_config() -> dict:
     return result
 
 
+def get_review_history_config() -> dict:
+    """Get review history configuration from config.yaml.
+
+    Controls whether a previous review comment is preserved on a later
+    re-review. By default (``preserve_previous: false``) the bot collapses its
+    prior summary comment to a short "superseded" pointer before posting the
+    fresh review, keeping the PR timeline tidy — this is the historical
+    behavior. Set ``preserve_previous: true`` to leave the prior review comment
+    untouched; the new review is then posted alongside it instead.
+
+    Config key: review_history::
+
+        review_history:
+          preserve_previous: false
+
+    Returns:
+        Dict with key ``preserve_previous`` (bool). Always present; defaults
+        to False. Fails closed to False on any malformed value so a bad config
+        never silently accumulates duplicate review comments.
+    """
+    config = _load_config()
+    section = config.get("review_history", {})
+    if not isinstance(section, dict):
+        return {"preserve_previous": False}
+    val = section.get("preserve_previous", False)
+    if not isinstance(val, bool):
+        return {"preserve_previous": False}
+    return {"preserve_previous": val}
+
+
 def get_review_inline_comments_config() -> dict:
     """Get inline-comment posting configuration for /review.
 

@@ -1846,6 +1846,42 @@ class TestGetReviewVerdictConfig:
         assert cfg["approved"] is False
 
 
+# --- get_review_history_config ---
+
+
+class TestGetReviewHistoryConfig:
+    def test_defaults_to_collapse(self):
+        """Default behavior preserves history: collapse the prior review."""
+        from app.config import get_review_history_config
+        with _mock_config({}):
+            cfg = get_review_history_config()
+        assert cfg == {"preserve_previous": False}
+
+    def test_preserve_previous_opt_in(self):
+        from app.config import get_review_history_config
+        with _mock_config({"review_history": {"preserve_previous": True}}):
+            cfg = get_review_history_config()
+        assert cfg["preserve_previous"] is True
+
+    def test_explicit_false(self):
+        from app.config import get_review_history_config
+        with _mock_config({"review_history": {"preserve_previous": False}}):
+            cfg = get_review_history_config()
+        assert cfg["preserve_previous"] is False
+
+    def test_non_dict_fails_closed(self):
+        from app.config import get_review_history_config
+        with _mock_config({"review_history": "garbage"}):
+            cfg = get_review_history_config()
+        assert cfg["preserve_previous"] is False
+
+    def test_non_bool_value_fails_closed(self):
+        from app.config import get_review_history_config
+        with _mock_config({"review_history": {"preserve_previous": "yes"}}):
+            cfg = get_review_history_config()
+        assert cfg["preserve_previous"] is False
+
+
 class TestReviewInlineCommentsConfig:
     def test_disabled_by_default(self):
         from app.config import get_review_inline_comments_config

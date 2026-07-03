@@ -59,6 +59,13 @@ focus passes (architecture, silent-failure hunting, comment quality, plan alignm
   `suggestion`; promote it before blocking. This mirrors the code-level fallback
   in `_normalize_review_data` (`blocking iff any critical/warning`) and the
   verdict body builder's definition of "blockers".
+- **Re-review comment handling:** on a re-review (new commits or a re-requested
+  review) the bot posts a *fresh* summary comment (GitHub does not notify on
+  edits). By default it first collapses the prior review comment to a short
+  "superseded" pointer (`_collapse_old_review`). `review_history.preserve_previous`
+  (global `config.yaml`, overridable per-project in `projects.yaml`, default
+  `false`, fail-closed to `false`) skips that collapse so the prior review is
+  left intact alongside the new one. Either way a fresh comment is posted.
 
 ## Evaluation
 

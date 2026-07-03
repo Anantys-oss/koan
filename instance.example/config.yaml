@@ -943,6 +943,14 @@ memory_monitor:
 #   include_blockers: true      # When REQUEST_CHANGES, list blocking finding titles
 #                               # in the verdict body (default: true)
 
+# Review history — on a re-review (new commits or a re-requested review), the
+# bot normally collapses its previous review comment to a short "superseded"
+# pointer so the PR timeline stays tidy. Enable preserve_previous to leave the
+# prior review comment untouched and post the new review alongside it instead.
+# Can also be overridden per-project in projects.yaml.
+# review_history:
+#   preserve_previous: false    # Keep the previous review comment intact (default: false)
+
 # Review inline comments — in addition to the single bucketed summary comment,
 # post each finding as an inline PR comment anchored to its code location, so a
 # reviewer can react/resolve/discuss each one in place. Additive: never

@@ -16,6 +16,7 @@ from app.projects_config import (
     get_project_max_open_prs,
     get_project_max_pending_branches,
     get_project_models,
+    get_project_review_history,
     get_project_review_verdict,
     get_project_submit_to_repository,
     get_project_tools,
@@ -1556,6 +1557,60 @@ class TestGetProjectReviewVerdict:
         }
         result = get_project_review_verdict(config, "app")
         assert result == {"approved": True}
+
+
+# ---------------------------------------------------------------------------
+# get_project_review_history
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectReviewHistory:
+    """Tests for get_project_review_history() — per-project review_history overrides."""
+
+    def test_returns_empty_when_not_configured(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_review_history(config, "app") == {}
+
+    def test_returns_preserve_true(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "review_history": {"preserve_previous": True},
+                }
+            }
+        }
+        assert get_project_review_history(config, "app") == {"preserve_previous": True}
+
+    def test_returns_preserve_false(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "review_history": {"preserve_previous": False},
+                }
+            }
+        }
+        assert get_project_review_history(config, "app") == {"preserve_previous": False}
+
+    def test_fails_closed_on_non_bool_value(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "review_history": {"preserve_previous": "yes"},
+                }
+            }
+        }
+        assert get_project_review_history(config, "app") == {"preserve_previous": False}
+
+    def test_fails_closed_on_non_dict(self):
+        config = {
+            "projects": {
+                "app": {"path": "/app", "review_history": "garbage"},
+            }
+        }
+        assert get_project_review_history(config, "app") == {"preserve_previous": False}
 
 
 # ---------------------------------------------------------------------------
