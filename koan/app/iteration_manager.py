@@ -1143,7 +1143,7 @@ def _filter_exploration_projects(
             filtered.append((name, path))
             continue
 
-        project_cfg = config.get("projects", {}).get(name, {}) or {}
+        project_cfg = (config.get("projects") or {}).get(name, {}) or {}
         urls_to_check = set()
         primary_url = project_cfg.get("github_url", "")
         if primary_url:
@@ -1215,7 +1215,7 @@ def _filter_exploration_projects(
             final_filtered.append((name, path))
             continue
 
-        project_cfg = config.get("projects", {}).get(name, {}) or {}
+        project_cfg = (config.get("projects") or {}).get(name, {}) or {}
         urls = set()
         primary = project_cfg.get("github_url", "")
         if primary:

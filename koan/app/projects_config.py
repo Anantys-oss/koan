@@ -114,6 +114,15 @@ def load_projects_config(koan_root: str) -> Optional[dict]:
     # key present but empty — e.g. every entry commented out — parses to None.
     # Coercing here means no downstream consumer has to guard against None
     # when it does `config.get("projects", {}).items()` / `in` / indexing.
+    if "projects" in data and data.get("projects") is None:
+        # Warn the operator: a present-but-empty section is usually an
+        # oversight (all entries commented out) rather than intent.
+        print(
+            "[projects_config] warning: 'projects:' section in projects.yaml "
+            "is empty (null) — treating as no configured projects",
+            file=sys.stderr,
+        )
+        data["projects"] = {}
     if data.get("projects") is None:
         data["projects"] = {}
     if data.get("defaults") is None:

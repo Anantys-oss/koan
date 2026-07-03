@@ -124,6 +124,13 @@ projects:
         assert config is not None
         assert config["projects"] == {}
 
+    def test_null_projects_section_warns_operator(self, koan_root, capsys):
+        """A present-but-null 'projects:' section is usually an oversight, so
+        the loader emits a warning to stderr (per reviewer request)."""
+        _write_yaml(koan_root, "projects:\n")
+        load_projects_config(koan_root)
+        assert "empty (null)" in capsys.readouterr().err
+
     def test_empty_projects_is_valid(self, koan_root):
         """Empty projects: dict is valid — workspace will provide projects."""
         _write_yaml(koan_root, "projects: {}")
