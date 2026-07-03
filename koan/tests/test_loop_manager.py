@@ -4241,3 +4241,22 @@ class TestProgressNotifier:
         notify = lm._progress_notifier()
         notify("Processing 3 GitHub notification(s)...")
         assert sent == ["Processing 3 GitHub notification(s)..."]
+
+
+class TestKnownReposNullProjects:
+    """Regression: a projects.yaml with an empty ``projects:`` key parses to
+    ``projects: null``, which must not crash the run loop (issue #2273)."""
+
+    def test_null_projects_section_does_not_crash(self, tmp_path, monkeypatch):
+        from app.loop_manager import _get_known_repos_from_projects
+        import app.projects_config as pc
+
+        # `projects:` present but empty (all entries commented out) → YAML null
+        (tmp_path / "projects.yaml").write_text("projects:\n")
+        # Bypass the mtime cache so this file is actually parsed
+        monkeypatch.setattr(pc, "_cache", {}, raising=False)
+
+        # Must degrade gracefully instead of raising AttributeError on None.
+        # No configured repos → None sentinel ("watch all") or an empty set.
+        result = _get_known_repos_from_projects(str(tmp_path))
+        assert result is None or isinstance(result, set)
