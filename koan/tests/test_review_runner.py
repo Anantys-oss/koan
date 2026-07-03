@@ -238,6 +238,58 @@ class TestBuildReviewPrompt:
 
 
 # ---------------------------------------------------------------------------
+# Verdict contract — suggestion-only findings must not block the PR
+# ---------------------------------------------------------------------------
+
+class TestReviewVerdictContract:
+    """The review prompt must encode the verdict-follows-severity contract.
+
+    ``lgtm`` drives the GitHub APPROVE / request-changes, so the prompt must
+    forbid rejecting a PR when only ``suggestion`` (non-blocking) findings
+    exist. These assertions guard the load-bearing markers in the rendered
+    prompt; if a future prompt edit weakens the contract, they fail.
+    """
+
+    @pytest.fixture
+    def real_review_skill_dir(self):
+        # The shipped review skill, not the synthetic tmp_path fixture.
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    def test_partials_resolve_into_real_prompt(self, pr_context, real_review_skill_dir):
+        """Sanity: the shipped prompt has its {@include} partials resolved."""
+        prompt = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "{@include" not in prompt
+        # "Output ONLY the JSON object" lives in the review-output-rules partial,
+        # so its presence proves the partial was rendered, not left as a token.
+        assert "Output ONLY the JSON object" in prompt
+
+    def test_main_prompt_forbids_blocking_on_suggestions(
+        self, pr_context, real_review_skill_dir
+    ):
+        """review.md carries an explicit Verdict Contract (body-only marker)."""
+        prompt = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        # This sentence exists only in the review.md Verdict Contract section —
+        # not in any partial — so it is a non-vacuous, single-source marker.
+        assert "Never reject a PR" in prompt
+
+    def test_shared_lgtm_rule_marks_suggestions_non_blocking(
+        self, pr_context, real_review_skill_dir
+    ):
+        """The shared review-output-rules partial must call suggestions non-blocking.
+
+        This partial is the load-bearing lgtm definition included by every JSON
+        review prompt (review.md and review-with-plan.md). Asserting on the
+        rendered prompt (not the source file) keeps the test honest about what
+        the model actually sees.
+        """
+        prompt = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "suggestion" in prompt.lower()
+        # "non-blocking" is present only in the sharpened rule; the pre-fix
+        # wording ("no blocking issues") did not contain it.
+        assert "non-blocking" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
 # Dedicated prior-review slot
 # ---------------------------------------------------------------------------
 

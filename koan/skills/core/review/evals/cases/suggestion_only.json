@@ -1,0 +1,20 @@
+{
+  "id": "suggestion_only",
+  "name": "A real but non-blocking nit — must flag it AND still LGTM",
+  "skill": "review",
+  "description": "Verdict-follows-severity guard: a correct, working change that has a legitimate low-severity nit (a redundant local alias). A disciplined review should surface the nit as a 'suggestion' but must NOT block the PR — lgtm must be true. This is the regression that bites when the prompt lets suggestion findings flip the verdict to request-changes.",
+  "diff": "--- a/format.py\n+++ b/format.py\n@@ -3,5 +3,7 @@ def render(name):\n     \"\"\"Return a greeting for the given name.\"\"\"\n-    return f\"Hello, {name}!\"\n+    display_name = name\n+    message = f\"Hello, {display_name}!\"\n+    return message\n",
+  "expect": {
+    "expect_lgtm": true,
+    "min_findings": 0,
+    "require_valid_json": true,
+    "expect_findings": [
+      {
+        "file": "format.py",
+        "keywords": ["display_name", "alias", "redundant", "unnecessary", "intermediate"],
+        "severity_in": ["suggestion"]
+      }
+    ],
+    "forbidden_files": []
+  }
+}
