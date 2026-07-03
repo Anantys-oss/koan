@@ -5925,6 +5925,21 @@ class TestResolveHistoryConfig:
             cfg = _resolve_history_config("myproject")
         assert cfg["preserve_previous"] is False
 
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": True})
+    def test_config_error_preserves_global_true(self, _mock_cfg, monkeypatch):
+        """A project-config load failure preserves the already-loaded global
+        value rather than force-resetting it. Pins the intentional asymmetry
+        vs _resolve_verdict_config (which force-resets on error): only the
+        per-project override failed to apply, the global loaded fine, so an
+        operator's explicit global preserve_previous=true survives."""
+        from app.review_runner import _resolve_history_config
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        with patch("app.projects_config.load_projects_config",
+                   side_effect=RuntimeError("bad config")):
+            cfg = _resolve_history_config("myproject")
+        assert cfg["preserve_previous"] is True
+
 
 class TestPreservePreviousReview:
     """review_history.preserve_previous gates whether the prior review comment

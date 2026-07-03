@@ -2313,7 +2313,15 @@ def _resolve_verdict_config(project_name: Optional[str] = None) -> dict:
 
 
 def _resolve_history_config(project_name: Optional[str] = None) -> dict:
-    """Merge global review_history config with project-level overrides."""
+    """Merge global review_history config with project-level overrides.
+
+    On a project-config load error, returns ``cfg`` unchanged — i.e. the
+    already-loaded global value is preserved, not forced to False. This is
+    intentional: the global config.yaml loaded fine, so only the per-project
+    override failed to apply. (This diverges from _resolve_verdict_config,
+    which force-resets on error because an approved verdict is unsafe if
+    uncertain.)
+    """
     cfg = get_review_history_config()
     if project_name:
         try:
