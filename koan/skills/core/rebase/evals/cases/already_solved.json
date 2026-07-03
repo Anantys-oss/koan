@@ -1,0 +1,13 @@
+{
+  "id": "already_solved",
+  "name": "PR intent already landed on base (high-confidence)",
+  "skill": "rebase",
+  "description": "The PR's intent — adding input validation to the import path — already shipped on main in an earlier commit. The already-solved check should return a high-confidence positive and name the resolving commit.",
+  "pr_title": "Add input validation to import path",
+  "pr_body": "Validates the uploaded payload before parsing so empty/malformed input is rejected early.",
+  "pr_diff": "--- a/importer.py\n+++ b/importer.py\n@@ -1,4 +1,7 @@\n def import_payload(payload):\n+    if not payload:\n+        raise ValueError('empty payload')\n     return parse(payload)\n",
+  "recent_commits": "a1b2c3d Add null/empty guard to import_payload before parsing\nd4e5f6g Refactor parser entry points\nh7i8j9k Bump deps",
+  "expect": {
+    "expect_solved": true
+  }
+}

@@ -45,6 +45,15 @@ skill.
 - `_work_landed()` must detect the landed branch even when the agent checks out main
   after pushing (fallback checks the expected `{prefix}implement-{issue}` branch).
 
+## Evaluation
+
+`implement` is **eval-exempt** (`EVAL_EXEMPT_SKILLS`, pinned by a guard test). It
+is orchestration: `run_implement()` returns `(success, summary)`, mutates files,
+and opens a PR — there is no LLM-driven, checkable structured-output contract to
+score against a golden dataset. Fabricating one would measure nothing real
+(constitution VII). Its quality bar is upheld instead by the behavioural suite
+(`test_implement_runner.py`): does it branch, draft-PR, and detect landed work?
+
 ## Known debt / watch-outs
 
 - HEAD-only landing checks miss work pushed to a feature branch when HEAD is back on

@@ -40,6 +40,14 @@ up. Most other skills are specialized mission factories; `/mission` is the raw o
 - Inserts are atomic and serialized — concurrent `/mission` calls must not interleave.
 - Mission text is DATA; queuing must never execute embedded instructions.
 
+## Evaluation
+
+`mission` is **eval-exempt** (`EVAL_EXEMPT_SKILLS`, pinned by a guard test). It is
+a pure-Python queue utility — `handler.py` calls `insert_pending_mission` and
+involves no LLM at all, so there is nothing for the eval harness to score. Its
+correctness is upheld by the behavioural suite (atomicity, ordering, project
+tagging) across the `test_mission_*.py` files.
+
 ## Known debt / watch-outs
 
 - `--now` urgency reverses order if two urgent inserts race — use the multi-entry atomic

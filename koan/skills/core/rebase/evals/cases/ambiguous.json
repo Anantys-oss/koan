@@ -1,0 +1,13 @@
+{
+  "id": "ambiguous",
+  "name": "Tangentially-related commit but not the same intent (negative)",
+  "skill": "rebase",
+  "description": "Precision trap: a recent commit touches the same file and a related concern, but does not implement this PR's specific intent. The honest answer is a negative (or at most a non-high-confidence positive), not a high-confidence skip.",
+  "pr_title": "Rate-limit the login endpoint",
+  "pr_body": "Adds per-IP throttling to the login endpoint to blunt brute-force attempts.",
+  "pr_diff": "--- a/auth.py\n+++ b/auth.py\n@@ -10,4 +10,7 @@ def login(req):\n+    if too_many_attempts(req.ip):\n+        return 429\n     return issue_session(req)\n",
+  "recent_commits": "a1b2c3d Log failed login attempts to the audit table\nd4e5f6g Rename login helper for clarity",
+  "expect": {
+    "expect_solved": false
+  }
+}

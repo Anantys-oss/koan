@@ -2,11 +2,33 @@
 
 Kōan ships a small, deterministic **eval harness** that scores an LLM-driven skill
 against a checked-in golden dataset. It exists to **catch quality regressions in
-CI** and to **measure improvements** across prompt iterations. It is wired up
-first for the `review` skill and is extensible to others.
+CI** and to **measure improvements** across prompt iterations. It covers the
+skills that are LLM-driven **and** emit a checkable structured output:
+`review`, `fix`, `plan`, `brainstorm`, `rebase`. Skills without such a contract
+(`implement`, `mission`) are exempt — see [Why some skills are exempt](#why-some-skills-are-exempt).
 
 **Code:** `koan/app/skill_evals.py` · **Design:** `specs/002-review-skill-evals/`
-· **Review cases:** `koan/skills/core/review/evals/`
+(review), `specs/003-core-skill-evals/` (multi-skill) · **Cases:** `koan/skills/core/<skill>/evals/`
+
+## Covered skills
+
+The harness scores any skill that is LLM-driven **and** emits a checkable
+structured output. Each has its own scorer (reusing the skill's own validator as
+the single source of truth), a `cases/` dataset, and a live adapter:
+
+| Skill | Output contract | What the scorer checks | Live command |
+|---|---|---|---|
+| `review` | JSON findings | validity, recall, LGTM, precision | `python -m app.skill_evals review --live` |
+| `fix` | diagnostic `{confidence, hypothesis, code_paths}` | confidence validity/match, hypothesis + code-path recall | `… fix --live` |
+| `plan` | markdown (sections + phases) | required sections, min phases, no placeholders, title | `… plan --live` |
+| `brainstorm` | JSON `{issues[]}` | JSON validity, count range, per-issue sections, priority, score bars, themes | `… brainstorm --live` |
+| `rebase` | JSON `{already_solved, confidence}` | decision correctness (`already_solved && high`), confidence, reasoning | `… rebase --live` |
+
+A case carries its input in `diff` (for `review`) or in a generic `input` block
+(`issue_*` for `fix`, `idea` for `plan`, `topic` for `brainstorm`, `pr_*` for
+`rebase`). See each skill's `evals/cases/` for the exact shape.
+
+
 
 ## Why two modes
 
@@ -135,6 +157,25 @@ Validity and recall dominate because those are the regressions that matter most.
 LGTM + no forbidden flags); the **continuous `score`** is what the live run diffs
 against the baseline, so partial improvements show up even when strict pass is
 binary.
+
+## Why some skills are exempt
+
+Two core skills are deliberately **not** covered: `implement` and `mission`
+(listed in `EVAL_EXEMPT_SKILLS`, pinned by a guard test). Forcing a golden
+dataset onto them would measure nothing real (constitution VII — honest
+reporting):
+
+- **`implement`** is orchestration — `run_implement()` returns `(success,
+  summary)`, mutates files, and opens a PR. There is no structured artifact to
+  score; its quality bar is "did the code work, did tests pass, was the PR
+  created", which is CI + behavioural tests (`test_implement_runner.py`).
+- **`mission`** is a pure-Python queue utility — `handler.py` calls
+  `insert_pending_mission` and involves no LLM at all.
+
+**The rule:** before adding evals to a skill, confirm it actually emits a
+structured LLM output with a validator/parser seam. If it does not, document it
+as exempt (add to `EVAL_EXEMPT_SKILLS` with rationale) rather than fabricating
+cases.
 
 ## Extend to another skill
 

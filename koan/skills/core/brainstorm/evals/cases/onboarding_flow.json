@@ -1,0 +1,12 @@
+{
+  "id": "onboarding_flow",
+  "name": "Brainstorm: redesign the new-user onboarding flow",
+  "skill": "brainstorm",
+  "description": "A broad UX topic that should decompose into 3-8 sub-issues spanning welcome, guidance, and activation. Theme keywords ensure the decomposition stays on-topic rather than drifting.",
+  "topic": "Redesign the new-user onboarding flow to improve activation and reduce first-week churn.",
+  "expect": {
+    "min_issues": 3,
+    "max_issues": 8,
+    "theme_keywords": ["welcome", "guide", "checklist", "activation", "tutorial", "churn"]
+  }
+}

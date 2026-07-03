@@ -1,0 +1,12 @@
+{
+  "id": "observability",
+  "name": "Brainstorm: build out service observability",
+  "skill": "brainstorm",
+  "description": "A broad infra topic decomposing into logging, metrics, tracing, and alerting sub-issues. Theme keywords keep the decomposition anchored to the observability pillars.",
+  "topic": "Build out service observability: logging, metrics, tracing, and alerting across all components.",
+  "expect": {
+    "min_issues": 3,
+    "max_issues": 8,
+    "theme_keywords": ["log", "metric", "trace", "alert", "dashboard", "health"]
+  }
+}

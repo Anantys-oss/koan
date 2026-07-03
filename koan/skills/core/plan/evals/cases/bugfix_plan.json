@@ -1,0 +1,12 @@
+{
+  "id": "bugfix_plan",
+  "name": "Plan: fix the quota resume loop",
+  "skill": "plan",
+  "description": "A focused bugfix plan: a single faulty loop causing repeated pause/resume. The plan should still name files, a verification command, and corner cases — no placeholders.",
+  "idea": "Fix the quota resume loop that causes an infinite pause/resume cycle when the reset timestamp is in the past.",
+  "expect": {
+    "required_sections": ["### Summary", "### Verification Criteria"],
+    "min_phases": 1,
+    "banned_patterns": ["TODO", "TBD", "FIXME", "<your", "[project name", "XXX", "lorem ipsum"]
+  }
+}
