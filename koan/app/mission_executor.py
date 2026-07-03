@@ -1296,12 +1296,21 @@ def _run_iteration(
         _mission_role = "review_mode" if autonomous_mode == "review" else "mission"
         mission_cli_provider = get_provider_for_role(_mission_role, project_name)
 
-        # Classify the mission type so per-mission-type effort pins
-        # (effort.review / effort.plan / …) override the dynamic default.
+        # Classify the mission type so a per-mission-type effort pin
+        # (effort.autonomous / effort.freetext / effort.refactor / …) can
+        # override the dynamic default. NB: only NON-skill missions reach here
+        # — skill-dispatched commands (/review, /plan, …) are routed to their
+        # own runners before _run_iteration, so their types never apply.
         try:
             from app.session_tracker import classify_mission_type
             mission_type = classify_mission_type(mission_title)
-        except Exception:
+        except ImportError:
+            # Version mismatch / partial update — degrade to mode-only effort.
+            mission_type = ""
+        except Exception as e:
+            # classify_mission_type is pure regex; any failure here is a bug.
+            # Log it so a silent no-op doesn't quietly drop every effort pin.
+            log("warning", f"classify_mission_type failed (effort pin disabled): {e}")
             mission_type = ""
 
         cmd, cmd_cleanup_paths = build_mission_command(

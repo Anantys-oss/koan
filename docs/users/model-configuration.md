@@ -86,22 +86,29 @@ flag (provider default). This keeps cheap audits cheap and deep reasoning deep,
 and is left untouched when you omit the `effort:` section.
 
 To pin effort **per mission type**, add an `effort:` section. Keys are mission
-types — the `/command` categories Kōan classifies internally (`plan`, `review`,
-`rebase`, `recreate`, `implement`, `refactor`, `audit`, `check`, `maintenance`,
-`pr`, `chat`, `incident`) — not budget modes:
+types — the categories Kōan classifies internally — not budget modes:
 
 ```yaml
 effort:
-  review: low          # always review cheaply, even when budget is flush
-  plan: high           # think hard when planning
-  implement: medium
+  autonomous: low      # keep background autonomous work cheap
+  freetext: medium     # plain-text missions
+  refactor: high       # think hard when refactoring
 ```
 
 A pinned type wins over the dynamic default regardless of the budget mode the
-mission happens to run in — so `review: low` keeps every `/review` cheap.
-Resolution order: `effort.<mission_type>` → `effort.<budget_mode>` (legacy) →
-dynamic default. A single string (`effort: high`) applies to all missions; an
-empty value (`effort: ""` or `effort: { review: "" }`) disables the flag.
+mission happens to run in. Resolution order: `effort.<mission_type>` →
+`effort.<budget_mode>` (legacy) → dynamic default. A single string
+(`effort: high`) applies to all missions; an empty value (`effort: ""` or
+`effort: { refactor: "" }`) disables the flag.
+
+> **Scope.** A per-type pin only affects missions that flow through the main
+> agent loop — autonomous background work, free-text missions, and slash
+> commands that have no dedicated skill runner (e.g. `/refactor`, `/pr`, some
+> `/chat` commands). Slash commands dispatched to a dedicated skill runner —
+> `/review`, `/plan`, `/rebase`, `/recreate`, `/implement`, `/fix`, `/audit`,
+> `/check`, … — run in their own runners and are **not** governed by the
+> `effort:` section (they use the provider default). To control effort for one
+> of those, configure that skill's runner directly.
 
 > Note: effort is a no-op when extended thinking is active for a mission
 > (thinking already implies max effort) and is ignored by providers whose CLI

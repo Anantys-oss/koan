@@ -518,16 +518,19 @@ models:
 # is then picked from the current budget mode (review→low, deep→high, else
 # none) so cheap audits and deep reasoning cost what they should.
 #
-# Keys below are MISSION TYPES (plan/review/rebase/recreate/implement/refactor/
-# audit/check/maintenance/pr/chat/incident), not budget modes. A pinned type
-# wins over the dynamic default regardless of the mode the mission runs in —
-# so `review: low` keeps every /review cheap even when budget is flush.
+# Keys below are MISSION TYPES, not budget modes. A pinned type wins over the
+# dynamic default regardless of the mode the mission runs in. NOTE: only
+# missions that run through the main agent loop honor a pin here — autonomous
+# work, free-text missions, and slash commands WITHOUT a dedicated skill runner
+# (e.g. /refactor, /pr). Skill-dispatched commands (/review, /plan, /rebase,
+# /recreate, /implement, /fix, /audit, /check, …) run in their own runners and
+# are NOT governed by this section, so pinning `review: low` here has no effect.
 #
 # A single string applies to all missions; an empty value disables the flag.
 # effort:
-#   review: low          # always review cheaply
-#   plan: high           # think hard when planning
-#   implement: medium
+#   autonomous: low      # keep background autonomous work cheap
+#   freetext: medium
+#   refactor: high       # think hard when refactoring
 
 # Per-role CLI provider (optional) — parallel to `models:`.
 # Pick a DIFFERENT provider (and optionally a custom binary) for each mission

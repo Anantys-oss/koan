@@ -14,11 +14,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from app.config import _VALID_EFFORT_LEVELS
 from app.run_log import log
-
-# Valid effort levels for the Claude Code --effort flag (empty disables).
-# Shared with config.py; mirrored here to keep the validator dependency-free.
-_EFFORT_LEVEL_VALUES = {"low", "medium", "high", "max"}
 
 # Top-level keys whose nested contents are validated inline (not via
 # SECTION_SCHEMAS), because the sub-key set is open. ``effort`` keys are
@@ -415,7 +412,7 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                         ))
                         continue
                     level = sub_value.strip().lower()
-                    if level and level not in _EFFORT_LEVEL_VALUES:
+                    if level not in _VALID_EFFORT_LEVELS:
                         warnings.append((
                             path,
                             f"'{path}' invalid effort '{sub_value}' "

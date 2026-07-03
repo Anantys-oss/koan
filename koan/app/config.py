@@ -1251,15 +1251,14 @@ def get_effort(autonomous_mode: str = "", mission_type: str = "") -> str:
     effort picked from the current budget mode via ``_DEFAULT_EFFORT_MAP`` —
     is preserved unless config pins a value.
 
-    Config shapes (mapping keys are **mission types**, matching
-    ``session_tracker.classify_mission_type``: plan/review/rebase/implement/
-    refactor/audit/check/maintenance/pr/chat/incident/freetext/autonomous):
+    Config shapes (mapping keys are **mission types** from
+    ``session_tracker.classify_mission_type``):
 
         # Per mission type — wins over the dynamic default
         effort:
-          review: low
-          plan: high
-          implement: medium
+          autonomous: low     # keep background autonomous work cheap
+          freetext: medium
+          refactor: high
 
         # Single value applied to every mission
         effort: high
@@ -1268,10 +1267,25 @@ def get_effort(autonomous_mode: str = "", mission_type: str = "") -> str:
         effort: ""
 
     Resolution order:
-      1. ``effort.<mission_type>`` when set (e.g. all /review missions → low,
-         regardless of the budget mode they happen to run in).
+      1. ``effort.<mission_type>`` when set.
       2. ``effort.<autonomous_mode>`` when set (legacy per-budget-mode pin).
       3. ``_DEFAULT_EFFORT_MAP[autonomous_mode]`` — the dynamic default.
+
+    .. note::
+
+       Only missions that flow through the main agent loop reach this function
+       (via ``build_mission_command``). In that loop ``mission_type`` comes
+       from ``classify_mission_type(mission_title)``, so the pins that can
+       actually take effect are the types returned for **non-skill** missions:
+       ``autonomous`` (no title), ``freetext`` (plain-text missions), and slash
+       commands that have no dedicated skill runner (``refactor``/``pr``/some
+       ``chat`` commands). Slash commands dispatched to a dedicated skill
+       runner — ``/review``, ``/plan``, ``/rebase``, ``/recreate``,
+       ``/implement``, ``/fix``, ``/audit``, ``/check`` … — are routed to those
+       runners *before* this path and are therefore **not** governed by the
+       ``effort:`` section. (They use the provider default.) config_validator
+       still accepts any mission-type key as valid config, since the dispatch
+       taxonomy is open.
 
     A single-string config is validated whole: an invalid value (not
     low/medium/high/max/"") disables the flag, matching the legacy behavior.

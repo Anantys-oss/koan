@@ -249,7 +249,12 @@ def spawn_session(
     try:
         from app.session_tracker import classify_mission_type
         _mission_type = classify_mission_type(mission_text)
-    except Exception:
+    except ImportError:
+        # Version mismatch / partial update — degrade to mode-only effort.
+        _mission_type = ""
+    except Exception as e:
+        # Log unexpected failures so a silent no-op doesn't drop effort pins.
+        print(f"[session_manager] classify_mission_type failed: {e}", file=sys.stderr)
         _mission_type = ""
     cmd, cmd_cleanup_paths = build_mission_command(
         prompt=mission_text,
