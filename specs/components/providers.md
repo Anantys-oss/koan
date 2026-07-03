@@ -81,7 +81,10 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   which runs in `review_runner`. Only main-loop missions honor a pin:
   `autonomous`/`freetext` and slash commands without a runner (`refactor`/`pr`).
   `get_effort_for_mode()` is the type-unaware wrapper and must stay equivalent
-  to `get_effort(mode, "")`.
+  to `get_effort(mode, "")`. `config_validator` accepts any `effort.*` key (the
+  mission-type set is open) but validates every value — dict entries *and* the
+  scalar shorthand (`effort: "high"`) — against `_VALID_EFFORT_LEVELS`, so a
+  typo'd level warns rather than silently dropping the flag.
 - **Footer attribution shows the binary that ran, then falls back to the flavor.**
   `review_runner._review_attribution()` is the single source of truth for the review
   footer's CLI label: `provider_cli_display()` surfaces the basename of a pinned

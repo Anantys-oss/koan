@@ -101,6 +101,15 @@ mission happens to run in. Resolution order: `effort.<mission_type>` →
 (`effort: high`) applies to all missions; an empty value (`effort: ""` or
 `effort: { refactor: "" }`) disables the flag.
 
+**Valid mission-type keys** (the full `classify_mission_type` taxonomy):
+`autonomous`, `freetext`, `plan`, `review`, `rebase`, `recreate`, `implement`,
+`refactor`, `audit`, `check`, `maintenance`, `pr`, `chat`, `incident`. Any key
+outside this set never matches a mission, so a pin on it is silently inert.
+Because the taxonomy is open (new skills add types), the config validator
+accepts any key and only checks that the value is a real level — a typo'd key
+will not warn, it just never fires. Of these, only the types listed under
+**Scope** below can actually take effect today.
+
 > **Scope.** A per-type pin only affects missions that flow through the main
 > agent loop — autonomous background work, free-text missions, and slash
 > commands that have no dedicated skill runner (e.g. `/refactor`, `/pr`, some

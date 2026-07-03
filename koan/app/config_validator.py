@@ -391,7 +391,17 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
             # (e.g. effort: "high" vs effort: {review: low, deep: high}).
             # Accept strings silently for these keys.
             if not isinstance(value, dict):
+                # effort accepts a scalar shorthand (effort: "high") that
+                # applies to every mission — but validate the level so a typo
+                # (effort: "hihg") warns instead of silently dropping the flag,
+                # mirroring the per-key validation below.
                 if key == "effort" and isinstance(value, str):
+                    if value.strip().lower() not in _VALID_EFFORT_LEVELS:
+                        warnings.append((
+                            key,
+                            f"'effort' invalid effort '{value}' "
+                            f"(expected low/medium/high/max)",
+                        ))
                     continue
                 warnings.append((key, f"'{key}' should be a mapping, got {type(value).__name__}"))
                 continue

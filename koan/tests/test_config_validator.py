@@ -501,6 +501,16 @@ class TestValidateOptimizationsNested:
     def test_effort_scalar_shorthand_is_allowed(self):
         assert validate_config({"effort": "high"}) == []
 
+    def test_effort_scalar_invalid_level_warns(self):
+        # A scalar typo must warn, not silently drop the flag (mirrors dict form).
+        warnings = validate_config({"effort": "hihg"})
+        assert any("effort" in path and "invalid effort" in msg
+                   for path, msg in warnings)
+
+    def test_effort_scalar_empty_is_allowed(self):
+        # "" disables the flag — valid as a scalar too.
+        assert validate_config({"effort": ""}) == []
+
     def test_effort_accepts_any_mission_type_key(self):
         # Mission types are an open set (plan/audit/chat/…) — any key with a
         # valid level is accepted, none should warn as "unrecognized".

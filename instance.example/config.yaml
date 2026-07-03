@@ -526,6 +526,13 @@ models:
 # /recreate, /implement, /fix, /audit, /check, …) run in their own runners and
 # are NOT governed by this section, so pinning `review: low` here has no effect.
 #
+# Valid mission-type keys (the full classify_mission_type taxonomy):
+#   autonomous  freetext  plan   review    rebase    recreate  implement
+#   refactor    audit     check  maintenance  pr      chat      incident
+# Any other key never matches a mission, so pinning it does nothing. Of these,
+# only autonomous / freetext / refactor / pr take effect today (the rest are
+# skill-dispatched, per the NOTE above).
+#
 # A single string applies to all missions; an empty value disables the flag.
 # effort:
 #   autonomous: low      # keep background autonomous work cheap
