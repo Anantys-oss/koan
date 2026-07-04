@@ -20,6 +20,9 @@ tracking issue. Each sub-issue carries a structured body (why / approach /
 acceptance criteria / risks / scores / priority / dependencies) so the work is
 actionable and rankable.
 
+See `docs/users/skills.md` for the end-user `/brainstorm` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
+
 ## Inputs
 
 | Input | Source | Required | Notes |

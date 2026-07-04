@@ -30,6 +30,9 @@ error instead of falling back to directory basename heuristics.
 
 ## PR Workflows
 
+See `specs/components/git-github.md` for the design contract behind branch and
+PR creation (draft-only, `gh`-only transport, fork-awareness invariants).
+
 Koan-created work normally lands in branch-prefixed draft PRs. PR helpers cover
 creation, review, rebasing, recreating, squashing, CI fixing, and PR quality
 checks. Auto-merge is configurable and should remain guarded by project config,
@@ -52,6 +55,9 @@ pushback outcomes (validated vs. overridden) so the agent learns which pushbacks
 trust.
 
 ## Review Issue-Tracker Enrichment
+
+See `specs/components/issue-tracking.md` for the design contract behind the
+provider-neutral tracker abstraction this enrichment sits on top of.
 
 When `/review` builds a PR review prompt, it can enrich the prompt with the
 referenced tracker issue so Claude reviews the change against its stated intent.

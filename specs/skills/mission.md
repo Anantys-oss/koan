@@ -18,6 +18,9 @@ updated: 2026-07-02
 The base primitive: queue a free-form mission to `missions.md` for the agent loop to pick
 up. Most other skills are specialized mission factories; `/mission` is the raw one.
 
+See `docs/users/skills.md` for the end-user `/mission` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
+
 ## Inputs
 
 | Input | Source | Required | Notes |

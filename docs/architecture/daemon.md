@@ -27,6 +27,9 @@ process does not stop cleanly.
 
 ## Bridge Loop
 
+See `specs/components/bridge.md` for the design contract behind this process
+(two-process isolation, crash-safe outbox, invariants on inbound-text trust).
+
 `awake.py` owns user-facing message ingestion. It:
 
 - loads messaging configuration and command registries;
@@ -63,6 +66,9 @@ extra OS process is forked — the "dedicated chat channel vs bg tasks" split is
 realized with threads inside the existing bridge process.
 
 ## Agent Loop
+
+See `specs/components/agent-loop.md` for the design contract behind this
+pipeline (execution flow, retry guards, lifecycle invariants).
 
 `run.py` owns background work. Its loop is split across focused modules:
 

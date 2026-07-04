@@ -81,7 +81,17 @@ Soft cap 400 lines / ~2,000 words, hard cap 800 lines — same as upstream. Revi
 
 ## Link convention (deviation from plugin default)
 
-Standard Markdown relative links (`[text](path.md)`), not Obsidian-style `[[wikilinks]]` — matches koan's existing convention and normal GitHub rendering. `/wiki:lint`'s orphan-page and broken-wikilink checks (which only scan for `[[bracket]]` syntax) don't apply here — treat those two specific findings as not applicable; its frontmatter, oversized-page, and staleness checks remain accurate.
+Standard Markdown relative links (`[text](path.md)`), not Obsidian-style `[[wikilinks]]` — matches koan's existing convention and normal GitHub rendering. `/wiki:lint`'s orphan-page and broken-wikilink checks (which only scan for `[[bracket]]` syntax) don't apply here regardless of the limitation below — treat those two specific findings as not applicable.
+
+## Known limitation: bundled scripts don't follow the wiki/ symlinks
+
+`wiki_lint.py`, `wiki_stats.py`, and `wiki_search.py` all discover pages via `Path.rglob("*.md")`, which does **not** descend into symlinked directories. Since `wiki/docs`, `wiki/specs-components`, and `wiki/specs-skills` are symlinks (see "Wiki location" above), running `/wiki:lint` or `/wiki:stats` here reports **0 pages** — a false-clean result, not a real health check. `wiki_search.py`'s BM25 fallback is similarly blind to the real content.
+
+This does **not** affect the two things that actually matter day to day:
+- **`/wiki:query`'s primary path still works** — reading `wiki/index.md` then opening the specific page it names is a direct file read (through the symlink, which resolves fine for a single hop), not a recursive walk.
+- **CI enforcement is unaffected** — `scripts/wiki_check.py` (repo root) reads `docs/`, `specs/components/`, `specs/skills/` directly by real path, no symlinks involved, and is what `.github/workflows/wiki-sync.yml` actually relies on.
+
+What's genuinely unavailable until upstream fixes this (or this wiki drops the symlink layer): `/wiki:lint`'s automated frontmatter/oversized-page/staleness sweep, `/wiki:stats`' page-count/scaling view, and `wiki_search.py`'s BM25 fallback for fuzzy queries the index can't resolve. Use `scripts/wiki_check.py --base-ref origin/main` for hygiene checks instead, and plain `grep`/`Grep` across `docs/`/`specs/` for fuzzy search until this is fixed.
 
 ## Index structure
 

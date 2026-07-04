@@ -19,6 +19,9 @@ The beating heart: a pure-Python loop that pulls a mission, builds a prompt, inv
 the CLI provider as a subprocess, monitors it, and finalizes the mission's lifecycle
 state. Everything else exists to feed or observe this loop.
 
+See `docs/architecture/daemon.md`'s Agent Loop section for how this pipeline is wired
+into the running daemon (startup, quota pause, parallel sessions).
+
 ## Execution flow (one iteration)
 
 ```

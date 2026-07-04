@@ -18,6 +18,9 @@ updated: 2026-07-02
 Fix a tracker issue end-to-end (understand → plan → test → implement → draft PR), or
 batch-queue fix missions for all open issues in a repo.
 
+See `docs/users/skills.md` for the end-user `/fix` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
+
 ## Inputs
 
 | Input | Source | Required | Notes |

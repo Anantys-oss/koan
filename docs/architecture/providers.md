@@ -10,7 +10,8 @@ updated: 2026-06-09
 
 CLI provider code lives under `koan/app/provider/`. New provider behavior should
 extend that package rather than adding provider-specific branching throughout the
-daemon.
+daemon. See `specs/components/providers.md` for the design contract (the
+`CLIProvider` ABC, per-role resolution, and invariants a new provider must honor).
 
 ## Responsibilities
 

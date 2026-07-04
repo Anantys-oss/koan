@@ -20,6 +20,9 @@ Recreate a diverged PR from scratch on current upstream: fetch the original meta
 diff, branch fresh from base, and reimplement. Used when a PR has drifted too far to
 rebase cleanly.
 
+See `docs/users/skills.md` for the end-user `/recreate` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
+
 ## Inputs
 
 | Input | Source | Required | Notes |

@@ -21,6 +21,9 @@ Answer a question about a GitHub PR or issue: fetch the surrounding context and 
 AI-generated reply back to GitHub. The conversational counterpart to `review` — explains
 rather than critiques.
 
+See `docs/users/skills.md` for the end-user `/ask` reference and `docs/users/user-manual.md`
+for the fuller walkthrough.
+
 ## Inputs
 
 | Input | Source | Required | Notes |

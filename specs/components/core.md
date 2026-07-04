@@ -22,6 +22,10 @@ The foundation layer every other component depends on. It owns three things:
 If a contract here changes, the blast radius is the whole daemon. Treat this layer
 as load-bearing.
 
+The operational mission-queue lifecycle this layer implements is documented in
+`docs/architecture/mission-lifecycle.md`; the config resolution and file-locking model
+is documented in `docs/architecture/shared-state.md`.
+
 ## Key types & functions
 
 | Symbol | Contract |
