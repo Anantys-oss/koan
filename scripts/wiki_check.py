@@ -102,15 +102,20 @@ def check_frontmatter(path):
 
 
 def check_index_entry(path, index_text):
-    """A wiki-eligible file should have a `[`<rel>`]` link somewhere in index.md."""
-    if path.startswith("docs/"):
+    """A wiki-eligible file should have a `[`<rel>`]` link somewhere in index.md.
+
+    wiki/index.md's display paths mirror the wiki/ symlink names, not the real
+    specs/ path: `specs/components/core.md` -> `components/core.md`,
+    `specs/skills/ask.md` -> `skills/ask.md` (matching wiki/specs-components,
+    wiki/specs-skills). Only the `specs/` prefix is dropped, not the
+    components/skills segment.
+    """
+    if path == SPECS_README:
+        rel = "specs/README.md"  # index.md keeps the full path for this one, unlike docs/README.md
+    elif path.startswith("docs/"):
         rel = path[len("docs/"):]
-    elif path.startswith(COMPONENT_SPEC_DIR):
-        rel = path[len(COMPONENT_SPEC_DIR):]
-    elif path.startswith(SKILL_SPEC_DIR):
-        rel = path[len(SKILL_SPEC_DIR):]
-    elif path == SPECS_README:
-        rel = "specs/README.md"
+    elif path.startswith("specs/"):
+        rel = path[len("specs/"):]  # "components/core.md" / "skills/ask.md"
     else:
         return []
     needle = f"[`{rel}`]"
