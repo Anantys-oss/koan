@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Prompt Guard"
+tags: [security]
+created: 2026-06-06
+updated: 2026-06-27
+---
+
 # Prompt Guard
 
 Input-side defense against prompt injection in missions and external data.

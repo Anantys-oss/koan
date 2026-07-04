@@ -1,0 +1,95 @@
+name: 📖 Wiki Sync
+
+# Backstop for koan's LLM Wiki (see wiki/SCHEMA.md). The primary mechanism is
+# LLM discipline — CLAUDE.md/AGENTS.md instruct any agent to keep wiki
+# bookkeeping (frontmatter, wiki/index.md, wiki/log.md, specs/<NNN-slug>/
+# status) current as part of the same change. This job catches what a session
+# missed and pushes a fix commit directly onto the PR's own branch — per the
+# documented exception in wiki/SCHEMA.md ("Workflow customizations") and
+# .specify/memory/constitution.md (Principle I), wiki bookkeeping specifically
+# is exempt from a separate human-reviewed step; the human still reviews and
+# merges the PR as a whole.
+#
+# NOTE: uses `pull_request` (not `pull_request_target`), so it only has write
+# access to branches within this repo — it will not push fixes onto PRs from
+# forks. Fork PRs still get the deterministic report via the job log; a
+# maintainer can apply the same fix by re-running /wiki:lint locally.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+concurrency:
+  group: wiki-sync-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  wiki-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Skip on fork PRs — GITHUB_TOKEN can't push to a fork's branch.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: ⚙️ Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+          cache-dependency-path: koan/requirements.txt
+
+      - name: 📦 Install dependencies
+        run: pip install -r koan/requirements.txt
+
+      - name: 🔍 Check wiki hygiene
+        id: check
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          python3 scripts/wiki_check.py --base-ref "origin/$BASE_REF" || echo "gaps_found=1" >> "$GITHUB_OUTPUT"
+
+      - name: 🩹 Fix gaps (scoped LLM pass)
+        if: steps.check.outputs.gaps_found == '1'
+        working-directory: koan
+        env:
+          KOAN_ROOT: ${{ github.workspace }}/koan
+          PYTHONPATH: "."
+          KOAN_TELEGRAM_TOKEN: "unused-in-ci"
+          KOAN_TELEGRAM_CHAT_ID: "0"
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          python3 ../scripts/wiki_sync_ci.py --base-ref "origin/$BASE_REF"
+
+      - name: 📤 Commit and push fix (if any)
+        if: steps.check.outputs.gaps_found == '1'
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes produced — nothing to push."
+            exit 0
+          fi
+          git config user.name "Koan-Bot"
+          git config user.email "koan-bot@users.noreply.github.com"
+          git add wiki/ docs/ specs/components/ specs/skills/
+          git commit -m "$(cat <<'EOF'
+          docs(wiki): sync frontmatter/index/log gaps
+
+          Automated wiki-hygiene backstop — see .github/workflows/wiki-sync.yml
+          and wiki/SCHEMA.md. Frontmatter dates, wiki/index.md entries, and
+          wiki/log.md are exempt from a separate human-review step per the
+          documented exception in wiki/SCHEMA.md and
+          .specify/memory/constitution.md (Principle I); this commit only
+          touches that bookkeeping, never spec/doc bodies or code.
+          EOF
+          )"
+          git push origin "HEAD:$HEAD_REF"

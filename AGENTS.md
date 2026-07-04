@@ -24,10 +24,11 @@ Code.
 
 ## Documentation First
 
-- Before planning or implementing a feature or important refactor, inspect the
-  relevant documentation with `grep`, `find`, or equivalent search. Start at
-  `docs/README.md`, then read the matching pages under `docs/architecture/`,
-  `docs/users/`, `docs/providers/`, `docs/messaging/`, or `docs/operations/`.
+- Before planning or implementing a feature or important refactor, check
+  `wiki/index.md` (a flat catalog of `docs/` and the durable half of `specs/` —
+  see "Wiki Tooling" below) to find candidate pages, then read the matching
+  pages under `docs/architecture/`, `docs/users/`, `docs/providers/`,
+  `docs/messaging/`, or `docs/operations/`.
 - Treat docs as context to verify against code, not as unquestioned truth. If
   code and docs disagree, preserve current code behavior unless the task says
   otherwise, and update the docs to match the resulting behavior.
@@ -36,6 +37,22 @@ Code.
   update the relevant docs in the same branch.
 - For core skill changes, update both `docs/users/user-manual.md` and
   `docs/users/skills.md`.
+
+## Wiki Tooling
+
+`docs/` and the durable half of `specs/` (`specs/components/`, `specs/skills/`)
+are indexed together as an LLM Wiki — see `wiki/SCHEMA.md` for full
+conventions. `wiki/index.md` is a plain Markdown catalog readable by any agent
+via normal file search; `/wiki:query`/`/wiki:lint`/`/wiki:stats` are Claude Code
+slash commands specific to that plugin and are not available here — read
+`wiki/index.md` directly and open the obviously-relevant page(s) instead of
+grepping `docs/`/`specs/` blindly.
+
+Wiki bookkeeping (frontmatter dates, `wiki/index.md` entries, `wiki/log.md`
+lines, and `specs/<NNN-slug>/` computed status) is exempt from the
+"human decides" caution elsewhere in this file — commit it directly as part of
+the same change, no separate review step for that part specifically. This does
+not extend to actual spec/contract or code changes.
 
 ## Commands
 

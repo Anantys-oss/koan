@@ -1,3 +1,11 @@
+---
+type: doc
+title: "REST API"
+tags: [operations]
+created: 2026-05-31
+updated: 2026-06-27
+---
+
 # REST API
 
 Kōan exposes an **optional HTTP control layer** so external tools can queue missions, poll status, and manage the agent programmatically — in addition to the Telegram / Matrix / Slack messaging bridge.

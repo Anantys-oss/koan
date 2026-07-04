@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Daemon Runtime"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-26
+---
+
 # Daemon Runtime
 
 This page describes how the long-running Koan daemon is assembled today.

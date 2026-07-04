@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Git & GitHub"
+tags: [git-github]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Component Spec — Git & GitHub
 
 **Modules:** `git_sync.py`, `git_auto_merge.py`, `github.py`, `github_url_parser.py`,

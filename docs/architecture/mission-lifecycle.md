@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Mission Lifecycle"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-27
+---
+
 # Mission Lifecycle
 
 `koan/app/missions.py` is the source of truth for parsing and mutating

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Shared State"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-11
+---
+
 # Shared State
 
 Koan intentionally uses local files instead of a database. This keeps setup

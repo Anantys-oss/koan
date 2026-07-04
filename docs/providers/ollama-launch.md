@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Ollama Launch Provider"
+tags: [providers]
+created: 2026-06-08
+updated: 2026-06-08
+---
+
 # Ollama Launch Provider
 
 The `ollama-launch` provider uses Ollama v0.16.0+ ``ollama launch claude`` to run

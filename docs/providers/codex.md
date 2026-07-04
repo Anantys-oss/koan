@@ -1,3 +1,11 @@
+---
+type: doc
+title: "OpenAI Codex CLI Provider"
+tags: [providers]
+created: 2026-05-28
+updated: 2026-07-01
+---
+
 # OpenAI Codex CLI Provider
 
 The Codex provider lets Kōan use OpenAI's Codex CLI as the underlying

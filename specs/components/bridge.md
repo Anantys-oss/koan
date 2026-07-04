@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Telegram Bridge"
+tags: [bridge]
+created: 2026-06-27
+updated: 2026-07-03
+---
+
 # Component Spec — Telegram Bridge
 
 **Modules:** `awake.py`, `command_handlers.py`, `bridge_state.py`, `bridge_log.py`,

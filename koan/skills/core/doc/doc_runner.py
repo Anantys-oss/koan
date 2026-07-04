@@ -173,6 +173,111 @@ def write_doc_file(
     return filepath
 
 
+# ---------------------------------------------------------------------------
+# Wiki bookkeeping — only activates when the TARGET project has adopted the
+# LLM Wiki pattern (praneybehl/llm-wiki-plugin) itself, i.e. it has its own
+# wiki/SCHEMA.md. This keeps /doc generic across arbitrary mission projects;
+# it's a no-op for projects without a wiki/.
+# ---------------------------------------------------------------------------
+
+_FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
+
+
+def _wiki_root(project_dir: Path) -> Optional[Path]:
+    """Return the project's wiki/ dir if it has adopted the LLM Wiki pattern, else None."""
+    wiki_dir = project_dir / "wiki"
+    if (wiki_dir / "SCHEMA.md").exists():
+        return wiki_dir
+    return None
+
+
+def _ensure_frontmatter(filepath: Path, category: str, title: str, today: str) -> None:
+    """Prepend or refresh a wiki frontmatter block on a doc file written by this skill.
+
+    New files get `created`/`updated` set to today. Existing frontmatter has only
+    `updated` refreshed; `created` and any existing `tags` are preserved.
+    """
+    text = filepath.read_text()
+    match = _FRONTMATTER_RE.match(text)
+    if match:
+        block = match.group(0)
+        created_match = re.search(r"^created:\s*(.+)$", block, re.MULTILINE)
+        created = created_match.group(1).strip() if created_match else today
+        tags_match = re.search(r"^tags:\s*(.+)$", block, re.MULTILINE)
+        tags = tags_match.group(1).strip() if tags_match else f"[{category}]"
+        body = text[match.end():]
+    else:
+        created = today
+        tags = f"[{category}]"
+        body = text
+
+    frontmatter = (
+        "---\n"
+        "type: doc\n"
+        f'title: "{title}"\n'
+        f"tags: {tags}\n"
+        f"created: {created}\n"
+        f"updated: {today}\n"
+        "---\n\n"
+    )
+    filepath.write_text(frontmatter + body.lstrip("\n"))
+
+
+def _update_wiki_index(wiki_dir: Path, docs_dir: Path, filepath: Path, summary: str) -> None:
+    """Add or refresh this doc's one-line entry in wiki/index.md."""
+    index_path = wiki_dir / "index.md"
+    if not index_path.exists():
+        return
+    rel_from_docs_root = filepath.relative_to(docs_dir)
+    rel_from_wiki = filepath.relative_to(docs_dir.parent)  # e.g. docs/architecture.md
+    link = f"- [`{rel_from_docs_root}`]({rel_from_wiki}) — {summary}"
+    text = index_path.read_text()
+    heading = "## Docs (via /doc)"
+    entry_re = re.compile(rf"^- \[`{re.escape(str(rel_from_docs_root))}`\].*$", re.MULTILINE)
+    if entry_re.search(text):
+        text = entry_re.sub(link, text)
+    elif heading in text:
+        text = text.replace(heading, f"{heading}\n{link}", 1)
+    else:
+        text = text.rstrip("\n") + f"\n\n{heading}\n{link}\n"
+    index_path.write_text(text)
+
+
+def _append_wiki_log(wiki_dir: Path, today: str, summary: str) -> None:
+    """Append one line to wiki/log.md, if it exists."""
+    log_path = wiki_dir / "log.md"
+    if not log_path.exists():
+        return
+    with log_path.open("a") as f:
+        f.write(f"\n## [{today}] ingest | /doc: {summary}\n")
+
+
+def _sync_wiki(project_dir: Path, docs_dir: Path, blocks: List["DocBlock"], written: List[str]) -> None:
+    """Best-effort wiki bookkeeping for docs this run actually wrote.
+
+    No-op when the target project has no wiki/SCHEMA.md.
+    """
+    wiki_dir = _wiki_root(project_dir)
+    if wiki_dir is None or not written:
+        return
+
+    import datetime
+    today = datetime.date.today().isoformat()
+
+    for block in blocks:
+        if block.category not in written:
+            continue
+        filepath = docs_dir / block.filename
+        if not filepath.exists():
+            continue
+        _ensure_frontmatter(filepath, block.category, block.title, today)
+        first_line = block.content.strip().splitlines()[0] if block.content.strip() else block.title
+        summary = first_line.lstrip("#").strip()[:160]
+        _update_wiki_index(wiki_dir, docs_dir, filepath, summary)
+
+    _append_wiki_log(wiki_dir, today, f"{len(written)} doc file(s) updated via /doc ({', '.join(written)})")
+
+
 def _describe_existing_docs(docs_dir: Path, categories: List[str]) -> str:
     """Describe which docs already exist for the requested categories."""
     if not docs_dir.exists():
@@ -297,6 +402,9 @@ def run_doc(
             written.append(block.category)
         else:
             skipped.append(block.category)
+
+    # Step 6: Wiki bookkeeping — no-op unless this project has its own wiki/SCHEMA.md
+    _sync_wiki(project_dir, docs_dir, blocks, written)
 
     # Build summary
     written_text = f"{len(written)} files written ({', '.join(written)})" if written else "no files written"

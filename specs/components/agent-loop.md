@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Agent Loop Pipeline"
+tags: [agent-loop]
+created: 2026-06-27
+updated: 2026-07-01
+---
+
 # Component Spec — Agent Loop Pipeline
 
 **Modules:** `run.py`, `iteration_manager.py`, `mission_executor.py`,

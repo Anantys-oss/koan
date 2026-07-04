@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Interactive launcher (make koan)"
+tags: [operations]
+created: 2026-06-08
+updated: 2026-06-09
+---
+
 # Interactive launcher (`make koan`)
 
 `make koan` is a TTY-gated front door for starting Kōan. It complements — and

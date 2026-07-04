@@ -1,3 +1,11 @@
+---
+type: doc
+title: "PR Activity Reports"
+tags: [operations]
+created: 2026-06-24
+updated: 2026-06-25
+---
+
 # PR Activity Reports
 
 The `/report` skill posts a digest of Kōan's GitHub Pull-Request activity to the

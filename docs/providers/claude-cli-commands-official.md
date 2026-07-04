@@ -1,3 +1,11 @@
+---
+type: doc
+title: "CLI reference"
+tags: [providers]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 > ## Documentation Index
 > Fetch the complete documentation index at: https://code.claude.com/docs/llms.txt
 > Use this file to discover all available pages before exploring further.

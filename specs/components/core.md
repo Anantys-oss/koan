@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Core Data & Config"
+tags: [core]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Component Spec — Core Data & Config
 
 **Modules:** `missions.py`, `projects_config.py`, `projects_migration.py`, `utils.py`,

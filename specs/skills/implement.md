@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — implement"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-07-02
+---
+
 # Skill Spec — `implement`
 
 ## Command(s)

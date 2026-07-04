@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Claude Code CLI Provider"
+tags: [providers]
+created: 2026-05-28
+updated: 2026-07-01
+---
+
 # Claude Code CLI Provider
 
 The Claude Code CLI is Koan's default and most capable provider. It gives

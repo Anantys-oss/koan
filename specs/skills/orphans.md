@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — orphans"
+tags: [skill]
+created: 2026-07-01
+updated: 2026-07-01
+---
+
 # Skill Spec — `orphans`
 
 ## Command(s)

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Architecture Overview"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 # Architecture Overview
 
 Koan is a local autonomous coding daemon. It keeps user intent in Markdown files,

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "GitHub And Trackers"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-23
+---
+
 # GitHub And Trackers
 
 Koan integrates with GitHub for notifications, PR workflows, CI feedback, and

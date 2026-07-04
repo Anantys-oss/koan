@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Threat Model: Agent Disalignment Risk"
+tags: [security]
+created: 2026-05-28
+updated: 2026-06-06
+---
+
 # Threat Model: Agent Disalignment Risk
 
 **Context**: Koan runs as an autonomous agent 24/7 on a MacBook using Claude Code CLI.

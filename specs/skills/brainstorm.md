@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — brainstorm"
+tags: [skill]
+created: 2026-07-02
+updated: 2026-07-02
+---
+
 # Skill Spec — `brainstorm`
 
 ## Command(s)

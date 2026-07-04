@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Skills System"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-23
+---
+
 # Skills System
 
 Skills are Koan's command extension mechanism. Core skills live under

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Messaging level (bridge verbosity)"
+tags: [messaging]
+created: 2026-06-24
+updated: 2026-06-25
+---
+
 # Messaging level (bridge verbosity)
 
 Kōan's Telegram/Slack bridge can be **chatty** — historically it announced every

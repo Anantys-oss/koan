@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — ci_check"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Skill Spec — `ci_check`
 
 ## Command(s)

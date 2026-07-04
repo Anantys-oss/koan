@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Provider Architecture"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-09
+---
+
 # Provider Architecture
 
 CLI provider code lives under `koan/app/provider/`. New provider behavior should

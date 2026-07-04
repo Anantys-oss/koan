@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Deploy Kōan on Railway"
+tags: [setup]
+created: 2026-06-24
+updated: 2026-06-26
+---
+
 # Deploy Kōan on Railway
 
 Kōan runs as a single hosted container on Railway (or a similar single-container

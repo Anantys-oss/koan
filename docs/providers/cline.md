@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Cline CLI Provider"
+tags: [providers]
+created: 2026-06-09
+updated: 2026-06-09
+---
+
 # Cline CLI Provider
 
 The Cline provider lets Kōan use Cline CLI as the underlying AI agent.

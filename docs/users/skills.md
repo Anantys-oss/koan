@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Skills Reference"
+tags: [users]
+created: 2026-05-28
+updated: 2026-06-29
+---
+
 # Skills Reference
 
 > **New here?** Start with the [Quickstart](quickstart.md) — a 5-minute, copy-paste guide to the most-used commands across GitHub, Jira, and your messaging app.

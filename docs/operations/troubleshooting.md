@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Troubleshooting"
+tags: [operations]
+created: 2026-06-04
+updated: 2026-06-11
+---
+
 # Troubleshooting
 
 Common operational issues and how to resolve them.

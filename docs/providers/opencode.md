@@ -1,3 +1,11 @@
+---
+type: doc
+title: "OpenCode Go via the Claude CLI"
+tags: [providers]
+created: 2026-06-26
+updated: 2026-06-26
+---
+
 # OpenCode Go via the Claude CLI
 
 Run Koan's **default Claude provider** against an

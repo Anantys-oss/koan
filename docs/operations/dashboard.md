@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Web Dashboard"
+tags: [operations]
+created: 2026-05-31
+updated: 2026-06-27
+---
+
 # Web Dashboard
 
 The Kōan web dashboard is a local, read-mostly Flask app for monitoring and interacting

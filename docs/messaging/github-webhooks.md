@@ -1,3 +1,11 @@
+---
+type: doc
+title: "GitHub Webhooks — Push-Based Notification Triggering"
+tags: [messaging]
+created: 2026-06-01
+updated: 2026-06-02
+---
+
 # GitHub Webhooks — Push-Based Notification Triggering
 
 By default, Kōan **polls** GitHub for @mentions on a throttled schedule (60s base,
