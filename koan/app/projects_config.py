@@ -110,6 +110,24 @@ def load_projects_config(koan_root: str) -> Optional[dict]:
 
     _validate_config(data)
 
+    # Normalize null sections to empty dicts. A `projects:` (or `defaults:`)
+    # key present but empty — e.g. every entry commented out — parses to None.
+    # Coercing here means no downstream consumer has to guard against None
+    # when it does `config.get("projects", {}).items()` / `in` / indexing.
+    if "projects" in data and data.get("projects") is None:
+        # Warn the operator: a present-but-empty section is usually an
+        # oversight (all entries commented out) rather than intent.
+        print(
+            "[projects_config] warning: 'projects:' section in projects.yaml "
+            "is empty (null) — treating as no configured projects",
+            file=sys.stderr,
+        )
+        data["projects"] = {}
+    if data.get("projects") is None:
+        data["projects"] = {}
+    if data.get("defaults") is None:
+        data["defaults"] = {}
+
     with _cache_lock:
         _cache[cache_key] = (current_mtime, data)
 
@@ -277,6 +295,8 @@ def get_projects_from_config(config: dict) -> List[Tuple[str, str]]:
 
 def _find_project_entry(projects: dict, project_name: str) -> dict:
     """Case-insensitive lookup of a project entry in the projects dict."""
+    # A null `projects:` section (all entries commented out) parses to None.
+    projects = projects or {}
     # Fast path: exact match
     entry = projects.get(project_name)
     if entry is not None:
@@ -911,7 +931,7 @@ def ensure_github_urls(koan_root: str) -> List[str]:
     if config is None:
         return []
 
-    projects = config.get("projects", {})
+    projects = config.get("projects") or {}
     if not projects:
         return []
 

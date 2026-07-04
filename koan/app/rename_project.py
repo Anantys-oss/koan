@@ -138,7 +138,7 @@ def run_rename(koan_root: Path, old_name: str, new_name: str, dry_run: bool = Tr
     # Validate old project exists
     with open(yaml_path) as f:
         config = yaml.safe_load(f)
-    projects = config.get("projects", {})
+    projects = config.get("projects") or {}
     if old_name not in projects:
         print(f"Error: project '{old_name}' not found in projects.yaml", file=sys.stderr)
         print(f"Available projects: {', '.join(projects.keys())}", file=sys.stderr)

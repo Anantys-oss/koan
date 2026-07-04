@@ -105,12 +105,31 @@ projects:
             load_projects_config(koan_root)
 
     def test_missing_projects_section_is_valid(self, koan_root):
-        """projects: section is optional — defaults-only yaml is valid."""
+        """projects: section is optional — defaults-only yaml is valid.
+
+        The loader normalizes a missing/null projects section to an empty
+        dict so downstream consumers never see None (issue #2273)."""
         _write_yaml(koan_root, "defaults:\n  enabled: true\n")
         config = load_projects_config(koan_root)
         assert config is not None
         assert "defaults" in config
-        assert config.get("projects") is None
+        assert config["projects"] == {}
+
+    def test_null_projects_section_normalized_to_empty_dict(self, koan_root):
+        """A 'projects:' key present but empty (all entries commented out)
+        parses to None; the loader must normalize it to {} so the run loop
+        never crashes on `.get("projects", {}).values()` (issue #2273)."""
+        _write_yaml(koan_root, "projects:\n")
+        config = load_projects_config(koan_root)
+        assert config is not None
+        assert config["projects"] == {}
+
+    def test_null_projects_section_warns_operator(self, koan_root, capsys):
+        """A present-but-null 'projects:' section is usually an oversight, so
+        the loader emits a warning to stderr (per reviewer request)."""
+        _write_yaml(koan_root, "projects:\n")
+        load_projects_config(koan_root)
+        assert "empty (null)" in capsys.readouterr().err
 
     def test_empty_projects_is_valid(self, koan_root):
         """Empty projects: dict is valid — workspace will provide projects."""
@@ -306,6 +325,14 @@ class TestGetProjectConfig:
         result = get_project_config(config, "app")
         assert result["git_auto_merge"]["enabled"] is True
         assert result["git_auto_merge"]["base_branch"] == "main"
+
+    def test_null_projects_value(self):
+        """A 'projects:' key present but empty parses to None. get_project_config
+        must not raise AttributeError (regression for the GitHub-notification
+        authorized-users path)."""
+        config = {"projects": None}
+        result = get_project_config(config, "anything")
+        assert isinstance(result, dict)
 
     def test_project_overrides_defaults(self):
         config = {

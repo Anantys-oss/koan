@@ -856,7 +856,7 @@ def _persist_and_cache_remotes(
     try:
         from app.projects_config import load_projects_config, save_projects_config
         config = load_projects_config(str(KOAN_ROOT))
-        if config and name in config.get("projects", {}):
+        if config and name in (config.get("projects") or {}):
             proj = config["projects"][name]
             if isinstance(proj, dict) and proj.get("path"):
                 if primary and not proj.get("github_url"):
@@ -907,7 +907,7 @@ def _resolve_via_fork_parent(
     if not config:
         return None
 
-    for project in config.get("projects", {}).values():
+    for project in (config.get("projects") or {}).values():
         if not isinstance(project, dict):
             continue
         gh_url = (project.get("github_url") or "").lower()
@@ -972,7 +972,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
             from app.projects_config import load_projects_config
             _projects_config = load_projects_config(str(KOAN_ROOT))
             if _projects_config:
-                for project in _projects_config.get("projects", {}).values():
+                for project in (_projects_config.get("projects") or {}).values():
                     if isinstance(project, dict):
                         # Check primary github_url
                         gh_url = project.get("github_url", "")
@@ -1058,7 +1058,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
             config = _projects_config
             if config:
                 candidates = []
-                for project in config.get("projects", {}).values():
+                for project in (config.get("projects") or {}).values():
                     if not isinstance(project, dict):
                         continue
                     all_urls = []

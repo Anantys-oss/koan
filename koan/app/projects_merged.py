@@ -276,7 +276,7 @@ def get_yaml_project_names(koan_root: str) -> set:
             return set()
         
         return {
-            name for name, proj in config.get("projects", {}).items()
+            name for name, proj in (config.get("projects") or {}).items()
             if isinstance(proj, dict) and proj.get("path")
         }
     except (ValueError, OSError):

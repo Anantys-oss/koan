@@ -145,7 +145,7 @@ def _update_projects_config(koan_root: str, fixed: dict):
         if config is None:
             return
 
-        projects = config.get("projects", {})
+        projects = config.get("projects") or {}
         modified = False
 
         for name, new_slug in fixed.items():
