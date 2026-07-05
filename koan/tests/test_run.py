@@ -8756,4 +8756,3 @@ class TestFinalizeVerifyRequeue:
         requeue.assert_called_once()
         notify.assert_not_called()
         complete.assert_called_once()        # falls through to normal completion
-        requeue.assert_not_called()

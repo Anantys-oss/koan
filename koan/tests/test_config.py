@@ -2623,11 +2623,13 @@ class TestGetVerifyRequeueMax:
         with _mock_config({"verification": {"max_requeue": 0}}):
             assert get_verify_requeue_max() == 0
 
-    def test_negative_clamps_to_zero(self):
+    def test_negative_is_config_error_not_disable(self):
         from app.config import get_verify_requeue_max
 
+        # A negative value is a mistake, not "disable" — returning the default
+        # keeps the re-queue on instead of silently clamping to 0 (disabled).
         with _mock_config({"verification": {"max_requeue": -5}}):
-            assert get_verify_requeue_max() == 0
+            assert get_verify_requeue_max() == 2
 
     def test_non_numeric_falls_back_to_default(self):
         from app.config import get_verify_requeue_max

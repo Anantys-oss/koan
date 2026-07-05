@@ -1892,9 +1892,13 @@ def get_verify_requeue_max() -> int:
     cfg = _load_config() or {}
     raw = (cfg.get("verification") or {}).get("max_requeue", 2)
     try:
-        return max(0, int(raw))
+        value = int(raw)
     except (TypeError, ValueError):
         return 2
+    # A negative value is a config mistake, not "disable" — clamp it to the
+    # default rather than to 0 (which would silently turn the re-queue off).
+    # ``0`` is the explicit, documented way to disable.
+    return value if value >= 0 else 2
 
 
 def get_autonomous_health_config() -> dict:
