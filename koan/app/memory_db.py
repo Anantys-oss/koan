@@ -116,6 +116,12 @@ def _stream_jsonl_into_entries(conn: sqlite3.Connection, log_path: Path) -> tupl
             except json.JSONDecodeError:
                 skipped += 1
                 continue
+            # Valid JSON that is not an object (e.g. 42, "x", [1,2]) would make
+            # _row_from_obj's obj.get(...) raise AttributeError, aborting the
+            # whole stream. Treat it as malformed, matching the JSONDecodeError.
+            if not isinstance(obj, dict):
+                skipped += 1
+                continue
             batch.append(_row_from_obj(obj))
             if len(batch) >= _STREAM_BATCH:
                 conn.executemany(_INSERT_SQL, batch)
@@ -134,7 +140,8 @@ def _reindex_from_jsonl(conn: sqlite3.Connection, instance: str) -> None:
         return
     try:
         inserted, skipped = _stream_jsonl_into_entries(conn, log_path)
-    except OSError:
+    except OSError as e:
+        logger.warning("[memory_db] Re-index read failed, skipping: %s", e)
         return
     except sqlite3.DatabaseError as e:
         # Roll back the partial batches: ensure_db keeps this connection open
@@ -579,7 +586,8 @@ def migrate_jsonl_to_sqlite(instance: str) -> int:
 
         try:
             count, skipped = _stream_jsonl_into_entries(conn, log_path)
-        except OSError:
+        except OSError as e:
+            logger.warning("[memory_db] Migration read failed, skipping: %s", e)
             conn.close()
             return 0
 
