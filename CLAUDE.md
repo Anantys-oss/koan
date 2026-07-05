@@ -60,7 +60,7 @@ clean refactoring: change the spec's contract deliberately, then make the code m
 - **Index-first.** Read `wiki/index.md`, open the obviously-relevant page(s) directly. Escalate to `/wiki:query "<topic>"` only for open-ended/fuzzy questions the index alone doesn't resolve. `/wiki:lint`/`/wiki:stats` are periodic health checks, not part of the per-task loop.
 - **In Plan Mode**, the plan's Context section must state what the wiki said (or that nothing relevant was found) before the recommended approach.
 - **Wiki bookkeeping is exempt from the "no unsupervised modification" principle below** — frontmatter dates, `wiki/index.md` entries, `wiki/log.md` lines, and `specs/<NNN-slug>/` computed status are committed directly as part of the same change/PR, no separate review step for that part specifically. This does not extend to actual spec/contract or code changes. A CI job (`.github/workflows/wiki-sync.yml`) backstops anything an LLM session missed by pushing a same-branch fix commit — never to `main`, never a separate PR.
-- If `/wiki:*` commands aren't recognized, the marketplace wasn't synced yet — run once: `/plugin marketplace add praneybehl/llm-wiki-plugin` then `/plugin install llm-wiki@llm-wiki`.
+- `make setup` installs the `llm-wiki` plugin automatically (user scope, so it's available in every project on the machine — this is what makes `/wiki:*` work for both human sessions and koan's own headless CLI invocations, which never see the interactive plugin-install prompt). If `/wiki:*` commands aren't recognized (e.g. `claude` wasn't on `PATH` during `make setup`, or the plugin cache was cleared), run once: `claude plugin marketplace add praneybehl/llm-wiki-plugin && claude plugin install llm-wiki@llm-wiki --scope user`.
 
 ## Commands
 
