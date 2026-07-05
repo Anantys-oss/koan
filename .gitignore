@@ -33,6 +33,7 @@ koan/htmlcov/
 # IDE
 .vscode/
 .idea/
+wiki/.obsidian/
 .last-review-sha
 projects.yaml
 projects.docker.yaml
