@@ -309,6 +309,21 @@ def _find_project_entry(projects: dict, project_name: str) -> dict:
     return {}
 
 
+def _project_exists(projects: dict, project_name: str) -> bool:
+    """Case-insensitive membership test for a project.
+
+    Distinct from :func:`_find_project_entry`, which returns ``{}`` both when a
+    project is absent *and* when it exists with an empty/null override body
+    (e.g. a tag-only ``my-project:`` entry). Callers that must reject unknown
+    projects without also rejecting valid-but-empty ones test membership here.
+    """
+    projects = projects or {}
+    if project_name in projects:
+        return True
+    lower = project_name.lower()
+    return any(key.lower() == lower for key in projects)
+
+
 def get_project_config(config: dict, project_name: str) -> dict:
     """Get merged config for a project (defaults + project overrides).
 
@@ -887,7 +902,7 @@ def apply_project_patch(koan_root: str, project_name: str, patch: dict) -> dict:
     config = load_projects_config(koan_root)
     if not config:
         raise ValueError("No projects.yaml found")
-    if not _find_project_entry(config.get("projects", {}), project_name):
+    if not _project_exists(config.get("projects", {}), project_name):
         raise ValueError(f"Unknown project: {project_name}")
 
     clean: dict = {}
@@ -920,7 +935,10 @@ def apply_project_patch(koan_root: str, project_name: str, patch: dict) -> dict:
     # other projects / defaults — passing the full config keeps them intact.
     full = copy.deepcopy(config)
     full.setdefault("projects", {})
-    full["projects"].setdefault(canonical, {})
+    # A tag-only entry parses to None (not a dict), so setdefault won't replace
+    # it — normalize to {} before updating so `.update()` doesn't hit None.
+    if not isinstance(full["projects"].get(canonical), dict):
+        full["projects"][canonical] = {}
     full["projects"][canonical].update(clean)
 
     save_projects_config(koan_root, full)

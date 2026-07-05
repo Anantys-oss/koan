@@ -2065,3 +2065,19 @@ class TestApplyProjectPatch:
         fresh = _pc.load_projects_config(str(patch_koan_root))
         assert "Koan" not in fresh["projects"]  # no case-variant duplicate
         assert _pc.get_project_config(fresh, "koan")["autoreview"] is True
+
+    def test_empty_entry_project_accepted(self, tmp_path):
+        # A tag-only / empty-body entry is a valid project with no overrides yet;
+        # the patch must land, not be rejected as "Unknown project".
+        _write_projects_yaml(tmp_path, (
+            "projects:\n"
+            "  koan:\n"
+            "    path: /tmp/koan\n"
+            "  bare:\n"        # empty body -> parses to None
+        ))
+        _pc.invalidate_projects_config_cache()
+        merged = _pc.apply_project_patch(str(tmp_path), "bare", {"autoreview": True})
+        assert merged["autoreview"] is True
+        _pc.invalidate_projects_config_cache()
+        fresh = _pc.load_projects_config(str(tmp_path))
+        assert fresh["projects"]["bare"]["autoreview"] is True

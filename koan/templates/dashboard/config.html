@@ -528,7 +528,18 @@
     const status = document.getElementById('settings-status');
     if (!status) return;
 
-    async function saveSetting(key, value) {
+    // Last-known-persisted value per control, so a failed save can revert the
+    // control instead of leaving a security-relevant toggle (auto-merge, CI /
+    // review dispatch) visually "changed" while config.yaml was never written.
+    const persisted = new WeakMap();
+
+    function readControl(el) { return el.type === 'checkbox' ? el.checked : el.value; }
+    function writeControl(el, v) {
+        if (el.type === 'checkbox') el.checked = !!v;
+        else el.value = v == null ? '' : v;
+    }
+
+    async function saveSetting(el, key, value) {
         status.textContent = 'Saving…';
         try {
             const resp = await fetch('/api/config/setting', {
@@ -536,8 +547,15 @@
                 body: JSON.stringify({ key, value }),
             });
             const data = await resp.json();
-            status.textContent = data.ok ? `✓ ${key} saved` : `✗ ${data.error}`;
+            if (data.ok) {
+                persisted.set(el, value);
+                status.textContent = `✓ ${key} saved`;
+            } else {
+                writeControl(el, persisted.get(el));   // revert to persisted state
+                status.textContent = `✗ ${data.error}`;
+            }
         } catch (e) {
+            writeControl(el, persisted.get(el));        // revert to persisted state
             status.textContent = `✗ ${key} save failed: ${e}`;
         }
     }
@@ -549,8 +567,8 @@
             const vals = data.settings || {};
             document.querySelectorAll('[data-setting]').forEach(el => {
                 const v = vals[el.dataset.setting];
-                if (el.type === 'checkbox') el.checked = !!v;
-                else el.value = v == null ? '' : v;
+                writeControl(el, v);
+                persisted.set(el, readControl(el));   // seed the revert baseline
             });
             // Present-but-wrong-shape keys can't be read back accurately —
             // warn rather than let a misleading unchecked toggle imply "off".
@@ -565,8 +583,7 @@
 
     document.querySelectorAll('[data-setting]').forEach(el => {
         el.addEventListener('change', () => {
-            const value = el.type === 'checkbox' ? el.checked : el.value;
-            saveSetting(el.dataset.setting, value);
+            saveSetting(el, el.dataset.setting, readControl(el));
         });
     });
 
