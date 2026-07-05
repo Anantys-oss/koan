@@ -70,50 +70,91 @@ def _table_has_expected_columns(conn: sqlite3.Connection) -> bool:
         return False
 
 
+_INSERT_SQL = (
+    "INSERT INTO entries(project, type, content, ts, "
+    "source_skill, tags, confidence, expires_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+)
+_STREAM_BATCH = 500
+
+
+def _row_from_obj(obj: Dict) -> tuple:
+    """Project a JSONL entry dict onto the 8-column entries-table tuple."""
+    tags_raw = obj.get("tags")
+    conf_raw = obj.get("confidence")
+    return (
+        obj.get("project") or "",
+        obj.get("type") or "",
+        obj.get("content") or "",
+        obj.get("ts") or "",
+        obj.get("source_skill") or "",
+        json.dumps(tags_raw) if tags_raw else "",
+        str(conf_raw) if conf_raw is not None else "",
+        obj.get("expires_at") or "",
+    )
+
+
+def _stream_jsonl_into_entries(conn: sqlite3.Connection, log_path: Path) -> tuple:
+    """Stream a JSONL log into the entries table in bounded batches.
+
+    Reads one line at a time and flushes every ``_STREAM_BATCH`` rows, so
+    peak memory stays flat regardless of how large ``log.jsonl`` has grown —
+    versus ``read_text()`` + ``splitlines()`` + a full list, which held three
+    copies of the file. Returns ``(inserted, skipped_malformed)``. May raise
+    ``OSError`` (open) or ``sqlite3.DatabaseError`` (insert); callers handle.
+    """
+    inserted = 0
+    skipped = 0
+    batch: List[tuple] = []
+    with log_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                skipped += 1
+                continue
+            # Valid JSON that is not an object (e.g. 42, "x", [1,2]) would make
+            # _row_from_obj's obj.get(...) raise AttributeError, aborting the
+            # whole stream. Treat it as malformed, matching the JSONDecodeError.
+            if not isinstance(obj, dict):
+                skipped += 1
+                continue
+            batch.append(_row_from_obj(obj))
+            if len(batch) >= _STREAM_BATCH:
+                conn.executemany(_INSERT_SQL, batch)
+                inserted += len(batch)
+                batch.clear()
+    if batch:
+        conn.executemany(_INSERT_SQL, batch)
+        inserted += len(batch)
+    return inserted, skipped
+
+
 def _reindex_from_jsonl(conn: sqlite3.Connection, instance: str) -> None:
     """Re-index JSONL entries into an empty FTS5 table after schema upgrade."""
     log_path = Path(instance) / "memory" / "log.jsonl"
     if not log_path.exists():
         return
     try:
-        raw = log_path.read_text(encoding="utf-8")
-    except OSError:
+        inserted, skipped = _stream_jsonl_into_entries(conn, log_path)
+    except OSError as e:
+        logger.warning("[memory_db] Re-index read failed, skipping: %s", e)
         return
-    entries = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-            tags_raw = obj.get("tags")
-            tags_str = json.dumps(tags_raw) if tags_raw else ""
-            conf_raw = obj.get("confidence")
-            conf_str = str(conf_raw) if conf_raw is not None else ""
-            entries.append((
-                obj.get("project") or "",
-                obj.get("type") or "",
-                obj.get("content") or "",
-                obj.get("ts") or "",
-                obj.get("source_skill") or "",
-                tags_str,
-                conf_str,
-                obj.get("expires_at") or "",
-            ))
-        except json.JSONDecodeError:
-            continue
-    if entries:
-        try:
-            conn.executemany(
-                "INSERT INTO entries(project, type, content, ts, "
-                "source_skill, tags, confidence, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                entries,
-            )
-            conn.commit()
-            logger.info("[memory_db] Re-indexed %d JSONL entries after schema upgrade", len(entries))
-        except sqlite3.DatabaseError as e:
-            logger.warning("[memory_db] Re-index after schema upgrade failed: %s", e)
+    except sqlite3.DatabaseError as e:
+        # Roll back the partial batches: ensure_db keeps this connection open
+        # and hands it to the caller, whose next insert_entry() commit would
+        # otherwise flush an orphaned half-reindexed table with no signal.
+        conn.rollback()
+        logger.warning("[memory_db] Re-index after schema upgrade failed: %s", e)
+        return
+    if skipped:
+        logger.warning("[memory_db] Skipped %d malformed JSONL lines during reindex", skipped)
+    if inserted:
+        conn.commit()
+        logger.info("[memory_db] Re-indexed %d JSONL entries after schema upgrade", inserted)
 
 
 def ensure_db(instance: str) -> Optional[sqlite3.Connection]:
@@ -543,51 +584,18 @@ def migrate_jsonl_to_sqlite(instance: str) -> int:
         import time
         start = time.monotonic()
 
-        count = 0
         try:
-            raw = log_path.read_text(encoding="utf-8")
-        except OSError:
+            count, skipped = _stream_jsonl_into_entries(conn, log_path)
+        except OSError as e:
+            logger.warning("[memory_db] Migration read failed, skipping: %s", e)
             conn.close()
             return 0
-
-        entries = []
-        skipped = 0
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                tags_raw = obj.get("tags")
-                tags_str = json.dumps(tags_raw) if tags_raw else ""
-                conf_raw = obj.get("confidence")
-                conf_str = str(conf_raw) if conf_raw is not None else ""
-                entries.append((
-                    obj.get("project") or "",
-                    obj.get("type") or "",
-                    obj.get("content") or "",
-                    obj.get("ts") or "",
-                    obj.get("source_skill") or "",
-                    tags_str,
-                    conf_str,
-                    obj.get("expires_at") or "",
-                ))
-            except json.JSONDecodeError:
-                skipped += 1
-                continue
 
         if skipped:
             logger.warning("[memory_db] Skipped %d malformed JSONL lines during migration", skipped)
 
-        if entries:
-            conn.executemany(
-                "INSERT INTO entries(project, type, content, ts, "
-                "source_skill, tags, confidence, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                entries,
-            )
+        if count:
             conn.commit()
-            count = len(entries)
 
         elapsed = time.monotonic() - start
         logger.info(
