@@ -413,6 +413,12 @@
     const status = document.getElementById('project-form-status');
     if (!sel) return;
 
+    // Snapshot of the values as loaded, so Save only sends fields the operator
+    // actually changed. Sending every rendered control would materialize
+    // inherited `defaults:` values into this project's own overrides, silently
+    // freezing them so later default changes no longer apply.
+    let loaded = {};
+
     // Field spec mirrors EDITABLE_PROJECT_FIELDS server-side. The cli_provider
     // options are filled from /api/providers so they stay in sync with the
     // backend registry instead of drifting from a hardcoded list.
@@ -469,19 +475,30 @@
     async function loadProject(name) {
         try {
             const data = await (await fetch(`/api/projects/${encodeURIComponent(name)}`)).json();
-            if (data.ok) { renderFields(data.config); status.textContent = ''; }
+            if (data.ok) { loaded = data.config || {}; renderFields(loaded); status.textContent = ''; }
             else status.textContent = `✗ ${data.error}`;
         } catch (e) {
             status.textContent = `✗ Could not load project: ${e}`;
         }
     }
 
+    // Only include a field when its control value differs from what was
+    // loaded, so unchanged inherited defaults aren't pinned into the project's
+    // own override entry (see `loaded` snapshot above).
     function collectPatch() {
         const patch = {};
         fields.querySelectorAll('[data-key]').forEach(el => {
-            if (el.type === 'checkbox') patch[el.dataset.key] = el.checked;
-            else if (el.type === 'number') { if (el.value !== '') patch[el.dataset.key] = Number(el.value); }
-            else if (el.value !== '') patch[el.dataset.key] = el.value;
+            const key = el.dataset.key;
+            let val;
+            if (el.type === 'checkbox') val = el.checked;
+            else if (el.type === 'number') val = el.value === '' ? null : Number(el.value);
+            else val = el.value === '' ? null : el.value;
+            if (val === null) return;                       // blank → leave inherited
+            const was = loaded[key];
+            // Compare loosely so bool-vs-string-bool and number-vs-string forms
+            // (as they may arrive from merged config) don't read as changes.
+            if (el.type === 'checkbox' ? Boolean(was) === val : String(was ?? '') === String(val)) return;
+            patch[key] = val;
         });
         return patch;
     }
@@ -535,6 +552,12 @@
                 if (el.type === 'checkbox') el.checked = !!v;
                 else el.value = v == null ? '' : v;
             });
+            // Present-but-wrong-shape keys can't be read back accurately —
+            // warn rather than let a misleading unchecked toggle imply "off".
+            const bad = data.unreadable || [];
+            status.textContent = bad.length
+                ? `⚠ Could not read (unexpected shape in config.yaml): ${bad.join(', ')}`
+                : '';
         } catch (e) {
             status.textContent = `✗ Could not load settings: ${e}`;
         }

@@ -60,19 +60,33 @@ def api_config_settings_get():
     from app.utils import load_config
     cfg = load_config()
     values = {}
+    unreadable = []
     for dotted, expected in EDITABLE_SETTINGS.items():
         node = cfg
+        reachable = True
         for part in dotted.split("."):
-            node = node.get(part) if isinstance(node, dict) else None
-            if node is None:
+            if isinstance(node, dict) and part in node:
+                node = node[part]
+            else:
+                # Genuinely-absent key vs. a value stored in an unexpected
+                # shape (e.g. `git_auto_merge: true` shorthand): the parent
+                # isn't a dict, so the leaf is unreachable. Track why below.
+                reachable = isinstance(node, dict)
+                node = None
                 break
-        if node is None:
+        if node is None and reachable:
+            # Leaf truly missing from an otherwise-navigable tree → default.
             values[dotted] = False if expected is bool else ""
+        elif not reachable:
+            # Present-but-wrong-shape: don't report a definitive False/"" that
+            # could mask an enabled feature. Flag it so the UI can say so.
+            values[dotted] = None
+            unreadable.append(dotted)
         elif expected is bool:
             values[dotted] = bool(node)
         else:
             values[dotted] = node
-    return jsonify({"ok": True, "settings": values})
+    return jsonify({"ok": True, "settings": values, "unreadable": unreadable})
 
 
 @config_form_bp.route("/api/config/setting", methods=["PUT"])
@@ -96,6 +110,10 @@ def api_config_setting():
             else:
                 return jsonify({"ok": False, "error": f"Invalid value for {key}"}), 422
     else:
+        if value is None:
+            # A missing/null value would coerce to the literal string "None"
+            # and be persisted — reject it as a malformed request instead.
+            return jsonify({"ok": False, "error": f"Missing value for {key}"}), 422
         try:
             value = expected(value)
         except (TypeError, ValueError):
