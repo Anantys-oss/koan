@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — brainstorm"
+tags: [skill]
+created: 2026-07-02
+updated: 2026-07-02
+---
+
 # Skill Spec — `brainstorm`
 
 ## Command(s)
@@ -11,6 +19,9 @@ Decompose a broad topic into linked GitHub sub-issues grouped under a master
 tracking issue. Each sub-issue carries a structured body (why / approach /
 acceptance criteria / risks / scores / priority / dependencies) so the work is
 actionable and rankable.
+
+See `docs/users/skills.md` for the end-user `/brainstorm` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 

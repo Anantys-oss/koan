@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — review"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-07-02
+---
+
 # Skill Spec — `review`
 
 ## Command(s)
@@ -12,6 +20,9 @@
 Queue a code-review mission for one or more GitHub PRs/issues. The agent reviews the
 diff and posts findings as a review comment. The default review can be sharpened with
 focus passes (architecture, silent-failure hunting, comment quality, plan alignment).
+
+See `docs/users/skills.md` for the end-user `/review` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 

@@ -1,0 +1,126 @@
+# Wiki Index
+
+The catalog of all pages in this wiki. Each entry: a link to the page and a one-line summary. Read this first (after `SCHEMA.md`) when answering a query or planning a feature, to identify candidate pages before reading them.
+
+This wiki spans two content roots — `docs/` (operational "how to use", see [`docs/README.md`](docs/README.md)) and the durable half of `specs/` (design "why/contract", see [`specs/README.md`](../specs/README.md)) — reached from here via the `wiki/docs`, `wiki/specs-components`, `wiki/specs-skills` symlinks. Speckit's ephemeral per-feature folders (`specs/<NNN-slug>/`) are listed under "Specs — Active Features" below with a computed status, not frontmattered. See `SCHEMA.md` for the full rationale.
+
+~81 pages total — well under the ~150-page / 300-line shard threshold, so this stays flat.
+
+---
+
+## Docs
+
+### Architecture
+- [`architecture/daemon.md`](docs/architecture/daemon.md) — Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture.
+- [`architecture/github-and-trackers.md`](docs/architecture/github-and-trackers.md) — Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work.
+- [`architecture/memory.md`](docs/architecture/memory.md) — Details Koan's Markdown+JSONL memory store, the SQLite FTS5 secondary index (confidence-weighted BM25 ranking, dual-write, fallback), entry schema, read/write paths, and compaction.
+- [`architecture/mission-lifecycle.md`](docs/architecture/mission-lifecycle.md) — Explains the mission queue format and lifecycle (Pending/In Progress/Done/Failed), org-wide missions, branch prep, direct skill dispatch, scheduling, recovery/retries, and missions.md integrity/size-bound safeguards.
+- [`architecture/overview.md`](docs/architecture/overview.md) — High-level architecture summary of Koan's two main processes (bridge and agent loop), major subsystems, and the human-decides safety model.
+- [`architecture/providers.md`](docs/architecture/providers.md) — Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Local).
+- [`architecture/shared-state.md`](docs/architecture/shared-state.md) — Explains Koan's file-based (no-database) shared state under instance/, locking/atomic-write conventions, per-uid temp/scratch directories, and configuration sources.
+- [`architecture/skills-system.md`](docs/architecture/skills-system.md) — Describes the skill definition format, dispatch paths, the private implementation review gate (challenge loop, cost controls, dedup), and the documentation contract for skill changes.
+
+### Design
+- [`design/decisions.md`](docs/design/decisions.md) — Records durable Koan design decisions (human authority, local files over DB, branch isolation, provider isolation, prompt files, public artifact genericity, documentation-first).
+- [`design/introspection-beyond-code.md`](docs/design/introspection-beyond-code.md) — A session-107 introspective proposal for making Kōan a relational companion, identifying five missing dimensions (emotional memory, self-reflection, proactivity, relationship rituals, identity) and a phased implementation plan.
+- [`design/memory-injection.md`](docs/design/memory-injection.md) — Documents the shipped memory-injection feature threading project memory (learnings/context/priorities) into the five mission-driving skills plus anti-thrash and semantic-dedup safeguards for memory compaction.
+- [`design/spec-always-up-railway.md`](docs/design/spec-always-up-railway.md) — A deployment proposal for running Kōan as an always-on Docker service on Railway, covering CLI auth, persistent state via git, and security hardening.
+
+### Messaging
+- [`messaging/discord.md`](docs/messaging/discord.md) — Setup guide for using Discord as Kōan's messaging bridge via REST polling instead of the Gateway/WebSocket API.
+- [`messaging/github-commands.md`](docs/messaging/github-commands.md) — Full reference for triggering Kōan via `@mention` commands in GitHub PR/issue comments, including config, dedup, security, and fallback scanning.
+- [`messaging/github-webhooks.md`](docs/messaging/github-webhooks.md) — Describes the opt-in push-based GitHub webhook receiver that collapses notification-polling latency while polling remains the reliability fallback.
+- [`messaging/jira-integration.md`](docs/messaging/jira-integration.md) — Full reference for controlling Kōan via `@mention` commands in Jira issue comments, including project mapping, ADF parsing, and coexistence with GitHub.
+- [`messaging/matrix.md`](docs/messaging/matrix.md) — Setup guide for using a Matrix homeserver as Kōan's messaging provider via the Client-Server HTTP API.
+- [`messaging/messaging-level.md`](docs/messaging/messaging-level.md) — Explains the `messaging.level` setting (`normal`/`debug`) that controls how much lifecycle/progress chatter Kōan's Telegram/Slack bridge sends versus only logs.
+- [`messaging/slack.md`](docs/messaging/slack.md) — Step-by-step guide to configuring Kōan with Slack (Socket Mode app setup, scopes, env vars) plus Slack-specific behavior like threading, reactions, and the assistant "thinking" status.
+- [`messaging/telegram.md`](docs/messaging/telegram.md) — Step-by-step guide to configuring Kōan with Telegram (bot creation, chat ID, env vars), including group-chat privacy-mode setup and troubleshooting.
+
+*(`docs/messaging/slack-app-manifest.json` is a config asset, not a wiki page — not indexed.)*
+
+### Operations
+- [`operations/auto-update.md`](docs/operations/auto-update.md) — Describes Kōan's opt-in auto-update feature that checks for and pulls upstream commits, plus the always-on release-tag notification.
+- [`operations/dashboard.md`](docs/operations/dashboard.md) — Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, and design-system integration.
+- [`operations/interactive-launcher.md`](docs/operations/interactive-launcher.md) — Describes `make koan`, the TTY-gated interactive launcher and its textual terminal dashboard (tabs, toggles, keybindings).
+- [`operations/maint.md`](docs/operations/maint.md) — Covers Kōan's release process and branch philosophy (`main` vs `stable`), the `make release` procedure, versioning scheme, and recovery steps.
+- [`operations/memory-watchdog.md`](docs/operations/memory-watchdog.md) — Explains the memory watchdog that restarts the agent loop between missions when RSS stays over a threshold, its config knobs, and health-endpoint observability.
+- [`operations/pr-reports.md`](docs/operations/pr-reports.md) — Documents the `/report` skill that posts per-project and global GitHub PR activity digests (created/merged/interacted metrics) over weekly/monthly windows.
+- [`operations/rest-api.md`](docs/operations/rest-api.md) — Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints) and its security model.
+- [`operations/rtk.md`](docs/operations/rtk.md) — Explains the optional rtk CLI-proxy integration (detection, awareness injection, hook setup) that compresses dev-command output for token savings.
+- [`operations/skill-evals.md`](docs/operations/skill-evals.md) — Describes the deterministic eval harness that scores LLM-driven skills (review, fix, plan, brainstorm, rebase) against golden datasets in offline (CI) and live modes.
+- [`operations/troubleshooting.md`](docs/operations/troubleshooting.md) — Catalogs common operational issues (agent loop, git/worktrees, memory, bridge, GitHub, CLI provider, parallel sessions, config) and their fixes.
+
+### Providers
+- [`providers/claude-cli-commands-official.md`](docs/providers/claude-cli-commands-official.md) — Official upstream Claude Code CLI reference listing all commands and flags.
+- [`providers/claude.md`](docs/providers/claude.md) — Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode.
+- [`providers/cline.md`](docs/providers/cline.md) — Setup and feature-mapping guide for using Cline CLI as Kōan's underlying multi-backend AI provider.
+- [`providers/codex.md`](docs/providers/codex.md) — Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting.
+- [`providers/copilot.md`](docs/providers/copilot.md) — Setup guide and feature/tool-mapping differences for using GitHub Copilot CLI as Kōan's provider.
+- [`providers/local.md`](docs/providers/local.md) — Explains that the `local` Ollama provider was removed and points to `ollama-launch` or a custom Claude CLI endpoint as the supported replacements.
+- [`providers/ollama-launch.md`](docs/providers/ollama-launch.md) — Documents the `ollama-launch` provider, which runs the Claude Code CLI through `ollama launch claude` for full tool-use/streaming parity with native Claude.
+- [`providers/ollama-wrapper.md`](docs/providers/ollama-wrapper.md) — Describes the `bin/ollama-claude` wrapper that routes Koan's default `claude` provider through a local Ollama model via `ollama launch claude`, without changing `cli_provider`.
+- [`providers/opencode.md`](docs/providers/opencode.md) — Describes the `bin/oc-claude` wrapper that routes Koan's Claude CLI invocations through the `ocgo` proxy to run against an OpenCode Go subscription (Kimi, DeepSeek, Qwen, etc.).
+- [`providers/openrouter.md`](docs/providers/openrouter.md) — Explains how to run Koan's Claude CLI provider against OpenRouter models via a local `claude-code-router` (CCR) translation server, including setup, model routing, and caveats.
+- [`providers/zai.md`](docs/providers/zai.md) — Documents the `bin/zai-claude` wrapper that points the real Claude CLI at Z.ai's Anthropic-compatible endpoint and maps Anthropic model tiers to GLM models.
+
+### Security
+- [`security/prompt-guard.md`](docs/security/prompt-guard.md) — Documents `prompt_guard.py`'s input-side defenses against prompt injection in missions and its configuration/complementary defenses (outbox scanner, data fencing, memory scanning).
+- [`security/security-review.md`](docs/security/security-review.md) — Documents the automated post-mission security review that scans diffs for dangerous patterns, scores risk, optionally blocks auto-merge, and logs an audit trail.
+- [`security/threat-model-agent-disalignment.md`](docs/security/threat-model-agent-disalignment.md) — A threat-model analysis of the blast radius if Koan's autonomous agent becomes disaligned, covering attack surface, exfiltration vectors, protections, and recommended mitigations.
+
+### Setup
+- [`setup/docker.md`](docs/setup/docker.md) — Covers Docker Compose setup for Koan (pull vs. build from source), workspace project mounts, authentication (Claude/GitHub), volume layout, and troubleshooting common container issues.
+- [`setup/env-var-deployment.md`](docs/setup/env-var-deployment.md) — Explains how Koan can run purely from injected environment variables (Railway/Docker/Kubernetes/systemd) without a hand-authored `.env` file, and the precedence rules between env vars and the synthesized `.env`.
+- [`setup/launchd.md`](docs/setup/launchd.md) — Documents running Koan as a macOS launchd user service for auto-restart and login-time startup, including setup, logs, SSH agent forwarding, and troubleshooting.
+- [`setup/railway.md`](docs/setup/railway.md) — Details deploying Koan as a single hosted container on Railway via `KOAN_DEPLOY=railway`, covering required service variables, the GitHub token bot-identity caveat, dashboard passphrase gating, and re-deploy behavior.
+- [`setup/ssh-setup.md`](docs/setup/ssh-setup.md) — Walks through SSH authentication setup for Koan's git operations across macOS direct-run, Linux systemd, and Docker deployment modes, including fallback key generation.
+- [`setup/systemd-user.md`](docs/setup/systemd-user.md) — Describes running Koan as a per-user (rootless) systemd service on Linux, covering unit installation, linger for boot persistence, and PATH preservation for CLI providers.
+
+### Users
+- [`users/model-configuration.md`](docs/users/model-configuration.md) — Explains how to configure which model handles each Koan role (mission, chat, lightweight, fallback, etc.) per provider via `config.yaml`, including resolution order and CLI-provider-per-role routing.
+- [`users/onboarding.md`](docs/users/onboarding.md) — Documents the interactive 12-step onboarding wizard that sets up a new Koan instance, its resumability, personality presets, and non-interactive/CI mode.
+- [`users/quickstart.md`](docs/users/quickstart.md) — A 5-minute guide to the commands for driving Koan from GitHub PRs/issues, Jira, and messaging apps (Telegram/Slack), with minimal and context-augmented examples for each.
+- [`users/skills.md`](docs/users/skills.md) — Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions.
+- [`users/user-manual.md`](docs/users/user-manual.md) — A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration.
+
+### Overview
+- [`README.md`](docs/README.md) — Top-level router explaining the docs/ tree's purpose, its relationship to specs/ design contracts, and pointers to user, architecture, and directory-map content.
+
+## Specs — Components
+
+- [`components/agent-loop.md`](specs-components/agent-loop.md) — Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state.
+- [`components/bridge.md`](specs-components/bridge.md) — Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely.
+- [`components/core.md`](specs-components/core.md) — Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on.
+- [`components/git-github.md`](specs-components/git-github.md) — Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows.
+- [`components/issue-tracking.md`](specs-components/issue-tracking.md) — Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer.
+- [`components/providers.md`](specs-components/providers.md) — Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot) behind one `CLIProvider` contract.
+- [`components/skills.md`](specs-components/skills.md) — Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness).
+- [`components/web.md`](specs-components/web.md) — Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, and the invariants keeping the two surfaces from drifting.
+
+## Specs — Skills
+
+Per `specs/README.md`'s coverage policy: only the ~10 highest-impact skills have a spec today (as templates for the remaining ~80), filled in on-demand as touched. This index reflects only what exists.
+
+- [`skills/ask.md`](specs-skills/ask.md) — Specifies the `/ask` skill, which answers a question about a GitHub PR/issue by fetching context and posting an AI-generated reply as a read-only, non-mutating worker.
+- [`skills/brainstorm.md`](specs-skills/brainstorm.md) — Specifies the `/brainstorm` skill, which decomposes a topic into structured, linked GitHub sub-issues under a master tracking issue and is covered by the skill-eval harness.
+- [`skills/ci_check.md`](specs-skills/ci_check.md) — Specifies the `/ci_check` skill, which checks a PR's CI status, runs the shared CI-fix loop on failures, and toggles automatic CI-fix dispatch.
+- [`skills/fix.md`](specs-skills/fix.md) — Specifies the `/fix` skill, which fixes a tracker issue end-to-end (or batch-queues fixes for a repo) and redirects PR URLs to `/rebase`, with eval coverage on its diagnostic output.
+- [`skills/implement.md`](specs-skills/implement.md) — Specifies the `/implement` skill, which queues an end-to-end implementation mission for a tracker issue that results in a draft PR, and is eval-exempt as pure orchestration.
+- [`skills/mission.md`](specs-skills/mission.md) — Specifies the `/mission` skill, the base primitive that queues a free-form mission to `missions.md` for later agent-loop execution, also eval-exempt as a non-LLM queue utility.
+- [`skills/orphans.md`](specs-skills/orphans.md) — Documents the `/orphans` skill that rebases and opens draft PRs for unmerged, PR-less branches, with commit-derived (non-LLM) PR titles/descriptions and per-branch error isolation.
+- [`skills/plan.md`](specs-skills/plan.md) — Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness.
+- [`skills/rebase.md`](specs-skills/rebase.md) — Documents the `/rebase` skill that rebases a PR onto its current base and addresses review feedback, including its already-solved detection JSON scored by the eval harness.
+- [`skills/recreate.md`](specs-skills/recreate.md) — Documents the `/recreate` skill that rebuilds a too-far-diverged PR from scratch on current upstream via a fresh branch and reimplementation, rather than rebasing.
+- [`skills/review.md`](specs-skills/review.md) — Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness.
+- [`skills/security_audit.md`](specs-skills/security_audit.md) — Documents the `/security_audit` skill that runs a background SDLC security audit of a project and files up to 5 critical-vulnerability tracker issues via the provider-neutral tracker service.
+
+### Overview
+- [`specs/README.md`](../specs/README.md) — The top-level index and conventions doc for `specs/`, explaining the specs-vs-docs distinction, directory layout, naming rules, and the mandatory read-before/update-after spec discipline.
+
+## Specs — Active Features
+
+Speckit's ephemeral per-feature planning folders. Status is computed from `tasks.md`'s checkbox ratio, not hand-maintained — recompute on every ingest/CI pass. No frontmatter is injected into these files (see `SCHEMA.md`). Entry point for each is `spec.md`.
+
+- [`001-speckit-native-support/spec.md`](../specs/001-speckit-native-support/spec.md) — **in-progress** (16/36 tasks, `Status: Draft`). Native speckit slash-command orchestration (chat-trigger, issue-URL, @mention, from-branch). Code for setup/foundational plumbing and User Stories 2/3/5 is merged; the MVP chat-trigger orchestration (User Story 1) and CI-review-loop wiring (User Story 4) remain.
+- [`002-review-skill-evals/spec.md`](../specs/002-review-skill-evals/spec.md) — **draft** (0/19 tasks, `Status: Draft`). Planning artifact only, not started.
+- [`003-core-skill-evals/spec.md`](../specs/003-core-skill-evals/spec.md) — **draft** (0/32 tasks, `Status: Draft`). Planning artifact only, not started.

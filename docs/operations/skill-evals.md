@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Skill evaluation (eval) harness"
+tags: [operations]
+created: 2026-07-01
+updated: 2026-07-02
+---
+
 # Skill evaluation (eval) harness
 
 Kōan ships a small, deterministic **eval harness** that scores an LLM-driven skill

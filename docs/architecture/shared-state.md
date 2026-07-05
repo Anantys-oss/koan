@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Shared State"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-11
+---
+
 # Shared State
 
 Koan intentionally uses local files instead of a database. This keeps setup
@@ -24,7 +32,9 @@ simple and makes state inspectable by humans and agents.
 Shared files must be written with existing helpers such as `atomic_write()` and
 file-locking utilities from `utils.py` or dedicated state modules. Avoid direct
 read-modify-write cycles on `instance/` files unless the code already owns the
-appropriate lock.
+appropriate lock. See `specs/components/core.md` for the design contract behind
+these primitives (why `atomic_write()` and `koan_tmp_dir()` are the single
+sanctioned path for shared-file writes).
 
 The bridge and runner are separate processes, so bugs that are harmless in a
 single process can corrupt state when both daemons are active.

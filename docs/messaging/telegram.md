@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Telegram Setup Guide"
+tags: [messaging]
+created: 2026-05-28
+updated: 2026-07-03
+---
+
 # Telegram Setup Guide
 
 This guide covers setting up Kōan with Telegram as the messaging provider.

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "GitHub Copilot CLI Provider"
+tags: [providers]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 # GitHub Copilot CLI Provider
 
 The Copilot provider lets Koan use GitHub Copilot's CLI as the

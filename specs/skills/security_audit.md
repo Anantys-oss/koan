@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — security_audit"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Skill Spec — `security_audit`
 
 ## Command(s)
@@ -10,6 +18,9 @@
 
 Security-focused SDLC audit of a project codebase: find up to 5 critical vulnerabilities
 and create a tracker issue for each. The actionable counterpart to read-only audits.
+
+See `docs/users/skills.md` for the end-user `/security_audit` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 

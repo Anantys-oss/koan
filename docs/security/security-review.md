@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Security Review"
+tags: [security]
+created: 2026-05-28
+updated: 2026-06-27
+---
+
 # Security Review
 
 Kōan can automatically scan mission diffs for security-sensitive patterns before auto-merge. This provides a lightweight safety net that catches common dangerous code patterns without requiring an external tool.

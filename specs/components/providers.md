@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — CLI Provider Abstraction"
+tags: [providers]
+created: 2026-06-27
+updated: 2026-07-01
+---
+
 # Component Spec — CLI Provider Abstraction
 
 **Package:** `koan/app/provider/` (`base.py`, `claude.py`, `cline.py`, `codex.py`,

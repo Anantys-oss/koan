@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — ci_check"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Skill Spec — `ci_check`
 
 ## Command(s)
@@ -9,6 +17,9 @@
 
 Check a PR's CI status and fix failures. Also toggles the automatic CI-fix dispatch
 (`ci_dispatch.py`) that reacts to CI failures on Kōan-authored PRs.
+
+See `docs/users/skills.md` for the end-user `/ci_check` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 

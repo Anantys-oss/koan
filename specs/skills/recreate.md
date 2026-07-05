@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — recreate"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Skill Spec — `recreate`
 
 ## Command(s)
@@ -11,6 +19,9 @@
 Recreate a diverged PR from scratch on current upstream: fetch the original metadata and
 diff, branch fresh from base, and reimplement. Used when a PR has drifted too far to
 rebase cleanly.
+
+See `docs/users/skills.md` for the end-user `/recreate` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 

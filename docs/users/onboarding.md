@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Onboarding Guide"
+tags: [users]
+created: 2026-05-28
+updated: 2026-06-25
+---
+
 # Onboarding Guide
 
 The onboarding wizard is an interactive CLI tool that walks you through setting up Koan for the first time. It covers everything from prerequisites to your first launch.

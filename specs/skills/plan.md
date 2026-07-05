@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — plan"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-07-02
+---
+
 # Skill Spec — `plan`
 
 ## Command(s)
@@ -9,6 +17,9 @@
 
 Deep-think an idea and produce a structured plan as a tracker issue — or iterate on an
 existing issue. Plans become the contract `implement`/`fix` work against.
+
+See `docs/users/skills.md` for the end-user `/plan` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 

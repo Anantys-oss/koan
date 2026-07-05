@@ -1,3 +1,11 @@
+---
+type: doc
+title: "OpenRouter via Claude Code CLI"
+tags: [providers]
+created: 2026-06-13
+updated: 2026-06-13
+---
+
 # OpenRouter via Claude Code CLI
 
 This page explains how to run Koan's **default Claude provider** against

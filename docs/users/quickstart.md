@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Kōan Quickstart — Zero to Hero"
+tags: [users]
+created: 2026-06-29
+updated: 2026-06-29
+---
+
 # Kōan Quickstart — Zero to Hero
 
 **The 5-minute guide to driving Kōan.** This page shows the handful of commands you'll

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Running as a launchd Service (macOS)"
+tags: [setup]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 # Running as a launchd Service (macOS)
 
 Kōan can run as a native **launchd** user agent on macOS — automatic restart on failure, login-time startup, and no `sudo` required.

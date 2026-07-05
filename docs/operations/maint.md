@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Maintenance & Release"
+tags: [operations]
+created: 2026-05-28
+updated: 2026-07-01
+---
+
 # Maintenance & Release
 
 ## Philosophy

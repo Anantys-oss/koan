@@ -1,7 +1,18 @@
+---
+type: doc
+title: "Mission Lifecycle"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-27
+---
+
 # Mission Lifecycle
 
 `koan/app/missions.py` is the source of truth for parsing and mutating
-`instance/missions.md`.
+`instance/missions.md`. See `specs/components/core.md` for the mission-queue
+contract (single-writer invariants, sanctioned exits from In Progress) and
+`specs/components/agent-loop.md` for how the agent loop picks up and executes
+a mission end to end.
 
 ## Queue Format
 

@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — implement"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-07-02
+---
+
 # Skill Spec — `implement`
 
 ## Command(s)
@@ -11,6 +19,9 @@
 Queue an implementation mission for a tracker issue (GitHub or Jira): the agent reads the
 issue, plans, implements, tests, and opens a draft PR. The end-to-end "build the thing"
 skill.
+
+See `docs/users/skills.md` for the end-user `/implement` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 

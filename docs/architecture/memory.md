@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Memory Architecture"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-07-02
+---
+
 # Memory Architecture
 
 Koan keeps memory as Markdown files and a JSONL truth log under

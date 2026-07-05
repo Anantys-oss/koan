@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Matrix Setup Guide"
+tags: [messaging]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 # Matrix Setup Guide
 
 This guide covers setting up Kōan with [Matrix](https://matrix.org) as the messaging provider. Kōan talks to a Matrix homeserver via the Client-Server HTTP API — no extra Python packages are required beyond `requests`.

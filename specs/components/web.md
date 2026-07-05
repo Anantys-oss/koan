@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Web Dashboard & REST API"
+tags: [web]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Component Spec — Web Dashboard & REST API
 
 **Packages:** `koan/app/dashboard/`, `koan/app/dashboard_service/`, `koan/app/api/`

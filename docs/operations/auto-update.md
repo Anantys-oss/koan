@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Auto-Update"
+tags: [operations]
+created: 2026-05-28
+updated: 2026-06-10
+---
+
 # Auto-Update
 
 Kōan can automatically keep itself up to date by periodically checking for new upstream commits and pulling them. **This feature is disabled by default** — the recommended workflow is to use `/update` when you're ready.

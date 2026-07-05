@@ -1,3 +1,11 @@
+---
+type: doc
+title: "GitHub Notification-Driven Commands"
+tags: [messaging]
+created: 2026-05-28
+updated: 2026-06-24
+---
+
 # GitHub Notification-Driven Commands
 
 Control Kōan directly from GitHub PR and issue comments using `@mention` commands.

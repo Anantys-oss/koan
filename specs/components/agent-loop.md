@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Agent Loop Pipeline"
+tags: [agent-loop]
+created: 2026-06-27
+updated: 2026-07-01
+---
+
 # Component Spec — Agent Loop Pipeline
 
 **Modules:** `run.py`, `iteration_manager.py`, `mission_executor.py`,
@@ -10,6 +18,9 @@
 The beating heart: a pure-Python loop that pulls a mission, builds a prompt, invokes
 the CLI provider as a subprocess, monitors it, and finalizes the mission's lifecycle
 state. Everything else exists to feed or observe this loop.
+
+See `docs/architecture/daemon.md`'s Agent Loop section for how this pipeline is wired
+into the running daemon (startup, quota pause, parallel sessions).
 
 ## Execution flow (one iteration)
 

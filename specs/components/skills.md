@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Skills System"
+tags: [skills]
+created: 2026-06-27
+updated: 2026-07-02
+---
+
 # Component Spec — Skills System
 
 **Modules:** `koan/app/skills.py`, `koan/app/skill_dispatch.py`,

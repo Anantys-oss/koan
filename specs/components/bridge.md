@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Telegram Bridge"
+tags: [bridge]
+created: 2026-06-27
+updated: 2026-07-03
+---
+
 # Component Spec — Telegram Bridge
 
 **Modules:** `awake.py`, `command_handlers.py`, `bridge_state.py`, `bridge_log.py`,
@@ -9,6 +17,9 @@ The human ↔ agent interface. A process independent of the agent loop that poll
 Telegram, classifies each message as *chat* (answer now) or *mission* (queue it),
 and flushes the agent's outbox back to Telegram. It is the realtime channel; the
 agent loop is asynchronous and never talks to Telegram directly except via `outbox.md`.
+
+See `docs/architecture/daemon.md`'s Bridge Loop section for the operational rundown
+of polling, the chat/bg worker lanes, and outbox draining.
 
 ## Architecture
 

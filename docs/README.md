@@ -1,3 +1,11 @@
+---
+type: overview
+title: "Documentation"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-07-01
+---
+
 # Documentation
 
 This directory is the user-facing manual and the implementation reference for
@@ -12,6 +20,12 @@ For **design contracts** (why a component exists, the invariants it upholds, wha
 breaks if you change it), see [`specs/`](../specs/README.md) — the single source of
 truth for design. Specs drive implementation and refactoring; these docs explain how
 to operate Koan. Most non-trivial changes update both.
+
+This directory (plus the durable half of `specs/`) is also indexed as an LLM Wiki —
+see [`wiki/index.md`](../wiki/index.md) for a flat, one-line-per-page catalog and
+[`wiki/SCHEMA.md`](../wiki/SCHEMA.md) for the frontmatter/tagging conventions.
+Use the wiki index to find candidate pages quickly; this file remains the
+hand-curated entry point for a first read.
 
 ## Start Here
 

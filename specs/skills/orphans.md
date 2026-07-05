@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — orphans"
+tags: [skill]
+created: 2026-07-01
+updated: 2026-07-01
+---
+
 # Skill Spec — `orphans`
 
 ## Command(s)
@@ -11,6 +19,9 @@
 Recover orphan branches (unmerged, no open PR) for a project in one step — rebase
 each onto the default branch and open a draft PR. Exists so detected orphans surface
 during git sync can be turned into reviewable PRs without manual git work.
+
+See `docs/users/skills.md` for the end-user `/orphans` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 

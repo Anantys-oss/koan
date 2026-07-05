@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Kōan User Manual"
+tags: [users]
+created: 2026-05-28
+updated: 2026-07-02
+---
+
 # Kōan User Manual
 
 **From beginner to power user — everything Kōan can do.**

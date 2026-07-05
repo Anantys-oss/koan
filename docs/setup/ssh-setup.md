@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Git SSH Authentication"
+tags: [setup]
+created: 2026-05-28
+updated: 2026-06-06
+---
+
 # Git SSH Authentication
 
 Koan uses `git fetch` and `git push` to interact with GitHub repositories.

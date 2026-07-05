@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — rebase"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-07-02
+---
+
 # Skill Spec — `rebase`
 
 ## Command(s)
@@ -10,6 +18,9 @@
 
 Rebase a PR onto current base and address review concerns — the standing workflow for
 keeping a Kōan PR current and merge-ready. `/fix` on a PR URL redirects here.
+
+See `docs/users/skills.md` for the end-user `/rebase` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 
