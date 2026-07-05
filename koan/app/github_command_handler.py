@@ -1225,10 +1225,11 @@ def _try_assignment_notification(
     # Draft-PR gate (opt-in). When ``review_draft_skip`` is enabled, defer the
     # automatic /review while the PR is in draft state — the author has marked
     # it not-ready. This is a SOFT skip: mark the notification read but do NOT
-    # track the thread or set the review cooldown, so a re-surfaced request is
-    # re-evaluated fresh. The reliable remedy is an explicit /review; automatic
-    # resume on the draft->ready transition depends on GitHub re-firing
-    # review_requested (unverified) and happens only if it does.
+    # track the thread or set the review cooldown, so any re-surfaced request is
+    # re-evaluated fresh. The remedy is an explicit /review once the PR is ready:
+    # do NOT rely on automatic resume — GitHub does not reliably re-fire
+    # review_requested on the draft->ready transition, so a deferred review is
+    # not guaranteed to fire on its own (hence the info notification below).
     # An explicit human /review (chat or GitHub @mention) is handled on the
     # separate @mention path (processed before this fallback) and is never
     # gated by this flag. Only the review_requested path is affected; ``assign``
@@ -2597,9 +2598,9 @@ def _notify_draft_pr_skipped(
         url_part = f"\n{web_url}" if web_url else ""
         send_telegram(
             f"💤 Draft PR review deferred: {owner}/{repo} — {subject_title}{url_part}\n"
-            "Send /review when you want it reviewed — that always works. It may "
-            "also resume automatically when the PR is marked ready for review, "
-            "but that depends on GitHub re-surfacing the request (not guaranteed).",
+            "Send /review when the PR is ready — that is the reliable way to "
+            "review it. (Kōan does not auto-resume: GitHub does not reliably "
+            "re-surface the request on the draft→ready transition.)",
             priority=NotificationPriority.INFO,
         )
     except Exception as e:

@@ -68,9 +68,12 @@ handled no-op.
 ### FR-004 — Soft skip (re-armable)
 The draft deferral is a **soft skip**: it must **not** record the thread
 (`track_thread`) or set the review cooldown (`set_review_cooldown`). This
-guarantees the review fires automatically when GitHub re-fires
-`review_requested` after the PR is marked ready for review (new notification id
-→ fresh processing), and never suppresses a later legitimate review.
+ensures the deferral never suppresses a later legitimate review: *if* GitHub
+re-surfaces `review_requested` (new notification id → fresh processing), the
+review is re-evaluated with the PR no longer draft. It does **not** guarantee
+automatic resume — GitHub does not reliably re-fire `review_requested` on the
+draft→ready transition, so the reliable remedy is an explicit `/review` once the
+PR is ready (FR-007 surfaces this).
 
 ### FR-005 — Human `/review` is always honored
 Explicit `/review` from chat or from a GitHub `@mention` is never gated by this
@@ -84,9 +87,11 @@ normal. The gate affects draft PRs only.
 ### FR-007 — Visibility
 A single best-effort Telegram INFO notification is sent when a draft review is
 deferred, so the operator understands the review was intentionally deferred
-(not silently dropped), with the remedy ("mark ready for review, or send
-`/review`"). Failures sending this notification are logged and never abort
-processing. (Mirrors the existing closed/merged skip notification.)
+(not silently dropped), with the remedy ("send `/review` once the PR is ready").
+Because auto-resume is not guaranteed (FR-004), this notification is what
+prevents a deferred review from becoming a silent loss. Failures sending this
+notification are logged and never abort processing. (Mirrors the existing
+closed/merged skip notification.)
 
 ## Data Model
 
@@ -120,10 +125,12 @@ As an operator who does nothing, review behavior is identical to today
 As a human, I can always get a draft PR reviewed immediately by sending
 `/review` (chat) or `@bot /review` (GitHub), regardless of the flag.
 
-### US4 — Ready-for-review re-triggers automatically
+### US4 — Ready-for-review resumes cleanly
 As an operator with the gate enabled, when a deferred draft PR is later marked
-ready for review, the bot reviews it on the next `review_requested` re-fire
-without any manual workaround.
+ready for review, I send `/review` (the reliable remedy) and it is reviewed with
+no residual suppression. Because the deferral is a soft skip, *if* GitHub happens
+to re-surface `review_requested` the review also fires on its own — but that
+auto-resume is not guaranteed and must not be relied upon.
 
 ## Acceptance Criteria
 
@@ -147,8 +154,12 @@ without any manual workaround.
   distinct mechanism (self-review of bot-authored PRs) gated by the separate
   per-project `autoreview` flag, and bot-authored PRs are non-draft by default.
 - **Q: Track the thread / set cooldown on deferral?** → A: No — soft skip only,
-  so the ready-for-review re-fire is processed fresh (FR-004). Hard-tracking
-  would permanently suppress the review.
+  so any re-surfaced request is processed fresh (FR-004). Hard-tracking would
+  permanently suppress the review.
+- **Q: Does the gate rely on ready-for-review auto-resume?** → A: No. GitHub does
+  not reliably re-fire `review_requested` on the draft→ready transition, so the
+  reliable remedy is an explicit `/review`; the INFO notification (FR-007) exists
+  precisely so a deferred review is never a silent loss.
 - **Q: Notify on deferral?** → A: Yes, one INFO message (FR-007), mirroring the
   closed/merged skip notification, so a deferred review is not mistaken for a
   dropped one.

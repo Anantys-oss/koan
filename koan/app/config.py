@@ -2338,10 +2338,11 @@ def get_review_draft_skip_config() -> dict:
 
     When enabled, a ``review_requested`` notification (the bot attached as a PR
     reviewer) does NOT auto-queue ``/review`` while the PR is in draft state.
-    The review fires once GitHub re-fires ``review_requested`` after the PR is
-    marked ready for review, and an explicit ``/review`` (chat or GitHub
-    @mention) is always honored regardless of this flag — it only gates the
-    "bot attached as reviewer" path.
+    The remedy is an explicit ``/review`` once the PR is ready — the gate does
+    not rely on automatic resume (GitHub does not reliably re-fire
+    ``review_requested`` on the draft->ready transition). An explicit ``/review``
+    (chat or GitHub @mention) is always honored regardless of this flag — it only
+    gates the "bot attached as reviewer" path.
 
     Config key: review_draft_skip::
 
