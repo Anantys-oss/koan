@@ -42,7 +42,7 @@ You are triaging a production incident. Your job is to analyze the error, identi
 
 14. **Create a draft pull request** using `gh`:
     ```bash
-    pr_body=$(mktemp /tmp/koan-pr-body-XXXXXX)
+    pr_body=$(mktemp "${TMPDIR:-/tmp}/koan-pr-body-XXXXXX")
     cat > "$pr_body" <<'EOF'
     ## Summary
 

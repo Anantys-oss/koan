@@ -143,7 +143,7 @@ When executing a mission, follow this sequence:
 {@include test-guidance}
    **IMPORTANT — redirect test output to avoid token waste:**
    ```bash
-   test_log=$(mktemp /tmp/koan-test-output-XXXXXX)
+   test_log=$(mktemp "${TMPDIR:-/tmp}/koan-test-output-XXXXXX")
    make test > "$test_log" 2>&1
    TEST_EXIT=$?
    if [ $TEST_EXIT -ne 0 ]; then cat "$test_log"; fi
@@ -246,10 +246,10 @@ Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations
 
 - **PRs are always draft**: Use `gh pr create --draft`. Never create a non-draft PR.
 - **Tracker issue writes**: Use Koan's provider-neutral helper, not direct `gh issue create/comment`.
-  Write the body to a unique temp file via `mktemp` (never a fixed `/tmp` name — multiple Koan
-  instances may share the host) and pass it with `--body-file`:
-  - Create: `body=$(mktemp /tmp/koan-issue-XXXXXX); printf '%s' "<body>" > "$body"; {KOAN_PYTHON} -m app.issue_cli create --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --title "..." --body-file "$body"`
-  - Comment: `body=$(mktemp /tmp/koan-comment-XXXXXX); printf '%s' "<body>" > "$body"; {KOAN_PYTHON} -m app.issue_cli comment <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --body-file "$body"`
+  Write the body to a unique temp file via `mktemp` under `$TMPDIR` (never a fixed name or a bare
+  `/tmp` path — multiple Koan instances may share the host) and pass it with `--body-file`:
+  - Create: `body=$(mktemp "${TMPDIR:-/tmp}/koan-issue-XXXXXX"); printf '%s' "<body>" > "$body"; {KOAN_PYTHON} -m app.issue_cli create --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --title "..." --body-file "$body"`
+  - Comment: `body=$(mktemp "${TMPDIR:-/tmp}/koan-comment-XXXXXX"); printf '%s' "<body>" > "$body"; {KOAN_PYTHON} -m app.issue_cli comment <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}" --body-file "$body"`
   - Fetch: `{KOAN_PYTHON} -m app.issue_cli fetch <issue-url> --project "{PROJECT_NAME}" --project-path "{PROJECT_PATH}"`
 - **Pushing branches**: Always push to the `origin` remote: `git push -u origin <branch>`.
   Never push to other remotes (e.g. `upstream`, named forks).
@@ -271,6 +271,8 @@ Do NOT use `curl`, raw API calls, or git-based workarounds for GitHub operations
 - **API access**: `gh api repos/{owner}/{repo}/...` for anything not covered above.
 
 The `gh` CLI is already authenticated via `GH_TOKEN` — no extra setup needed.
+
+{@include temp-hygiene}
 
 # Git awareness
 
