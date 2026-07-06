@@ -2003,3 +2003,81 @@ class TestResolveProjectsConfigPath:
         config = load_projects_config(str(tmp_path))
         assert config is not None
         assert "rootapp" in config["projects"]
+
+
+# ---------------------------------------------------------------------------
+# apply_project_patch — allow-listed per-project override writes
+# ---------------------------------------------------------------------------
+from app import projects_config as _pc
+
+
+def _write_projects_yaml(koan_root, body):
+    inst = koan_root / "instance"
+    inst.mkdir(parents=True, exist_ok=True)
+    (inst / "projects.yaml").write_text(body)
+
+
+@pytest.fixture
+def patch_koan_root(tmp_path):
+    _write_projects_yaml(tmp_path, (
+        "projects:\n"
+        "  koan:\n"
+        "    path: /tmp/koan\n"
+        "    autoreview: false\n"
+        "    max_open_prs: 3\n"
+        "  other:\n"
+        "    path: /tmp/other\n"
+    ))
+    _pc.invalidate_projects_config_cache()
+    return tmp_path
+
+
+class TestApplyProjectPatch:
+    def test_updates_scalar_fields(self, patch_koan_root):
+        merged = _pc.apply_project_patch(str(patch_koan_root), "koan",
+                                         {"autoreview": True, "max_open_prs": "7"})
+        assert merged["autoreview"] is True
+        assert merged["max_open_prs"] == 7  # coerced to int
+        # Persisted, not just in-memory:
+        _pc.invalidate_projects_config_cache()
+        fresh = _pc.load_projects_config(str(patch_koan_root))
+        assert _pc.get_project_config(fresh, "koan")["max_open_prs"] == 7
+
+    def test_other_projects_preserved(self, patch_koan_root):
+        _pc.apply_project_patch(str(patch_koan_root), "koan", {"autoreview": True})
+        _pc.invalidate_projects_config_cache()
+        fresh = _pc.load_projects_config(str(patch_koan_root))
+        # The partial patch must not wipe sibling projects or `path`.
+        assert "other" in fresh["projects"]
+        assert fresh["projects"]["koan"]["path"] == "/tmp/koan"
+
+    def test_unknown_project_rejected(self, patch_koan_root):
+        with pytest.raises(ValueError, match="Unknown project"):
+            _pc.apply_project_patch(str(patch_koan_root), "ghost", {"autoreview": True})
+
+    def test_non_editable_field_rejected(self, patch_koan_root):
+        with pytest.raises(ValueError, match="not editable"):
+            _pc.apply_project_patch(str(patch_koan_root), "koan", {"path": "/etc"})
+
+    def test_case_insensitive_no_duplicate_entry(self, patch_koan_root):
+        _pc.apply_project_patch(str(patch_koan_root), "Koan", {"autoreview": True})
+        _pc.invalidate_projects_config_cache()
+        fresh = _pc.load_projects_config(str(patch_koan_root))
+        assert "Koan" not in fresh["projects"]  # no case-variant duplicate
+        assert _pc.get_project_config(fresh, "koan")["autoreview"] is True
+
+    def test_empty_entry_project_accepted(self, tmp_path):
+        # A tag-only / empty-body entry is a valid project with no overrides yet;
+        # the patch must land, not be rejected as "Unknown project".
+        _write_projects_yaml(tmp_path, (
+            "projects:\n"
+            "  koan:\n"
+            "    path: /tmp/koan\n"
+            "  bare:\n"        # empty body -> parses to None
+        ))
+        _pc.invalidate_projects_config_cache()
+        merged = _pc.apply_project_patch(str(tmp_path), "bare", {"autoreview": True})
+        assert merged["autoreview"] is True
+        _pc.invalidate_projects_config_cache()
+        fresh = _pc.load_projects_config(str(tmp_path))
+        assert fresh["projects"]["bare"]["autoreview"] is True

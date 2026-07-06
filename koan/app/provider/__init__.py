@@ -157,6 +157,20 @@ def get_provider() -> CLIProvider:
     return _cached_provider
 
 
+def is_known_provider(name: str) -> bool:
+    """True when ``name`` resolves to a registered CLI provider."""
+    return str(name or "").strip().lower() in _PROVIDERS
+
+
+def known_providers() -> list:
+    """Return the sorted names of all registered CLI providers.
+
+    Single source of truth so dashboard forms stay in sync with the registry
+    instead of hardcoding a provider list that drifts as providers are added.
+    """
+    return sorted(_PROVIDERS)
+
+
 def get_provider_by_name(name: str) -> CLIProvider:
     """Return a fresh provider instance by name.
 
