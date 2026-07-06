@@ -418,6 +418,79 @@ def _ensure_secure_dir(base: Path) -> None:
         os.chmod(base, 0o700)
 
 
+# Per-mission TMPDIR dirs live directly under koan_tmp_dir() and embed the
+# owning process's pid so reap_stale_mission_tmp_dirs() can tell dirs owned
+# by a live Kōan instance apart from leftovers of a dead one (the base dir
+# is per-uid and may be shared by several instances).
+_MISSION_TMP_RE = re.compile(r"^mission-(\d+)-[A-Za-z0-9._-]+$")
+
+
+def create_mission_tmp_dir(tag: str = "") -> str:
+    """Create a private per-mission TMPDIR under :func:`koan_tmp_dir`.
+
+    The mission subprocess is spawned with ``TMPDIR`` pointing here, so
+    everything the agent creates via ``mktemp`` / ``$TMPDIR`` lands in one
+    directory that :func:`cleanup_mission_tmp_dir` reaps when the mission
+    ends. Crash leftovers are swept at startup by
+    :func:`reap_stale_mission_tmp_dirs`.
+    """
+    import uuid
+    suffix = tag or uuid.uuid4().hex[:8]
+    path = Path(koan_tmp_dir()) / f"mission-{os.getpid()}-{suffix}"
+    path.mkdir(mode=0o700)
+    return str(path)
+
+
+def cleanup_mission_tmp_dir(path: str) -> None:
+    """Best-effort removal of a per-mission TMPDIR.
+
+    Refuses anything that is not a ``mission-*`` dir directly under
+    :func:`koan_tmp_dir`, so a corrupted/forged path can never rmtree
+    outside Kōan's own scratch space.
+    """
+    import shutil
+    p = Path(path)
+    if p.parent != Path(koan_tmp_dir()) or not _MISSION_TMP_RE.match(p.name):
+        return
+    shutil.rmtree(p, ignore_errors=True)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def reap_stale_mission_tmp_dirs() -> int:
+    """Remove ``mission-<pid>-*`` dirs whose owning process is dead.
+
+    Covers crashes/kill -9 where the mission's ``finally`` never ran. Dirs
+    named with a live pid belong to another running Kōan instance sharing
+    this uid and are left alone. Returns the number of dirs removed.
+    """
+    import shutil
+    reaped = 0
+    try:
+        entries = list(Path(koan_tmp_dir()).iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        m = _MISSION_TMP_RE.match(entry.name)
+        if not m or entry.is_symlink() or not entry.is_dir():
+            continue
+        if _pid_alive(int(m.group(1))):
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        reaped += 1
+    if reaped:
+        print(f"[utils] reaped {reaped} stale mission tmp dir(s)", file=sys.stderr)
+    return reaped
+
+
 def atomic_write(path: Path, content: str):
     """Write content to a file atomically using write-to-temp + rename.
 

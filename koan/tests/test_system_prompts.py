@@ -145,17 +145,18 @@ def test_agent_prompt_uses_mktemp_not_fixed_tmp_names():
     """Agent prompt must not instruct fixed /tmp filenames.
 
     Fixed names (e.g. /tmp/issue.md) collide across users running Kōan on the
-    same host. The prompt must use mktemp patterns so each run gets a unique
-    file. See koan_tmp_dir() / the multi-instance temp-collision fix.
+    same host. The prompt must use mktemp patterns under $TMPDIR so each run
+    gets a unique file inside the per-mission dir that Kōan reaps at mission
+    end. See koan_tmp_dir() / create_mission_tmp_dir().
     """
     prompt = (PROMPTS_DIR / "agent.md").read_text()
 
     for fixed in ("/tmp/test-output.txt", "/tmp/issue.md", "/tmp/comment.md"):
         assert fixed not in prompt, f"Fixed /tmp path still present: {fixed}"
 
-    assert "mktemp /tmp/koan-test-output-XXXXXX" in prompt
-    assert "mktemp /tmp/koan-issue-XXXXXX" in prompt
-    assert "mktemp /tmp/koan-comment-XXXXXX" in prompt
+    assert 'mktemp "${TMPDIR:-/tmp}/koan-test-output-XXXXXX"' in prompt
+    assert 'mktemp "${TMPDIR:-/tmp}/koan-issue-XXXXXX"' in prompt
+    assert 'mktemp "${TMPDIR:-/tmp}/koan-comment-XXXXXX"' in prompt
     _assert_mktemp_templates_are_bsd_portable(prompt)
 
 
@@ -164,8 +165,33 @@ def test_submit_pr_prompt_uses_mktemp_not_fixed_tmp_names():
     prompt = (PROMPTS_DIR / "submit-pull-request.md").read_text()
 
     assert "/tmp/koan-audit-issue.md" not in prompt
-    assert "mktemp /tmp/koan-audit-issue-XXXXXX" in prompt
+    assert 'mktemp "${TMPDIR:-/tmp}/koan-audit-issue-XXXXXX"' in prompt
     _assert_mktemp_templates_are_bsd_portable(prompt)
+
+
+def test_agent_prompt_includes_temp_hygiene():
+    """agent.md pulls in the shared temp-hygiene partial, and the partial's
+    own mktemp examples stay BSD-portable."""
+    raw = (PROMPTS_DIR / "agent.md").read_text()
+    assert "{@include temp-hygiene}" in raw
+
+    partial = (PROMPTS_DIR / "_partials" / "temp-hygiene.md").read_text()
+    assert "$TMPDIR" in partial
+    _assert_mktemp_templates_are_bsd_portable(partial)
+
+
+def test_no_literal_tmp_mktemp_anywhere():
+    """No prompt or core skill may instruct `mktemp /tmp/...` — scratch files
+    must go through $TMPDIR (the per-mission dir) so they are reaped at
+    mission end instead of accumulating in the shared /tmp."""
+    skills_dir = PROMPTS_DIR.parent / "skills"
+    offenders = [
+        str(path)
+        for root in (PROMPTS_DIR, skills_dir)
+        for path in sorted(root.rglob("*.md"))
+        if "mktemp /tmp/" in path.read_text()
+    ]
+    assert offenders == [], f"literal /tmp mktemp templates found in: {offenders}"
 
 
 def test_pr_creation_prompts_use_body_file_not_heredoc():
@@ -180,7 +206,7 @@ def test_pr_creation_prompts_use_body_file_not_heredoc():
 
     impl = (partials / "implementation-workflow.md").read_text()
     assert '--body-file "$pr_body"' in impl
-    assert "mktemp /tmp/koan-pr-body-XXXXXX" in impl
+    assert 'mktemp "${TMPDIR:-/tmp}/koan-pr-body-XXXXXX"' in impl
     assert "--body \"$(cat" not in impl
 
     fork = (partials / "pr-submit-fork.md").read_text()
@@ -199,7 +225,7 @@ def _assert_mktemp_templates_are_bsd_portable(prompt: str):
     """
     import re
 
-    for m in re.finditer(r"mktemp\s+(\S+)", prompt):
+    for m in re.finditer(r"mktemp\s+(?:-d\s+)?(\S+)", prompt):
         # Strip trailing shell punctuation (the template often sits inside a
         # $(...) command substitution, so the token can end with `)`, `;`, etc.).
         template = m.group(1).rstrip(');"\'`')

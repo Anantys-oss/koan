@@ -728,6 +728,8 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Memory cleanup", cleanup_memory, instance)
         _safe_run("Missions pruning", prune_missions_done, instance)
         _safe_run("Mission history cleanup", cleanup_mission_history, instance)
+        from app.utils import reap_stale_mission_tmp_dirs
+        _safe_run("Stale mission tmp sweep", reap_stale_mission_tmp_dirs)
         _safe_run("Health check", check_health, koan_root)
 
     with protected_phase("Self-reflection check"):

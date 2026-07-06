@@ -53,8 +53,18 @@ under a per-uid temp directory returned by `utils.koan_tmp_dir()`:
 
 This isolation is what lets multiple users run Kōan on one host without colliding
 on shared `/tmp` paths. Code that needs a temp file MUST pass `dir=koan_tmp_dir()`
-to `tempfile.*`; agent prompts that write to `/tmp` MUST use a `mktemp` pattern
-rather than a fixed filename. See [Troubleshooting](../operations/troubleshooting.md).
+to `tempfile.*`; agent prompts that create scratch files MUST use
+`mktemp "${TMPDIR:-/tmp}/koan-<purpose>-XXXXXX"` rather than a fixed filename or a
+bare `/tmp` path. See [Troubleshooting](../operations/troubleshooting.md).
+
+Each mission (and each parallel session) is additionally spawned with a private
+`TMPDIR` under `koan_tmp_dir()` — `mission-<pid>-<id>/`, created by
+`utils.create_mission_tmp_dir()`. Everything the agent writes via `mktemp` /
+`$TMPDIR` therefore lands in one directory that is reaped when the mission ends
+(`utils.cleanup_mission_tmp_dir()`). Leftovers from crashed runs are removed at
+startup by `utils.reap_stale_mission_tmp_dirs()`, which skips dirs whose owning
+pid is still alive so concurrent Kōan instances sharing a uid don't reap each
+other's scratch space.
 
 ## Configuration Sources
 

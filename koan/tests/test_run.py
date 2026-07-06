@@ -1275,6 +1275,32 @@ class TestRunClaudeTask:
 
         assert exit_code != 0
 
+    def test_sets_and_reaps_per_mission_tmpdir(self, tmp_path, monkeypatch):
+        """The child runs with a private TMPDIR that is removed afterwards."""
+        from app import utils
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "ktmp"))
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+
+        exit_code = run_claude_task(
+            cmd=["sh", "-c", 'printf %s "$TMPDIR"; : > "$TMPDIR/left-behind"'],
+            stdout_file=stdout_f,
+            stderr_file=stderr_f,
+            cwd=str(tmp_path),
+        )
+
+        assert exit_code == 0
+        reported = Path(stdout_f).read_text().strip()
+        assert reported.startswith(str(tmp_path / "ktmp"))
+        assert "/mission-" in reported
+        # Reaped in the finally — including the file the child left behind.
+        assert not Path(reported).exists()
+
     def test_resets_signal_state(self, tmp_path):
         from app.run import run_claude_task, _sig
 
