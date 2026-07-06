@@ -87,6 +87,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "branch_cleanup": _NESTED,
     "review_concurrency": _NESTED,
     "review_ignore": _NESTED,
+    "review_draft_skip": _NESTED,
     "automation_rules": _NESTED,
     "effort": _NESTED,
     "thinking": _NESTED,
@@ -256,6 +257,9 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "review_ignore": {
         "glob": "list",
         "regex": "list",
+    },
+    "review_draft_skip": {
+        "enabled": "bool",
     },
     "automation_rules": {
         "max_fires_per_minute": "int",

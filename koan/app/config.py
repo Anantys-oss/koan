@@ -2338,6 +2338,38 @@ def get_review_inline_comments_config() -> dict:
     return {"enabled": enabled, "max_comments": max_comments}
 
 
+def get_review_draft_skip_config() -> dict:
+    """Get the draft-PR auto-review gate configuration from config.yaml.
+
+    When enabled, a ``review_requested`` notification (the bot attached as a PR
+    reviewer) does NOT auto-queue ``/review`` while the PR is in draft state.
+    The remedy is an explicit ``/review`` once the PR is ready — the gate does
+    not rely on automatic resume (GitHub does not reliably re-fire
+    ``review_requested`` on the draft->ready transition). An explicit ``/review``
+    (chat or GitHub @mention) is always honored regardless of this flag — it only
+    gates the "bot attached as reviewer" path.
+
+    Config key: review_draft_skip::
+
+        review_draft_skip:
+          enabled: false
+
+    Returns:
+        Dict with key: enabled (bool). Defaults to disabled so the historical
+        "review always" behavior (including draft PRs) is preserved.
+    """
+    config = _load_config()
+    section = config.get("review_draft_skip", {}) or {}
+    if not isinstance(section, dict):
+        section = {}
+
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        enabled = False
+
+    return {"enabled": enabled}
+
+
 def is_caveman_mode() -> bool:
     """Check if caveman output optimization is enabled.
 
