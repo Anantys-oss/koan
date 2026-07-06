@@ -569,6 +569,14 @@ def get_project_shared_deps(config: dict, project_name: str) -> list:
     """
     shared = get_project_config(config, project_name).get("shared_deps", [])
     if not isinstance(shared, list):
+        # Malformed config (e.g. a string instead of a list) — surface it so
+        # the operator learns dependency symlinking is disabled, instead of
+        # silently dropping the optimization.
+        print(
+            f"[projects_config] shared_deps for {project_name} must be a list, "
+            f"got {type(shared).__name__} — ignoring (dependency symlinking disabled)",
+            file=sys.stderr,
+        )
         return []
     return [str(d) for d in shared]
 

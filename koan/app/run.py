@@ -3584,10 +3584,16 @@ def _cleanup_worktree(worktree_info, project_path: str, instance: str = "", merg
         # The branch is no longer checked out anywhere — delete the stale local
         # ref the auto-merge step could not remove while the worktree held it.
         with suppress_logged(log, "debug", f"Local branch cleanup failed ({merged_branch})", Exception):
-            subprocess.run(
+            _del = subprocess.run(
                 ["git", "branch", "-D", merged_branch],
                 cwd=project_path, capture_output=True, text=True, timeout=30,
             )
+            # branch -D exits non-zero (not an exception) when the ref is gone
+            # or still in use; suppress_logged only catches raised errors, so
+            # surface the stale-branch case explicitly instead of silently.
+            if _del.returncode != 0:
+                log("debug", f"Local branch cleanup failed ({merged_branch}): "
+                             f"{(_del.stderr or '').strip()}")
         return
 
     # Push any branches the agent created in the worktree, using the shared
