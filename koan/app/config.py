@@ -1233,9 +1233,18 @@ def _resolve_effort_dict(
     """
     # 1. Per-mission-type override (the user-facing axis).
     if mission_type and mission_type in effort_config:
-        level = str(effort_config.get(mission_type, "")).strip().lower()
+        raw = str(effort_config.get(mission_type, ""))
+        level = raw.strip().lower()
         if level in _VALID_EFFORT_LEVELS:
             return level
+        # Present-but-invalid pin: discard and fall through to the dynamic
+        # default. config_validator warns at load time, but log here too so
+        # runtime behavior is traceable on paths that skip validation.
+        print(
+            f"[config] effort.{mission_type} invalid value {raw!r} "
+            f"(expected low/medium/high/max); ignoring pin",
+            file=sys.stderr,
+        )
     # 2. Legacy per-mode override (e.g. effort.deep / effort.wait).
     if autonomous_mode and autonomous_mode in effort_config:
         level = str(effort_config.get(autonomous_mode, "")).strip().lower()

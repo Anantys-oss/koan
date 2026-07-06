@@ -249,8 +249,14 @@ def spawn_session(
     try:
         from app.session_tracker import classify_mission_type
         _mission_type = classify_mission_type(mission_text)
-    except ImportError:
+    except ImportError as e:
         # Version mismatch / partial update — degrade to mode-only effort.
+        # Log so a partial upgrade disabling effort pins is observable.
+        print(
+            f"[session_manager] classify_mission_type unavailable "
+            f"(effort pin disabled): {e}",
+            file=sys.stderr,
+        )
         _mission_type = ""
     except Exception as e:
         # Log unexpected failures so a silent no-op doesn't drop effort pins.

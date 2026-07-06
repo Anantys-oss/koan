@@ -1304,8 +1304,10 @@ def _run_iteration(
         try:
             from app.session_tracker import classify_mission_type
             mission_type = classify_mission_type(mission_title)
-        except ImportError:
+        except ImportError as e:
             # Version mismatch / partial update — degrade to mode-only effort.
+            # Log so a partial upgrade disabling effort pins is observable.
+            log("warning", f"classify_mission_type unavailable (effort pin disabled): {e}")
             mission_type = ""
         except Exception as e:
             # classify_mission_type is pure regex; any failure here is a bug.
