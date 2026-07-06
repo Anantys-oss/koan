@@ -339,8 +339,19 @@ def run_claude_task(
 
     from app.cli_exec import popen_cli
     from app.config import get_mission_timeout
+    from app.utils import cleanup_mission_tmp_dir, create_mission_tmp_dir
 
     mission_timeout = get_mission_timeout()
+
+    # Per-mission TMPDIR: everything the agent creates via mktemp/$TMPDIR is
+    # reaped in the outer finally below; crash leftovers are swept at startup
+    # by reap_stale_mission_tmp_dirs(). Failure to create it is non-fatal:
+    # the child then simply inherits the parent's TMPDIR (prior behavior).
+    mission_tmp = None
+    try:
+        mission_tmp = create_mission_tmp_dir()
+    except OSError as e:
+        log("error", f"per-mission TMPDIR creation failed: {e}")
 
     exit_code = 1  # default if subprocess never completes
     # Read once up front so the outer finally can always clear the liveness
@@ -351,6 +362,9 @@ def run_claude_task(
             # provider is the role-resolved instance (cli: section); popen_cli
             # uses it for stdin-rewrite + invocation lock so they match the
             # binary the command was built for. None → global provider.
+            popen_kwargs = {}
+            if mission_tmp:
+                popen_kwargs["env"] = {**os.environ, "TMPDIR": mission_tmp}
             proc, cleanup = popen_cli(
                 cmd,
                 provider=provider,
@@ -358,6 +372,7 @@ def run_claude_task(
                 stderr=err_f,
                 cwd=cwd,
                 start_new_session=True,
+                **popen_kwargs,
             )
             _sig.claude_proc = proc
 
@@ -455,6 +470,11 @@ def run_claude_task(
         elif _last_mission_stagnated.is_set():
             exit_code = 1
     finally:
+        # Reap the mission's TMPDIR. In the rare "unkillable — abandoning"
+        # path the child may still be alive; removing its scratch dir is safe
+        # on POSIX (open fds survive) and the mission is already failed.
+        if mission_tmp:
+            cleanup_mission_tmp_dir(mission_tmp)
         # Clear the liveness signal on every exit path — including exceptions
         # raised before the subprocess wait loop — so no stale .koan-active
         # survives to be misread as a live (then zombie) mission (#2086).

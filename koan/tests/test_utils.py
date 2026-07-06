@@ -1806,6 +1806,103 @@ class TestKoanTmpDir:
             koan_tmp_dir()
 
 
+class TestMissionTmpDirs:
+    """Per-mission TMPDIR lifecycle: create, guarded cleanup, stale reaping."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_tmp(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "ktmp"))
+
+    def test_create_names_by_pid_under_koan_tmp_dir(self):
+        import stat as _stat
+        from app.utils import create_mission_tmp_dir, koan_tmp_dir
+
+        path = Path(create_mission_tmp_dir())
+        assert str(path.parent) == koan_tmp_dir()
+        assert path.name.startswith(f"mission-{os.getpid()}-")
+        assert path.is_dir()
+        assert _stat.S_IMODE(os.stat(path).st_mode) == 0o700
+
+    def test_create_honors_tag(self):
+        from app.utils import create_mission_tmp_dir
+
+        path = Path(create_mission_tmp_dir(tag="abc123def456"))
+        assert path.name == f"mission-{os.getpid()}-abc123def456"
+
+    def test_cleanup_removes_dir_and_contents(self):
+        from app.utils import cleanup_mission_tmp_dir, create_mission_tmp_dir
+
+        path = Path(create_mission_tmp_dir())
+        (path / "left-behind").write_text("scratch")
+        cleanup_mission_tmp_dir(str(path))
+        assert not path.exists()
+
+    def test_cleanup_is_noop_for_missing_path(self):
+        from app.utils import cleanup_mission_tmp_dir, koan_tmp_dir
+
+        cleanup_mission_tmp_dir(str(Path(koan_tmp_dir()) / "mission-1-gone"))
+
+    def test_cleanup_refuses_paths_outside_koan_tmp_dir(self, tmp_path):
+        from app.utils import cleanup_mission_tmp_dir
+
+        outside = tmp_path / "elsewhere" / f"mission-{os.getpid()}-abcd1234"
+        outside.mkdir(parents=True)
+        cleanup_mission_tmp_dir(str(outside))
+        assert outside.is_dir(), "must not delete outside koan_tmp_dir()"
+
+    def test_cleanup_refuses_non_mission_names(self):
+        from app.utils import cleanup_mission_tmp_dir, koan_tmp_dir
+
+        victim = Path(koan_tmp_dir()) / "provider.lock.d"
+        victim.mkdir()
+        cleanup_mission_tmp_dir(str(victim))
+        assert victim.is_dir(), "must only delete mission-* dirs"
+
+    def test_pid_alive(self):
+        import subprocess
+        from app.utils import _pid_alive
+
+        assert _pid_alive(os.getpid()) is True
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        assert _pid_alive(proc.pid) is False
+
+    def test_reap_removes_dead_pid_dirs_keeps_live(self, monkeypatch):
+        from app import utils
+        from app.utils import koan_tmp_dir, reap_stale_mission_tmp_dirs
+
+        base = Path(koan_tmp_dir())
+        live = base / f"mission-{os.getpid()}-live0001"
+        live.mkdir()
+        dead = base / "mission-99999999-dead0001"
+        (dead / "sub").mkdir(parents=True)
+        monkeypatch.setattr(utils, "_pid_alive", lambda pid: pid == os.getpid())
+
+        assert reap_stale_mission_tmp_dirs() == 1
+        assert live.is_dir()
+        assert not dead.exists()
+
+    def test_reap_skips_files_symlinks_and_odd_names(self, monkeypatch):
+        from app import utils
+        from app.utils import koan_tmp_dir, reap_stale_mission_tmp_dirs
+
+        base = Path(koan_tmp_dir())
+        (base / "mission-99999999-afile").write_text("not a dir")
+        (base / "koan-prompt-x").mkdir()
+        target = base / "elsewhere"
+        target.mkdir()
+        (base / "mission-99999999-alink").symlink_to(target)
+        monkeypatch.setattr(utils, "_pid_alive", lambda pid: False)
+
+        assert reap_stale_mission_tmp_dirs() == 0
+        assert (base / "mission-99999999-afile").exists()
+        assert (base / "koan-prompt-x").is_dir()
+        assert (base / "mission-99999999-alink").is_symlink()
+        assert target.is_dir()
+
+
 class TestGetTelegramChatId:
     def test_strips_trailing_newline(self, monkeypatch):
         from app.utils import get_telegram_chat_id
