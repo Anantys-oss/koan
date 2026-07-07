@@ -331,3 +331,57 @@ class TestLogPrefix:
         step()
         captured = capsys.readouterr()
         assert "[pipeline]" in captured.err
+
+
+class TestSkipLogging:
+    """Test throttled logging while a circuit is open."""
+
+    def test_logs_first_skip(self, capsys):
+        cb = CircuitBreaker(threshold=1, log_prefix="test")
+
+        @cb.guard("subsystem", default=None)
+        def broken():
+            raise RuntimeError("boom")
+
+        broken()  # opens the circuit
+        capsys.readouterr()  # drop the open-circuit log
+        broken()  # first skip — should log
+        captured = capsys.readouterr()
+        assert "skipped 1 call" in captured.err
+        assert "subsystem" in captured.err
+
+    def test_throttles_repeated_skips(self, capsys):
+        cb = CircuitBreaker(threshold=1, log_prefix="test", skip_log_interval=5)
+
+        @cb.guard("subsystem", default=None)
+        def broken():
+            raise RuntimeError("boom")
+
+        broken()  # opens the circuit
+        capsys.readouterr()
+        # Skips 2, 3, 4 stay silent; skip 5 logs again.
+        for _ in range(4):
+            broken()
+        captured = capsys.readouterr()
+        # Only the 1st and 5th skip emit a line.
+        assert captured.err.count("circuit OPEN, skipped") == 1
+        assert "skipped 5 call" in captured.err
+
+    def test_success_resets_skip_counter(self, capsys):
+        cb = CircuitBreaker(threshold=1, reset_after=0.01, log_prefix="test")
+
+        @cb.guard("subsystem", default=None)
+        def sometimes(fail):
+            if fail:
+                raise RuntimeError("boom")
+            return "ok"
+
+        sometimes(True)  # opens circuit
+        time.sleep(0.02)  # half-open
+        assert sometimes(False) == "ok"  # recovers, resets skip counter
+        capsys.readouterr()
+        sometimes(True)  # opens again
+        capsys.readouterr()
+        sometimes(True)  # first skip after reset — count starts at 1
+        captured = capsys.readouterr()
+        assert "skipped 1 call" in captured.err

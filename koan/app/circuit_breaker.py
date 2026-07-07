@@ -59,6 +59,7 @@ class CircuitBreaker:
         reset_after: float = 0,
         log_prefix: str = "circuit_breaker",
         log_fn: Optional[Callable[[str], None]] = None,
+        skip_log_interval: int = 20,
     ):
         """
         Args:
@@ -68,14 +69,19 @@ class CircuitBreaker:
             log_prefix: Prefix for log messages (e.g. "mission_runner").
             log_fn: Callable for log output. Receives a formatted string.
                 Defaults to writing to stderr.
+            skip_log_interval: Emit a throttled log every Nth skipped call
+                while a circuit is open, so an open circuit stays visible
+                instead of silently swallowing every call.
         """
         self.threshold = threshold
         self.reset_after = reset_after
         self.log_prefix = log_prefix
         self._log = log_fn or _default_log
+        self.skip_log_interval = max(1, skip_log_interval)
         self._failures: Dict[str, int] = {}
         self._open_since: Dict[str, float] = {}
         self._last_error: Dict[str, str] = {}
+        self._skips: Dict[str, int] = {}
 
     def is_open(self, name: str) -> bool:
         """Check if the circuit for *name* is open (tripped)."""
@@ -94,6 +100,23 @@ class CircuitBreaker:
         self._failures.pop(name, None)
         self._open_since.pop(name, None)
         self._last_error.pop(name, None)
+        self._skips.pop(name, None)
+
+    def _record_skip(self, name: str) -> None:
+        """Count a skipped call on an open circuit, logging periodically.
+
+        Without this, an open circuit silently swallows every subsequent
+        call for the process lifetime; the throttled log keeps the
+        degraded subsystem visible in the logs.
+        """
+        count = self._skips.get(name, 0) + 1
+        self._skips[name] = count
+        if count == 1 or count % self.skip_log_interval == 0:
+            self._log(
+                f"[{self.log_prefix}] {name}: circuit OPEN, skipped "
+                f"{count} call(s) (last error: "
+                f"{self._last_error.get(name, 'unknown')})"
+            )
 
     def record_failure(self, name: str, error: Exception) -> None:
         """Record a failure.  Opens the circuit when threshold is reached."""
@@ -113,10 +136,12 @@ class CircuitBreaker:
             self._failures.clear()
             self._open_since.clear()
             self._last_error.clear()
+            self._skips.clear()
         else:
             self._failures.pop(name, None)
             self._open_since.pop(name, None)
             self._last_error.pop(name, None)
+            self._skips.pop(name, None)
 
     def guard(
         self,
@@ -163,6 +188,7 @@ class CircuitBreaker:
             @wraps(fn)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
                 if self.is_open(name):
+                    self._record_skip(name)
                     return _get_default()
                 try:
                     result = fn(*args, **kwargs)
@@ -191,9 +217,15 @@ def get_open_circuits() -> Dict[str, str]:
 
     Lazily imports the breaker instance to avoid circular imports.
     Returns an empty dict if the breaker hasn't been initialized.
+
+    Only the import is guarded — a genuine error inside ``open_circuits``
+    must propagate rather than be masked as "no open circuits".
     """
     try:
-        from app.mission_runner import _breaker
-        return _breaker.open_circuits
-    except (ImportError, AttributeError):
+        from app import mission_runner
+    except ImportError:
         return {}
+    breaker = getattr(mission_runner, "_breaker", None)
+    if breaker is None:
+        return {}
+    return breaker.open_circuits

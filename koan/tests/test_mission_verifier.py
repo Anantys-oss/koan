@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.mission_verifier import (
     Check,
     CheckStatus,
@@ -481,9 +483,9 @@ class TestMissionRunnerIntegration:
         assert result.passed is True
 
     @patch("app.mission_verifier.verify_mission", side_effect=Exception("boom"))
-    def test_run_mission_verification_swallows_errors(self, mock_verify):
-        """Circuit breaker catches the error, records the failure, returns default."""
+    def test_run_mission_verification_propagates_errors(self, mock_verify):
+        """Errors propagate — caller (_PipelineTracker.run_step) records them."""
         from app.mission_runner import _run_mission_verification
 
-        result = _run_mission_verification("/project", "test mission", 0, "/instance")
-        assert result is None
+        with pytest.raises(Exception, match="boom"):
+            _run_mission_verification("/project", "test mission", 0, "/instance")
