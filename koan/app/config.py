@@ -1247,9 +1247,18 @@ def _resolve_effort_dict(
         )
     # 2. Legacy per-mode override (e.g. effort.deep / effort.wait).
     if autonomous_mode and autonomous_mode in effort_config:
-        level = str(effort_config.get(autonomous_mode, "")).strip().lower()
+        raw = str(effort_config.get(autonomous_mode, ""))
+        level = raw.strip().lower()
         if level in _VALID_EFFORT_LEVELS:
             return level
+        # Present-but-invalid mode pin: log before falling through, mirroring
+        # step 1 so an invalid effort.deep/effort.wait is traceable at runtime
+        # on paths that skip config_validator.
+        print(
+            f"[config] effort.{autonomous_mode} invalid value {raw!r} "
+            f"(expected low/medium/high/max); ignoring pin",
+            file=sys.stderr,
+        )
     return None
 
 
@@ -1267,7 +1276,6 @@ def get_effort(autonomous_mode: str = "", mission_type: str = "") -> str:
         effort:
           autonomous: low     # keep background autonomous work cheap
           freetext: medium
-          refactor: high
 
         # Single value applied to every mission
         effort: high
@@ -1284,17 +1292,19 @@ def get_effort(autonomous_mode: str = "", mission_type: str = "") -> str:
 
        Only missions that flow through the main agent loop reach this function
        (via ``build_mission_command``). In that loop ``mission_type`` comes
-       from ``classify_mission_type(mission_title)``, so the pins that can
-       actually take effect are the types returned for **non-skill** missions:
-       ``autonomous`` (no title), ``freetext`` (plain-text missions), and slash
-       commands that have no dedicated skill runner (``refactor``/``pr``/some
-       ``chat`` commands). Slash commands dispatched to a dedicated skill
-       runner — ``/review``, ``/plan``, ``/rebase``, ``/recreate``,
-       ``/implement``, ``/fix``, ``/audit``, ``/check`` … — are routed to those
-       runners *before* this path and are therefore **not** governed by the
-       ``effort:`` section. (They use the provider default.) config_validator
-       still accepts any mission-type key as valid config, since the dispatch
-       taxonomy is open.
+       from ``classify_mission_type(mission_title)``, so the only pins that can
+       actually take effect are the types returned for missions that are **not**
+       slash commands: ``autonomous`` (empty / "Autonomous …" titles) and
+       ``freetext`` (plain human-text missions). Every named slash-command type
+       is handled before this path: commands with a dedicated runner —
+       ``/review``, ``/plan``, ``/rebase``, ``/recreate``, ``/implement``,
+       ``/fix``, ``/audit``, ``/check`` … — are routed to those runners, and
+       commands with no runner (e.g. ``/refactor``, ``/pr``) are dispatched by
+       their bridge-side handler or failed as an unknown skill in
+       ``_handle_skill_dispatch`` — they never reach ``build_mission_command``.
+       So a pin like ``effort.refactor`` or ``effort.review`` is inert.
+       config_validator still accepts any mission-type key as valid config,
+       since the dispatch taxonomy is open.
 
     A single-string config is validated whole: an invalid value (not
     low/medium/high/max/"") disables the flag, matching the legacy behavior.

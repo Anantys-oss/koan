@@ -78,8 +78,13 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   (`/review`, `/plan`, `/rebase`, `/recreate`, `/implement`, `/fix`, `/audit`,
   `/check`, …) are routed to their own runners before this path and are not
   governed by `effort:` — so a `review: low` pin has no effect on `/review`,
-  which runs in `review_runner`. Only main-loop missions honor a pin:
-  `autonomous`/`freetext` and slash commands without a runner (`refactor`/`pr`).
+  which runs in `review_runner`. Slash commands *without* a dedicated runner
+  don't reach it either: `/refactor`/`/pr` are handled by their bridge-side
+  handler or failed as an unknown skill in `_handle_skill_dispatch` before
+  `build_mission_command`. In practice the only pins that fire are
+  **`autonomous`** and **`freetext`** (non-slash missions). A partial dict
+  leaves unlisted modes on the dynamic default (not disabled), preserving the
+  absence contract per-mode.
   `get_effort_for_mode()` is the type-unaware wrapper and must stay equivalent
   to `get_effort(mode, "")`. `config_validator` accepts any `effort.*` key (the
   mission-type set is open) but validates every value — dict entries *and* the

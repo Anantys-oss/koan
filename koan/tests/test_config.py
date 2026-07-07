@@ -1717,12 +1717,36 @@ class TestGetEffortMissionType:
             assert get_effort("review", mission_type="plan") == "low"
             assert get_effort("implement", mission_type="implement") == ""
 
-    def test_no_mission_type_matches_legacy_behavior(self):
-        """Without a mission type, resolution equals get_effort_for_mode."""
-        from app.config import get_effort, get_effort_for_mode
+    def test_no_mission_type_resolves_per_mode(self):
+        """Without a mission type, resolution is the per-mode config value.
+
+        Asserts hardcoded expected values (not equality with the wrapper, which
+        would be trivially true since get_effort_for_mode just calls get_effort
+        with mission_type="").
+        """
+        from app.config import get_effort
         with _mock_config({"effort": {"review": "low", "deep": "max"}}):
-            for mode in ("review", "implement", "deep", "wait"):
-                assert get_effort(mode) == get_effort_for_mode(mode)
+            assert get_effort("review") == "low"   # pinned
+            assert get_effort("deep") == "max"     # pinned
+            # Unlisted modes whose dynamic default is "" stay "".
+            assert get_effort("implement") == ""
+            assert get_effort("wait") == ""
+
+    def test_partial_dict_unlisted_mode_uses_dynamic_default(self):
+        """A partial dict leaves unlisted modes on the DYNAMIC default.
+
+        Pins behavior flagged in review: with only `implement` listed, an
+        unlisted mode whose dynamic default is non-empty (deep→high, review→low)
+        resolves to that default rather than being disabled. This is the
+        intended semantics ("dynamic default preserved unless config pins a
+        value"); the test locks it so the fall-through can't regress silently.
+        """
+        from app.config import get_effort
+        with _mock_config({"effort": {"implement": "high"}}):
+            assert get_effort("implement") == "high"   # pinned
+            assert get_effort("deep") == "high"        # dynamic default
+            assert get_effort("review") == "low"       # dynamic default
+            assert get_effort("wait") == ""            # dynamic default (none)
 
     def test_mission_type_disables_with_empty_string(self):
         from app.config import get_effort

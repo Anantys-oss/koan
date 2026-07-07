@@ -1297,10 +1297,11 @@ def _run_iteration(
         mission_cli_provider = get_provider_for_role(_mission_role, project_name)
 
         # Classify the mission type so a per-mission-type effort pin
-        # (effort.autonomous / effort.freetext / effort.refactor / …) can
-        # override the dynamic default. NB: only NON-skill missions reach here
-        # — skill-dispatched commands (/review, /plan, …) are routed to their
-        # own runners before _run_iteration, so their types never apply.
+        # (effort.autonomous / effort.freetext) can override the dynamic
+        # default. NB: only NON-skill missions reach here — slash commands are
+        # handled earlier in _handle_skill_dispatch (dedicated runner, or failed
+        # as unknown for /refactor, /pr, …), so only "autonomous" and "freetext"
+        # ever apply here.
         try:
             from app.session_tracker import classify_mission_type
             mission_type = classify_mission_type(mission_title)
@@ -1309,11 +1310,9 @@ def _run_iteration(
             # Log so a partial upgrade disabling effort pins is observable.
             log("warning", f"classify_mission_type unavailable (effort pin disabled): {e}")
             mission_type = ""
-        except Exception as e:
-            # classify_mission_type is pure regex; any failure here is a bug.
-            # Log it so a silent no-op doesn't quietly drop every effort pin.
-            log("warning", f"classify_mission_type failed (effort pin disabled): {e}")
-            mission_type = ""
+        # classify_mission_type is pure regex (no I/O); any other exception is a
+        # programming bug and is left to propagate rather than silently disabling
+        # effort pins for every mission.
 
         cmd, cmd_cleanup_paths = build_mission_command(
             prompt=prompt,

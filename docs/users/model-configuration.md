@@ -91,8 +91,7 @@ types — the categories Kōan classifies internally — not budget modes:
 ```yaml
 effort:
   autonomous: low      # keep background autonomous work cheap
-  freetext: medium     # plain-text missions
-  refactor: high       # think hard when refactoring
+  freetext: medium     # plain human-text missions
 ```
 
 A pinned type wins over the dynamic default regardless of the budget mode the
@@ -110,14 +109,17 @@ accepts any key and only checks that the value is a real level — a typo'd key
 will not warn, it just never fires. Of these, only the types listed under
 **Scope** below can actually take effect today.
 
-> **Scope.** A per-type pin only affects missions that flow through the main
-> agent loop — autonomous background work, free-text missions, and slash
-> commands that have no dedicated skill runner (e.g. `/refactor`, `/pr`, some
-> `/chat` commands). Slash commands dispatched to a dedicated skill runner —
+> **Scope.** A per-type pin only takes effect for missions that reach the main
+> agent loop's `build_mission_command` — in practice only **`autonomous`**
+> (background autonomous work) and **`freetext`** (plain human-text missions).
+> Every named slash-command type is handled *before* that point and is **not**
+> governed by the `effort:` section: commands with a dedicated skill runner —
 > `/review`, `/plan`, `/rebase`, `/recreate`, `/implement`, `/fix`, `/audit`,
-> `/check`, … — run in their own runners and are **not** governed by the
-> `effort:` section (they use the provider default). To control effort for one
-> of those, configure that skill's runner directly.
+> `/check`, … — run in their own runners, and commands with no runner (e.g.
+> `/refactor`, `/pr`) are handled by their bridge-side handler or fail as an
+> unknown skill. So pinning `review: low` — or `refactor: high` — has no
+> effect. To control effort for one of those, configure that skill's runner
+> directly.
 
 > Note: effort is a no-op when extended thinking is active for a mission
 > (thinking already implies max effort) and is ignored by providers whose CLI

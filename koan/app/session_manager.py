@@ -258,10 +258,9 @@ def spawn_session(
             file=sys.stderr,
         )
         _mission_type = ""
-    except Exception as e:
-        # Log unexpected failures so a silent no-op doesn't drop effort pins.
-        print(f"[session_manager] classify_mission_type failed: {e}", file=sys.stderr)
-        _mission_type = ""
+    # classify_mission_type is pure regex (no I/O); any other exception is a
+    # programming bug and is left to propagate rather than silently disabling
+    # effort pins.
     cmd, cmd_cleanup_paths = build_mission_command(
         prompt=mission_text,
         autonomous_mode=autonomous_mode,
