@@ -120,8 +120,9 @@ Consequences and safeguards:
 - **Result-bearing work must complete in-turn.** The agent is instructed (see
   the `cli-execution-model` prompt partial) to block or poll within the turn
   until a command finishes, then read its result before concluding.
-- **Foreground headroom.** Koan sets `BASH_DEFAULT_TIMEOUT_MS` /
-  `BASH_MAX_TIMEOUT_MS` (from `bash_foreground_timeout`, default 15 min, clamped
+- **Foreground headroom.** For the Claude provider, Koan sets
+  `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` (from
+  `bash_foreground_timeout`, default 15 min, clamped
   below `mission_timeout` with a 120s reporting buffer) so a long-but-bounded
   command can block in the foreground rather than being backgrounded and
   orphaned. Set `bash_foreground_timeout: 0` to keep the CLI's built-in default.

@@ -338,7 +338,11 @@ def run_claude_task(
         )
 
     from app.cli_exec import popen_cli
-    from app.config import get_bash_foreground_timeout_ms, get_mission_timeout
+    from app.config import (
+        get_bash_foreground_timeout_ms,
+        get_cli_provider_name,
+        get_mission_timeout,
+    )
     from app.utils import cleanup_mission_tmp_dir, create_mission_tmp_dir
 
     mission_timeout = get_mission_timeout()
@@ -346,9 +350,12 @@ def run_claude_task(
     # Give the agent enough foreground headroom to BLOCK on a long-but-bounded
     # command rather than backgrounding it (backgrounded children are orphaned
     # when the one-shot session ends — see the cli-execution-model prompt).
+    # BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS are Claude-CLI-specific, so
+    # only inject them for the Claude provider (inert but noise for others).
     mission_env = dict(os.environ)
+    _provider_name = getattr(provider, "name", "") or get_cli_provider_name()
     _bash_ms = get_bash_foreground_timeout_ms()
-    if _bash_ms > 0:
+    if _bash_ms > 0 and _provider_name == "claude":
         mission_env["BASH_DEFAULT_TIMEOUT_MS"] = str(_bash_ms)
         mission_env["BASH_MAX_TIMEOUT_MS"] = str(_bash_ms)
 
