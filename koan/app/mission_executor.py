@@ -1379,7 +1379,12 @@ def _run_iteration(
 
         # --- Worktree isolation ---
         execution_cwd = project_path
-        if not _dc_present:
+        # Skip isolation for the org-wide sentinel: it runs at the workspace
+        # root (not a git repo, see the branch-prep note above), so
+        # `git worktree add` would fail and spam a false-alarm "setup failed"
+        # notification on every org-wide cycle. Running in the project dir is
+        # the correct behavior for org-wide anyway.
+        if not _dc_present and not is_org_wide:
             try:
                 from app.config import get_worktree_isolation
                 if get_worktree_isolation():
@@ -1388,9 +1393,10 @@ def _run_iteration(
                     # step resolved (prep.base_branch — config/auto-detected),
                     # not a hardcoded "main". Otherwise a repo on master/develop
                     # gets a worktree off the wrong commit and the PR diff is
-                    # computed against the wrong base. prep is None only for the
-                    # org-wide sentinel (branch prep skipped); fall back to "main".
-                    _wt_base_branch = prep.base_branch if prep else "main"
+                    # computed against the wrong base. prep is guaranteed
+                    # non-None here (org-wide, the only prep-less path, is
+                    # excluded above).
+                    _wt_base_branch = prep.base_branch
                     _worktree_info = create_worktree(project_path, base_branch=_wt_base_branch)
                     execution_cwd = _worktree_info.path
                     # Match the parallel-session provisioning: symlink heavy
