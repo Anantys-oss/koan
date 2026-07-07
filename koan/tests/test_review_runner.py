@@ -27,6 +27,7 @@ from app.review_runner import (
     _extract_json_text,
     _build_review_footer,
     _post_review_comment,
+    _append_error_section_to_review,
     _post_comment_replies,
     _fetch_pr_commit_shas,
     _fetch_pr_head_oid,
@@ -1570,6 +1571,107 @@ class TestFetchPrHeadOid:
 # ---------------------------------------------------------------------------
 # run_review (integration, mocked externals)
 # ---------------------------------------------------------------------------
+
+class TestAppendErrorSectionToReview:
+    """Fix #2: the silent-failure-hunter section is appended to the already
+    posted review comment (rather than baked into the initial post)."""
+
+    @patch("app.review_runner.run_gh")
+    @patch(
+        "app.review_runner.find_bot_comment",
+        return_value={"id": 555, "body": "## Code Review\n\nold body"},
+    )
+    def test_locates_and_patches_comment(self, _mock_find, mock_gh):
+        ok = _append_error_section_to_review(
+            "owner", "repo", "42",
+            review_body="## Code Review\n\nCore body",
+            error_section="### Silent failures\n\n- swallowed exception",
+            bot_username="bot",
+        )
+        assert ok is True
+        mock_gh.assert_called_once()
+        args = mock_gh.call_args[0]
+        assert "PATCH" in args  # in-place edit of the located comment
+        assert any("555" in str(a) for a in args)  # the located comment id
+        joined = " ".join(str(a) for a in args)
+        assert "Core body" in joined and "swallowed exception" in joined
+
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    def test_returns_false_when_comment_not_located(self, _mock_find, mock_gh):
+        ok = _append_error_section_to_review(
+            "owner", "repo", "42",
+            review_body="body", error_section="section", bot_username="bot",
+        )
+        assert ok is False
+        mock_gh.assert_not_called()  # nothing edited, core review left as-is
+
+
+class TestReviewPostsBeforeEnrichment:
+    """Fix #2: the core review is posted before the optional enrichment passes,
+    so no enrichment failure can cost the review that already landed."""
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch(
+        "app.review_runner._run_error_hunter",
+        side_effect=RuntimeError("provider stalled"),
+    )
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_review_still_posts_when_error_hunter_raises(
+        self, mock_fetch, mock_claude, mock_gh, _mock_repliable,
+        _mock_hunter, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """An enrichment pass raising after the post must not fail the run."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            errors=True,  # force the (raising) silent-failure-hunter pass
+        )
+
+        assert success is True
+        assert "42" in summary
+        mock_gh.assert_called()  # the core review was posted despite the raise
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner._append_error_section_to_review")
+    @patch(
+        "app.review_runner._run_error_hunter",
+        return_value="### Silent failures\n\n- swallowed exception at x",
+    )
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_error_section_appended_not_in_initial_post(
+        self, mock_fetch, mock_claude, mock_gh, _mock_repliable,
+        _mock_hunter, mock_append, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """The hunter's section goes through the append path, not the first post."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, _summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            errors=True,
+        )
+
+        assert success is True
+        # The section is routed to the append helper, carrying the hunter output.
+        mock_append.assert_called_once()
+        assert "swallowed exception at x" in mock_append.call_args.kwargs["error_section"]
+        # And it is NOT baked into the initial posted comment body.
+        posted = " ".join(str(c) for c in mock_gh.call_args_list)
+        assert "swallowed exception at x" not in posted
+
 
 class TestRunReview:
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
