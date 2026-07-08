@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Core Data & Config"
+tags: [core]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Component Spec — Core Data & Config
 
 **Modules:** `missions.py`, `projects_config.py`, `projects_migration.py`, `utils.py`,
@@ -13,6 +21,10 @@ The foundation layer every other component depends on. It owns three things:
 
 If a contract here changes, the blast radius is the whole daemon. Treat this layer
 as load-bearing.
+
+The operational mission-queue lifecycle this layer implements is documented in
+`docs/architecture/mission-lifecycle.md`; the config resolution and file-locking model
+is documented in `docs/architecture/shared-state.md`.
 
 ## Key types & functions
 

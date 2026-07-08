@@ -1,0 +1,11 @@
+{
+  "id": "vague_report",
+  "name": "Vague 'it feels slow' report with no repro",
+  "skill": "fix",
+  "description": "Precision trap: the issue gives no concrete repro, no logs, no metric. A disciplined diagnostic must not over-commit; LOW confidence (cannot localise) is the honest answer, not a fabricated HIGH root cause.",
+  "issue_title": "Dashboard feels slow sometimes",
+  "issue_body": "Not sure how to describe this but the dashboard just feels slow sometimes. Maybe in the afternoon? Could be the database or the network. No specific page or error.",
+  "expect": {
+    "expected_confidence": "LOW"
+  }
+}

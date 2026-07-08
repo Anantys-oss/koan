@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Z.ai (GLM) via the Claude CLI"
+tags: [providers]
+created: 2026-06-28
+updated: 2026-06-28
+---
+
 # Z.ai (GLM) via the Claude CLI
 
 Run Koan's **default Claude provider** against a

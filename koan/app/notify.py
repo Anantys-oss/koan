@@ -24,7 +24,7 @@ from typing import Dict, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-from app.utils import load_dotenv
+from app.utils import get_telegram_chat_id, load_dotenv
 
 # Thread-local reply context for group chat threading.
 # Set by the bridge main loop before dispatching a message handler;
@@ -267,7 +267,7 @@ def _direct_send(text: str, reply_to: int = 0) -> bool:
 
     load_dotenv()
     bot_token = os.environ.get("KOAN_TELEGRAM_TOKEN", "")
-    chat_id = os.environ.get("KOAN_TELEGRAM_CHAT_ID", "")
+    chat_id = get_telegram_chat_id()
 
     if not bot_token or not chat_id:
         print("[notify] KOAN_TELEGRAM_TOKEN or KOAN_TELEGRAM_CHAT_ID not set.",

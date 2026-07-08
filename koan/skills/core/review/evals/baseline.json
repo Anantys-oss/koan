@@ -1,0 +1,6 @@
+{
+  "skill": "review",
+  "metrics": null,
+  "updated": null,
+  "note": "Stub baseline. Metrics are null until the first live eval run writes them via 'python -m app.skill_evals review --live --update-baseline' (requires KOAN_EVAL_LIVE=1). Schema: {skill, metrics:{valid_json_rate, mean_recall, lgtm_accuracy, mean_score, pass_rate}, updated}. compare_to_baseline treats a null/missing metrics block as 'no_baseline'."
+}

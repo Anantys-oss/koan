@@ -238,6 +238,58 @@ class TestBuildReviewPrompt:
 
 
 # ---------------------------------------------------------------------------
+# Verdict contract — suggestion-only findings must not block the PR
+# ---------------------------------------------------------------------------
+
+class TestReviewVerdictContract:
+    """The review prompt must encode the verdict-follows-severity contract.
+
+    ``lgtm`` drives the GitHub APPROVE / request-changes, so the prompt must
+    forbid rejecting a PR when only ``suggestion`` (non-blocking) findings
+    exist. These assertions guard the load-bearing markers in the rendered
+    prompt; if a future prompt edit weakens the contract, they fail.
+    """
+
+    @pytest.fixture
+    def real_review_skill_dir(self):
+        # The shipped review skill, not the synthetic tmp_path fixture.
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    def test_partials_resolve_into_real_prompt(self, pr_context, real_review_skill_dir):
+        """Sanity: the shipped prompt has its {@include} partials resolved."""
+        prompt = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "{@include" not in prompt
+        # "Output ONLY the JSON object" lives in the review-output-rules partial,
+        # so its presence proves the partial was rendered, not left as a token.
+        assert "Output ONLY the JSON object" in prompt
+
+    def test_main_prompt_forbids_blocking_on_suggestions(
+        self, pr_context, real_review_skill_dir
+    ):
+        """review.md carries an explicit Verdict Contract (body-only marker)."""
+        prompt = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        # This sentence exists only in the review.md Verdict Contract section —
+        # not in any partial — so it is a non-vacuous, single-source marker.
+        assert "Never reject a PR" in prompt
+
+    def test_shared_lgtm_rule_marks_suggestions_non_blocking(
+        self, pr_context, real_review_skill_dir
+    ):
+        """The shared review-output-rules partial must call suggestions non-blocking.
+
+        This partial is the load-bearing lgtm definition included by every JSON
+        review prompt (review.md and review-with-plan.md). Asserting on the
+        rendered prompt (not the source file) keeps the test honest about what
+        the model actually sees.
+        """
+        prompt = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "suggestion" in prompt.lower()
+        # "non-blocking" is present only in the sharpened rule; the pre-fix
+        # wording ("no blocking issues") did not contain it.
+        assert "non-blocking" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
 # Dedicated prior-review slot
 # ---------------------------------------------------------------------------
 
@@ -4695,14 +4747,42 @@ class TestReviewBinaryRouting:
 
     def test_review_attribution_uses_review_provider(self):
         """The footer attribution (provider + model) reflects the review_mode
-        provider, not the global one (PR #2251 comment-4848512613)."""
+        provider, not the global one (PR #2251 comment-4848512613).
+
+        With a ``cli.review_mode: flavor:path`` override the attribution is the
+        binary basename (``claude-deep``), so the signature shows the CLI that
+        actually ran, not the provider flavor."""
         from unittest.mock import patch
         import app.provider as provider
         from app.review_runner import _review_attribution
 
         full = {
             "cli_provider": "codex",
-            "cli": {"default": {"review_mode": "claude:/opt/review-claude"}},
+            "cli": {"default": {"review_mode": "claude:/root/.local/bin/claude-deep"}},
+            "models": {
+                "codex": {"review_mode": "codex-WRONG"},
+                "claude": {"review_mode": "opus"},
+            },
+        }
+        with patch("app.config._load_config", return_value=full), \
+             patch("app.config._load_project_overrides", return_value={}), \
+             patch("app.utils.load_config", return_value=full):
+            provider.reset_provider()
+            name, model = _review_attribution()
+        assert name == "claude-deep"
+        assert model == "opus"
+
+    def test_review_attribution_falls_back_to_flavor(self, monkeypatch):
+        """Without a custom path (``cli.review_mode: claude``) the attribution
+        is the provider flavor name, not a binary basename."""
+        from unittest.mock import patch
+        import app.provider as provider
+        from app.review_runner import _review_attribution
+
+        monkeypatch.delenv("KOAN_CLAUDE_CLI_PATH", raising=False)
+        full = {
+            "cli_provider": "codex",
+            "cli": {"default": {"review_mode": "claude"}},
             "models": {
                 "codex": {"review_mode": "codex-WRONG"},
                 "claude": {"review_mode": "opus"},
@@ -5801,6 +5881,147 @@ class TestResolveVerdictConfig:
         with patch("app.projects_config.load_projects_config", side_effect=RuntimeError("bad config")):
             cfg = _resolve_verdict_config("myproject")
         assert cfg["approved"] is False
+
+
+class TestResolveHistoryConfig:
+    """_resolve_history_config merges global review_history with project overrides."""
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": False})
+    def test_returns_global_default(self, _mock_cfg):
+        from app.review_runner import _resolve_history_config
+        cfg = _resolve_history_config()
+        assert cfg["preserve_previous"] is False
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": False})
+    def test_returns_global_when_no_koan_root(self, _mock_cfg, monkeypatch):
+        from app.review_runner import _resolve_history_config
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        cfg = _resolve_history_config("myproject")
+        assert cfg["preserve_previous"] is False
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": False})
+    def test_project_override_merges(self, _mock_cfg, monkeypatch):
+        from app.review_runner import _resolve_history_config
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        with patch("app.projects_config.load_projects_config") as mock_load, \
+             patch("app.projects_config.get_project_review_history") as mock_proj:
+            mock_load.return_value = {"projects": {}}
+            mock_proj.return_value = {"preserve_previous": True}
+            cfg = _resolve_history_config("myproject")
+        assert cfg["preserve_previous"] is True
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": False})
+    def test_config_error_keeps_default(self, _mock_cfg, monkeypatch):
+        """A project-config load failure falls back to the global default
+        rather than surprising the reviewer with preserved stale comments."""
+        from app.review_runner import _resolve_history_config
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        with patch("app.projects_config.load_projects_config",
+                   side_effect=RuntimeError("bad config")):
+            cfg = _resolve_history_config("myproject")
+        assert cfg["preserve_previous"] is False
+
+    @patch("app.review_runner.get_review_history_config",
+           return_value={"preserve_previous": True})
+    def test_config_error_preserves_global_true(self, _mock_cfg, monkeypatch):
+        """A project-config load failure preserves the already-loaded global
+        value rather than force-resetting it. Pins the intentional asymmetry
+        vs _resolve_verdict_config (which force-resets on error): only the
+        per-project override failed to apply, the global loaded fine, so an
+        operator's explicit global preserve_previous=true survives."""
+        from app.review_runner import _resolve_history_config
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        with patch("app.projects_config.load_projects_config",
+                   side_effect=RuntimeError("bad config")):
+            cfg = _resolve_history_config("myproject")
+        assert cfg["preserve_previous"] is True
+
+
+class TestPreservePreviousReview:
+    """review_history.preserve_previous gates whether the prior review comment
+    is collapsed on a re-review (default: collapse it)."""
+
+    @patch("app.review_runner._resolve_history_config",
+           return_value={"preserve_previous": True})
+    @patch("app.review_runner._collapse_old_review")
+    @patch("app.review_runner.get_review_verdict_config",
+           return_value={"approved": True, "body_enabled": True, "include_blockers": True})
+    @patch("app.review_runner._is_review_requested", return_value=True)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_preserve_previous_leaves_old_comment_intact(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        mock_find_bot, _shas, _verdict, _req, _vcfg,
+        mock_collapse, _history, pr_context, review_skill_dir,
+    ):
+        """preserve_previous=True: the prior review comment is NOT collapsed."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {
+            "id": 99,
+            "body": f"{SUMMARY_TAG}\n## Review\n\n{sha_block}",
+            "user": "koan-bot",
+        }
+        mock_find_bot.return_value = prior_comment
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, _, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        mock_collapse.assert_not_called()
+
+    @patch("app.review_runner._resolve_history_config",
+           return_value={"preserve_previous": False})
+    @patch("app.review_runner._collapse_old_review")
+    @patch("app.review_runner.get_review_verdict_config",
+           return_value={"approved": True, "body_enabled": True, "include_blockers": True})
+    @patch("app.review_runner._is_review_requested", return_value=True)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_default_collapses_old_comment(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        mock_find_bot, _shas, _verdict, _req, _vcfg,
+        mock_collapse, _history, pr_context, review_skill_dir,
+    ):
+        """preserve_previous=False (default): the prior comment is collapsed."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {
+            "id": 99,
+            "body": f"{SUMMARY_TAG}\n## Review\n\n{sha_block}",
+            "user": "koan-bot",
+        }
+        mock_find_bot.return_value = prior_comment
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, _, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        mock_collapse.assert_called_once_with("owner", "repo", prior_comment)
 
 
 class TestReRequestBypassesIncrementalSkip:

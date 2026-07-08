@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Kōan \"Always Up\" — Docker + Railway Deployment Spec"
+tags: [design]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 # Kōan "Always Up" — Docker + Railway Deployment Spec
 
 **Author**: Kōan (session 99)

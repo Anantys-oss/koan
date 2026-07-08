@@ -8,7 +8,12 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.deep_research import DeepResearch, _extract_issue_numbers, _normalize_tokens
+from app.deep_research import (
+    DeepResearch,
+    _extract_issue_numbers,
+    _normalize_tokens,
+    _recently_covered,
+)
 
 pytestmark = pytest.mark.slow
 
@@ -1536,6 +1541,43 @@ class TestPrCoverage:
         assert 2131 in coverage["issue_numbers"]
         assert coverage["pr_issues"][400] == {2131}
 
+    def test_build_pr_coverage_body_closing_keyword_colon(self, research_env):
+        """GitHub's colon form ('Closes: #N') counts as coverage.
+
+        GitHub's own parser links the issue for both 'Closes #N' and
+        'Closes: #N'; the dedup must recognise both or it re-picks an
+        already-covered issue as an autonomous topic.
+        """
+        research = self._make_research(research_env, [
+            {
+                "number": 410,
+                "title": "feat: thing",
+                "headRefName": "koan0/thing",
+                "body": "Adds a thing.\n\nFixes: #777",
+            },
+        ])
+
+        coverage = research._build_pr_coverage()
+
+        assert 777 in coverage["issue_numbers"]
+        assert coverage["pr_issues"][410] == {777}
+
+    def test_build_pr_coverage_body_ignores_keyword_in_larger_word(self, research_env):
+        """A closing keyword embedded in a longer word is not coverage."""
+        research = self._make_research(research_env, [
+            {
+                "number": 411,
+                "title": "feat: thing",
+                "headRefName": "koan0/thing",
+                "body": "This prefixes #123 onto each line; suffixes #124 too.",
+            },
+        ])
+
+        coverage = research._build_pr_coverage()
+
+        assert 123 not in coverage["issue_numbers"]
+        assert 124 not in coverage["issue_numbers"]
+
     def test_build_pr_coverage_body_ignores_incidental_refs(self, research_env):
         """Non-closing '#N' mentions in the body are not treated as coverage."""
         research = self._make_research(research_env, [
@@ -1853,3 +1895,57 @@ class TestFeedbackBoostTagging:
         goal = next(t for t in topics if "Long-term goal" in t["topic"])
         assert goal["priority"] == 3
         assert "deprioritized" not in goal["reasoning"]
+
+
+class TestRecentlyCovered:
+    """Word-boundary dedup for the 'skip if recently worked on' filter."""
+
+    def test_blank_candidate_never_matches(self):
+        """An empty/whitespace candidate must not dedup against every topic."""
+        assert _recently_covered("", ["some recent topic"]) is False
+        assert _recently_covered("   ", ["some recent topic"]) is False
+
+    def test_partial_word_does_not_match(self):
+        """A short candidate must not match inside a longer word."""
+        assert _recently_covered("auth", ["Investigate authentication flow"]) is False
+
+    def test_whole_phrase_matches(self):
+        """A genuine whole-phrase overlap dedups (case-insensitive)."""
+        assert _recently_covered("Auth module", ["## Fixed the auth module bug"]) is True
+
+    def test_no_topics_never_matches(self):
+        assert _recently_covered("anything", []) is False
+
+    def test_file_path_candidate_matches_whole(self):
+        """Path-like candidates (non-word chars) still match as a whole unit."""
+        assert _recently_covered(
+            "koan/app/run.py", ["Investigate high-churn file: koan/app/run.py"]
+        ) is True
+        # but not glued inside a longer token
+        assert _recently_covered("run.py", ["run.pytest harness"]) is False
+
+
+class TestSuggestTopicsDedupBoundary:
+    """suggest_topics must not drop a valid issue on a partial-word collision."""
+
+    def _research(self, env):
+        research = DeepResearch(env["instance"], env["project_name"], env["project_path"])
+        research._pending_prs = []
+        return research
+
+    def test_issue_survives_partial_word_collision(self, research_env):
+        """An 'auth' issue is not deduped by an unrelated 'authentication' topic."""
+        research = self._research(research_env)
+        with patch.object(research, "get_open_issues", return_value=[
+                 {"number": 7, "title": "auth", "labels": []},
+             ]), \
+             patch.object(research, "get_recent_journal_topics",
+                          return_value=["## Investigate authentication flow"]), \
+             patch.object(research, "get_priorities", return_value={
+                 "current_focus": [], "strategic_goals": [],
+                 "technical_debt": [], "do_not_touch": [], "notes": "",
+             }), \
+             patch.object(research, "_gather_file_hotspots", return_value=[]):
+            topics = research.suggest_topics()
+
+        assert any("#7" in t["topic"] for t in topics)

@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Issue Tracking"
+tags: [issue-tracking]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Component Spec — Issue Tracking
 
 **Package:** `koan/app/issue_tracker/` (`base.py`, `config.py`, `github.py`, `jira.py`,

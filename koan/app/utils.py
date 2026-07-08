@@ -156,6 +156,19 @@ def get_cli_provider_env() -> str:
     return ""
 
 
+def get_telegram_chat_id() -> str:
+    """Return KOAN_TELEGRAM_CHAT_ID, stripped of stray whitespace/newlines.
+
+    Railway (and copy-paste) can inject a trailing newline that makes Telegram
+    return "Bad Request: chat not found". Numeric IDs (incl. negative group IDs)
+    are returned as-is once stripped; Telegram accepts numeric strings.
+
+    Returns:
+        The stripped environment value, or empty string if unset.
+    """
+    return os.environ.get("KOAN_TELEGRAM_CHAT_ID", "").strip()
+
+
 def parse_project(text: str) -> Tuple[Optional[str], str]:
     """Extract [project:name] or [projet:name] from text.
 
@@ -403,6 +416,79 @@ def _ensure_secure_dir(base: Path) -> None:
     if stat.S_IMODE(st.st_mode) & 0o077:
         # We own it, so tightening group/other access succeeds.
         os.chmod(base, 0o700)
+
+
+# Per-mission TMPDIR dirs live directly under koan_tmp_dir() and embed the
+# owning process's pid so reap_stale_mission_tmp_dirs() can tell dirs owned
+# by a live Kōan instance apart from leftovers of a dead one (the base dir
+# is per-uid and may be shared by several instances).
+_MISSION_TMP_RE = re.compile(r"^mission-(\d+)-[A-Za-z0-9._-]+$")
+
+
+def create_mission_tmp_dir(tag: str = "") -> str:
+    """Create a private per-mission TMPDIR under :func:`koan_tmp_dir`.
+
+    The mission subprocess is spawned with ``TMPDIR`` pointing here, so
+    everything the agent creates via ``mktemp`` / ``$TMPDIR`` lands in one
+    directory that :func:`cleanup_mission_tmp_dir` reaps when the mission
+    ends. Crash leftovers are swept at startup by
+    :func:`reap_stale_mission_tmp_dirs`.
+    """
+    import uuid
+    suffix = tag or uuid.uuid4().hex[:8]
+    path = Path(koan_tmp_dir()) / f"mission-{os.getpid()}-{suffix}"
+    path.mkdir(mode=0o700)
+    return str(path)
+
+
+def cleanup_mission_tmp_dir(path: str) -> None:
+    """Best-effort removal of a per-mission TMPDIR.
+
+    Refuses anything that is not a ``mission-*`` dir directly under
+    :func:`koan_tmp_dir`, so a corrupted/forged path can never rmtree
+    outside Kōan's own scratch space.
+    """
+    import shutil
+    p = Path(path)
+    if p.parent != Path(koan_tmp_dir()) or not _MISSION_TMP_RE.match(p.name):
+        return
+    shutil.rmtree(p, ignore_errors=True)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def reap_stale_mission_tmp_dirs() -> int:
+    """Remove ``mission-<pid>-*`` dirs whose owning process is dead.
+
+    Covers crashes/kill -9 where the mission's ``finally`` never ran. Dirs
+    named with a live pid belong to another running Kōan instance sharing
+    this uid and are left alone. Returns the number of dirs removed.
+    """
+    import shutil
+    reaped = 0
+    try:
+        entries = list(Path(koan_tmp_dir()).iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        m = _MISSION_TMP_RE.match(entry.name)
+        if not m or entry.is_symlink() or not entry.is_dir():
+            continue
+        if _pid_alive(int(m.group(1))):
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        reaped += 1
+    if reaped:
+        print(f"[utils] reaped {reaped} stale mission tmp dir(s)", file=sys.stderr)
+    return reaped
 
 
 def atomic_write(path: Path, content: str):
@@ -843,7 +929,7 @@ def _persist_and_cache_remotes(
     try:
         from app.projects_config import load_projects_config, save_projects_config
         config = load_projects_config(str(KOAN_ROOT))
-        if config and name in config.get("projects", {}):
+        if config and name in (config.get("projects") or {}):
             proj = config["projects"][name]
             if isinstance(proj, dict) and proj.get("path"):
                 if primary and not proj.get("github_url"):
@@ -894,7 +980,7 @@ def _resolve_via_fork_parent(
     if not config:
         return None
 
-    for project in config.get("projects", {}).values():
+    for project in (config.get("projects") or {}).values():
         if not isinstance(project, dict):
             continue
         gh_url = (project.get("github_url") or "").lower()
@@ -959,7 +1045,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
             from app.projects_config import load_projects_config
             _projects_config = load_projects_config(str(KOAN_ROOT))
             if _projects_config:
-                for project in _projects_config.get("projects", {}).values():
+                for project in (_projects_config.get("projects") or {}).values():
                     if isinstance(project, dict):
                         # Check primary github_url
                         gh_url = project.get("github_url", "")
@@ -1045,7 +1131,7 @@ def resolve_project_path(repo_name: str, owner: Optional[str] = None) -> Optiona
             config = _projects_config
             if config:
                 candidates = []
-                for project in config.get("projects", {}).values():
+                for project in (config.get("projects") or {}).values():
                     if not isinstance(project, dict):
                         continue
                     all_urls = []

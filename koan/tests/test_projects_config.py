@@ -16,6 +16,7 @@ from app.projects_config import (
     get_project_max_open_prs,
     get_project_max_pending_branches,
     get_project_models,
+    get_project_review_history,
     get_project_review_verdict,
     get_project_submit_to_repository,
     get_project_tools,
@@ -104,12 +105,31 @@ projects:
             load_projects_config(koan_root)
 
     def test_missing_projects_section_is_valid(self, koan_root):
-        """projects: section is optional — defaults-only yaml is valid."""
+        """projects: section is optional — defaults-only yaml is valid.
+
+        The loader normalizes a missing/null projects section to an empty
+        dict so downstream consumers never see None (issue #2273)."""
         _write_yaml(koan_root, "defaults:\n  enabled: true\n")
         config = load_projects_config(koan_root)
         assert config is not None
         assert "defaults" in config
-        assert config.get("projects") is None
+        assert config["projects"] == {}
+
+    def test_null_projects_section_normalized_to_empty_dict(self, koan_root):
+        """A 'projects:' key present but empty (all entries commented out)
+        parses to None; the loader must normalize it to {} so the run loop
+        never crashes on `.get("projects", {}).values()` (issue #2273)."""
+        _write_yaml(koan_root, "projects:\n")
+        config = load_projects_config(koan_root)
+        assert config is not None
+        assert config["projects"] == {}
+
+    def test_null_projects_section_warns_operator(self, koan_root, capsys):
+        """A present-but-null 'projects:' section is usually an oversight, so
+        the loader emits a warning to stderr (per reviewer request)."""
+        _write_yaml(koan_root, "projects:\n")
+        load_projects_config(koan_root)
+        assert "empty (null)" in capsys.readouterr().err
 
     def test_empty_projects_is_valid(self, koan_root):
         """Empty projects: dict is valid — workspace will provide projects."""
@@ -305,6 +325,14 @@ class TestGetProjectConfig:
         result = get_project_config(config, "app")
         assert result["git_auto_merge"]["enabled"] is True
         assert result["git_auto_merge"]["base_branch"] == "main"
+
+    def test_null_projects_value(self):
+        """A 'projects:' key present but empty parses to None. get_project_config
+        must not raise AttributeError (regression for the GitHub-notification
+        authorized-users path)."""
+        config = {"projects": None}
+        result = get_project_config(config, "anything")
+        assert isinstance(result, dict)
 
     def test_project_overrides_defaults(self):
         config = {
@@ -1559,6 +1587,60 @@ class TestGetProjectReviewVerdict:
 
 
 # ---------------------------------------------------------------------------
+# get_project_review_history
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectReviewHistory:
+    """Tests for get_project_review_history() — per-project review_history overrides."""
+
+    def test_returns_empty_when_not_configured(self):
+        config = {"projects": {"app": {"path": "/app"}}}
+        assert get_project_review_history(config, "app") == {}
+
+    def test_returns_preserve_true(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "review_history": {"preserve_previous": True},
+                }
+            }
+        }
+        assert get_project_review_history(config, "app") == {"preserve_previous": True}
+
+    def test_returns_preserve_false(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "review_history": {"preserve_previous": False},
+                }
+            }
+        }
+        assert get_project_review_history(config, "app") == {"preserve_previous": False}
+
+    def test_fails_closed_on_non_bool_value(self):
+        config = {
+            "projects": {
+                "app": {
+                    "path": "/app",
+                    "review_history": {"preserve_previous": "yes"},
+                }
+            }
+        }
+        assert get_project_review_history(config, "app") == {"preserve_previous": False}
+
+    def test_fails_closed_on_non_dict(self):
+        config = {
+            "projects": {
+                "app": {"path": "/app", "review_history": "garbage"},
+            }
+        }
+        assert get_project_review_history(config, "app") == {"preserve_previous": False}
+
+
+# ---------------------------------------------------------------------------
 # get_project_submit_to_repository (additional tests in test_projects_config)
 # ---------------------------------------------------------------------------
 
@@ -1921,3 +2003,81 @@ class TestResolveProjectsConfigPath:
         config = load_projects_config(str(tmp_path))
         assert config is not None
         assert "rootapp" in config["projects"]
+
+
+# ---------------------------------------------------------------------------
+# apply_project_patch — allow-listed per-project override writes
+# ---------------------------------------------------------------------------
+from app import projects_config as _pc
+
+
+def _write_projects_yaml(koan_root, body):
+    inst = koan_root / "instance"
+    inst.mkdir(parents=True, exist_ok=True)
+    (inst / "projects.yaml").write_text(body)
+
+
+@pytest.fixture
+def patch_koan_root(tmp_path):
+    _write_projects_yaml(tmp_path, (
+        "projects:\n"
+        "  koan:\n"
+        "    path: /tmp/koan\n"
+        "    autoreview: false\n"
+        "    max_open_prs: 3\n"
+        "  other:\n"
+        "    path: /tmp/other\n"
+    ))
+    _pc.invalidate_projects_config_cache()
+    return tmp_path
+
+
+class TestApplyProjectPatch:
+    def test_updates_scalar_fields(self, patch_koan_root):
+        merged = _pc.apply_project_patch(str(patch_koan_root), "koan",
+                                         {"autoreview": True, "max_open_prs": "7"})
+        assert merged["autoreview"] is True
+        assert merged["max_open_prs"] == 7  # coerced to int
+        # Persisted, not just in-memory:
+        _pc.invalidate_projects_config_cache()
+        fresh = _pc.load_projects_config(str(patch_koan_root))
+        assert _pc.get_project_config(fresh, "koan")["max_open_prs"] == 7
+
+    def test_other_projects_preserved(self, patch_koan_root):
+        _pc.apply_project_patch(str(patch_koan_root), "koan", {"autoreview": True})
+        _pc.invalidate_projects_config_cache()
+        fresh = _pc.load_projects_config(str(patch_koan_root))
+        # The partial patch must not wipe sibling projects or `path`.
+        assert "other" in fresh["projects"]
+        assert fresh["projects"]["koan"]["path"] == "/tmp/koan"
+
+    def test_unknown_project_rejected(self, patch_koan_root):
+        with pytest.raises(ValueError, match="Unknown project"):
+            _pc.apply_project_patch(str(patch_koan_root), "ghost", {"autoreview": True})
+
+    def test_non_editable_field_rejected(self, patch_koan_root):
+        with pytest.raises(ValueError, match="not editable"):
+            _pc.apply_project_patch(str(patch_koan_root), "koan", {"path": "/etc"})
+
+    def test_case_insensitive_no_duplicate_entry(self, patch_koan_root):
+        _pc.apply_project_patch(str(patch_koan_root), "Koan", {"autoreview": True})
+        _pc.invalidate_projects_config_cache()
+        fresh = _pc.load_projects_config(str(patch_koan_root))
+        assert "Koan" not in fresh["projects"]  # no case-variant duplicate
+        assert _pc.get_project_config(fresh, "koan")["autoreview"] is True
+
+    def test_empty_entry_project_accepted(self, tmp_path):
+        # A tag-only / empty-body entry is a valid project with no overrides yet;
+        # the patch must land, not be rejected as "Unknown project".
+        _write_projects_yaml(tmp_path, (
+            "projects:\n"
+            "  koan:\n"
+            "    path: /tmp/koan\n"
+            "  bare:\n"        # empty body -> parses to None
+        ))
+        _pc.invalidate_projects_config_cache()
+        merged = _pc.apply_project_patch(str(tmp_path), "bare", {"autoreview": True})
+        assert merged["autoreview"] is True
+        _pc.invalidate_projects_config_cache()
+        fresh = _pc.load_projects_config(str(tmp_path))
+        assert fresh["projects"]["bare"]["autoreview"] is True

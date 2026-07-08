@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Discord Messaging Provider"
+tags: [messaging]
+created: 2026-06-01
+updated: 2026-06-01
+---
+
 # Discord Messaging Provider
 
 Kōan can use Discord as its messaging bridge via the Discord REST API. No WebSocket/Gateway connection is required — the provider uses REST polling, matching the latency profile of the existing Telegram bridge (~3 second polling interval).

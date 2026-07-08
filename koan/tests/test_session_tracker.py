@@ -846,6 +846,30 @@ class TestGetDriftSummary:
         record_outcome(tracker_env, "koan", "deep", 10, "branch pushed")
         assert get_drift_summary(tracker_env, "koan", "") == ""
 
+    @patch("app.session_tracker.subprocess.run")
+    @patch("app.session_tracker._count_commits_since", return_value=5)
+    @patch("app.session_tracker.get_last_session_timestamp")
+    @patch("app.session_tracker.datetime")
+    def test_label_uses_calendar_day_not_elapsed_hours(
+        self, mock_dt, mock_ts, mock_count, mock_run, tracker_env
+    ):
+        """A session late on day N, viewed early on day N+1, is 'yesterday'.
+
+        The prior code used ``(now - dt).days`` which counts elapsed 24h
+        periods: a 31-minute gap across midnight yields 0 → mislabelled
+        'today'. The label tracks calendar dates, so it must read 'yesterday'.
+        """
+        from datetime import datetime as real_dt
+
+        mock_ts.return_value = "2026-06-28T23:59:30"
+        mock_dt.now.return_value = real_dt(2026, 6, 29, 0, 30, 0)
+        mock_dt.fromisoformat.side_effect = real_dt.fromisoformat
+        mock_run.return_value = type("R", (), {"returncode": 0, "stdout": ""})()
+
+        summary = get_drift_summary(tracker_env, "koan", "/path")
+        assert "yesterday" in summary
+        assert "today" not in summary
+
 
 # --- classify_mission_type ---
 

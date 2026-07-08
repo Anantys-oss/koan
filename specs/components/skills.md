@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Skills System"
+tags: [skills]
+created: 2026-06-27
+updated: 2026-07-02
+---
+
 # Component Spec — Skills System
 
 **Modules:** `koan/app/skills.py`, `koan/app/skill_dispatch.py`,
@@ -69,6 +77,59 @@ koan/skills/core/<name>/
 4. Update `docs/users/user-manual.md` and `docs/users/skills.md`.
 5. Add the per-skill spec in `specs/skills/<name>.md`.
 6. `TestCoreSkillGroupEnforcement` must pass (fails if `group:` is missing).
+7. If the skill is LLM-driven and has a checkable output contract, add eval cases
+   (see "Skill evaluation harness" below). Orchestration/queue skills with no
+   structured LLM output are exempt — see `EVAL_EXEMPT_SKILLS`.
+
+## Skill evaluation harness
+
+**Module:** `koan/app/skill_evals.py` — a deterministic framework for evaluating
+LLM-driven skills against a checked-in golden dataset, so quality regressions
+are caught in CI and improvements are measurable across prompt iterations.
+
+**Rule (constitution VII — honest reporting):** a skill gets golden-dataset
+evals **iff** it is LLM-driven **and** emits a checkable structured output
+(valid JSON / a parseable contract). Skills that lack such a contract are
+documented as exempt — fabricating a dataset for them would measure nothing
+real. This is enforced at contribute time by the new-skill checklist (step 7)
+and pinned by the `TestEvalExemption` guard.
+
+**Covered skills** (scorer + `evals/cases/` + live adapter, all keyed by name in
+the `SCORERS` / `LIVE_FNS` registries — adding a skill never edits `run_eval`):
+
+| Skill | Output contract | Scorer reuses |
+|---|---|---|
+| `review` | JSON findings (`review_schema`) | `validate_review` |
+| `fix` | diagnostic `{confidence, hypothesis, code_paths}` | `_parse_diagnostic` shape |
+| `plan` | markdown (sections + `#### Phase N:`) | `parse_plan_progress` |
+| `brainstorm` | JSON `{issues[]}` w/ 7 `REQUIRED_ISSUE_SECTIONS` | `_parse_decomposition` + `_validate_issue_bodies` |
+| `rebase` | JSON `{already_solved, confidence}` decision | `_check_if_already_solved` rule |
+
+**Exempt skills** (`EVAL_EXEMPT_SKILLS`, pinned by a guard test — quality bar is
+behavioural unit tests instead):
+
+| Skill | Why exempt |
+|---|---|
+| `implement` | orchestration: `run_implement()` returns `(success, summary)`, mutates files + opens a PR — no structured artifact to score |
+| `mission` | pure-Python queue utility — no LLM at all |
+
+- **Per-skill data** lives with the skill: `koan/skills/core/<name>/evals/cases/*.json`
+  (golden inputs + expectations) + `evals/baseline.json` (last-known-good live
+  scores). `EvalCase.diff` is the `review` input; other skills carry inputs in
+  `EvalCase.input` (e.g. `issue_*`, `idea`, `topic`, `pr_*`).
+- **Scorer dispatch** is keyed by skill name via the `SCORERS` registry
+  (`register_scorer`/`get_scorer`); the CLI resolves the live adapter per skill
+  via `LIVE_FNS` (`get_live_fn`), reporting "no live adapter" honestly when absent.
+- **Two modes:** offline (default, CI-safe — scores canned outputs, never calls
+  the Claude subprocess) and live (opt-in via `KOAN_EVAL_LIVE`, composes the
+  skill's real pipeline seams, compares to `baseline.json`, exits non-zero on
+  regression).
+- **Single source of truth:** each scorer reuses that skill's own existing
+  validator/parser rather than re-implementing the contract.
+
+**Design contract:** `specs/002-review-skill-evals/` (review),
+`specs/003-core-skill-evals/` (multi-skill). **Operator runbook:**
+`docs/operations/skill-evals.md`.
 
 ## Integration points
 

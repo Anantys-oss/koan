@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Memory Injection into Skill Prompts"
+tags: [design]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 # Memory Injection into Skill Prompts
 
 Status: shipped on commit `d9dfab2` — `feat(memory): wire memory into skill prompts`.

@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from app.git_utils import (
+    get_commit_messages,
     get_commit_subjects,
     get_current_branch,
     ordered_remotes,
@@ -233,6 +234,51 @@ class TestGetCommitSubjects:
     @patch("app.git_utils.run_git", return_value=(1, "", "fatal: not a repo"))
     def test_error_returns_empty(self, mock):
         assert get_commit_subjects(cwd="/repo") == []
+
+
+class TestGetCommitMessages:
+    """Tests for get_commit_messages() — full commit-message extraction."""
+
+    @patch(
+        "app.git_utils.run_git",
+        return_value=(0, "feat: A\n\nBody of A.\x00fix: B\x00", ""),
+    )
+    def test_returns_full_messages_oldest_first(self, mock):
+        result = get_commit_messages(cwd="/repo")
+        assert result == ["feat: A\n\nBody of A.", "fix: B"]
+        mock.assert_called_once_with(
+            "log", "main..HEAD", "--reverse", "--format=%B%x00", cwd="/repo",
+        )
+
+    @patch("app.git_utils.run_git", return_value=(0, "feat: A\n\nBody of A.\x00", ""))
+    def test_preserves_multi_line_body(self, mock):
+        assert get_commit_messages(cwd="/repo") == ["feat: A\n\nBody of A."]
+
+    @patch("app.git_utils.run_git", return_value=(0, "feat: A\x00", ""))
+    def test_custom_base_branch(self, mock):
+        get_commit_messages(cwd="/repo", base_branch="develop")
+        mock.assert_called_once_with(
+            "log", "develop..HEAD", "--reverse", "--format=%B%x00", cwd="/repo",
+        )
+
+    @patch("app.git_utils.run_git", return_value=(0, "feat: A\x00", ""))
+    def test_custom_branch(self, mock):
+        get_commit_messages(cwd="/repo", branch="koan/fix")
+        mock.assert_called_once_with(
+            "log", "main..koan/fix", "--reverse", "--format=%B%x00", cwd="/repo",
+        )
+
+    @patch("app.git_utils.run_git", return_value=(0, "", ""))
+    def test_empty_output(self, mock):
+        assert get_commit_messages(cwd="/repo") == []
+
+    @patch("app.git_utils.run_git", return_value=(0, "\x00\n \x00\x00", ""))
+    def test_blank_messages_filtered(self, mock):
+        assert get_commit_messages(cwd="/repo") == []
+
+    @patch("app.git_utils.run_git", return_value=(1, "", "fatal: not a repo"))
+    def test_error_returns_empty(self, mock):
+        assert get_commit_messages(cwd="/repo") == []
 
 
 class TestOrderedRemotes:

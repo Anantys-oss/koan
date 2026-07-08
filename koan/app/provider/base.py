@@ -84,6 +84,36 @@ class CLIProvider:
         """Return the CLI binary name or path."""
         raise NotImplementedError
 
+    def custom_binary_name(self) -> str:
+        """Binary basename when this instance pins a custom CLI path, else ''.
+
+        A non-empty result means a per-instance override (``cli.<role>:
+        flavor:path``) is in effect — callers surface it in footers and
+        attribution so the signature matches the binary that actually ran.
+        Returns '' when no override is configured, so callers fall back to
+        the provider flavor name. Subclasses whose :meth:`binary` honors a
+        global env override (e.g. Claude's ``KOAN_CLAUDE_CLI_PATH``) surface
+        that channel too. Only differs from a vanilla default: a bare
+        ``flavor`` with no path yields '', never the flavor name.
+
+        Basename extraction and the "basename equals flavor → collapse" guard
+        are delegated to :meth:`_override_basename` so subclasses share one
+        copy of the rule.
+        """
+        raw = (self._binary_override or "").strip()
+        return self._override_basename(raw) if raw else ""
+
+    def _override_basename(self, raw: str) -> str:
+        """Basename of a pinned binary path, '' when it equals the flavor.
+
+        Shared by :meth:`custom_binary_name` and subclasses (e.g. Claude's
+        ``KOAN_CLAUDE_CLI_PATH`` channel) so the path slice and the
+        "basename equals flavor → not a meaningfully different binary"
+        collapse live in exactly one place.
+        """
+        base = raw.rstrip("/").rsplit("/", 1)[-1]
+        return base if base and base != self.name else ""
+
     def shell_command(self) -> str:
         """Return the full command prefix for shell scripts.
 

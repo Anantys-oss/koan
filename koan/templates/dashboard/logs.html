@@ -49,7 +49,7 @@
     const meta = document.getElementById('log-meta');
 
     function classifyLine(line) {
-        const lower = line.toLowerCase();
+        const lower = (line.text || '').toLowerCase();
         if (lower.includes('error') || lower.includes('traceback') || lower.includes('exception')) return 'error';
         if (lower.includes('warn')) return 'warn';
         return 'info';
@@ -61,10 +61,10 @@
 
     function render() {
         const filtered = filterText
-            ? allLines.filter(l => l.toLowerCase().includes(filterText.toLowerCase()))
+            ? allLines.filter(l => (l.text || '').toLowerCase().includes(filterText.toLowerCase()))
             : allLines;
         output.innerHTML = filtered.map(l =>
-            `<span class="log-line ${classifyLine(l)}">${escHtml(l)}</span>`
+            `<span class="log-line ${classifyLine(l)}">${escHtml(l.text || '')}</span>`
         ).join('');
         meta.textContent = `${filtered.length} lines` + (filterText ? ` (filtered from ${allLines.length})` : '');
         output.scrollTop = output.scrollHeight;
@@ -72,10 +72,20 @@
 
     function loadLogs() {
         const source = sourceSelect.value;
-        fetch(`/api/logs?source=${source}&lines=500`)
+        fetch(`/api/logs?source=${source}&limit=500`)
             .then(r => r.json())
-            .then(data => { allLines = data.lines || []; render(); })
-            .catch(() => { meta.textContent = 'Failed to load logs'; });
+            .then(data => {
+                allLines = data.lines || [];
+                // Detect a regressed/malformed payload once, rather than
+                // silently coercing every missing `.text` to '' per line.
+                const malformed = allLines.filter(l => l == null || typeof l.text !== 'string').length;
+                if (malformed) {
+                    meta.textContent = `⚠ ${malformed}/${allLines.length} log lines have an unexpected shape (missing .text)`;
+                    return;
+                }
+                render();
+            })
+            .catch(e => { console.warn('logs load failed:', e); meta.textContent = 'Failed to load logs'; });
     }
 
     function debouncedFilter() {

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Claude Code CLI Provider"
+tags: [providers]
+created: 2026-05-28
+updated: 2026-07-01
+---
+
 # Claude Code CLI Provider
 
 The Claude Code CLI is Koan's default and most capable provider. It gives
@@ -171,6 +179,12 @@ same as `models:`: `mission`, `chat`, `lightweight`, `review_mode`, `reflect`.
 - **`review_mode`** drives `/review`, `/ultrareview`, and every internal review
   call (main pass, reflection, silent-failure hunter, bot-comment triage),
   replacing the old `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`.
+- **Review footer attribution:** the signature Kōan appends to each review
+  (`Automated review by Kōan (… · model …)`) names the CLI that actually ran.
+  With `review_mode: claude:/root/.local/bin/claude-deep` it reads
+  `claude-deep`, not `Claude`; with no custom path it falls back to the
+  provider flavor. The same applies when `KOAN_CLAUDE_CLI_PATH` points the
+  `claude` flavor at a wrapper.
 - **Model coupling:** a role's *model* is read from that role's provider block —
   e.g. with `review_mode: claude`, the review model comes from
   `models.claude.review_mode` (falling back to `models.default.review_mode`). So
@@ -245,7 +259,11 @@ Claude CLI cannot prompt for tool approval. MCP tools will be
 
 > **Note:** `skip_permissions: true` does **not** work when Koan runs
 > as root — Claude CLI rejects `--dangerously-skip-permissions` with
-> root/sudo privileges. You must use the allowlist approach below.
+> root/sudo privileges. Koan detects this and drops the flag from
+> Claude CLI invocations, logging a warning (once per process) so you
+> know the config value is not being honored. Other CLI providers are
+> unaffected and honor the setting as usual. You must use the allowlist
+> approach below.
 
 To pre-approve MCP tools, create a `.claude/settings.local.json` file
 **in the target project's root directory** (the `path` from

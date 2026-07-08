@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Telegram Setup Guide"
+tags: [messaging]
+created: 2026-05-28
+updated: 2026-07-03
+---
+
 # Telegram Setup Guide
 
 This guide covers setting up Kōan with Telegram as the messaging provider.
@@ -65,6 +73,15 @@ You should see in the logs:
 2. **Verify chat ID**: Make sure `KOAN_TELEGRAM_CHAT_ID` matches the ID from `getUpdates`
 3. **Check logs**: `make logs` — look for `[error]` entries
 4. **Restart**: `make stop && make start`
+
+### "Bad Request: chat not found"
+
+Usually the chat ID is wrong, but a stray trailing newline or surrounding
+whitespace in `KOAN_TELEGRAM_CHAT_ID` triggers the same error — common on
+Railway (env vars are injected as strings, and editors can preserve a trailing
+newline). Kōan now `.strip()`s the value at read time, so a clean restart clears
+it. If it persists, re-check the ID from `getUpdates` (group IDs are negative,
+e.g. `-1001234567890`).
 
 ### "KOAN_TELEGRAM_TOKEN not set" error
 

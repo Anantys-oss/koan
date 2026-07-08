@@ -73,6 +73,27 @@ def chat_page():
     return render_template("chat.html")
 
 
+@chat_bp.route("/chat/history")
+def chat_history():
+    """Return recent persisted chat turns so the UI survives a reload.
+
+    Normalizes the stored ``text`` field to ``content`` so the chat template
+    binds to a stable {role, content} shape.
+    """
+    messages = load_recent_history(state.CONVERSATION_HISTORY_FILE, max_messages=20)
+    normalized = []
+    skipped = 0
+    for m in messages:
+        text = m.get("text")
+        if not text:
+            # Malformed/truncated JSONL line — skip rather than render a
+            # confusing blank chat bubble. Count so the response signals it.
+            skipped += 1
+            continue
+        normalized.append({"role": m.get("role", "assistant"), "content": text})
+    return jsonify({"ok": True, "messages": normalized, "skipped": skipped})
+
+
 @chat_bp.route("/chat/send", methods=["POST"])
 def chat_send():
     """Send a message — either as mission or direct outbox message."""

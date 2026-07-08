@@ -157,6 +157,20 @@ def get_provider() -> CLIProvider:
     return _cached_provider
 
 
+def is_known_provider(name: str) -> bool:
+    """True when ``name`` resolves to a registered CLI provider."""
+    return str(name or "").strip().lower() in _PROVIDERS
+
+
+def known_providers() -> list:
+    """Return the sorted names of all registered CLI providers.
+
+    Single source of truth so dashboard forms stay in sync with the registry
+    instead of hardcoding a provider list that drifts as providers are added.
+    """
+    return sorted(_PROVIDERS)
+
+
 def get_provider_by_name(name: str) -> CLIProvider:
     """Return a fresh provider instance by name.
 
@@ -278,6 +292,21 @@ def get_cli_binary_name() -> str:
     """
     path = os.environ.get("KOAN_CLAUDE_CLI_PATH", "").strip()
     return path.rstrip("/").rsplit("/", 1)[-1] if path else ""
+
+
+def provider_cli_display(provider: CLIProvider) -> str:
+    """Footer/attribution label for a resolved provider instance.
+
+    Returns the basename of the CLI binary actually in use when the provider
+    pins a custom path (per-role ``cli.<role>: flavor:path`` or, for Claude,
+    the global ``KOAN_CLAUDE_CLI_PATH``) — e.g. ``claude-deep`` from
+    ``cli.review_mode: claude:/root/.local/bin/claude-deep``. Falls back to
+    the provider flavor name (``claude``) when no custom binary is configured,
+    so the default setup is unchanged. Unlike a naive ``binary()`` basename,
+    this never surfaces a provider's natural fallback (e.g. Copilot's ``gh``)
+    as a "custom" binary — only explicit overrides count.
+    """
+    return provider.custom_binary_name() or provider.name
 
 
 def get_provider_display(name: str = "") -> str:

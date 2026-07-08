@@ -24,6 +24,7 @@ from app.github_command_handler import (
     _is_subject_closed,
     _load_reply_timestamps,
     _notify_closed_subject_skipped,
+    _notify_draft_pr_skipped,
     _notify_github_question,
     _notify_github_reply,
     _post_help_reply,
@@ -84,23 +85,35 @@ def subject_head_sha():
     return "deadbeefcafe0001"
 
 
+@pytest.fixture
+def subject_draft():
+    """Per-test override hook for the stubbed subject's draft flag.
+
+    Defaults to ``False`` (subject treated as a non-draft PR / issue). Tests
+    exercising the draft-PR review gate override this fixture to return
+    ``True``. Mirrors ``subject_closed_state`` so the seam stays explicit.
+    """
+    return False
+
+
 @pytest.fixture(autouse=True)
-def _stub_subject_info(subject_closed_state, subject_head_sha):
+def _stub_subject_info(subject_closed_state, subject_head_sha, subject_draft):
     """Stub the network-hitting subject fetch shared by both notification paths.
 
     ``_fetch_subject_info`` is the single seam that calls the GitHub API for a
-    subject's state/merged/head SHA. The @mention path reaches it through
+    subject's state/merged/head SHA/draft. The @mention path reaches it through
     ``_is_subject_closed`` and the assignment path calls it directly, so
     stubbing it here keeps the whole module offline and parallel-safe. The
     returned dict is consistent with ``subject_closed_state`` and carries
-    ``subject_head_sha`` so review-request dedup keys are deterministic.
+    ``subject_head_sha`` so review-request dedup keys are deterministic, plus
+    ``draft`` for the opt-in draft-PR review gate.
     """
     if subject_closed_state == "merged":
-        info = {"state": "closed", "merged": True, "head_sha": subject_head_sha}
+        info = {"state": "closed", "merged": True, "head_sha": subject_head_sha, "draft": subject_draft}
     elif subject_closed_state == "closed":
-        info = {"state": "closed", "merged": False, "head_sha": subject_head_sha}
+        info = {"state": "closed", "merged": False, "head_sha": subject_head_sha, "draft": subject_draft}
     else:
-        info = {"state": "open", "merged": False, "head_sha": subject_head_sha}
+        info = {"state": "open", "merged": False, "head_sha": subject_head_sha, "draft": subject_draft}
     with patch(
         "app.github_command_handler._fetch_subject_info",
         return_value=info,
@@ -3554,6 +3567,34 @@ class TestTryAssignmentNotification:
         assert "/review https://github.com/sukria/koan/pull/99" in content
         assert "[project:koan]" in content
 
+    def test_review_requested_non_draft_pr_reviewed_when_gate_enabled(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """Gate enabled but PR is NOT draft → review still queued (AC3).
+
+        The autouse subject stub defaults ``draft`` to False here, so even with
+        ``review_draft_skip`` enabled the review must fire as usual — the gate
+        affects draft PRs only.
+        """
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        with patch("app.config.get_review_draft_skip_config",
+                   return_value={"enabled": True}), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_QUEUED
+        assert "/review https://github.com/sukria/koan/pull/99" in missions_path.read_text()
+
     def test_assign_queues_implement_mission(
         self, assign_notification, review_registry, tmp_path, monkeypatch,
     ):
@@ -4784,6 +4825,33 @@ class TestNotifyClosedSubjectSkipped:
             )
 
 
+class TestNotifyDraftPRSkipped:
+    """Tests for _notify_draft_pr_skipped helper."""
+
+    def test_sends_telegram_notification(self):
+        notification = {
+            "subject": {
+                "type": "PullRequest",
+                "url": "https://api.github.com/repos/owner/repo/pulls/88",
+            },
+        }
+        with patch("app.notify.send_telegram") as mock_send:
+            _notify_draft_pr_skipped("owner", "repo", "WIP feature", notification)
+            mock_send.assert_called_once()
+            msg = mock_send.call_args[0][0]
+            assert "owner/repo" in msg
+            assert "WIP feature" in msg
+            assert "/review" in msg
+            # Web URL built from the API subject URL.
+            assert "github.com/owner/repo/pull/88" in msg
+
+    def test_handles_send_failure_gracefully(self):
+        notification = {"subject": {"type": "PullRequest", "url": ""}}
+        with patch("app.notify.send_telegram", side_effect=Exception("boom")):
+            # Should not raise.
+            _notify_draft_pr_skipped("owner", "repo", "Title", notification)
+
+
 class TestProcessSingleNotificationClosedSubject:
     """Tests for closed/merged subject detection in process_single_notification."""
 
@@ -4870,6 +4938,156 @@ class TestProcessSingleNotificationClosedSubject:
 
         # Should NOT have called the skip notification
         mock_notify.assert_not_called()
+
+
+class TestTryAssignmentNotificationDraftGate:
+    """Draft-PR review gate (review_draft_skip) in _try_assignment_notification."""
+
+    @pytest.fixture
+    def subject_draft(self):
+        # Drive the autouse _fetch_subject_info stub to report a draft PR.
+        return True
+
+    @pytest.fixture
+    def review_registry(self):
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="review", aliases=["rv"])],
+        ))
+        reg._register(Skill(
+            name="implement",
+            scope="core",
+            description="Implement issue",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="implement", aliases=["impl"])],
+        ))
+        return reg
+
+    @pytest.fixture
+    def review_notification(self):
+        return {
+            "id": "78001",
+            "reason": "review_requested",
+            "updated_at": "2026-07-02T01:00:00Z",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "title": "WIP feature",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/88",
+            },
+        }
+
+    def _setup_missions(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+        return missions_path
+
+    def test_draft_pr_deferred_when_gate_enabled(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """Draft PR + gate enabled → /review NOT queued; soft skip (AC2)."""
+        missions_path = self._setup_missions(tmp_path, monkeypatch)
+
+        with patch("app.config.get_review_draft_skip_config",
+                   return_value={"enabled": True}), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read") as mock_read, \
+             patch("app.github_command_handler._notify_draft_pr_skipped") as mock_notify, \
+             patch("app.github_notification_tracker.set_review_cooldown") as mock_cd, \
+             patch("app.github_notification_tracker.track_thread") as mock_track:
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True  # handled (no-op), not failed
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
+        # No review mission queued
+        assert "/review" not in missions_path.read_text()
+        mock_read.assert_called_once()
+        mock_notify.assert_called_once()
+        # SOFT skip: neither dedup state nor cooldown written (FR-004) — so the
+        # ready-for-review re-fire is processed fresh.
+        mock_cd.assert_not_called()
+        mock_track.assert_not_called()
+
+    def test_draft_pr_reviewed_when_gate_disabled(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """Draft PR but gate disabled (default) → /review still queued (AC1).
+
+        Preserves the historical 'review always' behavior for operators who do
+        not opt in.
+        """
+        missions_path = self._setup_missions(tmp_path, monkeypatch)
+
+        with patch("app.config.get_review_draft_skip_config",
+                   return_value={"enabled": False}), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale", return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_QUEUED
+        assert "/review https://github.com/sukria/koan/pull/88" in missions_path.read_text()
+
+    def test_explicit_review_mention_not_gated_by_draft_skip(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """An explicit @bot /review mention on a draft PR is still honored (AC4).
+
+        The gate lives inside _try_assignment_notification (the assignment
+        fallback). process_single_notification processes @mention comments
+        FIRST and only falls back to the assignment path when there are none,
+        so a human /review can never be blocked by the draft gate. Asserting
+        the assignment path is not even invoked when a mention is present.
+        """
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+
+        config = {
+            "github": {"nickname": "testbot", "authorized_users": ["alice"]},
+        }
+
+        with patch("app.config.get_review_draft_skip_config",
+                   return_value={"enabled": True}), \
+             patch("app.github_command_handler._find_all_thread_mentions") as mock_mentions, \
+             patch("app.github_command_handler._try_assignment_notification") as mock_assign, \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.check_user_permission", return_value=True), \
+             patch("app.github_command_handler.check_already_processed", return_value=False), \
+             patch("app.github_command_handler.add_reaction", return_value=True), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch("app.utils.insert_pending_mission") as mock_insert:
+            mock_mentions.return_value = [{
+                "id": 88001,
+                "body": "@testbot review",
+                "user": {"login": "alice"},
+            }]
+            process_single_notification(
+                review_notification, review_registry, config, None, "testbot",
+            )
+
+        # The assignment path (and thus the gate) was bypassed entirely.
+        mock_assign.assert_not_called()
+        # The mention-routed /review was still queued despite the draft + gate.
+        mock_insert.assert_called_once()
 
 
 class TestTryAssignmentNotificationClosedSubject:

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Docker Setup"
+tags: [setup]
+created: 2026-05-28
+updated: 2026-06-24
+---
+
 # Docker Setup
 
 > Docker provides isolated environments and simplified deployment — ideal for

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Environment-variable-only deployment"
+tags: [setup]
+created: 2026-06-24
+updated: 2026-06-26
+---
+
 # Environment-variable-only deployment
 
 Kōan does not require a hand-written `.env` file. On platforms that inject

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Jira Integration"
+tags: [messaging]
+created: 2026-05-28
+updated: 2026-05-29
+---
+
 # Jira Integration
 
 Control Koan directly from Jira issue comments using `@mention` commands.

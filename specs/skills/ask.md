@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — ask"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-06-28
+---
+
 # Skill Spec — `ask`
 
 ## Command(s)
@@ -12,6 +20,9 @@
 Answer a question about a GitHub PR or issue: fetch the surrounding context and post an
 AI-generated reply back to GitHub. The conversational counterpart to `review` — explains
 rather than critiques.
+
+See `docs/users/skills.md` for the end-user `/ask` reference and `docs/users/user-manual.md`
+for the fuller walkthrough.
 
 ## Inputs
 

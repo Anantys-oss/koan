@@ -497,6 +497,79 @@ class TestSpawnSessionFileHandleLeak:
         assert opened_files[0].closed, "out_f leaked when stderr open() raised"
 
 
+class TestSpawnSessionTmpdir:
+    """Sessions run with a private per-session TMPDIR, reaped at cleanup."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_tmp(self, tmp_path, monkeypatch):
+        from app import utils
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "ktmp"))
+
+    @patch("app.session_manager.inject_worktree_claude_md")
+    @patch("app.session_manager.create_worktree")
+    def test_env_tmpdir_set_and_reaped_on_cleanup(self, mock_create_wt, mock_inject, registry, tmp_path):
+        from app.utils import koan_tmp_dir
+
+        wt = MagicMock()
+        wt.session_id = "tmpdir123456"
+        wt.path = str(tmp_path / "worktree")
+        wt.branch = "koan/session-tmpdir123456"
+        mock_create_wt.return_value = wt
+
+        captured = {}
+
+        def fake_popen(cmd, provider=None, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return MagicMock(pid=4321), MagicMock()
+
+        with patch("app.mission_runner.build_mission_command", return_value=(["echo"], [])), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            session = spawn_session(
+                mission_text="test",
+                project_name="p",
+                project_path=str(tmp_path),
+                instance_dir=registry.instance_dir,
+                registry=registry,
+            )
+
+        env = captured["env"]
+        assert env is not None
+        session_tmp = Path(env["TMPDIR"])
+        assert str(session_tmp.parent) == koan_tmp_dir()
+        assert session_tmp.name == f"mission-{os.getpid()}-tmpdir123456"
+        assert session_tmp.is_dir()
+
+        (session_tmp / "left-behind").write_text("scratch")
+        session._cleanup()
+        assert not session_tmp.exists()
+
+    @patch("app.session_manager.inject_worktree_claude_md")
+    @patch("app.session_manager.create_worktree")
+    def test_tmpdir_reaped_when_popen_raises(self, mock_create_wt, mock_inject, registry, tmp_path):
+        from app.utils import koan_tmp_dir
+
+        wt = MagicMock()
+        wt.session_id = "tmpdirboom99"
+        wt.path = str(tmp_path / "worktree")
+        wt.branch = "koan/session-tmpdirboom99"
+        mock_create_wt.return_value = wt
+
+        with patch("app.mission_runner.build_mission_command", return_value=(["echo"], [])), \
+             patch("app.cli_exec.popen_cli", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                spawn_session(
+                    mission_text="test",
+                    project_name="p",
+                    project_path=str(tmp_path),
+                    instance_dir=registry.instance_dir,
+                    registry=registry,
+                )
+
+        leftovers = list(Path(koan_tmp_dir()).glob("mission-*"))
+        assert leftovers == [], f"session TMPDIR leaked: {leftovers}"
+
+
 class TestRecoverStaleSessions:
     def test_marks_dead_sessions_as_failed(self, registry):
         s = Session(id="dead", mission_text="m", project_name="p",

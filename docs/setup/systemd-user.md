@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Running as a systemd --user Service (Linux, no root)"
+tags: [setup]
+created: 2026-06-26
+updated: 2026-06-27
+---
+
 # Running as a systemd `--user` Service (Linux, no root)
 
 Kōan can run as a per-user **systemd** service on Linux — automatic restart on

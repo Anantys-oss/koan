@@ -126,6 +126,7 @@ class TestValidConfigProducesNoWarnings:
             "contemplative_chance": 10,
             "start_on_pause": False,
             "skip_permissions": False,
+            "strip_co_authored_by": True,
             "cli_provider": "claude",
             "telegram": {"bot_token": "tok", "chat_id": "123"},
             "budget": {"warn_at_percent": 70, "stop_at_percent": 85},
@@ -201,6 +202,15 @@ class TestValidConfigProducesNoWarnings:
         # The code reads usage.unlimited_quota — not a top-level key.
         assert validate_config({"usage": {"unlimited_quota": True}}) == []
 
+    def test_strip_co_authored_by_is_known(self):
+        # Read by config.is_strip_co_authored_by_enabled() — must validate clean.
+        assert validate_config({"strip_co_authored_by": True}) == []
+
+    def test_strip_co_authored_by_rejects_non_bool(self):
+        warnings = validate_config({"strip_co_authored_by": "yes"})
+        assert len(warnings) == 1
+        assert "strip_co_authored_by" in warnings[0][1]
+
 
 # ---------------------------------------------------------------------------
 # validate_config — unrecognized keys
@@ -240,6 +250,12 @@ class TestUnrecognizedKeys:
         assert "moved to 'usage.unlimited_quota'" in warnings[0][1]
         assert not any("unrecognized key 'unlimited_quota'" in m for _, m in warnings)
 
+    def test_review_draft_skip_recognized(self):
+        # The new opt-in review gate is a registered nested section, so a valid
+        # config must not warn about it.
+        warnings = validate_config({"review_draft_skip": {"enabled": True}})
+        assert not any("unrecognized key 'review_draft_skip'" in m for _, m in warnings)
+
 
 # ---------------------------------------------------------------------------
 # validate_config — type mismatches
@@ -268,6 +284,12 @@ class TestTypeMismatches:
         assert len(warnings) == 1
         assert "budget.warn_at_percent" in warnings[0][1]
         assert "should be int" in warnings[0][1]
+
+    def test_review_draft_skip_enabled_non_bool(self):
+        warnings = validate_config({"review_draft_skip": {"enabled": "yes"}})
+        assert len(warnings) == 1
+        assert "review_draft_skip.enabled" in warnings[0][1]
+        assert "should be bool" in warnings[0][1]
 
     def test_section_not_dict(self):
         warnings = validate_config({"telegram": "not-a-dict"})

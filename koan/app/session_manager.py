@@ -254,12 +254,21 @@ def spawn_session(
     )
 
     # Create temp files for stdout/stderr
-    from app.utils import koan_tmp_dir
+    from app.utils import cleanup_mission_tmp_dir, create_mission_tmp_dir, koan_tmp_dir
 
     fd_out, stdout_file = tempfile.mkstemp(prefix=f"koan-session-{wt.session_id}-out-", dir=koan_tmp_dir())
     os.close(fd_out)
     fd_err, stderr_file = tempfile.mkstemp(prefix=f"koan-session-{wt.session_id}-err-", dir=koan_tmp_dir())
     os.close(fd_err)
+
+    # Per-session TMPDIR, reaped in _session_cleanup (crash leftovers are
+    # swept at startup by reap_stale_mission_tmp_dirs). Non-fatal on failure:
+    # the child then inherits the parent's TMPDIR (prior behavior).
+    session_tmp = None
+    try:
+        session_tmp = create_mission_tmp_dir(tag=wt.session_id)
+    except OSError as e:
+        print(f"[session_manager] session TMPDIR creation failed: {e}", file=sys.stderr)
 
     # Create session
     session = Session(
@@ -284,6 +293,9 @@ def spawn_session(
     try:
         out_f = open(stdout_file, "w")  # noqa: SIM115
         err_f = open(stderr_file, "w")  # noqa: SIM115
+        popen_kwargs = {}
+        if session_tmp:
+            popen_kwargs["env"] = {**os.environ, "TMPDIR": session_tmp}
         proc, cli_cleanup = popen_cli(
             cmd,
             provider=session_cli_provider,
@@ -291,12 +303,15 @@ def spawn_session(
             stderr=err_f,
             cwd=wt.path,
             start_new_session=True,
+            **popen_kwargs,
         )
     except Exception:
         if err_f:
             err_f.close()
         if out_f:
             out_f.close()
+        if session_tmp:
+            cleanup_mission_tmp_dir(session_tmp)
         raise
     session.pid = proc.pid
 
@@ -306,6 +321,8 @@ def spawn_session(
         cli_cleanup()
         out_f.close()
         err_f.close()
+        if session_tmp:
+            cleanup_mission_tmp_dir(session_tmp)
         if cmd_cleanup_paths:
             try:
                 from app.provider import cleanup_managed_paths

@@ -16,11 +16,17 @@ Templates requiring updates:
   - .specify/templates/tasks-template.md   ✅ no change — generic speckit template
   - .specify/templates/commands/           ✅ n/a — no commands directory present
 Follow-up TODOs:
-  - TODO(SPECS_DIR_COLLISION): Kōan's `specs/` holds component/skill design
-    contracts (see specs/README.md), while the speckit plan/spec/tasks templates
-    write per-feature specs to a `specs/<feature>/` folder. Reconcile the layout
-    before authoring the first speckit feature spec so the two purposes do not
-    collide.
+  - RESOLVED(SPECS_DIR_COLLISION) [2026-07-04]: Kōan's `specs/` holds component/skill
+    design contracts (see specs/README.md) alongside speckit's per-feature
+    `specs/<feature>/` planning folders. Reconciled by treating them as two
+    coexisting populations at different, non-colliding paths rather than merging
+    or renaming: component/skill specs are durable and wiki-indexed; speckit
+    folders are ephemeral, status-tagged, and never frontmattered (speckit's own
+    tooling rewrites them wholesale). A shipped speckit feature's durable artifact
+    is the updated `specs/components/<group>.md`, not the speckit folder itself.
+    Full rationale in `specs/README.md` ("components/, skills/ vs.
+    <NNN-feature-slug>/") and `wiki/SCHEMA.md` ("Why speckit feature folders get
+    no frontmatter").
 Source basis: specs/README.md, specs/components/{core,agent-loop,providers}.md,
 docs/architecture/{overview,shared-state}.md, docs/design/decisions.md,
 docs/security/threat-model-agent-disalignment.md, CLAUDE.md.
@@ -41,6 +47,13 @@ behavior is explicitly configured, narrowly scoped, and documented.
   stay optional, visible, and behind the existing review and safety gates.
 - The loop's job is to host the CLI subprocess and finalize lifecycle state —
   not to alter git state itself.
+- One narrowly-scoped, explicitly documented exception exists for wiki
+  bookkeeping (frontmatter dates, `wiki/index.md` entries, `wiki/log.md` lines,
+  and `specs/<NNN-slug>/` computed status) — see `wiki/SCHEMA.md` ("Workflow
+  customizations"). It may be committed directly onto an existing PR's own
+  branch by CI, without a separate human-reviewed step, but never to `main` and
+  never for anything beyond that metadata (spec/doc bodies and code keep the
+  full discipline above).
 
 *Rationale*: Kōan runs autonomously 24/7 with broad tool access; human PR review
 is the primary security boundary against a disaligned or prompt-injected agent

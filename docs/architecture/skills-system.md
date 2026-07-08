@@ -1,7 +1,17 @@
+---
+type: doc
+title: "Skills System"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-23
+---
+
 # Skills System
 
 Skills are Koan's command extension mechanism. Core skills live under
-`koan/skills/core/`; custom skills load from `instance/skills/<scope>/`.
+`koan/skills/core/`; custom skills load from `instance/skills/<scope>/`. See
+`specs/components/skills.md` for the design contract behind discovery,
+frontmatter flags, and dispatch routing.
 
 ## Skill Definition
 

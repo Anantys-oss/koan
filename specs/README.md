@@ -1,3 +1,11 @@
+---
+type: overview
+title: "Kōan Specs"
+tags: [core]
+created: 2026-06-27
+updated: 2026-06-27
+---
+
 # Kōan Specs
 
 This directory is the **single source of truth for Kōan's design**. Specs capture
@@ -18,6 +26,11 @@ Specs and docs coexist — they do not replace each other. When a feature change
 *behavior*, update `docs/`. When it changes *design or contracts*, update `specs/`.
 Most non-trivial changes touch both.
 
+`specs/components/`, `specs/skills/`, and this file are indexed as part of an LLM
+Wiki spanning this directory and `docs/` — see
+[`../wiki/index.md`](../wiki/index.md) for the flat catalog and
+[`../wiki/SCHEMA.md`](../wiki/SCHEMA.md) for frontmatter/tagging conventions.
+
 ## Layout
 
 ```
@@ -32,12 +45,35 @@ specs/
 │   ├── issue-tracking.md         # provider-neutral issue tracker (GitHub/Jira)
 │   ├── skills.md                 # skills registry + dispatch system
 │   └── web.md                    # dashboard (Flask) + REST API
-└── skills/                       # one spec per skill
-    ├── SKILL_SPEC_TEMPLATE.md    # copy this to author a new skill spec
-    ├── review.md
-    ├── implement.md
-    └── ...
+├── skills/                       # one spec per skill
+│   ├── SKILL_SPEC_TEMPLATE.md    # copy this to author a new skill spec
+│   ├── review.md
+│   ├── implement.md
+│   └── ...
+└── <NNN-feature-slug>/           # speckit's per-feature planning folders — see below
+    ├── spec.md
+    ├── plan.md
+    ├── tasks.md
+    └── ...                       # research.md, data-model.md, checklists/, contracts/
 ```
+
+### `components/`, `skills/` vs. `<NNN-feature-slug>/` — two different things named `specs/`
+
+`specs/components/` and `specs/skills/` are **durable design contracts**, hand-authored
+and wiki-indexed as described above. `specs/<NNN-feature-slug>/` folders are
+**speckit's own ephemeral per-feature planning scaffolding** (`/speckit-specify`,
+`/speckit-plan`, `/speckit-tasks`, etc.) — ratified `Draft`/in-progress/shipped, rewritten
+wholesale by speckit's own tooling as a feature is clarified or replanned. They are not
+frontmattered and not walked by the wiki's lint tooling (see `wiki/SCHEMA.md`), though
+they're still referenced from `wiki/index.md` with a computed status so in-flight work
+stays discoverable.
+
+**The rule that reconciles them**: when a speckit feature ships, the durable artifact is
+the **updated `specs/components/<group>.md`** (per "Spec discipline" below) — not the
+speckit folder itself, which remains as a historical record of how the feature was
+planned. Nothing is renamed or moved; the two populations simply coexist at different,
+non-colliding paths with different lifecycles. This resolves the
+`TODO(SPECS_DIR_COLLISION)` flagged in `.specify/memory/constitution.md`.
 
 ## Naming conventions
 

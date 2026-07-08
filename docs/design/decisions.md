@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Design Decisions"
+tags: [design]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 # Design Decisions
 
 This page records durable Koan design decisions. Update it when a change alters

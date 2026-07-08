@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Telegram Bridge"
+tags: [bridge]
+created: 2026-06-27
+updated: 2026-07-03
+---
+
 # Component Spec — Telegram Bridge
 
 **Modules:** `awake.py`, `command_handlers.py`, `bridge_state.py`, `bridge_log.py`,
@@ -9,6 +17,9 @@ The human ↔ agent interface. A process independent of the agent loop that poll
 Telegram, classifies each message as *chat* (answer now) or *mission* (queue it),
 and flushes the agent's outbox back to Telegram. It is the realtime channel; the
 agent loop is asynchronous and never talks to Telegram directly except via `outbox.md`.
+
+See `docs/architecture/daemon.md`'s Bridge Loop section for the operational rundown
+of polling, the chat/bg worker lanes, and outbox draining.
 
 ## Architecture
 
@@ -41,6 +52,10 @@ awake.py (loop, ~3s poll)
   *how* the agent behaves.
 - **Command parsing is hyphen-hostile.** Skill names/aliases use underscores; Telegram
   treats `-` as a word boundary and truncates the command.
+- **The chat ID is normalized at read time.** All reads of `KOAN_TELEGRAM_CHAT_ID` go
+  through `utils.get_telegram_chat_id()`, which `.strip()`s stray whitespace/newlines
+  (Railway/copy-paste inject a trailing newline that makes Telegram answer
+  `chat not found`). Never read the env var raw into an API payload.
 
 ## Integration points
 

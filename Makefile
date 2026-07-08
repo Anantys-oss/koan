@@ -87,6 +87,11 @@ setup: $(VENV)/.installed
 $(VENV)/.installed: koan/requirements.txt
 	$(PYTHON_BIN) -m venv $(VENV)
 	$(VENV)/bin/pip install -r koan/requirements.txt
+	@command -v claude >/dev/null 2>&1 && ( \
+		claude plugin marketplace add praneybehl/llm-wiki-plugin >/dev/null 2>&1; \
+		claude plugin install llm-wiki@llm-wiki --scope user >/dev/null 2>&1; \
+		echo "claude plugin: llm-wiki installed (user scope)" \
+	) || echo "claude CLI not found; skipping llm-wiki plugin install (see CLAUDE.md 'Wiki tooling')"
 	@touch $@
 
 awake: setup

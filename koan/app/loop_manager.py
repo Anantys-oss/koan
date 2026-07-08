@@ -586,7 +586,7 @@ def _get_known_repos_from_projects(koan_root: str) -> Optional[set]:
     # 1. projects.yaml — primary source
     projects_config = load_projects_config(koan_root)
     if projects_config:
-        for proj in projects_config.get("projects", {}).values():
+        for proj in (projects_config.get("projects") or {}).values():
             if not isinstance(proj, dict):
                 continue
             gh_url = proj.get("github_url", "")

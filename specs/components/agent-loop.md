@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — Agent Loop Pipeline"
+tags: [agent-loop]
+created: 2026-06-27
+updated: 2026-07-01
+---
+
 # Component Spec — Agent Loop Pipeline
 
 **Modules:** `run.py`, `iteration_manager.py`, `mission_executor.py`,
@@ -10,6 +18,9 @@
 The beating heart: a pure-Python loop that pulls a mission, builds a prompt, invokes
 the CLI provider as a subprocess, monitors it, and finalizes the mission's lifecycle
 state. Everything else exists to feed or observe this loop.
+
+See `docs/architecture/daemon.md`'s Agent Loop section for how this pipeline is wired
+into the running daemon (startup, quota pause, parallel sessions).
 
 ## Execution flow (one iteration)
 
@@ -41,6 +52,8 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `mission_executor._maybe_retry_mission()` | Single transient-error retry. **Any new mission-terminating pathway must add a guard here** (see stagnation retry gap). |
 | `mission_runner.build_mission_command()` | CLI prompt + flags assembly. |
 | `mission_runner.parse_claude_output()` | JSON → text extraction from `--output-format json` / stream-json. |
+| `run._is_ci_check_mission()` | Classifies a mission title as CI-related (`/ci_check …`, ci_dispatch `Fix CI failure: …`). |
+| `run._mission_fail_icon()` | **The single source of truth for the emoji prefix on a mission-failure notification** — 🚦 for CI missions, ❌ otherwise. Every failure-notification site MUST call this, never hardcode ❌. |
 | `iteration_manager._downgrade_if_burning_fast()` | Burn-rate-driven mode downgrade, next to affordability downgrade. |
 | `stagnation_monitor` | Daemon thread hashing last-N stdout lines; kills the subprocess group after K identical hashes; requeues up to `max_retry_on_stagnation`. |
 | `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
@@ -56,6 +69,12 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
   mistaken for a quota/auth message. Keep that default for new dispatch pathways.
 - **Every termination pathway needs a retry guard.** Stagnation kill, timeout kill,
   and CLI error all route through `_maybe_retry_mission`'s RETRYABLE check.
+- **Mission-failure notifications route their emoji through `_mission_fail_icon()`.**
+  CI-related missions (`/ci_check`, ci_dispatch `Fix CI failure:`) surface 🚦 — a
+  status signal, not an alarm, per operator preference; all other failures surface ❌.
+  This was scattered across call sites and kept regressing (start-transition and
+  devcontainer-setup failures still hardcoded ❌). New failure-notify sites must call
+  `_mission_fail_icon(mission_title)`, never inline the emoji.
 - **Contemplative failures must surface, not swallow.** `_handle_contemplative`
   captures the CLI exit code and runs `_notify_contemplative_failure`, which classifies
   the outcome (529 overload, quota, auth, transient, exit-code) and sends ONE throttled

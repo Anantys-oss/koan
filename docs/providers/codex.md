@@ -1,3 +1,11 @@
+---
+type: doc
+title: "OpenAI Codex CLI Provider"
+tags: [providers]
+created: 2026-05-28
+updated: 2026-07-01
+---
+
 # OpenAI Codex CLI Provider
 
 The Codex provider lets Kōan use OpenAI's Codex CLI as the underlying
@@ -228,6 +236,12 @@ workspace…") is recognized as a quota failure and triggers a quota pause even
 though it carries no generic error marker. Token accounting failures and quota
 detection are separate: if usage extraction fails for a mission, Koan still
 runs quota detection for that mission.
+
+Codex may also print healthy quota telemetry such as `rate_limit_ok: allowed`
+or a `Monthly credit limit ... left` meter. Those lines are informational and
+do not mean the provider refused work. Kōan treats only rejected/exceeded rate
+limit signals, spend-cap errors, HTTP 429s, or structured provider error events
+as hard quota exhaustion.
 
 Quota detection is reactive and is **not** disabled by
 `usage.unlimited_quota: true` — that flag only skips proactive budget gating.

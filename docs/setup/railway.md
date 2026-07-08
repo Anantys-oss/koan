@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Deploy Kōan on Railway"
+tags: [setup]
+created: 2026-06-24
+updated: 2026-06-26
+---
+
 # Deploy Kōan on Railway
 
 Kōan runs as a single hosted container on Railway (or a similar single-container
@@ -89,6 +97,19 @@ This gate is enforced on **both** launch paths through a single helper
 (`pid_manager.start_all`, triggered by `dashboard.enabled: true` in
 `config.yaml`). With the passphrase unset on Railway, only `run` + `awake`
 launch, exposing the minimal worker footprint.
+
+## REST API gate (`KOAN_API_TOKEN`)
+
+The optional REST API follows the same "no optional processes on Railway unless
+explicitly opted in" policy. Every extra long-lived process raises the
+container's idle RAM floor, so the config-driven launcher only starts the API on
+Railway when `KOAN_API_TOKEN` is set — the token is required for the API to
+function at all, so its presence is the explicit opt-in. This is enforced by
+`railway.api_allowed()` inside `pid_manager._is_api_enabled`. Off Railway the
+gate is inert and `api.enabled: true` in `config.yaml` alone decides.
+
+The API also defaults to **2** waitress worker threads (`api.threads`), down from
+8, to keep its resident footprint small on memory-constrained hosts.
 
 `make koan` either **attaches** to the already-running daemon (status/logs/
 dashboard), or runs the onboarding **wizard** on an empty volume. Because the

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Slack Setup Guide"
+tags: [messaging]
+created: 2026-05-28
+updated: 2026-06-25
+---
+
 # Slack Setup Guide
 
 This guide covers setting up Kōan with Slack as the messaging provider. Slack uses Socket Mode for real-time bidirectional communication.

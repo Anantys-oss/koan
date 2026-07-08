@@ -1222,6 +1222,34 @@ def _try_assignment_notification(
         mark_notification_read(notif_id)
         return False
 
+    # Draft-PR gate (opt-in). When ``review_draft_skip`` is enabled, defer the
+    # automatic /review while the PR is in draft state — the author has marked
+    # it not-ready. This is a SOFT skip: mark the notification read but do NOT
+    # track the thread or set the review cooldown, so any re-surfaced request is
+    # re-evaluated fresh. The remedy is an explicit /review once the PR is ready:
+    # do NOT rely on automatic resume — GitHub does not reliably re-fire
+    # review_requested on the draft->ready transition, so a deferred review is
+    # not guaranteed to fire on its own (hence the info notification below).
+    # An explicit human /review (chat or GitHub @mention) is handled on the
+    # separate @mention path (processed before this fallback) and is never
+    # gated by this flag. Only the review_requested path is affected; ``assign``
+    # targets issues, which have no draft flag.
+    if reason == "review_requested" and subject_info.get("draft"):
+        from app.config import get_review_draft_skip_config
+
+        if get_review_draft_skip_config()["enabled"]:
+            subject_title = notification.get("subject", {}).get("title", "?")
+            pr_number = extract_issue_number_from_notification(notification)
+            log.info(
+                "GitHub assign: deferring review of draft PR %s/%s#%s — "
+                "review_draft_skip enabled (%s)",
+                owner, repo, pr_number or "?", subject_title,
+            )
+            _notify_draft_pr_skipped(owner, repo, subject_title, notification)
+            mark_notification_read(notif_id)
+            notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+            return True
+
     # Build web URL from subject
     subject_url = notification.get("subject", {}).get("url", "")
     web_url = api_url_to_web_url(subject_url) if subject_url else ""
@@ -2450,17 +2478,19 @@ def _try_subscription_notification(
 
 
 def _fetch_subject_info(notification: dict) -> dict:
-    """Fetch state, merged status, and head SHA for a notification's subject.
+    """Fetch state, merged status, head SHA, and draft flag for a subject.
 
     One API call returns everything the assignment path needs: the
-    ``state``/``merged`` fields for the closed/merged check and ``head_sha``
-    for the review-request dedup key. Issues have no ``head`` — ``head_sha``
-    comes back null in that case.
+    ``state``/``merged`` fields for the closed/merged check, ``head_sha``
+    for the review-request dedup key, and ``draft`` for the opt-in draft-PR
+    review gate. Issues have no ``head`` and no ``draft`` — both come back
+    null in that case.
 
     Returns:
-        A dict with keys ``state``, ``merged``, ``head_sha`` (values may be
-        empty/None/False). Returns an empty dict when the subject cannot be
-        fetched, so callers must treat a missing ``head_sha`` as "unknown".
+        A dict with keys ``state``, ``merged``, ``head_sha``, ``draft``
+        (values may be empty/None/False). Returns an empty dict when the
+        subject cannot be fetched, so callers must treat a missing
+        ``head_sha``/``draft`` as "unknown".
     """
     from app.github import SSOAuthRequired, api as gh_api
 
@@ -2479,7 +2509,7 @@ def _fetch_subject_info(notification: dict) -> dict:
     try:
         raw = gh_api(
             endpoint,
-            jq="{state: .state, merged: .merged, head_sha: .head.sha}",
+            jq="{state: .state, merged: .merged, head_sha: .head.sha, draft: .draft}",
             timeout=15,
         )
         data = json.loads(raw) if raw else {}
@@ -2543,6 +2573,38 @@ def _notify_closed_subject_skipped(
         )
     except Exception as e:
         log.warning("Failed to send closed-subject skip notification: %s", e)
+
+
+def _notify_draft_pr_skipped(
+    owner: str,
+    repo: str,
+    subject_title: str,
+    notification: dict,
+) -> None:
+    """Send Telegram notification when deferring a draft-PR review request.
+
+    Sent only when ``review_draft_skip`` is enabled and a ``review_requested``
+    notification targets a draft PR. Best-effort: failures are logged and never
+    raised — a notification problem must not break notification processing.
+    Mirrors :func:`_notify_closed_subject_skipped` so a deferred review is not
+    mistaken for a silently-dropped one.
+    """
+    try:
+        from app.github_notifications import api_url_to_web_url
+        from app.notify import NotificationPriority, send_telegram
+
+        subject_url = notification.get("subject", {}).get("url", "")
+        web_url = api_url_to_web_url(subject_url) if subject_url else ""
+        url_part = f"\n{web_url}" if web_url else ""
+        send_telegram(
+            f"💤 Draft PR review deferred: {owner}/{repo} — {subject_title}{url_part}\n"
+            "Send /review when the PR is ready — that is the reliable way to "
+            "review it. (Kōan does not auto-resume: GitHub does not reliably "
+            "re-surface the request on the draft→ready transition.)",
+            priority=NotificationPriority.INFO,
+        )
+    except Exception as e:
+        log.warning("Failed to send draft-PR skip notification: %s", e)
 
 
 def _notify_github_question(

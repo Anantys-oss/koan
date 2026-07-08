@@ -33,6 +33,14 @@ Check for these categories of drift:
 - Check `koan/app/command_handlers.py` for `_CORE_COMMAND_HELP` and verify it matches the actual commands.
 - Check `koan/app/skill_dispatch.py` for `_CANONICAL_RUNNERS` and verify each registered skill exists.
 
+#### E. Wiki Hygiene
+This project's `docs/` and the durable half of `specs/` (`specs/components/`, `specs/skills/`) are indexed as an LLM Wiki — see `wiki/SCHEMA.md` for full conventions. Check:
+- **Missing/stale frontmatter**: any file under `docs/`, `specs/components/`, or `specs/skills/` (excluding `specs/skills/SKILL_SPEC_TEMPLATE.md`) that lacks the `type`/`title`/`tags`/`created`/`updated` YAML block, or whose `updated:` date is clearly older than the file's actual last git-log modification date.
+- **Stale `wiki/index.md` entries**: pages that exist but have no `wiki/index.md` entry, entries pointing at pages that no longer exist, or one-line summaries that no longer match the page's actual content after a substantive edit.
+- **Speckit feature status drift**: for each `specs/<NNN-slug>/tasks.md`, recompute the checkbox ratio (`grep -cE '^\s*-\s*\[[xX]\]'` vs `^\s*-\s*\[[ ]\]'`) and compare against the status `wiki/index.md` currently records under "Specs — Active Features" (`draft` / `in-progress` / `shipped`). Flag any mismatch.
+- **Shipped-but-not-reconciled**: a `specs/<NNN-slug>/` folder whose tasks are ~100% checked (or whose branch has clearly merged) but whose corresponding `specs/components/<group>.md` shows no matching update — per the mandatory "Specs discipline" rule in `CLAUDE.md`, this is incomplete.
+- Do **not** flag `specs/<NNN-slug>/*.md` files themselves for missing frontmatter — that's a deliberate exemption documented in `wiki/SCHEMA.md`, not drift.
+
 ### Phase 3 — Produce the Report
 
 Output a structured report in this exact format:
@@ -65,6 +73,10 @@ Spec-Drift Report — {PROJECT_NAME}
 ### Behavioral Drift
 
 [Numbered list of code behavior that doesn't match documentation]
+
+### Wiki Hygiene
+
+[Numbered list of missing/stale frontmatter, stale index.md entries, or speckit status drift, with the specific file(s) to fix]
 
 ## Suggested Missions
 

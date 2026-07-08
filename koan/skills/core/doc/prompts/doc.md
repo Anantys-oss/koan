@@ -157,6 +157,10 @@ Standard library first, then third-party, then local...
 
 ---
 
+## Wiki bookkeeping (automatic, not your job)
+
+If the target project has adopted the LLM Wiki pattern (a `wiki/SCHEMA.md` exists at its root), the runner automatically adds/refreshes a YAML frontmatter block and a `wiki/index.md` entry on each file you write, after your output is parsed. You do not need to produce frontmatter yourself — output plain `---DOC---` blocks as specified above.
+
 ## Boundaries
 
 - **Read-only.** Do not modify any source files. Only produce documentation output blocks.

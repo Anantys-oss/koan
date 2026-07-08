@@ -699,7 +699,7 @@ usage:
 #   enabled: false          # Include API in managed processes (default: false)
 #   host: "127.0.0.1"       # Bind address (default: 127.0.0.1)
 #   port: 8420              # HTTP port (default: 8420)
-#   threads: 8              # waitress worker threads (default: 8)
+#   threads: 2              # waitress worker threads (default: 2)
 #   # token: ""             # Bearer token fallback (prefer KOAN_API_TOKEN env var)
 
 # Automation suggestions — context-aware recurring task proposals
@@ -943,6 +943,14 @@ memory_monitor:
 #   include_blockers: true      # When REQUEST_CHANGES, list blocking finding titles
 #                               # in the verdict body (default: true)
 
+# Review history — on a re-review (new commits or a re-requested review), the
+# bot normally collapses its previous review comment to a short "superseded"
+# pointer so the PR timeline stays tidy. Enable preserve_previous to leave the
+# prior review comment untouched and post the new review alongside it instead.
+# Can also be overridden per-project in projects.yaml.
+# review_history:
+#   preserve_previous: false    # Keep the previous review comment intact (default: false)
+
 # Review inline comments — in addition to the single bucketed summary comment,
 # post each finding as an inline PR comment anchored to its code location, so a
 # reviewer can react/resolve/discuss each one in place. Additive: never
@@ -950,6 +958,17 @@ memory_monitor:
 # review_inline_comments:
 #   enabled: false        # Master switch (default: false)
 #   max_comments: 25      # Cap inline threads posted per review (default: 25)
+
+# Review draft-PR gate — when the bot is attached as a PR reviewer, defer the
+# automatic /review while the PR is in draft state (the author marked it not
+# ready). Off by default: draft PRs are reviewed as today. When enabled, send
+# /review once the PR is ready — that is the reliable remedy. Do NOT rely on
+# automatic resume: GitHub does not reliably re-fire review_requested on the
+# draft->ready transition, so a deferral sends an info notification. This only
+# gates the "bot attached as reviewer" path — an explicit /review (chat or
+# GitHub @mention) is ALWAYS honored regardless.
+# review_draft_skip:
+#   enabled: false          # Defer auto-review of draft PRs (default: false)
 
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention

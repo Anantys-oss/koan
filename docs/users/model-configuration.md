@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Model Configuration"
+tags: [users]
+created: 2026-06-07
+updated: 2026-06-30
+---
+
 # Model Configuration
 
 Kōan lets you choose which model handles each type of call (mission execution,

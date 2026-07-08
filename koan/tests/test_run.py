@@ -1275,6 +1275,32 @@ class TestRunClaudeTask:
 
         assert exit_code != 0
 
+    def test_sets_and_reaps_per_mission_tmpdir(self, tmp_path, monkeypatch):
+        """The child runs with a private TMPDIR that is removed afterwards."""
+        from app import utils
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path / "ktmp"))
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+
+        exit_code = run_claude_task(
+            cmd=["sh", "-c", 'printf %s "$TMPDIR"; : > "$TMPDIR/left-behind"'],
+            stdout_file=stdout_f,
+            stderr_file=stderr_f,
+            cwd=str(tmp_path),
+        )
+
+        assert exit_code == 0
+        reported = Path(stdout_f).read_text().strip()
+        assert reported.startswith(str(tmp_path / "ktmp"))
+        assert "/mission-" in reported
+        # Reaped in the finally — including the file the child left behind.
+        assert not Path(reported).exists()
+
     def test_resets_signal_state(self, tmp_path):
         from app.run import run_claude_task, _sig
 
@@ -4202,6 +4228,143 @@ class TestIsCiCheckMission:
     def test_non_ci_fix_mission(self):
         from app.run import _is_ci_check_mission
         assert not _is_ci_check_mission("Fix the CI pipeline configuration")
+
+
+class TestMissionFailIcon:
+    """_mission_fail_icon() is the single source of truth for the emoji
+    prefix on mission-failure notifications. CI missions surface 🚦 (a
+    status, not an alarm); every other failure surfaces ❌."""
+
+    def test_ci_check_mission_is_traffic_light(self):
+        from app.run import _mission_fail_icon
+        assert _mission_fail_icon("/ci_check https://github.com/o/r/pull/42") == "🚦"
+
+    def test_ci_check_with_project_tag(self):
+        from app.run import _mission_fail_icon
+        assert _mission_fail_icon(
+            "[project:myapp] /ci_check https://github.com/o/r/pull/984"
+        ) == "🚦"
+
+    def test_ci_dispatch_fix_mission(self):
+        from app.run import _mission_fail_icon
+        assert _mission_fail_icon(
+            "[project:myapp] Fix CI failure: lint on PR #42 — Job: lint"
+        ) == "🚦"
+
+    def test_non_ci_mission_is_cross(self):
+        from app.run import _mission_fail_icon
+        assert _mission_fail_icon("/review https://github.com/o/r/pull/42") == "❌"
+
+    def test_plain_mission_is_cross(self):
+        from app.run import _mission_fail_icon
+        assert _mission_fail_icon("Fix the login bug") == "❌"
+
+    def test_empty_title_is_cross(self):
+        from app.run import _mission_fail_icon
+        assert _mission_fail_icon("") == "❌"
+
+
+class TestMissionFailureIconWiring:
+    """Behavioral proof that mission-failure notification paths route the
+    emoji through _mission_fail_icon — a /ci_check mission must surface 🚦
+    even when it fails before normal execution (the previous hardcoded-❌
+    leak)."""
+
+    def _mission_plan(self, title):
+        return {
+            "action": "mission",
+            "project_name": "myapp",
+            "project_path": "/tmp/myapp",
+            "autonomous_mode": "implement",
+            "available_pct": 50,
+            "display_lines": [],
+            "mission_title": title,
+            "focus_area": "",
+            "decision_reason": "",
+            "recurring_injected": [],
+        }
+
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run._commit_instance")
+    @patch("app.run._update_mission_in_file")
+    @patch("app.run._notify")
+    @patch("app.run._start_mission_in_file", return_value=False)
+    @patch("app.git_prep.prepare_project_branch")
+    @patch("app.mission_history.should_skip_mission", return_value=False)
+    @patch("app.run.set_status")
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    def test_ci_check_not_started_uses_traffic_light(
+        self, mock_plan, mock_log, mock_status, mock_skip,
+        mock_prep, mock_start, mock_notify, mock_update, mock_commit, mock_sleep,
+        tmp_path,
+    ):
+        """A /ci_check mission whose Pending→In Progress transition fails
+        must notify with 🚦, not ❌ (regression guard for the hardcoded leak)."""
+        from types import SimpleNamespace
+        from app.run import _run_iteration
+
+        mock_plan.return_value = self._mission_plan(
+            "/ci_check https://github.com/o/r/pull/42"
+        )
+        mock_prep.return_value = SimpleNamespace(
+            stashed=False, success=True, error="",
+            base_branch="main", remote_used="origin",
+        )
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+        (tmp_path / ".koan-project").write_text("myapp")
+
+        _run_iteration(
+            koan_root=str(tmp_path),
+            instance=instance,
+            projects=[("myapp", "/tmp/myapp")],
+            count=0, max_runs=10, interval=60, git_sync_interval=5,
+        )
+
+        notified = " | ".join(str(c.args[1]) for c in mock_notify.call_args_list)
+        assert "Mission not started" in notified
+        assert "🚦" in notified
+        assert "❌" not in notified
+
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run._commit_instance")
+    @patch("app.run._update_mission_in_file")
+    @patch("app.run._notify")
+    @patch("app.run._start_mission_in_file", return_value=False)
+    @patch("app.git_prep.prepare_project_branch")
+    @patch("app.mission_history.should_skip_mission", return_value=False)
+    @patch("app.run.set_status")
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    def test_plain_mission_not_started_uses_cross(
+        self, mock_plan, mock_log, mock_status, mock_skip,
+        mock_prep, mock_start, mock_notify, mock_update, mock_commit, mock_sleep,
+        tmp_path,
+    ):
+        """A non-CI mission failing the same way still surfaces ❌."""
+        from types import SimpleNamespace
+        from app.run import _run_iteration
+
+        mock_plan.return_value = self._mission_plan("Fix the login bug")
+        mock_prep.return_value = SimpleNamespace(
+            stashed=False, success=True, error="",
+            base_branch="main", remote_used="origin",
+        )
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+        (tmp_path / ".koan-project").write_text("myapp")
+
+        _run_iteration(
+            koan_root=str(tmp_path),
+            instance=instance,
+            projects=[("myapp", "/tmp/myapp")],
+            count=0, max_runs=10, interval=60, git_sync_interval=5,
+        )
+
+        notified = " | ".join(str(c.args[1]) for c in mock_notify.call_args_list)
+        assert "Mission not started" in notified
+        assert "❌" in notified
 
 
 # ---------------------------------------------------------------------------

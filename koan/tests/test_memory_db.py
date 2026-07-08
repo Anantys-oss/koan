@@ -73,8 +73,10 @@ def reset_fts5_flag():
     """Reset the module-level _fts5_available flag between tests."""
     import app.memory_db as mdb
     mdb._fts5_available = None
+    mdb._learnings_cache.clear()
     yield
     mdb._fts5_available = None
+    mdb._learnings_cache.clear()
 
 
 class TestEnsureDb:
@@ -316,6 +318,76 @@ class TestDeleteBefore:
         conn.close()
 
 
+class TestVacuumExpired:
+
+    def test_deletes_expired_but_recent_ts(self, instance_dir):
+        # An entry expired while its ts is still recent — delete_before (keyed
+        # on ts) would leave it, causing JSONL↔SQLite divergence.
+        from app.memory_db import ensure_db, insert_entry, vacuum_expired, entry_count
+        conn = ensure_db(instance_dir)
+        insert_entry(conn, {"ts": "2026-06-01T00:00:00Z", "type": "session",
+                            "project": "koan", "content": "expired",
+                            "expires_at": "2026-06-15T00:00:00Z"})
+        insert_entry(conn, {"ts": "2026-06-01T00:00:00Z", "type": "session",
+                            "project": "koan", "content": "live",
+                            "expires_at": "2099-01-01T00:00:00Z"})
+        insert_entry(conn, {"ts": "2026-06-01T00:00:00Z", "type": "session",
+                            "project": "koan", "content": "no-expiry"})
+        removed = vacuum_expired(conn, now_iso="2026-07-01T00:00:00Z")
+        assert removed == 1
+        assert entry_count(conn) == 2
+        conn.close()
+
+    def test_keeps_malformed_expires_at(self, instance_dir):
+        from app.memory_db import ensure_db, insert_entry, vacuum_expired, entry_count
+        conn = ensure_db(instance_dir)
+        insert_entry(conn, {"ts": "2026-06-01T00:00:00Z", "type": "session",
+                            "project": "koan", "content": "bad",
+                            "expires_at": "not-a-date"})
+        removed = vacuum_expired(conn, now_iso="2026-07-01T00:00:00Z")
+        assert removed == 0
+        assert entry_count(conn) == 1
+        conn.close()
+
+    def test_returns_zero_when_nothing_expired(self, instance_dir):
+        from app.memory_db import ensure_db, insert_entry, vacuum_expired
+        conn = ensure_db(instance_dir)
+        insert_entry(conn, {"ts": "2026-06-01T00:00:00Z", "type": "session",
+                            "project": "koan", "content": "live",
+                            "expires_at": "2099-01-01T00:00:00Z"})
+        assert vacuum_expired(conn, now_iso="2026-07-01T00:00:00Z") == 0
+        conn.close()
+
+
+class TestSearchLearningsCache:
+
+    def test_identical_call_skips_fts5_rebuild(self, instance_dir):
+        import app.memory_db as mdb
+        from app.memory_db import ensure_db, search_learnings
+        conn = ensure_db(instance_dir)
+        content = (
+            "- JWT token expiry causes race condition in session handler\n"
+            "- Database connection pooling tunes at 25\n"
+        )
+        first = search_learnings(conn, content, "race condition", max_k=4)
+        assert first  # non-empty result got cached
+        # Second identical call must NOT open a new in-memory FTS5 connection.
+        with patch.object(mdb.sqlite3, "connect", side_effect=AssertionError("rebuilt")):
+            second = search_learnings(conn, content, "race condition", max_k=4)
+        assert second == first
+        conn.close()
+
+    def test_changed_content_misses_cache(self, instance_dir):
+        from app.memory_db import ensure_db, search_learnings
+        conn = ensure_db(instance_dir)
+        c1 = "- alpha authentication problem\n"
+        c2 = "- alpha authentication problem\n- beta authentication fix\n"
+        r1 = search_learnings(conn, c1, "authentication", max_k=10)
+        r2 = search_learnings(conn, c2, "authentication", max_k=10)
+        assert len(r2) > len(r1)
+        conn.close()
+
+
 class TestMigration:
 
     def test_migrate_jsonl_to_sqlite(self, instance_dir):
@@ -337,6 +409,29 @@ class TestMigration:
 
         conn = ensure_db(instance_dir)
         assert entry_count(conn) == 3
+        conn.close()
+
+    def test_migrate_streams_across_batch_boundary_and_skips_malformed(self, instance_dir):
+        """Migration must index every valid row even past the internal batch
+        size, and silently skip malformed JSONL lines — proving the bounded
+        line-streaming path inserts the full file, not just the last batch."""
+        from app.memory_db import migrate_jsonl_to_sqlite, ensure_db, entry_count, _STREAM_BATCH
+
+        log_path = Path(instance_dir) / "memory" / "log.jsonl"
+        total = _STREAM_BATCH * 2 + 7  # crosses two flush boundaries
+        lines = [
+            json.dumps({"ts": f"2026-01-01T00:00:{i:02d}Z", "type": "session",
+                        "project": "koan", "content": f"entry {i}"})
+            for i in range(total)
+        ]
+        lines.insert(10, "{ this is not valid json")  # one malformed line
+        log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        count = migrate_jsonl_to_sqlite(instance_dir)
+        assert count == total
+
+        conn = ensure_db(instance_dir)
+        assert entry_count(conn) == total
         conn.close()
 
     def test_migration_skips_when_db_populated(self, instance_dir):

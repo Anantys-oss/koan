@@ -1,7 +1,8 @@
 # Kōan instance data (private to each user)
 instance
 .koan*
-.claude
+.claude/*
+!.claude/settings.json
 
 # Python
 __pycache__/
@@ -32,6 +33,7 @@ koan/htmlcov/
 # IDE
 .vscode/
 .idea/
+wiki/.obsidian/
 .last-review-sha
 projects.yaml
 projects.docker.yaml

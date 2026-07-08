@@ -47,8 +47,22 @@ _LEGACY_FOOTER_PATTERNS: List[re.Pattern] = [
 
 
 def _provider_label(provider_name: str) -> str:
-    """Return a human-readable provider label."""
-    return provider_name[:1].upper() + provider_name[1:] if provider_name else ""
+    """Return a human-readable CLI label for the footer.
+
+    Known provider flavors (``claude``, ``codex``, …) are title-cased for
+    readability (``claude`` → ``Claude``). Custom CLI binary basenames
+    (e.g. ``claude-deep`` from ``cli.review_mode:
+    claude:/root/.local/bin/claude-deep``) are technical identifiers and shown
+    verbatim, so the signature reflects the binary that ran instead of the
+    provider flavor.
+    """
+    if not provider_name:
+        return ""
+    from app.provider import is_known_provider
+
+    if is_known_provider(provider_name):
+        return provider_name[:1].upper() + provider_name[1:]
+    return provider_name
 
 
 def build_koan_footer(
@@ -66,6 +80,11 @@ def build_koan_footer(
 
         build_koan_footer(action="Automated review by", provider_name="claude", model="opus-4-6")
         # → '_Automated review by [Kōan](...)_ _(Claude · model opus-4-6)_'
+
+        # A custom CLI binary basename (e.g. from cli.review_mode:
+        # claude:/root/.local/bin/claude-deep) is shown verbatim, not title-cased.
+        build_koan_footer(action="Automated review by", provider_name="claude-deep", model="opus")
+        # → '_Automated review by [Kōan](...)_ _(claude-deep · model opus)_'
     """
     base = f"_{action} {KOAN_BRANDED}_"
     parts = []

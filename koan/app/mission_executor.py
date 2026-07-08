@@ -877,7 +877,7 @@ def _run_iteration(
         # causing a retry loop until MAX_CONSECUTIVE_ERRORS triggers pause.
         if mission_title:
             _run._update_mission_in_file(instance, mission_title, failed=True)
-            _fail_icon = "🚦" if _run._is_ci_check_mission(mission_title) else "❌"
+            _fail_icon = _run._mission_fail_icon(mission_title)
             _run._notify(instance, f"{_fail_icon} Mission failed: {plan.get('error', mission_title)}")
             _run._commit_instance(instance)
         else:
@@ -1054,7 +1054,7 @@ def _run_iteration(
                 log("error", f"Git prep failed for {project_name}: {prep.error}")
                 if mission_title:
                     _run._update_mission_in_file(instance, mission_title, failed=True)
-                    _gp_icon = "🚦" if _run._is_ci_check_mission(mission_title) else "❌"
+                    _gp_icon = _run._mission_fail_icon(mission_title)
                     _run._notify(instance, f"{_gp_icon} [{project_name}] Git prep failed, aborting mission: {mission_title[:60]}")
                 return False  # abort — branch state is unreliable
             else:
@@ -1063,7 +1063,7 @@ def _run_iteration(
             log("error", f"Git prep error for {project_name}: {e}\n{traceback.format_exc()}")
             if mission_title:
                 _run._update_mission_in_file(instance, mission_title, failed=True)
-                _gp_icon = "🚦" if _run._is_ci_check_mission(mission_title) else "❌"
+                _gp_icon = _run._mission_fail_icon(mission_title)
                 _run._notify(instance, f"{_gp_icon} [{project_name}] Git prep error, aborting mission: {mission_title[:60]}")
             return False  # abort — branch state is unreliable
 
@@ -1085,7 +1085,7 @@ def _run_iteration(
             try:
                 _run._notify(
                     instance,
-                    f"❌ [{project_name}] Mission not started: {mission_title}\n"
+                    f"{_run._mission_fail_icon(mission_title)} [{project_name}] Mission not started: {mission_title}\n"
                     f"Reason: {reason}.",
                 )
             except Exception as notify_err:  # notification must never mask the abort
@@ -1323,7 +1323,7 @@ def _run_iteration(
                 log("error", f"[devcontainer] setup failed for '{project_name}': {e}")
                 if original_mission_title:
                     _run._update_mission_in_file(instance, original_mission_title, failed=True)
-                    _run._notify(instance, f"❌ [{project_name}] Devcontainer setup failed: {e}")
+                    _run._notify(instance, f"{_run._mission_fail_icon(original_mission_title)} [{project_name}] Devcontainer setup failed: {e}")
                 return False
             cmd = _dc.wrap_command(
                 cmd, project_path,

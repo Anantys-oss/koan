@@ -1,3 +1,11 @@
+---
+type: doc
+title: "REST API"
+tags: [operations]
+created: 2026-05-31
+updated: 2026-06-27
+---
+
 # REST API
 
 Kōan exposes an **optional HTTP control layer** so external tools can queue missions, poll status, and manage the agent programmatically — in addition to the Telegram / Matrix / Slack messaging bridge.
@@ -15,7 +23,7 @@ api:
   enabled: true       # Include API in managed processes (default: false)
   host: "127.0.0.1"  # Bind address (default: 127.0.0.1 — loopback only)
   port: 8420          # HTTP port (default: 8420)
-  threads: 8          # waitress worker threads (default: 8)
+  threads: 2          # waitress worker threads (default: 2)
   # token: ""         # Bearer token fallback (prefer KOAN_API_TOKEN env var)
 ```
 

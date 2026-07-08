@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Daemon Runtime"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-06-26
+---
+
 # Daemon Runtime
 
 This page describes how the long-running Koan daemon is assembled today.
@@ -18,6 +26,9 @@ bridge. `make stop` asks managed processes to exit and escalates only when a
 process does not stop cleanly.
 
 ## Bridge Loop
+
+See `specs/components/bridge.md` for the design contract behind this process
+(two-process isolation, crash-safe outbox, invariants on inbound-text trust).
 
 `awake.py` owns user-facing message ingestion. It:
 
@@ -55,6 +66,9 @@ extra OS process is forked — the "dedicated chat channel vs bg tasks" split is
 realized with threads inside the existing bridge process.
 
 ## Agent Loop
+
+See `specs/components/agent-loop.md` for the design contract behind this
+pipeline (execution flow, retry guards, lifecycle invariants).
 
 `run.py` owns background work. Its loop is split across focused modules:
 

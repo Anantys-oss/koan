@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Introspection : Kōan au-delà du code"
+tags: [design]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 # Introspection : Kōan au-delà du code
 
 *Session 107 — Mission deep*

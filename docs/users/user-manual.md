@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Kōan User Manual"
+tags: [users]
+created: 2026-05-28
+updated: 2026-07-02
+---
+
 # Kōan User Manual
 
 **From beginner to power user — everything Kōan can do.**
@@ -578,7 +586,7 @@ The debug loop enforces four steps:
   - `--bot-comments` — Triage inline comments from code-review bots (CodeRabbit, Copilot Review, Sourcery) and post replies to actionable findings
 - **Output:** Findings are grouped into severity buckets (🔴 Blocking / 🟡 Important / 🟢 Suggestions), each folded into a collapsible section. Every finding's location is shown on its own line inside the summary as a **clickable link** that jumps straight to the exact file and lines on GitHub, pinned to the reviewed commit (so the link stays accurate even after the PR gets new commits).
 - **Project memory:** Reviews automatically inject the project's filtered learnings plus human-curated `context.md`/`priorities.md`, ranked against the PR's title, body, and diff via the SQLite FTS5 memory index. Set `review_memory.enabled: true` in `config.yaml` to *also* include recent typed project memory (decisions, observations) for extra reviewer context. Both apply to `/review` and the backend private review gate.
-- **Prior review context:** On a re-review, the bot's own most recent structured review is surfaced in a dedicated, head-preserving prompt slot so the new review builds on it (confirming whether prior findings are resolved) instead of losing it to the recency-truncated conversation thread. That prior review is also removed from the thread so it doesn't echo or crowd out human feedback. Tune via `review_context` in `config.yaml` (`include_bot_feedback`, `prior_review_max_chars`).
+- **Prior review context:** On a re-review, the bot's own most recent structured review is surfaced in a dedicated, head-preserving prompt slot so the new review builds on it (confirming whether prior findings are resolved) instead of losing it to the recency-truncated conversation thread. That prior review comment is also collapsed to a short "superseded" pointer so it doesn't echo or crowd out human feedback — set `review_history.preserve_previous: true` to keep it intact instead. Tune the prompt slot via `review_context` in `config.yaml` (`include_bot_feedback`, `prior_review_max_chars`).
 
 <details>
 <summary>Use cases</summary>
@@ -796,6 +804,7 @@ After completion, Kōan posts a structured comment on the PR with these sections
 
 - `/orphans koan` — Find orphan branches in the koan project, rebase each onto main, and create draft PRs
 - Orphan branches are automatically detected during git sync — use this to recover them in one step
+- Each PR's title and description are derived from the branch's own commits (no AI call): the title is the first commit's subject, the body is that commit's full message (single commit) or the first three commit messages (multiple commits)
 </details>
 
 **`/check`** — Run project health checks on a PR or issue (rebase, review, plan as needed).
@@ -1619,6 +1628,20 @@ GitHub forbids APPROVE / REQUEST_CHANGES on a PR you authored (HTTP 422). When K
 review_inline_comments:
   enabled: false        # Master switch (default: false)
   max_comments: 25      # Cap inline threads posted per review (default: 25)
+```
+
+**Review history (preserving prior reviews):** By default, on a re-review (new commits landed, or a review was re-requested), the bot collapses its previous review comment to a short "superseded" pointer so the PR timeline stays tidy and the latest review is the one that stands out. Set `review_history.preserve_previous: true` to leave the prior review comment untouched — the new review is posted alongside it instead. The flag only affects re-reviews; a review of the same commits with no re-request still updates the existing comment in place. Overridable per-project in `projects.yaml`.
+
+```yaml
+review_history:
+  preserve_previous: false   # Keep the previous review comment intact (default: false)
+```
+
+**Draft-PR review gate (opt-in):** By default Kōan reviews a PR as soon as it is attached as a reviewer, whether or not the PR is a draft. Set `review_draft_skip.enabled: true` to defer that automatic review while a PR is in draft state — the author has marked it not-ready, so the bot waits. **To review a deferred PR, send `/review` once it is ready — that is the reliable remedy.** Do **not** rely on automatic resume: GitHub does not reliably re-surface the review request on the draft→ready transition, so a deferred review is not guaranteed to fire on its own. (The deferral is a soft skip — it writes no dedup or cooldown state — so *if* GitHub ever does re-surface the request it is re-evaluated fresh; but treat that as a bonus, not a mechanism you can count on.) So you are never left guessing, a deferred review sends one info message telling you it was intentionally postponed and to send `/review` when ready. This gates **only** the "bot attached as reviewer" path: an explicit `/review` from chat or a GitHub `@mention` is always honored immediately, regardless of this flag or the PR's draft state.
+
+```yaml
+review_draft_skip:
+  enabled: false          # Defer auto-review of draft PRs (default: false)
 ```
 
 ### Custom Skills

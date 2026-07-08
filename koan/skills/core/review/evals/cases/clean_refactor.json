@@ -1,0 +1,14 @@
+{
+  "id": "clean_refactor",
+  "name": "Add type annotations to an unchanged function",
+  "skill": "review",
+  "description": "A purely additive, safe change: adds type hints to a function whose body and behaviour are unchanged. A disciplined review should LGTM this.",
+  "diff": "--- a/utils.py\n+++ b/utils.py\n@@ -3,4 +3,4 @@\n-def compute_total(items):\n+def compute_total(items: list[int]) -> int:\n     \"\"\"Return the sum of all items.\"\"\"\n     return sum(items)\n",
+  "expect": {
+    "expect_lgtm": true,
+    "min_findings": 0,
+    "require_valid_json": true,
+    "expect_findings": [],
+    "forbidden_files": ["utils.py"]
+  }
+}

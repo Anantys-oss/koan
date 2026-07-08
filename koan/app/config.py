@@ -40,7 +40,7 @@ def _load_project_overrides(project_name: str) -> dict:
         projects_config = load_projects_config(koan_root)
         if not projects_config:
             return {}
-        if project_name not in projects_config.get("projects", {}):
+        if project_name not in (projects_config.get("projects") or {}):
             return {}
         return get_project_config(projects_config, project_name)
     except Exception as e:
@@ -642,6 +642,12 @@ def get_skip_permissions() -> bool:
 
     When True, ``--dangerously-skip-permissions`` is added to Claude CLI
     invocations — required for MCP tools to work in autonomous mode.
+
+    Root handling is deliberately NOT done here: the root/sudo refusal of
+    ``--dangerously-skip-permissions`` is Claude-CLI-specific, so
+    ``ClaudeProvider.build_permission_args()`` drops the flag (with a
+    one-time warning) while other providers keep honoring this setting
+    when running as root.
     """
     config = _load_config()
     return bool(config.get("skip_permissions", False))
@@ -786,15 +792,20 @@ def get_api_token() -> str:
 
 
 def get_api_threads() -> int:
-    """Return the number of waitress worker threads (default: 8).
+    """Return the number of waitress worker threads (default: 2).
 
-    Config key: api.threads (default: 8)
+    Lowered from 8 to 2: the REST API is a low-traffic control plane, and
+    each idle waitress thread holds a stack + thread-local arena. Two threads
+    keep the resident footprint small on memory-constrained hosts (Railway)
+    while still serving concurrent requests. Operators can raise it via config.
+
+    Config key: api.threads (default: 2)
     """
     config = _load_config()
     api_cfg = config.get("api", {})
     if isinstance(api_cfg, dict):
-        return _safe_int(api_cfg.get("threads", 8), 8)
-    return 8
+        return _safe_int(api_cfg.get("threads", 2), 2)
+    return 2
 
 
 def get_cli_output_journal() -> bool:
@@ -1778,7 +1789,7 @@ def get_auto_merge_config(config: dict, project_name: str) -> dict:
         from app.projects_config import load_projects_config, get_project_auto_merge
         koan_root = os.environ.get("KOAN_ROOT", "")
         projects_config = load_projects_config(koan_root) if koan_root else None
-        if projects_config and project_name in projects_config.get("projects", {}):
+        if projects_config and project_name in (projects_config.get("projects") or {}):
             return get_project_auto_merge(projects_config, project_name)
     except Exception as e:
         print(f"[config] Auto-merge config load error for {project_name}: {e}", file=sys.stderr)
@@ -2265,6 +2276,36 @@ def get_review_verdict_config() -> dict:
     return result
 
 
+def get_review_history_config() -> dict:
+    """Get review history configuration from config.yaml.
+
+    Controls whether a previous review comment is preserved on a later
+    re-review. By default (``preserve_previous: false``) the bot collapses its
+    prior summary comment to a short "superseded" pointer before posting the
+    fresh review, keeping the PR timeline tidy — this is the historical
+    behavior. Set ``preserve_previous: true`` to leave the prior review comment
+    untouched; the new review is then posted alongside it instead.
+
+    Config key: review_history::
+
+        review_history:
+          preserve_previous: false
+
+    Returns:
+        Dict with key ``preserve_previous`` (bool). Always present; defaults
+        to False. Fails closed to False on any malformed value so a bad config
+        never silently accumulates duplicate review comments.
+    """
+    config = _load_config()
+    section = config.get("review_history", {})
+    if not isinstance(section, dict):
+        return {"preserve_previous": False}
+    val = section.get("preserve_previous", False)
+    if not isinstance(val, bool):
+        return {"preserve_previous": False}
+    return {"preserve_previous": val}
+
+
 def get_review_inline_comments_config() -> dict:
     """Get inline-comment posting configuration for /review.
 
@@ -2295,6 +2336,38 @@ def get_review_inline_comments_config() -> dict:
         max_comments = 25
 
     return {"enabled": enabled, "max_comments": max_comments}
+
+
+def get_review_draft_skip_config() -> dict:
+    """Get the draft-PR auto-review gate configuration from config.yaml.
+
+    When enabled, a ``review_requested`` notification (the bot attached as a PR
+    reviewer) does NOT auto-queue ``/review`` while the PR is in draft state.
+    The remedy is an explicit ``/review`` once the PR is ready — the gate does
+    not rely on automatic resume (GitHub does not reliably re-fire
+    ``review_requested`` on the draft->ready transition). An explicit ``/review``
+    (chat or GitHub @mention) is always honored regardless of this flag — it only
+    gates the "bot attached as reviewer" path.
+
+    Config key: review_draft_skip::
+
+        review_draft_skip:
+          enabled: false
+
+    Returns:
+        Dict with key: enabled (bool). Defaults to disabled so the historical
+        "review always" behavior (including draft PRs) is preserved.
+    """
+    config = _load_config()
+    section = config.get("review_draft_skip", {}) or {}
+    if not isinstance(section, dict):
+        section = {}
+
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        enabled = False
+
+    return {"enabled": enabled}
 
 
 def is_caveman_mode() -> bool:

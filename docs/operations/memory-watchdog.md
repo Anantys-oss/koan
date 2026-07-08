@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Memory watchdog (#2232)"
+tags: [operations]
+created: 2026-07-01
+updated: 2026-07-01
+---
+
 # Memory watchdog (#2232)
 
 Kōan's RSS grows over multi-day runs. The watchdog samples RSS each loop

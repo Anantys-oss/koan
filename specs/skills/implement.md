@@ -1,3 +1,11 @@
+---
+type: skill-spec
+title: "Skill Spec — implement"
+tags: [skill]
+created: 2026-06-27
+updated: 2026-07-02
+---
+
 # Skill Spec — `implement`
 
 ## Command(s)
@@ -11,6 +19,9 @@
 Queue an implementation mission for a tracker issue (GitHub or Jira): the agent reads the
 issue, plans, implements, tests, and opens a draft PR. The end-to-end "build the thing"
 skill.
+
+See `docs/users/skills.md` for the end-user `/implement` reference and
+`docs/users/user-manual.md` for the fuller walkthrough.
 
 ## Inputs
 
@@ -44,6 +55,15 @@ skill.
 - Always a draft PR on a `<prefix>/*` branch; never commits to main, never merges.
 - `_work_landed()` must detect the landed branch even when the agent checks out main
   after pushing (fallback checks the expected `{prefix}implement-{issue}` branch).
+
+## Evaluation
+
+`implement` is **eval-exempt** (`EVAL_EXEMPT_SKILLS`, pinned by a guard test). It
+is orchestration: `run_implement()` returns `(success, summary)`, mutates files,
+and opens a PR — there is no LLM-driven, checkable structured-output contract to
+score against a golden dataset. Fabricating one would measure nothing real
+(constitution VII). Its quality bar is upheld instead by the behavioural suite
+(`test_implement_runner.py`): does it branch, draft-PR, and detect landed work?
 
 ## Known debt / watch-outs
 

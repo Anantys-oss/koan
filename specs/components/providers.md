@@ -1,3 +1,11 @@
+---
+type: component-spec
+title: "Component Spec — CLI Provider Abstraction"
+tags: [providers]
+created: 2026-06-27
+updated: 2026-07-01
+---
+
 # Component Spec — CLI Provider Abstraction
 
 **Package:** `koan/app/provider/` (`base.py`, `claude.py`, `cline.py`, `codex.py`,
@@ -30,6 +38,7 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 | `__init__.run_command()` / `run_command_streaming()` | The single invocation entry points. Callers should not spawn provider subprocesses directly. |
 | `__init__.build_full_command()` | Assembles the provider-specific argv. |
 | `__init__.get_provider_display()` / `get_cli_binary_name()` | Display helpers. `get_provider_display()` returns `"<name>"` or `"<name> (<binary>)"` when `KOAN_CLAUDE_CLI_PATH` points at a different binary. Single source of truth for the global provider line shown by the startup banner and `/status`. Per-role provider overrides are summarized separately by `describe_cli_roles()`. |
+| `base.custom_binary_name()` / `__init__.provider_cli_display(provider)` | Per-instance attribution helpers. `custom_binary_name()` returns the basename of a pinned custom binary (per-role `_binary_override` from `cli.<role>: flavor:path`; Claude also surfaces the global `KOAN_CLAUDE_CLI_PATH`), or `''` when no override is configured. `provider_cli_display(provider)` returns that basename or, failing that, the provider flavor name — used by `review_runner._review_attribution()` so the review footer shows the CLI that actually ran (e.g. `claude-deep`), not just the flavor. Only real overrides count: a provider's natural fallback (Copilot's `gh`) is never surfaced as "custom". |
 | `__init__.get_provider_for_role(role, project_name)` / `get_fallback_provider(project_name)` / `resolve_role_provider(role, project_name)` | Per-role provider selection (the `cli:` config section). `get_provider_for_role` returns the **global cached singleton** when the role is unset (parity) or a **fresh** `_PROVIDERS[flavor](binary_path=path)` otherwise — never written to `_cached_provider`. `get_fallback_provider` returns the single section-wide `cli.fallback` instance (or `None`). `resolve_role_provider` is the stateless-helper entry point: it pre-flight-swaps to the fallback when the role binary is unavailable. |
 | `cli:` config / `config.get_cli_config()` / `get_cli_fallback()` | New config section parallel to `models:`. `cli.default.<role>` (+ per-project flat `cli.<role>`) maps a mission role (`mission`/`chat`/`lightweight`/`review_mode`/`reflect`) to a `flavor` or `flavor:path`; a single `cli.fallback` provider is used on launch/auth failure. The role's MODEL resolves against that provider's `models.<provider>.<role>` block (`get_model_config(role_providers=…)`). Replaces the removed `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`. |
 | Provider resolution | Order: `KOAN_CLI_PROVIDER` env (fallback `CLI_PROVIDER`) → `projects.yaml`/`config.yaml` → default. Centralized in `utils.get_cli_provider_env()`. This resolves the GLOBAL provider; `cli.<role>` layers per-role selection on top via `get_provider_for_role`. |
@@ -57,12 +66,27 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 - **The `cli:` absence contract is exact parity.** With no `cli:` section, every
   role resolves to `(get_provider_name(), "")` and `get_model_config(role_providers=None)`
   is byte-for-byte the historical behavior. Changes here must preserve that.
+- **Footer attribution shows the binary that ran, then falls back to the flavor.**
+  `review_runner._review_attribution()` is the single source of truth for the review
+  footer's CLI label: `provider_cli_display()` surfaces the basename of a pinned
+  review binary (`cli.review_mode: flavor:path`, or Claude's `KOAN_CLAUDE_CLI_PATH`)
+  so the signature reads e.g. `claude-deep`, not `Claude`; with no override it falls
+  back to the provider flavor. `pr_footer._provider_label()` title-cases known
+  provider flavors (`claude` → `Claude`) but renders custom binary basenames
+  verbatim — they are technical identifiers, not brand names.
 - **Provider fallback is launch/auth only, never quota/transient.** The single
   `cli.fallback` provider is substituted only on binary-not-found (exit 127 /
   `is_available()` False) or `ErrorCategory.AUTH`, and (on the mission path) only
   when no commits were produced. Quota still pauses; transient errors still use
   the in-place retry. Do not widen this to quota — that would double-spend across
   subscriptions and change the pause contract.
+- **Root handling for `skip_permissions` is Claude-specific.** The Claude CLI
+  refuses `--dangerously-skip-permissions` under root/sudo, so
+  `ClaudeProvider.build_permission_args()` (inherited by `OllamaLaunchProvider`)
+  drops the flag under euid 0 with a once-per-process warning.
+  `config.get_skip_permissions()` stays a pure config read — moving the root
+  check there would silently strip Codex full access and Cline auto-approve
+  for root deployments, whose CLIs accept the setting.
 - **Tool-name vocabularies differ per provider.** Copilot maps its own names; the
   abstraction must translate, not leak provider-specific tool names upward.
 - **Quota/usage extraction is provider-specific.** Claude exposes usage in

@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Architecture Overview"
+tags: [architecture]
+created: 2026-05-28
+updated: 2026-05-28
+---
+
 # Architecture Overview
 
 Koan is a local autonomous coding daemon. It keeps user intent in Markdown files,
@@ -40,4 +48,6 @@ as `koan/`. It does not commit directly to `main`, and shipping work remains a
 human decision unless an explicit project configuration enables a narrower
 automation such as auto-merge. Keep new features aligned with this boundary.
 
-See [Design Decisions](../design/decisions.md) for durable design rules.
+See [Design Decisions](../design/decisions.md) for durable design rules, and
+`specs/README.md` for the component-by-component design contracts (why each
+subsystem is built the way it is) that this overview only sketches.

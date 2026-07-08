@@ -1,3 +1,11 @@
+---
+type: doc
+title: "Local LLM Provider (removed)"
+tags: [providers]
+created: 2026-05-28
+updated: 2026-06-24
+---
+
 # Local LLM Provider (removed)
 
 > **The `local` provider has been removed.** It plugged an Ollama

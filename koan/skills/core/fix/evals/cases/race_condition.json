@@ -1,0 +1,13 @@
+{
+  "id": "race_condition",
+  "name": "Intermittent double-processing under concurrent workers",
+  "skill": "fix",
+  "description": "A flaky, concurrency-dependent bug: two workers occasionally process the same job. Reproducibility is partial, so a disciplined diagnostic should land at MEDIUM confidence and name the shared-state race.",
+  "issue_title": "Jobs run twice ~5% of the time under load",
+  "issue_body": "Under concurrent load (~20 workers), about 5% of jobs appear to execute twice. No deterministic repro yet. Suspect a shared queue or missing lock around job claims. Happens more often right after a deploy.",
+  "expect": {
+    "expected_confidence": "MEDIUM",
+    "hypothesis_keywords": ["race", "lock", "concurrent"],
+    "code_path_keywords": ["worker"]
+  }
+}

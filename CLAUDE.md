@@ -23,7 +23,9 @@ contract it upholds, and what breaks if you change it. Specs drive the applicati
 explain how to use it (see `specs/README.md` for the specs-vs-docs split). This discipline
 is **not optional**:
 
-1. **Before implementing** any feature or refactor, READ the relevant spec first:
+1. **Before implementing** any feature or refactor, READ the relevant spec first — via
+   `wiki/index.md` (or `/wiki:query` for a fuzzy question) rather than blind grep, see
+   "Wiki tooling" below:
    - Component change → `specs/components/<group>.md` (core, agent-loop, bridge,
      providers, git-github, issue-tracking, skills, web).
    - Skill change → `specs/skills/<skill-name>.md`.
@@ -35,16 +37,30 @@ is **not optional**:
 3. **No spec yet?** If you touch a component or skill that has no spec, WRITE one using
    `specs/components/` conventions or `specs/skills/SKILL_SPEC_TEMPLATE.md`. Phase 1 ships
    specs for the highest-impact pieces; the rest are added on-demand as they are touched.
+4. **`specs/<NNN-slug>/` (speckit) is a different, ephemeral population** — not the durable
+   contracts this discipline governs. See `specs/README.md`'s "components/, skills/ vs.
+   `<NNN-feature-slug>/`" section. When a speckit feature ships, step 2 above (updating the
+   matching `specs/components/<group>.md`) is what makes it durable — the speckit folder
+   itself stays as planning history.
 
 Specs and `docs/` coexist — most non-trivial changes update both. Use specs to anchor
 clean refactoring: change the spec's contract deliberately, then make the code match.
 
 ## Documentation first
 
-- Before planning or implementing a feature or important refactor, inspect the relevant documentation with `grep`, `find`, or equivalent search. Start at `docs/README.md`, then read the matching pages under `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`, `docs/operations/`, `docs/design/`, `docs/security/`, or `docs/setup/`.
+- Before planning or implementing a feature or important refactor, check `wiki/index.md` (or `/wiki:query` for a fuzzy question) to find candidate pages — see "Wiki tooling" below — then read the matching pages under `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`, `docs/operations/`, `docs/design/`, `docs/security/`, or `docs/setup/`.
 - Treat docs as context to verify against code, not as unquestioned truth. If code and docs disagree, preserve current code behavior unless the task says otherwise, and update the docs to match the resulting behavior.
 - After changing user behavior, configuration, daemon flow, provider behavior, shared state, safety boundaries, or an important implementation decision, update the relevant docs in the same branch.
 - For core skill changes, update both `docs/users/user-manual.md` and `docs/users/skills.md`.
+
+## Wiki tooling
+
+`docs/` and the durable half of `specs/` (`components/`, `skills/`) are indexed together as an LLM Wiki (`praneybehl/llm-wiki-plugin`, real `wiki/` directory with `wiki/docs`, `wiki/specs-components`, `wiki/specs-skills` symlinks — see `wiki/SCHEMA.md` for full conventions, including why `specs/<NNN-slug>/` stays wiki-visible but unfrontmattered).
+
+- **Index-first.** Read `wiki/index.md`, open the obviously-relevant page(s) directly. Escalate to `/wiki:query "<topic>"` only for open-ended/fuzzy questions the index alone doesn't resolve. `/wiki:lint`/`/wiki:stats` are periodic health checks, not part of the per-task loop.
+- **In Plan Mode**, the plan's Context section must state what the wiki said (or that nothing relevant was found) before the recommended approach.
+- **Wiki bookkeeping is exempt from the "no unsupervised modification" principle below** — frontmatter dates, `wiki/index.md` entries, `wiki/log.md` lines, and `specs/<NNN-slug>/` computed status are committed directly as part of the same change/PR, no separate review step for that part specifically. This does not extend to actual spec/contract or code changes. A CI job (`.github/workflows/wiki-sync.yml`) backstops anything an LLM session missed by pushing a same-branch fix commit — never to `main`, never a separate PR.
+- `make setup` installs the `llm-wiki` plugin automatically (user scope, so it's available in every project on the machine — this is what makes `/wiki:*` work for both human sessions and koan's own headless CLI invocations, which never see the interactive plugin-install prompt). If `/wiki:*` commands aren't recognized (e.g. `claude` wasn't on `PATH` during `make setup`, or the plugin cache was cleared), run once: `claude plugin marketplace add praneybehl/llm-wiki-plugin && claude plugin install llm-wiki@llm-wiki --scope user`.
 
 ## Commands
 
