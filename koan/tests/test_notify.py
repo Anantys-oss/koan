@@ -231,6 +231,17 @@ class TestDirectSend:
         assert "bottok" in mock_post.call_args[0][0]
 
     @patch("app.notify.load_dotenv")
+    def test_numeric_group_id_sent_as_int(self, mock_dotenv, monkeypatch):
+        """A quoted negative group ID reaches the API payload as an int."""
+        monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "tok")
+        monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "-1001234567890")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"ok": True}
+        with patch("requests.post", return_value=mock_resp) as mock_post:
+            assert _direct_send("hello") is True
+        assert mock_post.call_args[1]["json"]["chat_id"] == -1001234567890
+
+    @patch("app.notify.load_dotenv")
     def test_api_error_returns_false(self, mock_dotenv, monkeypatch):
         monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "tok")
         monkeypatch.setenv("KOAN_TELEGRAM_CHAT_ID", "123")

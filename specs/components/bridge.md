@@ -3,7 +3,7 @@ type: component-spec
 title: "Component Spec — Telegram Bridge"
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-07-03
+updated: 2026-07-08
 ---
 
 # Component Spec — Telegram Bridge
@@ -56,6 +56,15 @@ awake.py (loop, ~3s poll)
   through `utils.get_telegram_chat_id()`, which `.strip()`s stray whitespace/newlines
   (Railway/copy-paste inject a trailing newline that makes Telegram answer
   `chat not found`). Never read the env var raw into an API payload.
+- **The chat ID is coerced to `int` at the outbound API payload.** Every Telegram
+  `chat_id` field (`sendMessage`, `sendChatAction`, `setMessageReaction`, and
+  `notify._direct_send_chunk`) wraps the value in `utils.coerce_chat_id()`, which turns a
+  fully-numeric (optionally negative) ID into `int` and passes anything else — Slack
+  channel strings, `@channelusername` — through unchanged. Railway's ENV editor cannot
+  store a bare negative group ID, so it becomes a quoted string; empirically Telegram
+  returns `chat not found` for a quoted group ID but accepts the JSON integer. The stored
+  identity string (`get_telegram_chat_id()` / `bridge_state.CHAT_ID`) stays a string for
+  inbound `chat.id` equality checks; coercion happens only where the payload is built.
 
 ## Integration points
 
