@@ -218,8 +218,17 @@ setup_ssh() {
 # -------------------------------------------------------------------------
 setup_instance() {
     if [ ! -f "$INSTANCE/missions.md" ]; then
-        log "Initializing instance/ from template"
-        cp -r "$KOAN_ROOT/instance.example/"* "$INSTANCE/" 2>/dev/null || true
+        # Cold boot: try to hydrate from the operator's private instance repo
+        # (KOAN_INSTANCE_REPO). Fail-open — fall back to the bundled template.
+        if [ -n "${KOAN_INSTANCE_REPO:-}" ] \
+           && (cd "$KOAN_ROOT/koan" && $PYTHON -m app.instance_hydrator hydrate "$INSTANCE"); then
+            success "instance/ hydrated from ${KOAN_INSTANCE_REPO}"
+        else
+            [ -n "${KOAN_INSTANCE_REPO:-}" ] && \
+                warn "instance hydration failed — using instance.example/ template"
+            log "Initializing instance/ from template"
+            cp -r "$KOAN_ROOT/instance.example/"* "$INSTANCE/" 2>/dev/null || true
+        fi
     fi
 
     # Ensure required subdirectories exist
