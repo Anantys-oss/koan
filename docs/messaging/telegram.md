@@ -3,7 +3,7 @@ type: doc
 title: "Telegram Setup Guide"
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-07-03
+updated: 2026-07-08
 ---
 
 # Telegram Setup Guide
@@ -82,6 +82,13 @@ Railway (env vars are injected as strings, and editors can preserve a trailing
 newline). Kōan now `.strip()`s the value at read time, so a clean restart clears
 it. If it persists, re-check the ID from `getUpdates` (group IDs are negative,
 e.g. `-1001234567890`).
+
+For **group/supergroup** IDs specifically, Railway's ENV editor can't store a
+bare negative number, so it ends up quoted (`"-1001234567890"`); Telegram has
+been observed to answer `chat not found` for a quoted group ID while accepting
+the same value as a plain integer. Kōan coerces any fully-numeric chat ID to an
+integer in the outgoing API request, so this now works whether you store it
+quoted or not.
 
 ### "KOAN_TELEGRAM_TOKEN not set" error
 

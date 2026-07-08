@@ -1923,3 +1923,43 @@ class TestGetTelegramChatId:
         from app.utils import get_telegram_chat_id
         monkeypatch.delenv("KOAN_TELEGRAM_CHAT_ID", raising=False)
         assert get_telegram_chat_id() == ""
+
+
+class TestCoerceChatId:
+    def test_negative_group_id_becomes_int(self):
+        from app.utils import coerce_chat_id
+        assert coerce_chat_id("-1001234567890") == -1001234567890
+
+    def test_positive_user_id_becomes_int(self):
+        from app.utils import coerce_chat_id
+        assert coerce_chat_id("123456") == 123456
+
+    def test_strips_before_coercing(self):
+        from app.utils import coerce_chat_id
+        assert coerce_chat_id("  -1001234567890\n") == -1001234567890
+
+    def test_int_passes_through(self):
+        from app.utils import coerce_chat_id
+        assert coerce_chat_id(-1001234567890) == -1001234567890
+
+    def test_channel_username_unchanged(self):
+        from app.utils import coerce_chat_id
+        assert coerce_chat_id("@my_channel") == "@my_channel"
+
+    def test_non_numeric_string_unchanged(self):
+        from app.utils import coerce_chat_id
+        assert coerce_chat_id("C0123SLACK") == "C0123SLACK"
+
+    def test_empty_unchanged(self):
+        from app.utils import coerce_chat_id
+        assert coerce_chat_id("") == ""
+
+    def test_lone_minus_unchanged(self):
+        from app.utils import coerce_chat_id
+        assert coerce_chat_id("-") == "-"
+
+    def test_exotic_numeral_not_coerced(self):
+        # str.isdigit() is True for superscripts but int() rejects them —
+        # must not raise, must leave the value untouched.
+        from app.utils import coerce_chat_id
+        assert coerce_chat_id("²") == "²"

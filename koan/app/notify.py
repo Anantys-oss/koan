@@ -24,7 +24,7 @@ from typing import Dict, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-from app.utils import get_telegram_chat_id, load_dotenv
+from app.utils import coerce_chat_id, get_telegram_chat_id, load_dotenv
 
 # Thread-local reply context for group chat threading.
 # Set by the bridge main loop before dispatching a message handler;
@@ -323,7 +323,7 @@ def _direct_send_chunk(api_base: str, chat_id: str, chunk: str,
     """Send a single message chunk via Telegram API. Raises on network error."""
     import requests
 
-    payload = {"chat_id": chat_id, "text": chunk}
+    payload = {"chat_id": coerce_chat_id(chat_id), "text": chunk}
     if parse_mode:
         payload["parse_mode"] = parse_mode
     if reply_to:
