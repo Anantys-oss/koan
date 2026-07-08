@@ -13,6 +13,36 @@ Do not hand-edit released entries — they are the source for `changes/stable.md
 
 ## Unreleased
 
+### Merged 2026-07-08 — main @ 7411209c (92 commits)
+
+**Features**
+
+- **Skill-eval harness** — new `koan/app/skill_evals.py` (~1.3k LoC) with golden datasets, scorers, and live adapters for fix/plan/brainstorm/rebase/review skills; documented in `docs/operations/skill-evals.md`.
+- **Dashboard operator config tabs** (#2122) — live-edit projects/settings from the dashboard (`config_form.py`), with strict bool validation, config-write error surfacing, 404 on unknown project, and `cli_provider` validation.
+- **Review draft-PR gate** — `review_draft_skip` config flag defers auto-review of draft PRs when the bot is attached as reviewer.
+- **Orphans PR titles** — derive PR title/body from branch commits (length-capped).
+- **LLM Wiki adoption** — `wiki/` spanning `docs/` + `specs/`, `wiki-sync.yml` CI backstop, and `wiki_check.py` / `wiki_sync_ci.py` scripts.
+- `review_history.preserve_previous` config flag.
+
+**Refactors / perf**
+
+- `memory_db.py` — streaming JSONL reindex/migration (no whole-file buffering), FTS5 vacuum of expired rows, rollback on partial reindex, memoized learnings search.
+- Deploy: gate optional API process on Railway; lower `api.threads` default 8→2.
+- Review: dedupe custom-binary basename logic into a base helper; signature shows pinned CLI binary name.
+
+**Fixes** — highlights
+
+- **Config robustness**: tolerate null `projects:` section (#2273/#2274); disable `skip_permissions` when running as root; `strip_co_authored_by` validator entry.
+- **Security-adjacent**: `memory_db` guards non-dict JSONL lines / OSError skips; Telegram strips whitespace from `KOAN_TELEGRAM_CHAT_ID` (#2276, closes #2256); dashboard rejects bogus settings writes.
+- Per-run `$TMPDIR` for missions, reaped on completion; agent scratch files routed through it.
+- `deep_research` word-boundary topic dedup; `pr_feedback` `--limit` (silent 30-cap); `session_tracker` calendar-day drift off-by-one.
+- Two reverts of an earlier review CI-safe eval harness, superseded by the new `skill_evals` harness.
+
+**Docs / tests / CI**
+
+- Spec-kit artifacts (002 review-skill-evals, 003 core-skill-evals, 003 review-skip-draft-pr), `specs/components/*` + `specs/skills/*` frontmatter, dashboard/railway/telegram docs.
+- Test coverage for eval scorers, review draft gate, and session-tracker drift.
+
 ### Merged 2026-07-01 — main @ 3d9508ed (1 commit)
 
 **Features**
