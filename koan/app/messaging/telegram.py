@@ -333,7 +333,8 @@ class TelegramProvider(MessagingProvider):
 
     def _send_chunk(self, chunk: str, parse_mode: str = None, reply_to: int = 0) -> bool:
         """Send a single chunk via Telegram API. Raises on network error."""
-        payload = {"chat_id": self._chat_id, "text": chunk}
+        from app.utils import coerce_chat_id
+        payload = {"chat_id": coerce_chat_id(self._chat_id), "text": chunk}
         if parse_mode:
             payload["parse_mode"] = parse_mode
         if reply_to:
@@ -366,10 +367,11 @@ class TelegramProvider(MessagingProvider):
         """
         if not self._bot_token or not self._chat_id:
             return False
+        from app.utils import coerce_chat_id
         try:
             resp = requests.post(
                 f"{self._api_base}/sendChatAction",
-                json={"chat_id": self._chat_id, "action": "typing"},
+                json={"chat_id": coerce_chat_id(self._chat_id), "action": "typing"},
                 timeout=5,
             )
             return resp.json().get("ok", False)
@@ -385,11 +387,12 @@ class TelegramProvider(MessagingProvider):
         """
         if not reply_to_message_id or not self._bot_token or not self._chat_id:
             return False
+        from app.utils import coerce_chat_id
         try:
             resp = requests.post(
                 f"{self._api_base}/setMessageReaction",
                 json={
-                    "chat_id": self._chat_id,
+                    "chat_id": coerce_chat_id(self._chat_id),
                     "message_id": reply_to_message_id,
                     "reaction": [{"type": "emoji", "emoji": emoji}],
                 },

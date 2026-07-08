@@ -29,7 +29,7 @@ import threading
 import time
 import yaml
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 
 if "KOAN_ROOT" not in os.environ:
@@ -167,6 +167,27 @@ def get_telegram_chat_id() -> str:
         The stripped environment value, or empty string if unset.
     """
     return os.environ.get("KOAN_TELEGRAM_CHAT_ID", "").strip()
+
+
+def coerce_chat_id(chat_id: Union[str, int]) -> Union[str, int]:
+    """Coerce a numeric Telegram chat ID to ``int`` for the API payload.
+
+    Telegram group/supergroup IDs are negative integers (e.g. ``-1001234567890``).
+    Railway's ENV editor cannot store a bare negative number, so it is quoted as a
+    string; empirically Telegram's API returns "Bad Request: chat not found" for a
+    quoted group ID while the same value as a JSON integer works. Coerce a
+    fully-numeric (optionally negative) ID to ``int``; leave anything else — Slack
+    channel strings, ``@channelusername``, empty — untouched.
+    """
+    s = str(chat_id).strip()
+    if s.lstrip("-").isdigit():
+        try:
+            return int(s)
+        except ValueError:
+            # str.isdigit() is True for exotic numerals (superscripts, etc.)
+            # that int() rejects; leave those untouched.
+            return s
+    return s
 
 
 def parse_project(text: str) -> Tuple[Optional[str], str]:

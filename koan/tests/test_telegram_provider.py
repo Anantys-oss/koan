@@ -167,6 +167,39 @@ class TestSendRaw:
         assert "2/3" in notice_text
 
 
+class TestChatIdPayloadCoercion:
+    """Numeric chat IDs go into the API payload as int (Telegram group-chat fix)."""
+
+    @patch("app.messaging.telegram.requests.post")
+    def test_numeric_group_id_sent_as_int(self, mock_post, provider):
+        provider._chat_id = "-1001234567890"
+        mock_post.return_value = MagicMock(json=lambda: {"ok": True})
+        provider._send_raw("hi")
+        assert mock_post.call_args[1]["json"]["chat_id"] == -1001234567890
+        assert isinstance(mock_post.call_args[1]["json"]["chat_id"], int)
+
+    @patch("app.messaging.telegram.requests.post")
+    def test_non_numeric_id_left_as_string(self, mock_post, provider):
+        provider._chat_id = "@my_channel"
+        mock_post.return_value = MagicMock(json=lambda: {"ok": True})
+        provider._send_raw("hi")
+        assert mock_post.call_args[1]["json"]["chat_id"] == "@my_channel"
+
+    @patch("app.messaging.telegram.requests.post")
+    def test_typing_action_coerces_chat_id(self, mock_post, provider):
+        provider._chat_id = "-1001234567890"
+        mock_post.return_value = MagicMock(json=lambda: {"ok": True})
+        provider.send_typing()
+        assert mock_post.call_args[1]["json"]["chat_id"] == -1001234567890
+
+    @patch("app.messaging.telegram.requests.post")
+    def test_reaction_coerces_chat_id(self, mock_post, provider):
+        provider._chat_id = "-1001234567890"
+        mock_post.return_value = MagicMock(json=lambda: {"ok": True})
+        provider.add_reaction(55, "✅")
+        assert mock_post.call_args[1]["json"]["chat_id"] == -1001234567890
+
+
 class TestSendMessage:
     """Tests for send_message with flood protection."""
 
@@ -357,7 +390,7 @@ class TestSendTyping:
         mock_post.assert_called_once()
         call_json = mock_post.call_args[1]["json"]
         assert call_json["action"] == "typing"
-        assert call_json["chat_id"] == "12345"
+        assert call_json["chat_id"] == 12345
 
     @patch("app.messaging.telegram.requests.post")
     def test_returns_false_on_api_error(self, mock_post, provider):
@@ -492,7 +525,7 @@ class TestAddReaction:
         assert provider.add_reaction(55, "✅") is True
         args, kwargs = mock_post.call_args
         assert args[0].endswith("/setMessageReaction")
-        assert kwargs["json"]["chat_id"] == "12345"
+        assert kwargs["json"]["chat_id"] == 12345
         assert kwargs["json"]["message_id"] == 55
         assert kwargs["json"]["reaction"] == [{"type": "emoji", "emoji": "✅"}]
 
