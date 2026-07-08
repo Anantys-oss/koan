@@ -4,7 +4,7 @@ title: "Docker Setup"
 description: "Covers Docker Compose setup for Koan (pull vs. build from source), workspace project mounts, authentication (Claude/GitHub), volume layout, and troubleshooting common container issues."
 tags: [setup]
 created: 2026-05-28
-updated: 2026-06-24
+updated: 2026-07-08
 ---
 
 # Docker Setup
@@ -430,3 +430,31 @@ Mission queues are isolated by default (`missions.docker.md` vs
 `missions.md`). However, `instance/` state (memory, journal, config) is
 shared. If you run both simultaneously, avoid editing `instance/config.yaml`
 from both sides.
+
+## Instance hydration (boot as *your* instance)
+
+Set **`KOAN_INSTANCE_REPO`** to your PRIVATE instance repository and, on cold
+boot with an empty volume, the entrypoint clones it (including `.git`) into
+`instance/` so Kōan boots as *your* instance: soul, projects, skills, memory,
+journal, and any in-flight mission state. Unset → seed from the bundled
+`instance.example/` template.
+
+| Variable | Purpose |
+|---|---|
+| `KOAN_INSTANCE_REPO` | `gh` slug (`owner/koan-instance`) or full git URL of your private instance repo. |
+| `KOAN_INSTANCE_REPO_BRANCH` | Optional branch to clone. Default: the repo's default branch. |
+| `KOAN_INSTANCE_SYNC_INTERVAL` | Optional seconds between background `git pull --rebase --autostash` of `instance/`. `0` (default) disables it. |
+
+**Full-mirror model.** Hydration restores the whole tree, not just config,
+because the running agent already commits **and pushes** the entire `instance/`
+directory via `mission_runner.commit_instance()` on every lifecycle beat. The
+clone is the only new piece; the agent keeps the remote in sync from then on,
+and a later redeploy re-clones the up-to-date remote and resumes.
+
+**Caveats.** The `gh` clone path uses `GH_TOKEN` directly; the `git clone`
+fallback needs a credential helper (`gh auth setup-git` runs in the entrypoint).
+Any clone error fails open to the template — boot never hard-fails. Don't edit
+the remote by hand while the agent runs (the next `commit_instance` push would
+be non-fast-forward and diverge); if you must, set `KOAN_INSTANCE_SYNC_INTERVAL`
+so a throttled `pull --rebase --autostash` reconciles first. Secrets stay out of
+the repo — `.env` lives at `$KOAN_ROOT/.env`, outside `instance/`.
