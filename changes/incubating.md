@@ -33,7 +33,8 @@ Do not hand-edit released entries — they are the source for `changes/stable.md
 **Fixes** — highlights
 
 - **Config robustness**: tolerate null `projects:` section (#2273/#2274); disable `skip_permissions` when running as root; `strip_co_authored_by` validator entry.
-- **Security-adjacent**: `memory_db` guards non-dict JSONL lines / OSError skips; Telegram strips whitespace from `KOAN_TELEGRAM_CHAT_ID` (#2276, closes #2256); dashboard rejects bogus settings writes.
+- **Telegram chat-ID fix** (#2276, closes #2256) — strip whitespace/trailing newline from `KOAN_TELEGRAM_CHAT_ID` (injected by Railway or copy-paste) that caused "Bad Request: chat not found"; add `utils.get_telegram_chat_id()`.
+- **Security-adjacent**: `memory_db` guards non-dict JSONL lines / OSError skips; dashboard rejects bogus settings writes.
 - Per-run `$TMPDIR` for missions, reaped on completion; agent scratch files routed through it.
 - `deep_research` word-boundary topic dedup; `pr_feedback` `--limit` (silent 30-cap); `session_tracker` calendar-day drift off-by-one.
 - Two reverts of an earlier review CI-safe eval harness, superseded by the new `skill_evals` harness.
