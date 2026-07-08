@@ -129,6 +129,21 @@ def get_contemplative_tools(project_name: str = "") -> str:
     return _get_tools_for_role("contemplative", ["Read", "Write", "Glob", "Grep"], project_name)
 
 
+def get_instance_sync_interval() -> int:
+    """Seconds between periodic `instance/` pulls; 0 disables (default).
+
+    Read from KOAN_INSTANCE_SYNC_INTERVAL. When > 0, the loop periodically
+    runs `git pull --rebase --autostash` on instance/ to reconcile operator
+    edits pushed directly to the remote, keeping commit_instance()'s push
+    fast-forwardable.
+    """
+    raw = os.environ.get("KOAN_INSTANCE_SYNC_INTERVAL", "0")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 # Backward compatibility alias
 def get_allowed_tools() -> str:
     """Deprecated: Use get_chat_tools() or get_mission_tools() instead."""

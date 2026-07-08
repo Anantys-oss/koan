@@ -185,6 +185,30 @@ def format_project_list(projects: list) -> str:
 
 _last_ci_queue_sleep_check: float = 0
 
+# --- Optional periodic instance/ pull (opt-in, default off) ---
+
+_last_instance_sync: float = float("-inf")
+
+
+def _maybe_sync_instance_repo(instance_dir: str) -> None:
+    """Opt-in low-frequency `git pull --rebase --autostash` of instance/.
+
+    Gated by KOAN_INSTANCE_SYNC_INTERVAL (0 = disabled). Reconciles operator
+    edits pushed directly to the remote so commit_instance()'s next push stays
+    fast-forwardable. Fail-open — never blocks the loop.
+    """
+    global _last_instance_sync
+    from app.config import get_instance_sync_interval
+    interval = get_instance_sync_interval()
+    if interval <= 0:
+        return
+    now = time.time()
+    if now - _last_instance_sync < interval:
+        return
+    _last_instance_sync = now
+    from app.instance_hydrator import pull_instance_repo
+    pull_instance_repo(instance_dir)
+
 
 def _drain_ci_queue_during_sleep(instance_dir: str, elapsed: float):
     """Drain CI queue during interruptible sleep (throttled).
@@ -1802,6 +1826,7 @@ def interruptible_sleep(
         from app.heartbeat import run_stale_mission_check, run_disk_space_check
         run_stale_mission_check(instance_dir)
         run_disk_space_check(koan_root)
+        _maybe_sync_instance_repo(instance_dir)
 
         # Drain CI queue (throttled to once per 30s).
         # Completed CI runs inject missions or log success — detected faster

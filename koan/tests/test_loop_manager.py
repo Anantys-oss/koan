@@ -4260,3 +4260,33 @@ class TestKnownReposNullProjects:
         # No configured repos → None sentinel ("watch all") or an empty set.
         result = _get_known_repos_from_projects(str(tmp_path))
         assert result is None or isinstance(result, set)
+
+
+class TestInstanceRepoSync:
+    """Opt-in periodic instance/ pull tick (_maybe_sync_instance_repo)."""
+
+    def test_noop_when_interval_disabled(self, monkeypatch):
+        import app.loop_manager as lm
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "0")
+        called = []
+        monkeypatch.setattr(
+            "app.instance_hydrator.pull_instance_repo",
+            lambda d: called.append(d),
+        )
+        lm._maybe_sync_instance_repo("/tmp/does-not-matter")
+        assert called == []
+
+    def test_pull_invoked_when_enabled_and_throttled(self, monkeypatch):
+        import app.loop_manager as lm
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "900")
+        monkeypatch.setattr(lm, "_last_instance_sync", float("-inf"), raising=False)
+        called = []
+        monkeypatch.setattr(
+            "app.instance_hydrator.pull_instance_repo",
+            lambda d: called.append(d) or True,
+        )
+        lm._maybe_sync_instance_repo("/tmp/inst")
+        assert called == ["/tmp/inst"]
+        # Second immediate call is throttled (interval not elapsed).
+        lm._maybe_sync_instance_repo("/tmp/inst")
+        assert called == ["/tmp/inst"]
