@@ -13,6 +13,17 @@ Do not hand-edit released entries — they are the source for `changes/stable.md
 
 ## Unreleased
 
+### Merged 2026-07-08 — main @ 78eb231e (1 commit)
+
+**Fixes**
+
+- **Telegram chat-ID coercion** (#2281) — coerce a numeric `chat_id` to `int` in the outgoing Telegram API payload, with a supporting helper in `utils.py`. Follows the earlier `#2276` whitespace-strip fix for `KOAN_TELEGRAM_CHAT_ID`.
+
+**Docs / tests**
+
+- `docs/messaging/telegram.md` and `specs/components/bridge.md` updated for the coercion behavior.
+- New coverage in `test_telegram_provider.py`, `test_notify.py`, and `test_utils.py`.
+
 ### Merged 2026-07-08 — main @ 7411209c (92 commits)
 
 **Features**
