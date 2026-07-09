@@ -180,9 +180,11 @@ and the new declaration/rarity/contract-first language (present and consistent).
 - **FR-002**: The Workflow & Quality Gates section of the Constitution MUST be updated so
   the "docs-and-specs-in-branch" gate no longer implies retroactive contract editing,
   and MUST reference the declaration requirement.
-- **FR-003**: `CLAUDE.md` (repo root `/CLAUDE.md`) and `workspace/koan/CLAUDE.md`
-  *Specs discipline (mandatory)* sections MUST be updated to the new rule, consistent
-  with the Constitution, and MUST point to the enforcing guard and the decision doc.
+- **FR-003**: The koan repo's root `CLAUDE.md` *Specs discipline (mandatory)* section
+  MUST be updated to the new rule, consistent with the Constitution, and MUST point to
+  the enforcing guard and the decision doc. (There is a single `CLAUDE.md` in the koan
+  repo; the surrounding workspace wrapper's `CLAUDE.md` is a different repo and out of
+  scope.)
 - **FR-004**: `specs/README.md` *Spec discipline* section MUST be updated to the same
   rule, preserving the existing durable-vs-ephemeral distinction it already documents.
 - **FR-005**: A load-bearing check (`scripts/spec_change_guard.py`) MUST detect, from a
