@@ -61,7 +61,7 @@ def is_speckit_ephemeral(path):
 
 
 def is_reserved(path):
-    return Path(path).name in ("index.md", "log.md")
+    return Path(path).name == "index.md"
 
 
 def is_eligible(path):

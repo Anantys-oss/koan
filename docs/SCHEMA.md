@@ -29,7 +29,7 @@ topic folder. Wiki-directory-level concerns (the `wiki/` symlink layer, cross-bu
   (created lazily on first ingest). Always carries `raw:` (local provenance path under
   the git-ignored `raw/` directory) and, when the source had one, `resource:` (the
   external URI — a durable citation, unlike `raw:` which isn't dereferenceable by other
-  clones). Always ends its body with a `# Citations` section (`docs/SPEC.md` §7).
+  clones). Always ends its body with a `# Citations` section (`docs/SPEC.md` §6).
 
 Add a new type only when a real category doesn't fit the above and needs distinct
 queryability — not for a one-off; use tags instead.
@@ -54,7 +54,7 @@ One tag per topic folder, plus one for the new `reference/` folder:
 
 ## Frontmatter requirements
 
-Every page under `docs/` (except the reserved `index.md`/`log.md` filenames) must have:
+Every page under `docs/` (except the reserved `index.md` filename) must have:
 
 ```yaml
 ---
@@ -68,7 +68,7 @@ updated: 2026-07-02
 ```
 
 `created`/`updated` are real dates from git history for that file, not the backfill
-date. `description` is OKF-recommended (not OKF-required, per `SPEC.md` §8) but is
+date. `description` is OKF-recommended (not OKF-required, per `SPEC.md` §7) but is
 treated as required house style here — see `docs/SPEC.md`'s note on `created`/`updated`
 replacing OKF's `timestamp`. `reference` pages additionally carry `raw:` and, where
 applicable, `resource:` (see "Page types" above).

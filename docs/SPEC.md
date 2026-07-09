@@ -37,7 +37,6 @@ agent) can open directly.
 ```
 <bundle-root>/
 ├── index.md                  # Optional. Directory listing for progressive disclosure.
-├── log.md                    # Optional. Chronological history of updates.
 ├── <concept>.md               # A concept at the bundle root.
 └── <subdirectory>/            # Subdirectories group concepts by topic.
     ├── index.md
@@ -45,9 +44,8 @@ agent) can open directly.
     └── ...
 ```
 
-**Reserved filenames**: `index.md` and `log.md` MUST NOT be used as concept documents —
-they have their own structure (§4, §5). Every other `.md` file in the bundle is a
-concept document.
+**Reserved filename**: `index.md` MUST NOT be used as a concept document — it has its
+own structure (§5). Every other `.md` file in the bundle is a concept document.
 
 ## 3. Concept documents and frontmatter
 
@@ -131,23 +129,7 @@ Entries SHOULD reuse the linked concept's `description` frontmatter rather than
 inventing new prose. An `index.md` may be generated mechanically from that frontmatter
 (koan's is — see `scripts/okf_backfill.py`).
 
-## 6. Log files
-
-A `log.md` MAY appear at any directory level as a flat, chronological, newest-first
-record of changes to that directory:
-
-```markdown
-# Directory Update Log
-
-## 2026-07-08
-* **Update**: Refreshed [Provider Architecture](/architecture/providers.md) for the new CLI provider.
-* **Creation**: Added [Skill Evaluation Harness](/operations/skill-evals.md).
-```
-
-Date headings MUST be ISO 8601 (`YYYY-MM-DD`). The leading bold word per entry is
-convention, not a requirement.
-
-## 7. Citations
+## 6. Citations
 
 A body's `# Citations` section lists numbered references to external sources:
 
@@ -161,21 +143,21 @@ A body's `# Citations` section lists numbered references to external sources:
 Citation targets may be absolute URLs, bundle-relative paths, or paths into a shared
 references directory.
 
-## 8. Conformance
+## 7. Conformance
 
 A bundle is **OKF v0.1 conformant** if and only if:
 
 1. Every non-reserved `.md` file in the bundle contains a parseable YAML frontmatter
    block.
 2. Every such frontmatter block contains a non-empty `type` field.
-3. Any `index.md` or `log.md` present follows the structure in §5/§6.
+3. Any `index.md` present follows the structure in §5.
 
 These three rules are the **only** hard requirements. Everything else in this spec —
 recommended fields, tag taxonomies, link conventions, page sizing — is soft guidance. A
 conformance checker MUST NOT hard-fail a bundle for a missing optional field, an
 unrecognized `type`, a broken link, or the absence of an `index.md`; it may only warn.
 
-## 9. Versioning
+## 8. Versioning
 
 OKF versions are `<major>.<minor>`. A minor version is a backward-compatible addition; a
 major version may break existing bundles. A bundle declares the version it targets via

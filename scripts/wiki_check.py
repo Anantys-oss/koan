@@ -119,12 +119,12 @@ def is_frontmatter_eligible(path):
 
 
 def is_concept_page(path):
-    """OKF concept-page eligibility: same as legacy, minus reserved index.md/log.md."""
+    """OKF concept-page eligibility: same as legacy, minus the reserved index.md."""
     if not path.endswith(".md"):
         return False
     if is_speckit_ephemeral(path):
         return False
-    if is_reserved_index(path) or Path(path).name == "log.md":
+    if is_reserved_index(path):
         return False
     return is_frontmatter_eligible(path)
 

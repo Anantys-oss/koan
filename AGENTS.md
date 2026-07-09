@@ -60,8 +60,8 @@ rely on either (see `wiki/SCHEMA.md`) — is a Claude-Code-specific slash comman
 not available here. Read `wiki/index.md` directly and open the
 obviously-relevant page(s) instead of grepping `docs/`/`specs/` blindly.
 
-Wiki bookkeeping (frontmatter dates, `wiki/index.md` entries, `wiki/log.md`
-lines, and `specs/<NNN-slug>/` computed status) is exempt from the
+Wiki bookkeeping (frontmatter dates, `wiki/index.md` entries, and
+`specs/<NNN-slug>/` computed status) is exempt from the
 "human decides" caution elsewhere in this file — commit it directly as part of
 the same change, no separate review step for that part specifically. This does
 not extend to actual spec/contract or code changes.
