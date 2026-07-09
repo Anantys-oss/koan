@@ -1,0 +1,55 @@
+name: 🏛️ Spec-Change Guard
+
+# Blocks a PR that changes a durable design contract (specs/components/**,
+# specs/skills/**) without an explicit "architectural change" declaration in the
+# PR body. This is the load-bearing half of Kōan's specs discipline — prose is
+# advisory, a git-enforced check has teeth (Constitution Principle V). See
+# scripts/spec_change_guard.py and docs/design/spec-changes-are-architectural.md.
+#
+# Read-only: no `contents: write`, no push, no secrets beyond the default token.
+# `edited` is included so re-checking the declaration box on an already-open PR
+# re-runs the gate. Fork PRs run the same read-only check; a failing status is
+# still visible to maintainers.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [main]
+
+concurrency:
+  group: spec-change-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  spec-change-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: ⚙️ Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: 📝 Write PR body to a file
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" > /tmp/pr-body.md
+
+      - name: 🏛️ Check durable-contract changes are declared
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          python3 scripts/spec_change_guard.py \
+            --base-ref "origin/$BASE_REF" \
+            --pr-body-file /tmp/pr-body.md
