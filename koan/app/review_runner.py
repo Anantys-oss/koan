@@ -1811,6 +1811,29 @@ def _build_review_footer(
     return footer
 
 
+def _build_stale_head_alert(reviewed_sha: str, live_sha: str) -> str:
+    """Return a GitHub IMPORTANT alert when the branch moved during review.
+
+    Compares the SHA the review was performed against (``reviewed_sha`` — the
+    same value shown as ``HEAD=<short>`` in the footer) to the PR branch's live
+    HEAD (``live_sha``). When they differ, commits were pushed (or force-pushed)
+    after the review captured its diff, so the findings may be stale.
+
+    Returns a leading-blank-line alert block suitable for appending to the end
+    of the review content, or "" when either SHA is missing or they match (in
+    which case the posted comment is byte-identical to today's output).
+    """
+    if not reviewed_sha or not live_sha or reviewed_sha == live_sha:
+        return ""
+    return (
+        "\n\n> [!IMPORTANT]\n"
+        "> **The branch moved during review.** This review was performed "
+        f"against `HEAD={reviewed_sha[:7]}`, but the PR branch now points at "
+        f"`{live_sha[:7]}`. Commits pushed after the review started are not "
+        "reflected below — re-run `/review` to cover them."
+    )
+
+
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
     existing_comment: Optional[dict] = None,
