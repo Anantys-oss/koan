@@ -91,9 +91,12 @@ silent contract breakage across a high-fan-in daemon.
 ### III. Local Files by Default; Mission State in the Store
 
 Runtime state lives in plain, inspectable files under `instance/`
-(Markdown/YAML/JSON/trackers) **by default**. Shared files MUST be written
-through `utils.atomic_write()` (temp file + rename + `fcntl.flock()`); never
-perform a raw read-modify-write on an `instance/` file.
+(Markdown/YAML/JSON/trackers) by default — **with exactly one exception: mission
+state is authoritative in a database (SQLite by default) behind the
+`MissionStore` port** (detailed in the first bullet). Everything else stays in
+files. Shared files MUST be written through `utils.atomic_write()` (temp file +
+rename + `fcntl.flock()`); never perform a raw read-modify-write on an
+`instance/` file.
 
 - **Mission state is the one authorized database exception.** It is authoritative
   in the backend selected through the `MissionStore` port — SQLite
