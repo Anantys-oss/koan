@@ -2998,6 +2998,11 @@ def run_review(
             _collapse_old_review(owner, repo, existing_comment)
         post_target = None
 
+    # Re-read the branch's live HEAD just before posting so we can flag a
+    # review whose diff was captured before the author pushed new commits.
+    # Best-effort: "" on any error ⇒ no alert (never blocks the post).
+    live_head_sha = _fetch_pr_head_oid(owner, repo, pr_number) if current_shas else ""
+
     notify_fn(f"Posting review on PR #{pr_number}...")
     _review_duration = time.monotonic() - _review_start
     posted, post_error = _post_review_comment(
@@ -3006,6 +3011,7 @@ def run_review(
         provider_name=review_provider_name,
         model=review_model,
         duration_seconds=_review_duration,
+        live_head_sha=live_head_sha,
     )
 
     # Step 7c: Optionally post each finding as an inline PR comment (opt-in).
