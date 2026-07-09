@@ -719,6 +719,52 @@ class TestFetchPrContext:
         assert "Please fix" in context["reviews"]
         assert "Will do" in context["issue_comments"]
         assert context["has_pending_reviews"] is False  # comments fetched OK
+        assert context["diff_skipped_files"] == []  # small diff, nothing cut
+
+    @staticmethod
+    def _big_two_file_diff():
+        a = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n+y\n"
+        b = (
+            "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n"
+            + "+x\n" * 5000
+        )
+        return a + b
+
+    @patch("app.github.subprocess.run")
+    def test_records_diff_skips_under_small_cap(self, mock_run):
+        big = self._big_two_file_diff()
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "T", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="0"),
+            MagicMock(returncode=0, stdout=big),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        context = fetch_pr_context("o", "r", "1", max_diff_chars=500)
+        assert "b.py" in context["diff_skipped_files"]
+
+    @patch("app.github.subprocess.run")
+    def test_large_cap_admits_full_diff(self, mock_run):
+        big = self._big_two_file_diff()
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "T", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="0"),
+            MagicMock(returncode=0, stdout=big),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        context = fetch_pr_context("o", "r", "1", max_diff_chars=1_000_000)
+        assert context["diff_skipped_files"] == []
 
     @patch("app.github.subprocess.run")
     def test_handles_empty_responses(self, mock_run):

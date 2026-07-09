@@ -607,17 +607,16 @@ def truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars] + "\n...(truncated)"
 
 
-def truncate_diff(diff: str, max_chars: int) -> str:
-    """Truncate a unified diff intelligently, preserving whole file blocks.
+def truncate_diff_with_skips(diff: str, max_chars: int) -> tuple[str, list[str]]:
+    """Truncate a unified diff preserving whole file blocks, returning the
+    truncated text AND the list of omitted file paths.
 
-    Instead of cutting at an arbitrary character offset (which leaves the
-    reviewer guessing what was cut), this splits the diff into per-file
-    blocks and keeps as many complete blocks as fit within *max_chars*.
-    Files that don't fit are listed as a summary at the end so the
-    reviewer knows they exist.
+    Same packing logic as :func:`truncate_diff`; the omitted-file list is
+    surfaced so callers can report partial coverage instead of relying on
+    the in-body footer alone.
     """
     if not diff or len(diff) <= max_chars:
-        return diff
+        return diff, []
 
     # Split into per-file blocks at 'diff --git' boundaries.
     raw_blocks = re.split(r'(?=^diff --git )', diff, flags=re.MULTILINE)
@@ -625,7 +624,7 @@ def truncate_diff(diff: str, max_chars: int) -> str:
 
     if not blocks:
         # Can't parse structure — fall back to character truncation.
-        return truncate_text(diff, max_chars)
+        return truncate_text(diff, max_chars), []
 
     # Pre-scan filenames so we can estimate the worst-case footer size
     # and reserve budget for it, ensuring output stays within max_chars.
@@ -635,7 +634,7 @@ def truncate_diff(diff: str, max_chars: int) -> str:
         filenames.append(m.group(1) if m else "(unknown file)")
 
     # Greedy first pass: keep blocks that fit without any footer.
-    kept: list[str] = []
+    kept: list[tuple[str, str]] = []
     skipped: list[str] = []
     used = 0
 
@@ -660,7 +659,19 @@ def truncate_diff(diff: str, max_chars: int) -> str:
     result = "".join(b for b, _ in kept)
     if skipped:
         result += _build_footer(skipped, len(kept))
-    return result
+    return result, skipped
+
+
+def truncate_diff(diff: str, max_chars: int) -> str:
+    """Truncate a unified diff intelligently, preserving whole file blocks.
+
+    Instead of cutting at an arbitrary character offset (which leaves the
+    reviewer guessing what was cut), this splits the diff into per-file
+    blocks and keeps as many complete blocks as fit within *max_chars*.
+    Files that don't fit are listed as a summary at the end so the
+    reviewer knows they exist.
+    """
+    return truncate_diff_with_skips(diff, max_chars)[0]
 
 
 def _build_footer(skipped: list[str], kept_count: int) -> str:

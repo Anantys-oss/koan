@@ -57,7 +57,12 @@ from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.retry import retry_with_backoff
-from app.utils import _GITHUB_REMOTE_RE, truncate_diff, truncate_text
+from app.utils import (
+    _GITHUB_REMOTE_RE,
+    truncate_diff,
+    truncate_diff_with_skips,
+    truncate_text,
+)
 
 def _resolve_own_login() -> str:
     """Resolve our own GitHub login (the configured ``github.nickname``).
@@ -399,11 +404,18 @@ def fetch_pr_context(
     repo: str,
     pr_number: str,
     project_path: Optional[str] = None,
+    max_diff_chars: int = 32000,
 ) -> dict:
     """Fetch PR details, diff, and all comments via gh CLI.
 
     Returns a dict with keys: title, body, branch, base, state, author, url,
-    diff, review_comments, reviews, issue_comments.
+    diff, diff_skipped_files, review_comments, reviews, issue_comments.
+
+    ``max_diff_chars`` caps the fetch-time diff size. The legacy 32K default
+    preserves behaviour for rebase/squash/recreate/ci_queue callers; ``/review``
+    passes a large budget-derived cap so the diff compressor (its real coverage
+    guardrail) receives the whole diff. Any files cut here are reported via the
+    returned ``diff_skipped_files`` list.
 
     When ``project_path`` is provided, oversized-PR diff failures
     (GitHub HTTP 406: > 300 files) trigger a local ``git fetch`` +
@@ -532,6 +544,8 @@ def fetch_pr_context(
     # there are invisible pending reviews.
     has_pending_reviews = api_review_comment_count > 0 and fetched_comment_count == 0
 
+    truncated_diff, diff_skipped_files = truncate_diff_with_skips(diff, max_diff_chars)
+
     return {
         "title": metadata.get("title", ""),
         "body": metadata.get("body", ""),
@@ -541,7 +555,8 @@ def fetch_pr_context(
         "author": metadata.get("author", {}).get("login", ""),
         "head_owner": metadata.get("headRepositoryOwner", {}).get("login", ""),
         "url": metadata.get("url", ""),
-        "diff": truncate_diff(diff, 32000),
+        "diff": truncated_diff,
+        "diff_skipped_files": diff_skipped_files,
         "diff_error": truncate_text(diff_error, 1000),
         "review_comments": truncate_text(comments_json, 4000),
         "reviews": truncate_text(reviews_json, 3000),
