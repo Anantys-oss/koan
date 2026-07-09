@@ -22,11 +22,11 @@ US3 written discipline). Each commit is one task (per the `/speckit` pipeline).
 **Purpose**: The load-bearing guard + its tests. This is the MVP: without it the
 instruction change is advisory.
 
-- [ ] **T001** [US1] Implement `scripts/spec_change_guard.py` with pure functions
+- [x] **T001** [US1] Implement `scripts/spec_change_guard.py` with pure functions
   `is_durable_contract`, `has_architecture_declaration`, `evaluate`, the impure
   `changed_files(base_ref)`, and a `main()`/`argparse` CLI honouring the exit-code and
   output contract in `contracts/spec_change_guard.md`. Stdlib only.
-- [ ] **T002** [US1] Add `koan/tests/test_spec_change_guard.py` covering: durable-contract
+- [x] **T002** [US1] Add `koan/tests/test_spec_change_guard.py` covering: durable-contract
   detection (components/skills positive; nested skill path), exclusions (`index.md`,
   `SKILL_SPEC_TEMPLATE.md`, `specs/<NNN>/…`, `specs/README.md`, `docs/…`), declaration
   parsing (checked / unchecked / absent / case + bullet variants), `evaluate` verdicts
@@ -39,11 +39,11 @@ instruction change is advisory.
 
 **Purpose**: Make the declaration discoverable so it is not a surprise CI failure.
 
-- [ ] **T003** [P] [US2] Add `.github/PULL_REQUEST_TEMPLATE.md` containing the
+- [x] **T003** [P] [US2] Add `.github/PULL_REQUEST_TEMPLATE.md` containing the
   architectural-change declaration section with the exact marker phrase the guard
   recognises, plus a one-line "check this when you touched `specs/components/**` or
   `specs/skills/**`" instruction, and a normal summary/testing scaffold. (FR-008; SC-004.)
-- [ ] **T004** [US2] Add `.github/workflows/spec-change-guard.yml`: `pull_request`
+- [x] **T004** [US2] Add `.github/workflows/spec-change-guard.yml`: `pull_request`
   (`opened|synchronize|reopened|edited` → `main`), `permissions: contents: read`,
   checkout full-depth, setup-python 3.11, write `github.event.pull_request.body` to a
   file, run the guard with `--base-ref origin/$BASE_REF --pr-body-file`. No push, no
@@ -56,20 +56,20 @@ instruction change is advisory.
 **Purpose**: Reconcile the four governance texts + record the decision. Depends on the
 final marker string/paths chosen in Phase 1–2.
 
-- [ ] **T005** [US3] Amend `.specify/memory/constitution.md`: rewrite Principle II so a
+- [x] **T005** [US3] Amend `.specify/memory/constitution.md`: rewrite Principle II so a
   durable-contract change is a contract-first, rare, **declared** architectural change
   (remove "update the spec in the same branch to reflect the new design"); update the
   Workflow & Quality Gates "docs-and-specs-in-branch" gate to reference the declaration;
   bump the version (2.0.0 → 3.0.0, MAJOR — prior compliance redefined) and update
   **Last Amended**; prepend a fresh Sync Impact Report enumerating every reconciled
   artifact. (FR-001, FR-002; SC-003, SC-006.)
-- [ ] **T006** [P] [US3] Update the *Specs discipline (mandatory)* section in **both**
+- [x] **T006** [P] [US3] Update the *Specs discipline (mandatory)* section in **both**
   `CLAUDE.md` (repo root) and `workspace/koan/CLAUDE.md` to the new rule, cross-linking
   the guard (`scripts/spec_change_guard.py`) and the decision doc. (FR-003; SC-003.)
-- [ ] **T007** [P] [US3] Update `specs/README.md` *Spec discipline* section to the new
+- [x] **T007** [P] [US3] Update `specs/README.md` *Spec discipline* section to the new
   rule, preserving the durable-vs-ephemeral distinction it already documents. (FR-004;
   SC-003.)
-- [ ] **T008** [P] [US3] Write `docs/design/spec-changes-are-architectural.md` (OKF
+- [x] **T008** [P] [US3] Write `docs/design/spec-changes-are-architectural.md` (OKF
   frontmatter, `tags: [design]`): rationale (specs are contract-first, not code-mirrors),
   customer origin (PR #2052 comment), the enforcement (guard + declaration + template),
   and the rejected heavier alternative (mandatory two-PR split). Add a short
