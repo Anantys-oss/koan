@@ -1841,6 +1841,7 @@ def _post_review_comment(
     provider_name: str = "",
     model: str = "",
     duration_seconds: float = 0,
+    live_head_sha: str = "",
 ) -> Tuple[bool, str]:
     """Post (or update) the review as a comment on the PR.
 
@@ -1852,6 +1853,11 @@ def _post_review_comment(
     incremental-review check can skip already-reviewed commits.  When
     absent, preserves any COMMIT_IDS block from ``existing_comment`` so
     a re-review without SHA info doesn't clobber prior state.
+
+    When ``live_head_sha`` is provided and differs from the reviewed tip
+    (``commit_shas[-1]``), a stale-HEAD IMPORTANT alert is appended at the
+    end of the review content (the branch moved during review). Empty
+    ``live_head_sha`` (the default) leaves the body byte-identical.
 
     Returns (True, "") on success, (False, error_detail) on failure.
     """
@@ -1866,11 +1872,14 @@ def _post_review_comment(
         duration_seconds=duration_seconds,
     )
 
+    # Stale-HEAD alert: appended after truncation so it is never dropped.
+    stale_alert = _build_stale_head_alert(head_sha, live_head_sha)
+
     # If body already starts with a ## heading, don't add another
     if review_text.startswith("## "):
-        body = f"{SUMMARY_TAG}\n{review_text}\n\n---\n{footer}"
+        body = f"{SUMMARY_TAG}\n{review_text}{stale_alert}\n\n---\n{footer}"
     else:
-        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}\n\n---\n{footer}"
+        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}{stale_alert}\n\n---\n{footer}"
 
     # Embed commit SHAs in a single hidden HTML comment (fully invisible).
     if commit_shas:
