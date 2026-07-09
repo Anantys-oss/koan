@@ -2222,6 +2222,25 @@ def _fetch_pr_commit_shas(owner: str, repo: str, pr_number: str) -> List[str]:
         return []
 
 
+def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
+    """Return the PR branch's current HEAD commit OID (full SHA), or "" on error.
+
+    Unlike ``_fetch_pr_commit_shas`` (which pages the commits list and can
+    truncate at GitHub's 250-commit cap), ``headRefOid`` always reflects the
+    true branch tip — including after a force-push. Best-effort: any failure
+    yields "" so callers treat it as "unknown" and skip the staleness check.
+    """
+    try:
+        return run_gh(
+            "pr", "view", pr_number,
+            "--repo", f"{owner}/{repo}",
+            "--json", "headRefOid",
+            "--jq", ".headRefOid",
+        ).strip()
+    except RuntimeError:
+        return ""
+
+
 def _fetch_pr_state(owner: str, repo: str, pr_number: str) -> str:
     """Return the PR state (OPEN, MERGED, CLOSED) or empty string on error."""
     try:
