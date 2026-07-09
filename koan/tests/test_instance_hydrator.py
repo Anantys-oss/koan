@@ -114,3 +114,26 @@ def test_pull_applies_remote_commit(tmp_path):
     subprocess.run(["git", "push", "-q"], cwd=op, check=True)
     assert pull_instance_repo(str(instance)) is True
     assert (instance / "soul.md").read_text() == "updated by operator\n"
+
+
+def test_pull_aborts_rebase_on_conflict(tmp_path):
+    url = _make_source_repo(tmp_path)
+    instance = tmp_path / "instance"
+    subprocess.run(["git", "clone", "-q", url, str(instance)], check=True)
+    # remote commit touching soul.md
+    bare = url.removeprefix("file://")
+    op = tmp_path / "op"
+    subprocess.run(["git", "clone", "-q", str(bare), str(op)], check=True)
+    (op / "soul.md").write_text("remote change\n")
+    subprocess.run(["git", "add", "-A"], cwd=op, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "remote"], cwd=op, env=_git_env(), check=True)
+    subprocess.run(["git", "push", "-q"], cwd=op, check=True)
+    # conflicting committed local change on the same line
+    (instance / "soul.md").write_text("local change\n")
+    subprocess.run(["git", "add", "-A"], cwd=instance, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "local"], cwd=instance, env=_git_env(), check=True)
+    # rebase conflicts → pull returns False and instance/ is NOT left mid-rebase
+    assert pull_instance_repo(str(instance)) is False
+    assert not (instance / ".git" / "rebase-merge").exists()
+    assert not (instance / ".git" / "rebase-apply").exists()
+    assert "<<<<<<<" not in (instance / "soul.md").read_text()

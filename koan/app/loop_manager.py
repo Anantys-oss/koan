@@ -207,7 +207,12 @@ def _maybe_sync_instance_repo(instance_dir: str) -> None:
         return
     _last_instance_sync = now
     from app.instance_hydrator import pull_instance_repo
-    pull_instance_repo(instance_dir)
+    if not pull_instance_repo(instance_dir):
+        # Surface the failed reconcile and retry on the next tick instead of
+        # waiting a full interval — a diverged remote keeps commit_instance()'s
+        # push non-fast-forwardable until it succeeds.
+        _log_loop("sync", "instance/ pull --rebase failed; will retry next tick")
+        _last_instance_sync = float("-inf")
 
 
 def _drain_ci_queue_during_sleep(instance_dir: str, elapsed: float):

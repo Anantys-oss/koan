@@ -37,6 +37,18 @@ def _already_hydrated(instance: Path) -> bool:
     return (instance / "missions.md").exists() or (instance / ".git").is_dir()
 
 
+def _wipe_dir_contents(directory: Path) -> None:
+    """Remove everything inside `directory` but keep the dir (bind-mount point)."""
+    try:
+        for child in directory.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+    except OSError as exc:
+        sys.stderr.write(f"[instance_hydrator] wipe failed: {exc}\n")
+
+
 def _run(cmd: List[str]) -> bool:
     try:
         proc = subprocess.run(
@@ -95,6 +107,10 @@ def hydrate_instance_from_repo(
         return True
     except OSError as exc:
         sys.stderr.write(f"[instance_hydrator] copy failed: {exc}\n")
+        # A partial copytree would poison the template fallback (instance.example/
+        # seeded on top of a half-cloned tree → silently corrupt instance/). Wipe
+        # what we wrote so the caller falls back from a clean state.
+        _wipe_dir_contents(instance)
         return False
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -109,7 +125,18 @@ def pull_instance_repo(instance_dir: str) -> bool:
     """
     if not (Path(instance_dir) / ".git").is_dir():
         return False
-    return _run(["git", "-C", instance_dir, "pull", "--rebase", "--autostash"])
+    if _run(["git", "-C", instance_dir, "pull", "--rebase", "--autostash"]):
+        return True
+    # A failed rebase leaves instance/ mid-rebase; the next commit_instance()
+    # would `git add -A` the conflict markers and push them. Abort to restore a
+    # clean, pushable state. `rebase --abort` is a harmless no-op if the failure
+    # happened before any rebase started (e.g. fetch error).
+    sys.stderr.write("[instance_hydrator] pull --rebase failed; aborting to restore clean state\n")
+    subprocess.run(
+        ["git", "-C", instance_dir, "rebase", "--abort"],
+        capture_output=True, text=True,
+    )
+    return False
 
 
 def _main(argv: List[str]) -> int:

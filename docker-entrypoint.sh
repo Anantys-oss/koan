@@ -227,7 +227,11 @@ setup_instance() {
             [ -n "${KOAN_INSTANCE_REPO:-}" ] && \
                 warn "instance hydration failed — using instance.example/ template"
             log "Initializing instance/ from template"
-            cp -r "$KOAN_ROOT/instance.example/"* "$INSTANCE/" 2>/dev/null || true
+            # Last-resort recovery — surface failures instead of booting an
+            # empty/partial instance silently.
+            if ! cp -r "$KOAN_ROOT/instance.example/"* "$INSTANCE/"; then
+                warn "instance.example/ template copy failed — instance/ may be empty or partial"
+            fi
         fi
     fi
 
