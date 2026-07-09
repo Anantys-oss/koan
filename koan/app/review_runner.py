@@ -848,8 +848,14 @@ def _write_review_findings_sidecar(
     base_ref: str,
     head_sha: str,
     project_name: str = "",
+    review_summary: Optional[dict] = None,
 ) -> None:
-    """Write structured review findings to a sidecar JSON for post-merge outcome tracking."""
+    """Write structured review findings + summary to a sidecar JSON.
+
+    Consumed by pr_review_learning (post-merge outcome tracking, reads
+    file_comments) and by the REST API result resolver (reads both
+    file_comments and review_summary). review_summary is additive.
+    """
     try:
         import time as _time
         sidecar_dir = Path(instance_dir) / ".review-findings"
@@ -862,6 +868,7 @@ def _write_review_findings_sidecar(
             "head_sha": head_sha,
             "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
             "file_comments": file_comments,
+            "review_summary": review_summary or {},
         }
         from app.utils import atomic_write_json
         atomic_write_json(sidecar_path, data, indent=2)
@@ -2980,6 +2987,7 @@ def run_review(
                 base_ref=_sidecar_base,
                 head_sha=_sidecar_head,
                 project_name=project_name or "",
+                review_summary=review_data.get("review_summary") or {},
             )
         else:
             print(

@@ -183,15 +183,39 @@ Response (202):
 ```json
 {
   "id": "uuid",
-  "text": "- [project:koan] /fix ...",
+  "text": "- /review https://github.com/o/r/pull/5",
   "project": "koan",
   "status": "pending|in_progress|done|failed|removed",
   "created": 1748700000.0,
-  "result_line": "✅ (2026-05-31 14:22) Fixed the bug"
+  "result_line": "✅ (2026-05-31 14:22) Review posted on PR #5",
+  "result": {
+    "kind": "review",
+    "file_comments": [
+      {"file": "a.py", "line_start": 1, "line_end": 1, "severity": "warning",
+       "title": "…", "comment": "…", "code_snippet": ""}
+    ],
+    "review_summary": {"lgtm": false, "summary": "…", "checklist": []}
+  },
+  "result_ref": null
 }
 ```
 
 Mission status is reconciled on each read against the live `missions.md` state.
+
+`result` is a typed structured payload emitted by skills that produce one
+(e.g. `/review`); other missions leave it `null`. `result_line` remains the
+short free-text summary for backward compatibility.
+
+When a result exceeds the inline size cap (`DEFAULT_RESULT_CAP_BYTES`, 256 KB)
+the full payload is written to `instance/.api-results/<id>.json` and
+`result_ref` points at that relative path. The record still carries a trimmed
+inline `result` with `kind`, the verdict/summary, and `"result_truncated": true`
+so the merge verdict is always readable without a second call.
+
+**GET /v1/missions/{id}/result** — returns the *complete* structured result
+(inline or spilled) as JSON, so a remote client that cannot read the instance
+filesystem can always retrieve the full findings. `404` if the mission has no
+structured result.
 
 **PATCH /v1/missions/{id}** body:
 ```json

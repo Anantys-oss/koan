@@ -11,6 +11,7 @@ from app.api.mission_index import (
     cancel_mission,
     get_mission,
     list_missions,
+    load_full_result,
     record_mission,
     reconcile,
     update_mission_text,
@@ -182,7 +183,24 @@ def get_mission_route(mission_id: str):
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
     rec = reconcile(_instance_dir(), _missions_file(), mission_id)
+    rec.setdefault("result", None)
+    rec.setdefault("result_ref", None)
     return jsonify(rec)
+
+
+@bp.route("/v1/missions/<mission_id>/result", methods=["GET"])
+@require_token
+def get_mission_result_route(mission_id: str):
+    if get_mission(_instance_dir(), mission_id) is None:
+        return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
+    # reconcile so a just-completed mission gets its result attached first
+    reconcile(_instance_dir(), _missions_file(), mission_id)
+    result = load_full_result(_instance_dir(), mission_id)
+    if result is None:
+        return jsonify(
+            {"error": {"code": "not_found", "message": "No structured result for this mission"}}
+        ), 404
+    return jsonify(result)
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["DELETE"])
