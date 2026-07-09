@@ -281,7 +281,11 @@ class SqliteMissionStore(MissionStore):
             row = conn.execute("SELECT value FROM meta WHERE key='initialized_at'").fetchone()
             return row is not None
 
-    def ingest_from_file(self, missions_md_path) -> IngestReport:
+    def _populate_missions(self, conn, content: str) -> IngestReport:
+        """Parse ``missions.md`` content and insert one row per lifecycle item.
+        Shared by ``ingest_from_file`` (one-time) and ``reconcile_from_content``
+        (transition read-sync). The caller owns the transaction and the meta
+        marker; this helper only inserts missions rows."""
         from app.missions import (
             extract_complexity_tag,
             extract_project_tag,
@@ -289,35 +293,55 @@ class SqliteMissionStore(MissionStore):
             parse_sections,
         )
         report = IngestReport()
+        if not content:
+            return report
+        stamp = "%Y-%m-%dT%H:%M"
+        sections = parse_sections(content)
+        seq = 0
+        for state in VALID_STATES:
+            for item in sections.get(state, []):
+                if self._key_source(item) is None:
+                    report.unparseable.append(item[:120])
+                    continue
+                seq += 1
+                ts = extract_timestamps(item)
+                conn.execute(
+                    "INSERT INTO missions(text, state, project, sequence, complexity, "
+                    "queued_at, started_at, completed_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (_clean_text(item), state,
+                     extract_project_tag(item) or "default", seq,
+                     extract_complexity_tag(item),
+                     ts["queued"].strftime(stamp) if ts["queued"] else None,
+                     ts["started"].strftime(stamp) if ts["started"] else None,
+                     ts["completed"].strftime(stamp) if ts["completed"] else None))
+                report.inserted += 1
+                report.by_state[state] = report.by_state.get(state, 0) + 1
+        return report
+
+    def ingest_from_file(self, missions_md_path) -> IngestReport:
+        from time import strftime
         path = Path(missions_md_path)
-        _stamp = ("%Y-%m-%dT%H:%M")
+        content = path.read_text() if path.exists() else ""
         with self._connect() as conn:
-            if path.exists():
-                sections = parse_sections(path.read_text())
-                seq = 0
-                for state in VALID_STATES:
-                    for item in sections.get(state, []):
-                        key = self._key_source(item)
-                        if key is None:
-                            report.unparseable.append(item[:120])
-                            continue
-                        seq += 1
-                        ts = extract_timestamps(item)
-                        conn.execute(
-                            "INSERT INTO missions(text, state, project, sequence, complexity, "
-                            "queued_at, started_at, completed_at) VALUES (?,?,?,?,?,?,?,?)",
-                            (_clean_text(item), state,
-                             extract_project_tag(item) or "default", seq,
-                             extract_complexity_tag(item),
-                             ts["queued"].strftime(_stamp) if ts["queued"] else None,
-                             ts["started"].strftime(_stamp) if ts["started"] else None,
-                             ts["completed"].strftime(_stamp) if ts["completed"] else None))
-                        report.inserted += 1
-                        report.by_state[state] = report.by_state.get(state, 0) + 1
-            from time import strftime
+            report = self._populate_missions(conn, content)
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('initialized_at', ?)",
                          (strftime("%Y-%m-%dT%H:%M"),))
         return report
+
+    def reconcile_from_content(self, content: str) -> IngestReport:
+        """Rebuild the missions table from a ``missions.md`` content string.
+
+        Transition helper: while ``missions.md`` remains authoritative (S4–S7),
+        readers call ``reconcile_from_file`` before a store read so the store
+        tracks the file. Does not touch the initialized marker. At the S8 flip
+        the store becomes authoritative and readers stop reconciling."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM missions")
+            return self._populate_missions(conn, content)
+
+    def reconcile_from_file(self, missions_md_path) -> IngestReport:
+        path = Path(missions_md_path)
+        return self.reconcile_from_content(path.read_text() if path.exists() else "")
 
     @staticmethod
     def _key_source(item: str) -> Optional[str]:

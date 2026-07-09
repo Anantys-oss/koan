@@ -88,6 +88,30 @@ def test_export_view_roundtrips_and_is_reingestable(tmp_path):
     assert store2.count_by_state("failed") == 1
 
 
+def test_reconcile_rebuilds_and_replaces(tmp_path):
+    store = SqliteMissionStore(str(tmp_path))
+    store.reconcile_from_content("# Missions\n\n## Pending\n- a\n- b\n")
+    assert store.count_by_state("pending") == 2
+    # Reconciling again fully replaces the prior missions rows.
+    store.reconcile_from_content("# Missions\n\n## Pending\n- c\n")
+    assert store.count_by_state("pending") == 1
+    assert "c" in store.list_by_state("pending")[0].text
+    # reconcile does not flip the initialized marker (only ingest does)
+    assert store.is_initialized() is False
+
+
+def test_reconcile_from_file(tmp_path):
+    (tmp_path / "missions.md").write_text(
+        "# Missions\n\n## Pending\n- x [project:koan]\n\n"
+        "## Done\n- y ✅ (2026-06-30 12:00)\n"
+    )
+    store = SqliteMissionStore(str(tmp_path))
+    store.reconcile_from_file(tmp_path / "missions.md")
+    assert store.count_by_state("pending") == 1
+    assert store.count_by_state("done") == 1
+    assert store.list_by_state("pending")[0].project == "koan"
+
+
 def test_recover_stale_requeues_then_escalates(tmp_path):
     store = SqliteMissionStore(str(tmp_path))
     store.add_pending("work")

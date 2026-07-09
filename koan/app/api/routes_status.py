@@ -56,17 +56,23 @@ def _get_agent_state() -> dict:
 
 
 def _mission_counts() -> dict:
-    """Count missions by section."""
-    missions_file = _instance_dir() / "missions.md"
+    """Count missions by state via the mission store.
+
+    During the S4–S7 transition the store is reconciled from the still-
+    authoritative missions.md before the read; at the S8 flip the reconcile call
+    is removed and the store is read directly.
+    """
+    instance = _instance_dir()
     try:
-        from app.missions import parse_sections
-        content = missions_file.read_text() if missions_file.exists() else ""
-        sections = parse_sections(content)
+        from app.mission_store import get_mission_store
+        store = get_mission_store(str(instance))
+        store.reconcile_from_file(instance / "missions.md")
+        c = store.counts()
         return {
-            "pending": len(sections.get("pending", [])),
-            "in_progress": len(sections.get("in_progress", [])),
-            "done": len(sections.get("done", [])),
-            "failed": len(sections.get("failed", [])),
+            "pending": c.get("pending", 0),
+            "in_progress": c.get("in_progress", 0),
+            "done": c.get("done", 0),
+            "failed": c.get("failed", 0),
         }
     except Exception as e:
         log.error("mission count error: %s", e)

@@ -168,3 +168,15 @@ class MissionStore(ABC):
     @abstractmethod
     def backend_name(self) -> str:
         """Short label for the startup log and ``/status``."""
+
+    # ---- transition helpers (temporary; removed at the S8 flip) ------------
+    # While missions.md remains authoritative during the migration (S4–S7),
+    # readers call reconcile_from_file() before a read so the store tracks the
+    # file. Concrete no-ops here; the file-backed sqlite adapter overrides them.
+    # When the store becomes authoritative (S8) these calls are removed.
+
+    def reconcile_from_content(self, content: str):  # noqa: D401
+        return None
+
+    def reconcile_from_file(self, missions_md_path):
+        return None
