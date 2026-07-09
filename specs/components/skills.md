@@ -146,7 +146,12 @@ behavioural unit tests instead):
   (`optimizations.review_compressor.token_budget`, default 80,000), read via
   `config.get_review_compressor_token_budget()`. The fetch-time character cap is
   *derived* from it — `config.get_review_max_diff_chars()` = budget × 3.5 × 4 —
-  so there is no independent, conflicting numeric cap.
+  so there is no independent, conflicting numeric cap. When the compressor is
+  *disabled* (`review_compressor.enabled: false`), no packer re-shrinks the diff,
+  so `build_review_prompt()` applies a token-safe backstop
+  `config.get_review_uncompressed_max_diff_chars()` = budget × 3.5 (no headroom)
+  via `utils.truncate_diff_with_skips()` — the size guard holds in every config
+  and its skips feed the same coverage note.
 - `fetch_pr_context(...)` (in `rebase_pr.py`) takes `max_diff_chars` (legacy default
   32 000 for rebase/squash/recreate/ci_queue callers; `/review` passes the derived
   cap) and returns a `diff_skipped_files` list via `utils.truncate_diff_with_skips()`

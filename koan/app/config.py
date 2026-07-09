@@ -2625,6 +2625,18 @@ def get_review_max_diff_chars() -> int:
     return int(budget * _REVIEW_CHARS_PER_TOKEN * _REVIEW_FETCH_HEADROOM)
 
 
+def get_review_uncompressed_max_diff_chars() -> int:
+    """Token-safe diff cap for the compressor-*off* path.
+
+    = token_budget × 3.5 chars/token (NO headroom multiplier). When
+    ``review_compressor.enabled`` is false, no intelligent packer re-shrinks the
+    fetched diff, so the raw diff must itself stay within the budget or it would
+    overflow the model context and hard-fail the review. This keeps the
+    single-knob property while preserving a size backstop in every config.
+    """
+    return int(get_review_compressor_token_budget() * _REVIEW_CHARS_PER_TOKEN)
+
+
 def _get_rtk_dict() -> dict:
     """Return the ``optimizations.rtk`` mapping (or an empty dict).
 

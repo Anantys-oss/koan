@@ -27,14 +27,14 @@ from typing import List, Optional, Tuple
 from urllib.parse import quote
 
 from app.claude_step import resolve_pr_location
-from app.config import get_review_bot_triage_config, get_review_compressor_token_budget, get_review_history_config, get_review_inline_comments_config, get_review_max_diff_chars, get_review_reply_config, get_review_verdict_config, is_review_compressor_enabled
+from app.config import get_review_bot_triage_config, get_review_compressor_token_budget, get_review_history_config, get_review_inline_comments_config, get_review_max_diff_chars, get_review_reply_config, get_review_uncompressed_max_diff_chars, get_review_verdict_config, is_review_compressor_enabled
 from app.run_log import log
 from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
 from app.rebase_pr import fetch_pr_context
-from app.utils import KOAN_ROOT
+from app.utils import KOAN_ROOT, truncate_diff_with_skips
 from app.review_markers import (
     SUMMARY_TAG,
     COMMIT_IDS_START,
@@ -734,6 +734,20 @@ def build_review_prompt(
                 "review",
                 f"Diff compressed — {len(compressor_skipped)} file(s) skipped: "
                 + ", ".join(compressor_skipped),
+            )
+    else:
+        # Compressor off: no packer re-shrinks the fetch-time diff, so apply a
+        # token-safe backstop here or the raw diff (up to the generous fetch
+        # cap) could overflow the model context and hard-fail the review. Skips
+        # flow into the same coverage note as compressor skips.
+        raw_diff, compressor_skipped = truncate_diff_with_skips(
+            raw_diff, get_review_uncompressed_max_diff_chars()
+        )
+        if compressor_skipped:
+            log(
+                "review",
+                f"Compressor off — diff truncated, {len(compressor_skipped)} "
+                f"file(s) skipped: " + ", ".join(compressor_skipped),
             )
 
     # ONE unified coverage note — the same value feeds the {SKIPPED_FILES}
