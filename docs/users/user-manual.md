@@ -912,6 +912,16 @@ Reads the Failed section of `missions.md`, finds the most recent failure (option
 - `/claudemd` — Refresh for the default/focused project
 </details>
 
+#### Project-specific instructions (`KOAN.md`)
+
+Drop an optional `KOAN.md` at a project's root to give instructions to the
+autonomous Kōan agent **only**. It uses the same format as `CLAUDE.md`, but
+interactive Claude Code sessions never load it — so you can steer koan's
+autonomous work (e.g. "prefer docs over code here", "always run `make lint`")
+without touching the shared `CLAUDE.md` your whole team sees. Precedence:
+mission instruction > `KOAN.md` > `CLAUDE.md`/defaults. See
+[KOAN.md — koan-only project instructions](koan-md.md) for details.
+
 **`/gha_audit`** — Scan GitHub Actions workflows for security vulnerabilities.
 
 - **Usage:** `/gha_audit [project-name]`
