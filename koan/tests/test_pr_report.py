@@ -271,3 +271,13 @@ def test_resolve_windows_matrix():
     assert _resolve_windows("report", "--week --month") == [7, 30]
     # Aliases pin their window regardless of flags.
     assert _resolve_windows("monthly_report", "--week") == [30]
+    # /reports behaves like a bare /report — both windows.
+    assert _resolve_windows("reports", "") == [7, 30]
+
+
+def test_reports_alias_registered():
+    from app.skills import build_registry
+
+    skill = build_registry().find_by_command("reports")
+    assert skill is not None
+    assert skill.name == "report"
