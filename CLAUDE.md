@@ -98,8 +98,8 @@ architecture decision: **read it first (Consult), update it last (Capture)**.
   that doesn't originate from code you wrote.
 
 - **Wiki bookkeeping is exempt from the "no unsupervised modification" principle
-  below** — frontmatter fields, `wiki/index.md`/`docs/index.md`/`specs/index.md`/
-  per-folder `index.md` entries, and `wiki/log.md` lines are committed directly as part
+  below** — frontmatter fields and `wiki/index.md`/`docs/index.md`/`specs/index.md`/
+  per-folder `index.md` entries are committed directly as part
   of the same change/PR, no separate review step for that part specifically. This does
   not extend to actual spec/contract, doc-body, or code changes. A CI job
   (`.github/workflows/wiki-sync.yml`) backstops anything a session missed by pushing a

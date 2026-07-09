@@ -60,7 +60,7 @@ behavior is explicitly configured, narrowly scoped, and documented.
 - The loop's job is to host the CLI subprocess and finalize lifecycle state —
   not to alter git state itself.
 - One narrowly-scoped, explicitly documented exception exists for wiki
-  bookkeeping (frontmatter dates, `wiki/index.md` entries, `wiki/log.md` lines,
+  bookkeeping (frontmatter dates, `wiki/index.md` entries,
   and `specs/<NNN-slug>/` computed status) — see `wiki/SCHEMA.md` ("Workflow
   customizations"). It may be committed directly onto an existing PR's own
   branch by CI, without a separate human-reviewed step, but never to `main` and
