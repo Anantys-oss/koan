@@ -175,13 +175,17 @@ def handle(ctx):
     if not missions_file.exists():
         return "ℹ️ No missions file found."
 
-    from app.missions import parse_sections, clean_mission_display
+    from app.missions import clean_mission_display
+    from app.mission_store import get_mission_store
+    from app.mission_store.base import render_mission_line
 
-    content = missions_file.read_text()
-    sections = parse_sections(content)
-
-    in_progress = sections.get("in_progress", [])
-    pending = sections.get("pending", [])
+    # Read via the mission store, reconciled from the still-authoritative
+    # missions.md during the transition. Each Mission is rendered back to its
+    # line form so the existing display helpers below work unchanged.
+    store = get_mission_store(str(ctx.instance_dir))
+    store.reconcile_from_file(missions_file)
+    in_progress = [render_mission_line(m) for m in store.list_by_state("in_progress")]
+    pending = [render_mission_line(m) for m in store.list_by_state("pending")]
 
     if not in_progress and not pending:
         return "ℹ️ No missions pending or in progress."

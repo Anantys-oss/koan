@@ -26,6 +26,7 @@ from app.mission_store.base import (
     Mission,
     MissionStore,
     RecoverReport,
+    render_mission_line,
 )
 
 _SCHEMA = f"""
@@ -359,21 +360,9 @@ class SqliteMissionStore(MissionStore):
         lines = ["# Missions", ""]
         for state, title in headers:
             lines.append(f"## {title}")
-            lines.extend(self._render(m) for m in self.list_by_state(state))
+            lines.extend(render_mission_line(m) for m in self.list_by_state(state))
             lines.append("")
         atomic_write(Path(missions_md_path), "\n".join(lines).rstrip() + "\n")
-
-    @staticmethod
-    def _render(m: Mission) -> str:
-        markers = []
-        if m.queued_at:
-            markers.append(f"⏳({m.queued_at})")
-        if m.started_at:
-            markers.append(f"▶({m.started_at})")
-        if m.completed_at:
-            markers.append(("❌" if m.state == "failed" else "✅") + f"({m.completed_at})")
-        body = m.text if m.text.lstrip().startswith("### ") else f"- {m.text}"
-        return (body + (" " + " ".join(markers) if markers else "")).rstrip()
 
     def recover_stale(self, *, max_recover: int = 3) -> RecoverReport:
         from time import strftime

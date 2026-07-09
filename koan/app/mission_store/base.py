@@ -44,6 +44,24 @@ class Mission:
     completed_at: Optional[str] = None
 
 
+def render_mission_line(m: "Mission") -> str:
+    """Render a :class:`Mission` back to its ``missions.md`` line form.
+
+    Shared by ``export_view`` and by transition readers that reuse the existing
+    file-format display helpers (e.g. the ``/list`` skill). Lifecycle timestamps,
+    which live in columns, are re-emitted as ``⏳``/``▶``/``✅``/``❌`` markers.
+    """
+    markers = []
+    if m.queued_at:
+        markers.append(f"⏳({m.queued_at})")
+    if m.started_at:
+        markers.append(f"▶({m.started_at})")
+    if m.completed_at:
+        markers.append(("❌" if m.state == "failed" else "✅") + f"({m.completed_at})")
+    body = m.text if m.text.lstrip().startswith("### ") else f"- {m.text}"
+    return (body + (" " + " ".join(markers) if markers else "")).rstrip()
+
+
 @dataclass
 class IngestReport:
     """Result of the one-time ``missions.md`` → store import."""
