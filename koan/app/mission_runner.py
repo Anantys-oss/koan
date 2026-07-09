@@ -725,10 +725,31 @@ def _record_cost_event(
                 "cost_usd": 0.0,
             }
 
-        # Enrich with pre-collected JSONL session data when available
-        if jsonl_data and not tokens.get("cost_usd"):
-            if jsonl_data.get("cost_usd"):
+        # Enrich with pre-collected JSONL session data when available. Skill-dispatch
+        # runs can reach here with placeholder zeros (model="unknown") when the
+        # stream-usage sidecar was empty; backfill the real input/output/cost figures
+        # from the provider session tail so metered API consumers see actual usage
+        # rather than zeros. Only fill fields still at their zero/empty default so a
+        # real sidecar value is never overwritten (parse_session_tail does not return
+        # model or cache tokens, so those are left untouched).
+        if jsonl_data:
+            if not tokens.get("cost_usd") and jsonl_data.get("cost_usd"):
                 tokens["cost_usd"] = jsonl_data["cost_usd"]
+            if not tokens.get("input_tokens") and jsonl_data.get("input_tokens"):
+                tokens["input_tokens"] = jsonl_data["input_tokens"]
+            if not tokens.get("output_tokens") and jsonl_data.get("output_tokens"):
+                tokens["output_tokens"] = jsonl_data["output_tokens"]
+
+        # Resolve the API mission id (best-effort) so usage joins by id, not title.
+        # An unresolved title still records (mission_id="") and remains visible via
+        # the read-side `unattributed` block in aggregate_mission_usage().
+        mission_id = ""
+        if mission_title:
+            try:
+                from app.api.mission_index import find_active_mission_id
+                mission_id = find_active_mission_id(Path(instance_dir), mission_title) or ""
+            except Exception:
+                mission_id = ""
 
         record_usage(
             instance_dir=Path(instance_dir),
@@ -745,6 +766,7 @@ def _record_cost_event(
             duration_seconds=duration_seconds,
             provider=provider,
             last_action=jsonl_data.get("last_action", "") if jsonl_data else "",
+            mission_id=mission_id,
         )
     except Exception as e:
         _log_runner("error", f"Cost tracking failed: {e}")

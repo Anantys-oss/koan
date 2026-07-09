@@ -196,7 +196,25 @@ Response (202):
     ],
     "review_summary": {"lgtm": false, "summary": "…", "checklist": []}
   },
-  "result_ref": null
+  "result_ref": null,
+  "usage": {
+    "input_tokens": 12000,
+    "output_tokens": 3400,
+    "cache_creation_input_tokens": 800,
+    "cache_read_input_tokens": 9000,
+    "cost_usd": 0.184200,
+    "call_count": 3,
+    "models": ["opus", "sonnet"],
+    "providers": ["claude"],
+    "unattributed": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cost_usd": 0.0,
+      "call_count": 0
+    }
+  }
 }
 ```
 
@@ -216,6 +234,19 @@ so the merge verdict is always readable without a second call.
 (inline or spilled) as JSON, so a remote client that cannot read the instance
 filesystem can always retrieve the full findings. `404` if the mission has no
 structured result.
+
+The `usage` object aggregates every model call recorded for this mission id in
+`instance/usage/*.jsonl` over the mission's lifetime (its `created` date → today).
+Fields are zeroed and `call_count` is `0` when the mission has made no model calls yet.
+
+**Meter on token counts, not `cost_usd`.** `cost_usd` is best-effort and is `0`
+when the provider does not report a cost; `input_tokens`/`output_tokens` are the
+reliable billing signal.
+
+`usage.unattributed` sums calls whose title matches this mission but which could
+not be joined to its id (best-effort title→id resolution missed). A non-zero
+`unattributed.call_count` means the headline totals under-report — distinguish it
+from "0 because the mission was free" (`unattributed.call_count == 0`).
 
 **PATCH /v1/missions/{id}** body:
 ```json

@@ -3517,6 +3517,63 @@ class TestMissionRunnerFireAndForgetMetrics:
         assert kwargs["output_tokens"] == 0
         assert kwargs["mission_type"] == "review"
 
+    def test_record_cost_event_backfills_tokens_from_jsonl(self, tmp_path):
+        from app.mission_runner import _record_cost_event
+        inst = tmp_path / "instance"; inst.mkdir()
+        placeholder = {"model": "unknown", "input_tokens": 0, "output_tokens": 0,
+                       "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                       "cost_usd": 0.0}
+        jsonl = {"input_tokens": 1200, "output_tokens": 340, "cost_usd": 0.09}
+        with patch("app.cost_tracker.record_usage") as mock_record:
+            _record_cost_event(str(inst), "koan", "/tmp/out.json", "implement",
+                               "/review PR 5", tokens=placeholder,
+                               allow_placeholder=True, jsonl_data=jsonl)
+        kw = mock_record.call_args.kwargs
+        assert kw["input_tokens"] == 1200
+        assert kw["output_tokens"] == 340
+        assert round(kw["cost_usd"], 6) == 0.09
+
+    def test_record_cost_event_does_not_overwrite_real_tokens(self, tmp_path):
+        from app.mission_runner import _record_cost_event
+        inst = tmp_path / "instance"; inst.mkdir()
+        real = {"model": "opus", "input_tokens": 500, "output_tokens": 90,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                "cost_usd": 0.30}
+        jsonl = {"input_tokens": 1, "output_tokens": 1, "cost_usd": 0.99}
+        with patch("app.cost_tracker.record_usage") as mock_record:
+            _record_cost_event(str(inst), "koan", "/tmp/out.json", "implement",
+                               "Fix bug", tokens=real, jsonl_data=jsonl)
+        kw = mock_record.call_args.kwargs
+        assert kw["input_tokens"] == 500
+        assert kw["output_tokens"] == 90
+        assert round(kw["cost_usd"], 6) == 0.30
+
+    def test_record_cost_event_attaches_mission_id(self, tmp_path):
+        from app.mission_runner import _record_cost_event
+        from app.api import mission_index as mi
+
+        inst = tmp_path / "instance"; inst.mkdir()
+        mid = mi.record_mission(inst, "- Fix the bug", None)
+
+        tokens = {"model": "opus", "input_tokens": 100, "output_tokens": 20,
+                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                  "cost_usd": 0.1}
+        with patch("app.cost_tracker.record_usage") as mock_record:
+            _record_cost_event(str(inst), "koan", "/tmp/out.json",
+                               "implement", "Fix the bug", tokens=tokens)
+        assert mock_record.call_args.kwargs["mission_id"] == mid
+
+    def test_record_cost_event_no_id_for_unknown_mission(self, tmp_path):
+        from app.mission_runner import _record_cost_event
+        inst = tmp_path / "instance"; inst.mkdir()
+        tokens = {"model": "opus", "input_tokens": 1, "output_tokens": 1,
+                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                  "cost_usd": 0.0}
+        with patch("app.cost_tracker.record_usage") as mock_record:
+            _record_cost_event(str(inst), "koan", "/tmp/out.json",
+                               "implement", "autonomous work", tokens=tokens)
+        assert mock_record.call_args.kwargs["mission_id"] == ""
+
     def test_log_activity_usage_uses_preparsed_tokens(self):
         from app.mission_runner import _log_activity_usage
 

@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-01
+updated: 2026-07-08
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -123,6 +123,16 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 
 - Invoked by `run.run_claude_task()` and skill runners.
 - Usage flows to `usage_tracker.py` / `burn_rate.py` via the `record_usage()` hook.
+  Structured per-call events are written to `instance/usage/*.jsonl` by
+  `cost_tracker.record_usage()`, which now carries an optional `mission_id`
+  (resolved best-effort from `.api-missions.json` in `mission_runner._record_cost_event`).
+  `cost_tracker.aggregate_mission_usage(instance_dir, mission_id, mission_text=…)`
+  is the per-mission read path used by `GET /v1/missions/{id}`.
+- **Skill-dispatch token capture**: streaming skill runs persist per-call token
+  totals to `KOAN_STREAM_USAGE_FILE` (summed across calls), appended to the stdout
+  capture so `_ensure_tokens` parses real tokens. When that sidecar is empty,
+  `_record_cost_event` backfills `input/output/cost` from the provider session tail
+  (`get_session_data`) so command-missions do not record placeholder zeros.
 - Per-role provider selection from the `cli:` section (`config.get_cli_config()`),
   threaded into `mission_runner.build_mission_command()` (mission/review roles),
   the `run_command*` helpers (their `model_key` role), and
