@@ -28,6 +28,8 @@ from app.review_runner import (
     _post_review_comment,
     _post_comment_replies,
     _fetch_pr_commit_shas,
+    _fetch_pr_head_oid,
+    _build_stale_head_alert,
     _safe_code_fence,
     _fix_nested_fences,
     _github_blob_url,
@@ -1404,6 +1406,90 @@ class TestPostReviewComment:
         body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
         assert "<!-- koan-commits\nabc123\ndef456\n-->" in body
 
+    @patch("app.review_runner.run_gh")
+    def test_stale_head_alert_added_when_branch_moved(self, mock_gh):
+        """A differing live HEAD appends an IMPORTANT alert before the footer."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            commit_shas=["aaaaaaaful", "bbbbbbbful"],
+            live_head_sha="ccccccccful",
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "> [!IMPORTANT]" in body
+        assert "branch moved during review" in body
+        # Names both the reviewed short-SHA and the live short-SHA.
+        assert "HEAD=bbbbbbb" in body
+        assert "ccccccc" in body
+        # Alert sits after the review content and before the footer separator.
+        assert body.index("> [!IMPORTANT]") < body.index("\n---\n")
+
+    @patch("app.review_runner.run_gh")
+    def test_no_stale_head_alert_when_head_unchanged(self, mock_gh):
+        """Matching live HEAD yields no alert (body unchanged)."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            commit_shas=["aaaaaaaful", "bbbbbbbful"],
+            live_head_sha="bbbbbbbful",
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "[!IMPORTANT]" not in body
+
+    @patch("app.review_runner.run_gh")
+    def test_no_stale_head_alert_without_live_head(self, mock_gh):
+        """Default (no live_head_sha) never adds an alert."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            commit_shas=["aaaaaaaful", "bbbbbbbful"],
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "[!IMPORTANT]" not in body
+
+    @patch("app.review_runner.run_gh")
+    def test_no_stale_head_alert_without_commit_shas(self, mock_gh):
+        """No reviewed SHA to compare against ⇒ no alert even with a live HEAD."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            live_head_sha="ccccccccful",
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "[!IMPORTANT]" not in body
+
+
+# ---------------------------------------------------------------------------
+# _build_stale_head_alert / _fetch_pr_head_oid
+# ---------------------------------------------------------------------------
+
+class TestStaleHeadAlert:
+    def test_returns_empty_when_shas_equal(self):
+        assert _build_stale_head_alert("abc123full", "abc123full") == ""
+
+    def test_returns_empty_when_reviewed_missing(self):
+        assert _build_stale_head_alert("", "abc123full") == ""
+
+    def test_returns_empty_when_live_missing(self):
+        assert _build_stale_head_alert("abc123full", "") == ""
+
+    def test_alert_names_both_short_shas(self):
+        alert = _build_stale_head_alert("abcdef1234", "9876543210")
+        assert "> [!IMPORTANT]" in alert
+        assert "HEAD=abcdef1" in alert
+        assert "9876543" in alert
+        # Leading blank line so it appends cleanly to review content.
+        assert alert.startswith("\n\n")
+        # Every rendered line after the first is a valid alert continuation.
+        for line in alert.strip().splitlines():
+            assert line.startswith(">")
+
+
+class TestFetchPrHeadOid:
+    @patch("app.review_runner.run_gh", return_value="abc123full\n")
+    def test_returns_oid_on_success(self, _mock_gh):
+        assert _fetch_pr_head_oid("owner", "repo", "42") == "abc123full"
+
+    @patch("app.review_runner.run_gh", side_effect=RuntimeError("boom"))
+    def test_returns_empty_on_error(self, _mock_gh):
+        assert _fetch_pr_head_oid("owner", "repo", "42") == ""
+
 
 # ---------------------------------------------------------------------------
 # run_review (integration, mocked externals)
@@ -1439,6 +1525,41 @@ class TestRunReview:
         mock_claude.assert_called_once()
         mock_gh.assert_called_once()  # post comment
         assert mock_notify.call_count >= 2
+
+    @patch("app.review_runner._maybe_post_inline_comments", return_value=(0, 0))
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_head_oid", return_value="ffffffffff")
+    @patch(
+        "app.review_runner._fetch_pr_commit_shas",
+        return_value=["1111111111", "2222222222"],
+    )
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_stale_head_alert_when_branch_moved_during_review(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
+        _mock_head, _mock_verdict, _mock_inline, pr_context, review_skill_dir,
+    ):
+        """When the live HEAD differs from the reviewed tip, the posted comment
+        carries the stale-HEAD IMPORTANT alert."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, _summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        posted_bodies = [
+            a for c in mock_gh.call_args_list for a in c.args
+            if isinstance(a, str) and "> [!IMPORTANT]" in a
+        ]
+        assert posted_bodies, "expected a posted comment carrying the stale-HEAD alert"
+        assert "branch moved during review" in posted_bodies[0]
+        assert "HEAD=2222222" in posted_bodies[0]
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
