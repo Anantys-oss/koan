@@ -40,7 +40,6 @@ from app.constants import (
     NOTIF_CACHE_TTL as _NOTIF_CACHE_TTL,
 )
 from app.messaging_level import is_debug
-from app.missions import count_pending
 from app.run_log import log_safe as _log_loop, suppress_logged
 from app.utils import atomic_write
 
@@ -1781,8 +1780,8 @@ def _consume_check_notifications_signal(koan_root: str) -> bool:
 def check_pending_missions(instance_dir: str) -> bool:
     """Check if there are pending missions in missions.md."""
     try:
-        content = (Path(instance_dir) / "missions.md").read_text()
-        return count_pending(content) > 0
+        from app.mission_store.transition import read_sections
+        return len(read_sections(instance_dir).get("pending", [])) > 0
     except FileNotFoundError:
         return False
     except (OSError, ValueError) as e:

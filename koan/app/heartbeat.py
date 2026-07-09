@@ -15,7 +15,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from app.missions import parse_sections
 from app.utils import parse_project
 
 
@@ -54,16 +53,8 @@ def check_stale_missions(
     Returns:
         List of stale mission descriptions (already-alerted ones excluded).
     """
-    missions_path = Path(instance_dir) / "missions.md"
-    if not missions_path.exists():
-        return []
-
-    try:
-        content = missions_path.read_text()
-    except OSError:
-        return []
-
-    sections = parse_sections(content)
+    from app.mission_store.transition import read_sections
+    sections = read_sections(instance_dir)
     in_progress = sections.get("in_progress", [])
     if not in_progress:
         return []

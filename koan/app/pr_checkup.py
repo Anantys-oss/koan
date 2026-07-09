@@ -101,9 +101,8 @@ def _get_pending_missions_text(instance_dir: Path) -> str:
     if not missions_path.exists():
         return ""
     try:
-        from app.missions import parse_sections
-        content = missions_path.read_text()
-        sections = parse_sections(content)
+        from app.mission_store.transition import read_sections
+        sections = read_sections(instance_dir)
         return "\n".join(sections.get("pending", []))
     except (OSError, ValueError):
         return ""

@@ -109,10 +109,9 @@ def _parse_completed_missions(target_date: Optional[date] = None) -> List[str]:
     if not MISSIONS_FILE.exists():
         return []
 
-    from app.missions import parse_sections
+    from app.mission_store.transition import read_sections
 
-    content = MISSIONS_FILE.read_text()
-    sections = parse_sections(content)
+    sections = read_sections(MISSIONS_FILE.parent)
     completed = []
     for item in sections["done"]:
         first_line = item.split("\n")[0]
@@ -135,9 +134,9 @@ def _count_pending_missions() -> int:
     if not MISSIONS_FILE.exists():
         return 0
 
-    from app.missions import count_pending
+    from app.mission_store.transition import read_sections
 
-    return count_pending(MISSIONS_FILE.read_text())
+    return len(read_sections(MISSIONS_FILE.parent).get("pending", []))
 
 
 def generate_report(report_type: str = "morning") -> str:
@@ -192,10 +191,9 @@ def generate_report(report_type: str = "morning") -> str:
 
     # In-progress items
     if MISSIONS_FILE.exists():
-        from app.missions import parse_sections
+        from app.mission_store.transition import read_sections
 
-        content = MISSIONS_FILE.read_text()
-        sections = parse_sections(content)
+        sections = read_sections(MISSIONS_FILE.parent)
         in_progress = []
         for item in sections["in_progress"]:
             first_line = item.split("\n")[0]

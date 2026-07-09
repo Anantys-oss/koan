@@ -84,9 +84,9 @@ def get_missions_context(instance_dir: Path) -> str:
     if not missions_file.exists():
         return "No active missions."
 
-    from app.missions import parse_sections
+    from app.mission_store.transition import read_sections
 
-    sections = parse_sections(missions_file.read_text())
+    sections = read_sections(instance_dir)
     in_progress = sections.get("in_progress", [])
     pending = sections.get("pending", [])
     parts = []

@@ -118,14 +118,10 @@ def _collect_failed_missions(koan_root: str) -> list:
     """Return attention items for failed missions."""
     items = []
     try:
-        from app.missions import parse_sections
+        from app.mission_store.transition import read_sections
         from app.utils import KOAN_ROOT as _
 
-        missions_file = Path(koan_root) / "instance" / "missions.md"
-        if not missions_file.exists():
-            return []
-        content = missions_file.read_text()
-        sections = parse_sections(content)
+        sections = read_sections(Path(koan_root) / "instance")
         failed = sections.get("failed", [])
         for mission_text in failed:
             text_hash = hashlib.md5(mission_text.encode()).hexdigest()[:8]

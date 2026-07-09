@@ -19,7 +19,10 @@ from app.mission_store.resolver import get_mission_store
 
 def read_sections(instance) -> dict:
     """Return a ``parse_sections``-shaped dict from the store + file."""
-    p = Path(instance) / "missions.md"
+    inst = Path(instance)
+    if not inst.exists():
+        return {**{s: [] for s in VALID_STATES}, "ci": []}
+    p = inst / "missions.md"
     content = p.read_text() if p.exists() else ""
 
     store = get_mission_store(str(instance))
