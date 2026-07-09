@@ -100,6 +100,16 @@ banner to the comment noting that the findings predate your latest push — so y
 don't act on stale feedback. Re-run `/review` to cover the new commits. Nothing
 changes for the common case where the branch didn't move.
 
+**Large diffs & partial-coverage warning:** Review diffs are packed to fit a
+token budget by the diff compressor (`optimizations.review_compressor.token_budget`,
+default 80,000 tokens — the single knob controlling review diff size). The
+fetch-time character cap is *derived* from that budget (budget × 3.5 chars/token
+× 4 headroom), so the compressor — not a blind character cut — decides coverage
+on large-context models. Whenever any file is omitted (fetch-time backstop,
+compressor packing, or trivial-file triage), the posted review opens with a
+`⚠️ Partial review` block listing every omitted file, so partial coverage is
+never silent.
+
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
 ## PR Management
