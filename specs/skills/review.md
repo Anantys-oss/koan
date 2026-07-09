@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-02
+updated: 2026-07-09
 ---
 
 # Skill Spec — `review`
@@ -42,7 +42,11 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 ## Outputs / side effects
 
 - Queues a review mission (one per URL); the agent loop runs it.
-- Posts a review comment to the PR with a branded footer (`pr_footer.py`).
+- Posts a review comment to the PR with a branded footer (`pr_footer.py`). The
+  footer advertises the reviewed tip as `` `HEAD=<short-sha>` ``.
+- If the PR branch's live HEAD moved between when the review captured its diff and
+  when the comment is posted (a push or force-push mid-review), a
+  `> [!IMPORTANT]` stale-HEAD alert is appended to the end of the comment.
 - Review prompt is enriched with `{ISSUE_CONTEXT}` from `issue_tracker/enrichment.py`.
 
 ## Error cases
@@ -78,6 +82,17 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   (global `config.yaml`, overridable per-project in `projects.yaml`, default
   `false`, fail-closed to `false`) skips that collapse so the prior review is
   left intact alongside the new one. Either way a fresh comment is posted.
+- **Stale-HEAD alert:** the PR commit SHAs are captured at the *start* of a review
+  (`_fetch_pr_commit_shas`), but the branch tip can move during the run. Just
+  before posting, `run_review` re-reads the branch's live HEAD
+  (`_fetch_pr_head_oid` → `headRefOid`) and, when it differs from the reviewed tip
+  (`current_shas[-1]`, the SHA shown as `HEAD=<short>` in the footer), appends a
+  `> [!IMPORTANT]` alert to the end of the comment (`_build_stale_head_alert`,
+  applied in `_post_review_comment`). This is **best-effort and purely
+  informational**: a failed live-HEAD lookup or an unchanged HEAD adds no alert
+  (byte-identical output), and the alert never blocks the post, changes the LGTM
+  verdict, or re-runs analysis — re-covering the new commits is the
+  incremental-review path's job on the next `/review`.
 
 ## Evaluation
 
