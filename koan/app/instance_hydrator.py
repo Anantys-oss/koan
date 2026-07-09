@@ -132,10 +132,22 @@ def pull_instance_repo(instance_dir: str) -> bool:
     # clean, pushable state. `rebase --abort` is a harmless no-op if the failure
     # happened before any rebase started (e.g. fetch error).
     sys.stderr.write("[instance_hydrator] pull --rebase failed; aborting to restore clean state\n")
-    subprocess.run(
+    abort = subprocess.run(
         ["git", "-C", instance_dir, "rebase", "--abort"],
         capture_output=True, text=True,
     )
+    # If the abort itself fails, instance/ is left mid-rebase and the next
+    # commit_instance() would `git add -A` + push conflict markers. `rebase
+    # --abort` returns non-zero when there was no rebase in progress (fetch-time
+    # failure) — a harmless no-op — so only surface a real, dirty leftover.
+    if abort.returncode != 0 and (
+        (Path(instance_dir) / ".git" / "rebase-merge").exists()
+        or (Path(instance_dir) / ".git" / "rebase-apply").exists()
+    ):
+        sys.stderr.write(
+            f"[instance_hydrator] rebase --abort failed; instance/ left mid-rebase: "
+            f"{abort.stderr.strip()}\n"
+        )
     return False
 
 
