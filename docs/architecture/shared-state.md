@@ -3,7 +3,7 @@ type: doc
 title: "Shared State"
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-11
+updated: 2026-07-08
 ---
 
 # Shared State
@@ -21,7 +21,7 @@ simple and makes state inspectable by humans and agents.
 - `memory/` - global and per-project memory files.
 - `journal/` - daily logs and reflections.
 - `events/` - scheduled mission JSON files.
-- `hooks/` - user-defined lifecycle hooks.
+- `hooks/` - user-defined lifecycle hooks (see [Lifecycle Hooks & Automation Rules](hooks.md)).
 - hidden tracker files for pause, focus, passive mode, usage, CI dispatch,
   review dispatch, burn rate, and similar daemon state.
 

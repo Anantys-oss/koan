@@ -46,6 +46,7 @@ memory, or integration changes:
 - [Daemon Runtime](architecture/daemon.md)
 - [Mission Lifecycle](architecture/mission-lifecycle.md)
 - [Shared State](architecture/shared-state.md)
+- [Lifecycle Hooks & Automation Rules](architecture/hooks.md)
 - [Provider Architecture](architecture/providers.md)
 - [Skills System](architecture/skills-system.md)
 - [Memory Architecture](architecture/memory.md)

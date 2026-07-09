@@ -95,7 +95,7 @@ What's genuinely unavailable until upstream fixes this (or this wiki drops the s
 
 ## Index structure
 
-Flat `wiki/index.md` — ~81 index-worthy pages (56 docs + 8 component-specs + 12 skill-specs + specs/README.md + 3 feature-plan entries) is under the plugin's ~150-page / 300-line shard threshold. Sectioned: Docs (by topic folder), Specs — Components, Specs — Skills, Specs — Active Features (the `NNN-slug/` entries with computed status).
+Flat `wiki/index.md` — ~82 index-worthy pages (57 docs + 8 component-specs + 12 skill-specs + specs/README.md + 3 feature-plan entries) is under the plugin's ~150-page / 300-line shard threshold. Sectioned: Docs (by topic folder), Specs — Components, Specs — Skills, Specs — Active Features (the `NNN-slug/` entries with computed status).
 
 ## Workflow customizations
 
