@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "GitHub Copilot CLI Provider"
+description: "Setup guide and feature/tool-mapping differences for using GitHub Copilot CLI as Kōan's provider."
 tags: [providers]
 created: 2026-05-28
 updated: 2026-05-28

@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — orphans"
+description: "Documents the `/orphans` skill that rebases and opens draft PRs for unmerged, PR-less branches, with commit-derived (non-LLM) PR titles/descriptions and per-branch error isolation."
 tags: [skill]
 created: 2026-07-01
 updated: 2026-07-01

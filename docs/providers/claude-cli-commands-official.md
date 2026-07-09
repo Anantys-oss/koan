@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "CLI reference"
+description: "Official upstream Claude Code CLI reference listing all commands and flags."
 tags: [providers]
 created: 2026-05-28
 updated: 2026-05-28

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Discord Messaging Provider"
+description: "Setup guide for using Discord as Kōan's messaging bridge via REST polling instead of the Gateway/WebSocket API."
 tags: [messaging]
 created: 2026-06-01
 updated: 2026-06-01

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Local LLM Provider (removed)"
+description: "Explains that the `local` Ollama provider was removed and points to `ollama-launch` or a custom Claude CLI endpoint as the supported replacements."
 tags: [providers]
 created: 2026-05-28
 updated: 2026-06-24

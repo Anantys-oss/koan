@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Mission Lifecycle"
+description: "Explains the mission queue format and lifecycle (Pending/In Progress/Done/Failed), org-wide missions, branch prep, direct skill dispatch, scheduling, recovery/retries, and missions.md integrity/size-bound safeguards."
 tags: [architecture]
 created: 2026-05-28
 updated: 2026-06-27

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "OpenCode Go via the Claude CLI"
+description: "Describes the `bin/oc-claude` wrapper that routes Koan's Claude CLI invocations through the `ocgo` proxy to run against an OpenCode Go subscription (Kimi, DeepSeek, Qwen, etc.)."
 tags: [providers]
 created: 2026-06-26
 updated: 2026-06-26

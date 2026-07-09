@@ -1,6 +1,7 @@
 ---
 type: component-spec
 title: "Component Spec — CLI Provider Abstraction"
+description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
 updated: 2026-07-01

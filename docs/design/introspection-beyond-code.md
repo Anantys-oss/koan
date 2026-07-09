@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Introspection : Kōan au-delà du code"
+description: "A session-107 introspective proposal for making Kōan a relational companion, identifying five missing dimensions (emotional memory, self-reflection, proactivity, relationship rituals, identity) and a phased implementation plan."
 tags: [design]
 created: 2026-05-28
 updated: 2026-05-28

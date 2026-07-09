@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Kōan Quickstart — Zero to Hero"
+description: "A 5-minute guide to the commands for driving Koan from GitHub PRs/issues, Jira, and messaging apps (Telegram/Slack), with minimal and context-augmented examples for each."
 tags: [users]
 created: 2026-06-29
 updated: 2026-06-29

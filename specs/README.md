@@ -1,9 +1,10 @@
 ---
 type: overview
 title: "Kōan Specs"
+description: "The top-level index and conventions doc for `specs/`, explaining the specs-vs-docs distinction, directory layout, naming rules, and the mandatory read-before/update-after spec discipline."
 tags: [core]
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-07-08
 ---
 
 # Kōan Specs
@@ -26,10 +27,15 @@ Specs and docs coexist — they do not replace each other. When a feature change
 *behavior*, update `docs/`. When it changes *design or contracts*, update `specs/`.
 Most non-trivial changes touch both.
 
-`specs/components/`, `specs/skills/`, and this file are indexed as part of an LLM
-Wiki spanning this directory and `docs/` — see
+This directory (`specs/components/`, `specs/skills/`, and this file) is an independent
+OKF v0.1 knowledge bundle — see [`../docs/SPEC.md`](../docs/SPEC.md) for the normative
+format spec (shared with `docs/`) and [`SCHEMA.md`](SCHEMA.md) for the conventions
+specific to this bundle, including why `specs/<NNN-slug>/` stays excluded. It is also
+indexed, together with `docs/`, as an LLM Wiki — see
 [`../wiki/index.md`](../wiki/index.md) for the flat catalog and
-[`../wiki/SCHEMA.md`](../wiki/SCHEMA.md) for frontmatter/tagging conventions.
+[`../wiki/SCHEMA.md`](../wiki/SCHEMA.md) for the plugin-level conventions. The
+**`/brain` skill** is the preferred entrypoint for consulting or extending either
+bundle — see `../.claude/skills/brain/SKILL.md`.
 
 ## Layout
 

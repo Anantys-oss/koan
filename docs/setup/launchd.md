@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Running as a launchd Service (macOS)"
+description: "Documents running Koan as a macOS launchd user service for auto-restart and login-time startup, including setup, logs, SSH agent forwarding, and troubleshooting."
 tags: [setup]
 created: 2026-05-28
 updated: 2026-05-28

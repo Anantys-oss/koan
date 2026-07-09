@@ -1,9 +1,10 @@
 ---
 type: overview
 title: "Documentation"
+description: "Top-level router explaining the docs/ tree's purpose, its relationship to specs/ design contracts, and pointers to user, architecture, and directory-map content."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-01
+updated: 2026-07-08
 ---
 
 # Documentation
@@ -21,11 +22,15 @@ breaks if you change it), see [`specs/`](../specs/README.md) — the single sour
 truth for design. Specs drive implementation and refactoring; these docs explain how
 to operate Koan. Most non-trivial changes update both.
 
-This directory (plus the durable half of `specs/`) is also indexed as an LLM Wiki —
-see [`wiki/index.md`](../wiki/index.md) for a flat, one-line-per-page catalog and
-[`wiki/SCHEMA.md`](../wiki/SCHEMA.md) for the frontmatter/tagging conventions.
-Use the wiki index to find candidate pages quickly; this file remains the
-hand-curated entry point for a first read.
+This directory is an independent OKF v0.1 knowledge bundle — see [`SPEC.md`](SPEC.md)
+for the normative format spec (shared with `specs/`) and [`SCHEMA.md`](SCHEMA.md) for
+the conventions specific to this bundle (page types, tag taxonomy, frontmatter). It is
+also indexed, together with the durable half of `specs/`, as an LLM Wiki — see
+[`wiki/index.md`](../wiki/index.md) for a flat, one-line-per-page catalog and
+[`wiki/SCHEMA.md`](../wiki/SCHEMA.md) for the plugin-level conventions. The **`/brain`
+skill** is the preferred entrypoint for consulting or extending either bundle — see
+`.claude/skills/brain/SKILL.md`. Use `wiki/index.md` (or `/brain ask`) to find candidate
+pages quickly; this file remains the hand-curated entry point for a first read.
 
 ## Start Here
 
@@ -46,6 +51,7 @@ memory, or integration changes:
 - [Daemon Runtime](architecture/daemon.md)
 - [Mission Lifecycle](architecture/mission-lifecycle.md)
 - [Shared State](architecture/shared-state.md)
+- [Lifecycle Hooks & Automation Rules](architecture/hooks.md)
 - [Provider Architecture](architecture/providers.md)
 - [Skills System](architecture/skills-system.md)
 - [Memory Architecture](architecture/memory.md)

@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — recreate"
+description: "Documents the `/recreate` skill that rebuilds a too-far-diverged PR from scratch on current upstream via a fresh branch and reimplementation, rather than rebasing."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-06-27

@@ -4,7 +4,7 @@ The catalog of all pages in this wiki. Each entry: a link to the page and a one-
 
 This wiki spans two content roots — `docs/` (operational "how to use", see [`docs/README.md`](docs/README.md)) and the durable half of `specs/` (design "why/contract", see [`specs/README.md`](../specs/README.md)) — reached from here via the `wiki/docs`, `wiki/specs-components`, `wiki/specs-skills` symlinks. Speckit's ephemeral per-feature folders (`specs/<NNN-slug>/`) are listed under "Specs — Active Features" below with a computed status, not frontmattered. See `SCHEMA.md` for the full rationale.
 
-~81 pages total — well under the ~150-page / 300-line shard threshold, so this stays flat.
+~84 pages total — well under the ~150-page / 300-line shard threshold, so this stays flat.
 
 ---
 
@@ -13,6 +13,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 ### Architecture
 - [`architecture/daemon.md`](docs/architecture/daemon.md) — Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture.
 - [`architecture/github-and-trackers.md`](docs/architecture/github-and-trackers.md) — Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work.
+- [`architecture/hooks.md`](docs/architecture/hooks.md) — Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission): instance-wide and skill-bound Python hooks via `HookRegistry`, plus the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard.
 - [`architecture/memory.md`](docs/architecture/memory.md) — Details Koan's Markdown+JSONL memory store, the SQLite FTS5 secondary index (confidence-weighted BM25 ranking, dual-write, fallback), entry schema, read/write paths, and compaction.
 - [`architecture/mission-lifecycle.md`](docs/architecture/mission-lifecycle.md) — Explains the mission queue format and lifecycle (Pending/In Progress/Done/Failed), org-wide missions, branch prep, direct skill dispatch, scheduling, recovery/retries, and missions.md integrity/size-bound safeguards.
 - [`architecture/overview.md`](docs/architecture/overview.md) — High-level architecture summary of Koan's two main processes (bridge and agent loop), major subsystems, and the human-decides safety model.
@@ -85,6 +86,8 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 ### Overview
 - [`README.md`](docs/README.md) — Top-level router explaining the docs/ tree's purpose, its relationship to specs/ design contracts, and pointers to user, architecture, and directory-map content.
+- [`SPEC.md`](docs/SPEC.md) — Normative Open Knowledge Format rules the docs/ and specs/ bundles conform to: frontmatter, index/log files, and conformance requirements.
+- [`SCHEMA.md`](docs/SCHEMA.md) — OKF conventions specific to the docs/ bundle: page types, tag taxonomy, and frontmatter requirements.
 
 ## Specs — Components
 
@@ -116,6 +119,7 @@ Per `specs/README.md`'s coverage policy: only the ~10 highest-impact skills have
 
 ### Overview
 - [`specs/README.md`](../specs/README.md) — The top-level index and conventions doc for `specs/`, explaining the specs-vs-docs distinction, directory layout, naming rules, and the mandatory read-before/update-after spec discipline.
+- [`SCHEMA.md`](../specs/SCHEMA.md) — OKF conventions specific to the specs/ bundle: page types, tag taxonomy, frontmatter requirements, and why speckit feature folders are excluded.
 
 ## Specs — Active Features
 

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "REST API"
+description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints) and its security model."
 tags: [operations]
 created: 2026-05-31
 updated: 2026-06-27

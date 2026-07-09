@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Security Review"
+description: "Documents the automated post-mission security review that scans diffs for dangerous patterns, scores risk, optionally blocks auto-merge, and logs an audit trail."
 tags: [security]
 created: 2026-05-28
 updated: 2026-06-27

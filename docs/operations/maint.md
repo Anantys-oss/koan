@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Maintenance & Release"
+description: "Covers Kōan's release process and branch philosophy (`main` vs `stable`), the `make release` procedure, versioning scheme, and recovery steps."
 tags: [operations]
 created: 2026-05-28
 updated: 2026-07-01

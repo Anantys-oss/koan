@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — mission"
+description: "Specifies the `/mission` skill, the base primitive that queues a free-form mission to `missions.md` for later agent-loop execution, also eval-exempt as a non-LLM queue utility."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-07-02

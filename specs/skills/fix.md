@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — fix"
+description: "Specifies the `/fix` skill, which fixes a tracker issue end-to-end (or batch-queues fixes for a repo) and redirects PR URLs to `/rebase`, with eval coverage on its diagnostic output."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-07-02

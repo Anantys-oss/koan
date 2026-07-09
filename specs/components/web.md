@@ -1,6 +1,7 @@
 ---
 type: component-spec
 title: "Component Spec — Web Dashboard & REST API"
+description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
 updated: 2026-06-27

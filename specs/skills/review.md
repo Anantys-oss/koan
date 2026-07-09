@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — review"
+description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-07-02

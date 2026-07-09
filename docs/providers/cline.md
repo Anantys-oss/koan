@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Cline CLI Provider"
+description: "Setup and feature-mapping guide for using Cline CLI as Kōan's underlying multi-backend AI provider."
 tags: [providers]
 created: 2026-06-09
 updated: 2026-06-09

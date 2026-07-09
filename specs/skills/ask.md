@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — ask"
+description: "Specifies the `/ask` skill, which answers a question about a GitHub PR/issue by fetching context and posting an AI-generated reply as a read-only, non-mutating worker."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-06-28

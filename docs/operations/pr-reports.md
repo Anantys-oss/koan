@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "PR Activity Reports"
+description: "Documents the `/report` skill that posts per-project and global GitHub PR activity digests (created/merged/interacted metrics) over weekly/monthly windows."
 tags: [operations]
 created: 2026-06-24
 updated: 2026-06-25

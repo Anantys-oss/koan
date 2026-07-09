@@ -1,6 +1,7 @@
 ---
 type: component-spec
 title: "Component Spec — Core Data & Config"
+description: "Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on."
 tags: [core]
 created: 2026-06-27
 updated: 2026-06-27

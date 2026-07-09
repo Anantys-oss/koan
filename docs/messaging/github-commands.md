@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "GitHub Notification-Driven Commands"
+description: "Full reference for triggering Kōan via `@mention` commands in GitHub PR/issue comments, including config, dedup, security, and fallback scanning."
 tags: [messaging]
 created: 2026-05-28
 updated: 2026-06-24

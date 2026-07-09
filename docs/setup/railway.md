@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Deploy Kōan on Railway"
+description: "Details deploying Koan as a single hosted container on Railway via `KOAN_DEPLOY=railway`, covering required service variables, the GitHub token bot-identity caveat, dashboard passphrase gating, and re-deploy behavior."
 tags: [setup]
 created: 2026-06-24
 updated: 2026-06-26

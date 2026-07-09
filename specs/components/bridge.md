@@ -1,6 +1,7 @@
 ---
 type: component-spec
 title: "Component Spec — Telegram Bridge"
+description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
 tags: [bridge]
 created: 2026-06-27
 updated: 2026-07-08

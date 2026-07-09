@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Interactive launcher (make koan)"
+description: "Describes `make koan`, the TTY-gated interactive launcher and its textual terminal dashboard (tabs, toggles, keybindings)."
 tags: [operations]
 created: 2026-06-08
 updated: 2026-06-09

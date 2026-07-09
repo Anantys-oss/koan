@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Telegram Setup Guide"
+description: "Step-by-step guide to configuring Kōan with Telegram (bot creation, chat ID, env vars), including group-chat privacy-mode setup and troubleshooting."
 tags: [messaging]
 created: 2026-05-28
 updated: 2026-07-08

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Jira Integration"
+description: "Full reference for controlling Kōan via `@mention` commands in Jira issue comments, including project mapping, ADF parsing, and coexistence with GitHub."
 tags: [messaging]
 created: 2026-05-28
 updated: 2026-05-29
