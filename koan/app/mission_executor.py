@@ -1204,6 +1204,7 @@ def _run_iteration(
         available_pct=available_pct or 50,
         mission_title=mission_title,
         spec_content=spec_content,
+        host_project_path=project_path,  # real host path for KOAN.md read
     )
 
     # Create pending.md

@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-01
+updated: 2026-07-09
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -59,6 +59,20 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `stagnation_monitor` | Daemon thread hashing last-N stdout lines; kills the subprocess group after K identical hashes; requeues up to `max_retry_on_stagnation`. |
 | `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
 | `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, each error-isolated. |
+| `prompt_builder._get_koan_md_section()` | Reads `<project>/KOAN.md`, caps at `_MAX_KOAN_MD_CHARS` (16k), frames via the `koan-md` template. Returns `""` for absent/blank/unreadable. |
+
+### KOAN.md injection
+
+`prompt_builder._get_koan_md_section(project_path)` reads `<project>/KOAN.md`
+and, when present and non-empty, appends it (framed via the `koan-md`
+system-prompt template, capped at `_MAX_KOAN_MD_CHARS`) as a **Tier-1 stable
+system-prompt section** — placed right after the submit-PR section so the
+prompt-cache prefix stays intact. `build_agent_prompt_parts()` /
+`build_agent_prompt()` take an optional `host_project_path`; the reader uses it
+in preference to `project_path` so the on-disk file is read from the host even
+when `project_path` is the devcontainer workspace. Invariant: absent/blank
+KOAN.md leaves the system prompt unchanged. KOAN.md is koan-only — Claude Code
+auto-loads `CLAUDE.md` but never `KOAN.md`, so interactive sessions never see it.
 
 ## Invariants
 
