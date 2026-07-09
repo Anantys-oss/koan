@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -270,6 +271,101 @@ def _strip_bot_mention_from_text(text: str, msg: dict) -> str:
 # Chat
 # ---------------------------------------------------------------------------
 
+def _build_command_catalog() -> str:
+    """Build a compact catalog of high-value slash commands for chat suggestions.
+
+    Filters skills to human-triggerable ones (bridge/command/hybrid, excluding
+    agent-only). Confirmable skills go in a runnable section with their usage
+    forms; the rest are listed alphabetically, grouped and capped at 5 per group.
+    Formats as a plain-text list:
+
+        /command — Short description (one line)
+
+    Returns empty string if chat suggestion is disabled in config.
+    """
+    from app.config import get_chat_suggest_commands_enabled, get_chat_confirm_commands_enabled
+
+    if not get_chat_suggest_commands_enabled():
+        return ""
+
+    try:
+        registry = _get_registry()
+        # Get human-triggerable skills (bridge, command, hybrid — not agent-only)
+        skills = registry.list_by_audience("bridge", "command", "hybrid")
+        confirm_enabled = get_chat_confirm_commands_enabled()
+
+        def _representative(skill):
+            """Pick the command that best names the skill (name == skill.name),
+            else the first command. For multi-form skills like ``recurring`` this
+            surfaces ``/recurring …`` (with its run/resume subforms) instead of
+            an unrelated first command like ``/daily``."""
+            for c in skill.commands:
+                if c.name == skill.name:
+                    return c
+            return skill.commands[0] if skill.commands else None
+
+        # --- ⚡ Runnable section: confirmable commands WITH their usage forms ---
+        # These are the only commands the bridge will arm for one-word ("yes")
+        # confirmation. Showing the real usage (e.g. "/recurring run <n>") is what
+        # lets the model build the precise subcommand the human asked for.
+        runnable_lines = []
+        if confirm_enabled:
+            for skill in sorted(skills, key=lambda s: s.name):
+                if not skill.chat_confirmable:
+                    continue
+                cmd = _representative(skill)
+                if not cmd:
+                    continue
+                form = (cmd.usage or f"/{cmd.name}").strip()
+                desc = (cmd.description or skill.description or "")[:70]
+                runnable_lines.append(f"{form} — {desc}")
+
+        # --- Prose-only section: other human commands, grouped, capped ---
+        groups_dict = {}
+        for skill in skills:
+            if not skill.group or (confirm_enabled and skill.chat_confirmable):
+                continue
+            cmd = skill.commands[0] if skill.commands else None
+            if not cmd:
+                continue
+            desc = (cmd.description or skill.description or "")[:70]
+            groups_dict.setdefault(skill.group, []).append(f"/{cmd.name} — {desc}")
+        prose_lines = [
+            line
+            for group in sorted(groups_dict.keys())
+            for line in sorted(groups_dict[group])[:5]
+        ]
+
+        if not runnable_lines and not prose_lines:
+            return ""
+
+        sections = []
+        if runnable_lines:
+            sections.append(
+                "Commands you can OFFER TO RUN (the human confirms with \"yes\"):\n"
+                + "\n".join(runnable_lines)
+                + "\n\nTo offer one of these, write a short natural confirmation question, then put "
+                "the command on the FINAL line as EXACTLY:\n"
+                "  SUGGEST_COMMAND: /command [args]\n"
+                "Use the precise form, including any subcommand/args the human implied "
+                "(e.g. \"relance la 3\" → `SUGGEST_COMMAND: /recurring run 3`). The system shows the "
+                "human the literal command and runs it ONLY after they reply \"yes\" — you never run it. "
+                "Offer at most one per message, only when the mapping is clear."
+            )
+        if prose_lines:
+            sections.append(
+                "Other commands (mention in prose only — you cannot run these, do NOT add a marker):\n"
+                + "\n".join(prose_lines)
+            )
+
+        return "\n\n".join(sections)
+    except Exception:
+        # Log full traceback at error level so persistent registry bugs surface
+        # in normal monitoring instead of silently degrading to 'disabled'.
+        log("error", f"[chat] catalog builder failed:\n{traceback.format_exc()}")
+        return ""
+
+
 def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     """Build the prompt for a chat response.
 
@@ -391,6 +487,9 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
             else:
                 emotional_context = emotional_raw
 
+    # Build command catalog (empty in lite mode to save tokens)
+    skills_catalog = "" if lite else _build_command_catalog()
+
     prompt = load_prompt(
         "chat",
         SOUL=get_soul(),
@@ -402,6 +501,7 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
         HISTORY=history_context or "",
         TIME_HINT=time_hint,
         TEXT=text,
+        SKILLS_CATALOG=skills_catalog,
     )
 
     # Inject language preference override
@@ -460,7 +560,42 @@ def _clean_chat_response(text: str, user_message: str = "") -> str:
     return expand_github_refs_auto(cleaned, user_message)
 
 
-def handle_chat(text: str):
+def _apply_command_suggestion(response: str, chat_id: str) -> str:
+    """Extract a validated command offer from a chat reply and arm confirmation.
+
+    If the reply carries a valid ``SUGGEST_COMMAND:`` marker (resolves in the
+    registry + the skill opted into ``chat_confirmable``), register it as the
+    channel's pending suggestion and replace the marker with a visible footer
+    showing the *exact* literal command, so the human confirms what truly runs.
+    A rejected or absent marker is stripped and the prose is returned unchanged.
+    """
+    from app.config import get_chat_confirm_commands_enabled
+    from app.command_confirm import extract_suggestion, register_pending
+
+    if not get_chat_confirm_commands_enabled():
+        # Still strip any stray marker so it never reaches the human. No
+        # ``or response`` fallback: a reply that was *only* a marker must
+        # collapse to empty rather than re-leak the raw marker.
+        from app.command_confirm import _MARKER_RE
+        return _MARKER_RE.sub("", response or "").strip()
+
+    try:
+        registry = _get_registry()
+        cleaned, command = extract_suggestion(response, registry)
+        if command:
+            register_pending(command, chat_id)
+            footer = f"\n\n→ Reply \"yes\" to run  {command}"
+            return f"{cleaned}{footer}"
+        return cleaned
+    except Exception:
+        # Strip any marker even on failure so the internal control marker can
+        # never surface to the human; never return the raw response unsanitized.
+        from app.command_confirm import _MARKER_RE
+        log("error", f"[chat] command-suggestion processing failed:\n{traceback.format_exc()}")
+        return _MARKER_RE.sub("", response or "").strip()
+
+
+def handle_chat(text: str, chat_id: str = ""):
     """Lightweight Claude call for conversational messages — fast response.
 
     Uses restricted tools (Read/Glob/Grep by default) to prevent prompt
@@ -512,6 +647,10 @@ def handle_chat(text: str):
             )
             response = _clean_chat_response(result.stdout.strip(), text)
             if response:
+                response = _apply_command_suggestion(response, chat_id)
+            # Re-check: a marker-only reply collapses to empty after suggestion
+            # processing, so never send an empty message.
+            if response:
                 send_telegram(response)
                 msg_id = _get_last_message_id()
                 save_conversation_message(
@@ -550,6 +689,10 @@ def handle_chat(text: str):
                     cwd=chat_cwd,
                 )
                 response = _clean_chat_response(result.stdout.strip(), text)
+                if response:
+                    response = _apply_command_suggestion(response, chat_id)
+                # Re-check after suggestion processing: a marker-only reply
+                # collapses to empty, so never send an empty message.
                 if response:
                     send_telegram(response)
                     msg_id = _get_last_message_id()
@@ -883,7 +1026,7 @@ def _handle_reaction_update(update: dict):
         log("reaction", f"Reaction {emoji} removed from message {message_id}")
 
 
-def handle_message(text: str):
+def handle_message(text: str, chat_id: str = ""):
     text = text.strip()
     if not text:
         return
@@ -891,6 +1034,30 @@ def handle_message(text: str):
     # Each incoming user message resets flood protection so identical
     # command responses (e.g. /help twice) are never suppressed.
     reset_flood_state()
+
+    # Confirmation interception: if the chat model previously offered a command
+    # (stored as a channel-bound, single-use, TTL'd pending suggestion) and the
+    # human now replies with a tight affirmative, replay the *literal* stored
+    # command through this same routing — so it runs via the existing
+    # handle_command path with every existing gate. The human's "yes" is the
+    # trigger; no new code path and no LLM at execution time. Any non-affirmative
+    # reply clears the pending (the human moved on).
+    from app.command_confirm import is_affirmative, peek_pending, take_pending, clear_pending
+    from app.config import get_chat_confirm_commands_enabled
+
+    if get_chat_confirm_commands_enabled() and not is_command(text):
+        pending = peek_pending(chat_id)
+        if pending is not None:
+            if is_affirmative(text):
+                # take_pending is a second lock acquisition after peek: a TTL
+                # expiry or concurrent register_pending between the two can hand
+                # back None. Guard so we never pass None to handle_command.
+                command = take_pending(chat_id)
+                if command:
+                    log("chat", f"Confirmed chat suggestion → running {command}")
+                    handle_command(command)
+                    return
+            clear_pending()
 
     if is_command(text):
         handle_command(text)
@@ -904,7 +1071,7 @@ def handle_message(text: str):
     if is_mission(text):
         handle_mission(text)
     else:
-        _run_in_worker(handle_chat, text, lane="chat")
+        _run_in_worker(handle_chat, text, chat_id, lane="chat")
 
 
 def _check_group_chat_mode(provider) -> None:
@@ -1179,7 +1346,7 @@ def _bridge_loop():
                     log("chat", f"Received: {text[:60]}")
                     set_reply_context(message_id)
                     try:
-                        handle_message(text)
+                        handle_message(text, chat_id=chat_id)
                     except Exception as e:
                         log("error", f"Message handling failed: {e}")
                         try:

@@ -6,6 +6,7 @@ emoji: 🔔
 description: Force an immediate check of GitHub and Jira notifications
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: check_notifications
     description: Trigger immediate notification check (bypasses backoff)

@@ -6,6 +6,7 @@ emoji: 🔧
 description: Detect config.yaml drift against the instance.example template
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: config_check
     description: Compare instance/config.yaml against instance.example/config.yaml

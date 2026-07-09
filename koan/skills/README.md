@@ -66,6 +66,7 @@ handler: handler.py
 | `requirements` | no | Python packages to auto-install before first execution (e.g. `[requests, boto3]`) |
 | `sub_commands` | no | List of skill commands to expand into when triggered. Defines a combo skill — see [Combo skills](#combo-skills). Defaults to `[]`. |
 | `parallel` | no | Set to `true` to batch-insert all `sub_commands` atomically in a single write. Only meaningful with `sub_commands`. See [Parallel combo skills](#parallel-combo-skills). Defaults to `false`. |
+| `chat_confirmable` | no | Set to `true` to let chat offer one-word ("yes") confirmation that runs this skill's command from natural language. The confirmed "yes" replays the exact command through the normal command path (all gates apply); only opt in safe, non-destructive commands. Defaults to `false`. |
 
 ### Frontmatter validation
 

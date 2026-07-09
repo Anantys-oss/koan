@@ -6,6 +6,7 @@ emoji: 🔊
 description: Toggle verbose/silent progress updates
 version: 1.0.0
 audience: bridge
+chat_confirmable: true
 commands:
   - name: verbose
     description: Enable verbose progress updates
