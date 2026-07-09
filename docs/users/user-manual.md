@@ -1074,7 +1074,7 @@ Not ready to commit to a mission? Save it as an idea.
 - `/stats webapp` — How's Kōan doing on a specific project?
 </details>
 
-**`/report`** — Pull-Request activity report per-project and global, posted as a markdown code block. A plain `/report` emits both the weekly and the monthly digest; add `--week` or `--month` to narrow it. Shortcuts: `/weekly_report`, `/monthly_report`.
+**`/report`** — Pull-Request activity report per-project and global, posted as a markdown code block. A plain `/report` emits both the weekly and the monthly digest; add `--week` or `--month` to narrow it. Shortcuts: `/reports` (same as `/report`), `/weekly_report`, `/monthly_report`.
 
 - **Usage:** `/report` (both) | `/report --week` | `/report --month`
 - **Metrics:**
@@ -2306,7 +2306,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/journal` | `/log` | I | View journal entries |
 | `/email` | — | I | Email digest status or test |
 | `/stats [project]` | — | I | Session outcome statistics |
-| `/report [--week\|--month]` | `/weekly_report`, `/monthly_report` | I | PR activity report (created, merged %, interacted) per-project + global; defaults to both weekly and monthly |
+| `/report [--week\|--month]` | `/reports`, `/weekly_report`, `/monthly_report` | I | PR activity report (created, merged %, interacted) per-project + global; defaults to both weekly and monthly |
 | `/done [project]` | `/merged` | I | List PRs merged in the last 24 hours |
 | `/explore [project]` | `/exploration` | I | Enable/show exploration mode |
 | `/noexplore [project]` | — | I | Disable exploration mode |
