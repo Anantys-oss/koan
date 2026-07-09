@@ -2590,6 +2590,41 @@ def is_review_compressor_enabled() -> bool:
     return bool(enabled) if isinstance(enabled, bool) else True
 
 
+# Exact inverse of diff_compressor.estimate_tokens (chars / 3.5). Keeping the
+# two in sync means a diff that fits get_review_max_diff_chars() also fits the
+# compressor's token budget by its own estimate.
+_REVIEW_CHARS_PER_TOKEN = 3.5
+# Headroom multiplier: the fetch-time char cap is a coarse OOM backstop, NOT
+# the coverage guardrail. It must sit well ABOVE the compressor budget so the
+# compressor receives the whole diff (it needs every file to prioritise) and
+# does the intelligent packing + skip-reporting. The blind fetch cut only
+# fires on pathological diffs far larger than any realistic PR.
+_REVIEW_FETCH_HEADROOM = 4
+
+
+def get_review_compressor_token_budget() -> int:
+    """Token budget for the review diff compressor.
+
+    Reads ``optimizations.review_compressor.token_budget`` (default 80_000).
+    This is the single knob controlling review diff size — the fetch-time
+    char cap (:func:`get_review_max_diff_chars`) is derived from it.
+    """
+    raw = _get_review_compressor_dict().get("token_budget", 80_000)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return 80_000
+    return raw
+
+
+def get_review_max_diff_chars() -> int:
+    """Fetch-time character cap for review diffs, derived from the token budget.
+
+    = token_budget × 3.5 chars/token × 4 headroom. Generous by design so the
+    compressor (the real coverage guardrail) sees the full diff.
+    """
+    budget = get_review_compressor_token_budget()
+    return int(budget * _REVIEW_CHARS_PER_TOKEN * _REVIEW_FETCH_HEADROOM)
+
+
 def _get_rtk_dict() -> dict:
     """Return the ``optimizations.rtk`` mapping (or an empty dict).
 
