@@ -13,7 +13,7 @@ name: 📖 Wiki Sync
 # NOTE: uses `pull_request` (not `pull_request_target`), so it only has write
 # access to branches within this repo — it will not push fixes onto PRs from
 # forks. Fork PRs still get the deterministic report via the job log; a
-# maintainer can apply the same fix by re-running /wiki:lint locally.
+# maintainer can apply the same fix by re-running `/brain lint` locally.
 
 on:
   pull_request:
@@ -80,7 +80,12 @@ jobs:
           fi
           git config user.name "Koan-Bot"
           git config user.email "koan-bot@users.noreply.github.com"
-          git add wiki/ docs/ specs/components/ specs/skills/
+          # specs/*.md (non-recursive) picks up specs/README.md, specs/SCHEMA.md, and
+          # specs/index.md — root-level files in the specs/ bundle that live outside
+          # both specs/components/ and specs/skills/ and were previously never staged
+          # here. Never matches specs/<NNN-slug>/** (those are subdirectories, not
+          # files directly in specs/).
+          git add wiki/ docs/ specs/components/ specs/skills/ specs/*.md
           git commit -m "$(cat <<'EOF'
           docs(wiki): sync frontmatter/index/log gaps
 

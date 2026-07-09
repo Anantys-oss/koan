@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Web Dashboard"
+description: "Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, and design-system integration."
 tags: [operations]
 created: 2026-05-31
 updated: 2026-06-27

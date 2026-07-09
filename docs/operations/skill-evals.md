@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Skill evaluation (eval) harness"
+description: "Describes the deterministic eval harness that scores LLM-driven skills (review, fix, plan, brainstorm, rebase) against golden datasets in offline (CI) and live modes."
 tags: [operations]
 created: 2026-07-01
 updated: 2026-07-02

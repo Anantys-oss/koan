@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Shared State"
+description: "Explains Koan's file-based (no-database) shared state under instance/, locking/atomic-write conventions, per-uid temp/scratch directories, and configuration sources."
 tags: [architecture]
 created: 2026-05-28
 updated: 2026-07-08

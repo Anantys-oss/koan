@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Design Decisions"
+description: "Records durable Koan design decisions (human authority, local files over DB, branch isolation, provider isolation, prompt files, public artifact genericity, documentation-first)."
 tags: [design]
 created: 2026-05-28
 updated: 2026-05-28

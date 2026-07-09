@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "RTK integration"
+description: "Explains the optional rtk CLI-proxy integration (detection, awareness injection, hook setup) that compresses dev-command output for token savings."
 tags: [operations]
 created: 2026-05-28
 updated: 2026-05-28

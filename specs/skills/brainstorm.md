@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — brainstorm"
+description: "Specifies the `/brainstorm` skill, which decomposes a topic into structured, linked GitHub sub-issues under a master tracking issue and is covered by the skill-eval harness."
 tags: [skill]
 created: 2026-07-02
 updated: 2026-07-02

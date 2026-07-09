@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Memory watchdog (#2232)"
+description: "Explains the memory watchdog that restarts the agent loop between missions when RSS stays over a threshold, its config knobs, and health-endpoint observability."
 tags: [operations]
 created: 2026-07-01
 updated: 2026-07-01

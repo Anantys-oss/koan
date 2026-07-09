@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Daemon Runtime"
+description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
 updated: 2026-06-26

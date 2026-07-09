@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Z.ai (GLM) via the Claude CLI"
+description: "Documents the `bin/zai-claude` wrapper that points the real Claude CLI at Z.ai's Anthropic-compatible endpoint and maps Anthropic model tiers to GLM models."
 tags: [providers]
 created: 2026-06-28
 updated: 2026-06-28

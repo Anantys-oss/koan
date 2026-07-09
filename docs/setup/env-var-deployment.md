@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Environment-variable-only deployment"
+description: "Explains how Koan can run purely from injected environment variables (Railway/Docker/Kubernetes/systemd) without a hand-authored `.env` file, and the precedence rules between env vars and the synthesized `.env`."
 tags: [setup]
 created: 2026-06-24
 updated: 2026-06-26

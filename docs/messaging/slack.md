@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Slack Setup Guide"
+description: "Step-by-step guide to configuring Kōan with Slack (Socket Mode app setup, scopes, env vars) plus Slack-specific behavior like threading, reactions, and the assistant \"thinking\" status."
 tags: [messaging]
 created: 2026-05-28
 updated: 2026-06-25

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Onboarding Guide"
+description: "Documents the interactive 12-step onboarding wizard that sets up a new Koan instance, its resumability, personality presets, and non-interactive/CI mode."
 tags: [users]
 created: 2026-05-28
 updated: 2026-06-25

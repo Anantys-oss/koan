@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Docker Setup"
+description: "Covers Docker Compose setup for Koan (pull vs. build from source), workspace project mounts, authentication (Claude/GitHub), volume layout, and troubleshooting common container issues."
 tags: [setup]
 created: 2026-05-28
 updated: 2026-06-24

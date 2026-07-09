@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Model Configuration"
+description: "Explains how to configure which model handles each Koan role (mission, chat, lightweight, fallback, etc.) per provider via `config.yaml`, including resolution order and CLI-provider-per-role routing."
 tags: [users]
 created: 2026-06-07
 updated: 2026-06-30

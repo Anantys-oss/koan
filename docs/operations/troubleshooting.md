@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Troubleshooting"
+description: "Catalogs common operational issues (agent loop, git/worktrees, memory, bridge, GitHub, CLI provider, parallel sessions, config) and their fixes."
 tags: [operations]
 created: 2026-06-04
 updated: 2026-06-11

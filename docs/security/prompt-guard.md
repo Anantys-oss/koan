@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Prompt Guard"
+description: "Documents `prompt_guard.py`'s input-side defenses against prompt injection in missions and its configuration/complementary defenses (outbox scanner, data fencing, memory scanning)."
 tags: [security]
 created: 2026-06-06
 updated: 2026-06-27

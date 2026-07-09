@@ -1,9 +1,10 @@
 ---
 type: doc
 title: "Kōan User Manual"
+description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-02
+updated: 2026-07-08
 ---
 
 # Kōan User Manual
@@ -2222,6 +2223,14 @@ For advanced deployment scenarios, see the existing documentation:
 - [Docker deployment](../setup/docker.md)
 - [SSH tunnel setup](../setup/ssh-setup.md)
 - [Always-up Railway deployment](../design/spec-always-up-railway.md)
+
+### Contributing to Kōan's Own Docs
+
+If you're working on Kōan's codebase (not just running it), `docs/` and `specs/` are
+each an OKF-conformant knowledge bundle consulted via Claude Code's `/brain` project
+skill (`ask`/`sync`/`ingest`/`lint`/`init`) — see `docs/SPEC.md`/`docs/SCHEMA.md` and
+the root `CLAUDE.md`'s "Documentation first" section. This is a contributor-facing
+convention, not a Kōan runtime command — it isn't triggerable from Telegram or GitHub.
 
 ---
 

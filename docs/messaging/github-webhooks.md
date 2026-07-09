@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "GitHub Webhooks — Push-Based Notification Triggering"
+description: "Describes the opt-in push-based GitHub webhook receiver that collapses notification-polling latency while polling remains the reliability fallback."
 tags: [messaging]
 created: 2026-06-01
 updated: 2026-06-02

@@ -1,14 +1,1 @@
-{
-  "enabledPlugins": {
-    "llm-wiki@llm-wiki": true
-  },
-  "extraKnownMarketplaces": {
-    "llm-wiki": {
-      "source": {
-        "source": "github",
-        "repo": "praneybehl/llm-wiki-plugin"
-      },
-      "autoUpdate": true
-    }
-  }
-}
+{}

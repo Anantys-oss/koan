@@ -1,6 +1,7 @@
 ---
 type: component-spec
 title: "Component Spec — Agent Loop Pipeline"
+description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
 updated: 2026-07-01

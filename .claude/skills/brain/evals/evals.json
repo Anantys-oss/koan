@@ -1,0 +1,42 @@
+{
+  "skill_name": "brain",
+  "note": "brain is a .claude/skills/ project skill (Claude-Code-native, session-invoked), not a koan/skills/core/ runtime skill — it is NOT wired into app/skill_evals.py's SCORERS/EVAL_EXEMPT_SKILLS registries, which only cover skills dispatched through skill_dispatch.py. These scenarios are exercised manually (or by a Claude session on request) whenever this skill's SKILL.md changes, not by an automated CI job.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "ask reads wiki/index.md first",
+      "prompt": "/brain ask \"how does koan's mission lifecycle work?\"",
+      "expected_output": "Reads wiki/index.md before anything else, opens only the candidate page(s) it names (e.g. docs/architecture/mission-lifecycle.md), and answers citing real page paths. Does not fabricate a citation, does not grep docs/ blindly before consulting the index."
+    },
+    {
+      "id": 2,
+      "name": "search is a plain alias of ask",
+      "prompt": "/brain search \"how does koan's mission lifecycle work?\"",
+      "expected_output": "Identical behavior to eval 1 — same index-first traversal, same answer shape. Confirms search and ask are not two different code paths."
+    },
+    {
+      "id": 3,
+      "name": "sync only touches bookkeeping",
+      "prompt": "/brain sync (run after a change that added one new paragraph to an existing docs/ page, with no frontmatter edits made by the user)",
+      "expected_output": "Only the touched page's `updated:` frontmatter (and `description:` if it was missing) change, plus any stale index.md regenerated via scripts/okf_backfill.py and a wiki/index.md / wiki/log.md update. No other page's frontmatter or body content changes."
+    },
+    {
+      "id": 4,
+      "name": "ingest produces exactly one raw/ file and one reference page",
+      "prompt": "/brain ingest \"idea: cache provider responses for 60s to cut duplicate API calls\"",
+      "expected_output": "Exactly one new file under raw/notes/, exactly one new docs/reference/*.md page with type: reference, a raw: field pointing at the raw/notes/ file, and a body ending in a # Citations section. docs/reference/index.md and docs/index.md are regenerated. raw/ is never staged for commit."
+    },
+    {
+      "id": 5,
+      "name": "bare invocation asks, never guesses",
+      "prompt": "/brain",
+      "expected_output": "Prints the cheat sheet, then calls AskUserQuestion with one option per subcommand (ask, sync, ingest, lint, init). Does not silently pick an action based on prior conversation context."
+    },
+    {
+      "id": 6,
+      "name": "lint never invokes the llm-wiki plugin",
+      "prompt": "/brain lint",
+      "expected_output": "Runs scripts/wiki_check.py --full directly and reports its findings. Never invokes /wiki:lint (whose bundled wiki_lint.py is blind to the wiki/ symlinks, per wiki/SCHEMA.md) and never reports a false-clean result."
+    }
+  ]
+}

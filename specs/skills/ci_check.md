@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — ci_check"
+description: "Specifies the `/ci_check` skill, which checks a PR's CI status, runs the shared CI-fix loop on failures, and toggles automatic CI-fix dispatch."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-06-27

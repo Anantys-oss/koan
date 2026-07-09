@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Lifecycle Hooks & Automation Rules"
+description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission): instance-wide and skill-bound Python hooks via `HookRegistry`, plus the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard."
 tags: [architecture]
 created: 2026-07-08
 updated: 2026-07-08

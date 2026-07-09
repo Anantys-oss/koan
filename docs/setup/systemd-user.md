@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Running as a systemd --user Service (Linux, no root)"
+description: "Describes running Koan as a per-user (rootless) systemd service on Linux, covering unit installation, linger for boot persistence, and PATH preservation for CLI providers."
 tags: [setup]
 created: 2026-06-26
 updated: 2026-06-27

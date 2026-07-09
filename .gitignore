@@ -3,6 +3,21 @@ instance
 .koan*
 .claude/*
 !.claude/settings.json
+!.claude/skills
+.claude/skills/*
+!.claude/skills/brain
+
+# /brain ingest acquisition scratch — snapshots only, never committed
+raw/*
+!raw/articles
+!raw/notes
+!raw/files
+raw/articles/*
+raw/notes/*
+raw/files/*
+!raw/articles/.gitkeep
+!raw/notes/.gitkeep
+!raw/files/.gitkeep
 
 # Python
 __pycache__/

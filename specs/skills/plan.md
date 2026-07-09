@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — plan"
+description: "Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-07-02

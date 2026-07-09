@@ -24,8 +24,7 @@ explain how to use it (see `specs/README.md` for the specs-vs-docs split). This 
 is **not optional**:
 
 1. **Before implementing** any feature or refactor, READ the relevant spec first — via
-   `wiki/index.md` (or `/wiki:query` for a fuzzy question) rather than blind grep, see
-   "Wiki tooling" below:
+   `/brain ask` rather than blind grep, see "Documentation first" below:
    - Component change → `specs/components/<group>.md` (core, agent-loop, bridge,
      providers, git-github, issue-tracking, skills, web).
    - Skill change → `specs/skills/<skill-name>.md`.
@@ -48,19 +47,70 @@ clean refactoring: change the spec's contract deliberately, then make the code m
 
 ## Documentation first
 
-- Before planning or implementing a feature or important refactor, check `wiki/index.md` (or `/wiki:query` for a fuzzy question) to find candidate pages — see "Wiki tooling" below — then read the matching pages under `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`, `docs/operations/`, `docs/design/`, `docs/security/`, or `docs/setup/`.
-- Treat docs as context to verify against code, not as unquestioned truth. If code and docs disagree, preserve current code behavior unless the task says otherwise, and update the docs to match the resulting behavior.
-- After changing user behavior, configuration, daemon flow, provider behavior, shared state, safety boundaries, or an important implementation decision, update the relevant docs in the same branch.
-- For core skill changes, update both `docs/users/user-manual.md` and `docs/users/skills.md`.
+`docs/` and `specs/` are each independent OKF v0.1 knowledge bundles (see
+`docs/SPEC.md` for the normative, bundle-agnostic spec; `docs/SCHEMA.md` and
+`specs/SCHEMA.md` for the per-bundle conventions built on top of it), also jointly
+indexed via the `wiki/` directory (`wiki/index.md`, `wiki/docs`, `wiki/specs-components`,
+`wiki/specs-skills` symlinks — see `wiki/SCHEMA.md`). The **`/brain` skill**
+(`.claude/skills/brain/`) is the entrypoint for consulting and extending both bundles —
+it is fully self-sufficient (acquisition, index-first navigation, and OKF-conformance
+glue), with no dependency on the `llm-wiki` plugin's `/wiki:*` commands (see
+`wiki/SCHEMA.md` for why). Treat this as a hard rule on every feature, refactor, or
+architecture decision: **read it first (Consult), update it last (Capture)**.
 
-## Wiki tooling
+- **Consult — before you plan, research, or refactor.** Run `/brain ask "<question>"`
+  (or `/brain search`, an alias). It reads `wiki/index.md` first (never greps `docs/`/
+  `specs/` blindly), picks candidate pages from their one-line summaries, opens only
+  those (+ backlinks), and cites them by path. If the index doesn't clearly point to a
+  page, that's the signal coverage is missing — say so plainly rather than guessing.
+  State explicitly what you found (naming the docs) — or that nothing relevant existed
+  — before proposing changes. Never rely on source-code inspection alone when a
+  relevant doc exists. **In Plan Mode**, the plan file's Context section must state
+  what `docs/`/`specs/` said (or that nothing relevant was found) before the
+  recommended approach.
 
-`docs/` and the durable half of `specs/` (`components/`, `skills/`) are indexed together as an LLM Wiki (`praneybehl/llm-wiki-plugin`, real `wiki/` directory with `wiki/docs`, `wiki/specs-components`, `wiki/specs-skills` symlinks — see `wiki/SCHEMA.md` for full conventions, including why `specs/<NNN-slug>/` stays wiki-visible but unfrontmattered).
+  `/brain lint` (wrapping the broadened `scripts/wiki_check.py`) is a periodic health
+  check, not part of the per-task loop.
 
-- **Index-first.** Read `wiki/index.md`, open the obviously-relevant page(s) directly. Escalate to `/wiki:query "<topic>"` only for open-ended/fuzzy questions the index alone doesn't resolve. `/wiki:lint`/`/wiki:stats` are periodic health checks, not part of the per-task loop.
-- **In Plan Mode**, the plan's Context section must state what the wiki said (or that nothing relevant was found) before the recommended approach.
-- **Wiki bookkeeping is exempt from the "no unsupervised modification" principle below** — frontmatter dates, `wiki/index.md` entries, `wiki/log.md` lines, and `specs/<NNN-slug>/` computed status are committed directly as part of the same change/PR, no separate review step for that part specifically. This does not extend to actual spec/contract or code changes. A CI job (`.github/workflows/wiki-sync.yml`) backstops anything an LLM session missed by pushing a same-branch fix commit — never to `main`, never a separate PR.
-- `make setup` installs the `llm-wiki` plugin automatically (user scope, so it's available in every project on the machine — this is what makes `/wiki:*` work for both human sessions and koan's own headless CLI invocations, which never see the interactive plugin-install prompt). If `/wiki:*` commands aren't recognized (e.g. `claude` wasn't on `PATH` during `make setup`, or the plugin cache was cleared), run once: `claude plugin marketplace add praneybehl/llm-wiki-plugin && claude plugin install llm-wiki@llm-wiki --scope user`.
+- **Source of truth order.** (1) current source code, (2) `docs/`/`specs/`, (3) inline
+  code comments, (4) assumptions. If docs conflict with the code, trust the code and
+  propose a docs update in the same change — never silently pick a side.
+
+- **Capture — write/update after you implement.** After changing user behavior,
+  configuration, daemon flow, provider behavior, shared state, safety boundaries, or an
+  important implementation decision, create or update the relevant page under
+  `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`,
+  `docs/operations/`, `docs/design/`, `docs/security/`, or `docs/setup/` (see
+  `docs/SCHEMA.md` for frontmatter/tagging conventions), and the matching
+  `specs/components/<group>.md` if the change touches a component's contract (see
+  "Specs discipline" above). Then run **`/brain sync`** to close the loop: it bumps
+  `updated:` frontmatter (and adds `description:` on new/touched pages only — existing
+  pages are not bulk-backfilled), regenerates any stale `index.md` via
+  `scripts/okf_backfill.py indexes`, and refreshes the page's `wiki/index.md` entry.
+  For core skill changes, also update `docs/users/user-manual.md` and
+  `docs/users/skills.md`.
+
+- **Acquire — capture external material.** When a web article, an existing document,
+  or a stray idea worth preserving comes up mid-task (not tied to a feature you just
+  built), run **`/brain ingest <path|url|"idea sentence">`** — it snapshots the source
+  into the git-ignored `raw/` directory and compiles a durable, cited
+  `docs/reference/*.md` page. This is separate from feature docs: it's for knowledge
+  that doesn't originate from code you wrote.
+
+- **Wiki bookkeeping is exempt from the "no unsupervised modification" principle
+  below** — frontmatter fields, `wiki/index.md`/`docs/index.md`/`specs/index.md`/
+  per-folder `index.md` entries, and `wiki/log.md` lines are committed directly as part
+  of the same change/PR, no separate review step for that part specifically. This does
+  not extend to actual spec/contract, doc-body, or code changes. A CI job
+  (`.github/workflows/wiki-sync.yml`) backstops anything a session missed by pushing a
+  same-branch fix commit — never to `main`, never a separate PR.
+
+- **`.claude/skills/` vs. `koan/skills/core/`.** `brain` (like the `speckit-*` skills)
+  is a Claude-Code-native project skill under `.claude/skills/`, invoked directly in a
+  session — it is not a `koan/skills/core/` runtime skill dispatched via Telegram/
+  GitHub/Jira, has no attachment to `app/skill_evals.py`'s eval harness, and is out of
+  scope for `koan/skills/CLAUDE.md`'s "adding a new core skill" checklist. Never
+  conflate the two.
 
 ## Commands
 

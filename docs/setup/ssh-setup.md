@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Git SSH Authentication"
+description: "Walks through SSH authentication setup for Koan's git operations across macOS direct-run, Linux systemd, and Docker deployment modes, including fallback key generation."
 tags: [setup]
 created: 2026-05-28
 updated: 2026-06-06

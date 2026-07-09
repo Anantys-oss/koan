@@ -1,6 +1,7 @@
 ---
 type: component-spec
 title: "Component Spec — Skills System"
+description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
 updated: 2026-07-02

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "OpenAI Codex CLI Provider"
+description: "Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting."
 tags: [providers]
 created: 2026-05-28
 updated: 2026-07-01
