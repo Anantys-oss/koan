@@ -728,6 +728,10 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Memory cleanup", cleanup_memory, instance)
         _safe_run("Missions pruning", prune_missions_done, instance)
         _safe_run("Mission history cleanup", cleanup_mission_history, instance)
+        # One-time ingest of missions.md into the SQLite store (idempotent;
+        # gated on MissionStore.is_initialized). Analog of memory SQLite indexing.
+        from app.mission_store.startup import ensure_ingested
+        _safe_run("Mission store ingest", ensure_ingested, instance)
         from app.utils import reap_stale_mission_tmp_dirs
         _safe_run("Stale mission tmp sweep", reap_stale_mission_tmp_dirs)
         _safe_run("Health check", check_health, koan_root)
