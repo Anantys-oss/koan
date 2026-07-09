@@ -513,6 +513,33 @@ models:
   #   review_mode: "glm-5:cloud"
   #   reflect: "glm-5:cloud"
 
+# Reasoning effort (optional) — sets the Claude Code `--effort` flag
+# (low/medium/high/max). Omit the section to keep the DYNAMIC default: effort
+# is then picked from the current budget mode (review→low, deep→high, else
+# none) so cheap audits and deep reasoning cost what they should.
+#
+# Keys below are MISSION TYPES, not budget modes. A pinned type wins over the
+# dynamic default regardless of the mode the mission runs in. NOTE: in practice
+# only `autonomous` (background work) and `freetext` (plain human-text missions)
+# take effect — those are the only types that reach build_mission_command. Every
+# named slash command is handled earlier: commands with a dedicated skill runner
+# (/review, /plan, /rebase, /recreate, /implement, /fix, /audit, /check, …) run
+# in their own runners, and commands with no runner (/refactor, /pr) are handled
+# by their bridge-side handler or fail as unknown. So pinning `review: low` — or
+# `refactor: high` — here has NO effect.
+#
+# Valid mission-type keys (the full classify_mission_type taxonomy):
+#   autonomous  freetext  plan   review    rebase    recreate  implement
+#   refactor    audit     check  maintenance  pr      chat      incident
+# Any other key never matches a mission, so pinning it does nothing. Of these,
+# only autonomous / freetext take effect today (the rest are skill-dispatched or
+# handler-dispatched, per the NOTE above).
+#
+# A single string applies to all missions; an empty value disables the flag.
+# effort:
+#   autonomous: low      # keep background autonomous work cheap
+#   freetext: medium
+
 # Per-role CLI provider (optional) — parallel to `models:`.
 # Pick a DIFFERENT provider (and optionally a custom binary) for each mission
 # role. Each value is a flavor (claude/codex/copilot/cline/ollama-launch) or

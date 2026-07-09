@@ -246,11 +246,27 @@ def spawn_session(
     session_cli_provider = get_provider_for_role(effective_role, project_name)
 
     # Build CLI command
+    try:
+        from app.session_tracker import classify_mission_type
+        _mission_type = classify_mission_type(mission_text)
+    except ImportError as e:
+        # Version mismatch / partial update — degrade to mode-only effort.
+        # Log so a partial upgrade disabling effort pins is observable.
+        print(
+            f"[session_manager] classify_mission_type unavailable "
+            f"(effort pin disabled): {e}",
+            file=sys.stderr,
+        )
+        _mission_type = ""
+    # classify_mission_type is pure regex (no I/O); any other exception is a
+    # programming bug and is left to propagate rather than silently disabling
+    # effort pins.
     cmd, cmd_cleanup_paths = build_mission_command(
         prompt=mission_text,
         autonomous_mode=autonomous_mode,
         project_name=project_name,
         provider_override=session_cli_provider,
+        mission_type=_mission_type,
     )
 
     # Create temp files for stdout/stderr

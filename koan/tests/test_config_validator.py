@@ -65,11 +65,17 @@ class TestSuggestTypo:
 class TestSchemaCompleteness:
     def test_all_nested_keys_have_section_schemas(self):
         """Every top-level key marked as _NESTED in CONFIG_SCHEMA must have
-        a corresponding entry in SECTION_SCHEMAS. Missing entries mean nested
-        keys won't get type-checked or typo-detected at startup."""
-        from app.config_validator import CONFIG_SCHEMA, SECTION_SCHEMAS
+        a corresponding entry in SECTION_SCHEMAS (or be validated inline).
+        Missing entries mean nested keys won't get type-checked or
+        typo-detected at startup."""
+        from app.config_validator import (
+            CONFIG_SCHEMA, SECTION_SCHEMAS, _INLINE_VALIDATED_NESTED_KEYS,
+        )
         nested_keys = [k for k, v in CONFIG_SCHEMA.items() if v == "dict"]
-        missing = [k for k in nested_keys if k not in SECTION_SCHEMAS]
+        missing = [
+            k for k in nested_keys
+            if k not in SECTION_SCHEMAS and k not in _INLINE_VALIDATED_NESTED_KEYS
+        ]
         assert missing == [], (
             f"CONFIG_SCHEMA marks these as nested but SECTION_SCHEMAS "
             f"has no entry for them: {missing}"
@@ -494,6 +500,36 @@ class TestValidateOptimizationsNested:
 
     def test_effort_scalar_shorthand_is_allowed(self):
         assert validate_config({"effort": "high"}) == []
+
+    def test_effort_scalar_invalid_level_warns(self):
+        # A scalar typo must warn, not silently drop the flag (mirrors dict form).
+        warnings = validate_config({"effort": "hihg"})
+        assert any("effort" in path and "invalid effort" in msg
+                   for path, msg in warnings)
+
+    def test_effort_scalar_empty_is_allowed(self):
+        # "" disables the flag — valid as a scalar too.
+        assert validate_config({"effort": ""}) == []
+
+    def test_effort_accepts_any_mission_type_key(self):
+        # Mission types are an open set (plan/audit/chat/…) — any key with a
+        # valid level is accepted, none should warn as "unrecognized".
+        assert validate_config({
+            "effort": {"plan": "high", "review": "low", "audit": "medium"},
+        }) == []
+
+    def test_effort_accepts_empty_value(self):
+        # Empty string disables the flag for that type — still valid.
+        assert validate_config({"effort": {"review": ""}}) == []
+
+    def test_effort_rejects_invalid_level(self):
+        warnings = validate_config({"effort": {"plan": "turbo"}})
+        assert any("effort.plan" in path and "invalid effort" in msg
+                   for path, msg in warnings)
+
+    def test_effort_rejects_non_string_value(self):
+        warnings = validate_config({"effort": {"review": 5}})
+        assert any("effort.review" in path for path, msg in warnings)
 
 
 # ---------------------------------------------------------------------------

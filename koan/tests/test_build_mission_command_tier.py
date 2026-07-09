@@ -26,6 +26,51 @@ def _base_models(mission_model=""):
     }
 
 
+class TestEffortMissionTypeForwarded:
+    """build_mission_command forwards mission_type to get_effort so that
+    per-mission-type effort pins are honored."""
+
+    def _build(self, mission_type):
+        captured = {}
+
+        def fake_build(prompt, allowed_tools, model, fallback, output_format,
+                       max_turns=0, mcp_configs=None, plugin_dirs=None,
+                       system_prompt="", effort="", **kwargs):
+            captured["effort"] = effort
+            return ["fake", "cmd"], []
+
+        from app.mission_runner import build_mission_command
+
+        def fake_get_effort(mode, mission_type=""):
+            captured["args"] = (mode, mission_type)
+            # Return a distinctive value so we can confirm it reaches the cmd.
+            return "low" if mission_type == "review" else ""
+
+        with patch("app.config.get_model_config", return_value=_base_models()), \
+             patch("app.config.get_mission_tools", return_value="Read,Glob"), \
+             patch("app.config.get_mcp_configs", return_value=[]), \
+             patch("app.config.get_effort", side_effect=fake_get_effort), \
+             patch("app.provider.build_full_command_managed", side_effect=fake_build), \
+             patch("app.config.get_complexity_routing_config", return_value=None), \
+             patch("app.config.should_enable_thinking", return_value=False):
+            build_mission_command(
+                prompt="test prompt",
+                autonomous_mode="deep",
+                mission_type=mission_type,
+            )
+        return captured
+
+    def test_mission_type_forwarded_to_get_effort(self):
+        captured = self._build("review")
+        assert captured["args"] == ("deep", "review")
+        # The pinned "low" reaches the provider build.
+        assert captured["effort"] == "low"
+
+    def test_empty_mission_type_forwarded(self):
+        captured = self._build("")
+        assert captured["args"] == ("deep", "")
+
+
 class TestBuildMissionCommandTierOverride:
     def _call(self, tier=None, autonomous_mode="implement", mission_model="",
               routing_cfg=None, review_mode_model=""):
@@ -48,7 +93,7 @@ class TestBuildMissionCommandTierOverride:
         with patch("app.config.get_model_config", return_value=models), \
              patch("app.config.get_mission_tools", return_value="Read,Glob"), \
              patch("app.config.get_mcp_configs", return_value=[]), \
-             patch("app.config.get_effort_for_mode", return_value=""), \
+             patch("app.config.get_effort", return_value=""), \
              patch("app.provider.build_full_command_managed", side_effect=fake_build), \
              patch("app.config.get_complexity_routing_config",
                    return_value=routing_cfg if routing_cfg is not None else _routing_cfg()):
@@ -123,7 +168,7 @@ class TestBuildMissionCommandTierOverride:
             with patch("app.config.get_model_config", return_value=models), \
                  patch("app.config.get_mission_tools", return_value="Read,Glob"), \
                  patch("app.config.get_mcp_configs", return_value=[]), \
-                 patch("app.config.get_effort_for_mode", return_value=""), \
+                 patch("app.config.get_effort", return_value=""), \
                  patch("app.provider.build_full_command_managed", side_effect=fake_build), \
                  patch("app.config.get_complexity_routing_config", return_value=None):
                 build_mission_command(
@@ -139,11 +184,11 @@ class TestBuildMissionCommandTierOverride:
 
 
 class TestEffortImportFallback:
-    """Verify build_mission_command degrades gracefully when get_effort_for_mode
+    """Verify build_mission_command degrades gracefully when get_effort
     is missing from app.config (version mismatch / partial update)."""
 
     def test_missing_effort_function_does_not_crash(self):
-        """When get_effort_for_mode is absent, effort defaults to empty string."""
+        """When get_effort is absent, effort defaults to empty string."""
         import sys
         import importlib
 
@@ -156,11 +201,11 @@ class TestEffortImportFallback:
             captured["effort"] = effort
             return ["fake", "cmd"], []
 
-        # Remove get_effort_for_mode from config to simulate version mismatch
+        # Remove get_effort from config to simulate version mismatch
         import app.config as config_mod
-        original = getattr(config_mod, "get_effort_for_mode", None)
-        if hasattr(config_mod, "get_effort_for_mode"):
-            delattr(config_mod, "get_effort_for_mode")
+        original = getattr(config_mod, "get_effort", None)
+        if hasattr(config_mod, "get_effort"):
+            delattr(config_mod, "get_effort")
 
         # Force re-import of mission_runner so the try/except runs fresh
         sys.modules.pop("app.mission_runner", None)
@@ -179,6 +224,6 @@ class TestEffortImportFallback:
         finally:
             # Restore original state
             if original is not None:
-                config_mod.get_effort_for_mode = original
+                config_mod.get_effort = original
             sys.modules.pop("app.mission_runner", None)
             importlib.import_module("app.mission_runner")

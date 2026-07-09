@@ -1688,6 +1688,92 @@ class TestGetEffortForMode:
             assert get_effort_for_mode("deep") == "high"
 
 
+# --- get_effort (per-mission-type) ---
+
+
+class TestGetEffortMissionType:
+    def test_mission_type_overrides_dynamic_default(self):
+        """A pinned mission type wins over the budget-mode dynamic default.
+
+        A /review mission running in deep mode would normally get "high";
+        with effort.review pinned it stays "low" regardless of mode.
+        """
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": "low"}}):
+            assert get_effort("deep", mission_type="review") == "low"
+            assert get_effort("implement", mission_type="review") == "low"
+
+    def test_mission_type_absent_falls_back_to_dynamic_default(self):
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": "low"}}):
+            # "plan" not pinned → dynamic default by mode
+            assert get_effort("deep", mission_type="plan") == "high"
+            assert get_effort("review", mission_type="plan") == "low"
+
+    def test_no_config_preserves_dynamic_default(self):
+        from app.config import get_effort
+        with _mock_config({}):
+            assert get_effort("deep", mission_type="review") == "high"
+            assert get_effort("review", mission_type="plan") == "low"
+            assert get_effort("implement", mission_type="implement") == ""
+
+    def test_no_mission_type_resolves_per_mode(self):
+        """Without a mission type, resolution is the per-mode config value.
+
+        Asserts hardcoded expected values (not equality with the wrapper, which
+        would be trivially true since get_effort_for_mode just calls get_effort
+        with mission_type="").
+        """
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": "low", "deep": "max"}}):
+            assert get_effort("review") == "low"   # pinned
+            assert get_effort("deep") == "max"     # pinned
+            # Unlisted modes whose dynamic default is "" stay "".
+            assert get_effort("implement") == ""
+            assert get_effort("wait") == ""
+
+    def test_partial_dict_unlisted_mode_uses_dynamic_default(self):
+        """A partial dict leaves unlisted modes on the DYNAMIC default.
+
+        Pins behavior flagged in review: with only `implement` listed, an
+        unlisted mode whose dynamic default is non-empty (deep→high, review→low)
+        resolves to that default rather than being disabled. This is the
+        intended semantics ("dynamic default preserved unless config pins a
+        value"); the test locks it so the fall-through can't regress silently.
+        """
+        from app.config import get_effort
+        with _mock_config({"effort": {"implement": "high"}}):
+            assert get_effort("implement") == "high"   # pinned
+            assert get_effort("deep") == "high"        # dynamic default
+            assert get_effort("review") == "low"       # dynamic default
+            assert get_effort("wait") == ""            # dynamic default (none)
+
+    def test_mission_type_disables_with_empty_string(self):
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": ""}}):
+            # Explicit "" disables the flag for this mission type
+            assert get_effort("deep", mission_type="review") == ""
+
+    def test_mission_type_takes_precedence_over_mode_key(self):
+        """When both a mission-type and a mode key could match, the type wins."""
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": "low", "deep": "max"}}):
+            # review mission in deep mode: type "review" wins over mode "deep"
+            assert get_effort("deep", mission_type="review") == "low"
+
+    def test_invalid_mission_type_value_falls_back(self):
+        from app.config import get_effort
+        with _mock_config({"effort": {"plan": "turbo"}}):
+            # Invalid value → ignore pin, use dynamic default
+            assert get_effort("deep", mission_type="plan") == "high"
+
+    def test_string_config_ignores_mission_type(self):
+        from app.config import get_effort
+        with _mock_config({"effort": "high"}):
+            assert get_effort("deep", mission_type="review") == "high"
+            assert get_effort("implement", mission_type="plan") == "high"
+
+
 # --- get_thinking_config / should_enable_thinking ---
 
 

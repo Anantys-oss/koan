@@ -294,6 +294,7 @@ def build_mission_command(
     system_prompt_dir: Optional[str] = None,
     system_prompt_container_dir: Optional[str] = None,
     provider_override: Optional["CLIProvider"] = None,
+    mission_type: str = "",
 ) -> Tuple[List[str], List[str]]:
     """Build the CLI command for mission execution (provider-agnostic).
 
@@ -310,6 +311,10 @@ def build_mission_command(
         tier: Optional complexity tier ("trivial"/"simple"/"medium"/"complex")
             from the pre-classifier.  When set, overrides model and max_turns
             per the complexity_routing config (unless REVIEW mode is active).
+        mission_type: Optional mission category from
+            ``session_tracker.classify_mission_type`` (e.g. "review"/"plan").
+            When provided, an ``effort:<type>`` config pin takes precedence
+            over the dynamic mode-based default.
 
     Returns:
         ``(cmd, cleanup_paths)`` — the command list ready for subprocess and
@@ -319,9 +324,9 @@ def build_mission_command(
     """
     from app.config import get_mission_tools, get_model_config, get_mcp_configs
     try:
-        from app.config import get_effort_for_mode
+        from app.config import get_effort
     except ImportError:
-        get_effort_for_mode = lambda _mode="": ""  # noqa: E731
+        get_effort = lambda _mode="", _type="": ""  # noqa: E731
     from app.provider import build_full_command_managed, get_provider_for_role
 
     # Get mission tools (comma-separated list)
@@ -388,7 +393,7 @@ def build_mission_command(
 
     # When thinking is active it implies max effort — skip regular effort
     # to avoid duplicate/conflicting --effort flags.
-    effort = "" if thinking_enabled else get_effort_for_mode(autonomous_mode)
+    effort = "" if thinking_enabled else get_effort(autonomous_mode, mission_type)
 
     # Build provider-specific command (file-mode system prompt when supported)
     cmd, cleanup_paths = build_full_command_managed(
