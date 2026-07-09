@@ -23,7 +23,7 @@ Reuse the redirect-to-file pattern (as with `make test` above) so a large
 command's output doesn't burn tokens — read the file only when you need the detail:
 
 ```bash
-log=$(mktemp /tmp/koan-cmd-XXXXXX)
+log=$(mktemp "${TMPDIR:-/tmp}/koan-cmd-XXXXXX")
 ( <long-running command> > "$log" 2>&1; echo "DONE:$?" >> "$log" ) &
 # Poll within THIS turn until the sentinel appears — do not end your turn yet.
 until grep -q '^DONE:' "$log"; do sleep 30; done
