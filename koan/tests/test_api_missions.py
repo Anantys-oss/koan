@@ -660,3 +660,64 @@ class TestReorderMission:
         )
         assert resp.status_code == 409
         assert "Ambiguous" in resp.get_json()["error"]["message"]
+
+
+class TestStructuredResult:
+    def test_review_mission_get_returns_structured_result(self, api_client, instance_dir):
+        url = "https://github.com/o/r/pull/5"
+        mid = api_client.post("/v1/missions", json={"command": f"/review {url}"},
+                              headers=_AUTH).get_json()["id"]
+        records = json.loads((instance_dir / ".api-missions.json").read_text())
+        stored = next(r["text"] for r in records if r["id"] == mid)
+        (instance_dir / "missions.md").write_text(
+            f"# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n{stored}\n")
+        fdir = instance_dir / ".review-findings"; fdir.mkdir()
+        (fdir / "o_r_5.json").write_text(json.dumps({
+            "file_comments": [{"file": "a.py", "line_start": 1, "line_end": 1,
+                               "severity": "warning", "title": "t", "comment": "c",
+                               "code_snippet": ""}],
+            "review_summary": {"lgtm": False, "summary": "s", "checklist": []},
+        }))
+        data = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()
+        assert data["status"] == "done"
+        assert data["result_line"] is not None
+        assert data["result"]["kind"] == "review"
+        assert data["result"]["review_summary"]["lgtm"] is False
+        assert data["result"]["file_comments"][0]["severity"] == "warning"
+
+    def test_non_structured_mission_result_is_null(self, api_client, instance_dir):
+        mid = api_client.post("/v1/missions", json={"text": "Fix a typo"},
+                              headers=_AUTH).get_json()["id"]
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+        data = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()
+        assert data["result"] is None
+        assert data["result_ref"] is None
+
+    def test_result_endpoint_returns_full_blob_when_spilled(self, api_client, instance_dir, monkeypatch):
+        from app.api import mission_index as mi
+        monkeypatch.setattr(mi, "DEFAULT_RESULT_CAP_BYTES", 64)  # force spill
+        url = "https://github.com/o/r/pull/8"
+        mid = api_client.post("/v1/missions", json={"command": f"/review {url}"},
+                              headers=_AUTH).get_json()["id"]
+        records = json.loads((instance_dir / ".api-missions.json").read_text())
+        stored = next(r["text"] for r in records if r["id"] == mid)
+        (instance_dir / "missions.md").write_text(
+            f"# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n{stored}\n")
+        fdir = instance_dir / ".review-findings"; fdir.mkdir()
+        (fdir / "o_r_8.json").write_text(json.dumps({
+            "file_comments": [{"file": "a.py", "line_start": i, "line_end": i,
+                               "severity": "warning", "title": "t",
+                               "comment": "x" * 200, "code_snippet": ""} for i in range(20)],
+            "review_summary": {"lgtm": False, "summary": "big", "checklist": []},
+        }))
+        rec = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()
+        assert rec["result_ref"] is not None
+        assert rec["result"]["review_summary"]["summary"] == "big"
+        full = api_client.get(f"/v1/missions/{mid}/result", headers=_AUTH).get_json()
+        assert len(full["file_comments"]) == 20
+
+    def test_result_endpoint_404_when_no_result(self, api_client, instance_dir):
+        mid = api_client.post("/v1/missions", json={"text": "Fix a typo"},
+                              headers=_AUTH).get_json()["id"]
+        assert api_client.get(f"/v1/missions/{mid}/result", headers=_AUTH).status_code == 404
