@@ -51,13 +51,16 @@ def render_mission_line(m: "Mission") -> str:
     file-format display helpers (e.g. the ``/list`` skill). Lifecycle timestamps,
     which live in columns, are re-emitted as ``⏳``/``▶``/``✅``/``❌`` markers.
     """
+    # Marker formats match app.missions' parsers: ⏳/▶ use ISO 'T', ✅/❌ use
+    # a space before the paren and a space-separated date/time.
     markers = []
     if m.queued_at:
         markers.append(f"⏳({m.queued_at})")
     if m.started_at:
         markers.append(f"▶({m.started_at})")
     if m.completed_at:
-        markers.append(("❌" if m.state == "failed" else "✅") + f"({m.completed_at})")
+        marker = "❌" if m.state == "failed" else "✅"
+        markers.append(f"{marker} ({m.completed_at.replace('T', ' ')})")
     body = m.text if m.text.lstrip().startswith("### ") else f"- {m.text}"
     return (body + (" " + " ".join(markers) if markers else "")).rstrip()
 

@@ -41,8 +41,8 @@ def handle(ctx):
     recent_missions = ""
     missions_file = instance_dir / "missions.md"
     if missions_file.exists():
-        from app.missions import parse_sections
-        sections = parse_sections(missions_file.read_text())
+        from app.mission_store.transition import read_sections
+        sections = read_sections(instance_dir)
         in_progress = sections.get("in_progress", [])
         pending = sections.get("pending", [])
         parts = []

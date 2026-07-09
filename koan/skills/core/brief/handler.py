@@ -51,10 +51,10 @@ def _add_mission_summary(parts, instance_dir):
         return
 
     try:
-        from app.missions import extract_timestamps, parse_sections
+        from app.missions import extract_timestamps
+        from app.mission_store.transition import read_sections
 
-        content = missions_file.read_text()
-        sections = parse_sections(content)
+        sections = read_sections(instance_dir)
     except (OSError, ImportError):
         parts.append("  Missions: no data")
         return
