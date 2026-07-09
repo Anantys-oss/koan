@@ -329,14 +329,24 @@ def _get_koan_md_section(project_path: str) -> str:
     """
     if not project_path:
         return ""
+    koan_md_path = Path(project_path) / "KOAN.md"
     try:
-        content = (Path(project_path) / "KOAN.md").read_text(errors="replace")
-    except (FileNotFoundError, OSError):
+        content = koan_md_path.read_text(errors="replace")
+    except FileNotFoundError:
+        # Absent KOAN.md is the normal case — no error, no log.
+        return ""
+    except OSError as e:
+        # File exists but can't be read (permission denied, I/O error, etc.):
+        # surface it, since the operator deliberately configured guidance that
+        # is now being silently dropped.
+        logger.warning("KOAN.md present but unreadable at %s: %s", koan_md_path, e)
         return ""
 
     content = content.strip()
     if not content:
         return ""
+
+    logger.info("KOAN.md found and read (%d chars) from %s", len(content), koan_md_path)
 
     if len(content) > _MAX_KOAN_MD_CHARS:
         content = (
