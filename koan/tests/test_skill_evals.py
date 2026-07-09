@@ -489,7 +489,7 @@ class TestReviewLiveFn:
 
         def build(ctx, skill_dir=None, project_path=None):
             captured["ctx"] = ctx
-            return "PROMPT"
+            return "PROMPT", ""
 
         def run(prompt, project_path):
             captured["prompt"] = prompt
