@@ -2261,6 +2261,12 @@ def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
     truncate at GitHub's 250-commit cap), ``headRefOid`` always reflects the
     true branch tip — including after a force-push. Best-effort: any failure
     yields "" so callers treat it as "unknown" and skip the staleness check.
+
+    Catches ``Exception`` deliberately: this call sits *after* the (expensive)
+    provider analysis and just *before* posting, so a transient ``gh`` failure
+    (``run_gh`` re-raises ``OSError`` / ``subprocess.TimeoutExpired`` after
+    exhausting retries — neither a ``RuntimeError``) must never propagate and
+    discard an otherwise-complete review.
     """
     try:
         return run_gh(
@@ -2269,7 +2275,7 @@ def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
             "--json", "headRefOid",
             "--jq", ".headRefOid",
         ).strip()
-    except RuntimeError:
+    except Exception:
         return ""
 
 

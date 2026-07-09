@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -1488,6 +1489,20 @@ class TestFetchPrHeadOid:
 
     @patch("app.review_runner.run_gh", side_effect=RuntimeError("boom"))
     def test_returns_empty_on_error(self, _mock_gh):
+        assert _fetch_pr_head_oid("owner", "repo", "42") == ""
+
+    @patch(
+        "app.review_runner.run_gh",
+        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30),
+    )
+    def test_returns_empty_on_timeout(self, _mock_gh):
+        # run_gh re-raises TimeoutExpired/OSError (not RuntimeError) after
+        # exhausting retries; this call is post-analysis, so it must never
+        # propagate and discard a completed review.
+        assert _fetch_pr_head_oid("owner", "repo", "42") == ""
+
+    @patch("app.review_runner.run_gh", side_effect=OSError("network down"))
+    def test_returns_empty_on_oserror(self, _mock_gh):
         assert _fetch_pr_head_oid("owner", "repo", "42") == ""
 
 
