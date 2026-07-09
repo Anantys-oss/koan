@@ -2275,7 +2275,8 @@ def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
             "--json", "headRefOid",
             "--jq", ".headRefOid",
         ).strip()
-    except Exception:
+    except Exception as e:
+        log("review", f"Could not read live HEAD for PR #{pr_number}: {e}")
         return ""
 
 
