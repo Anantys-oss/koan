@@ -45,6 +45,26 @@ One-shot cutover: SQLite is the default and only in-tree backend; `missions.md` 
 - **T018** Update `specs/components/core.md` (mission-queue contract → `MissionStore`; single-writer invariant; `missions.md` = export), `CLAUDE.md` + `koan/app/CLAUDE.md` (missions.md = read-only export), `docs/architecture/{overview,shared-state,mission-lifecycle}.md`. Run `/brain sync`. Retire/relocate `app.missions` parse/lifecycle usage docs.
 - **T019** Full suite green (`KOAN_ROOT=/tmp/test-koan make test`) + `make lint`; update `docs/users/{user-manual,skills}.md` for the `/list` filter + any new command; leak check clean.
 
+## Scope amendment (2026-07-09, from the callsite map)
+
+The migration surface is **~40 files** (see the PR description's migration map), and
+`missions.md` holds three sub-populations beyond the four lifecycle states —
+handled as **sibling tables in `missions.db`** (`ci_queue`, `ideas`,
+`quarantine`; see `data-model.md`). Delivery: **one branch (`koan/mission-store-impl`),
+one commit per step** below, single PR.
+
+- **S1 (done, commit 1)** — Foundation: port + `SqliteMissionStore` + config + resolver + conformance/ingest tests.
+- **S2** — Sibling stores: `CiQueueStore`, `IdeaStore`, `QuarantineStore` + their ingest/export + tests.
+- **S3** — Startup wiring (T010–T011): resolve store, one-time ingest, `recover_stale`, export scheduling.
+- **S4** — Write callsites (T012–T013): lifecycle (`run.py`), all insert sites (utils, Telegram, GitHub/Jira, CI dispatch, schedulers, skills).
+- **S5** — Read callsites (T014–T015): picker, dashboard, API, status/list/brief/report/etc.
+- **S6** — CI-queue + Ideas callsites (`ci_queue_runner.py`, `rebase_pr.py`, `idea` skill, …) onto the sibling stores.
+- **S7** — Visibility (T016–T017): `/list <state>`, done/failed history, export command.
+- **S8** — Retire the file: make `missions.md` a generated read-only export; remove direct file reads/writes (incl. `startup_manager.py`, `recover.py` unlocked writes).
+- **S9** — Docs/specs reconciliation (T018) + full suite + lint (T019).
+
+Traps to preserve (from the map): out-of-lock read-then-transactional-write (TOCTOU) in `ci_queue_runner`/parallel dispatch; startup unlocked writes in `startup_manager.py`; direct `read_text`/`atomic_write` on the missions path in `startup_manager.py`/`recover.py`; pure text helpers (`extract_project_tag`, `canonical_mission_key`, …) are NOT store access and stay as-is.
+
 ## Notes
 
 - `app.missions` is **retained** but demoted to parse-on-ingest / render-on-export only (not the hot path).
