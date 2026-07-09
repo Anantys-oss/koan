@@ -509,6 +509,23 @@ class TestReviewLiveFn:
         assert captured["prompt"] == "PROMPT"
         assert captured["raw"] == "RAW"
 
+    def test_real_build_passes_string_prompt_to_run(self):
+        # Regression guard: build_review_prompt returns (prompt, note); the
+        # adapter must unpack it so _run_claude_review receives a str, not the
+        # tuple. Uses the real build (only _run/_parse stubbed).
+        captured = {}
+
+        def run(prompt, project_path):
+            captured["prompt"] = prompt
+            return ("RAW", "")
+
+        review_live_fn(
+            _sqli_case(), "/repo",
+            _run=run,
+            _parse=lambda raw: _review([], lgtm=True),
+        )
+        assert isinstance(captured["prompt"], str)
+
     def test_provider_error_raises(self):
         def run(prompt, project_path):
             return ("", "quota exceeded")
