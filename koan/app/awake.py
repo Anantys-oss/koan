@@ -316,9 +316,9 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     if pending_context:
         missions_context = pending_context
     elif MISSIONS_FILE.exists():
-        from app.missions import parse_sections
+        from app.mission_store.transition import read_sections
         try:
-            sections = parse_sections(MISSIONS_FILE.read_text())
+            sections = read_sections(MISSIONS_FILE.parent)
         except OSError:
             sections = {}
         in_progress = sections.get("in_progress", [])

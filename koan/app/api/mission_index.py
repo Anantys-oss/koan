@@ -218,9 +218,8 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
 
     # Parse missions.md to find current location
     try:
-        from app.missions import parse_sections
-        content = missions_file.read_text() if missions_file.exists() else ""
-        sections = parse_sections(content)
+        from app.mission_store.transition import read_sections
+        sections = read_sections(missions_file.parent)
     except Exception as e:
         log.error("reconcile error for mission %s: %s", mission_id, e)
         target["reconcile_error"] = str(e)
