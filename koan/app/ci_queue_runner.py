@@ -198,8 +198,11 @@ def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict) -> bool:
 
     # Insert non-urgent (normal FIFO) so CI fixing never jumps ahead of genuine
     # backlog work (/rebase, /review, /implement). A single flaky or unfixable
-    # PR must not freeze the single-slot mission queue; the ## CI attempt budget
-    # (ci_fix_max_attempts) still drives interleaved retries via drain_one().
+    # PR must not freeze the single-slot mission queue; drain_one() drives
+    # interleaved retries, giving up after the ## CI attempt counter reaches
+    # ci_fix_max_attempts (the counter resets on a fix that lands a fresh
+    # pending CI run — see add_ci_item — so a genuinely-progressing PR keeps
+    # going while a repeatedly fast-failing one is bounded).
     return insert_pending_mission(missions_path, mission_text, urgent=False)
 
 
@@ -357,13 +360,13 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     full_repo = f"{owner}/{repo}"
 
     # Per-mission fix budget is intentionally decoupled from the ## CI item's
-    # ``max_attempts`` (the total per-PR budget enforced by drain_one across
-    # interleaved re-injections). Each fix mission runs at most
-    # ``get_ci_check_max_fix_attempts()`` Claude steps (default 1) and then
-    # yields the single mission slot back to the queue; drain_one re-injects the
-    # next interleaved attempt only if CI is still failing and the ## CI budget
-    # is not exhausted. This prevents the attempts×attempts compounding that let
-    # one failing PR monopolize the queue for hours.
+    # ``max_attempts`` (the counter drain_one increments per re-injection).
+    # Each fix mission runs at most ``get_ci_check_max_fix_attempts()`` Claude
+    # steps (default 1) and then yields the single mission slot back to the
+    # queue; drain_one re-injects the next interleaved attempt only if CI is
+    # still failing and the counter has not reached ci_fix_max_attempts. This
+    # prevents the attempts×attempts compounding that let one failing PR
+    # monopolize the queue for hours.
     from app.config import get_ci_check_max_fix_attempts
     max_fix_attempts = get_ci_check_max_fix_attempts()
 
