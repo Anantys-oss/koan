@@ -382,8 +382,9 @@ class TelegramProvider(MessagingProvider):
         """React to a message via setMessageReaction. Best-effort; False on failure.
 
         Telegram's ``reply_to_message_id`` is the real message id, so no token
-        map is needed. Only a fixed set of emoji are allowed from a bot (✅ is
-        among them); a disallowed emoji yields ``ok: false`` → text fallback.
+        map is needed. Only Telegram's fixed ReactionTypeEmoji set is allowed
+        from a bot (👍 is among them, ✅ is NOT); a disallowed emoji yields
+        ``ok: false`` (REACTION_INVALID) → text fallback.
         """
         if not reply_to_message_id or not self._bot_token or not self._chat_id:
             return False
