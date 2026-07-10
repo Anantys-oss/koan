@@ -4280,6 +4280,7 @@ class TestInstanceRepoSync:
         import app.loop_manager as lm
         monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "900")
         monkeypatch.setattr(lm, "_last_instance_sync", float("-inf"), raising=False)
+        monkeypatch.setattr(lm, "_instance_sync_unavailable", False, raising=False)
         called = []
         monkeypatch.setattr(
             "app.instance_hydrator.pull_instance_repo",
@@ -4290,3 +4291,22 @@ class TestInstanceRepoSync:
         # Second immediate call is throttled (interval not elapsed).
         lm._maybe_sync_instance_repo("/tmp/inst")
         assert called == ["/tmp/inst"]
+
+    def test_not_a_repo_disables_tick_for_boot(self, monkeypatch):
+        # None from pull_instance_repo (template-seeded, no .git) is a benign
+        # steady state: the tick self-disables instead of retrying/logging forever.
+        import app.loop_manager as lm
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "900")
+        monkeypatch.setattr(lm, "_last_instance_sync", float("-inf"), raising=False)
+        monkeypatch.setattr(lm, "_instance_sync_unavailable", False, raising=False)
+        calls = []
+        monkeypatch.setattr(
+            "app.instance_hydrator.pull_instance_repo",
+            lambda d: calls.append(d) or None,
+        )
+        lm._maybe_sync_instance_repo("/tmp/inst")
+        assert calls == ["/tmp/inst"]
+        assert lm._instance_sync_unavailable is True
+        # Subsequent ticks short-circuit — no repeated pulls, no recurring warning.
+        lm._maybe_sync_instance_repo("/tmp/inst")
+        assert calls == ["/tmp/inst"]

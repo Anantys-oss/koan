@@ -37,16 +37,25 @@ def _already_hydrated(instance: Path) -> bool:
     return (instance / "missions.md").exists() or (instance / ".git").is_dir()
 
 
-def _wipe_dir_contents(directory: Path) -> None:
-    """Remove everything inside `directory` but keep the dir (bind-mount point)."""
-    try:
-        for child in directory.iterdir():
+def _wipe_dir_contents(directory: Path) -> bool:
+    """Remove everything inside `directory` but keep the dir (bind-mount point).
+
+    Returns True only if `directory` is empty afterwards. A partial wipe (some
+    child survived) returns False so the caller can surface the corruption risk
+    instead of silently seeding the template on top of a half-cloned tree.
+    """
+    for child in list(directory.iterdir()):
+        try:
             if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child, ignore_errors=True)
+                shutil.rmtree(child)  # raise, don't swallow — we must know if it stuck
             else:
                 child.unlink(missing_ok=True)
-    except OSError as exc:
-        sys.stderr.write(f"[instance_hydrator] wipe failed: {exc}\n")
+        except OSError as exc:
+            sys.stderr.write(f"[instance_hydrator] wipe failed for {child}: {exc}\n")
+    try:
+        return not any(directory.iterdir())
+    except OSError:
+        return False
 
 
 def _run(cmd: List[str]) -> bool:
@@ -110,21 +119,36 @@ def hydrate_instance_from_repo(
         # A partial copytree would poison the template fallback (instance.example/
         # seeded on top of a half-cloned tree → silently corrupt instance/). Wipe
         # what we wrote so the caller falls back from a clean state.
-        _wipe_dir_contents(instance)
+        if not _wipe_dir_contents(instance):
+            # Wipe itself was partial — stale clone files survive. The entrypoint
+            # will seed instance.example/ on top, producing the exact silent
+            # corruption the wipe was meant to prevent. Surface it loudly instead
+            # of hiding it behind a best-effort no-op.
+            sys.stderr.write(
+                "[instance_hydrator] WARNING: could not fully wipe instance/ after a "
+                "failed clone copy; the template fallback may seed on top of a partial "
+                "clone — manual cleanup of instance/ is required\n"
+            )
         return False
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def pull_instance_repo(instance_dir: str) -> bool:
+def pull_instance_repo(instance_dir: str) -> Optional[bool]:
     """Reconcile operator edits pushed to the remote (opt-in periodic sync).
 
     `pull --rebase --autostash` so any stray local write survives and the
     agent's own commits replay on top — keeping the commit_instance() push
-    path fast-forwardable. Graceful no-op when instance/ is not a git repo.
+    path fast-forwardable.
+
+    Tri-state return so the caller can tell a benign no-op from a real error:
+      * None  — instance/ is not a git repo (template-seeded); a pull can never
+                succeed here, so this is NOT a failure — don't retry or warn.
+      * True  — pull succeeded.
+      * False — pull was attempted and failed (transient; worth a throttled retry).
     """
     if not (Path(instance_dir) / ".git").is_dir():
-        return False
+        return None
     if _run(["git", "-C", instance_dir, "pull", "--rebase", "--autostash"]):
         return True
     # A failed rebase leaves instance/ mid-rebase; the next commit_instance()

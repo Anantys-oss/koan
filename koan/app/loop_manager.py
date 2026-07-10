@@ -188,6 +188,10 @@ _last_ci_queue_sleep_check: float = 0
 # --- Optional periodic instance/ pull (opt-in, default off) ---
 
 _last_instance_sync: float = float("-inf")
+# Set once instance/ is confirmed to not be a git repo (template-seeded): a pull
+# can never succeed there, so the tick self-disables for the rest of the boot
+# instead of logging a bogus recurring 'pull failed' every interval.
+_instance_sync_unavailable: bool = False
 
 
 def _maybe_sync_instance_repo(instance_dir: str) -> None:
@@ -197,7 +201,9 @@ def _maybe_sync_instance_repo(instance_dir: str) -> None:
     edits pushed directly to the remote so commit_instance()'s next push stays
     fast-forwardable. Fail-open — never blocks the loop.
     """
-    global _last_instance_sync
+    global _last_instance_sync, _instance_sync_unavailable
+    if _instance_sync_unavailable:
+        return
     from app.config import get_instance_sync_interval
     interval = get_instance_sync_interval()
     if interval <= 0:
@@ -207,7 +213,15 @@ def _maybe_sync_instance_repo(instance_dir: str) -> None:
         return
     _last_instance_sync = now
     from app.instance_hydrator import pull_instance_repo
-    if not pull_instance_repo(instance_dir):
+    result = pull_instance_repo(instance_dir)
+    if result is None:
+        # instance/ isn't a git repo (template-seeded; hydration skipped/failed).
+        # This is an expected steady state, not a failure — stop ticking for this
+        # boot and log it once at info rather than a recurring false alarm.
+        _instance_sync_unavailable = True
+        _log_loop("sync", "instance/ is not a git repo; disabling periodic pull for this boot")
+        return
+    if result is False:
         # Retry sooner than a full interval, but stay throttled: a persistent
         # conflict must not hot-loop (pull + log every tick). Back off to ~60s
         # (or the interval, if shorter) so a transient failure still recovers

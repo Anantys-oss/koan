@@ -97,7 +97,8 @@ def test_fail_open_on_bad_repo(tmp_path):
 def test_pull_is_noop_without_git(tmp_path):
     instance = tmp_path / "instance"
     instance.mkdir()
-    assert pull_instance_repo(str(instance)) is False  # not a repo → graceful
+    # Not a git repo → None (benign no-op), distinct from False (real failure)
+    assert pull_instance_repo(str(instance)) is None
 
 
 def test_pull_applies_remote_commit(tmp_path):
