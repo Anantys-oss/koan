@@ -58,9 +58,19 @@ one commit per step** below, single PR.
 - **S3** — Startup wiring (T010–T011): resolve store, one-time ingest, `recover_stale`, export scheduling.
 - **S4** — Write callsites (T012–T013): lifecycle (`run.py`), all insert sites (utils, Telegram, GitHub/Jira, CI dispatch, schedulers, skills).
 - **S5** — Read callsites (T014–T015): picker, dashboard, API, status/list/brief/report/etc.
-- **S6** — CI-queue + Ideas callsites (`ci_queue_runner.py`, `rebase_pr.py`, `idea` skill, …) onto the sibling stores.
+- **S6** — ~~CI-queue + Ideas callsites onto the sibling stores.~~ **Folded into S8.**
+  Under the reader-first/file-authoritative transition, CI/Ideas writers can't move
+  store-only without desyncing the `## CI`/`## Ideas` sections that file-readers
+  (e.g. `/brief`'s ci count, `ci_queue_runner`) still consume — that would be a
+  dual-write. CI/Ideas are read+write mixed, so there's no clean read-only subset
+  to pre-migrate. They migrate wholesale at the S8 flip (writers → `CiQueueStore`/
+  `IdeaStore`; the sibling stores gain `reconcile_from_content` there).
 - **S7** — Visibility (T016–T017): `/list <state>`, done/failed history, export command.
-- **S8** — Retire the file: make `missions.md` a generated read-only export; remove direct file reads/writes (incl. `startup_manager.py`, `recover.py` unlocked writes).
+- **S8** — The flip. Writers → store (lifecycle in `run.py`/`utils.py` + all insert
+  sites + CI/Ideas + `pick_mission`); `missions.md` becomes a generated read-only
+  export; remove direct file reads/writes (incl. `startup_manager.py`, `recover.py`
+  unlocked writes); drop the transition `reconcile_from_*` reader calls; update the
+  file-is-truth tests.
 - **S9** — Docs/specs reconciliation (T018) + full suite + lint (T019).
 
 Traps to preserve (from the map): out-of-lock read-then-transactional-write (TOCTOU) in `ci_queue_runner`/parallel dispatch; startup unlocked writes in `startup_manager.py`; direct `read_text`/`atomic_write` on the missions path in `startup_manager.py`/`recover.py`; pure text helpers (`extract_project_tag`, `canonical_mission_key`, …) are NOT store access and stay as-is.
