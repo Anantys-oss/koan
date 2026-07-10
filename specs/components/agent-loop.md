@@ -76,6 +76,19 @@ auto-loads `CLAUDE.md` but never `KOAN.md`, so interactive sessions never see it
 
 ## Invariants
 
+- **One-shot headless invocation, in-turn completion.** Missions run via
+  `claude -p --output-format json` — a single non-interactive turn with no
+  post-turn event loop. Deferred re-invocation (background monitors, scheduled
+  wake-ups, "report later") is NOT available; such work is dropped and the child
+  is killed. Result-bearing work MUST complete before the model ends its turn —
+  enforced at the prompt layer (`_partials/cli-execution-model.md`) and supported
+  by a raised Bash foreground timeout (`get_bash_foreground_timeout_ms()`,
+  injected into the mission subprocess env as `BASH_DEFAULT_TIMEOUT_MS` /
+  `BASH_MAX_TIMEOUT_MS` for the Claude provider only, clamped below
+  `mission_timeout`). `max_turns` is
+  orthogonal: default missions impose no `--max-turns` cap (`build_mission_command`
+  passes `0` unless `complexity_routing` assigns a tier), and a cap-hit is
+  classified as failure (`subtype: "error_max_turns"`), not a clean success.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary
   enforced by prompt + convention; the loop's job is to host the subprocess, not to
   alter git state itself.

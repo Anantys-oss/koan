@@ -149,6 +149,9 @@ When executing a mission, follow this sequence:
    if [ $TEST_EXIT -ne 0 ]; then cat "$test_log"; fi
    ```
    Only read the output file when tests fail. On success, log the result from the exit code alone.
+   **Block until the suite completes — never background it and end your turn.**
+
+{@include cli-execution-model}
 5. **Commit**: Write clear commit messages. Conventional commits when the project uses them.
    Do NOT add a `Co-Authored-By:` trailer or a "Generated with Claude Code" line — commits
    land under the operator's own git identity with no co-author attribution.

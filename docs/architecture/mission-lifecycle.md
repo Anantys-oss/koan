@@ -60,6 +60,14 @@ into `workspace/`).
 6. Post-mission reflection, journal writing, PR creation, security review,
    auto-merge checks, and autoreview queuing run only when their conditions apply.
 
+### In-turn completion before finalization
+
+Finalization runs the instant the one-shot CLI turn ends. There is no event loop
+that re-invokes the model afterward, so any command whose result the mission owes
+**must finish and be read within the same turn** — otherwise the mission is
+finalized Done without it. See `docs/architecture/daemon.md` →
+"One-shot execution model".
+
 ### Pre-mission branch preparation
 
 Before a mission runs, `git_prep.prepare_project_branch()` fetches refs, stashes

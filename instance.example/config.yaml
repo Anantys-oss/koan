@@ -143,6 +143,16 @@ skill_timeout: 7200
 # Default: 600 (10 min). Set 0 to disable.
 # first_output_timeout: 600
 
+# Max Bash-tool foreground timeout for mission subprocesses, in SECONDS.
+# Injected as BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS (Claude CLI). Lets the
+# agent block on a long-but-bounded command in the foreground instead of
+# backgrounding it (backgrounded children are orphaned when the one-shot session
+# ends, so the mission is finalized Done without the promised result). Clamped
+# below mission_timeout (a 120s reporting buffer is reserved). Set to 0 to keep
+# the Claude CLI's built-in Bash default (~2 min).
+# Default: 900 (15 minutes).
+# bash_foreground_timeout: 900
+
 # Rebase first output timeout — optional override for /rebase skill runs.
 # Useful for large PRs where "Applying review feedback" can be quiet for longer.
 # Falls back to first_output_timeout when unset.
