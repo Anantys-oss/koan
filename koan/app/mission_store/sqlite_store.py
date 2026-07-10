@@ -283,6 +283,22 @@ class SqliteMissionStore(MissionStore):
             row = conn.execute("SELECT value FROM meta WHERE key='initialized_at'").fetchone()
             return row is not None
 
+    def is_synced(self) -> bool:
+        """Whether the store has been synced from missions.md for the S8 cutover.
+
+        A distinct marker from ``initialized_at`` so a store that was populated
+        during the S1–S5 transition still re-syncs once on the first S8 boot.
+        """
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key='s8_synced'").fetchone()
+            return row is not None
+
+    def mark_synced(self) -> None:
+        from time import strftime
+        with self._connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('s8_synced', ?)",
+                         (strftime("%Y-%m-%dT%H:%M"),))
+
     def _populate_missions(self, conn, content: str) -> IngestReport:
         """Parse ``missions.md`` content and insert one row per lifecycle item.
         Shared by ``ingest_from_file`` (one-time) and ``reconcile_from_content``
@@ -373,7 +389,12 @@ class SqliteMissionStore(MissionStore):
         for state, title in (("pending", "Pending"), ("in_progress", "In Progress"),
                              ("done", "Done"), ("failed", "Failed")):
             lines.append(f"## {title}")
-            lines.extend(render_mission_line(m) for m in self.list_by_state(state))
+            for m in self.list_by_state(state):
+                lines.append(render_mission_line(m))
+                # A blank line terminates a multi-line ``### `` complex block so a
+                # following ``- `` mission isn't absorbed into it on re-parse.
+                if m.text.lstrip().startswith("### "):
+                    lines.append("")
             lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 

@@ -201,3 +201,14 @@ class MissionStore(ABC):
 
     def reconcile_from_file(self, missions_md_path):
         return None
+
+    # ---- S8 one-time sync marker -------------------------------------------
+    # The store is populated from missions.md exactly once (boot in production;
+    # first access in tests), then it is authoritative. Default: no sync needed
+    # (an out-of-tree backend that has no file to sync from is always "synced").
+
+    def is_synced(self) -> bool:
+        return True
+
+    def mark_synced(self) -> None:
+        pass

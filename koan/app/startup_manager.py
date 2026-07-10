@@ -443,6 +443,15 @@ def prune_missions_done(instance: str):
 
     if issues or pruned > 0 or new_content != content:
         atomic_write(missions_path, new_content)
+        # S8: this startup step writes the file directly (unlocked), so keep the
+        # authoritative store in sync with the repaired/pruned content.
+        try:
+            from app.mission_store import get_mission_store
+            from app.mission_store.transition import reconcile_all
+            reconcile_all(instance, new_content)
+            get_mission_store(instance).mark_synced()
+        except Exception as exc:
+            log("warn", f"mission store re-sync after prune skipped: {exc}")
         if pruned > 0:
             log("health", f"Pruned {pruned} old Done/Failed items from missions.md")
 

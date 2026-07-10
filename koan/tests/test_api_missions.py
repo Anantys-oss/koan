@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import patch
 
 from app.api import create_app
+from tests.store_helpers import seed_missions
 
 _TOKEN = "test-token"
 _AUTH = {"Authorization": f"Bearer {_TOKEN}"}
@@ -132,7 +133,7 @@ class TestGetMission:
             "## In Progress\n\n",
             f"## In Progress\n\n{pending_line}",
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.get(f"/v1/missions/{mission_id}", headers=_AUTH)
         data = resp.get_json()
@@ -180,7 +181,7 @@ class TestDeleteMission:
             "## In Progress\n\n",
             f"## In Progress\n\n{pending_line}",
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.delete(f"/v1/missions/{mission_id}", headers=_AUTH)
         assert resp.status_code == 409
@@ -419,7 +420,7 @@ class TestEditMission:
         content = content.replace(
             "## In Progress\n\n", f"## In Progress\n\n{pending_line}"
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.patch(
             f"/v1/missions/{mission_id}",
@@ -512,7 +513,7 @@ class TestEditMission:
         content = content.replace(
             "## In Progress", "- Duplicate task\n\n## In Progress"
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.patch(
             f"/v1/missions/{mission_id}",
@@ -578,7 +579,7 @@ class TestReorderMission:
         content = content.replace(
             "## In Progress\n\n", f"## In Progress\n\n{pending_line}"
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.post(
             "/v1/missions/reorder",
@@ -651,7 +652,7 @@ class TestReorderMission:
         content = content.replace(
             "## In Progress", "- Dup reorder\n\n## In Progress"
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.post(
             "/v1/missions/reorder",
@@ -669,8 +670,9 @@ class TestStructuredResult:
                               headers=_AUTH).get_json()["id"]
         records = json.loads((instance_dir / ".api-missions.json").read_text())
         stored = next(r["text"] for r in records if r["id"] == mid)
-        (instance_dir / "missions.md").write_text(
-            f"# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n{stored}\n")
+        seed_missions(
+            instance_dir,
+            f"# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n- {stored}\n")
         fdir = instance_dir / ".review-findings"; fdir.mkdir()
         (fdir / "o_r_5.json").write_text(json.dumps({
             "file_comments": [{"file": "a.py", "line_start": 1, "line_end": 1,
@@ -702,8 +704,9 @@ class TestStructuredResult:
                               headers=_AUTH).get_json()["id"]
         records = json.loads((instance_dir / ".api-missions.json").read_text())
         stored = next(r["text"] for r in records if r["id"] == mid)
-        (instance_dir / "missions.md").write_text(
-            f"# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n{stored}\n")
+        seed_missions(
+            instance_dir,
+            f"# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n- {stored}\n")
         fdir = instance_dir / ".review-findings"; fdir.mkdir()
         (fdir / "o_r_8.json").write_text(json.dumps({
             "file_comments": [{"file": "a.py", "line_start": i, "line_end": i,

@@ -57,10 +57,13 @@ class TestExtractComplexityTag:
 
 class TestTagComplexityInPending:
     def _make_missions(self, content: str) -> Path:
-        tmp = tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w")
-        tmp.write(content)
-        tmp.close()
-        return Path(tmp.name)
+        # The mission store is keyed on the instance dir and its missions.md
+        # (as in production), so seed a temp dir with a real missions.md rather
+        # than a randomly-named temp file.
+        tmpdir = tempfile.mkdtemp()
+        path = Path(tmpdir) / "missions.md"
+        path.write_text(content)
+        return path
 
     def teardown_method(self, method):
         """Clean up any temp files left by the test."""

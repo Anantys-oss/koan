@@ -1,12 +1,10 @@
-"""Transition-only read helpers used while migrating readers off missions.md
-(S4–S7). Removed at the S8 flip, when the store becomes authoritative and
-readers no longer reconcile from the file.
+"""Read/sync helpers bridging ``missions.md`` and the mission store.
 
-``read_sections`` is a drop-in for ``app.missions.parse_sections(content)``: it
-returns the same ``{state: [raw missions.md lines]}`` shape, sourcing the four
-lifecycle states from the store (reconciled from the still-authoritative file)
-and the ``## CI`` section straight from the file (CI migrates to its sibling
-store in S6).
+At S8 the store is authoritative and ``missions.md`` is a generated read-only
+export. ``ensure_store_synced`` performs the one-time cutover sync (populate the
+store from the file, once, gated by a persisted marker); thereafter readers read
+the store directly and writers round-trip through it. ``read_sections`` /
+``read_content`` are the shims the migrated readers call.
 """
 
 from __future__ import annotations
@@ -15,32 +13,6 @@ from pathlib import Path
 
 from app.mission_store.base import TERMINAL_STATES, VALID_STATES, render_mission_line
 from app.mission_store.resolver import get_mission_store
-
-
-def read_sections(instance) -> dict:
-    """Return a ``parse_sections``-shaped dict from the store + file."""
-    inst = Path(instance)
-    if not inst.exists():
-        return {**{s: [] for s in VALID_STATES}, "ci": []}
-    p = inst / "missions.md"
-    content = p.read_text() if p.exists() else ""
-
-    store = get_mission_store(str(instance))
-    store.reconcile_from_content(content)
-
-    out: dict = {}
-    for state in VALID_STATES:
-        missions = store.list_by_state(state)
-        if state in TERMINAL_STATES:
-            missions = list(reversed(missions))  # back to file/sequence order
-        out[state] = [render_mission_line(m) for m in missions]
-
-    # CI (and Ideas) remain file-authoritative until S6, so pass their raw
-    # section lines straight through (as parse_sections would) for readers that
-    # need them (e.g. /brief's ci count).
-    from app import missions as _m
-    out["ci"] = _m.parse_sections(content).get("ci", [])
-    return out
 
 
 def reconcile_all(instance, content: str) -> None:
@@ -56,13 +28,49 @@ def reconcile_all(instance, content: str) -> None:
     IdeaStore(inst).reconcile_from_content(content)
 
 
-def read_content(instance) -> str:
-    """The full missions.md content, for readers that need the raw text (e.g.
-    ``group_by_project``, which parses all sections at once).
+def ensure_store_synced(instance) -> None:
+    """Populate the store from ``missions.md`` once — the S8 cutover sync.
 
-    Transition seam (S4–S7): returns the still-authoritative file. At the S8
-    flip this renders the full content from the store instead — one swap point,
-    so ``group_by_project`` callers change exactly once.
+    Gated by the store's persisted ``s8_synced`` marker: the first boot (or, in
+    tests, the first read/write against a fresh store) rebuilds missions + CI +
+    Ideas from the current file and marks the store synced; thereafter the store
+    is authoritative and the file is a read-only export. Cheap after the first
+    call (one indexed marker check).
     """
+    store = get_mission_store(str(instance))
+    if store.is_synced():
+        return
     p = Path(instance) / "missions.md"
-    return p.read_text() if p.exists() else ""
+    content = p.read_text() if p.exists() else ""
+    reconcile_all(str(instance), content)
+    store.mark_synced()
+
+
+def read_sections(instance) -> dict:
+    """Return a ``parse_sections``-shaped ``{state: [raw lines]}`` dict, read
+    directly from the (authoritative) store."""
+    inst = Path(instance)
+    if not inst.exists():
+        return {**{s: [] for s in VALID_STATES}, "ci": []}
+    ensure_store_synced(str(inst))
+    store = get_mission_store(str(inst))
+
+    out: dict = {}
+    for state in VALID_STATES:
+        missions = store.list_by_state(state)
+        if state in TERMINAL_STATES:
+            missions = list(reversed(missions))  # oldest-first, as parse_sections
+        out[state] = [render_mission_line(m) for m in missions]
+
+    from app.mission_store.aux_stores import CiQueueStore
+    out["ci"] = CiQueueStore(str(inst)).render_lines()
+    return out
+
+
+def read_content(instance) -> str:
+    """The full ``missions.md`` content, rendered from the (authoritative) store."""
+    inst = Path(instance)
+    if not inst.exists():
+        return ""
+    ensure_store_synced(str(inst))
+    return get_mission_store(str(inst)).render_content()
