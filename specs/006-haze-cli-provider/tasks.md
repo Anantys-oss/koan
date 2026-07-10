@@ -16,9 +16,9 @@
 
 **Purpose**: Branch, contract-first durable spec change, shared fixtures
 
-- [ ] T001 Create feature branch `koan.atoomic/006-haze-cli-provider` off up-to-date `main` (never commit to main; constitution I)
-- [ ] T002 Contract-first durable spec update in `specs/components/providers.md`: add haze to the provider registry enumeration and a capability row (stream-json: yes; resume: no; usage: envelope-based camelCase translation in shared parsers; quota/auth: generic multi-backend patterns; lock: `haze-cli`; stdin prompt: flag-removal rewrite). Commit this FIRST and standalone so the architectural change is reviewable before code (constitution II; PR must check "Architectural change"; `scripts/spec_change_guard.py` enforces)
-- [ ] T003 [P] Create shared recorded-fixture module `koan/tests/haze_samples.py`: verbatim haze ≥0.7.0 output samples per contracts/haze-cli-interface.md — complete stream-json transcript (turn_start → message/tool events → turn_end → result envelope with camelCase usage), `failed` envelope, `aborted` envelope, quota-style stderr/stdout error samples, auth-style samples, benign-prose-mentioning-"rate limit" success sample, mid-stream-truncated transcript. Use only generic placeholder content (no private identifiers; constitution V)
+- [X] T001 Create feature branch off up-to-date `main` (never commit to main; constitution I) — branch `specs/006-haze-cli-provider` created by the operator
+- [X] T002 Contract-first durable spec update in `specs/components/providers.md`: add haze to the provider registry enumeration and a capability row (stream-json: yes; resume: no; usage: envelope-based camelCase translation in shared parsers; quota/auth: generic multi-backend patterns; lock: `haze-cli`; stdin prompt: flag-removal rewrite). Commit this FIRST and standalone so the architectural change is reviewable before code (constitution II; PR must check "Architectural change"; `scripts/spec_change_guard.py` enforces)
+- [X] T003 [P] Create shared recorded-fixture module `koan/tests/haze_samples.py`: verbatim haze ≥0.7.0 output samples per contracts/haze-cli-interface.md — complete stream-json transcript (turn_start → message/tool events → turn_end → result envelope with camelCase usage), `failed` envelope, `aborted` envelope, quota-style stderr/stdout error samples, auth-style samples, benign-prose-mentioning-"rate limit" success sample, mid-stream-truncated transcript. Use only generic placeholder content (no private identifiers; constitution V)
 
 ---
 

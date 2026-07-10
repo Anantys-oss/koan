@@ -187,5 +187,5 @@ The full two-process detail, the complete per-module reference (`Key modules`), 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-specs/006-haze-cli-provider/plan.md
+specs/001-speckit-native-support/plan.md
 <!-- SPECKIT END -->
