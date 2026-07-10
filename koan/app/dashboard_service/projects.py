@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 
 def _project_counts() -> dict:
     """Map project name -> {'pending': int, 'in_progress': int}."""
-    content = read_file(state.MISSIONS_FILE)
+    from app.mission_store.transition import read_content
+    content = read_content(state.MISSIONS_FILE.parent)
     out: dict = {}
     if not content:
         return out

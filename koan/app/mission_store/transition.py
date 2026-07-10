@@ -41,3 +41,15 @@ def read_sections(instance) -> dict:
     from app import missions as _m
     out["ci"] = _m.parse_sections(content).get("ci", [])
     return out
+
+
+def read_content(instance) -> str:
+    """The full missions.md content, for readers that need the raw text (e.g.
+    ``group_by_project``, which parses all sections at once).
+
+    Transition seam (S4–S7): returns the still-authoritative file. At the S8
+    flip this renders the full content from the store instead — one swap point,
+    so ``group_by_project`` callers change exactly once.
+    """
+    p = Path(instance) / "missions.md"
+    return p.read_text() if p.exists() else ""

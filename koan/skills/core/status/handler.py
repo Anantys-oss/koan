@@ -62,14 +62,10 @@ def _truncate(text: str, max_len: int = 60) -> str:
 def _count_pending_missions(missions_file) -> int:
     """Return the total number of pending missions across all projects."""
     from pathlib import Path
-    from app.missions import parse_sections
+    from app.mission_store.transition import read_sections
 
-    path = Path(missions_file)
-    if not path.exists():
-        return 0
     try:
-        sections = parse_sections(path.read_text())
-        return len(sections.get("pending", []))
+        return len(read_sections(Path(missions_file).parent).get("pending", []))
     except Exception:
         return 0
 
@@ -77,15 +73,11 @@ def _count_pending_missions(missions_file) -> int:
 def _get_in_progress_missions(missions_file) -> str:
     """Return a short display of in-progress missions, or empty string."""
     from pathlib import Path
-    from app.missions import parse_sections
     from app.utils import parse_project
+    from app.mission_store.transition import read_sections
 
-    path = Path(missions_file)
-    if not path.exists():
-        return ""
     try:
-        content = path.read_text()
-        sections = parse_sections(content)
+        sections = read_sections(Path(missions_file).parent)
         in_progress = sections.get("in_progress", [])
         if not in_progress:
             return ""
@@ -292,8 +284,8 @@ def _handle_status(ctx) -> str:
 
     # Missions section
     if missions_file.exists():
-        content = missions_file.read_text()
-        missions_by_project = group_by_project(content)
+        from app.mission_store.transition import read_content
+        missions_by_project = group_by_project(read_content(missions_file.parent))
 
         if missions_by_project:
             has_missions = any(
@@ -563,8 +555,8 @@ def _handle_usage(ctx) -> str:
 
     missions_text = "No missions."
     if missions_file.exists():
-        from app.missions import parse_sections
-        sections = parse_sections(missions_file.read_text())
+        from app.mission_store.transition import read_sections
+        sections = read_sections(missions_file.parent)
         parts = []
         in_progress = sections.get("in_progress", [])
         pending = sections.get("pending", [])

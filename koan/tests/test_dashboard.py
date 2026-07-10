@@ -77,7 +77,9 @@ class TestParsingMissions:
     def test_parse_empty(self, tmp_path):
         with patch.object(dashboard.state, "MISSIONS_FILE", tmp_path / "nope.md"):
             result = dashboard_service.missions.parse_missions()
-            assert result == {"pending": [], "in_progress": [], "done": []}
+            assert result["pending"] == []
+            assert result["in_progress"] == []
+            assert result["done"] == []
 
 
 class TestStaticCacheBusting:
