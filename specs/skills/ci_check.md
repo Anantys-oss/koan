@@ -4,7 +4,7 @@ title: "Skill Spec — ci_check"
 description: "Specifies the `/ci_check` skill, which checks a PR's CI status, runs the shared CI-fix loop on failures, and toggles automatic CI-fix dispatch."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-07-10
 ---
 
 # Skill Spec — `ci_check`
@@ -35,6 +35,25 @@ See `docs/users/skills.md` for the end-user `/ci_check` reference and
 - On failure, runs the shared CI-fix loop (`claude_step.run_ci_fix_loop()`), pushes fixes.
 - `--enable/--disable` flips the `ci_dispatch` config switch.
 
+## Queue-safety model (async check, non-blocking fix)
+
+The system has two halves that must stay decoupled:
+
+1. **Async monitor** — `ci_queue_runner.drain_one()`, called each iteration (throttled to
+   `CI_QUEUE_SLEEP_INTERVAL`) from the interruptible sleep loop. One non-blocking status check
+   per `## CI` PR. On failure it injects a `/ci_check <url>` fix mission **non-urgently**
+   (FIFO), so CI fixing never jumps ahead of `/rebase` / `/review` / `/implement` backlog work.
+2. **Fix mission** — the injected `/ci_check <url>` runs in the single mission slot. It performs
+   **at most `get_ci_check_max_fix_attempts()` internal Claude fix steps (default 1)** and then
+   returns, yielding the queue. The `## CI` item's `max_attempts` (config `ci_fix_max_attempts`,
+   default 5) is the **total per-PR budget** enforced by `drain_one` across interleaved
+   re-injections — it is NOT the per-mission internal loop count. Each fix step runs under
+   `get_ci_check_step_timeout()` (config `ci_check.timeout`, default 3600s) plus a
+   `first_output_timeout` idle guard, not the 2-hour `skill_timeout`.
+
+This preserves the original intent (fix on failure, give up after N attempts with the 🚦
+notification) while guaranteeing one failing PR cannot monopolize the queue for hours.
+
 ## Error cases
 
 | Condition | Behavior |
@@ -54,8 +73,16 @@ See `docs/users/skills.md` for the end-user `/ci_check` reference and
 
 - `None` (API error) and `[]` (all green) are distinct — never collapse them.
 - Cooldown timer resets only on successful API calls.
+- The auto-injected fix mission MUST be inserted non-urgent; per-mission fix attempts MUST be
+  bounded by `get_ci_check_max_fix_attempts()` (decoupled from the `## CI` total budget); and the
+  fix step MUST run under `ci_check.timeout` + idle guard, never the raw `skill_timeout`.
 
 ## Known debt / watch-outs
 
 - Polling vs single-shot recheck is caller-configured; the auto-dispatch path and the
   manual command share the loop but differ in `use_polling`.
+- Manual `/ci_check <url>` (no `## CI` entry) does a single bounded attempt; if the fix is pushed
+  and CI goes pending it re-enqueues for monitoring, otherwise it reports "still failing" as a
+  one-shot. Auto retries are driven by the `## CI` budget, not the manual path.
+- `ci_check` config accepts both a bare bool (`ci_check: true`) and the dict form
+  (`ci_check: {enabled, timeout, max_fix_attempts_per_mission}`); both are honored and validated.
