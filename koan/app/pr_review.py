@@ -16,7 +16,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Dict, List, Optional, Tuple
 
 from app.claude_step import (
     _force_push,
@@ -229,15 +229,22 @@ def run_pr_review(
     except Exception as e:
         return False, f"Failed to checkout branch {branch}: {e}"
 
-    # Rebase onto the upstream target branch (prefers the matched remote)
+    # Rebase onto the PR's target branch (strictly the matched base remote)
+    rebase_meta: Dict[str, str] = {}
     rebase_remote = _rebase_onto_target(
         base, project_path, preferred_remote=base_remote,
         head_remote=head_remote,
+        result_meta=rebase_meta,
     )
     if rebase_remote:
         actions_log.append(f"Rebased `{branch}` onto `{rebase_remote}/{base}`")
     else:
-        return False, f"Rebase conflict on {base} (tried origin and upstream)"
+        error_code = rebase_meta.get("error", "rebase_failed")
+        detail = rebase_meta.get("detail", "unresolved conflicts")
+        return False, (
+            f"[{error_code}] Rebase of `{branch}` onto "
+            f"`{base_remote or '?'}/{base}` aborted: {detail}"
+        )
 
     # ── Step 3: Address review feedback via Claude Code ───────────────
     has_review_feedback = bool(
