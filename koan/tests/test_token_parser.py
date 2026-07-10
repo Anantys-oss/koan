@@ -335,3 +335,83 @@ class TestExtractSessionId:
         f = tmp_path / "output.json"
         f.write_text(json.dumps({"session_id": "  abc-123  "}))
         assert extract_session_id(f) == "abc-123"
+
+
+class TestHazeCamelCaseUsage:
+    """Haze >= 0.7.0 result envelopes report usage with camelCase fields.
+
+    Mapping (specs/006-haze-cli-provider/data-model.md): inputTokens minus
+    cacheReadTokens -> input_tokens, outputTokens + reasoningTokens ->
+    output_tokens, cacheReadTokens -> cache_read_input_tokens,
+    cacheWriteTokens -> cache_creation_input_tokens.
+    """
+
+    def test_camelcase_envelope_dict(self, tmp_path):
+        from tests import haze_samples
+
+        f = tmp_path / "haze.json"
+        f.write_text(haze_samples.JSON_ENVELOPE_SUCCESS)
+        result = extract_tokens(f)
+        assert result is not None
+        assert result.input_tokens == 420
+        assert result.output_tokens == 3
+        assert result.cache_read_input_tokens == 0
+        assert result.cache_creation_input_tokens == 0
+
+    def test_camelcase_full_mapping(self, tmp_path):
+        f = tmp_path / "haze.json"
+        f.write_text(json.dumps({
+            "type": "result",
+            "status": "complete",
+            "result": "done",
+            "usage": {
+                "inputTokens": 5230,
+                "outputTokens": 410,
+                "cacheReadTokens": 1200,
+                "cacheWriteTokens": 300,
+                "reasoningTokens": 57,
+            },
+        }))
+        result = extract_tokens(f)
+        assert result is not None
+        # input excludes cache hits (Koan accounting convention)
+        assert result.input_tokens == 4030
+        # reasoningTokens is a subset of outputTokens — never added on top
+        assert result.output_tokens == 410
+        assert result.cache_read_input_tokens == 1200
+        assert result.cache_creation_input_tokens == 300
+        assert result.model == "unknown"
+
+    def test_camelcase_jsonl_transcript_uses_last_usage_event(self, tmp_path):
+        from tests import haze_samples
+
+        f = tmp_path / "haze-stream.jsonl"
+        f.write_text(haze_samples.STREAM_SUCCESS)
+        result = extract_tokens(f)
+        assert result is not None
+        assert result.input_tokens == 5230 - 1200
+        assert result.output_tokens == 410
+        assert result.cache_read_input_tokens == 1200
+        assert result.cache_creation_input_tokens == 300
+
+    def test_all_zero_camelcase_usage_returns_none(self, tmp_path):
+        from tests import haze_samples
+
+        f = tmp_path / "haze-zero.json"
+        f.write_text(haze_samples.JSON_ENVELOPE_ZERO_USAGE)
+        assert extract_tokens(f) is None
+
+    def test_snake_case_unaffected_by_camelcase_branch(self, tmp_path):
+        f = tmp_path / "claude.json"
+        f.write_text(json.dumps({
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 10,
+            },
+        }))
+        result = extract_tokens(f)
+        assert result is not None
+        assert result.input_tokens == 100
+        assert result.output_tokens == 50
+        assert result.cache_read_input_tokens == 10

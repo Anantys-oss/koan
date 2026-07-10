@@ -6,6 +6,7 @@ samples in ``tests/haze_samples.py`` — never a live ``haze`` subprocess.
 
 import json
 import os
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -401,3 +402,214 @@ class TestHazeStreamEventSummaries:
         line = self._event_lines(haze_samples.STREAM_ABORTED)[-2]
         summary = self._summarize(line)
         assert "aborted" in summary
+
+
+# ---------------------------------------------------------------------------
+# T013 — stream usage snapshot (camelCase envelope -> sidecar accounting)
+# ---------------------------------------------------------------------------
+
+class TestHazeStreamUsage:
+    def _envelope_event(self, transcript: str) -> dict:
+        return json.loads(transcript.strip().splitlines()[-1])
+
+    def test_usage_snapshot_from_camelcase_envelope(self):
+        from app.provider import _usage_snapshot_from_event
+
+        snapshot = _usage_snapshot_from_event(
+            self._envelope_event(haze_samples.STREAM_SUCCESS)
+        )
+        assert snapshot == {
+            "input_tokens": 5230 - 1200,
+            "output_tokens": 410,
+            "cache_read_input_tokens": 1200,
+            "cache_creation_input_tokens": 300,
+            "model": "unknown",
+        }
+
+    def test_all_zero_usage_yields_no_snapshot(self):
+        from app.provider import _usage_snapshot_from_event
+
+        assert _usage_snapshot_from_event(
+            json.loads(haze_samples.JSON_ENVELOPE_ZERO_USAGE)
+        ) is None
+
+    def test_progress_events_yield_no_snapshot(self):
+        from app.provider import _usage_snapshot_from_event
+
+        for line in haze_samples.STREAM_SUCCESS.strip().splitlines()[:-1]:
+            assert _usage_snapshot_from_event(json.loads(line)) is None
+
+    def test_replay_persists_usage_sidecar(self, tmp_path, monkeypatch):
+        sidecar = tmp_path / "stream-usage.json"
+        monkeypatch.setenv("KOAN_STREAM_USAGE_FILE", str(sidecar))
+        _replay(haze_samples.STREAM_SUCCESS)
+        persisted = json.loads(sidecar.read_text())
+        assert persisted["input_tokens"] == 5230 - 1200
+        assert persisted["output_tokens"] == 410
+        assert persisted["cache_read_input_tokens"] == 1200
+        assert persisted["cache_creation_input_tokens"] == 300
+
+
+# ---------------------------------------------------------------------------
+# T015 — failure classification & status mapping
+# ---------------------------------------------------------------------------
+
+class TestHazeQuotaDetection:
+    def setup_method(self):
+        self.provider = HazeProvider()
+
+    def test_stderr_quota_patterns_trusted(self):
+        for sample in (
+            haze_samples.STDERR_QUOTA_429,
+            haze_samples.STDERR_QUOTA_INSUFFICIENT,
+        ):
+            assert self.provider.detect_quota_exhaustion(
+                stderr_text=sample, exit_code=1,
+            ) is True
+
+    def test_stderr_quota_detected_even_with_exit_zero(self):
+        assert self.provider.detect_quota_exhaustion(
+            stderr_text=haze_samples.STDERR_QUOTA_429, exit_code=0,
+        ) is True
+
+    def test_stdout_quota_envelope_detected_on_failure(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=haze_samples.STDOUT_QUOTA_ENVELOPE, exit_code=1,
+        ) is True
+
+    def test_benign_prose_on_success_never_quota(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=haze_samples.STDOUT_BENIGN_PROSE_ENVELOPE, exit_code=0,
+        ) is False
+
+    def test_plain_failure_is_not_quota(self):
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=haze_samples.STREAM_FAILED, exit_code=1,
+        ) is False
+
+    def test_no_provider_configured_is_not_quota(self):
+        assert self.provider.detect_quota_exhaustion(
+            stderr_text=haze_samples.STDERR_NO_PROVIDER, exit_code=1,
+        ) is False
+
+
+class TestHazeAuthDetection:
+    def setup_method(self):
+        self.provider = HazeProvider()
+
+    def test_stderr_auth_patterns(self):
+        for sample in (haze_samples.STDERR_AUTH_401, haze_samples.STDERR_AUTH_KEY):
+            assert self.provider.detect_auth_failure(
+                stderr_text=sample, exit_code=1,
+            ) is True
+
+    def test_exit_zero_never_auth_failure(self):
+        assert self.provider.detect_auth_failure(
+            stderr_text=haze_samples.STDERR_AUTH_401, exit_code=0,
+        ) is False
+
+    def test_bad_model_selector_is_not_auth(self):
+        assert self.provider.detect_auth_failure(
+            stderr_text=haze_samples.STDERR_BAD_MODEL, exit_code=1,
+        ) is False
+
+    def test_quota_error_is_not_auth(self):
+        assert self.provider.detect_auth_failure(
+            stderr_text=haze_samples.STDERR_QUOTA_429, exit_code=1,
+        ) is False
+
+
+class TestHazeStatusMapping:
+    """failed/aborted terminal statuses surface as failures, never success."""
+
+    def test_failed_run_raises_with_envelope_error(self, monkeypatch):
+        monkeypatch.delenv("KOAN_STREAM_USAGE_FILE", raising=False)
+        with pytest.raises(RuntimeError) as exc:
+            _replay(haze_samples.STREAM_FAILED, returncode=1)
+        assert "Model call failed after 3 attempts" in str(exc.value)
+
+    def test_aborted_run_raises(self, monkeypatch):
+        monkeypatch.delenv("KOAN_STREAM_USAGE_FILE", raising=False)
+        with pytest.raises(RuntimeError):
+            _replay(haze_samples.STREAM_ABORTED, returncode=1)
+
+    def test_fatal_context_overflow_feeds_error_preview(self):
+        from app.provider import _extract_provider_error_preview
+
+        preview = _extract_provider_error_preview(
+            haze_samples.STREAM_CONTEXT_OVERFLOW_FATAL
+        )
+        assert preview == "context window exceeded"
+
+    def test_recovered_context_overflow_not_an_error(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert _extract_provider_error_preview(
+            haze_samples.STREAM_CONTEXT_OVERFLOW_RECOVERED
+        ) == ""
+
+    def test_complete_envelope_not_an_error(self):
+        from app.provider import _extract_provider_error_preview
+
+        assert _extract_provider_error_preview(
+            haze_samples.JSON_ENVELOPE_SUCCESS
+        ) == ""
+
+
+# ---------------------------------------------------------------------------
+# T019 — pre-flight quota probe
+# ---------------------------------------------------------------------------
+
+class TestHazeQuotaProbe:
+    def setup_method(self):
+        self.provider = HazeProvider()
+
+    def _completed(self, returncode=0, stdout="", stderr=""):
+        return subprocess.CompletedProcess(
+            args=["haze"], returncode=returncode, stdout=stdout, stderr=stderr,
+        )
+
+    def test_probe_success(self):
+        with patch(
+            "app.cli_exec.run_cli",
+            return_value=self._completed(stdout=haze_samples.JSON_ENVELOPE_SUCCESS),
+        ) as run_cli:
+            ok, detail = self.provider.check_quota_available("/tmp")
+        assert (ok, detail) == (True, "")
+        cmd = run_cli.call_args[0][0]
+        assert cmd[0] == "haze"
+        assert "--output" in cmd and "json" in cmd
+        assert cmd[-2:] == ["-p", "ok"]
+
+    def test_probe_quota_exhaustion(self):
+        with patch(
+            "app.cli_exec.run_cli",
+            return_value=self._completed(
+                returncode=1, stdout=haze_samples.STDOUT_QUOTA_ENVELOPE,
+            ),
+        ):
+            ok, detail = self.provider.check_quota_available("/tmp")
+        assert ok is False
+        assert "rate limit" in detail
+
+    def test_probe_auth_failure(self):
+        with patch(
+            "app.cli_exec.run_cli",
+            return_value=self._completed(
+                returncode=1, stderr=haze_samples.STDERR_AUTH_401,
+            ),
+        ):
+            ok, detail = self.provider.check_quota_available("/tmp")
+        assert ok is False
+        assert "401" in detail
+
+    def test_probe_timeout_never_blocks(self):
+        with patch(
+            "app.cli_exec.run_cli",
+            side_effect=subprocess.TimeoutExpired(cmd=["haze"], timeout=15),
+        ):
+            assert self.provider.check_quota_available("/tmp") == (True, "")
+
+    def test_probe_unexpected_error_never_blocks(self):
+        with patch("app.cli_exec.run_cli", side_effect=OSError("boom")):
+            assert self.provider.check_quota_available("/tmp") == (True, "")

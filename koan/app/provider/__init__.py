@@ -1006,6 +1006,31 @@ def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
 
     usage = event.get("usage")
     if isinstance(usage, dict):
+        # camelCase usage shape (haze-style result envelopes):
+        # {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+        #  reasoningTokens}. Shape-keyed on field presence — no provider names.
+        if "inputTokens" in usage or "outputTokens" in usage:
+            input_tokens = int(usage.get("inputTokens", 0) or 0)
+            # reasoningTokens is a SUBSET of outputTokens in AI-SDK-based
+            # reporting (OpenAI completion_tokens_details semantics) — it is
+            # already accounted inside outputTokens; adding it would
+            # double-count reasoning-model output.
+            output_tokens = int(usage.get("outputTokens", 0) or 0)
+            cache_read = int(usage.get("cacheReadTokens", 0) or 0)
+            cache_write = int(usage.get("cacheWriteTokens", 0) or 0)
+            if cache_read > 0:
+                # Koan accounting: input_tokens excludes cache hits.
+                input_tokens = max(0, input_tokens - cache_read)
+            if input_tokens or output_tokens or cache_read or cache_write:
+                return {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": cache_write,
+                    "model": str(event.get("model") or "unknown"),
+                }
+            return None
+
         input_tokens = int(usage.get("input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
         cached_input = int(usage.get("cached_input_tokens", 0) or 0)

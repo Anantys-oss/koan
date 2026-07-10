@@ -68,7 +68,7 @@ Invariants: always the last line; all five usage fields always present (pinned u
 | `outputTokens` | `output_tokens` | direct |
 | `cacheReadTokens` | `cache_read_input_tokens` | direct |
 | `cacheWriteTokens` | `cache_creation_input_tokens` | direct |
-| `reasoningTokens` | folded into `output_tokens` accounting | haze reports it separately; Kōan's snapshot has no dedicated field — fold, never drop (FR-005) |
+| `reasoningTokens` | accounted within `output_tokens` (subset) | AI-SDK reporting: `reasoningTokens` is a subset of `outputTokens` (OpenAI `completion_tokens_details` semantics) — adding it on top would double-count (FR-005 satisfied by subset accounting) |
 | (absent) | `model` | `"unknown"` unless a `-m` override was passed (envelope carries no model) |
 
 Applied shape-based (fields present ⇒ branch taken) in **both** pipelines: `_usage_snapshot_from_event()` (stream sidecar) and `token_parser` dict/JSONL extraction (mission stdout).

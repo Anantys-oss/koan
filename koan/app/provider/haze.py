@@ -1,10 +1,43 @@
 """Haze CLI provider implementation."""
 
+import re
 import shutil
+import subprocess
 from typing import List, Optional, Sequence, Tuple
 
 from app.provider.base import CLIProvider
 from app.run_log import log_safe
+
+# Haze is multi-backend (-m provider:model over OpenAI, OpenRouter, local
+# endpoints), so quota/auth detection uses generic patterns that work across
+# backends — same rationale as cline.py.
+_HAZE_QUOTA_PATTERNS = [
+    r"rate[_\s-]?limit(?:ed|_error| exceeded)?",
+    r"insufficient[_\s-]?quota",
+    r"\bquota\b.*(?:exceeded|reached|exhausted|insufficient)",
+    r"(?:exceeded|reached|exhausted|insufficient).*\bquota\b",
+    r"usage.*(?:limit|cap).*(?:reached|exceeded|hit)",
+    r"billing.*(?:limit|quota|credit)",
+    r"HTTP\s*429",
+    r"status[\s:]+429",
+    r"too many requests",
+    r"retry[\s-]+after",
+]
+_HAZE_QUOTA_RE = re.compile("|".join(_HAZE_QUOTA_PATTERNS), re.IGNORECASE)
+
+_HAZE_AUTH_PATTERNS = [
+    r"\b401\s+Unauthorized\b",
+    r"unexpected\s+status\s+401",
+    r"authentication\s+failed",
+    r"invalid\s+api\s+key",
+    r"api\s+key.*(?:invalid|missing|expired)",
+]
+_HAZE_AUTH_RE = re.compile("|".join(_HAZE_AUTH_PATTERNS), re.IGNORECASE)
+
+# Substrings marking a stdout line as a likely provider/CLI error, passed to
+# the inherited CLIProvider._line_has_error_marker() gate so benign assistant
+# prose is never scanned for quota text.
+_STDOUT_ERROR_MARKERS = ("error", "rate", "limit", "quota", "http", "status", "api")
 
 # Features the agent loop passes on every invocation (tool lists, max turns)
 # would flood the journal if warned per call, but the durable contract says
@@ -214,3 +247,89 @@ class HazeProvider(CLIProvider):
         cmd.extend(self.build_effort_args(effort))
         cmd.extend(self.build_prompt_args(prompt))
         return cmd
+
+    # ------------------------------------------------------------------
+    # Failure classification & quota probing
+    # ------------------------------------------------------------------
+
+    def detect_quota_exhaustion(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Detect quota/rate-limit failures from haze output.
+
+        Stderr is trusted for the full pattern set (backends report errors
+        there before the agent runs). Stdout — where the result envelope's
+        error text lands — is scanned only when the CLI failed AND the line
+        resembles a provider error, so benign assistant prose on successful
+        runs can never trigger a quota pause.
+        """
+        if _HAZE_QUOTA_RE.search(stderr_text or ""):
+            return True
+        if exit_code == 0:
+            return False
+        for line in (stdout_text or "").splitlines():
+            stripped = line.strip()
+            if not stripped or not self._line_has_error_marker(
+                stripped, _STDOUT_ERROR_MARKERS
+            ):
+                continue
+            if _HAZE_QUOTA_RE.search(stripped):
+                return True
+        return False
+
+    def detect_auth_failure(
+        self,
+        stdout_text: str = "",
+        stderr_text: str = "",
+        exit_code: int = 0,
+    ) -> bool:
+        """Detect authentication failures (401 / invalid or missing key)."""
+        if exit_code == 0:
+            return False
+        if _HAZE_AUTH_RE.search(stderr_text or ""):
+            return True
+        return any(
+            _HAZE_AUTH_RE.search(line)
+            for line in (stdout_text or "").splitlines()
+            if line.strip()
+        )
+
+    def check_quota_available(self, project_path: str, timeout: int = 15) -> Tuple[bool, str]:
+        """Best-effort quota/auth probe via a minimal one-shot 'ok' run.
+
+        Haze exposes no free usage introspection, so the probe is a real
+        (tiny) run — same precedent as cline. NOTE: consumes a small number
+        of tokens per call. Any probe error or timeout reports available so
+        a flaky probe never blocks real work.
+        """
+        from app.cli_exec import run_cli
+
+        cmd = [self.binary(), "--output", "json", "-p", "ok"]
+        try:
+            result = run_cli(
+                cmd,
+                provider=self,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=project_path,
+            )
+        except subprocess.TimeoutExpired:
+            return True, ""
+        except Exception as e:
+            log_safe("error", f"[{self.name}] quota probe error: {e}")
+            return True, ""
+
+        stdout_text = result.stdout or ""
+        stderr_text = result.stderr or ""
+        for detect in (self.detect_quota_exhaustion, self.detect_auth_failure):
+            if detect(
+                stdout_text=stdout_text,
+                stderr_text=stderr_text,
+                exit_code=result.returncode,
+            ):
+                return False, (stderr_text + "\n" + stdout_text).strip()
+        return True, ""
