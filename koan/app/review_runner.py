@@ -724,30 +724,32 @@ def build_review_prompt(
         project_memory += _build_review_session_memory(project_name, task_text)
 
     raw_diff = context["diff"]
-    compressor_skipped: list = []
+    # Files skipped to fit the token budget — either packed out by the
+    # compressor (on-path) or cut by the token-safe backstop (off-path).
+    budget_skipped: list = []
     if is_review_compressor_enabled():
         compressed = compress_diff(raw_diff, get_review_compressor_token_budget())
         raw_diff = compressed.diff_text
-        compressor_skipped = compressed.skipped_files
-        if compressor_skipped:
+        budget_skipped = compressed.skipped_files
+        if budget_skipped:
             log(
                 "review",
-                f"Diff compressed — {len(compressor_skipped)} file(s) skipped: "
-                + ", ".join(compressor_skipped),
+                f"Diff compressed — {len(budget_skipped)} file(s) skipped: "
+                + ", ".join(budget_skipped),
             )
     else:
         # Compressor off: no packer re-shrinks the fetch-time diff, so apply a
         # token-safe backstop here or the raw diff (up to the generous fetch
         # cap) could overflow the model context and hard-fail the review. Skips
         # flow into the same coverage note as compressor skips.
-        raw_diff, compressor_skipped = truncate_diff_with_skips(
+        raw_diff, budget_skipped = truncate_diff_with_skips(
             raw_diff, get_review_uncompressed_max_diff_chars()
         )
-        if compressor_skipped:
+        if budget_skipped:
             log(
                 "review",
-                f"Compressor off — diff truncated, {len(compressor_skipped)} "
-                f"file(s) skipped: " + ", ".join(compressor_skipped),
+                f"Compressor off — diff truncated, {len(budget_skipped)} "
+                f"file(s) skipped: " + ", ".join(budget_skipped),
             )
 
     # ONE unified coverage note — the same value feeds the {SKIPPED_FILES}
@@ -755,7 +757,7 @@ def build_review_prompt(
     # prompt and the posted body can never diverge.
     coverage_note = _build_coverage_note(
         fetch_skipped=context.get("diff_skipped_files", []),
-        compressor_skipped=compressor_skipped,
+        compressor_skipped=budget_skipped,
         triaged_files=triaged_files,
     )
 
