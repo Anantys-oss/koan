@@ -4,7 +4,7 @@ title: "Component Spec — Core Data & Config"
 description: "Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on."
 tags: [core]
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-07-08
 ---
 
 # Component Spec — Core Data & Config
@@ -41,6 +41,9 @@ is documented in `docs/architecture/shared-state.md`.
 | `config.py` | Centralized config access — tool config, model selection, CLI flag building, behavioral settings. New config keys get an accessor here, not scattered `os.environ` reads. |
 | `constants.py` | Numeric tuning constants. Import-as pattern preserves module-level names for test patching. |
 | `commit_conventions.py::get_project_commit_guidance()` | Detects commit style from CLAUDE.md or recent history; feeds rebase/CI commit messages. |
+| `instance_hydrator.py::hydrate_instance_from_repo()` | Cold-boot clone of `KOAN_INSTANCE_REPO` (incl. `.git`) into `instance/`. No-op when unconfigured or already hydrated (guard on `missions.md`/`.git`); fail-open to the `instance.example/` template. On a partial copy failure it wipes `instance/` contents so the template fallback starts clean (never seeds on top of a half-cloned tree); if the wipe itself is only partial, it emits a loud WARNING (stale clone files survive → manual cleanup required) rather than silently hiding the corruption. Invoked from `docker-entrypoint.sh::setup_instance()`. |
+| `instance_hydrator.py::pull_instance_repo()` | Opt-in `git pull --rebase --autostash` of `instance/`, gated by `config.get_instance_sync_interval()` (`KOAN_INSTANCE_SYNC_INTERVAL`, default 0 = off), ticked from `loop_manager.interruptible_sleep`. Keeps `commit_instance`'s push fast-forwardable when an operator edits the remote directly. **Tri-state return:** `None` when `instance/` is not a git repo (template-seeded — a benign steady state, NOT a failure), `True` on a successful pull, `False` on a real rebase failure. On a failed rebase it runs `git rebase --abort` to restore a clean, pushable state (never leaves conflict markers for the next `commit_instance` to commit); the loop tick then retries on the next beat instead of waiting a full interval. `loop_manager._maybe_sync_instance_repo` treats `None` by self-disabling the tick for the rest of the boot (single info log), so a template-seeded instance never emits a recurring bogus 'pull failed' warning. |
+| `mission_runner.py::commit_instance()` | Single writer of the `instance/` git remote: `git add -A` → commit → `push origin <branch>` over the whole tree, called at ~10 lifecycle points via `run.py::_commit_instance`. This is what makes hydration a full mirror — state (journal/memory/mission state) is tracked and restored, not just config. |
 
 ## Invariants
 
@@ -51,6 +54,10 @@ is documented in `docs/architecture/shared-state.md`.
   reuse an accessor in `config.py` / `projects_config.py`.
 - **Section names are bilingual.** `missions.md` accepts English and French section
   headers (Pending/In Progress/Done). Parsers must preserve both.
+- **`instance/` is a full-mirror git repo when hydrated.** `KOAN_INSTANCE_REPO`
+  clones the entire tree including state; `commit_instance()` is the sole pusher.
+  Do not gitignore state dirs (`journal/`, `memory/`, mission state) — they are
+  required for resume-after-redeploy. Cold-boot hydration must preserve `.git`.
 
 ## Integration points
 

@@ -2103,3 +2103,22 @@ class TestReviewCompressorBudget:
             {"optimizations": {"review_compressor": {"token_budget": 40_000}}}
         ):
             assert get_review_max_diff_chars() == 560_000
+
+
+class TestInstanceSyncInterval:
+    """KOAN_INSTANCE_SYNC_INTERVAL parsing."""
+
+    def test_instance_sync_interval_default_disabled(self, monkeypatch):
+        monkeypatch.delenv("KOAN_INSTANCE_SYNC_INTERVAL", raising=False)
+        from app.config import get_instance_sync_interval
+        assert get_instance_sync_interval() == 0
+
+    def test_instance_sync_interval_from_env(self, monkeypatch):
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "900")
+        from app.config import get_instance_sync_interval
+        assert get_instance_sync_interval() == 900
+
+    def test_instance_sync_interval_malformed_disabled(self, monkeypatch):
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "nope")
+        from app.config import get_instance_sync_interval
+        assert get_instance_sync_interval() == 0
