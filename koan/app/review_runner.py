@@ -1811,6 +1811,29 @@ def _build_review_footer(
     return footer
 
 
+def _build_stale_head_alert(reviewed_sha: str, live_sha: str) -> str:
+    """Return a GitHub IMPORTANT alert when the branch moved during review.
+
+    Compares the SHA the review was performed against (``reviewed_sha`` — the
+    same value shown as ``HEAD=<short>`` in the footer) to the PR branch's live
+    HEAD (``live_sha``). When they differ, commits were pushed (or force-pushed)
+    after the review captured its diff, so the findings may be stale.
+
+    Returns a leading-blank-line alert block suitable for appending to the end
+    of the review content, or "" when either SHA is missing or they match (in
+    which case the posted comment is byte-identical to today's output).
+    """
+    if not reviewed_sha or not live_sha or reviewed_sha == live_sha:
+        return ""
+    return (
+        "\n\n> [!IMPORTANT]\n"
+        "> **The branch moved during review.** This review was performed "
+        f"against `HEAD={reviewed_sha[:7]}`, but the PR branch now points at "
+        f"`{live_sha[:7]}`. Commits pushed after the review started are not "
+        "reflected below — re-run `/review` to cover them."
+    )
+
+
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
     existing_comment: Optional[dict] = None,
@@ -1818,6 +1841,7 @@ def _post_review_comment(
     provider_name: str = "",
     model: str = "",
     duration_seconds: float = 0,
+    live_head_sha: str = "",
 ) -> Tuple[bool, str]:
     """Post (or update) the review as a comment on the PR.
 
@@ -1829,6 +1853,11 @@ def _post_review_comment(
     incremental-review check can skip already-reviewed commits.  When
     absent, preserves any COMMIT_IDS block from ``existing_comment`` so
     a re-review without SHA info doesn't clobber prior state.
+
+    When ``live_head_sha`` is provided and differs from the reviewed tip
+    (``commit_shas[-1]``), a stale-HEAD IMPORTANT alert is appended at the
+    end of the review content (the branch moved during review). Empty
+    ``live_head_sha`` (the default) leaves the body byte-identical.
 
     Returns (True, "") on success, (False, error_detail) on failure.
     """
@@ -1843,11 +1872,14 @@ def _post_review_comment(
         duration_seconds=duration_seconds,
     )
 
+    # Stale-HEAD alert: appended after truncation so it is never dropped.
+    stale_alert = _build_stale_head_alert(head_sha, live_head_sha)
+
     # If body already starts with a ## heading, don't add another
     if review_text.startswith("## "):
-        body = f"{SUMMARY_TAG}\n{review_text}\n\n---\n{footer}"
+        body = f"{SUMMARY_TAG}\n{review_text}{stale_alert}\n\n---\n{footer}"
     else:
-        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}\n\n---\n{footer}"
+        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}{stale_alert}\n\n---\n{footer}"
 
     # Embed commit SHAs in a single hidden HTML comment (fully invisible).
     if commit_shas:
@@ -2220,6 +2252,32 @@ def _fetch_pr_commit_shas(owner: str, repo: str, pr_number: str) -> List[str]:
         return [line.strip() for line in raw.strip().splitlines() if line.strip()]
     except RuntimeError:
         return []
+
+
+def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
+    """Return the PR branch's current HEAD commit OID (full SHA), or "" on error.
+
+    Unlike ``_fetch_pr_commit_shas`` (which pages the commits list and can
+    truncate at GitHub's 250-commit cap), ``headRefOid`` always reflects the
+    true branch tip — including after a force-push. Best-effort: any failure
+    yields "" so callers treat it as "unknown" and skip the staleness check.
+
+    Catches ``Exception`` deliberately: this call sits *after* the (expensive)
+    provider analysis and just *before* posting, so a transient ``gh`` failure
+    (``run_gh`` re-raises ``OSError`` / ``subprocess.TimeoutExpired`` after
+    exhausting retries — neither a ``RuntimeError``) must never propagate and
+    discard an otherwise-complete review.
+    """
+    try:
+        return run_gh(
+            "pr", "view", pr_number,
+            "--repo", f"{owner}/{repo}",
+            "--json", "headRefOid",
+            "--jq", ".headRefOid",
+        ).strip()
+    except Exception as e:
+        log("review", f"Could not read live HEAD for PR #{pr_number}: {e}")
+        return ""
 
 
 def _fetch_pr_state(owner: str, repo: str, pr_number: str) -> str:
@@ -2947,6 +3005,11 @@ def run_review(
             _collapse_old_review(owner, repo, existing_comment)
         post_target = None
 
+    # Re-read the branch's live HEAD just before posting so we can flag a
+    # review whose diff was captured before the author pushed new commits.
+    # Best-effort: "" on any error ⇒ no alert (never blocks the post).
+    live_head_sha = _fetch_pr_head_oid(owner, repo, pr_number) if current_shas else ""
+
     notify_fn(f"Posting review on PR #{pr_number}...")
     _review_duration = time.monotonic() - _review_start
     posted, post_error = _post_review_comment(
@@ -2955,6 +3018,7 @@ def run_review(
         provider_name=review_provider_name,
         model=review_model,
         duration_seconds=_review_duration,
+        live_head_sha=live_head_sha,
     )
 
     # Step 7c: Optionally post each finding as an inline PR comment (opt-in).
