@@ -705,6 +705,7 @@ def list_open_pr_branches(repo: str, author: str, cwd: str = None) -> List[str]:
 def find_bot_comment(
     owner: str, repo: str, pr_number: int, marker: str,
     bot_username: str = "",
+    prefer_newest: bool = False,
 ) -> Optional[dict]:
     """Search issue comments on a PR for a comment containing ``marker``.
 
@@ -720,6 +721,13 @@ def find_bot_comment(
     empty (unconfigured), the first marker match wins regardless of author —
     preserving backward-compatible behaviour.
 
+    When ``prefer_newest`` is True, the highest-id (most recently created)
+    match is returned instead of the first (oldest). This matters when more
+    than one comment can legitimately carry the marker at once — e.g. with
+    ``review_history.preserve_previous`` the prior review is left intact
+    alongside the freshly-posted one, both authored by the same bot, so the
+    author filter can't disambiguate and the newest match is the current one.
+
     Args:
         owner: Repository owner.
         repo: Repository name.
@@ -727,6 +735,8 @@ def find_bot_comment(
         marker: Marker string to search for (e.g. ``SUMMARY_TAG``).
         bot_username: If provided, only return a comment authored by this
             account (case-insensitive).
+        prefer_newest: If True, return the highest-id match rather than the
+            first one encountered.
 
     Returns:
         Dict with keys ``id``, ``body``, ``user`` from the GitHub API, or
@@ -747,6 +757,7 @@ def find_bot_comment(
         return None
 
     wanted_user = bot_username.strip().lower()
+    newest = None
     for line in raw.strip().split("\n"):
         try:
             comment = json.loads(line)
@@ -756,9 +767,12 @@ def find_bot_comment(
             continue
         if wanted_user and str(comment.get("user", "")).lower() != wanted_user:
             continue
-        return comment
+        if not prefer_newest:
+            return comment
+        if newest is None or comment.get("id", 0) > newest.get("id", 0):
+            newest = comment
 
-    return None
+    return newest
 
 
 def check_pvrs_enabled(repo: str, cwd: str = None) -> bool:

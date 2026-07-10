@@ -1231,6 +1231,49 @@ class TestFindBotComment:
         assert result is not None
         assert result["id"] == 101
 
+    @patch("app.github.run_gh")
+    def test_prefer_newest_returns_highest_id_match(self, mock_gh):
+        """prefer_newest returns the highest-id match, not the first.
+
+        Reproduces the preserve_previous case: two same-bot comments carry the
+        marker at once (the preserved prior review + the freshly-posted one).
+        The newest — highest comment id — is the current review."""
+        old = self._make_comment(101, f"{self.MARKER} preserved prior review")
+        new = self._make_comment(303, f"{self.MARKER} fresh review")
+        mock_gh.return_value = f"{old}\n{new}"
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, prefer_newest=True,
+        )
+        assert result["id"] == 303
+
+    @patch("app.github.run_gh")
+    def test_prefer_newest_ignores_input_ordering(self, mock_gh):
+        """The highest id wins even when it appears first in the response."""
+        new = self._make_comment(303, f"{self.MARKER} fresh review")
+        old = self._make_comment(101, f"{self.MARKER} preserved prior review")
+        mock_gh.return_value = f"{new}\n{old}"
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, prefer_newest=True,
+        )
+        assert result["id"] == 303
+
+    @patch("app.github.run_gh")
+    def test_prefer_newest_respects_bot_username_filter(self, mock_gh):
+        """prefer_newest still honours the author filter: a newer comment by a
+        different bot is not selected over the current bot's own comment."""
+        mine = self._make_comment(
+            202, f"{self.MARKER} by me", user="koan-bot",
+        )
+        other_newer = self._make_comment(
+            303, f"{self.MARKER} by other", user="other-bot",
+        )
+        mock_gh.return_value = f"{mine}\n{other_newer}"
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER,
+            bot_username="koan-bot", prefer_newest=True,
+        )
+        assert result["id"] == 202
+
 
 class TestIssueEdit:
     def test_passes_repo_flag_when_provided(self):

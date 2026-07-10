@@ -1977,6 +1977,70 @@ def _post_review_comment(
         return False, str(e)
 
 
+def _append_error_section_to_review(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    *,
+    review_body: str,
+    error_section: str,
+    bot_username: str = "",
+    commit_shas: Optional[List[str]] = None,
+    provider_name: str = "",
+    model: str = "",
+    duration_seconds: float = 0,
+    coverage_note: str = "",
+) -> bool:
+    """Append the silent-failure-hunter section to the posted review comment.
+
+    The core review is posted *before* the enrichment passes run (so a slow or
+    failing enrichment pass can never cost the review). This re-locates that
+    comment via ``SUMMARY_TAG`` and rewrites it in place with the extra section
+    appended. Best-effort: on any failure the core review still stands and only
+    the extra section is lost.
+
+    ``prefer_newest=True`` re-locates the *most recent* marked comment: with
+    ``review_history.preserve_previous`` the superseded prior review is left
+    intact and still carries ``SUMMARY_TAG``, so the (default) first-match
+    lookup would append onto the old comment. The freshly-posted review always
+    has the highest comment id, so the newest match is the correct target.
+
+    ``coverage_note``, when passed, is forwarded to ``_post_review_comment``
+    so it is re-prepended here too. This rebuild replaces the whole comment
+    body (``combined``), so without it the ``⚠️ Partial review`` warning that
+    the initial post prepended would be silently dropped by this edit.
+
+    Returns True when the comment was updated.
+    """
+    located = find_bot_comment(
+        owner, repo, pr_number, SUMMARY_TAG, bot_username=bot_username,
+        prefer_newest=True,
+    )
+    if not located:
+        print(
+            "[review_runner] could not re-locate review comment to append "
+            "silent-failure-hunter section; leaving core review as-is",
+            file=sys.stderr,
+        )
+        return False
+    combined = review_body + "\n\n---\n\n" + error_section
+    updated, err = _post_review_comment(
+        owner, repo, pr_number, combined, located,
+        commit_shas=commit_shas,
+        provider_name=provider_name,
+        model=model,
+        duration_seconds=duration_seconds,
+        coverage_note=coverage_note,
+    )
+    if not updated:
+        print(
+            f"[review_runner] failed to append silent-failure-hunter "
+            f"section: {err}",
+            file=sys.stderr,
+        )
+    return updated
+
+
 def _collapse_old_review(
     owner: str, repo: str, comment: dict,
 ) -> None:
@@ -3001,58 +3065,18 @@ def run_review(
                 file=sys.stderr,
             )
 
-    # Step 6b: Bot comment triage pass (optional)
-    bot_triage_cfg = get_review_bot_triage_config()
-    bot_triage_enabled = bot_comments or bot_triage_cfg["enabled"]
-    extra_bot_usernames = bot_triage_cfg["bot_usernames"]
+    full_repo = f"{owner}/{repo}"
 
-    if bot_triage_enabled:
-        full_repo = f"{owner}/{repo}"
-        bot_inline = _fetch_bot_inline_comments(
-            full_repo, pr_number, bot_username, extra_bot_usernames,
-        )
-        if bot_inline:
-            notify_fn(f"Triaging {len(bot_inline)} bot comment(s) on PR #{pr_number}...")
-            triage_replies = _run_bot_comment_triage(
-                bot_inline, context.get("diff", ""), skill_dir,
-                project_path=project_path,
-                project_name=project_name or "",
-            )
-            if triage_replies:
-                bot_reply_results = _post_comment_replies(
-                    owner, repo, pr_number, triage_replies, bot_inline,
-                )
-                if bot_reply_results:
-                    print(
-                        f"[review_runner] posted {len(bot_reply_results)} bot triage reply(ies)",
-                        file=sys.stderr,
-                    )
-
-    # Step 6a: Silent-failure-hunter pass (explicit flag or auto-detected)
-    diff = context.get("diff", "")
-    run_error_hunter = errors or _should_run_error_hunter(diff)
-    if run_error_hunter:
-        notify_fn(f"Running silent-failure-hunter on PR #{pr_number}...")
-        error_section = _run_error_hunter(
-            diff, project_path, skill_dir,
-            owner=owner, repo=repo,
-            head_sha=(current_shas[-1] if current_shas else ""),
-            project_name=project_name or "",
-        )
-        if error_section:
-            review_body = review_body + "\n\n---\n\n" + error_section
-        else:
-            print(
-                "[review_runner] silent-failure-hunter: no findings",
-                file=sys.stderr,
-            )
-
-    # Step 7: Post (or update) review comment (Phase 3 — idempotent upsert)
-    # Commit SHAs are embedded in the body upfront to avoid extra API calls.
+    # Step 7 (posted BEFORE the optional enrichment passes): post (or update)
+    # the core review comment first, so a slow or failing enrichment pass (bot
+    # triage, silent-failure-hunter) can never cost the review that's already
+    # in hand. The silent-failure-hunter section, when produced, is appended to
+    # this comment via a follow-up edit below (Step 6a).
     #
-    # Re-review with new commits: post a FRESH comment instead of PATCHing.
-    # GitHub does not send notifications for edited comments, so an in-place
-    # update is invisible to the reviewer — they never see the updated review.
+    # Phase 3 — idempotent upsert. Commit SHAs are embedded in the body upfront
+    # to avoid extra API calls. Re-review with new commits: post a FRESH
+    # comment instead of PATCHing — GitHub does not notify on edits, so an
+    # in-place update is invisible to the reviewer.
     post_target = existing_comment
     new_commits = prior_shas and current_shas and set(current_shas) != set(prior_shas)
     if existing_comment and (new_commits or review_was_requested):
@@ -3083,6 +3107,92 @@ def run_review(
         live_head_sha=live_head_sha,
         coverage_note=coverage_note,
     )
+
+    # Steps 6b + 6a run AFTER the core post and are strictly best-effort: the
+    # whole enrichment block is wrapped so that once the review has landed, no
+    # enrichment failure (stall, provider error, or an unexpected exception)
+    # can flip the run's outcome to failure. run_error_hunter is pre-set so the
+    # summary reference below is defined even if the block aborts early.
+    run_error_hunter = errors or _should_run_error_hunter(context.get("diff", ""))
+    try:
+        # Step 6b: Bot comment triage — posts its own independent reply
+        # comments and never touched review_body, so running it after the post
+        # means a stall here can't delay or lose the review.
+        bot_triage_cfg = get_review_bot_triage_config()
+        bot_triage_enabled = bot_comments or bot_triage_cfg["enabled"]
+        extra_bot_usernames = bot_triage_cfg["bot_usernames"]
+
+        if bot_triage_enabled:
+            bot_inline = _fetch_bot_inline_comments(
+                full_repo, pr_number, bot_username, extra_bot_usernames,
+            )
+            if bot_inline:
+                notify_fn(f"Triaging {len(bot_inline)} bot comment(s) on PR #{pr_number}...")
+                triage_replies = _run_bot_comment_triage(
+                    bot_inline, context.get("diff", ""), skill_dir,
+                    project_path=project_path,
+                    project_name=project_name or "",
+                )
+                if triage_replies:
+                    bot_reply_results = _post_comment_replies(
+                        owner, repo, pr_number, triage_replies, bot_inline,
+                    )
+                    if bot_reply_results:
+                        print(
+                            f"[review_runner] posted {len(bot_reply_results)} bot triage reply(ies)",
+                            file=sys.stderr,
+                        )
+
+        # Step 6a: Silent-failure-hunter pass (explicit flag or auto-detected).
+        # Its section is appended to the already-posted review comment via an
+        # edit. If the core post failed, or the comment can't be re-located, the
+        # section is dropped (the core review still stands).
+        if run_error_hunter:
+            notify_fn(f"Running silent-failure-hunter on PR #{pr_number}...")
+            error_section = _run_error_hunter(
+                context.get("diff", ""), project_path, skill_dir,
+                owner=owner, repo=repo,
+                head_sha=(current_shas[-1] if current_shas else ""),
+                project_name=project_name or "",
+            )
+            if error_section and posted:
+                _append_error_section_to_review(
+                    owner, repo, pr_number,
+                    review_body=review_body,
+                    error_section=error_section,
+                    bot_username=bot_username,
+                    commit_shas=current_shas or None,
+                    provider_name=review_provider_name,
+                    model=review_model,
+                    duration_seconds=_review_duration,
+                    coverage_note=coverage_note,
+                )
+            elif error_section and not posted:
+                print(
+                    "[review_runner] silent-failure-hunter findings dropped: "
+                    "core review comment was not posted",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[review_runner] silent-failure-hunter: no findings",
+                    file=sys.stderr,
+                )
+    except Exception as exc:
+        # Never let a post-hoc enrichment failure undo an already-posted review.
+        # The catch is broad on purpose (a stall or provider error must not flip
+        # the run), but surface it through notify_fn too — not stderr alone — so
+        # a persistently-broken enrichment pass (e.g. a real defect introduced by
+        # a later refactor) is visible rather than silently swallowed on every PR.
+        print(
+            f"[review_runner] enrichment pass failed after posting review "
+            f"on PR #{pr_number}: {exc}",
+            file=sys.stderr,
+        )
+        notify_fn(
+            f"Enrichment pass failed after posting review on PR #{pr_number} "
+            f"(review still landed): {exc}"
+        )
 
     # Step 7c: Optionally post each finding as an inline PR comment (opt-in).
     # Additive to the summary comment above and independently failable, so an
