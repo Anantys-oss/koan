@@ -51,7 +51,8 @@ The system has two halves that must stay decoupled:
    CI run — `add_ci_item` treats that as a new run to evaluate — so a genuinely-progressing PR
    keeps going while a repeatedly fast-failing one is bounded.) Each fix step runs under
    `get_ci_check_step_timeout()` (config `ci_check.timeout`, default 3600s) plus a
-   `first_output_timeout` idle guard, not the 2-hour `skill_timeout`.
+   `get_ci_check_idle_timeout()` idle guard (config `ci_check.idle_timeout`, defaulting to
+   `first_output_timeout`), not the 2-hour `skill_timeout`.
 
 This preserves the original intent (fix on failure, give up after N attempts with the 🚦
 notification) while guaranteeing one failing PR cannot monopolize the queue for hours.

@@ -502,13 +502,14 @@ def _bounded_ci_fix_step_runner(
 
     Mirrors :func:`app.claude_step._default_ci_fix_step_runner` but replaces the
     2-hour ``skill_timeout`` with the dedicated ``ci_check.timeout`` overall cap
-    and adds an idle guard (``first_output_timeout``) so a stalled fix step is
-    killed early instead of holding the single-slot mission queue for hours.
+    and adds an idle guard (``ci_check.idle_timeout``, defaulting to
+    ``first_output_timeout``) so a stalled fix step is killed early instead of
+    holding the single-slot mission queue for hours.
     """
     from app.claude_step import run_claude_step
     from app.config import (
+        get_ci_check_idle_timeout,
         get_ci_check_step_timeout,
-        get_first_output_timeout,
         get_skill_max_turns,
     )
 
@@ -521,7 +522,7 @@ def _bounded_ci_fix_step_runner(
         actions_log=actions_log,
         max_turns=get_skill_max_turns(),
         timeout=get_ci_check_step_timeout(),
-        idle_timeout=get_first_output_timeout(),
+        idle_timeout=get_ci_check_idle_timeout(),
         use_convention_subject=use_convention_subject,
     )
     return result, False, 1

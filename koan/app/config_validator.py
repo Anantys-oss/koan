@@ -299,6 +299,7 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "enabled": "bool",
         "timeout": "int",
         "max_fix_attempts_per_mission": "int",
+        "idle_timeout": "int",
     },
 }
 

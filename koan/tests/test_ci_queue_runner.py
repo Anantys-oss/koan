@@ -750,7 +750,7 @@ class TestAttemptCiFixes:
             patch("app.claude_step.run_claude_step", return_value=False) as mock_step,
             patch("app.config.get_skill_max_turns", return_value=42),
             patch("app.config.get_ci_check_step_timeout", return_value=1234),
-            patch("app.config.get_first_output_timeout", return_value=567),
+            patch("app.config.get_ci_check_idle_timeout", return_value=567),
             patch("app.config.get_skill_timeout", return_value=999),
         ):
             _attempt_ci_fixes(

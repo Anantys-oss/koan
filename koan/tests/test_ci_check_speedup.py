@@ -66,6 +66,38 @@ class TestCiCheckConfigAccessors:
         ):
             assert get_ci_check_max_fix_attempts() == 1
 
+    def test_idle_timeout_defaults_to_first_output_timeout(self):
+        """Unset ci_check.idle_timeout must fall back to first_output_timeout."""
+        from app.config import get_ci_check_idle_timeout
+
+        with patch(
+            "app.config._load_config",
+            return_value={"first_output_timeout": 720},
+        ):
+            assert get_ci_check_idle_timeout() == 720
+
+    def test_idle_timeout_override(self):
+        from app.config import get_ci_check_idle_timeout
+
+        with patch(
+            "app.config._load_config",
+            return_value={
+                "first_output_timeout": 720,
+                "ci_check": {"idle_timeout": 90},
+            },
+        ):
+            assert get_ci_check_idle_timeout() == 90
+
+    def test_idle_timeout_zero_disables_guard(self):
+        """A configured 0 disables the idle guard (overall cap still bounds)."""
+        from app.config import get_ci_check_idle_timeout
+
+        with patch(
+            "app.config._load_config",
+            return_value={"ci_check": {"idle_timeout": 0}},
+        ):
+            assert get_ci_check_idle_timeout() == 0
+
 
 @pytest.fixture
 def _mock_pr_context():
