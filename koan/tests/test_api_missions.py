@@ -721,3 +721,70 @@ class TestStructuredResult:
         mid = api_client.post("/v1/missions", json={"text": "Fix a typo"},
                               headers=_AUTH).get_json()["id"]
         assert api_client.get(f"/v1/missions/{mid}/result", headers=_AUTH).status_code == 404
+
+
+class TestFindActiveMissionId:
+    def test_find_active_mission_id_prefers_in_progress(self, tmp_path):
+        from app.api import mission_index as mi
+        inst = tmp_path / "instance"
+        inst.mkdir()
+        id_pending = mi.record_mission(inst, "- [project:koan] Fix the bug", "koan")
+        id_running = mi.record_mission(inst, "- Do the thing", None)
+        recs = mi._load_index(inst)
+        for r in recs:
+            if r["id"] == id_running:
+                r["status"] = "in_progress"
+        mi._save_index(inst, recs)
+
+        # title arriving with project tag already stripped still matches
+        assert mi.find_active_mission_id(inst, "Fix the bug") == id_pending
+        assert mi.find_active_mission_id(inst, "Do the thing") == id_running
+        assert mi.find_active_mission_id(inst, "unknown mission") is None
+
+
+class TestGetMissionUsage:
+    def test_get_mission_returns_aggregated_usage(self, api_client, instance_dir):
+        from app.mission_runner import _record_cost_event
+        from app.api import mission_index as mi
+
+        mid = mi.record_mission(instance_dir, "- Fix the bug", None)
+        recs = mi._load_index(instance_dir)
+        recs[0]["status"] = "in_progress"
+        mi._save_index(instance_dir, recs)
+
+        tokens = {"model": "opus", "input_tokens": 100, "output_tokens": 20,
+                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 5,
+                  "cost_usd": 0.12}
+        _record_cost_event(str(instance_dir), "koan", "/tmp/out.json",
+                           "implement", "Fix the bug", tokens=tokens)
+
+        resp = api_client.get(f"/v1/missions/{mid}", headers=_AUTH)
+        assert resp.status_code == 200
+        usage = resp.get_json()["usage"]
+        assert usage["input_tokens"] == 100
+        assert usage["output_tokens"] == 20
+        assert usage["cache_read_input_tokens"] == 5
+        assert usage["call_count"] == 1
+        assert usage["models"] == ["opus"]
+        assert usage["unattributed"]["call_count"] == 0
+
+    def test_get_mission_usage_reports_unattributed(self, api_client, instance_dir):
+        from app.cost_tracker import record_usage
+        from app.api import mission_index as mi
+
+        mid = mi.record_mission(instance_dir, "- Fix the bug", None)
+        # an id-less event whose title matches — attribution gap
+        record_usage(instance_dir=instance_dir, project="koan", model="opus",
+                     input_tokens=42, output_tokens=9, mission="Fix the bug")
+
+        usage = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()["usage"]
+        assert usage["call_count"] == 0
+        assert usage["unattributed"]["call_count"] == 1
+        assert usage["unattributed"]["input_tokens"] == 42
+
+    def test_get_mission_usage_zeroed_when_no_calls(self, api_client, instance_dir):
+        resp = api_client.post("/v1/missions", json={"text": "no calls yet"}, headers=_AUTH)
+        mid = resp.get_json()["id"]
+        usage = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()["usage"]
+        assert usage["call_count"] == 0
+        assert usage["input_tokens"] == 0

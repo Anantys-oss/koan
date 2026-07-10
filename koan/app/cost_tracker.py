@@ -21,6 +21,7 @@ Usage:
 import fcntl
 import json
 import os
+import re
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -42,6 +43,7 @@ def record_usage(
     duration_seconds: int = 0,
     provider: str = "",
     last_action: str = "",
+    mission_id: str = "",
 ) -> bool:
     """Append a usage event to today's JSONL file.
 
@@ -65,6 +67,7 @@ def record_usage(
         provider: CLI provider name (e.g. "claude", "copilot"). Omitted when empty.
         last_action: Last tool action from JSONL session data (e.g. "Edit").
             Omitted when empty.
+        mission_id: API mission id (from .api-missions.json). Omitted when empty.
 
     Returns:
         True if the record was written successfully.
@@ -100,6 +103,10 @@ def record_usage(
         entry["provider"] = provider
     if last_action:
         entry["last_action"] = last_action
+    # API mission id (from .api-missions.json). Omitted when empty so
+    # autonomous/Telegram missions keep compact records.
+    if mission_id:
+        entry["mission_id"] = mission_id
 
     line = json.dumps(entry, separators=(",", ":")) + "\n"
 
@@ -142,6 +149,93 @@ def _read_jsonl_range(usage_dir: Path, start: date, end: date) -> list:
         entries.extend(_read_jsonl_for_date(usage_dir, current))
         current += timedelta(days=1)
     return entries
+
+
+_PROJECT_TAG_RE = re.compile(r"\[project:[^\]]+\]")
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize_title(text: str) -> str:
+    """Loose title key for matching usage events to a mission.
+
+    Strips a leading ``- ``, any ``[project:...]`` tag, and collapses
+    whitespace. Kept local to cost_tracker so this low-level module does
+    not import app.api.*.
+    """
+    text = (text or "").lstrip("- ").strip()
+    text = _PROJECT_TAG_RE.sub("", text)
+    return _WS_RE.sub(" ", text).strip()
+
+
+def _blank_totals() -> dict:
+    return {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cost_usd": 0.0,
+        "call_count": 0,
+    }
+
+
+def aggregate_mission_usage(
+    instance_dir: Path,
+    mission_id: str,
+    mission_text: Optional[str] = None,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+) -> dict:
+    """Aggregate usage events for a single API mission id.
+
+    Scans date-partitioned JSONL in [start, end] (inclusive) and sums all
+    events whose ``mission_id`` matches. When start/end are omitted, defaults
+    to the last 30 days. Returns a stable zeroed shape when no events match.
+
+    When ``mission_text`` is provided, also returns an ``unattributed`` block
+    summing events that carry no ``mission_id`` but whose title matches
+    ``mission_text`` — a signal that some spend could not be joined by id.
+    """
+    if end is None:
+        end = date.today()
+    if start is None:
+        start = end - timedelta(days=29)
+
+    usage_dir = Path(instance_dir) / "usage"
+    entries = _read_jsonl_range(usage_dir, start, end)
+
+    result = _blank_totals()
+    models: set = set()
+    providers: set = set()
+
+    needle = _normalize_title(mission_text) if mission_text else None
+    unattributed = _blank_totals() if needle is not None else None
+
+    for e in entries:
+        eid = e.get("mission_id")
+        if eid == mission_id:
+            target = result
+            if e.get("model"):
+                models.add(e["model"])
+            if e.get("provider"):
+                providers.add(e["provider"])
+        elif needle is not None and not eid and _normalize_title(e.get("mission", "")) == needle:
+            target = unattributed
+        else:
+            continue
+        target["input_tokens"] += e.get("input_tokens", 0)
+        target["output_tokens"] += e.get("output_tokens", 0)
+        target["cache_creation_input_tokens"] += e.get("cache_creation_input_tokens", 0)
+        target["cache_read_input_tokens"] += e.get("cache_read_input_tokens", 0)
+        target["cost_usd"] += e.get("cost_usd", 0.0)
+        target["call_count"] += 1
+
+    result["cost_usd"] = round(result["cost_usd"], 6)
+    result["models"] = sorted(models)
+    result["providers"] = sorted(providers)
+    if unattributed is not None:
+        unattributed["cost_usd"] = round(unattributed["cost_usd"], 6)
+        result["unattributed"] = unattributed
+    return result
 
 
 def summarize_day(instance_dir: Path, d: Optional[date] = None) -> dict:

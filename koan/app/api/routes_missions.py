@@ -185,7 +185,30 @@ def get_mission_route(mission_id: str):
     rec = reconcile(_instance_dir(), _missions_file(), mission_id)
     rec.setdefault("result", None)
     rec.setdefault("result_ref", None)
-    return jsonify(rec)
+
+    from datetime import date, datetime
+    from app.cost_tracker import aggregate_mission_usage
+
+    start = None
+    created = rec.get("created")
+    if isinstance(created, (int, float)) and created > 0:
+        try:
+            start = datetime.fromtimestamp(created).date()
+        except (ValueError, OSError) as e:
+            current_app.logger.warning(
+                "usage window: created=%r failed to convert for mission %s (%s); "
+                "falling back to default window", created, mission_id, e,
+            )
+            start = None
+    usage = aggregate_mission_usage(
+        _instance_dir(), mission_id,
+        mission_text=rec.get("text", ""),
+        start=start, end=date.today(),
+    )
+
+    out = dict(rec)  # copy so the sidecar is never mutated with usage
+    out["usage"] = usage
+    return jsonify(out)
 
 
 @bp.route("/v1/missions/<mission_id>/result", methods=["GET"])

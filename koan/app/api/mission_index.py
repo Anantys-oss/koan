@@ -308,6 +308,41 @@ def _normalize_for_match(text: str) -> str:
     return _LIFECYCLE_TS.sub("", text).strip()
 
 
+_PROJECT_TAG = re.compile(r"\[project:[^\]]+\]")
+
+
+def _normalize_loose(text: str) -> str:
+    """Like _normalize_for_match but also strips the [project:...] tag,
+    so a title with the tag already removed still matches a stored entry."""
+    text = _normalize_for_match(text)
+    return _PROJECT_TAG.sub("", text).strip()
+
+
+# Match precedence: in_progress beats pending beats terminal states.
+_STATUS_RANK = {"in_progress": 0, "pending": 1}
+
+
+def find_active_mission_id(instance_dir: Path, text: str) -> Optional[str]:
+    """Resolve a mission title to its API mission id via the sidecar index.
+
+    Returns the id of the best-matching record (in_progress preferred, then
+    pending, then most-recently-created), or None when nothing matches.
+    """
+    needle = _normalize_loose(text)
+    if not needle:
+        return None
+    candidates = [
+        rec for rec in _load_index(instance_dir)
+        if _normalize_loose(rec.get("text", "")) == needle
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda r: (_STATUS_RANK.get(r.get("status"), 2), -r.get("created", 0.0))
+    )
+    return candidates[0].get("id")
+
+
 def update_mission_text(instance_dir: Path, mission_id: str, new_text: str) -> bool:
     """Update the stored text for a pending mission in the sidecar index."""
     records = _load_index(instance_dir)
