@@ -1606,6 +1606,23 @@ class TestAppendErrorSectionToReview:
         assert ok is False
         mock_gh.assert_not_called()  # nothing edited, core review left as-is
 
+    @patch("app.review_runner.run_gh")
+    @patch(
+        "app.review_runner.find_bot_comment",
+        return_value={"id": 555, "body": "## Code Review\n\nold body"},
+    )
+    def test_relocates_newest_comment(self, mock_find, _mock_gh):
+        """With preserve_previous, the preserved prior review still carries
+        SUMMARY_TAG; the append must target the newest (freshly-posted) comment,
+        so find_bot_comment is asked for prefer_newest."""
+        _append_error_section_to_review(
+            "owner", "repo", "42",
+            review_body="## Code Review\n\nCore body",
+            error_section="### Silent failures\n\n- x",
+            bot_username="bot",
+        )
+        assert mock_find.call_args.kwargs["prefer_newest"] is True
+
 
 class TestReviewPostsBeforeEnrichment:
     """Fix #2: the core review is posted before the optional enrichment passes,

@@ -1998,10 +1998,17 @@ def _append_error_section_to_review(
     appended. Best-effort: on any failure the core review still stands and only
     the extra section is lost.
 
+    ``prefer_newest=True`` re-locates the *most recent* marked comment: with
+    ``review_history.preserve_previous`` the superseded prior review is left
+    intact and still carries ``SUMMARY_TAG``, so the (default) first-match
+    lookup would append onto the old comment. The freshly-posted review always
+    has the highest comment id, so the newest match is the correct target.
+
     Returns True when the comment was updated.
     """
     located = find_bot_comment(
         owner, repo, pr_number, SUMMARY_TAG, bot_username=bot_username,
+        prefer_newest=True,
     )
     if not located:
         print(
@@ -3165,10 +3172,18 @@ def run_review(
                 )
     except Exception as exc:
         # Never let a post-hoc enrichment failure undo an already-posted review.
+        # The catch is broad on purpose (a stall or provider error must not flip
+        # the run), but surface it through notify_fn too — not stderr alone — so
+        # a persistently-broken enrichment pass (e.g. a real defect introduced by
+        # a later refactor) is visible rather than silently swallowed on every PR.
         print(
             f"[review_runner] enrichment pass failed after posting review "
             f"on PR #{pr_number}: {exc}",
             file=sys.stderr,
+        )
+        notify_fn(
+            f"Enrichment pass failed after posting review on PR #{pr_number} "
+            f"(review still landed): {exc}"
         )
 
     # Step 7c: Optionally post each finding as an inline PR comment (opt-in).

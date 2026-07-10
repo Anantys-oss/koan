@@ -103,7 +103,11 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   silent-failure-hunter section is not baked into the initial body; when it
   produces findings it is appended to the already-posted comment in place via
   `_append_error_section_to_review` (re-locates the comment by `SUMMARY_TAG`
-  and PATCHes it). If the core post failed or the comment can't be re-located,
+  and PATCHes it). The re-locate uses `find_bot_comment(..., prefer_newest=True)`
+  so that under `review_history.preserve_previous` — where the superseded prior
+  review is left intact and still carries `SUMMARY_TAG` — the section lands on
+  the freshly-posted comment (the highest comment id) rather than the older
+  preserved one. If the core post failed or the comment can't be re-located,
   the section is dropped and the core review still stands. Pairs with the
   provider-side per-pass stall watchdog (see `specs/components/providers.md`,
   "read loop must be inactivity-bounded"), which makes a stalled enrichment
