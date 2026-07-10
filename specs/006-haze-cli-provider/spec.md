@@ -8,6 +8,13 @@
 
 **Input**: User description: "I want to provide a full cli implementation for haze harness. There is already a pending PR https://github.com/Anantys-oss/koan/pull/2211 that could be used as a starting plan. But it's incomplete and does not match the recent format update from haze to support stream json format. The PR from https://github.com/DenizOkcu/haze/pull/9 was since updated on haze main branch. Look at documentation and what looks like the haze format from https://github.com/DenizOkcu/haze, then understand how it drifts from the current implementation, and let's start a fresh implementation fully compatible with haze harness. We should close the legacy PR 2211 and link it to our new PR."
 
+## Clarifications
+
+### Session 2026-07-10
+
+- Q: How should Kōan deliver the (potentially very large) prompt to haze? → A: Via stdin — opt into Kōan's standard stdin prompt passing (drop the prompt flag; haze reads stdin when it is absent), avoiding OS argv-size limits.
+- Q: Should the haze provider perform a pre-flight quota/auth probe, given haze exposes no free usage introspection? → A: Yes — a tiny live probe (minimal one-shot prompt, like the existing multi-backend provider precedent); it consumes a few tokens per check and probe errors/timeouts never block real work.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Run missions through the haze harness (Priority: P1)
@@ -69,7 +76,7 @@ An operator discovering or adopting haze finds it treated as a first-class provi
 - Run killed mid-stream (timeout, signal) → partial assistant text accumulated from streamed message events is surfaced instead of an empty result.
 - Terminal status `aborted` (interrupt) → treated as failure, distinctly labeled.
 - Older haze without stream output support (< 0.7.0) → out of scope; documentation states the minimum supported haze version and the failure mode is a normal CLI error.
-- Prompts containing content that could be misparsed as flags → prompt passing remains safe (prompt delivered via the documented prompt flag as the final argument).
+- Prompts containing content that could be misparsed as flags, or exceeding OS argv limits → prompt passing remains safe: the prompt is delivered via stdin, never as a command-line argument.
 - Unsupported Kōan features (tool allow/deny lists, MCP configs, plugin dirs, fallback model, max turns, session resume, reasoning-effort control) → warn-and-skip, per acceptance scenario 3.3.
 
 ## Requirements *(mandatory)*
@@ -77,14 +84,14 @@ An operator discovering or adopting haze finds it treated as a first-class provi
 ### Functional Requirements
 
 - **FR-001**: Operators MUST be able to select haze as a CLI provider by the name `haze` through every existing provider-selection mechanism (global config, environment variable, per-role `cli:` section, per-project override), with the same resolution and fallback semantics as other providers.
-- **FR-002**: The system MUST invoke haze in one-shot headless mode: prompt passed via haze's prompt flag, optional per-run model override, streaming JSON output requested, and the system prompt merged into the prompt text (haze has no separate system-prompt input).
+- **FR-002**: The system MUST invoke haze in one-shot headless mode: prompt delivered via stdin using Kōan's standard stdin prompt passing (haze reads the prompt from stdin when its prompt flag is absent), optional per-run model override, streaming JSON output requested, and the system prompt merged into the prompt text (haze has no separate system-prompt input). Stdin delivery avoids OS per-argument size limits on large mission prompts.
 - **FR-003**: The system MUST consume haze's newline-delimited streaming events during the run and render each as a concise human-readable progress line, so existing liveness/stagnation monitoring functions without any provider-specific bypass in the agent loop.
 - **FR-004**: The system MUST capture the final assistant text from haze's terminal result envelope, and MUST fall back to text accumulated from streamed message events when the run dies before the terminal envelope.
 - **FR-005**: The system MUST record token usage from haze's reported usage fields (input, output, cache read, cache write, reasoning) into Kōan's usage accounting, translating haze's field naming so no reported quantity is silently dropped.
 - **FR-006**: The system MUST map haze's terminal status to mission outcome: `complete` (exit 0) is success; `failed` and `aborted` (non-zero exit) are failures with the status visible in the reported outcome.
 - **FR-007**: The system MUST detect quota/rate-limit exhaustion and authentication failures from haze output using backend-agnostic patterns (haze fronts multiple model backends), feeding Kōan's standard quota-pause and auth-fallback policies; detection MUST NOT false-positive on benign assistant prose in successful runs.
 - **FR-008**: For capabilities haze does not support in headless mode (per-tool allow/deny, external tool-server configs, plugin dirs, max turns, fallback model, session resume, reasoning-effort control), the system MUST warn and skip — never crash, never silently pretend support.
-- **FR-009**: The provider MUST report availability (binary present) and support a best-effort pre-flight quota probe consistent with other providers, where probe errors never block real work.
+- **FR-009**: The provider MUST report availability (binary present) and perform a best-effort pre-flight quota/auth probe by sending a minimal one-shot prompt (consistent with the existing multi-backend provider precedent). The probe consumes a small number of tokens; probe errors or timeouts MUST never block real work.
 - **FR-010**: The integration MUST include automated tests covering command construction, stream event handling, result/usage extraction, status mapping, and quota/auth detection — using recorded haze output samples, never a live haze invocation.
 - **FR-011**: Documentation MUST be updated: a haze provider page (setup, models, capabilities, limitations, minimum haze version, troubleshooting) linked from the providers index, plus the user-facing surfaces that enumerate providers; the durable providers component contract MUST be updated contract-first as part of the implementation change, declared as architectural per the specs discipline.
 - **FR-012**: Process requirement: when the replacement pull request is opened, legacy PR #2211 MUST be closed with a comment linking to the new PR (and the new PR must reference issue #2206), so reviewers can trace the lineage and the drift rationale.
