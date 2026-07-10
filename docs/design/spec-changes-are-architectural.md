@@ -34,18 +34,37 @@ discipline was meant to prevent.
 
 ## Decision
 
-A change to a **durable design contract** is an **architectural change**, governed by
+A **destructive** change to a **durable design contract** — deleting a contract, or
+rewriting/removing existing body lines — is an **architectural change**, governed by
 three rules:
 
 1. **Contract-first.** Change the spec to express the *intended* design, then make the
    code conform. Never edit a durable spec afterward to match code already written.
-2. **Rare.** Most PRs change zero durable contracts. Churn on an existing contract is
-   the exception. (Authoring a *first* spec for an un-specced component/skill is
-   expected, not "rare".)
+2. **Rare.** Most PRs change zero durable contracts destructively. Rewriting or retiring
+   an existing contract is the exception. (Authoring a *first* spec for an un-specced
+   component/skill, or growing an existing one, is expected — see "Additive vs
+   destructive" below.)
 3. **Declared.** The PR must carry an explicit architectural-change declaration — a
    checked "Architectural change" checkbox in the PR body — so a human reviews the new
    architecture before approval. Landing the contract change spec-first, in its own PR
    ahead of the implementing code, is recommended.
+
+### Additive vs destructive
+
+The gate is **additive-friendly**. Growing the specs never invalidates prior design, so
+purely additive changes pass freely, with no declaration:
+
+- **Additive (allowed, no declaration):** a brand-new contract file, or new
+  lines/paragraphs appended or inserted into an existing one (every diff hunk is an
+  insertion — no existing body line is removed or altered).
+- **Destructive (needs a declaration):** deleting a contract file, or a diff that removes
+  or rewrites existing body lines. This is the only case that can silently *contradict* a
+  previously reviewed contract, which is what the human declaration protects against.
+
+The distinction is computed line-by-line on the Markdown body below the frontmatter
+(`scripts/spec_change_guard.py::is_addition_only`). This means the common case the
+discipline was meant to encourage — writing more specs — is never blocked; only reversals
+of reviewed design are.
 
 ### What counts as a durable contract
 
@@ -71,10 +90,11 @@ Prose alone is advisory, and an autonomous agent routes around advice (Constitut
 Principle V: only code- or git-enforced controls are load-bearing). So the rule is
 backed by a git-level gate:
 
-- `scripts/spec_change_guard.py` — detects added/modified durable contracts in a PR's
-  diff and fails unless a declaration is present in the PR body. Pure, unit-tested
-  detection/decision functions plus a CLI with a `0/1/2` exit-code contract; it fails
-  *closed* when no PR body is available.
+- `scripts/spec_change_guard.py` — classifies each durable-contract change in a PR's diff
+  as additive or destructive, and fails only when a *destructive* change lacks a
+  declaration in the PR body. Pure, unit-tested detection/classification/decision
+  functions plus a CLI with a `0/1/2` exit-code contract and a rich, unicode-framed log
+  block; it fails *closed* when no PR body is available.
 - `.github/workflows/spec-change-guard.yml` — runs the guard as a **blocking**,
   read-only `pull_request` check on `main`.
 - `.github/PULL_REQUEST_TEMPLATE.md` — surfaces the declaration checkbox at author time

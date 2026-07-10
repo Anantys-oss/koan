@@ -180,6 +180,79 @@ def test_evaluate_ephemeral_only_is_clean_even_without_body():
     assert v.ok is True
 
 
+# --- is_addition_only ------------------------------------------------------
+
+_BODY = "# Core\n\nRule one.\n\nRule two.\n"
+
+
+def test_appended_paragraph_is_addition_only():
+    new = _BODY + "\nRule three.\n"
+    assert guard.is_addition_only(_BODY, new) is True
+
+
+def test_inserted_section_between_existing_is_addition_only():
+    new = "# Core\n\nRule one.\n\nRule one-and-a-half.\n\nRule two.\n"
+    assert guard.is_addition_only(_BODY, new) is True
+
+
+def test_rewritten_line_is_not_addition_only():
+    new = _BODY.replace("Rule two.", "Rule two, now redefined.")
+    assert guard.is_addition_only(_BODY, new) is False
+
+
+def test_removed_line_is_not_addition_only():
+    new = _BODY.replace("Rule two.\n", "")
+    assert guard.is_addition_only(_BODY, new) is False
+
+
+def test_addition_only_ignores_frontmatter():
+    old = "---\nupdated: 2026-01-01\n---\n\n# Core\n\nRule one.\n"
+    new = "---\nupdated: 2026-07-10\n---\n\n# Core\n\nRule one.\n\nRule two.\n"
+    assert guard.is_addition_only(old, new) is True
+
+
+# --- evaluate with classified ContractChange -------------------------------
+
+def test_evaluate_additive_contract_passes_without_declaration():
+    change = guard.ContractChange(
+        "specs/components/core.md", kind=guard.ADDED, destructive=False
+    )
+    v = guard.evaluate([change], pr_body=None)
+    assert v.ok is True
+    assert v.fail_closed is False
+    assert [c.path for c in v.allowed_additions] == ["specs/components/core.md"]
+
+
+def test_evaluate_destructive_contract_needs_declaration():
+    change = guard.ContractChange(
+        "specs/components/core.md", kind=guard.REWRITTEN, destructive=True
+    )
+    v = guard.evaluate([change], pr_body="normal PR, no declaration")
+    assert v.ok is False
+    assert v.undeclared_contracts == ["specs/components/core.md"]
+
+
+def test_evaluate_destructive_contract_declared_passes():
+    change = guard.ContractChange(
+        "specs/skills/review.md", kind=guard.DELETED, destructive=True
+    )
+    v = guard.evaluate([change], pr_body="- [x] architectural change: retire review spec")
+    assert v.ok is True
+
+
+def test_evaluate_mixed_only_flags_destructive():
+    additive = guard.ContractChange(
+        "specs/components/web.md", kind=guard.ADDED, destructive=False
+    )
+    destructive = guard.ContractChange(
+        "specs/components/core.md", kind=guard.REWRITTEN, destructive=True
+    )
+    v = guard.evaluate([additive, destructive], pr_body="no declaration")
+    assert v.ok is False
+    assert v.undeclared_contracts == ["specs/components/core.md"]
+    assert [c.path for c in v.allowed_additions] == ["specs/components/web.md"]
+
+
 # --- CLI exit-code contract ------------------------------------------------
 
 def _run_cli(args, stdin=None):

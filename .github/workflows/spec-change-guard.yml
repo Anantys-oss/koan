@@ -1,10 +1,13 @@
 name: 🏛️ Spec-Change Guard
 
-# Blocks a PR that changes a durable design contract (specs/components/**,
-# specs/skills/**) without an explicit "architectural change" declaration in the
-# PR body. This is the load-bearing half of Kōan's specs discipline — prose is
-# advisory, a git-enforced check has teeth (Constitution Principle V). See
-# scripts/spec_change_guard.py and docs/design/spec-changes-are-architectural.md.
+# Blocks a PR that *removes or rewrites* a durable design contract
+# (specs/components/**, specs/skills/**) without an explicit "architectural change"
+# declaration in the PR body. Additive changes — new contract files, or new
+# lines/paragraphs appended to existing ones — pass freely; only destructive edits
+# that can contradict a reviewed contract need a declaration. This is the load-bearing
+# half of Kōan's specs discipline — prose is advisory, a git-enforced check has teeth
+# (Constitution Principle V). See scripts/spec_change_guard.py and
+# docs/design/spec-changes-are-architectural.md.
 #
 # Read-only: no `contents: write`, no push, no secrets beyond the default token.
 # `edited` is included so re-checking the declaration box on an already-open PR
