@@ -89,13 +89,13 @@
 
 ### Tests for User Story 3 (write first, watch fail)
 
-- [ ] T020 [P] [US3] Registry/resolution tests: `known_providers()` contains `"haze"` + instantiation via registry in `koan/tests/test_provider_modules.py`; `KOAN_CLI_PROVIDER=haze` resolution + per-role `cli:` acceptance in `koan/tests/test_cli_provider.py`
+- [X] T020 [P] [US3] Registry/resolution tests: `known_providers()` contains `"haze"` + instantiation via registry in `koan/tests/test_provider_modules.py`; `KOAN_CLI_PROVIDER=haze` resolution + per-role `cli:` acceptance in `koan/tests/test_cli_provider.py`
 
 ### Implementation for User Story 3
 
-- [ ] T021 [US3] Add haze to `koan/app/onboarding.py`'s three literal provider structures: both provider→binary maps (`"haze": "haze"`) and the choice list (`("haze", "haze (multi-backend agentic CLI)")`) — these do not derive from the registry (research.md R8)
-- [ ] T022 [P] [US3] Write `docs/providers/haze.md` following the established provider-doc structure (Quick Setup: npm install ≥0.7.0 → in-haze `/provider` + `/model` config → `cli_provider: haze` → verify; Model Configuration incl. `provider:model` selector format + per-project overrides; Tool Configuration: fixed toolset, koan tool restrictions warn-and-skip; Advanced: custom binary, per-role `cli:`, stdin prompt delivery, probe token cost; Troubleshooting: "No model provider configured", bad selector, <0.7.0 version error), and link it from `docs/providers/index.md`
-- [ ] T023 [P] [US3] Add the haze provider mention to `docs/users/user-manual.md` (parity with other providers' mentions)
+- [X] T021 [US3] Add haze to `koan/app/onboarding.py`'s three literal provider structures: both provider→binary maps (`"haze": "haze"`) and the choice list (`("haze", "haze (multi-backend agentic CLI)")`) — these do not derive from the registry (research.md R8)
+- [X] T022 [P] [US3] Write `docs/providers/haze.md` following the established provider-doc structure (Quick Setup: npm install ≥0.7.0 → in-haze `/provider` + `/model` config → `cli_provider: haze` → verify; Model Configuration incl. `provider:model` selector format + per-project overrides; Tool Configuration: fixed toolset, koan tool restrictions warn-and-skip; Advanced: custom binary, per-role `cli:`, stdin prompt delivery, probe token cost; Troubleshooting: "No model provider configured", bad selector, <0.7.0 version error), and link it from `docs/providers/index.md`
+- [X] T023 [P] [US3] Add the haze provider mention to `docs/users/user-manual.md` (parity with other providers' mentions)
 
 **Checkpoint**: All three stories independently functional
 
