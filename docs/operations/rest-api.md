@@ -79,6 +79,30 @@ The API ships a machine-readable **OpenAPI 3.1 document** at
 table** — it can only describe endpoints that actually exist, so it never drifts from the
 code. Point any OpenAPI tool at it to preview docs, generate a client, or validate requests.
 
+### View & render the spec online
+
+The raw YAML is not fun to read by hand. To render it as browsable, interactive API docs
+in your browser — no install, no running server — open it in **Swagger Editor**:
+
+> **[▶ Open `koan/openapi.yaml` in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/Anantys-oss/koan/main/koan/openapi.yaml)**
+
+That link tells [editor.swagger.io](https://editor.swagger.io/) to fetch the spec from
+`main` and render it. The editor loads the file client-side (GitHub's raw host allows
+cross-origin reads), so nothing is uploaded anywhere. To preview a spec from a branch or a
+fork, swap the raw URL — the pattern is:
+
+```
+https://editor.swagger.io/?url=https://raw.githubusercontent.com/<owner>/<repo>/<ref>/koan/openapi.yaml
+```
+
+Prefer to render **local, uncommitted** changes (e.g. right after `make openapi`)? Any
+offline viewer works on the file directly:
+
+```bash
+npx @redocly/cli preview-docs koan/openapi.yaml   # Redoc, live-reloading, http://localhost:8080
+# or drag-and-drop koan/openapi.yaml into https://editor.swagger.io/
+```
+
 ### Regenerate after any API change
 
 ```bash
@@ -453,4 +477,4 @@ Tokens are never written to the log.
 
 - [`docs/operations/dashboard.md`](dashboard.md) — web dashboard (separate process, same config pattern)
 - [`instance.example/config.yaml`](../../instance.example/config.yaml) — documented `api:` section
-- [`koan/openapi.yaml`](../../koan/openapi.yaml) — generated OpenAPI 3.1 document (`make openapi`)
+- [`koan/openapi.yaml`](../../koan/openapi.yaml) — generated OpenAPI 3.1 document (`make openapi`) · [render in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/Anantys-oss/koan/main/koan/openapi.yaml)
