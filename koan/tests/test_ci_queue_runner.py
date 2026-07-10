@@ -365,9 +365,10 @@ class TestDrainOneErrorHandling:
 class TestInjectCiFixMission:
     """Verify _inject_ci_fix_mission uses dedup via insert_pending_mission."""
 
-    def test_uses_insert_pending_mission_for_dedup(self):
-        """_inject_ci_fix_mission must route through insert_pending_mission,
-        not raw insert_mission, so is_duplicate_mission is checked."""
+    def test_uses_insert_pending_mission_non_urgent(self):
+        """_inject_ci_fix_mission must route through insert_pending_mission
+        (so is_duplicate_mission dedup runs) and insert NON-urgently, so CI
+        fixing never jumps ahead of genuine backlog work in the serial queue."""
         from app.ci_queue_runner import _inject_ci_fix_mission
 
         entry = {"project": "proj", "project_path": ""}
@@ -379,7 +380,7 @@ class TestInjectCiFixMission:
         call_args = mock_insert.call_args
         assert "/ci_check" in call_args[0][1]
         assert PR_URL in call_args[0][1]
-        assert call_args[1]["urgent"] is True
+        assert call_args[1]["urgent"] is False
 
     def test_returns_false_when_duplicate(self):
         """When insert_pending_mission detects a duplicate, return False."""
@@ -738,8 +739,9 @@ class TestAttemptCiFixes:
             f"Expected 'upstream/main' in diff command, got: {diff_cmds}"
         )
 
-    def test_configurable_max_turns_used(self):
-        """run_claude_step is called with get_skill_max_turns() not a hardcoded value."""
+    def test_bounded_step_timeout_and_idle_guard_used(self):
+        """The CI-fix step runs under the bounded ci_check.timeout + idle guard,
+        NOT the 2-hour skill_timeout, so a stalled step cannot hold the queue."""
         from app.ci_queue_runner import _attempt_ci_fixes
 
         with (
@@ -747,6 +749,8 @@ class TestAttemptCiFixes:
             patch("app.rebase_pr._build_ci_fix_prompt", return_value="fix this"),
             patch("app.claude_step.run_claude_step", return_value=False) as mock_step,
             patch("app.config.get_skill_max_turns", return_value=42),
+            patch("app.config.get_ci_check_step_timeout", return_value=1234),
+            patch("app.config.get_first_output_timeout", return_value=567),
             patch("app.config.get_skill_timeout", return_value=999),
         ):
             _attempt_ci_fixes(
@@ -762,10 +766,13 @@ class TestAttemptCiFixes:
                 max_attempts=1,
             )
 
-        # Verify configurable values are passed through
+        # Verify the bounded values are passed through — and that the 2-hour
+        # skill_timeout is NOT used.
         call_kwargs = mock_step.call_args[1]
         assert call_kwargs["max_turns"] == 42
-        assert call_kwargs["timeout"] == 999
+        assert call_kwargs["timeout"] == 1234
+        assert call_kwargs["idle_timeout"] == 567
+        assert call_kwargs["timeout"] != 999
 
     def test_reenqueue_called_on_pending_ci(self):
         """After pushing a fix, if CI is pending, the PR is re-enqueued in ## CI section."""
