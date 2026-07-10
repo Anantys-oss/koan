@@ -96,7 +96,7 @@ def run_speckit(
 
     label = project_name or project_path
     _progress(f"Running /speckit for {label}: {goal_text[:80]}")
-    notify_fn(f"📋 /speckit started for {label}: {goal_text[:120]}")
+    notify_fn(f"🏭 /speckit started for {label}: {goal_text[:120]}")
 
     prompt = load_prompt_or_skill(
         _SKILL_DIR,

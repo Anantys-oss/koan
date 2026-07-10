@@ -2,7 +2,7 @@
 name: speckit
 scope: core
 group: code
-emoji: 📋
+emoji: 🏭
 description: "Run a spec-kit pipeline (specify -> plan -> tasks -> implement) for a goal or tracker issue, then best-effort review/CI and a draft PR"
 version: 1.0.0
 audience: hybrid

@@ -50,4 +50,4 @@ def handle(ctx):
     queued = orch.queue_mission(ctx.instance_dir, "speckit", project_name, goal)
     if not queued:
         return f"ℹ️ A /speckit mission for {project_name} is already queued."
-    return f"📋 Queued /speckit for {project_name}: {goal}"
+    return f"🏭 Queued /speckit for {project_name}: {goal}"
