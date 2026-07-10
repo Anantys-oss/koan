@@ -33,7 +33,9 @@ from app.utils import (
 
 # Emoji used to acknowledge a queued mission via reaction (reaction-capable
 # providers like Slack); falls back to a text reply elsewhere.
-ACK_EMOJI = "✅"
+# Must be a valid Telegram ReactionTypeEmoji — ✅ (U+2705) is NOT in that set
+# and yields "Bad Request: REACTION_INVALID", so use 👍 which is whitelisted.
+ACK_EMOJI = "👍"
 
 # Callbacks injected by awake.py at startup to avoid circular imports
 _handle_chat_cb: Optional[Callable] = None
