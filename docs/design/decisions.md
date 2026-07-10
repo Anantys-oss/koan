@@ -58,3 +58,15 @@ Before planning or implementing, agents should inspect relevant documentation
 with search tools and then verify behavior against code. After changing user
 behavior, configuration, daemon flow, provider behavior, shared state, or an
 important implementation decision, update the relevant docs in the same branch.
+
+## Spec Changes Are Architectural Changes
+
+Durable design contracts (`specs/components/**`, `specs/skills/**`) constrain the
+code; the code does not constrain them. A change to one is an *architectural*
+change: it must be made **contract-first** (change the spec to the intended design,
+then make the code conform — never edit the spec afterward to match code), it should
+be **rare**, and it must be **declared** in the PR so a human reviews the new
+architecture before approval. This differs from `docs/`, which is updated in the same
+branch to follow behaviour. See
+[`spec-changes-are-architectural.md`](spec-changes-are-architectural.md) for the full
+rationale; enforced by `scripts/spec_change_guard.py`.

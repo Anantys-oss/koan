@@ -2,43 +2,46 @@
 
 <!--
 === Sync Impact Report ===
-Version change: 1.0.0 → 2.0.0
-  MAJOR: Principle III redefined — the prior absolute "never in a database" no
-  longer holds for mission state. SQLite becomes mission state's default authority
-  behind the MissionStore port; all OTHER runtime state stays file-first.
+Version change: 2.0.0 → 3.0.0
+  MAJOR: Principle II redefined — a change to a DURABLE design contract
+  (specs/components/**, specs/skills/**) is now an ARCHITECTURAL change:
+  contract-first, rare, and explicitly DECLARED in the PR for review before
+  approval. The prior "after implementing, update the spec in the same branch to
+  reflect the new design" instruction — which let an agent retroactively bend the
+  spec to match sloppy code — is removed. This breaks prior compliance (a PR that
+  silently updated a durable spec to match its code was compliant before, is not
+  now), hence MAJOR. Origin: customer concern on PR #2052.
 Modified principles:
-  - III. "Local Files, Atomic State" → "Local Files by Default; Mission State in
-    the Store". Mission state is authoritative in the backend chosen through the
-    MissionStore port (SQLite / instance/missions.db by default), config-selected,
-    documented, and exclusive; missions.md becomes a generated read-only export.
-    memory_db-style derived indexes over a file truth remain permitted. Any
-    ADDITIONAL database-authoritative state needs a further amendment.
-  - VI. "Single Writer, Single Read Path" — mission clause restated: the single
-    authority is the active MissionStore (get_mission_store()); agents/code MUST
-    NOT mutate mission state outside the port nor treat the missions.md export as
-    writable.
-Constraints & Technology Stack: mission-storage backend added to the pluggable-
-  abstraction list (alongside messaging bridges and CLI providers).
+  - II. "Specs Are the Source of Truth" — durable contracts constrain code, not
+    the reverse; ephemeral speckit specs/<NNN-slug>/ stay the spec-first proposal
+    artifact and are exempt. Durable-contract changes MUST be contract-first, rare,
+    and declared; git-enforced by scripts/spec_change_guard.py.
+Modified sections:
+  - Workflow & Quality Gates → "Docs-and-specs-in-branch": durable contracts are
+    carved out of the "update in the same branch" gate and routed through the
+    declaration instead.
 Added / Removed sections: none.
 Templates requiring updates:
   - .specify/templates/plan-template.md   ✅ no change — "Constitution Check" gate defers here
   - .specify/templates/spec-template.md    ✅ no change — generic speckit template
   - .specify/templates/tasks-template.md   ✅ no change — generic speckit template
-Follow-up reconciliations — DEFERRED to the implementation PR (spec
-  004-mission-store, PR 2), NOT done in this amendment. These artifacts describe
-  the CURRENT file-based mission behavior, which Principle VII requires we preserve
-  until the code actually changes; PR 2 updates them in the same branch as the code:
-  - CLAUDE.md — "pulling missions from a shared file"; missions.md as the queue
-  - koan/app/CLAUDE.md — "missions.md — Task queue" → generated read-only export
-  - specs/components/core.md — mission-queue contract + single-writer invariant
-  - docs/architecture/{overview,shared-state,mission-lifecycle}.md — mission state location
-Rationale basis: specs/004-mission-store/{spec,plan,data-model,contracts}.md;
-  issue #2140; epic #2147. Design PR: #2295. Supersedes the mirror approach in #2209.
-Prior history: v1.0.0 initial ratification [2026-06-28]. SPECS_DIR_COLLISION was
-  RESOLVED [2026-07-04] — component/skill specs are durable + wiki-indexed while
-  speckit `specs/<feature>/` folders are ephemeral and unfrontmattered; a shipped
-  feature's durable artifact is the updated specs/components/<group>.md. Full
-  rationale in specs/README.md and wiki/SCHEMA.md.
+Reconciled in THIS amendment's branch (spec 005-spec-change-governance):
+  - CLAUDE.md — "Specs discipline (mandatory)" section
+  - specs/README.md — "Spec discipline" section
+  - docs/design/spec-changes-are-architectural.md — new decision doc (rationale)
+  - docs/design/decisions.md — new cross-linked entry
+  - scripts/spec_change_guard.py + koan/tests/test_spec_change_guard.py — the gate
+  - .github/PULL_REQUEST_TEMPLATE.md + .github/workflows/spec-change-guard.yml — CI
+Rationale basis: PR #2052 comment (github.com/Anantys-oss/koan/pull/2052);
+  specs/005-spec-change-governance/{spec,plan,research}.md; Principle V (only
+  git-enforced controls are load-bearing).
+Prior history: v1.0.0 initial ratification [2026-06-28]. v2.0.0 [2026-07-09] —
+  Principle III redefined (mission state authoritative in the MissionStore/SQLite
+  port; all other runtime state file-first; specs/004-mission-store, PR #2295;
+  issue #2140; supersedes #2209). SPECS_DIR_COLLISION RESOLVED [2026-07-04] —
+  component/skill specs are durable + wiki-indexed while speckit specs/<feature>/
+  folders are ephemeral; a shipped feature's durable artifact is the updated
+  specs/components/<group>.md (specs/README.md, wiki/SCHEMA.md).
 Source basis: specs/README.md, specs/components/{core,agent-loop,providers}.md,
 docs/architecture/{overview,shared-state}.md, docs/design/decisions.md,
 docs/security/threat-model-agent-disalignment.md, CLAUDE.md.
@@ -77,16 +80,36 @@ is the primary security boundary against a disaligned or prompt-injected agent
 exists, the contract it upholds, and what breaks if you change it. `docs/`
 explains how to **use** Kōan; it does not define contracts.
 
+Durable design contracts (`specs/components/<group>.md`, `specs/skills/<name>.md`)
+**constrain the code; the code does not constrain them.** The ephemeral speckit
+planning folders (`specs/<NNN-slug>/`) are the *spec-first proposal* artifact — they
+are meant to change in-branch before code and are exempt from the rules below.
+
 - **Before** implementing any feature or refactor, read the relevant component
   (`specs/components/<group>.md`) or skill (`specs/skills/<name>.md`) spec.
-- **After** implementing, update the spec in the same branch to reflect the new
-  design. A change that alters a contract without updating its spec is
-  **incomplete**.
-- If you touch a component or skill that has no spec, write one from the
-  relevant template.
+- **A change to a durable contract is an ARCHITECTURAL change**, not a
+  code-follows-spec afterthought. It MUST be:
+  - **contract-first** — change the spec to express the *intended* design, then
+    make code conform. NEVER edit a durable spec afterward to match whatever code
+    was written; that turns the source of truth into a mirror of the
+    implementation and defeats the entire discipline.
+  - **rare** — most PRs touch zero durable contracts, and churn on an existing
+    contract should be the exception. (Authoring a *first* spec for an un-specced
+    component/skill is expected and encouraged, not "rare".)
+  - **declared** — the PR MUST carry an explicit architectural-change declaration
+    (a checked "Architectural change" box in the PR body) so a human reviews the
+    new architecture *before* approval. Landing the contract change spec-first, in
+    its own PR ahead of the implementing code, is RECOMMENDED.
+- If you touch a component or skill that has no spec, write one from the relevant
+  template — and declare it (a new contract is an architectural decision).
+- **Git-enforced**: `scripts/spec_change_guard.py` (CI, blocking) fails any PR that
+  adds or changes a durable contract without the declaration.
 
 *Rationale*: Specs anchor deliberate, contract-first refactoring and prevent
-silent contract breakage across a high-fan-in daemon.
+silent contract breakage across a high-fan-in daemon. An autonomous agent will
+route around advisory prose, so the contract-first rule is backed by a git-enforced
+gate (Principle V: only code- or git-enforced controls are load-bearing) — see
+`docs/design/spec-changes-are-architectural.md`.
 
 ### III. Local Files by Default; Mission State in the Store
 
@@ -228,10 +251,13 @@ enforceable gate, not a ritual.
 
 - **Branch-first**: create `koan/*` (or configured prefix) branches; never
   commit to `main`. Open **draft** PRs for human review before any merge.
-- **Docs-and-specs-in-branch**: update the affected `specs/`, `docs/`, and
-  `README.md` in the same branch as the code change. User-manual pages
-  (`docs/users/user-manual.md`, `docs/users/skills.md`) stay in sync with the
-  skills under `koan/skills/core/`.
+- **Docs-and-specs-in-branch**: update the affected `docs/`, `README.md`, and
+  ephemeral speckit planning (`specs/<NNN-slug>/`) in the same branch as the code
+  change. **Durable design contracts** (`specs/components/**`, `specs/skills/**`)
+  are the exception — change them **contract-first** and **declare** the
+  architectural change in the PR (Principle II), never as a retroactive edit to
+  match code. User-manual pages (`docs/users/user-manual.md`,
+  `docs/users/skills.md`) stay in sync with the skills under `koan/skills/core/`.
 - **Skills hygiene**: every core skill has a `group:` field, underscore names
   (never hyphens), and is registered in `skill_dispatch.py`, `CLAUDE.md`, and
   the user docs. `TestCoreSkillGroupEnforcement` enforces this.
@@ -269,4 +295,4 @@ The `code-reviewer` and `security_review` paths treat the principles as gates,
 not suggestions. Unjustified complexity MUST be recorded in the plan's
 Complexity Tracking table with a rejected-simpler-alternative rationale.
 
-**Version**: 2.0.0 | **Ratified**: 2026-06-28 | **Last Amended**: 2026-07-09
+**Version**: 3.0.0 | **Ratified**: 2026-06-28 | **Last Amended**: 2026-07-09

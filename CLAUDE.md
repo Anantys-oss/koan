@@ -30,20 +30,34 @@ is **not optional**:
    - Skill change → `specs/skills/<skill-name>.md`.
    The spec tells you the invariants you must not silently break. Do not skip this because
    a change "looks small" — small changes break contracts too.
-2. **After implementing**, UPDATE the spec in the same branch to reflect the new design:
-   new types/functions, changed integration points, resolved or newly-introduced debt. A
-   PR that alters a component's contract without updating its spec is **incomplete**.
+2. **A durable-contract change is an ARCHITECTURAL change** (`specs/components/**`,
+   `specs/skills/**`). Change the spec **contract-first** — write the *intended* design,
+   then make the code conform. NEVER edit a durable spec afterward to match code you
+   already wrote; that turns the source of truth into a mirror of the implementation and
+   defeats the discipline. Such changes should be **rare**, and the PR MUST **declare**
+   them — check the "Architectural change" box in the PR body so the new architecture is
+   reviewed before approval. CI enforces this: `scripts/spec_change_guard.py` fails an
+   undeclared durable-contract change. See `docs/design/spec-changes-are-architectural.md`.
 3. **No spec yet?** If you touch a component or skill that has no spec, WRITE one using
-   `specs/components/` conventions or `specs/skills/SKILL_SPEC_TEMPLATE.md`. Phase 1 ships
-   specs for the highest-impact pieces; the rest are added on-demand as they are touched.
-4. **`specs/<NNN-slug>/` (speckit) is a different, ephemeral population** — not the durable
-   contracts this discipline governs. See `specs/README.md`'s "components/, skills/ vs.
-   `<NNN-feature-slug>/`" section. When a speckit feature ships, step 2 above (updating the
-   matching `specs/components/<group>.md`) is what makes it durable — the speckit folder
-   itself stays as planning history.
+   `specs/components/` conventions or `specs/skills/SKILL_SPEC_TEMPLATE.md` — and declare
+   it (a new contract is an architectural decision). Phase 1 ships specs for the
+   highest-impact pieces; the rest are added on-demand as they are touched.
+4. **`specs/<NNN-slug>/` (speckit) is a different, ephemeral population** — the spec-first
+   *proposal* artifact, not the durable contracts this discipline governs. Change them
+   freely in-branch. See `specs/README.md`'s "components/, skills/ vs.
+   `<NNN-feature-slug>/`" section. When a speckit feature ships, the durable artifact is
+   the **updated `specs/components/<group>.md`** — landed contract-first and declared per
+   step 2, not retroactively bent to match the code you wrote.
+5. **NEVER commit `.specify/feature.json`** — it is speckit's local current-feature
+   pointer (repointed automatically by `/speckit.*` commands), not a deliverable. It is
+   trivially picked up as an unrelated diff that trips the "no scope creep" review gate.
+   Before staging, confirm your PR does not touch it: `git diff --name-only main.. | grep
+   -q '.specify/feature.json' && git checkout main -- .specify/feature.json`. Only include
+   it when the PR's explicit purpose is to change speckit's active-feature pointer.
 
-Specs and `docs/` coexist — most non-trivial changes update both. Use specs to anchor
-clean refactoring: change the spec's contract deliberately, then make the code match.
+Specs and `docs/` coexist — most non-trivial changes update `docs/`. Durable specs are
+different: anchor clean refactoring by changing the contract **deliberately and first**,
+then making the code match — never the reverse.
 
 ## Documentation first
 
