@@ -993,8 +993,8 @@ def get_ci_check_step_timeout() -> int:
     The auto-injected ``/ci_check`` fix mission runs in the single-slot mission
     queue, so an unbounded step blocks all other work. This dedicated cap keeps
     a stuck fix step from holding the queue for the full ``skill_timeout``
-    (2 hours). Paired with an idle guard (``first_output_timeout``) in the
-    CI-fix step runner.
+    (2 hours). Paired with an idle guard (``ci_check.idle_timeout``, see
+    ``get_ci_check_idle_timeout``) in the CI-fix step runner.
 
     Config key: ci_check.timeout (default: 3600 — 1 hour).
     """
@@ -1014,6 +1014,23 @@ def get_ci_check_max_fix_attempts() -> int:
     """
     value = _safe_int(_ci_check_section().get("max_fix_attempts_per_mission", 1), 1)
     return max(1, value)
+
+
+def get_ci_check_idle_timeout() -> int:
+    """Idle (between-output) watchdog (seconds) for a CI-fix Claude step.
+
+    Kills a stalled fix step early instead of waiting the full
+    ``ci_check.timeout`` overall cap. Defaults to ``first_output_timeout`` so
+    existing tuning carries over, but is a dedicated knob so operators can tune
+    the first-output guard without silently changing CI-fix idle behavior (and
+    vice versa). Set to 0 to disable (the overall cap still bounds the step).
+
+    Config key: ci_check.idle_timeout (default: first_output_timeout).
+    """
+    value = _ci_check_section().get("idle_timeout")
+    if value is None:
+        return get_first_output_timeout()
+    return _safe_int(value, get_first_output_timeout())
 
 
 def _missions_section() -> dict:
