@@ -47,4 +47,9 @@ def require_token(f):
         g.authenticated = True
         return f(*args, **kwargs)
 
+    # Marker read by the OpenAPI generator (app.api.openapi_gen) so that a route's
+    # bearer-auth requirement is derived from the decorator that actually enforces
+    # it — a single source of truth. New secured routes are labelled correctly
+    # without touching any allow-list.
+    decorated._koan_requires_token = True
     return decorated

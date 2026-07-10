@@ -134,6 +134,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`api/routes_admin.py`** — `POST /v1/pause`, `POST /v1/resume`, `GET /v1/config` (secrets masked), `POST /v1/restart`, `POST /v1/shutdown`, `POST /v1/update`.
 - **`api/routes_observability.py`** — `GET /v1/usage`, `GET /v1/metrics`, `GET /v1/logs` (token-gated; delegate to usage_service / mission_metrics / log_reader).
 - **`api/server.py`** — Runnable entrypoint (`make api`); validates token at startup (fail-closed), warns on non-loopback bind, calls `waitress.serve(create_app(), ...)`.
+- **`api/openapi_gen.py`** — Generates the OpenAPI 3.1 document (`koan/openapi.yaml`) by introspecting the live `create_app()` route table. `build_spec(app)` (pure) → `dump_yaml()` (deterministic) → `generate()`/`check()`; CLI `python -m app.api.openapi_gen [--output PATH] [--check]`. Security is derived from the `require_token` marker (`_koan_requires_token`), not an allow-list. **When you add/remove/modify a route, run `make openapi` and commit `koan/openapi.yaml` in the same change** — never hand-edit it. `make openapi-check` (and CI `.github/workflows/openapi.yml`, path-filtered to API changes) fails on drift.
 
 Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `127.0.0.1`), `get_api_port()` (default `8420`), `get_api_token()` (env `KOAN_API_TOKEN` → `api.token` → `""`), `get_api_threads()` (default `8`). `pid_manager.py` adds `"api"` to `PROCESS_NAMES` and provides `start_api()` / `_is_api_enabled()`. See `docs/operations/rest-api.md`.
 

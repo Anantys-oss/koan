@@ -1,0 +1,54 @@
+name: 🔌 OpenAPI
+
+# Enforce that koan/openapi.yaml stays in lock-step with the REST API code.
+# This job runs ONLY when an API-defining file changes — unrelated PRs skip it
+# entirely (GitHub does not start a workflow whose paths filter matches nothing).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'koan/app/api/**'        # any route module or the generator itself
+      - 'koan/openapi.yaml'      # the committed artifact
+      - 'koan/requirements.txt'  # PyYAML/deps feed the generator's byte output
+      - 'Makefile'               # the openapi / openapi-check targets
+      - '.github/workflows/openapi.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: openapi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: openapi-drift-check
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: ⚙️ Set up Python
+        uses: actions/setup-python@v6
+        with:
+          # Must track tests.yml's PR version: the drift check is a byte compare,
+          # and test_committed_artifact_is_current (run there on 3.11 AND 3.14)
+          # already proves the committed spec is byte-identical across both. The
+          # generator disables YAML line-folding (width=1<<30) so output is
+          # version-stable; keep this pin in lock-step with tests.yml.
+          python-version: "3.14"
+          allow-prereleases: true
+          cache: 'pip'
+          cache-dependency-path: koan/requirements.txt
+
+      - name: 📦 Install dependencies
+        run: pip install -r koan/requirements.txt
+
+      - name: 🔍 Check OpenAPI document is up to date
+        working-directory: koan
+        env:
+          KOAN_ROOT: ${{ github.workspace }}/koan
+          PYTHONPATH: "."
+        run: |
+          python -m app.api.openapi_gen --check --output openapi.yaml
+          # On drift the command exits non-zero and prints the exact fix
+          # instruction (run `make openapi` and commit koan/openapi.yaml).

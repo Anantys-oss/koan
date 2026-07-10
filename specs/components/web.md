@@ -1,10 +1,10 @@
 ---
 type: component-spec
 title: "Component Spec — Web Dashboard & REST API"
-description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, and the invariants keeping the two surfaces from drifting."
+description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-07-08
+updated: 2026-07-10
 ---
 
 # Component Spec — Web Dashboard & REST API
@@ -37,7 +37,7 @@ dashboard_service/  (pure logic, no Flask client needed to test)
 
 api/  (Flask blueprints via create_app())
   auth (require_token) · mission_index (sidecar) · routes_missions/projects/status/
-  admin/observability · server.py (waitress entrypoint)
+  admin/observability · server.py (waitress entrypoint) · openapi_gen.py (spec generator)
 ```
 
 ## Key types & functions
@@ -54,6 +54,7 @@ api/  (Flask blueprints via create_app())
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
 | `log_reader.tail_log()/read_logs()` | Shared log tailing for dashboard **and** `GET /v1/logs`. |
 | `api/server.py` | Validates token at startup (fail-closed), warns on non-loopback bind, serves via waitress. |
+| `api/openapi_gen.py` | Generates the committed OpenAPI 3.1 doc `koan/openapi.yaml` from the live `create_app()` route table. `build_spec(app)` (pure: equal route table → equal dict) → `dump_yaml()` (deterministic, sorted) → `generate()`/`check()`. Per-route bearer-auth is read from the `require_token` marker `_koan_requires_token` (single source of truth), never an allow-list. `make openapi` regenerates; `make openapi-check` (and CI `openapi.yml`, path-filtered) fails on drift. |
 
 ## Mission record: typed structured `result`
 
@@ -108,6 +109,13 @@ port unchanged onto the #2140 missions table.
 - **GET mission usage is derived, never stored.** `usage` is computed on read from
   `instance/usage/*.jsonl`; it is attached to a response copy and must not be
   persisted into `.api-missions.json`.
+- **The OpenAPI doc is derived, never hand-edited.** `koan/openapi.yaml` is generated from
+  the route table; a route's auth requirement comes from the `require_token` decorator marker,
+  not a maintained list. Adding/removing/modifying a route requires regenerating
+  (`make openapi`) and committing the artifact in the same change; the path-filtered CI drift
+  check (`.github/workflows/openapi.yml`) enforces this only when API-defining files change.
+  Generation is deterministic (unchanged code → byte-identical output) and needs no server,
+  token, or `api.enabled`.
 
 ## Integration points
 
@@ -126,5 +134,6 @@ port unchanged onto the #2140 missions table.
 ## Change protocol
 
 New endpoints add the pure logic to `dashboard_service/` (or a shared service), wire a
-thin route, and — if observability — expose it on both surfaces. Update
+thin route, and — if observability — expose it on both surfaces. For **API** changes, also
+run `make openapi` and commit the regenerated `koan/openapi.yaml` in the same change. Update
 `docs/operations/rest-api.md` for API changes and this spec for structural ones.
