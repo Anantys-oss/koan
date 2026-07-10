@@ -1989,6 +1989,7 @@ def _append_error_section_to_review(
     provider_name: str = "",
     model: str = "",
     duration_seconds: float = 0,
+    coverage_note: str = "",
 ) -> bool:
     """Append the silent-failure-hunter section to the posted review comment.
 
@@ -2003,6 +2004,11 @@ def _append_error_section_to_review(
     intact and still carries ``SUMMARY_TAG``, so the (default) first-match
     lookup would append onto the old comment. The freshly-posted review always
     has the highest comment id, so the newest match is the correct target.
+
+    ``coverage_note``, when passed, is forwarded to ``_post_review_comment``
+    so it is re-prepended here too. This rebuild replaces the whole comment
+    body (``combined``), so without it the ``⚠️ Partial review`` warning that
+    the initial post prepended would be silently dropped by this edit.
 
     Returns True when the comment was updated.
     """
@@ -2024,6 +2030,7 @@ def _append_error_section_to_review(
         provider_name=provider_name,
         model=model,
         duration_seconds=duration_seconds,
+        coverage_note=coverage_note,
     )
     if not updated:
         print(
@@ -3158,6 +3165,7 @@ def run_review(
                     provider_name=review_provider_name,
                     model=review_model,
                     duration_seconds=_review_duration,
+                    coverage_note=coverage_note,
                 )
             elif error_section and not posted:
                 print(

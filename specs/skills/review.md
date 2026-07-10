@@ -112,6 +112,16 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   provider-side per-pass stall watchdog (see `specs/components/providers.md`,
   "read loop must be inactivity-bounded"), which makes a stalled enrichment
   pass degrade to empty rather than hang.
+  The append rebuilds the comment body from the clean `review_body`, so
+  `_append_error_section_to_review` also takes `coverage_note` and forwards
+  it to its inner `_post_review_comment` call — without it, a large PR's
+  `⚠️ Partial review` warning (prepended on the initial post; see
+  `specs/components/skills.md`, "`review` diff-size & partial-coverage
+  contract") would be silently overwritten on the hunter-append edit. Large
+  PRs (non-empty `coverage_note`) are also the PRs most likely to trigger the
+  hunter, so this overlap is exercised by
+  `TestReviewPostsBeforeEnrichment::test_coverage_note_survives_hunter_append_overlap`
+  in `koan/tests/test_review_runner.py`.
 
 ## Evaluation
 

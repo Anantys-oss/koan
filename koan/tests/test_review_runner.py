@@ -1623,6 +1623,30 @@ class TestAppendErrorSectionToReview:
         )
         assert mock_find.call_args.kwargs["prefer_newest"] is True
 
+    @patch("app.review_runner.run_gh")
+    @patch(
+        "app.review_runner.find_bot_comment",
+        return_value={"id": 555, "body": "## Code Review\n\nold body"},
+    )
+    def test_coverage_note_is_reprepended(self, _mock_find, mock_gh):
+        """Regression for the #2294 x #2299 overlap: the append path rebuilds
+        the comment from the clean review_body, so without re-forwarding
+        coverage_note the already-posted `Partial review` warning would be
+        silently dropped by this edit."""
+        note = ("> ⚠️ **Partial review** — 1 file(s) omitted due to diff size "
+                 "and NOT reviewed: `huge.py`")
+        ok = _append_error_section_to_review(
+            "owner", "repo", "42",
+            review_body="## Code Review\n\nCore body",
+            error_section="### Silent failures\n\n- swallowed exception",
+            bot_username="bot",
+            coverage_note=note,
+        )
+        assert ok is True
+        joined = " ".join(str(a) for a in mock_gh.call_args[0])
+        assert "Partial review" in joined and "`huge.py`" in joined
+        assert "swallowed exception" in joined
+
 
 class TestReviewPostsBeforeEnrichment:
     """Fix #2: the core review is posted before the optional enrichment passes,
@@ -1688,6 +1712,49 @@ class TestReviewPostsBeforeEnrichment:
         # And it is NOT baked into the initial posted comment body.
         posted = " ".join(str(c) for c in mock_gh.call_args_list)
         assert "swallowed exception at x" not in posted
+
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch(
+        "app.review_runner._run_error_hunter",
+        return_value="### Silent failures\n\n- swallowed exception at x",
+    )
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner.build_review_prompt")
+    def test_coverage_note_survives_hunter_append_overlap(
+        self, mock_prompt, mock_fetch, mock_claude, mock_gh, _mock_repliable,
+        _mock_hunter, _mock_shas, mock_find, pr_context, review_skill_dir,
+    ):
+        """Regression for the #2294 x #2299 overlap flagged in
+        https://github.com/Anantys-oss/koan/pull/2299#issuecomment-4930545352:
+        a large PR (non-empty coverage_note) that also triggers the
+        silent-failure-hunter must keep the `Partial review` warning in the
+        final comment, not just the initial post."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        note = ("> ⚠️ **Partial review** — 1 file(s) omitted due to diff size "
+                 "and NOT reviewed: `huge.py`\n\n")
+        mock_prompt.return_value = ("REVIEW PROMPT", note)
+        # The append path re-locates the just-posted comment by SUMMARY_TAG.
+        mock_find.return_value = {"id": 999, "body": "## Code Review\n\nplaceholder"}
+
+        success, _summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            errors=True,  # force the silent-failure-hunter pass
+        )
+
+        assert success is True
+        # Two gh calls: the initial "pr comment" post, then the PATCH append.
+        assert mock_gh.call_count >= 2
+        final_call = mock_gh.call_args_list[-1]
+        final_body = " ".join(str(a) for a in final_call.args)
+        assert "Partial review" in final_body and "`huge.py`" in final_body
+        assert "swallowed exception at x" in final_body
 
 
 class TestRunReview:
