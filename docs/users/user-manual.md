@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-08
+updated: 2026-07-10
 ---
 
 # Kōan User Manual
@@ -687,6 +687,17 @@ strategy, and re-reviews up to the configured round limit. Gate failures are
 reported in the rebase summary but do not fail an otherwise successful rebase.
 
 When `/rebase` runs long, Kōan uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout), Kōan now restores the clean rebased checkpoint and still pushes the rebase (without partial feedback edits), so timeout noise does not discard a valid rebase. If the feedback step hits a *provider quota limit*, the rebase still stops so you can retry after quota reset. Any other transient feedback error remains best-effort and does not block pushing the rebase.
+
+`/rebase` is strict about *what* it rebases onto: the branch is rebased only
+onto the PR's actual base repository's branch, freshly fetched. The mission
+fails loudly — instead of pushing a suspect result — when no local git remote
+matches the PR's base repository (`[no_base_remote]`; fix with
+`git remote add`), when the base branch can't be fetched (`[fetch_failed]`),
+or when a post-rebase sanity check finds the branch not sitting on the base's
+current tip or carrying *more* unique commits than before the rebase
+(`[sanity_check_failed]` — the branch is restored to its pre-rebase state and
+nothing is pushed). A correct rebase can only keep or shrink a PR's commit
+count; growth means already-merged commits were resurrected.
 
 When a target repository pre-commit hook formats files during the feedback
 commit, Kōan stages the hook-created edits and retries the commit once. If local

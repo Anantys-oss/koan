@@ -379,26 +379,31 @@ class TestRebaseOntoTarget:
     @patch("app.claude_step._run_git")
     @patch("app.claude_step.subprocess.run")
     def test_success_returns_remote_name(self, mock_subproc, mock_git):
-        result = _rebase_onto_target("main", "/tmp/p")
+        def mock_run(cmd, **kwargs):
+            if "rev-parse" in cmd or "merge-base" in cmd:
+                return "tip"
+            if "rev-list" in cmd:
+                return "2"
+            return ""
+        mock_git.side_effect = mock_run
+        result = _rebase_onto_target("main", "/tmp/p", preferred_remote="origin")
         assert result == "origin"
 
     @patch("app.claude_step._run_git")
     @patch("app.claude_step.subprocess.run")
-    def test_falls_back_to_upstream(self, mock_subproc, mock_git):
-        """When origin rebase fails, tries upstream."""
-        def selective_fail(cmd, **kwargs):
-            if "rebase" in cmd and any("origin" in a for a in cmd):
-                raise RuntimeError("conflict on origin")
-            return ""
-        mock_git.side_effect = selective_fail
-        result = _rebase_onto_target("main", "/tmp/p")
-        assert result == "upstream"
+    def test_no_base_remote_returns_none(self, mock_subproc, mock_git):
+        """Without a resolved base remote there is no fallback guessing."""
+        meta = {}
+        result = _rebase_onto_target("main", "/tmp/p", result_meta=meta)
+        assert result is None
+        assert meta["error"] == "no_base_remote"
+        mock_git.assert_not_called()
 
     @patch("app.claude_step._run_git")
     @patch("app.claude_step.subprocess.run")
-    def test_all_remotes_fail_returns_none(self, mock_subproc, mock_git):
+    def test_rebase_failure_returns_none(self, mock_subproc, mock_git):
         mock_git.side_effect = RuntimeError("conflict")
-        result = _rebase_onto_target("main", "/tmp/p")
+        result = _rebase_onto_target("main", "/tmp/p", preferred_remote="origin")
         assert result is None
 
 
@@ -681,6 +686,13 @@ class TestBuildQualityReviewPrompt:
 # ---------------------------------------------------------------------------
 
 class TestRunPrReview:
+    @pytest.fixture(autouse=True)
+    def _base_remote_resolves(self, monkeypatch):
+        """The strict rebase contract requires a resolved base remote;
+        simulate a checkout whose ``origin`` matches the PR's base repo."""
+        monkeypatch.setattr(
+            "app.pr_review._find_remote_for_repo", lambda *a, **k: "origin",
+        )
     def _mock_pr_context(self):
         return json.dumps({
             "title": "Fix bug",

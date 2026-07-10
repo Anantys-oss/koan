@@ -159,7 +159,7 @@ def _sync_secondary_remotes(
     """Fetch base branch from all remotes besides the primary.
 
     Ensures remote tracking refs are fresh for fork-aware operations
-    (e.g., --onto rebase needs both origin/ and upstream/ refs current).
+    (e.g., locating a PR head branch across fork remotes).
     Non-fatal — failures are logged but never abort the mission.
     """
     rc, stdout, _ = run_git("remote", cwd=project_path)
@@ -419,8 +419,8 @@ def prepare_project_branch(
             result.error = f"reset failed: {stderr}"
             return result
 
-    # Sync secondary remotes so fork-aware operations (--onto rebase,
-    # _is_ancestor checks) see fresh tracking refs for every remote.
+    # Sync secondary remotes so fork-aware operations (e.g. locating a PR
+    # head branch across forks) see fresh tracking refs for every remote.
     _sync_secondary_remotes(base_branch, remote, project_path)
 
     return result

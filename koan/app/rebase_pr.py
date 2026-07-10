@@ -814,24 +814,31 @@ def _run_rebase_impl(
     # ── Step 3: Rebase onto target branch ─────────────────────────────
     print(f"[rebase] Rebasing `{branch}` onto `{base}`", flush=True)
     notify_fn(f"Rebasing `{branch}` onto `{base}`...")
+    rebase_meta: Dict[str, str] = {}
     rebase_remote = _rebase_with_conflict_resolution(
         base, project_path, context, actions_log,
         notify_fn=notify_fn, skill_dir=skill_dir,
         max_conflict_rounds=get_rebase_max_conflict_rounds(),
         preferred_remote=base_remote,
         head_remote=effective_head_remote,
+        result_meta=rebase_meta,
     )
     if rebase_remote:
         actions_log.append(f"Rebased `{branch}` onto `{rebase_remote}/{base}`")
     else:
         _safe_checkout(original_branch, project_path)
-        attempted_remotes = _ordered_remotes(base_remote, cwd=project_path)
-        attempted = ", ".join(attempted_remotes) if attempted_remotes else "none"
-        guidance = _build_rebase_recovery_guidance(project_path)
+        error_code = rebase_meta.get("error", "rebase_failed")
+        detail = rebase_meta.get("detail", "")
+        if error_code == "rebase_failed":
+            guidance = _build_rebase_recovery_guidance(project_path)
+            return False, (
+                "[conflict_unresolved] "
+                f"Rebase failed on `{base_remote or '?'}/{base}`. "
+                f"Could not resolve conflicts.\n{guidance}"
+            )
         return False, (
-            "[conflict_unresolved] "
-            f"Rebase failed on `{base}` (tried: {attempted}). "
-            f"Could not resolve conflicts.\n{guidance}"
+            f"[{error_code}] Rebase of `{branch}` onto "
+            f"`{base_remote or '?'}/{base}` aborted before any push: {detail}"
         )
 
     # Save the clean rebased state before optional review-feedback edits.
@@ -1303,20 +1310,22 @@ def _rebase_with_conflict_resolution(
     max_conflict_rounds: int = 10,
     preferred_remote: Optional[str] = None,
     head_remote: Optional[str] = None,
+    result_meta: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     """Rebase onto target branch, resolving conflicts via Claude if needed.
 
-    Delegates to :func:`claude_step._rebase_onto_target` for the core
-    fetch-and-rebase loop, injecting a conflict-resolution callback that
+    Delegates to :func:`claude_step._rebase_onto_target` for the strict
+    fetch-and-rebase flow, injecting a conflict-resolution callback that
     invokes Claude to resolve conflicted files.
 
     When ``git rebase`` hits conflicts, Claude is invoked to resolve the
     conflicted files, they are staged, and the rebase is continued.  This
-    loop repeats for up to *max_conflict_rounds* per remote (one round per
+    loop repeats for up to *max_conflict_rounds* rounds (one round per
     conflicting commit).
 
     Returns:
-        Remote name used (e.g. "origin") on success, None on total failure.
+        Remote name used (e.g. "origin") on success, None on total failure
+        (*result_meta*, when given, then carries ``error``/``detail``).
     """
 
     def _on_conflict(proj_path: str) -> bool:
@@ -1333,6 +1342,7 @@ def _rebase_with_conflict_resolution(
         preferred_remote=preferred_remote,
         head_remote=head_remote,
         on_conflict=_on_conflict,
+        result_meta=result_meta,
     )
 
 
