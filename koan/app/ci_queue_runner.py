@@ -196,7 +196,11 @@ def _inject_ci_fix_mission(instance_dir: str, pr_url: str, entry: dict) -> bool:
 
     mission_text = f"- {tag}/ci_check {pr_url}"
 
-    return insert_pending_mission(missions_path, mission_text, urgent=True)
+    # Insert non-urgent (normal FIFO) so CI fixing never jumps ahead of genuine
+    # backlog work (/rebase, /review, /implement). A single flaky or unfixable
+    # PR must not freeze the single-slot mission queue; the ## CI attempt budget
+    # (ci_fix_max_attempts) still drives interleaved retries via drain_one().
+    return insert_pending_mission(missions_path, mission_text, urgent=False)
 
 
 def _project_name_from_path(project_path: str) -> str:
@@ -338,12 +342,11 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     Steps:
     1. Fetch PR context and confirm CI failure (non-blocking)
     2. Checkout the PR branch
-    3. Attempt Claude-based fix (up to max_attempts from ## CI entry)
+    3. Attempt Claude-based fix (up to get_ci_check_max_fix_attempts() steps
+       per mission; default 1, then yields the queue)
     4. Force-push fixes and re-check CI
     5. Restore original branch
     """
-    import os
-
     from app.config import is_ci_check_enabled
     if not is_ci_check_enabled():
         return False, "CI check system is disabled in config.yaml (ci_check.enabled: false)."
@@ -353,18 +356,16 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     owner, repo, pr_number = parse_pr_url(pr_url)
     full_repo = f"{owner}/{repo}"
 
-    # Determine max attempts from ## CI entry (respects per-enqueue config)
-    max_fix_attempts = 2  # fallback if not in ## CI
-    koan_root = os.environ.get("KOAN_ROOT", "")
-    if koan_root:
-        missions_path = Path(koan_root) / "instance" / "missions.md"
-        if missions_path.exists():
-            from app.missions import get_ci_items
-            items = get_ci_items(missions_path.read_text())
-            for item in items:
-                if item["pr_url"] == pr_url:
-                    max_fix_attempts = item["max_attempts"]
-                    break
+    # Per-mission fix budget is intentionally decoupled from the ## CI item's
+    # ``max_attempts`` (the total per-PR budget enforced by drain_one across
+    # interleaved re-injections). Each fix mission runs at most
+    # ``get_ci_check_max_fix_attempts()`` Claude steps (default 1) and then
+    # yields the single mission slot back to the queue; drain_one re-injects the
+    # next interleaved attempt only if CI is still failing and the ## CI budget
+    # is not exhausted. This prevents the attempts×attempts compounding that let
+    # one failing PR monopolize the queue for hours.
+    from app.config import get_ci_check_max_fix_attempts
+    max_fix_attempts = get_ci_check_max_fix_attempts()
 
     # Fetch minimal PR context needed for CI fix
     from app.rebase_pr import fetch_pr_context
@@ -484,6 +485,45 @@ def run_ci_check_and_fix(pr_url: str, project_path: str) -> Tuple[bool, str]:
     return success, f"Actions:\n{summary}"
 
 
+def _bounded_ci_fix_step_runner(
+    *,
+    prompt: str,
+    project_path: str,
+    commit_msg: str,
+    success_label: str,
+    failure_label: str,
+    actions_log: list,
+    use_convention_subject: bool,
+) -> Tuple[object, bool, int]:
+    """CI-fix step runner with queue-safety bounds.
+
+    Mirrors :func:`app.claude_step._default_ci_fix_step_runner` but replaces the
+    2-hour ``skill_timeout`` with the dedicated ``ci_check.timeout`` overall cap
+    and adds an idle guard (``first_output_timeout``) so a stalled fix step is
+    killed early instead of holding the single-slot mission queue for hours.
+    """
+    from app.claude_step import run_claude_step
+    from app.config import (
+        get_ci_check_step_timeout,
+        get_first_output_timeout,
+        get_skill_max_turns,
+    )
+
+    result = run_claude_step(
+        prompt=prompt,
+        project_path=project_path,
+        commit_msg=commit_msg,
+        success_label=success_label,
+        failure_label=failure_label,
+        actions_log=actions_log,
+        max_turns=get_skill_max_turns(),
+        timeout=get_ci_check_step_timeout(),
+        idle_timeout=get_first_output_timeout(),
+        use_convention_subject=use_convention_subject,
+    )
+    return result, False, 1
+
+
 def _attempt_ci_fixes(
     branch: str,
     base: str,
@@ -525,6 +565,7 @@ def _attempt_ci_fixes(
         prompt_builder=_build_prompt,
         commit_msg_template=f"fix: resolve CI failures on #{pr_number} (attempt {{attempt}})",
         base_remote=base_remote,
+        step_runner=_bounded_ci_fix_step_runner,
     )
 
     # Re-enqueue for monitoring when a fix was pushed and CI is pending
