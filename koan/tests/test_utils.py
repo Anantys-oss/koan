@@ -1154,6 +1154,46 @@ class TestTruncateDiff:
         assert "truncated" in result
 
 
+class TestTruncateDiffWithSkips:
+    """Tests for truncate_diff_with_skips() — surfaces the omitted-file list."""
+
+    def _make_file_block(self, filename, lines=10):
+        header = f"diff --git a/{filename} b/{filename}\n"
+        header += f"--- a/{filename}\n+++ b/{filename}\n"
+        header += "@@ -1,5 +1,5 @@\n"
+        body = "".join(f"+line {i}\n" for i in range(lines))
+        return header + body
+
+    def test_with_skips_reports_omitted_files(self):
+        from app.utils import truncate_diff_with_skips
+        block_a = self._make_file_block("a.py", lines=3)
+        block_b = self._make_file_block("b.py", lines=50)
+        diff = block_a + block_b
+        budget = len(block_a) + 120
+        text, skipped = truncate_diff_with_skips(diff, budget)
+        assert "b.py" in skipped
+        assert "Omitted files" in text  # footer still embedded for the prompt body
+
+    def test_truncate_diff_output_unchanged(self):
+        from app.utils import truncate_diff, truncate_diff_with_skips
+        block_a = self._make_file_block("a.py", lines=3)
+        block_b = self._make_file_block("b.py", lines=50)
+        diff = block_a + block_b
+        budget = len(block_a) + 120
+        assert truncate_diff(diff, budget) == truncate_diff_with_skips(diff, budget)[0]
+
+    def test_with_skips_no_truncation_when_under_cap(self):
+        from app.utils import truncate_diff_with_skips
+        diff = self._make_file_block("a.py", lines=3)
+        text, skipped = truncate_diff_with_skips(diff, 10_000)
+        assert skipped == []
+        assert text == diff
+
+    def test_empty_diff(self):
+        from app.utils import truncate_diff_with_skips
+        assert truncate_diff_with_skips("", 100) == ("", [])
+
+
 class TestIsKnownProject:
     """Tests for is_known_project() shared utility."""
 

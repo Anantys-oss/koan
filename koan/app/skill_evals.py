@@ -936,7 +936,7 @@ def review_live_fn(
 
     skill_dir = _SKILLS_CORE_DIR / case.skill
     context = build_minimal_review_context(case)
-    prompt = build(context, skill_dir=skill_dir, project_path=None)
+    prompt, _coverage_note = build(context, skill_dir=skill_dir, project_path=None)
     raw, error = run(prompt, project_path)
     if error:
         raise RuntimeError(f"review invocation failed: {error}")

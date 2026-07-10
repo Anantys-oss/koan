@@ -2060,3 +2060,46 @@ class TestMemoryMonitorConfig:
             conf = get_memory_monitor_config()
         assert conf["enabled"] is False
         assert conf["threshold_mb"] == 1200
+
+
+class TestReviewCompressorBudget:
+    def test_token_budget_default(self):
+        from app.config import get_review_compressor_token_budget
+        with _mock_config({}):
+            assert get_review_compressor_token_budget() == 80_000
+
+    def test_token_budget_override(self):
+        from app.config import get_review_compressor_token_budget
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": 120_000}}}
+        ):
+            assert get_review_compressor_token_budget() == 120_000
+
+    def test_token_budget_malformed_falls_back(self):
+        from app.config import get_review_compressor_token_budget
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": "huge"}}}
+        ):
+            assert get_review_compressor_token_budget() == 80_000
+
+    def test_token_budget_bool_falls_back(self):
+        from app.config import get_review_compressor_token_budget
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": True}}}
+        ):
+            assert get_review_compressor_token_budget() == 80_000
+
+    def test_max_diff_chars_derived_from_budget(self):
+        from app.config import get_review_max_diff_chars
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": 80_000}}}
+        ):
+            # 80_000 tokens * 3.5 chars/token * 4 headroom
+            assert get_review_max_diff_chars() == 1_120_000
+
+    def test_max_diff_chars_scales_with_budget(self):
+        from app.config import get_review_max_diff_chars
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": 40_000}}}
+        ):
+            assert get_review_max_diff_chars() == 560_000

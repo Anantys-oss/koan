@@ -27,14 +27,14 @@ from typing import List, Optional, Tuple
 from urllib.parse import quote
 
 from app.claude_step import resolve_pr_location
-from app.config import get_review_bot_triage_config, get_review_history_config, get_review_inline_comments_config, get_review_reply_config, get_review_verdict_config, is_review_compressor_enabled
+from app.config import get_review_bot_triage_config, get_review_compressor_token_budget, get_review_history_config, get_review_inline_comments_config, get_review_max_diff_chars, get_review_reply_config, get_review_uncompressed_max_diff_chars, get_review_verdict_config, is_review_compressor_enabled
 from app.run_log import log
 from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
 from app.rebase_pr import fetch_pr_context
-from app.utils import KOAN_ROOT
+from app.utils import KOAN_ROOT, truncate_diff_with_skips
 from app.review_markers import (
     SUMMARY_TAG,
     COMMIT_IDS_START,
@@ -614,6 +614,40 @@ def _resolve_issue_context(
         return ""
 
 
+def _build_coverage_note(
+    fetch_skipped: list,
+    compressor_skipped: list,
+    triaged_files: Optional[list],
+) -> str:
+    """Build ONE unified coverage note used for both the review prompt's
+    {SKIPPED_FILES} slot and the note prepended to the posted GitHub review.
+
+    - fetch_skipped:      files cut at diff-fetch time (oversized-diff backstop)
+    - compressor_skipped: files packed out by the token-budget compressor
+    - triaged_files:      trivial files intentionally skipped (informational)
+
+    Returning a single value (no copy-then-append) guarantees the prompt and
+    the posted body never diverge.
+    """
+    # dict.fromkeys preserves order and dedupes (a file cut at fetch never
+    # reaches the compressor, but dedupe defensively).
+    omitted = list(dict.fromkeys([*(fetch_skipped or []), *(compressor_skipped or [])]))
+    parts: list[str] = []
+    if omitted:
+        listing = ", ".join(f"`{f}`" for f in omitted)
+        parts.append(
+            f"> ⚠️ **Partial review** — {len(omitted)} file(s) omitted "
+            f"due to diff size and NOT reviewed: {listing}"
+        )
+    if triaged_files:
+        triaged_list = ", ".join(f"`{t.path}` ({t.reason})" for t in triaged_files)
+        parts.append(
+            f"> ℹ️ Triaged {len(triaged_files)} trivial file(s) "
+            f"(not reviewed): {triaged_list}"
+        )
+    return ("\n>\n".join(parts) + "\n\n") if parts else ""
+
+
 def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
@@ -626,7 +660,7 @@ def build_review_prompt(
     project_name: str = "",
     prior_review: Optional[str] = None,
     issue_context: Optional[str] = None,
-) -> str:
+) -> Tuple[str, str]:
     """Build a prompt for Claude to review a PR.
 
     When plan_body is provided, selects the plan-aware prompt variant
@@ -690,31 +724,42 @@ def build_review_prompt(
         project_memory += _build_review_session_memory(project_name, task_text)
 
     raw_diff = context["diff"]
-    skipped_note = ""
+    # Files skipped to fit the token budget — either packed out by the
+    # compressor (on-path) or cut by the token-safe backstop (off-path).
+    budget_skipped: list = []
     if is_review_compressor_enabled():
-        compressed = compress_diff(raw_diff)
+        compressed = compress_diff(raw_diff, get_review_compressor_token_budget())
         raw_diff = compressed.diff_text
-        if compressed.skipped_files:
+        budget_skipped = compressed.skipped_files
+        if budget_skipped:
             log(
                 "review",
-                f"Diff compressed — {len(compressed.skipped_files)} file(s) skipped: "
-                + ", ".join(compressed.skipped_files),
+                f"Diff compressed — {len(budget_skipped)} file(s) skipped: "
+                + ", ".join(budget_skipped),
             )
-            skipped_list = ", ".join(f"`{f}`" for f in compressed.skipped_files)
-            skipped_note = (
-                f"> ⚠️ Diff compressed — {len(compressed.skipped_files)} file(s) omitted"
-                f" due to size: {skipped_list}\n\n"
+    else:
+        # Compressor off: no packer re-shrinks the fetch-time diff, so apply a
+        # token-safe backstop here or the raw diff (up to the generous fetch
+        # cap) could overflow the model context and hard-fail the review. Skips
+        # flow into the same coverage note as compressor skips.
+        raw_diff, budget_skipped = truncate_diff_with_skips(
+            raw_diff, get_review_uncompressed_max_diff_chars()
+        )
+        if budget_skipped:
+            log(
+                "review",
+                f"Compressor off — diff truncated, {len(budget_skipped)} "
+                f"file(s) skipped: " + ", ".join(budget_skipped),
             )
 
-    if triaged_files:
-        triaged_list = ", ".join(
-            f"`{t.path}` ({t.reason})" for t in triaged_files
-        )
-        triage_note = (
-            f"> ℹ️ Triaged {len(triaged_files)} trivial file(s)"
-            f" (not reviewed): {triaged_list}\n\n"
-        )
-        skipped_note = skipped_note + triage_note
+    # ONE unified coverage note — the same value feeds the {SKIPPED_FILES}
+    # prompt slot AND is returned for prepending to the posted review, so the
+    # prompt and the posted body can never diverge.
+    coverage_note = _build_coverage_note(
+        fetch_skipped=context.get("diff_skipped_files", []),
+        compressor_skipped=budget_skipped,
+        triaged_files=triaged_files,
+    )
 
     if issue_context is None:
         issue_context = _resolve_issue_context(context, project_name, project_path)
@@ -732,7 +777,7 @@ def build_review_prompt(
         REPLIABLE_COMMENTS=repliable_text,
         PRIOR_REVIEW=prior_review_block,
         PROJECT_MEMORY=project_memory,
-        SKIPPED_FILES=skipped_note,
+        SKIPPED_FILES=coverage_note,   # same value returned below
         ISSUE_CONTEXT=issue_context or "",
     )
 
@@ -743,7 +788,8 @@ def build_review_prompt(
             plan_body = _truncate_plan(plan_body)
         kwargs["PLAN"] = plan_body
 
-    return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+    prompt = load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+    return prompt, coverage_note
 
 
 def _review_attribution(project_name: str = "") -> Tuple[str, str]:
@@ -1842,6 +1888,7 @@ def _post_review_comment(
     model: str = "",
     duration_seconds: float = 0,
     live_head_sha: str = "",
+    coverage_note: str = "",
 ) -> Tuple[bool, str]:
     """Post (or update) the review as a comment on the PR.
 
@@ -1859,8 +1906,16 @@ def _post_review_comment(
     end of the review content (the branch moved during review). Empty
     ``live_head_sha`` (the default) leaves the body byte-identical.
 
+    When ``coverage_note`` is non-empty, it is prepended to the review body
+    *before* the GitHub-length truncation so the partial-review warning is
+    never the part that gets cut.
+
     Returns (True, "") on success, (False, error_detail) on failure.
     """
+    # Surface partial-coverage warning at the very top, before truncation.
+    if coverage_note:
+        review_text = f"{coverage_note.rstrip()}\n\n{review_text}"
+
     # Truncate if too long for GitHub (max ~65536 chars)
     max_len = 60000
     if len(review_text) > max_len:
@@ -2637,7 +2692,10 @@ def run_private_review(
     notify_fn(f"Privately reviewing PR #{pr_number} ({full_repo})...")
 
     try:
-        context = fetch_pr_context(owner, repo, pr_number, project_path)
+        context = fetch_pr_context(
+            owner, repo, pr_number, project_path,
+            max_diff_chars=get_review_max_diff_chars(),
+        )
     except Exception as e:
         return False, f"Failed to fetch PR context: {e}", None, {}
 
@@ -2652,7 +2710,7 @@ def run_private_review(
 
     plan_body = _resolve_plan_body(plan_url, context.get("body", ""))
 
-    prompt = build_review_prompt(
+    prompt, _coverage_note = build_review_prompt(
         context,
         skill_dir=skill_dir,
         architecture=architecture,
@@ -2768,6 +2826,7 @@ def run_review(
         with ThreadPoolExecutor(max_workers=min(2, github_workers)) as pool:
             f_context = pool.submit(
                 fetch_pr_context, owner, repo, pr_number, project_path,
+                max_diff_chars=get_review_max_diff_chars(),
             )
             f_comments = pool.submit(
                 fetch_repliable_comments, owner, repo, pr_number, True, bot_username,
@@ -2779,7 +2838,10 @@ def run_review(
             repliable_comments = f_comments.result()
     else:
         try:
-            context = fetch_pr_context(owner, repo, pr_number, project_path)
+            context = fetch_pr_context(
+                owner, repo, pr_number, project_path,
+                max_diff_chars=get_review_max_diff_chars(),
+            )
         except Exception as e:
             return False, f"Failed to fetch PR context: {e}", None
         repliable_comments = fetch_repliable_comments(
@@ -2872,7 +2934,7 @@ def run_review(
         extract_prior_review_body(existing_comment.get("body", ""))
         if existing_comment else None
     )
-    prompt = build_review_prompt(
+    prompt, coverage_note = build_review_prompt(
         context, skill_dir=skill_dir, architecture=architecture,
         comments=comments, repliable_comments=repliable_comments,
         plan_body=plan_body or None, project_path=project_path,
@@ -3019,6 +3081,7 @@ def run_review(
         model=review_model,
         duration_seconds=_review_duration,
         live_head_sha=live_head_sha,
+        coverage_note=coverage_note,
     )
 
     # Step 7c: Optionally post each finding as an inline PR comment (opt-in).

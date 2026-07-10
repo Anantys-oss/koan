@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-07-02
+updated: 2026-07-09
 ---
 
 # Component Spec — Skills System
@@ -139,6 +139,29 @@ behavioural unit tests instead):
 - Custom skills under `instance/skills/<scope>/` can be cloned Git repos for team sharing
   (`skill_manager.py`).
 - GitHub/Jira @mentions route through `external_skill_dispatch.py`.
+
+### `review` diff-size & partial-coverage contract
+
+- **Single source of truth for diff size** is the compressor token budget
+  (`optimizations.review_compressor.token_budget`, default 80,000), read via
+  `config.get_review_compressor_token_budget()`. The fetch-time character cap is
+  *derived* from it — `config.get_review_max_diff_chars()` = budget × 3.5 × 4 —
+  so there is no independent, conflicting numeric cap. When the compressor is
+  *disabled* (`review_compressor.enabled: false`), no packer re-shrinks the diff,
+  so `build_review_prompt()` applies a token-safe backstop
+  `config.get_review_uncompressed_max_diff_chars()` = budget × 3.5 (no headroom)
+  via `utils.truncate_diff_with_skips()` — the size guard holds in every config
+  and its skips feed the same coverage note.
+- `fetch_pr_context(...)` (in `rebase_pr.py`) takes `max_diff_chars` (legacy default
+  32 000 for rebase/squash/recreate/ci_queue callers; `/review` passes the derived
+  cap) and returns a `diff_skipped_files` list via `utils.truncate_diff_with_skips()`
+  so files cut at fetch time are first-class, not buried in the diff footer.
+- `review_runner.build_review_prompt()` returns a `(prompt, coverage_note)` tuple.
+  `_build_coverage_note()` merges fetch-time skips, compressor skips, and triaged
+  files into **one** value used both for the `{SKIPPED_FILES}` prompt slot and the
+  returned note — the two can never diverge. `_post_review_comment(..., coverage_note=)`
+  prepends the note (a `⚠️ Partial review` block) above the review body, before the
+  60 K GitHub-length truncation, so partial coverage is never silent.
 
 ## Known debt / watch-outs
 
