@@ -975,6 +975,47 @@ def get_skill_timeout() -> int:
     return _safe_int(config.get("skill_timeout", 7200), 7200)
 
 
+def _ci_check_section() -> dict:
+    """Return the ``ci_check`` config as a dict.
+
+    Tolerates the two accepted shapes (mirrors ``is_ci_check_enabled``): a
+    mapping (``ci_check: {enabled: true, ...}``) or a bare bool
+    (``ci_check: true``). Anything else yields an empty dict so callers fall
+    back to documented defaults.
+    """
+    ci_cfg = _load_config().get("ci_check", {})
+    return ci_cfg if isinstance(ci_cfg, dict) else {}
+
+
+def get_ci_check_step_timeout() -> int:
+    """Overall wall-clock timeout (seconds) for a single CI-fix Claude step.
+
+    The auto-injected ``/ci_check`` fix mission runs in the single-slot mission
+    queue, so an unbounded step blocks all other work. This dedicated cap keeps
+    a stuck fix step from holding the queue for the full ``skill_timeout``
+    (2 hours). Paired with an idle guard (``first_output_timeout``) in the
+    CI-fix step runner.
+
+    Config key: ci_check.timeout (default: 3600 — 1 hour).
+    """
+    return _safe_int(_ci_check_section().get("timeout", 3600), 3600)
+
+
+def get_ci_check_max_fix_attempts() -> int:
+    """Max Claude fix attempts performed *within a single* ``/ci_check`` mission.
+
+    Decoupled from ``ci_fix_max_attempts`` (the total per-PR budget enforced by
+    ``ci_queue_runner.drain_one`` across interleaved re-injections). Keeping this
+    at 1 means each fix mission does one attempt and yields the queue, so a
+    failing PR cannot monopolize the single mission slot with a compounding
+    multi-attempt loop.
+
+    Config key: ci_check.max_fix_attempts_per_mission (default: 1). Floored at 1.
+    """
+    value = _safe_int(_ci_check_section().get("max_fix_attempts_per_mission", 1), 1)
+    return max(1, value)
+
+
 def _missions_section() -> dict:
     return _load_config().get("missions", {}) or {}
 
