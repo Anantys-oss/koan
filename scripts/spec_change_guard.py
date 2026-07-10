@@ -179,14 +179,22 @@ def _is_bookkeeping_only(path: str, old_ref: str) -> bool:
 
 
 def changed_files(base_ref: str) -> list[str]:
-    """Added/modified files vs ``base_ref`` (impure; not unit-tested).
+    """Added/modified/deleted files vs ``base_ref`` (impure; not unit-tested).
+
+    Uses ``--diff-filter=AMD`` (not just ``AM``): **deleting** or **retiring** a
+    durable contract is at least as architectural as editing one, so a bare
+    ``git rm specs/components/core.md`` must not slip past the gate undeclared.
+    ``--no-renames`` decomposes a rename into a delete of the old path plus an add of
+    the new one, so both sides of a moved contract are evaluated. Deleting an
+    ephemeral speckit file, an ``index.md``, or the template is harmless — those are
+    already excluded by ``is_durable_contract()``.
 
     Durable-contract files whose diff is frontmatter-only (a bookkeeping date bump
     from ``/brain sync`` or the wiki-sync backstop, exempt per Principle I) are
     dropped so the guard doesn't demand an architectural-change declaration for them.
     """
     out = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=AM", f"{base_ref}...HEAD"],
+        ["git", "diff", "--name-only", "--diff-filter=AMD", "--no-renames", f"{base_ref}...HEAD"],
         capture_output=True,
         text=True,
         check=True,

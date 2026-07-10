@@ -154,10 +154,12 @@ governance + CI feature.
   text includes the fixed phrase **"architectural change"** (regex
   `^\s*[-*]\s*\[x\]\s*.*architectural change`, `re.I | re.M`). An unchecked `- [ ]` box
   or an absent phrase → not declared.
-- **Changed files** come from `git diff --name-only --diff-filter=AM <base>...HEAD`
-  (added + modified; deletions of a contract are not gated — removing a contract is
-  visible in the diff and does not risk silent code-mirroring). The base ref is a CLI arg
-  (`--base-ref`, default `origin/main`), matching `wiki_check.py`.
+- **Changed files** come from `git diff --name-only --diff-filter=AMD --no-renames
+  <base>...HEAD` (added + modified + deleted; deleting or retiring a contract is
+  architectural too, so a bare `git rm specs/components/core.md` cannot bypass the
+  gate undeclared — `--no-renames` splits a rename into delete-old + add-new so both
+  sides are evaluated). The base ref is a CLI arg (`--base-ref`, default `origin/main`),
+  matching `wiki_check.py`.
 - **PR body source**: `--pr-body-file <path>` (CI writes the event body to a file) or
   `--pr-body -` (stdin). If durable contracts changed and no body was supplied → exit
   non-zero with the fail-closed message.

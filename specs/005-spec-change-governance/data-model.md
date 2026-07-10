@@ -5,8 +5,11 @@ guard reasons over.
 
 ## ChangedFile (input)
 
-A repo-relative path string emitted by `git diff --name-only --diff-filter=AM
-<base>...HEAD`.
+A repo-relative path string emitted by `git diff --name-only --diff-filter=AMD
+--no-renames <base>...HEAD`. `AMD` covers **A**dds, **M**odifications, and
+**D**eletions (retiring a contract is architectural too — a bare `git rm` must not
+bypass the gate); `--no-renames` splits a rename into delete-old + add-new so both
+sides are evaluated.
 
 - Fields: `path: str` (POSIX-style, repo-relative).
 - Derived: `is_durable_contract(path) -> bool`.
