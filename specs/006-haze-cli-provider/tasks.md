@@ -28,8 +28,8 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Create `koan/app/provider/haze.py` with `HazeProvider(CLIProvider)` skeleton per contracts/haze-provider-contract.md: `name = "haze"`, `binary()` (`_binary_override` → `"haze"`), `is_available()`, `invocation_lock_name() = "haze-cli"`, capability declarations (`supports_stream_json() = True`, `supports_session_resume() = False`, `supports_system_prompt_file() = False`, `supports_last_message_file() = False`, `has_api_quota() = True`), module docstring citing the haze ≥0.7.0 contract
-- [ ] T005 Register haze in `koan/app/provider/__init__.py`: top-level import + `_PROVIDERS["haze"] = HazeProvider` (single source of truth — `known_providers()`, config validation, dashboard forms, per-role `cli:` resolution all derive)
+- [X] T004 Create `koan/app/provider/haze.py` with `HazeProvider(CLIProvider)` skeleton per contracts/haze-provider-contract.md: `name = "haze"`, `binary()` (`_binary_override` → `"haze"`), `is_available()`, `invocation_lock_name() = "haze-cli"`, capability declarations (`supports_stream_json() = True`, `supports_session_resume() = False`, `supports_system_prompt_file() = False`, `supports_last_message_file() = False`, `has_api_quota() = True`), module docstring citing the haze ≥0.7.0 contract
+- [X] T005 Register haze in `koan/app/provider/__init__.py`: top-level import + `_PROVIDERS["haze"] = HazeProvider` (single source of truth — `known_providers()`, config validation, dashboard forms, per-role `cli:` resolution all derive)
 
 **Checkpoint**: `from app.provider import get_provider` resolves `KOAN_CLI_PROVIDER=haze`; user stories can start
 
