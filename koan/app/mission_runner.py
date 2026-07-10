@@ -748,7 +748,8 @@ def _record_cost_event(
             try:
                 from app.api.mission_index import find_active_mission_id
                 mission_id = find_active_mission_id(Path(instance_dir), mission_title) or ""
-            except Exception:
+            except Exception as e:
+                _log_runner("debug", f"Mission id resolution failed for {mission_title!r}: {e}")
                 mission_id = ""
 
         record_usage(

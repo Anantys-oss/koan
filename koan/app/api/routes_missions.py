@@ -194,7 +194,11 @@ def get_mission_route(mission_id: str):
     if isinstance(created, (int, float)) and created > 0:
         try:
             start = datetime.fromtimestamp(created).date()
-        except (ValueError, OSError):
+        except (ValueError, OSError) as e:
+            current_app.logger.warning(
+                "usage window: created=%r failed to convert for mission %s (%s); "
+                "falling back to default window", created, mission_id, e,
+            )
             start = None
     usage = aggregate_mission_usage(
         _instance_dir(), mission_id,
