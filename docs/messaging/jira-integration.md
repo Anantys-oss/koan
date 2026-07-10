@@ -4,7 +4,7 @@ title: "Jira Integration"
 description: "Full reference for controlling Kōan via `@mention` commands in Jira issue comments, including project mapping, ADF parsing, and coexistence with GitHub."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-05-29
+updated: 2026-07-10
 ---
 
 # Jira Integration
@@ -259,6 +259,17 @@ When `enable_multiple_instances: true` is set, each Koan instance should declare
 Jira Cloud stores comment bodies as ADF — a JSON tree format. Koan recursively extracts plain text from ADF nodes while skipping code blocks (`codeBlock`, `code`, `inlineCard`) to prevent false @mention matches inside code examples.
 
 Both ADF (Jira Cloud) and plain text (Jira Server/older) formats are supported.
+
+### GitHub alert syntax
+
+GitHub-flavored alert blocks — `> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`,
+`> [!WARNING]`, `> [!CAUTION]` — have no native Jira equivalent and would
+otherwise render as literal `> [!WARNING]` text. When Koan translates a PR body
+or `/plan` output into a Jira comment, it degrades each alert block into a plain
+`TYPE: text` line (for example, `WARNING: Data loss possible`) so the note stays
+readable. The detection is deliberately narrow — only the five canonical alert
+keywords on an exact `> [!TYPE]` opener line are converted, so an ordinary
+human-written Jira blockquote is left untouched.
 
 ### Deduplication
 
