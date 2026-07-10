@@ -2269,3 +2269,35 @@ class TestSkillApproveCommand:
         mock_reset.assert_not_called()
         reply = mock_send.call_args[0][0]
         assert "❌" in reply
+
+
+# ---------------------------------------------------------------------------
+# ACK_EMOJI must be a valid Telegram reaction
+# ---------------------------------------------------------------------------
+
+# Telegram's setMessageReaction only accepts emoji from this fixed whitelist
+# (Bot API ReactionTypeEmoji). Anything else yields Bad Request: REACTION_INVALID.
+# Source: https://core.telegram.org/bots/api#reactiontypeemoji
+TELEGRAM_ALLOWED_REACTIONS = {
+    "👍", "👎", "❤", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢",
+    "🎉", "🤩", "🤮", "💩", "🙏", "👌", "🕊", "🤡", "🥱", "🥴", "😍", "🐳",
+    "❤‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓",
+    "🍾", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "👨‍💻", "👀", "🎃", "🙈",
+    "😇", "😨", "🤝", "✍", "🤗", "🫡", "🎅", "🎄", "☃", "💅", "🤪", "🗿",
+    "🆒", "💘", "🙉", "🦄", "😘", "💊", "🙊", "😎", "👾", "🤷‍♂", "🤷", "🤷‍♀",
+    "😡",
+}
+
+
+class TestAckEmojiIsValidReaction:
+    def test_ack_emoji_is_accepted_by_telegram(self):
+        """The mission-ack reaction is passed verbatim to Telegram's
+        setMessageReaction. If it is not in Telegram's allowed set, every ack
+        fails with REACTION_INVALID (observed 20+ times/week in production logs).
+        """
+        from app import command_handlers as ch
+
+        assert ch.ACK_EMOJI in TELEGRAM_ALLOWED_REACTIONS, (
+            f"ACK_EMOJI {ch.ACK_EMOJI!r} is not a valid Telegram reaction — "
+            "Telegram will reject it with REACTION_INVALID"
+        )
