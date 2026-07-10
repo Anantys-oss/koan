@@ -26,7 +26,7 @@ Templates requiring updates:
   - .specify/templates/spec-template.md    ✅ no change — generic speckit template
   - .specify/templates/tasks-template.md   ✅ no change — generic speckit template
 Reconciled in THIS amendment's branch (spec 005-spec-change-governance):
-  - CLAUDE.md + workspace/koan/CLAUDE.md — "Specs discipline (mandatory)" section
+  - CLAUDE.md — "Specs discipline (mandatory)" section
   - specs/README.md — "Spec discipline" section
   - docs/design/spec-changes-are-architectural.md — new decision doc (rationale)
   - docs/design/decisions.md — new cross-linked entry

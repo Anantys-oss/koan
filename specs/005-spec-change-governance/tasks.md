@@ -63,9 +63,9 @@ final marker string/paths chosen in Phase 1–2.
   bump the version (2.0.0 → 3.0.0, MAJOR — prior compliance redefined) and update
   **Last Amended**; prepend a fresh Sync Impact Report enumerating every reconciled
   artifact. (FR-001, FR-002; SC-003, SC-006.)
-- [x] **T006** [P] [US3] Update the *Specs discipline (mandatory)* section in **both**
-  `CLAUDE.md` (repo root) and `workspace/koan/CLAUDE.md` to the new rule, cross-linking
-  the guard (`scripts/spec_change_guard.py`) and the decision doc. (FR-003; SC-003.)
+- [x] **T006** [P] [US3] Update the *Specs discipline (mandatory)* section in
+  `CLAUDE.md` (repo root) to the new rule, cross-linking the guard
+  (`scripts/spec_change_guard.py`) and the decision doc. (FR-003; SC-003.)
 - [x] **T007** [P] [US3] Update `specs/README.md` *Spec discipline* section to the new
   rule, preserving the durable-vs-ephemeral distinction it already documents. (FR-004;
   SC-003.)

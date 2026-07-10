@@ -133,7 +133,6 @@ docs/design/
 # Reconciled governance texts (edits, not new files):
 .specify/memory/constitution.md          # Principle II + Workflow gate + version bump + Sync Impact Report
 CLAUDE.md                                 # repo-root Specs discipline section
-workspace/koan/CLAUDE.md                  # nested Specs discipline section
 specs/README.md                          # Spec discipline section
 docs/design/decisions.md                 # add a short "Spec Changes Are Architectural" decision entry + backlink
 ```
