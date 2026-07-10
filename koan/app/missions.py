@@ -342,6 +342,14 @@ def insert_mission(content: str, entry: str, *, urgent: bool = False) -> str:
     # Sanitize newlines in the entry to keep it on one line
     entry = re.sub(r"\r\n|\r|\n", " ", entry)
 
+    # Ensure a list-item prefix. Parsers (and the mission store) only treat
+    # "- "/"### " lines as items, so a caller passing raw text (e.g. hooks) would
+    # otherwise create an entry the picker never sees — and one the store drops
+    # on round-trip. Normalize it to a proper "- " mission line.
+    _stripped = entry.lstrip()
+    if _stripped and not (_stripped.startswith("- ") or _stripped.startswith("### ")):
+        entry = f"- {_stripped}"
+
     # Add queued timestamp if not already present
     if _QUEUED_MARKER not in entry:
         entry = stamp_queued(entry)
