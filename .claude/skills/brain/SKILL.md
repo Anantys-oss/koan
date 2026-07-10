@@ -98,9 +98,8 @@ implementing a feature, before finishing the change:
    backfill only, never touch *other* untouched pages).
 3. Run `python3 scripts/okf_backfill.py indexes` to regenerate any stale bundle-root or
    per-folder `index.md` — **never hand-edit a generated `index.md`**.
-4. Add or update the page's entry in `wiki/index.md`, and append a line to
-   `wiki/log.md`.
-5. Present the frontmatter/index/log changes as a normal diff — not a separate
+4. Add or update the page's entry in `wiki/index.md`.
+5. Present the frontmatter/index changes as a normal diff — not a separate
    "propose, wait for approval" step (wiki bookkeeping is exempt from that, per
    `wiki/SCHEMA.md`'s "Workflow customizations").
 
@@ -123,8 +122,7 @@ preserving — as a durable, cited `docs/reference/*.md` page. Full procedure in
    both claims with citations, note the page as contested in its body, and flag it to
    the user.
 4. Link the new page from related pages where it makes sense; run
-   `python3 scripts/okf_backfill.py indexes`; add a `wiki/index.md` entry; append a
-   `wiki/log.md` `ingest` line.
+   `python3 scripts/okf_backfill.py indexes`; add a `wiki/index.md` entry.
 5. Commit via the project's normal commit flow — only the compiled page + the
    regenerated indexes are staged, **never `raw/`**.
 6. Discuss the takeaway with the user.

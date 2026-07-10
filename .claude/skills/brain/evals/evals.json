@@ -18,7 +18,7 @@
       "id": 3,
       "name": "sync only touches bookkeeping",
       "prompt": "/brain sync (run after a change that added one new paragraph to an existing docs/ page, with no frontmatter edits made by the user)",
-      "expected_output": "Only the touched page's `updated:` frontmatter (and `description:` if it was missing) change, plus any stale index.md regenerated via scripts/okf_backfill.py and a wiki/index.md / wiki/log.md update. No other page's frontmatter or body content changes."
+      "expected_output": "Only the touched page's `updated:` frontmatter (and `description:` if it was missing) change, plus any stale index.md regenerated via scripts/okf_backfill.py and a wiki/index.md update. No other page's frontmatter or body content changes."
     },
     {
       "id": 4,

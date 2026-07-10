@@ -3,7 +3,7 @@ export
 
 .PHONY: install onboard setup start stop status restart
 .PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
-.PHONY: awake run errand-run errand-awake dashboard koan api api-token webhook
+.PHONY: awake run errand-run errand-awake dashboard koan api api-token openapi openapi-check webhook
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-user-service uninstall-user-service
@@ -156,6 +156,16 @@ api-token:
 		echo "Or set in instance/config.yaml:" && \
 		echo "  api:" && \
 		echo "    token: \"$$token\""
+
+# Regenerate the committed OpenAPI document (koan/openapi.yaml) from the live
+# REST API route table. Run this after adding/removing/modifying an API endpoint,
+# then commit koan/openapi.yaml in the same change.
+openapi: setup
+	$(KOAN_RUN) -m app.api.openapi_gen --output openapi.yaml
+
+# Fail if koan/openapi.yaml has drifted from the REST API code (what CI runs).
+openapi-check: setup
+	$(KOAN_RUN) -m app.api.openapi_gen --check --output openapi.yaml
 
 # Standalone GitHub webhook receiver (alternative to the bridge-embedded one).
 # Requires KOAN_GITHUB_WEBHOOK_SECRET. Front with a tunnel (smee/cloudflared).

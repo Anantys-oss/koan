@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "REST API"
-description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints) and its security model."
+description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-06-27
+updated: 2026-07-10
 ---
 
 # REST API
@@ -69,6 +69,42 @@ Authorization: Bearer <your-token>
 | `403` | Token present but incorrect |
 
 Token comparison uses `hmac.compare_digest` to prevent timing attacks. If no token is configured, **all authenticated requests return 403** — the server never accepts unauthenticated control requests.
+
+---
+
+## OpenAPI specification
+
+The API ships a machine-readable **OpenAPI 3.1 document** at
+[`koan/openapi.yaml`](../../koan/openapi.yaml). It is **generated from the live Flask route
+table** — it can only describe endpoints that actually exist, so it never drifts from the
+code. Point any OpenAPI tool at it to preview docs, generate a client, or validate requests.
+
+### Regenerate after any API change
+
+```bash
+make openapi                          # rewrite koan/openapi.yaml from the code
+git add koan/openapi.yaml && git commit
+```
+
+Generation needs **no running server, no token, and no `api.enabled: true`** — it inspects
+the app object in-process. The file is derived output: **never hand-edit it.**
+
+### Check for drift
+
+```bash
+make openapi-check   # exit non-zero (with a fix instruction) if the file is stale
+```
+
+CI runs this automatically via [`.github/workflows/openapi.yml`](../../.github/workflows/openapi.yml),
+but **only when an API-defining file changes** (`koan/app/api/**`, `koan/openapi.yaml`,
+`koan/requirements.txt`, the `Makefile`, or the workflow itself) — unrelated PRs spend no
+CI time on it. If the check
+fails, the log tells you to run `make openapi` and commit the result.
+
+> **Scope (iteration 1):** the document precisely covers **paths, methods, path parameters,
+> and bearer-auth security** for every route. Per-operation request/response **body** schemas
+> are a planned enrichment and are not yet included. Two known non-`200` successes are
+> reflected: `POST /v1/missions` → `202`, `POST /v1/projects` → `201`.
 
 ---
 
@@ -417,3 +453,4 @@ Tokens are never written to the log.
 
 - [`docs/operations/dashboard.md`](dashboard.md) — web dashboard (separate process, same config pattern)
 - [`instance.example/config.yaml`](../../instance.example/config.yaml) — documented `api:` section
+- [`koan/openapi.yaml`](../../koan/openapi.yaml) — generated OpenAPI 3.1 document (`make openapi`)
