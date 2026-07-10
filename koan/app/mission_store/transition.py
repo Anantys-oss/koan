@@ -43,6 +43,19 @@ def read_sections(instance) -> dict:
     return out
 
 
+def reconcile_all(instance, content: str) -> None:
+    """Rebuild the whole store (missions + CI + Ideas) from a ``missions.md``
+    content string. The S8 write path uses this: render_content → transform →
+    reconcile_all → export_view, so the store stays authoritative while every
+    existing content transform keeps working unchanged.
+    """
+    from app.mission_store.aux_stores import CiQueueStore, IdeaStore
+    inst = str(instance)
+    get_mission_store(inst).reconcile_from_content(content)
+    CiQueueStore(inst).reconcile_from_content(content)
+    IdeaStore(inst).reconcile_from_content(content)
+
+
 def read_content(instance) -> str:
     """The full missions.md content, for readers that need the raw text (e.g.
     ``group_by_project``, which parses all sections at once).

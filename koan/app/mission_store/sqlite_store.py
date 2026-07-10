@@ -68,6 +68,7 @@ def _clean_text(item: str) -> str:
 
 class SqliteMissionStore(MissionStore):
     def __init__(self, instance: str):
+        self._instance = str(instance)
         self._db_path = str(Path(instance) / "missions.db")
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
@@ -353,16 +354,32 @@ class SqliteMissionStore(MissionStore):
             return first
         return None
 
-    def export_view(self, missions_md_path) -> None:
-        from app.utils import atomic_write
-        headers = [("pending", "Pending"), ("in_progress", "In Progress"),
-                   ("done", "Done"), ("failed", "Failed")]
+    def render_content(self) -> str:
+        """Render the full ``missions.md`` content from the store — all sections
+        (CI, Ideas, and the four lifecycle states). This is the store→content
+        direction the S8 write chokepoints use (render → transform → reconcile →
+        export) and the read-only export written to ``missions.md``.
+        """
+        from app.mission_store.aux_stores import CiQueueStore, IdeaStore
         lines = ["# Missions", ""]
-        for state, title in headers:
+        lines.append("## CI")
+        lines.extend(CiQueueStore(self._instance).render_lines())
+        lines.append("")
+        idea_lines = IdeaStore(self._instance).render_lines()
+        if idea_lines:
+            lines.append("## Ideas")
+            lines.extend(idea_lines)
+            lines.append("")
+        for state, title in (("pending", "Pending"), ("in_progress", "In Progress"),
+                             ("done", "Done"), ("failed", "Failed")):
             lines.append(f"## {title}")
             lines.extend(render_mission_line(m) for m in self.list_by_state(state))
             lines.append("")
-        atomic_write(Path(missions_md_path), "\n".join(lines).rstrip() + "\n")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def export_view(self, missions_md_path) -> None:
+        from app.utils import atomic_write
+        atomic_write(Path(missions_md_path), self.render_content())
 
     def recover_stale(self, *, max_recover: int = 3) -> RecoverReport:
         from time import strftime

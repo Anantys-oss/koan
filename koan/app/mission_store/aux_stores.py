@@ -152,6 +152,14 @@ class CiQueueStore:
                      int(it.get("attempt", 0)), int(it.get("max_attempts", 5)), seq))
         return len(items)
 
+    def reconcile_from_content(self, content: str) -> None:
+        """Rebuild the CI queue from a ``missions.md`` content string (S8 flip)."""
+        from app import missions as _m
+        items = _m.get_ci_items(content)
+        with _connect(self._db) as conn:
+            conn.execute("DELETE FROM ci_queue")
+        self.ingest_items(items)
+
 
 class IdeaStore:
     """The ``## Ideas`` list (replaces parse_ideas/insert_idea/delete_idea)."""
@@ -209,6 +217,14 @@ class IdeaStore:
                     "INSERT INTO ideas(text, added_at, sequence) VALUES (?,?,?)",
                     (text, strftime("%Y-%m-%dT%H:%M"), seq))
         return len(texts)
+
+    def reconcile_from_content(self, content: str) -> None:
+        """Rebuild the Ideas list from a ``missions.md`` content string (S8 flip)."""
+        from app import missions as _m
+        texts = _m.parse_ideas(content)
+        with _connect(self._db) as conn:
+            conn.execute("DELETE FROM ideas")
+        self.ingest_items(texts)
 
 
 class QuarantineStore:
