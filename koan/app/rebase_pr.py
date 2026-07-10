@@ -43,6 +43,7 @@ from app.claude_step import (
     run_claude_step,
     wait_for_ci,
 )
+from app.github_alerts import build_alert
 from app.config import (
     get_rebase_include_bot_feedback,
     get_rebase_ci_idle_timeout,
@@ -2304,10 +2305,13 @@ def _build_rebase_comment(
     if feedback_failed:
         reason = feedback_reason.strip() or "the feedback step did not complete"
         parts.append(
-            "> [!WARNING]\n"
-            f"> **Review feedback was NOT applied** — {reason}. The reviewer "
-            "comments above still need to be addressed: re-run `/rebase` or "
-            "apply them manually.\n"
+            build_alert(
+                "WARNING",
+                f"**Review feedback was NOT applied** — {reason}. The reviewer "
+                "comments above still need to be addressed: re-run `/rebase` or "
+                "apply them manually.",
+            )
+            + "\n"
         )
 
     # ── 2. Changes ──────────────────────────────────────────────────
