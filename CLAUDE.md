@@ -48,6 +48,12 @@ is **not optional**:
    `<NNN-feature-slug>/`" section. When a speckit feature ships, the durable artifact is
    the **updated `specs/components/<group>.md`** — landed contract-first and declared per
    step 2, not retroactively bent to match the code you wrote.
+5. **NEVER commit `.specify/feature.json`** — it is speckit's local current-feature
+   pointer (repointed automatically by `/speckit.*` commands), not a deliverable. It is
+   trivially picked up as an unrelated diff that trips the "no scope creep" review gate.
+   Before staging, confirm your PR does not touch it: `git diff --name-only main.. | grep
+   -q '.specify/feature.json' && git checkout main -- .specify/feature.json`. Only include
+   it when the PR's explicit purpose is to change speckit's active-feature pointer.
 
 Specs and `docs/` coexist — most non-trivial changes update `docs/`. Durable specs are
 different: anchor clean refactoring by changing the contract **deliberately and first**,
