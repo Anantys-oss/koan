@@ -46,8 +46,10 @@ The system has two halves that must stay decoupled:
 2. **Fix mission** — the injected `/ci_check <url>` runs in the single mission slot. It performs
    **at most `get_ci_check_max_fix_attempts()` internal Claude fix steps (default 1)** and then
    returns, yielding the queue. The `## CI` item's `max_attempts` (config `ci_fix_max_attempts`,
-   default 5) is the **total per-PR budget** enforced by `drain_one` across interleaved
-   re-injections — it is NOT the per-mission internal loop count. Each fix step runs under
+   default 5) is the counter `drain_one` increments per re-injection and gives up at — it is NOT
+   the per-mission internal loop count. (The counter resets to 0 when a fix lands a fresh *pending*
+   CI run — `add_ci_item` treats that as a new run to evaluate — so a genuinely-progressing PR
+   keeps going while a repeatedly fast-failing one is bounded.) Each fix step runs under
    `get_ci_check_step_timeout()` (config `ci_check.timeout`, default 3600s) plus a
    `first_output_timeout` idle guard, not the 2-hour `skill_timeout`.
 

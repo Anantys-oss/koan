@@ -179,7 +179,9 @@ removes most of the blocking, but a hard cap is what guarantees the queue is nev
   CI-fix mission does and *where* it sits in the queue, not to add real parallelism.
 - Interleaving retries across missions (one attempt each) is acceptable latency for CI fixes, which
   are lower priority than the human/agent backlog by design.
-- `ci_fix_max_attempts` (default 5) remains the total budget per PR; only the per-mission internal
-  loop is capped at 1 by default.
+- `ci_fix_max_attempts` (default 5) remains the drain-level give-up counter per PR; only the
+  per-mission internal loop is capped at 1 by default. (That counter resets on a fix that lands a
+  fresh *pending* CI run — pre-existing `add_ci_item` behavior — so it bounds repeated fast-failing
+  attempts rather than being a hard lifetime cap; this diff does not change that reset.)
 - Bounding the fix step to 3600s + idle guard does not truncate legitimate fixes (observed real
   steps were ≤ ~1575s; the idle guard only kills genuinely silent steps).
