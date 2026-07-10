@@ -83,6 +83,38 @@ def is_durable_contract(path: str) -> bool:
     return bool(_COMPONENTS_RE.match(norm) or _SKILLS_RE.match(norm))
 
 
+def _body_below_frontmatter(text: str) -> str:
+    """Return the Markdown body with any leading YAML frontmatter block stripped.
+
+    Frontmatter is a block that starts on line 1 with a ``---`` delimiter and ends
+    at the next ``---`` delimiter. A file with no such block is all body. An
+    unterminated block is treated as body (nothing stripped) so a malformed file
+    can never masquerade as a body-less bookkeeping change.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return text
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return "\n".join(lines[i + 1:])
+    return text
+
+
+def is_frontmatter_only_change(old_text: str, new_text: str) -> bool:
+    """True iff ``old_text`` -> ``new_text`` leaves the Markdown body unchanged.
+
+    The body below the YAML frontmatter is the durable contract; a diff that only
+    touches frontmatter (e.g. a ``/brain sync`` or wiki-sync ``updated:`` date bump)
+    is bookkeeping, explicitly exempt from the architectural-change declaration per
+    the constitution's wiki-bookkeeping exemption (Principle I) and CLAUDE.md. Such
+    a change must not trip this guard — otherwise the wiki-sync backstop's own
+    frontmatter auto-commit to a contract file would spuriously block the PR.
+    """
+    if old_text == new_text:
+        return True
+    return _body_below_frontmatter(old_text) == _body_below_frontmatter(new_text)
+
+
 def has_architecture_declaration(pr_body: str | None) -> bool:
     """True iff ``pr_body`` contains a checked architectural-change declaration."""
     if not pr_body:
@@ -110,15 +142,58 @@ def evaluate(changed_files: list[str], pr_body: str | None) -> GuardVerdict:
     return GuardVerdict(ok=False, undeclared_contracts=contracts)
 
 
+def _file_at_ref(ref: str, path: str) -> str | None:
+    """Content of ``path`` at ``ref``, or None if it doesn't exist there (impure)."""
+    result = subprocess.run(
+        ["git", "show", f"{ref}:{path}"],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def _merge_base(base_ref: str) -> str:
+    """Merge base of ``base_ref`` and HEAD, matching the ``base...HEAD`` diff (impure)."""
+    result = subprocess.run(
+        ["git", "merge-base", base_ref, "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() or base_ref
+
+
+def _is_bookkeeping_only(path: str, old_ref: str) -> bool:
+    """True iff ``path`` is a contract whose diff since ``old_ref`` is frontmatter-only.
+
+    A newly added contract (absent at ``old_ref``) is never bookkeeping.
+    """
+    if not is_durable_contract(path):
+        return False
+    old = _file_at_ref(old_ref, path)
+    if old is None:
+        return False
+    new = _file_at_ref("HEAD", path)
+    if new is None:
+        return False
+    return is_frontmatter_only_change(old, new)
+
+
 def changed_files(base_ref: str) -> list[str]:
-    """Added/modified files vs ``base_ref`` (impure; not unit-tested)."""
+    """Added/modified files vs ``base_ref`` (impure; not unit-tested).
+
+    Durable-contract files whose diff is frontmatter-only (a bookkeeping date bump
+    from ``/brain sync`` or the wiki-sync backstop, exempt per Principle I) are
+    dropped so the guard doesn't demand an architectural-change declaration for them.
+    """
     out = subprocess.run(
         ["git", "diff", "--name-only", "--diff-filter=AM", f"{base_ref}...HEAD"],
         capture_output=True,
         text=True,
         check=True,
     )
-    return [line for line in out.stdout.splitlines() if line.strip()]
+    paths = [line for line in out.stdout.splitlines() if line.strip()]
+    old_ref = _merge_base(base_ref)
+    return [p for p in paths if not _is_bookkeeping_only(p, old_ref)]
 
 
 def _read_pr_body(args: argparse.Namespace) -> str | None:

@@ -73,6 +73,45 @@ def test_windows_separators_normalised():
     assert guard.is_durable_contract("specs\\components\\core.md") is True
 
 
+# --- is_frontmatter_only_change --------------------------------------------
+
+_FM_OLD = "---\ntitle: Core\nupdated: 2026-01-01\n---\n\n# Core\n\nThe contract body.\n"
+
+
+def test_frontmatter_only_updated_bump_is_bookkeeping():
+    new = _FM_OLD.replace("2026-01-01", "2026-07-09")
+    assert guard.is_frontmatter_only_change(_FM_OLD, new) is True
+
+
+def test_identical_text_is_bookkeeping():
+    assert guard.is_frontmatter_only_change(_FM_OLD, _FM_OLD) is True
+
+
+def test_body_change_is_not_bookkeeping():
+    new = _FM_OLD.replace("The contract body.", "The contract body, now different.")
+    assert guard.is_frontmatter_only_change(_FM_OLD, new) is False
+
+
+def test_body_change_with_frontmatter_bump_is_not_bookkeeping():
+    new = _FM_OLD.replace("2026-01-01", "2026-07-09").replace(
+        "The contract body.", "A rewritten contract."
+    )
+    assert guard.is_frontmatter_only_change(_FM_OLD, new) is False
+
+
+def test_body_only_files_compare_whole_text():
+    old = "# Core\n\nThe contract body.\n"
+    assert guard.is_frontmatter_only_change(old, old) is True
+    assert guard.is_frontmatter_only_change(old, old + "extra\n") is False
+
+
+def test_unterminated_frontmatter_treated_as_body():
+    # No closing '---': nothing is stripped, so any diff counts as a body change.
+    old = "---\ntitle: Core\n"
+    new = "---\ntitle: Core\nupdated: x\n"
+    assert guard.is_frontmatter_only_change(old, new) is False
+
+
 # --- has_architecture_declaration ------------------------------------------
 
 @pytest.mark.parametrize(

@@ -56,6 +56,15 @@ spec-first *proposal* artifact and are meant to change in-branch before code (se
 `specs/README.md`, "two different things named `specs/`"). `docs/` is likewise out of
 scope: docs follow behaviour and are updated in the same branch.
 
+**Frontmatter-only changes to a contract are not a contract change.** The durable
+*contract* is the Markdown body below the YAML frontmatter; a diff that touches only the
+frontmatter (e.g. a `/brain sync` or wiki-sync `updated:` date bump) is bookkeeping,
+explicitly exempt from a separate human-reviewed step per the constitution's
+wiki-bookkeeping exemption (Principle I) and `CLAUDE.md`. The guard therefore drops
+frontmatter-only diffs before deciding, so the wiki-sync backstop's own frontmatter
+auto-commit to `specs/components/`/`specs/skills/` (`.github/workflows/wiki-sync.yml`)
+can't fire a `synchronize` event that spuriously blocks the PR for a date bump.
+
 ## Enforcement
 
 Prose alone is advisory, and an autonomous agent routes around advice (Constitution
