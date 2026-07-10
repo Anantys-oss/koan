@@ -4,7 +4,7 @@ title: "Component Spec — Git & GitHub"
 description: "Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows."
 tags: [git-github]
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-07-10
 ---
 
 # Component Spec — Git & GitHub
@@ -32,6 +32,8 @@ workflows.
 | `github_webhook.py::maybe_start_from_config()` | Opt-in HMAC-verified push receiver; writes `.koan-check-notifications` to collapse poll latency 60-180s → ~10s. Polling remains the fallback. |
 | `github_command_handler.py` | @mention → mission: validate → permission check → react → create mission. Also the assignment fallback (`process_single_notification` processes @mentions first, then `_try_assignment_notification`): `review_requested` → `/review`, `assign` → `/implement`. When `review_draft_skip.enabled` is true, a `review_requested` on a **draft** PR is a soft skip (mark read, no thread/cooldown tracking): because no dedup state is written, any re-surfaced request is re-evaluated fresh. An explicit `/review` once the PR is ready is the remedy — the gate does **not** rely on automatic resume (GitHub does not reliably re-fire `review_requested` on the draft→ready transition), so an info notification is sent on deferral to avoid silent loss; explicit `/review` mentions are never gated. |
 | `claude_step.py::run_ci_fix_loop()` | Shared CI-fix loop; `use_polling` toggles polling vs single-shot recheck; caller supplies `prompt_builder`. |
+| `claude_step.py::_rebase_onto_target()` | Strict PR rebase: target is **only** `{base_remote}/{base}` (the remote matching the PR's base repo, resolved by `rebase_pr._find_remote_for_repo`); fails closed when no remote matches or the target fetch fails; always a plain `git rebase` (never `--onto`); post-rebase sanity gate before any push. Structured failure codes via `result_meta` (`no_base_remote` / `fetch_failed` / `rebase_failed` / `sanity_check_failed`). |
+| `claude_step.py::_verify_rebase_result()` | Post-rebase gate: branch must sit on the target's current tip and its unique-commit count (`rev-list --count target..HEAD`) must not grow vs the pre-rebase baseline. On violation the branch is hard-reset to its pre-rebase commit and the rebase reported failed — nothing is pushed. |
 | `head_tracker.py` | Detects remote HEAD change (master→main), throttled 12h, state in `.head-tracker.json`. |
 | `github_url_parser.py` | Single PR/issue URL parsing path. |
 
@@ -47,6 +49,13 @@ workflows.
   (`gh auth token --user <owner>`); tokens are redacted in logs.
 - **Mock above `retry_with_backoff`.** Test error handling at `run_gh()`/`api()`, never
   at `subprocess.run` — the latter sleeps 1+2+4s per retry (anti-pattern 6).
+- **Rebases target the PR's base repo remote, freshly fetched, or fail.** No fallback
+  to other remotes (a fork's `main` is stale by construction), no proceeding on a
+  failed fetch, no `--onto` with a fork branch as cut point, and no push when the
+  post-rebase sanity gate flags a stale base or commit-count growth. A failed rebase
+  mission is recoverable; a polluted force-push is not (incident: PR #2309 — a rebase
+  onto a 4-days-stale ref with the fork's 1,889-commits-behind `main` as cut point
+  resurrected 33 already-merged commits and force-pushed them unchecked).
 
 ## Integration points
 
