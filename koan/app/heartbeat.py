@@ -9,6 +9,7 @@ All checks are pure Python file operations — no API calls, no subprocess.
 """
 
 import contextlib
+import logging
 import shutil
 import time
 from datetime import datetime
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import List
 
 from app.utils import parse_project
+
+logger = logging.getLogger(__name__)
 
 
 # --- Stale mission detection ---
@@ -56,11 +59,12 @@ def check_stale_missions(
     from app.mission_store.transition import read_sections
     try:
         sections = read_sections(instance_dir)
-    except Exception:
+    except Exception as e:
         # A store/DB read error must degrade to "no stale missions" (as the old
         # missing-file/OSError guards did) rather than propagate out of the
         # heartbeat. read_sections now goes through SQLite, so this catches
         # sqlite3.DatabaseError (not an OSError subclass) too.
+        logger.warning("[heartbeat] stale-mission read failed: %s", e)
         return []
     in_progress = sections.get("in_progress", [])
     if not in_progress:
