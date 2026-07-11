@@ -61,6 +61,11 @@ workflows.
 
 - Notifications wired into `loop_manager.process_github_notifications()`, which also
   drives `review_comment_dispatch.py` and `ci_dispatch.py`.
+- The unregistered-repo @mention alert (`loop_manager._warn_unregistered_mention_repos`)
+  is deduped per repo in the in-memory `_warned_unregistered_repos` set and suppressed
+  entirely when `enable_multiple_instances` is set. Invariant: a warned repo is pruned
+  from the set once it appears in `known_repos`, so registering then later removing a
+  repo warns again rather than staying silently suppressed by a stale entry.
 - Webhook receiver started in the bridge (`maybe_start_from_config()`) or standalone
   (`make webhook`).
 - Commit messages shaped by `commit_conventions.py`.
