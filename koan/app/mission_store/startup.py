@@ -30,7 +30,12 @@ def ensure_ingested(instance: str) -> Optional[IngestReport]:
     """
     from app.mission_store import get_mission_store
     store = get_mission_store(instance)
-    if store.is_initialized():
+    # Short-circuit if the store is already populated by EITHER path: the S3
+    # ingest marker (initialized_at) OR the S8 cutover sync marker (s8_synced,
+    # set by ensure_store_synced / prune_missions_done's re-sync). Without the
+    # is_synced() guard, a boot where startup pruning re-syncs first would then
+    # append a full SECOND copy here (ingest_from_file INSERTs without deleting).
+    if store.is_initialized() or store.is_synced():
         return None
 
     md = Path(instance) / "missions.md"

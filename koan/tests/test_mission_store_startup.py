@@ -44,6 +44,25 @@ def test_ensure_ingested_is_one_shot(tmp_path):
     assert get_mission_store(str(tmp_path)).count_by_state("pending") == 1
 
 
+def test_ensure_ingested_skips_when_already_synced(tmp_path):
+    # Cutover-boot regression: startup pruning re-syncs the store first (sets the
+    # s8_synced marker but NOT initialized_at). ensure_ingested must short-circuit
+    # on that too, or it appends a full second copy (ingest_from_file INSERTs
+    # without deleting) — doubling every mission/CI/idea on the cutover boot.
+    from app.mission_store.transition import reconcile_all
+    _fresh(tmp_path)
+    (tmp_path / "missions.md").write_text(FULL)
+    reconcile_all(str(tmp_path), FULL)               # like prune's re-sync…
+    get_mission_store(str(tmp_path)).mark_synced()   # …which sets s8_synced only
+    assert get_mission_store(str(tmp_path)).is_initialized() is False
+
+    assert ensure_ingested(str(tmp_path)) is None    # short-circuits, no re-ingest
+    assert get_mission_store(str(tmp_path)).count_by_state("pending") == 1
+    assert get_mission_store(str(tmp_path)).count_by_state("done") == 1
+    assert len(CiQueueStore(str(tmp_path)).get_items()) == 1
+    assert IdeaStore(str(tmp_path)).list() == ["- a bright idea"]
+
+
 def test_ensure_ingested_migrates_quarantine_file(tmp_path):
     _fresh(tmp_path)
     (tmp_path / "missions.md").write_text("# Missions\n\n## Pending\n")

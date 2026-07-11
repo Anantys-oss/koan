@@ -319,7 +319,10 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
         from app.mission_store.transition import read_sections
         try:
             sections = read_sections(MISSIONS_FILE.parent)
-        except OSError:
+        except Exception:
+            # read_sections now goes through SQLite; a DB read failure
+            # (sqlite3.DatabaseError, not an OSError) must degrade to empty
+            # chat-context rather than crash bridge chat-prompt building.
             sections = {}
         in_progress = sections.get("in_progress", [])
         pending = sections.get("pending", [])

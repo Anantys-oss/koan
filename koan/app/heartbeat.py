@@ -54,7 +54,14 @@ def check_stale_missions(
         List of stale mission descriptions (already-alerted ones excluded).
     """
     from app.mission_store.transition import read_sections
-    sections = read_sections(instance_dir)
+    try:
+        sections = read_sections(instance_dir)
+    except Exception:
+        # A store/DB read error must degrade to "no stale missions" (as the old
+        # missing-file/OSError guards did) rather than propagate out of the
+        # heartbeat. read_sections now goes through SQLite, so this catches
+        # sqlite3.DatabaseError (not an OSError subclass) too.
+        return []
     in_progress = sections.get("in_progress", [])
     if not in_progress:
         return []

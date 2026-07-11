@@ -111,8 +111,12 @@ def _has_in_progress_mission() -> bool:
     from app.mission_store.transition import read_sections
     try:
         return len(read_sections(MISSIONS_FILE.parent).get("in_progress", [])) > 0
-    except FileNotFoundError:
-        return False
+    except Exception:
+        # This gate decides whether a second mission may start. read_sections now
+        # goes through SQLite (sqlite3.DatabaseError is not FileNotFoundError), so
+        # on any unknown store state fail CLOSED — assume busy rather than risk a
+        # second concurrent mission.
+        return True
 
 
 def _resolve_project_alias(command_name: str) -> Optional[str]:

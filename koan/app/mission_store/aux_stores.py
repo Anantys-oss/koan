@@ -15,12 +15,15 @@ Each method mirrors the semantics of the ``app.missions`` function it replaces:
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from time import strftime
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 _CI_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ci_queue (
@@ -247,7 +250,11 @@ class QuarantineStore:
                     "(SELECT id FROM quarantine ORDER BY id DESC LIMIT ?)",
                     (_QUARANTINE_KEEP,))
             return True
-        except sqlite3.DatabaseError:
+        except sqlite3.DatabaseError as e:
+            # Quarantine isolates poison-pill (e.g. prompt-injection) missions;
+            # a silently-lost record defeats its purpose. Log loudly, then signal
+            # failure to the caller.
+            logger.error("quarantine add failed (mission NOT quarantined): %s", e)
             return False
 
     def list(self) -> List[dict]:

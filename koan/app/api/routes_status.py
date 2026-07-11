@@ -56,27 +56,30 @@ def _get_agent_state() -> dict:
 
 
 def _mission_counts() -> dict:
-    """Count missions by state via the mission store.
+    """Count missions by state from the authoritative store.
 
-    During the S4–S7 transition the store is reconciled from the still-
-    authoritative missions.md before the read; at the S8 flip the reconcile call
-    is removed and the store is read directly.
+    Uses the same sync path as ``transition.read_sections`` (``ensure_store_synced``
+    + a direct store read) so the counts agree with every other read surface.
     """
     instance = _instance_dir()
     try:
         from app.mission_store import get_mission_store
-        store = get_mission_store(str(instance))
-        store.reconcile_from_file(instance / "missions.md")
-        c = store.counts()
-        return {
-            "pending": c.get("pending", 0),
-            "in_progress": c.get("in_progress", 0),
-            "done": c.get("done", 0),
-            "failed": c.get("failed", 0),
-        }
+        from app.mission_store.transition import ensure_store_synced
+        ensure_store_synced(str(instance))
+        c = get_mission_store(str(instance)).counts()
     except Exception as e:
+        # A misconfigured/broken store must be distinguishable from a healthy
+        # empty queue — surface an explicit error rather than reporting zeros as
+        # if valid. Keep the count keys (0) so downstream consumers don't break.
         log.error("mission count error: %s", e)
-        return {"pending": 0, "in_progress": 0, "done": 0, "failed": 0}
+        return {"pending": 0, "in_progress": 0, "done": 0, "failed": 0,
+                "error": str(e)}
+    return {
+        "pending": c.get("pending", 0),
+        "in_progress": c.get("in_progress", 0),
+        "done": c.get("done", 0),
+        "failed": c.get("failed", 0),
+    }
 
 
 def _signal_flags() -> dict:
