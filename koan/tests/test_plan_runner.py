@@ -569,6 +569,7 @@ class TestGenerateIterationPlan:
             # Verify it loads plan-iterate, not plan
             mock_load.assert_called_once_with(
                 skill_dir, "plan-iterate",
+                project_path="/project",
                 ISSUE_CONTEXT="issue context here",
                 PROJECT_MEMORY="",
             )
@@ -579,6 +580,7 @@ class TestGenerateIterationPlan:
             _generate_iteration_plan("/project", "context")
             mock_load.assert_called_once_with(
                 None, "plan-iterate",
+                project_path="/project",
                 ISSUE_CONTEXT="context",
                 PROJECT_MEMORY="",
             )

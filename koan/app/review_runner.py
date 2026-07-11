@@ -789,7 +789,9 @@ def build_review_prompt(
             plan_body = _truncate_plan(plan_body)
         kwargs["PLAN"] = plan_body
 
-    prompt = load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+    prompt = load_prompt_or_skill(
+        skill_dir, prompt_name, project_path=project_path, **kwargs
+    )
     return prompt, coverage_note
 
 

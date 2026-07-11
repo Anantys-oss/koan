@@ -762,7 +762,8 @@ def _generate_plan(
         project_path, idea, project_name=project_name, instance_dir=instance_dir,
     )
     prompt = load_prompt_or_skill(
-        skill_dir, "plan", IDEA=idea, CONTEXT=context, PROJECT_MEMORY=project_memory,
+        skill_dir, "plan", project_path=project_path,
+        IDEA=idea, CONTEXT=context, PROJECT_MEMORY=project_memory,
     )
     plan = _run_claude_plan(prompt, project_path)
 
@@ -805,6 +806,7 @@ def _generate_iteration_plan(
     )
     prompt = load_prompt_or_skill(
         skill_dir, "plan-iterate",
+        project_path=project_path,
         ISSUE_CONTEXT=issue_context,
         PROJECT_MEMORY=project_memory,
     )
