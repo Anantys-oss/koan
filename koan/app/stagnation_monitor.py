@@ -550,12 +550,24 @@ def get_verify_count(instance_dir: str, mission_title: str) -> int:
     path = _retry_tracker_path(instance_dir)
     data = locked_json_read(path, default={})
     if not isinstance(data, dict):
+        # A corrupt tracker silently reads as 0 (never-requeued), which would
+        # reset the verify budget — surface it instead of masking it.
+        print(
+            f"[stagnation_monitor] verify tracker not a dict "
+            f"({type(data).__name__}); treating verify_count as 0",
+            file=sys.stderr,
+        )
         return 0
     raw = data.get(_mission_key(mission_title), {})
     if isinstance(raw, dict):
         try:
             return max(0, int(raw.get("verify_count", 0)))
         except (TypeError, ValueError):
+            print(
+                f"[stagnation_monitor] unparseable verify_count "
+                f"{raw.get('verify_count')!r}; treating as 0",
+                file=sys.stderr,
+            )
             return 0
     return 0
 
