@@ -2419,6 +2419,49 @@ class TestWarnUnregisteredMentionRepos:
         )
         mock_send.assert_not_called()
 
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_reset_after_repo_registered(self, mock_send, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+
+        # First drop while unregistered → warns once.
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 2}, str(tmp_path), known_repos={"other/known"},
+        )
+        assert mock_send.call_count == 1
+
+        # Repo gets registered: now present in known_repos. A stray drop in the
+        # same cycle (e.g. a notification fetched before the filter caught up)
+        # must prune the warned entry rather than stay suppressed.
+        mock_send.reset_mock()
+        _warn_unregistered_mention_repos(
+            {}, str(tmp_path), known_repos={"other/known", "owner/repo"},
+        )
+        assert mock_send.call_count == 0  # nothing to warn, but entry pruned
+
+        # Repo removed again and drops once more → warns afresh (no stale suppression).
+        mock_send.reset_mock()
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 1}, str(tmp_path), known_repos={"other/known"},
+        )
+        assert mock_send.call_count == 1
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_prune_is_case_insensitive(self, mock_send, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+        import app.loop_manager as lm
+
+        _warn_unregistered_mention_repos(
+            {"Owner/Repo": 1}, str(tmp_path), known_repos=None,
+        )
+        # known_repos are normalized lowercase; prune must still match.
+        _warn_unregistered_mention_repos(
+            {}, str(tmp_path), known_repos={"owner/repo"},
+        )
+        with lm._warned_unregistered_repos_lock:
+            assert not any(
+                r.lower() == "owner/repo" for r in lm._warned_unregistered_repos
+            )
+
 
 class TestSingleInstanceDrainSkipped:
     """Verify single-instance mode drains notifications from unregistered repos."""

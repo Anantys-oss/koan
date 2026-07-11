@@ -685,9 +685,16 @@ def get_known_repos_from_projects(koan_root: str) -> Optional[set]:
 def _warn_unregistered_mention_repos(
     skipped_mention_repos: dict,
     instance_dir: str,
+    known_repos: Optional[set] = None,
 ) -> None:
-    """Alert the user when @mentions are dropped from repos not in projects.yaml."""
-    if not skipped_mention_repos:
+    """Alert the user when @mentions are dropped from repos not in projects.yaml.
+
+    The per-repo warning is one-shot per process. It resets once the repo is
+    added to projects.yaml: any warned repo now present in ``known_repos`` is
+    pruned from the dedup set, so if it is later removed and drops a mention
+    again the operator is warned afresh (AC #3 of issue #2279).
+    """
+    if not skipped_mention_repos and not known_repos:
         return
 
     with suppress_logged(_log_loop, "error", "Multi-instance config check failed", ImportError, OSError):
@@ -696,6 +703,17 @@ def _warn_unregistered_mention_repos(
             return
 
     with _warned_unregistered_repos_lock:
+        # Reset-on-registration: drop any warned repo that is now known so a
+        # future de-registration + re-drop warns again instead of staying
+        # silently suppressed by a stale entry. known_repos are normalized
+        # lowercase while skipped_mention_repos keys keep original case, so
+        # compare case-insensitively.
+        if known_repos:
+            known_lower = {r.lower() for r in known_repos}
+            _warned_unregistered_repos.difference_update(
+                {r for r in _warned_unregistered_repos if r.lower() in known_lower}
+            )
+
         new_repos = {
             repo for repo in skipped_mention_repos
             if repo not in _warned_unregistered_repos
@@ -990,8 +1008,11 @@ def process_github_notifications(
         result = fetch_unread_notifications(known_repos, since=since_value)
         notifications = result.actionable
 
-        # Warn about @mentions dropped from unregistered repos (once per repo per session).
-        _warn_unregistered_mention_repos(result.skipped_mention_repos, instance_dir)
+        # Warn about @mentions dropped from unregistered repos (once per repo per
+        # session; resets if the repo is later added to projects.yaml).
+        _warn_unregistered_mention_repos(
+            result.skipped_mention_repos, instance_dir, known_repos=known_repos,
+        )
 
         # Record the check timestamp for the next ``since`` window.
         new_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
