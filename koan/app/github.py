@@ -6,9 +6,9 @@ which sets ``GH_TOKEN`` — this module has no auth logic.
 """
 
 import json
+import logging
 import re
 import subprocess
-import sys
 import time
 from typing import Dict, List, Optional
 
@@ -226,7 +226,10 @@ def list_open_issues(
         args.extend(["--repo", repo])
     try:
         output = run_gh(*args, cwd=cwd)
-    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
+        logging.getLogger(__name__).warning(
+            "list_open_issues failed: %s", exc, exc_info=True,
+        )
         return []
     if not output:
         return []
@@ -342,7 +345,9 @@ def fetch_issue_state(owner, repo, issue_number):
         state = result.strip().strip('"')
         return state if state in ("open", "closed") else "open"
     except Exception as e:
-        print(f"[github] fetch_issue_state error: {e}", file=sys.stderr)
+        logging.getLogger(__name__).warning(
+            "fetch_issue_state failed: %s", e, exc_info=True,
+        )
         return "open"
 
 
@@ -410,7 +415,10 @@ def get_gh_username() -> str:
 
     try:
         _cached_gh_username = run_gh("api", "user", "--jq", ".login", timeout=15)
-    except (RuntimeError, subprocess.SubprocessError, OSError):
+    except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+        logging.getLogger(__name__).warning(
+            "get_gh_username failed: %s", exc, exc_info=True,
+        )
         _cached_gh_username = ""
 
     return _cached_gh_username
