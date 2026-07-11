@@ -43,6 +43,13 @@ SLACK_RECONNECT_ESCALATION_ATTEMPTS = 5
 # quiet bridge that is actually still deaf. At one attempt per
 # SLACK_RECONNECT_COOLDOWN_SECONDS this re-emits roughly every few minutes.
 SLACK_RECONNECT_REESCALATION_ATTEMPTS = 10
+# Re-emit the "no usable liveness probe" warning every this many drains while an
+# atypical SDK keeps exposing no is_connected(). One-shot logging there would
+# recreate the exact 'quiet deaf bridge' failure this PR fixes: the single line
+# scrolls off and an operator watching ``make logs`` later sees an
+# apparently-healthy bridge whose socket liveness is actually unknowable. At one
+# drain per ~3s this re-emits roughly every few minutes.
+SLACK_PROBE_WARN_INTERVAL = 100
 MAX_MESSAGE_SIZE = DEFAULT_MAX_MESSAGE_SIZE
 
 # Bounded memory for threading/dedup state. These cap unbounded growth on a
@@ -88,9 +95,12 @@ class SlackProvider(MessagingProvider):
         # out retries (SLACK_RECONNECT_COOLDOWN_SECONDS) so a dead workspace
         # doesn't hammer the SDK on every 3s drain.
         self._last_connect_attempt: float = 0.0
-        # One-shot guard so the "no usable liveness probe" warning is logged
-        # once, not on every 3s drain.
-        self._probe_warned: bool = False
+        # Count of drains that found no usable liveness probe. Used to re-emit
+        # the "no usable liveness probe" warning periodically
+        # (SLACK_PROBE_WARN_INTERVAL) rather than once, so an atypical SDK that
+        # never exposes is_connected() keeps producing a signal instead of going
+        # quiet after a single line that scrolls off.
+        self._probe_warn_count: int = 0
         # Consecutive failed (re)connect attempts, and a one-shot guard so the
         # escalated "bridge is deaf" warning fires once per outage (reset on the
         # next successful connect). A persistently-failing connect() otherwise
@@ -437,13 +447,16 @@ class SlackProvider(MessagingProvider):
             # No usable probe: we can't tell, so we assume alive to avoid
             # churn. slack_sdk's SocketModeClient does expose is_connected(),
             # so in practice this branch only fires on an unexpected SDK. Make
-            # the blind spot observable (once) rather than silently re-creating
-            # the 'bridge goes deaf with no signal' failure mode this PR fixes.
-            if not self._probe_warned:
+            # the blind spot observable periodically rather than silently
+            # re-creating the 'bridge goes deaf with no signal' failure mode
+            # this PR fixes: a one-shot line would scroll off and leave an
+            # operator seeing an apparently-healthy bridge whose liveness is
+            # actually unknowable.
+            if self._probe_warn_count % SLACK_PROBE_WARN_INTERVAL == 0:
                 print("[slack] SocketModeClient exposes no is_connected() probe; "
                       "cannot detect a dead socket — assuming alive.",
                       file=sys.stderr)
-                self._probe_warned = True
+            self._probe_warn_count += 1
             return True
         try:
             return bool(probe())

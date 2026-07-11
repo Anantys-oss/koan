@@ -248,6 +248,26 @@ class TestPollUpdates:
         assert provider._consecutive_connect_failures == 0
         assert provider._connect_failure_escalated is False
 
+    def test_no_probe_warning_reemits_periodically(self, provider):
+        """An SDK with no is_connected() re-logs the blind-spot warning.
+
+        One-shot logging would recreate the 'quiet deaf bridge' failure this PR
+        fixes: the single line scrolls off and the socket's liveness stays
+        unknowable with no signal. Drive enough drains to cross the interval
+        twice and assert the warning is logged more than once.
+        """
+        from app.messaging.slack import SLACK_PROBE_WARN_INTERVAL
+        provider._connected = True
+        del provider._socket_client.is_connected  # simulate an SDK with no probe
+        with patch("builtins.print") as mock_print:
+            for _ in range(SLACK_PROBE_WARN_INTERVAL + 1):
+                provider.poll_updates()
+        probe_warnings = [
+            c for c in mock_print.call_args_list
+            if c.args and "no is_connected() probe" in str(c.args[0])
+        ]
+        assert len(probe_warnings) >= 2
+
 
 class TestHandleSocketEvent:
     """Test Socket Mode event handling and filtering logic."""

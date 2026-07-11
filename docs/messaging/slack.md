@@ -289,9 +289,10 @@ while Telegram keeps working" symptom.
 Kōan closes this gap on every 3s poll drain:
 
 - It probes socket liveness (`is_connected()`, best-effort — an SDK that exposes
-  no probe is assumed alive, logged once) and **re-dials a dropped socket**,
-  tearing down the dead client first so the old monitor/receiver threads don't
-  leak.
+  no probe is assumed alive, with that blind spot re-logged periodically via
+  `SLACK_PROBE_WARN_INTERVAL` so it never goes quiet) and **re-dials a dropped
+  socket**, tearing down the dead client first so the old monitor/receiver
+  threads don't leak.
 - Re-dials are rate-limited to **at most once per 30s**
   (`SLACK_RECONNECT_COOLDOWN_SECONDS`), so a persistently-unreachable workspace
   (revoked token, network partition, Slack outage) is retried gently rather than
