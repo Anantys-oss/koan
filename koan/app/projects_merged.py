@@ -8,6 +8,7 @@ with the same name.
 """
 
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -134,36 +135,67 @@ def _load_yaml_projects(koan_root: str, warnings: List[str]) -> List[Tuple[str, 
     return []
 
 
+def _normalize_name(name: str) -> str:
+    """Canonical dedup key for a project name: lowercased with dashes and
+    underscores stripped. Collapses ``my-repo`` / ``my_repo`` / ``myrepo``
+    to one identity so a yaml entry and its auto-discovered workspace
+    directory are never listed as two projects (issue #2339)."""
+    return re.sub(r"[-_]", "", name.lower())
+
+
+def _resolve_path(path: str) -> str:
+    """Resolve a project path to a canonical absolute string for identity
+    comparison. ``strict=False`` so missing/placeholder paths resolve
+    instead of raising; falls back to the raw string on error."""
+    try:
+        return str(Path(path).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError):
+        return path
+
+
 def _merge_projects(
     yaml_projects: List[Tuple[str, str]],
     workspace_projects: List[Tuple[str, str]],
     warnings: List[str]
 ) -> Dict[str, str]:
-    """Merge yaml and workspace projects, with yaml taking precedence.
-    
+    """Merge yaml and workspace projects into one logical set.
+
+    A workspace project is the SAME project as a yaml entry when either
+    (a) it resolves to the same filesystem path, or (b) its name normalizes
+    to the same key (case/dash/underscore-insensitive). In both cases the
+    yaml entry wins (name + path + config). Same-path collisions are silent
+    (expected coexistence — yaml mirrors a workspace dir); name-only
+    collisions with differing paths append a warning to ``warnings`` (which
+    refresh_projects stores via _update_cache and get_warnings() exposes).
+
     Returns a dict mapping project name to path.
     """
-    # Build lookup for yaml projects (case-insensitive)
-    yaml_by_name = {name.lower(): (name, path) for name, path in yaml_projects}
-    
-    # Start with yaml projects
-    merged = {name: path for name, path in yaml_projects}
-    
-    # Add workspace projects if not already in yaml
+    # Start with yaml projects; index them by resolved path and normalized name.
+    merged: Dict[str, str] = {name: path for name, path in yaml_projects}
+    yaml_by_path: Dict[str, Tuple[str, str]] = {}
+    yaml_by_norm: Dict[str, Tuple[str, str]] = {}
+    for name, path in yaml_projects:
+        yaml_by_path[_resolve_path(path)] = (name, path)
+        yaml_by_norm[_normalize_name(name)] = (name, path)
+
     for ws_name, ws_path in workspace_projects:
-        yaml_entry = yaml_by_name.get(ws_name.lower())
-        if yaml_entry:
-            # Duplicate: yaml wins; only warn when paths actually differ
-            yaml_name, yaml_path = yaml_entry
-            if yaml_path != ws_path:
-                warnings.append(
-                    f"⚠️ Duplicate project '{ws_name}': "
-                    f"using {yaml_path} (yaml) instead of {ws_path} (workspace)"
-                )
-        else:
-            # New workspace project
-            merged[ws_name] = ws_path
-    
+        # (a) Same physical directory as a yaml entry → same project, silent.
+        if _resolve_path(ws_path) in yaml_by_path:
+            continue
+
+        # (b) Same normalized name but a different path → yaml wins, warn.
+        norm_match = yaml_by_norm.get(_normalize_name(ws_name))
+        if norm_match:
+            _, yaml_path = norm_match
+            warnings.append(
+                f"⚠️ Duplicate project '{ws_name}': "
+                f"using {yaml_path} (yaml) instead of {ws_path} (workspace)"
+            )
+            continue
+
+        # Genuinely new workspace project.
+        merged[ws_name] = ws_path
+
     return merged
 
 
