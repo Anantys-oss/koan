@@ -39,12 +39,15 @@ _HAZE_AUTH_RE = re.compile("|".join(_HAZE_AUTH_PATTERNS), re.IGNORECASE)
 # prose is never scanned for quota text.
 _STDOUT_ERROR_MARKERS = ("error", "rate", "limit", "quota", "http", "status", "api")
 
-# Features the agent loop passes on every invocation (tool lists, max turns)
-# would flood the journal if warned per call, but the durable contract says
-# unsupported inputs are never silently accepted — so those warn once per
-# process (same pattern as Claude's root permission warning). Operator-
-# configured features (MCP, plugins, effort, fallback model, resume,
-# system-prompt file) warn on every call, matching the Cline precedent.
+# Unsupported inputs are never silently accepted (durable contract), but the
+# notice level follows a two-tier rule, deduped once per process:
+# - "info"    → static capabilities driven by Koan's OWN defaults (per-tool
+#               allow/deny, max turns, fallback model). The loop passes these
+#               unconditionally; the operator did nothing wrong and cannot
+#               act, so per-mission "warning" lines would be pure noise.
+# - "warning" → operator-actionable config (MCP, plugins, effort, resume,
+#               system-prompt file — removable from config) and the
+#               safety-relevant no-permission-gates notice.
 _WARNED_UNSUPPORTED: set = set()
 
 
@@ -135,9 +138,12 @@ class HazeProvider(CLIProvider):
 
     def build_model_args(self, model: str = "", fallback: str = "") -> List[str]:
         if fallback:
-            log_safe(
-                "warning",
-                f"[{self.name}] fallback model is not supported by haze; ignored",
+            # Usually inherited from Koan's global models defaults, not the
+            # haze block — info tier, or it would recur every mission.
+            self._warn_unsupported_once(
+                "fallback",
+                "fallback model is not supported by haze; ignored",
+                level="info",
             )
         return ["-m", model] if model else []
 
@@ -148,11 +154,13 @@ class HazeProvider(CLIProvider):
             return ["--output", fmt]
         return []
 
-    def _warn_unsupported_once(self, feature: str, message: str) -> None:
+    def _warn_unsupported_once(
+        self, feature: str, message: str, level: str = "warning",
+    ) -> None:
         if feature in _WARNED_UNSUPPORTED:
             return
         _WARNED_UNSUPPORTED.add(feature)
-        log_safe("warning", f"[{self.name}] {message}")
+        log_safe(level, f"[{self.name}] {message}")
 
     def build_tool_args(
         self,
@@ -164,6 +172,7 @@ class HazeProvider(CLIProvider):
                 "tools",
                 "per-tool allow/deny is not supported by haze "
                 "(fixed built-in toolset); tool restrictions ignored",
+                level="info",
             )
         return []
 
@@ -172,31 +181,32 @@ class HazeProvider(CLIProvider):
             self._warn_unsupported_once(
                 "max_turns",
                 "max turns is not supported by haze; one-shot runs to completion",
+                level="info",
             )
         return []
 
     def build_mcp_args(self, configs: Optional[List[str]] = None) -> List[str]:
         if configs:
-            log_safe(
-                "warning",
-                f"[{self.name}] MCP config is not supported via CLI flags; "
+            self._warn_unsupported_once(
+                "mcp",
+                "MCP config is not supported via CLI flags; "
                 "configure servers inside haze (/mcp) instead",
             )
         return []
 
     def build_plugin_args(self, plugin_dirs: Optional[List[str]] = None) -> List[str]:
         if plugin_dirs:
-            log_safe(
-                "warning",
-                f"[{self.name}] plugin directories are not supported; ignored",
+            self._warn_unsupported_once(
+                "plugins",
+                "plugin directories are not supported; ignored",
             )
         return []
 
     def build_effort_args(self, effort: str = "") -> List[str]:
         if effort:
-            log_safe(
-                "warning",
-                f"[{self.name}] reasoning effort control is not supported; ignored",
+            self._warn_unsupported_once(
+                "effort",
+                "reasoning effort control is not supported; ignored",
             )
         return []
 
@@ -228,18 +238,18 @@ class HazeProvider(CLIProvider):
         through their builders (which warn) rather than dropped here.
         """
         if system_prompt_file:
-            log_safe(
-                "warning",
-                f"[{self.name}] system prompt file is not supported; "
+            self._warn_unsupported_once(
+                "system_prompt_file",
+                "system prompt file is not supported; "
                 "falling back to inline system prompt",
             )
         if system_prompt:
             # No dedicated system-prompt flag: prepend (base fallback shape).
             prompt = system_prompt + "\n\n" + prompt
         if resume_session_id:
-            log_safe(
-                "warning",
-                f"[{self.name}] session resume is not supported "
+            self._warn_unsupported_once(
+                "resume",
+                "session resume is not supported "
                 "(headless haze is one-shot); starting fresh",
             )
         if not skip_permissions:
@@ -319,10 +329,20 @@ class HazeProvider(CLIProvider):
         (tiny) run — same precedent as cline. NOTE: consumes a small number
         of tokens per call. Any probe error or timeout reports available so
         a flaky probe never blocks real work.
+
+        The probe runs from a fresh EMPTY directory, not *project_path*:
+        haze ingests CLAUDE.md/AGENTS.md context files from its cwd, which
+        inflates a "tiny" probe to ~12K input tokens inside a real project.
+        Quota/auth state is global to the operator's haze setup, so the cwd
+        is irrelevant to what the probe measures.
         """
+        import tempfile
+
         from app.cli_exec import run_cli
+        from app.utils import koan_tmp_dir
 
         cmd = [self.binary(), "--output", "json", "-p", "ok"]
+        probe_dir = tempfile.mkdtemp(prefix="haze-probe-", dir=koan_tmp_dir())
         try:
             result = run_cli(
                 cmd,
@@ -330,13 +350,15 @@ class HazeProvider(CLIProvider):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=project_path,
+                cwd=probe_dir,
             )
         except subprocess.TimeoutExpired:
             return True, ""
         except Exception as e:
             log_safe("error", f"[{self.name}] quota probe error: {e}")
             return True, ""
+        finally:
+            shutil.rmtree(probe_dir, ignore_errors=True)
 
         stdout_text = result.stdout or ""
         stderr_text = result.stderr or ""

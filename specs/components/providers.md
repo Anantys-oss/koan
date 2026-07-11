@@ -147,11 +147,19 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   and tested so the flip is one line. Headless haze is one-shot (no session
   resume) and exposes no
   per-tool/MCP/plugin/max-turns/fallback-model/effort controls — those inputs
-  are warned-and-skipped, never silently accepted. Quota/auth detection uses
+  are skipped but never silently: a two-tier notice policy applies, deduped
+  once per process. Static capabilities driven by Kōan's OWN defaults
+  (per-tool allow/deny, max turns, fallback model — passed unconditionally by
+  the loop; the operator cannot act) log at **info**; operator-actionable
+  config (MCP, plugins, effort, resume, system-prompt file — removable) and
+  the safety-relevant no-permission-gates notice log at **warning**.
+  Quota/auth detection uses
   backend-agnostic patterns (haze fronts OpenAI/OpenRouter/local backends):
   stderr trusted fully, stdout only on non-zero exit with an error-marker gate.
   Pre-flight quota check is a minimal token-consuming `--output json` probe
-  (cline precedent); probe errors never block work. Invocation lock:
+  (cline precedent) run from a fresh EMPTY scratch directory — never the
+  project dir, whose CLAUDE.md/AGENTS.md context haze would ingest (~12K
+  tokens per probe); probe errors never block work. Invocation lock:
   `haze-cli` (shared `~/.haze/settings.json` state).
 
 ## Integration points

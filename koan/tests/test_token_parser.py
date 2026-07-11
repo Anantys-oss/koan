@@ -341,8 +341,9 @@ class TestHazeCamelCaseUsage:
     """Haze >= 0.7.0 result envelopes report usage with camelCase fields.
 
     Mapping (specs/006-haze-cli-provider/data-model.md): inputTokens minus
-    cacheReadTokens -> input_tokens, outputTokens + reasoningTokens ->
-    output_tokens, cacheReadTokens -> cache_read_input_tokens,
+    cacheReadTokens -> input_tokens; outputTokens -> output_tokens
+    (reasoningTokens is a SUBSET of outputTokens — accounted within it,
+    never added on top); cacheReadTokens -> cache_read_input_tokens;
     cacheWriteTokens -> cache_creation_input_tokens.
     """
 

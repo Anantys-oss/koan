@@ -14,6 +14,11 @@ underlying AI agent. Haze is a minimal multi-backend agentic CLI (OpenAI,
 OpenRouter, local endpoints such as LM Studio or Ollama) with a focused built-in
 toolset for terminal development workflows.
 
+**Official haze documentation: https://denizokcu.github.io/haze/** — the
+authoritative reference for haze itself (installation, slash commands,
+providers/models, skills, MCP/LSP). This page covers only the Kōan
+integration.
+
 **Minimum supported haze version: 0.7.0** — the first release with
 `--output stream-json`, which Kōan uses as its primary integration mode. Older
 versions fail with a normal CLI error when Kōan requests streaming output.
@@ -92,8 +97,10 @@ models:
 
 When no model is configured, haze uses its own active model (`/model`).
 A bad or ambiguous selector fails fast with a precise error before the agent
-runs. **There is no fallback model** — a configured `fallback:` is warned about
-and ignored.
+runs. **There is no fallback model** — a configured `fallback:` (often
+inherited from `models.default.fallback`) is noted once per process at info
+level and ignored; set `models: haze: fallback: ""` to silence the note
+entirely.
 
 Per-project overrides and the per-role `cli:` section work like any other
 provider (see the [user manual](../users/user-manual.md)).
@@ -141,7 +148,27 @@ Haze fronts metered API backends, so Kōan treats it as quota-bearing:
 - **Pre-flight probe**: before missions, Kōan may run a minimal one-shot
   `haze --output json` probe ("ok") to surface quota/auth problems early.
   This consumes a small number of tokens; probe errors or timeouts never
-  block real work.
+  block real work. The probe runs from a fresh empty scratch directory —
+  never the project — so haze doesn't ingest the repo's `CLAUDE.md`/
+  `AGENTS.md` context (~12K tokens) for a two-word check.
+
+## Operational notes
+
+- **Expected `[info] [haze]` log lines**: capability notices for features the
+  agent loop always passes but haze doesn't support (tool restrictions, max
+  turns, fallback model) are logged once per mission subprocess at info
+  level — they describe static provider capabilities, not problems.
+  Operator-actionable cases (MCP config, plugin dirs, effort, session resume)
+  and the no-permission-gates notice log at warning level.
+- **`.haze/tasks.json` in your workspace**: haze persists its task-list state
+  into the working directory during runs. Add `.haze/` to the target
+  project's `.gitignore` (Kōan's own repo ignores it) so agent branches never
+  commit it.
+- **Telegram message formatting may fall back to plain text**: haze's startup
+  plus context load (~10s+) can exceed Kōan's 30s lightweight-formatting call;
+  the fallback is graceful (unformatted message). If formatted messages
+  matter, route the lightweight role to a faster provider via the `cli:`
+  section, e.g. `cli: { default: { lightweight: claude } }`.
 
 ## Troubleshooting
 

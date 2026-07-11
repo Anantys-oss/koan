@@ -514,6 +514,15 @@ models:
   #   review_mode: "gpt-5.5"        # serious code review
   #   reflect: "gpt-5.4"            # summarize / reason about result
 
+  # Haze provider overrides (uncomment to customize). Values are haze model
+  # selectors: an unambiguous model name, or provider:model, as configured
+  # inside haze via /provider + /model. See docs/providers/haze.md.
+  # haze:
+  #   mission: "glm-5.2"       # main mission execution
+  #   review_mode: "glm-5.2"   # code review
+  #   chat: "glm-4.7"          # chat responses
+  #   lightweight: "glm-4.7"   # low-cost calls (format_outbox, pick_mission)
+
   # Ollama Launch provider overrides (uncomment to customize):
   # ollama-launch:
   #   mission: "kimi-k2.7:cloud"         # main mission execution

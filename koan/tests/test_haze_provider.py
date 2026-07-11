@@ -96,12 +96,15 @@ class TestHazeCommandConstruction:
         assert self.provider.build_model_args("openai:gpt-5") == ["-m", "openai:gpt-5"]
         assert self.provider.build_model_args("") == []
 
-    def test_build_model_args_fallback_warns_and_skips(self):
+    def test_build_model_args_fallback_notes_once_at_info(self):
         with patch("app.provider.haze.log_safe") as log:
             flags = self.provider.build_model_args("openai:gpt-5", fallback="openai:gpt-4o")
+            self.provider.build_model_args("openai:gpt-5", fallback="openai:gpt-4o")
         assert flags == ["-m", "openai:gpt-5"]
-        assert log.called
-        assert "fallback" in log.call_args[0][1]
+        fallback_notes = [c for c in log.call_args_list if "fallback" in c.args[1]]
+        assert len(fallback_notes) == 1
+        # Koan-defaults-driven static capability -> info tier, not warning.
+        assert fallback_notes[0].args[0] == "info"
 
     def test_build_output_args_mapping(self):
         assert self.provider.build_output_args("stream-json") == ["--output", "stream-json"]
@@ -155,16 +158,30 @@ class TestHazeCommandConstruction:
         assert self.provider.build_plugin_args(["/tmp/plugins"]) == []
         assert self.provider.build_effort_args("high") == []
 
-    def test_unsupported_builders_warn(self):
+    def test_unsupported_builders_note_with_two_tier_levels(self):
         with patch("app.provider.haze.log_safe") as log:
             self.provider.build_tool_args(["Bash"])
             self.provider.build_max_turns_args(10)
             self.provider.build_mcp_args(["/tmp/mcp.json"])
             self.provider.build_plugin_args(["/tmp/plugins"])
             self.provider.build_effort_args("high")
-        warned = " | ".join(c.args[1] for c in log.call_args_list)
+        by_msg = {c.args[1]: c.args[0] for c in log.call_args_list}
+        joined = " | ".join(by_msg)
         for feature in ("tool", "max turns", "MCP", "plugin", "effort"):
-            assert feature in warned, f"missing warning for {feature}"
+            assert feature in joined, f"missing notice for {feature}"
+        # Koan-defaults-driven -> info; operator-actionable config -> warning.
+        for msg, level in by_msg.items():
+            expected = "info" if ("tool" in msg or "max turns" in msg) else "warning"
+            assert level == expected, f"{msg!r} logged at {level}, expected {expected}"
+
+    def test_operator_actionable_notices_fire_once_per_process(self):
+        with patch("app.provider.haze.log_safe") as log:
+            self.provider.build_mcp_args(["/tmp/mcp.json"])
+            self.provider.build_mcp_args(["/tmp/mcp.json"])
+            self.provider.build_effort_args("high")
+            self.provider.build_effort_args("low")
+        assert len([c for c in log.call_args_list if "MCP" in c.args[1]]) == 1
+        assert len([c for c in log.call_args_list if "effort" in c.args[1]]) == 1
 
     def test_structural_warnings_fire_once_per_process(self):
         with patch("app.provider.haze.log_safe") as log:
@@ -233,6 +250,8 @@ class TestHazeStdinRewrite:
 
     def test_prepare_prompt_file_keeps_prompt_in_argv(self, tmp_path, monkeypatch):
         """While stdin passing is disabled, the prompt must stay in argv."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
         monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
         from app.cli_exec import prepare_prompt_file
 
@@ -244,6 +263,8 @@ class TestHazeStdinRewrite:
 
     def test_prepare_prompt_file_uses_stdin_once_reenabled(self, tmp_path, monkeypatch):
         """The dormant rewrite works end-to-end when stdin passing is re-enabled."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
         monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
         from app.cli_exec import prepare_prompt_file
 
@@ -599,6 +620,24 @@ class TestHazeQuotaProbe:
         assert cmd[0] == "haze"
         assert "--output" in cmd and "json" in cmd
         assert cmd[-2:] == ["-p", "ok"]
+
+    def test_probe_runs_from_neutral_empty_dir(self, tmp_path, monkeypatch):
+        """The probe must not run inside the project: haze would ingest the
+        repo's CLAUDE.md/AGENTS.md context and inflate the probe to ~12K
+        input tokens. A fresh empty dir keeps it cheap."""
+        import app.utils as utils
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
+        with patch(
+            "app.cli_exec.run_cli",
+            return_value=self._completed(stdout=haze_samples.JSON_ENVELOPE_SUCCESS),
+        ) as run_cli:
+            self.provider.check_quota_available("/some/real/project")
+        probe_cwd = run_cli.call_args.kwargs["cwd"]
+        assert probe_cwd != "/some/real/project"
+        assert probe_cwd.startswith(str(tmp_path))
+        # Scratch dir is cleaned up after the probe.
+        assert not os.path.exists(probe_cwd)
 
     def test_probe_quota_exhaustion(self):
         with patch(
