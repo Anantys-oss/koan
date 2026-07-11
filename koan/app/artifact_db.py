@@ -234,7 +234,7 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
       without truncating, mirroring an append to the file. A once-dirty append
       projection stays dirty across subsequent successful appends — an append
       cannot backfill rows a prior failed append dropped, so only a full rebuild
-      (``"replace"``) heals it.
+      (:func:`rebuild_from_file`) heals it.
 
     A DB projection failure is logged, rolled back, and the projection flagged
     dirty (so subsequent reads fall back to the file) but never propagated; if
@@ -263,7 +263,7 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
             # An append inserts only the new rows; it cannot backfill rows a
             # prior failed append dropped. Clearing the dirty flag here would
             # serve a DB permanently missing those rows. So a once-dirty append
-            # projection stays dirty until a full rebuild (replace) heals it.
+            # projection stays dirty until rebuild_from_file() heals it.
             already_dirty = _is_dirty(conn, table)
             conn.executemany(sql, [tuple(r.get(c) for c in cols) for r in records])
             _set_dirty(conn, table, already_dirty)
@@ -297,6 +297,44 @@ def dual_write(records: List[Dict], *, file_writer: Callable[[List[Dict]], None]
                 logger.warning(
                     "[artifact_db] could not close %s conn after failed dirty "
                     "flag: %s", table, close_err)
+
+
+def rebuild_from_file(conn: Optional[sqlite3.Connection], table: str, *,
+                      file_reader: Callable[[], List[Dict]]) -> bool:
+    """Rebuild a projection from the authoritative file, clearing the dirty flag.
+
+    The named recovery handle for a dirty (usually ``"append"``) projection: an
+    append cannot backfill rows a prior failed append dropped, so only a full
+    re-read + replace heals it (see :func:`dual_write`). Re-parses the whole file
+    via ``file_reader`` and rewrites the projection in one transaction. Mirrors
+    :func:`app.memory_db.migrate_jsonl_to_sqlite`; the file is never written.
+
+    Returns ``True`` when the projection was rebuilt and marked clean, ``False``
+    on any DB error (file stays authoritative, projection stays dirty).
+    """
+    if conn is None:
+        return False
+    spec = ARTIFACT_SCHEMAS.get(table)
+    if spec is None:
+        logger.warning("[artifact_db] rebuild_from_file: unknown artifact %r", table)
+        return False
+    cols = [c.name for c in spec.columns if not c.primary_key]
+    placeholders = ", ".join("?" for _ in cols)
+    sql = f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})"
+    records = file_reader()                    # authoritative source
+    try:
+        conn.execute(f"DELETE FROM {table}")   # full-rewrite mirror
+        conn.executemany(sql, [tuple(r.get(c) for c in cols) for r in records])
+        _set_dirty(conn, table, False)         # full rebuild heals any gap
+        conn.commit()
+        return True
+    except sqlite3.DatabaseError as e:
+        logger.warning("[artifact_db] rebuild_from_file(%s) failed: %s", table, e)
+        try:
+            conn.rollback()                    # leave a consistent (stale) DB
+        except sqlite3.DatabaseError as rb_err:
+            logger.warning("[artifact_db] rollback failed for %s: %s", table, rb_err)
+        return False
 
 
 def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,

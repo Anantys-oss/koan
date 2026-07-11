@@ -168,6 +168,50 @@ def test_dual_write_append_dirty_is_sticky_until_rebuild(tmp_path):
     conn.close()
 
 
+def test_rebuild_from_file_heals_dirty_append_projection(tmp_path):
+    # A dirty append projection is the case rebuild_from_file() exists for:
+    # re-read the whole file, replace the projection, clear the dirty flag.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    artifact_db.dual_write([{"text": "a", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn,
+                           table="missions", mode="append")
+    conn.execute("ALTER TABLE missions RENAME TO missions_tmp")  # break insert
+    artifact_db.dual_write([{"text": "dropped", "section": "pending"}],
+                           file_writer=lambda r: None, conn=conn,
+                           table="missions", mode="append")
+    conn.execute("ALTER TABLE missions_tmp RENAME TO missions")  # restore
+    assert artifact_db._is_dirty(conn, "missions") is True
+    file_recs = [{"text": "a", "section": "pending"},
+                 {"text": "dropped", "section": "pending"}]
+    assert artifact_db.rebuild_from_file(
+        conn, "missions", file_reader=lambda: file_recs) is True
+    assert artifact_db._is_dirty(conn, "missions") is False
+    healed = artifact_db.read_from_db_or_file(
+        conn, "missions", file_reader=lambda: [])
+    assert [r["text"] for r in healed] == ["a", "dropped"]
+    conn.close()
+
+
+def test_rebuild_from_file_returns_false_on_db_error(tmp_path):
+    # No conn / DB error leaves the file authoritative; never raises.
+    assert artifact_db.rebuild_from_file(
+        None, "missions", file_reader=lambda: []) is False
+    conn = artifact_db.connect(tmp_path / "a.db")
+    # tables intentionally NOT created -> DELETE fails -> False, no raise
+    assert artifact_db.rebuild_from_file(
+        conn, "missions", file_reader=lambda: [{"text": "x", "section": "p"}]
+    ) is False
+    conn.close()
+
+
+def test_rebuild_from_file_unknown_artifact(tmp_path):
+    conn = artifact_db.connect(tmp_path / "a.db")
+    assert artifact_db.rebuild_from_file(
+        conn, "not_an_artifact", file_reader=lambda: []) is False
+    conn.close()
+
+
 def test_dual_read_falls_back_on_schema_drift(tmp_path):
     # A DB whose live columns drift from the declared set must fall back to the
     # file rather than serve a divergent dict shape — even with a clean (dirty=0)

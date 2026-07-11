@@ -32,12 +32,20 @@ columns are pinned to `memory_db._EXPECTED_COLUMNS` so the two indexes agree.
   files like `journal`, the `memory` log, `recovery.jsonl`) inserts the supplied
   new rows without truncating. A once-dirty `"append"` projection stays dirty
   across later successful appends — an append cannot backfill rows a prior failed
-  append dropped, so only a `"replace"` rebuild heals it. A DB failure is logged,
+  append dropped, so only a `rebuild_from_file()` heals it. A DB failure is logged,
   rolled back, and flags the
   projection **dirty** so later reads fall back to the file; if the dirty flag
   itself can't be persisted the connection is closed so reads still fall through
   to the file. The DB failure is never propagated. A `file_writer` failure
   propagates (the write genuinely failed).
+- `rebuild_from_file(conn, table, file_reader=)` — recovery handle for a dirty
+  projection: re-reads the whole file and rewrites the projection in one
+  transaction, clearing the dirty flag. An append-mode projection that went dirty
+  after a partial failure can only be healed by a full rebuild (an append can't
+  backfill dropped rows), so this is the named primitive downstream migrations
+  call — the equivalent of `memory_db.migrate_jsonl_to_sqlite()`. Best-effort:
+  returns `False` and leaves the file authoritative on any DB error; never writes
+  the file.
 - `read_from_db_or_file(conn, table, file_reader=, order_key=None)` — reads the
   DB when populated and in-sync, else parses the file; preserves file-parse
   ordering **and dict shape** (surrogate `id` PK columns are excluded) so a
