@@ -1461,8 +1461,11 @@ class MemoryManager:
     def prune_memory_log(self, horizon_days: int = 365) -> int:
         """Remove log entries older than ``horizon_days``. Returns removed count.
 
-        The full read-filter-write cycle holds ``flock(LOCK_EX)`` on the log
-        file so a concurrent ``append_memory_entry`` cannot lose data.
+        Streams the log line-by-line (no full ``f.read()`` buffer) to reduce
+        peak memory on large files.  The read-filter-write cycle holds
+        ``flock(LOCK_EX)`` on the log file so a concurrent
+        ``append_memory_entry`` cannot lose data; the in-place rewrite (as
+        opposed to temp-file + rename) preserves this lock contract.
         """
         if not self._log_path.exists():
             return 0
@@ -1473,13 +1476,12 @@ class MemoryManager:
 
         try:
             fcntl.flock(f, fcntl.LOCK_EX)
-            raw = f.read()
 
             now_utc = datetime.now(timezone.utc)
             cutoff = now_utc - timedelta(days=horizon_days)
             kept = []
             removed = 0
-            for line in raw.splitlines():
+            for line in f:
                 line = line.strip()
                 if not line:
                     continue
