@@ -55,7 +55,10 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   `> [!TYPE]` alert blocks into plain `TYPE: text` before Jira output; it runs
   inside `_strip_markdown_for_jira()` (plan comments) and the Jira branches of
   `build_pr_comment_success/_failure` (PR comments). `jira_add_comment()` stays a
-  raw ADF poster so human `/comment` blockquotes are never mangled.
+  raw ADF poster so human `/comment` blockquotes are never mangled. The fold is
+  fence-aware (alert syntax inside a fenced code block is left verbatim) and
+  stops each block's body run at the next opener (adjacent blocks degrade
+  independently instead of merging).
 
 ## Integration points
 

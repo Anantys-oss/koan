@@ -269,7 +269,10 @@ or `/plan` output into a Jira comment, it degrades each alert block into a plain
 `TYPE: text` line (for example, `WARNING: Data loss possible`) so the note stays
 readable. The detection is deliberately narrow — only the five canonical alert
 keywords on an exact `> [!TYPE]` opener line are converted, so an ordinary
-human-written Jira blockquote is left untouched.
+human-written Jira blockquote is left untouched. Alert syntax inside a fenced
+code block is preserved verbatim (it is example text, not an alert), and
+back-to-back alert blocks with no separating blank line are degraded
+independently rather than merged.
 
 ### Deduplication
 

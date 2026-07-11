@@ -30,11 +30,13 @@ def _flatten_github_alerts(text: str) -> str:
     """Fold GitHub ``> [!TYPE]`` alert blocks into plain ``TYPE: ...`` text.
 
     The opener must be exactly ``> [!TYPE]`` (one of the 5 canonical kinds);
-    the block body is the contiguous run of ``>``-prefixed lines below it.
+    the block body is the contiguous run of ``>``-prefixed lines below it,
+    stopping at the next alert opener so back-to-back blocks stay separate.
     The first body line is labelled ``TYPE: <text>`` and the rest follow as
-    plain lines. This is the single definition of the plain-text degradation
-    for a GitHub alert on a markdown-less tracker; keep it in sync with the
-    native-alert helper once #2301's ``build_alert()`` lands.
+    plain lines. Alert syntax inside a fenced code block is left untouched.
+    This is the single definition of the plain-text degradation for a GitHub
+    alert on a markdown-less tracker; keep it in sync with the native-alert
+    helper once #2301's ``build_alert()`` lands.
     """
     if not text:
         return ""
@@ -42,8 +44,14 @@ def _flatten_github_alerts(text: str) -> str:
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     out: List[str] = []
     i, n = 0, len(lines)
+    in_fence = False
     while i < n:
-        match = _ALERT_OPEN_RE.match(lines[i].strip())
+        if lines[i].strip().startswith("```"):
+            in_fence = not in_fence
+            out.append(lines[i])
+            i += 1
+            continue
+        match = None if in_fence else _ALERT_OPEN_RE.match(lines[i].strip())
         if not match:
             out.append(lines[i])
             i += 1
@@ -51,7 +59,11 @@ def _flatten_github_alerts(text: str) -> str:
         kind = match.group(1).upper()
         body: List[str] = []
         i += 1
-        while i < n and lines[i].lstrip().startswith(">"):
+        while (
+            i < n
+            and lines[i].lstrip().startswith(">")
+            and not _ALERT_OPEN_RE.match(lines[i].strip())
+        ):
             body.append(_BLOCKQUOTE_PREFIX_RE.sub("", lines[i].lstrip()).rstrip())
             i += 1
         content = [line for line in body if line.strip()]

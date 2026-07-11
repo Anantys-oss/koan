@@ -388,6 +388,23 @@ class TestGitHubAlertFlattening(unittest.TestCase):
         result = jira_readable_markdown(md)
         assert "WARNING:" not in result
 
+    def test_adjacent_blocks_without_blank_line(self):
+        # A second opener terminates the first block's body run; both flatten
+        # independently instead of the second folding in as literal `[!NOTE]`.
+        md = "> [!WARNING]\n> a\n> [!NOTE]\n> b"
+        result = jira_readable_markdown(md)
+        assert "[!" not in result
+        assert "WARNING: a" in result
+        assert "NOTE: b" in result
+
+    def test_alert_syntax_inside_code_fence_preserved(self):
+        # Alert syntax inside a fenced code block is example text, not an
+        # alert to degrade — leave it verbatim.
+        md = "```\n> [!WARNING]\n> literal example\n```"
+        result = jira_readable_markdown(md)
+        assert "[!WARNING]" in result
+        assert "WARNING: literal example" not in result
+
 
 class TestPrCommentAlertSafety(unittest.TestCase):
     def test_success_why_section_alert_flattened(self):
