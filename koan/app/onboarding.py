@@ -524,14 +524,7 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
 
     # Supported CLI providers
     installed_providers = _detect_installed_providers()
-    provider_tools = {
-        "claude": "claude",
-        "cline": "cline",
-        "codex": "codex",
-        "copilot": "gh",
-        "ollama-launch": "ollama",
-    }
-    for provider, tool in provider_tools.items():
+    for provider, tool in PROVIDER_TOOLS.items():
         if tool is not None:
             found = _check_tool(tool)
             print(f"  {green('✓') if found else yellow('○')} {provider} provider" + (
@@ -571,24 +564,29 @@ def step_prerequisites(state: OnboardingState) -> OnboardingState:
 # Step 2: Provider selection
 # ---------------------------------------------------------------------------
 
+# Provider flavor -> binary probed on PATH to consider it installed.
+# Single source for the environment check, readiness gate, and detection scan.
+PROVIDER_TOOLS = {
+    "claude": "claude",
+    "cline": "cline",
+    "codex": "codex",
+    "copilot": "gh",
+    "haze": "haze",
+    "ollama-launch": "ollama",
+}
+
 PROVIDERS = [
     ("claude", "Claude Code CLI"),
     ("cline", "Cline CLI"),
     ("codex", "OpenAI Codex CLI"),
     ("copilot", "GitHub Copilot CLI"),
+    ("haze", "haze (multi-backend agentic CLI)"),
     ("ollama-launch", "Ollama Launch (local models via ollama)"),
 ]
 
 
 def _provider_ready(provider: str) -> tuple[bool, str]:
-    tool_by_provider = {
-        "claude": "claude",
-        "cline": "cline",
-        "codex": "codex",
-        "copilot": "gh",
-        "ollama-launch": "ollama",
-    }
-    tool = tool_by_provider.get(provider)
+    tool = PROVIDER_TOOLS.get(provider)
     if provider == "ollama-launch":
         if not tool:
             return False, f"Unknown CLI provider: {provider}"
@@ -604,14 +602,7 @@ def _provider_ready(provider: str) -> tuple[bool, str]:
 
 def _detect_installed_providers() -> list[str]:
     """Return the list of CLI providers whose binaries are on PATH."""
-    provider_tools = {
-        "claude": "claude",
-        "cline": "cline",
-        "codex": "codex",
-        "copilot": "gh",
-        "ollama-launch": "ollama",
-    }
-    return [p for p, t in provider_tools.items() if _check_tool(t)]
+    return [p for p, t in PROVIDER_TOOLS.items() if _check_tool(t)]
 
 
 def _get_config_cli_provider() -> str:

@@ -1,16 +1,16 @@
 ---
 type: component-spec
 title: "Component Spec — CLI Provider Abstraction"
-description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot) behind one `CLIProvider` contract."
+description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-08
+updated: 2026-07-10
 ---
 
 # Component Spec — CLI Provider Abstraction
 
 **Package:** `koan/app/provider/` (`base.py`, `claude.py`, `cline.py`, `codex.py`,
-`copilot.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
+`copilot.py`, `haze.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
 
 ## Purpose
 
@@ -27,7 +27,8 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
        ├─ claude.py    → ClaudeProvider (Claude Code CLI)
        ├─ cline.py     → ClineProvider
        ├─ codex.py     → CodexProvider (quota via stream-json summary only)
-       └─ copilot.py   → CopilotProvider (with tool-name mapping)
+       ├─ copilot.py   → CopilotProvider (with tool-name mapping)
+       └─ haze.py      → HazeProvider (haze ≥0.7.0 headless stream-json)
 ```
 
 ## Key types & functions
@@ -116,8 +117,50 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   abstraction must translate, not leak provider-specific tool names upward.
 - **Quota/usage extraction is provider-specific.** Claude exposes usage in
   `modelUsage` (no top-level `model` field); codex surfaces quota only via the
-  stream-json summary (`rate_limit_rejected`, stdout JSONL — never stderr). Detectors
-  read the summary stream, not assistant text.
+  stream-json summary (`rate_limit_rejected`, stdout JSONL — never stderr); haze
+  reports usage only in its terminal result envelope with **camelCase** fields
+  (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`reasoningTokens`).
+  Detectors read the summary stream, not assistant text.
+- **Shared stream parsers extend by event SHAPE, never by provider name.** The
+  central summarizer/text/usage extractors in `provider/__init__.py` (and the
+  mission-stdout path in `token_parser.py`) branch on field presence
+  (e.g. `inputTokens` ⇒ camelCase usage) so the agent loop never learns which
+  provider is running (Provider Isolation). Adding a provider must not add
+  `if provider == …` branches to shared code.
+- **Haze headless contract (haze ≥ 0.7.0).** `HazeProvider` targets haze's
+  documented harness mode: `--output stream-json` NDJSON progress events
+  (`turn_start`/`message_*`/`tool_*`/`retry`/`context_overflow`/`turn_end`)
+  terminated by a result envelope `{type:"result", status, result, usage}` that is
+  byte-identical to `--output json`; exit code 0 ⇔ status `complete`
+  (`failed`/`aborted` are failures, never success). Because haze streams,
+  it uses the standard `supports_stream_json()` path — **no**
+  incremental-progress capability flag and **no** agent-loop bypass may be
+  (re)introduced for it. Prompt delivery: the *target* design is stdin via a
+  flag-REMOVAL `rewrite_prompt_for_stdin()` (haze reads stdin only when `-p`
+  is absent; the base marker substitution would send the marker as the literal
+  prompt), but stdin passing is **disabled**
+  (`supports_stdin_prompt_passing()` False) until upstream fixes its stdin
+  gate — haze checks `process.stdin.isTTY === false` and Node reports
+  `undefined` for pipes/files, so piped runs fall into the interactive UI
+  (verified live 2026-07-10). Until then the prompt rides argv as `-p`
+  (subject to OS per-argument limits); the dormant rewrite stays implemented
+  and tested so the flip is one line. Headless haze is one-shot (no session
+  resume) and exposes no
+  per-tool/MCP/plugin/max-turns/fallback-model/effort controls — those inputs
+  are skipped but never silently: a two-tier notice policy applies, deduped
+  once per process. Static capabilities driven by Kōan's OWN defaults
+  (per-tool allow/deny, max turns, fallback model — passed unconditionally by
+  the loop; the operator cannot act) log at **info**; operator-actionable
+  config (MCP, plugins, effort, resume, system-prompt file — removable) and
+  the safety-relevant no-permission-gates notice log at **warning**.
+  Quota/auth detection uses
+  backend-agnostic patterns (haze fronts OpenAI/OpenRouter/local backends):
+  stderr trusted fully, stdout only on non-zero exit with an error-marker gate.
+  Pre-flight quota check is a minimal token-consuming `--output json` probe
+  (cline precedent) run from a fresh EMPTY scratch directory — never the
+  project dir, whose CLAUDE.md/AGENTS.md context haze would ingest (~12K
+  tokens per probe); probe errors never block work. Invocation lock:
+  `haze-cli` (shared `~/.haze/settings.json` state).
 
 ## Integration points
 

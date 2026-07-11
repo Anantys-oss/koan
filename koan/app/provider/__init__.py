@@ -44,6 +44,7 @@ from app.provider.claude import ClaudeProvider  # noqa: F401
 from app.provider.cline import ClineProvider  # noqa: F401
 from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
+from app.provider.haze import HazeProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
 
 
@@ -61,6 +62,21 @@ def _extract_provider_error_preview(stdout: str) -> str:
         if not isinstance(event, dict):
             continue
         etype = str(event.get("type") or "")
+        # Haze-style failures: the terminal result envelope carries the error
+        # text in ``result`` with status "failed"/"aborted", and a fatal
+        # context overflow reports its error inline. Shape-keyed — no
+        # provider-name checks.
+        if etype == "result":
+            status = str(event.get("status") or "").lower()
+            result = event.get("result")
+            if status in {"failed", "aborted"} and isinstance(result, str) and result.strip():
+                previews.append(result.strip())
+            continue
+        if etype == "context_overflow" and event.get("recovered") is False:
+            error = event.get("error")
+            if isinstance(error, str) and error.strip():
+                previews.append(error.strip())
+            continue
         if etype not in PROVIDER_ERROR_EVENT_TYPES:
             continue
         message = event.get("message")
@@ -101,6 +117,7 @@ _PROVIDERS = {
     "cline": ClineProvider,
     "codex": CodexProvider,
     "copilot": CopilotProvider,
+    "haze": HazeProvider,
     "ollama-launch": OllamaLaunchProvider,
 }
 
@@ -710,6 +727,12 @@ def _content_text(content: Any) -> str:
     return ""
 
 
+def _first_line(value: Any, limit: int = 80) -> str:
+    """First line of *value* as a bounded preview string ('' when empty)."""
+    lines = str(value or "").strip().splitlines()
+    return lines[0][:limit] if lines else ""
+
+
 def _summarize_stream_event(event: Dict[str, Any]) -> str:
     """Render a provider JSONL event as a single human-readable line.
 
@@ -758,11 +781,54 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
         return "[cli] user turn"
 
     if etype == "result":
-        subtype = event.get("subtype", "")
+        # Claude labels results with ``subtype`` ("success"); haze-style
+        # envelopes carry ``status`` ("complete"/"aborted"/"failed") instead.
+        subtype = event.get("subtype", "") or event.get("status", "")
         duration_ms = event.get("duration_ms")
         if isinstance(duration_ms, (int, float)):
             return f"[cli] result: {subtype or '?'} ({int(duration_ms) // 1000}s)"
         return f"[cli] result: {subtype or '?'}"
+
+    # Haze-style message lifecycle events ({type: message_*, id, text}).
+    # ``message_update`` fires per streamed chunk with a cumulative text
+    # snapshot — summarize it cheaply instead of reprinting the text.
+    if etype == "message_start":
+        return "[cli] assistant — message start"
+    if etype == "message_update":
+        return "[cli] assistant — streaming"
+    if etype == "message_end":
+        if event.get("hidden"):
+            return "[cli] assistant — (hidden)"
+        preview = _first_line(event.get("text"))
+        if preview:
+            return f"[cli] assistant — text: {preview}"
+        return "[cli] assistant — message end"
+
+    # Haze-style tool completion ({type: tool_end, name, success, durationMs}).
+    # tool_start falls through to the generic name-keyed fallback below.
+    if etype == "tool_end" and isinstance(event.get("name"), str):
+        name = event.get("name") or "?"
+        duration = event.get("durationMs")
+        took = f", {int(duration)}ms" if isinstance(duration, (int, float)) else ""
+        if event.get("success") is False:
+            error = _first_line(event.get("error"))
+            suffix = f": {error}" if error else ""
+            return f"[cli] tool_end: {name} (FAILED{took}){suffix}"
+        return f"[cli] tool_end: {name} (ok{took})"
+
+    # Haze-style retry events ({type: retry, attempt, maxAttempts, error}).
+    if etype == "retry" and "attempt" in event:
+        error = _first_line(event.get("error"))
+        suffix = f": {error}" if error else ""
+        return f"[cli] retry {event.get('attempt')}/{event.get('maxAttempts')}{suffix}"
+
+    # Haze-style context overflow ({type: context_overflow, recovered, error}).
+    if etype == "context_overflow" and "recovered" in event:
+        if event.get("recovered"):
+            return "[cli] context_overflow (recovered)"
+        error = _first_line(event.get("error"))
+        suffix = f": {error}" if error else ""
+        return f"[cli] context_overflow (fatal){suffix}"
 
     if etype == "rate_limit_event":
         # The new CLI emits these informationally (status "allowed") on every
@@ -836,6 +902,16 @@ def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
                 text = block.get("text")
                 if isinstance(text, str) and text:
                     chunks.append(text)
+
+    # Haze-style segment completion: ``message_end`` carries the finalized
+    # text for one assistant segment (one event per segment id). Cumulative
+    # ``message_update`` snapshots are deliberately NOT collected — they would
+    # duplicate the same text many times. Hidden segments are excluded, same
+    # as haze's own result joining.
+    if event.get("type") == "message_end" and not event.get("hidden"):
+        text = event.get("text")
+        if isinstance(text, str) and text:
+            chunks.append(text)
 
     item = event.get("item")
     if isinstance(item, dict) and (
@@ -930,6 +1006,31 @@ def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
 
     usage = event.get("usage")
     if isinstance(usage, dict):
+        # camelCase usage shape (haze-style result envelopes):
+        # {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+        #  reasoningTokens}. Shape-keyed on field presence — no provider names.
+        if "inputTokens" in usage or "outputTokens" in usage:
+            input_tokens = int(usage.get("inputTokens", 0) or 0)
+            # reasoningTokens is a SUBSET of outputTokens in AI-SDK-based
+            # reporting (OpenAI completion_tokens_details semantics) — it is
+            # already accounted inside outputTokens; adding it would
+            # double-count reasoning-model output.
+            output_tokens = int(usage.get("outputTokens", 0) or 0)
+            cache_read = int(usage.get("cacheReadTokens", 0) or 0)
+            cache_write = int(usage.get("cacheWriteTokens", 0) or 0)
+            if cache_read > 0:
+                # Koan accounting: input_tokens excludes cache hits.
+                input_tokens = max(0, input_tokens - cache_read)
+            if input_tokens or output_tokens or cache_read or cache_write:
+                return {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": cache_write,
+                    "model": str(event.get("model") or "unknown"),
+                }
+            return None
+
         input_tokens = int(usage.get("input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
         cached_input = int(usage.get("cached_input_tokens", 0) or 0)
