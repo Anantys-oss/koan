@@ -1564,6 +1564,8 @@ def run_ci_fix_loop(
     push_fn: Optional[Callable[[str, str], None]] = None,
     recheck_fn: Optional[Callable[[str, str], Tuple[str, object, str]]] = None,
     outcome: Optional[dict] = None,
+    instance_dir: str = "",
+    project_name: str = "",
 ) -> Tuple[bool, str]:
     """Core CI fix loop: diff-fetch -> prompt -> Claude step -> push -> recheck.
 
@@ -1766,8 +1768,10 @@ def run_ci_fix_loop(
     attempts = loop_outcome.get("attempts", [])
     last_result = attempts[-1]["result"] if attempts else None
 
+    _loop_result = "exhausted"
     if last_result and isinstance(last_result, dict) and "_terminal" in last_result:
         term_name, success, term_logs = last_result["_terminal"]
+        _loop_result = term_name
         extra: dict = {}
         if "push_error" in last_result:
             extra["push_error"] = last_result["push_error"]
@@ -1775,14 +1779,73 @@ def run_ci_fix_loop(
 
         if term_name == "no_changes":
             actions_log.append(f"CI still failing after {max_attempts} fix attempts")
+            _capture_ci_fix_experience(
+                instance_dir, project_name, branch, full_repo, ci_logs,
+                loop_outcome, _loop_result,
+            )
             return False, current_ci_logs
 
+        _capture_ci_fix_experience(
+            instance_dir, project_name, branch, full_repo, ci_logs,
+            loop_outcome, _loop_result,
+        )
         return success, term_logs
 
     actions_log.append(f"CI still failing after {max_attempts} fix attempts")
     if outcome is not None and "result" not in outcome:
         _set_outcome("exhausted", max_attempts, current_ci_logs)
+    _capture_ci_fix_experience(
+        instance_dir, project_name, branch, full_repo, ci_logs,
+        loop_outcome, _loop_result,
+    )
     return False, current_ci_logs
+
+
+def _capture_ci_fix_experience(
+    instance_dir: str,
+    project_name: str,
+    branch: str,
+    full_repo: str,
+    ci_logs: str,
+    loop_outcome: dict,
+    loop_result: str,
+) -> None:
+    """Capture experience for CI-fix outcome (after loop, never inside it).
+
+    Only fires when both ``instance_dir`` and ``project_name`` are provided.
+    Extracts the winning iteration's diagnostic→fix from the last attempt's
+    evidence for the ``approach`` field.
+    """
+    if not instance_dir or not project_name:
+        return
+    try:
+        from app.experience_capture import capture_experience
+
+        ci_outcome = "success" if loop_result == "fixed" else "failed"
+
+        # Extract winning diagnostic→fix from the last attempt's evidence
+        root_cause = (ci_logs or "")[:500]
+        winning_approach = ""
+        attempts_list = loop_outcome.get("attempts", [])
+        if attempts_list:
+            last_attempt = attempts_list[-1]
+            result_obj = last_attempt.get("result")
+            if isinstance(result_obj, dict) and result_obj.get("new_logs"):
+                winning_approach = str(result_obj["new_logs"])[:500]
+
+        capture_experience(
+            instance_dir=instance_dir,
+            project_name=project_name,
+            mission_title=f"/fix CI fix for {branch}",
+            exit_code=0 if ci_outcome == "success" else 1,
+            outcome=ci_outcome,
+            root_cause=root_cause,
+            approach=winning_approach,
+            artifact=full_repo,
+            duration_minutes=0,
+        )
+    except Exception as e:
+        print(f"[claude_step] Experience capture for CI fix failed: {e}", file=sys.stderr)
 
 
 def _is_permission_error(error_msg: str) -> bool:

@@ -547,8 +547,14 @@ def _attempt_ci_fixes(
     Thin wrapper around :func:`app.claude_step.run_ci_fix_loop` with
     non-blocking CI recheck and re-enqueue on pending.
     """
+    import os
+
     from app.claude_step import run_ci_fix_loop
     from app.rebase_pr import _build_ci_fix_prompt
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    ci_instance_dir = os.path.join(koan_root, "instance") if koan_root else ""
+    ci_project_name = _project_name_from_path(project_path)
 
     def _build_prompt(logs: str, diff: str) -> str:
         return _build_ci_fix_prompt(
@@ -570,6 +576,8 @@ def _attempt_ci_fixes(
         commit_msg_template=f"fix: resolve CI failures on #{pr_number} (attempt {{attempt}})",
         base_remote=base_remote,
         step_runner=_bounded_ci_fix_step_runner,
+        instance_dir=ci_instance_dir,
+        project_name=ci_project_name,
     )
 
     # Re-enqueue for monitoring when a fix was pushed and CI is pending

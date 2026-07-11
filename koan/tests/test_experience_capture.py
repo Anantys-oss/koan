@@ -340,10 +340,10 @@ class TestStagnationCapture:
 
         _last_mission_stagnated.set()
 
-        with patch("app.run.get_retry_count", return_value=3), \
-             patch("app.run.get_total_attempts", return_value=3), \
+        with patch("app.stagnation_monitor.get_retry_count", return_value=3), \
+             patch("app.stagnation_monitor.get_total_attempts", return_value=3), \
              patch("app.run._update_mission_in_file"), \
-             patch("app.run.record_execution"), \
+             patch("app.mission_history.record_execution"), \
              patch("app.experience_capture.capture_experience") as mock_capture:
             _finalize_mission(
                 instance=str(tmp_path),
@@ -384,7 +384,7 @@ class TestCiFixCapture:
 
         with patch("app.claude_step._force_push"), \
              patch("app.claude_step._run_git", return_value=""), \
-             patch("app.claude_step.truncate_diff", return_value=""), \
+             patch("app.utils.truncate_diff", return_value=""), \
              patch("app.experience_capture.capture_experience") as mock_capture:
             run_ci_fix_loop(
                 branch="koan/test",
@@ -405,8 +405,9 @@ class TestCiFixCapture:
         mock_capture.assert_called_once()
         _, kwargs = mock_capture.call_args
         assert kwargs["outcome"] == "success"
-        assert kwargs["mission_kind"] == "fix"
         assert kwargs["exit_code"] == 0
+        # mission_kind is determined internally by _classify_mission_kind,
+        # not passed by the caller — so it's not in kwargs.
 
     def test_ci_fix_no_capture_without_instance_dir(self, tmp_path):
         from app.claude_step import run_ci_fix_loop
@@ -418,7 +419,7 @@ class TestCiFixCapture:
 
         with patch("app.claude_step._force_push"), \
              patch("app.claude_step._run_git", return_value=""), \
-             patch("app.claude_step.truncate_diff", return_value=""), \
+             patch("app.utils.truncate_diff", return_value=""), \
              patch("app.experience_capture.capture_experience") as mock_capture:
             run_ci_fix_loop(
                 branch="koan/test",

@@ -2981,6 +2981,24 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
         else:
             cause_tag = f"stagnation:{pattern}"
         _notify_stagnation(mission_title, project_name, pattern, excerpt)
+
+        # Capture experience for stagnation-cap failures (outcome='reverted').
+        # Placed after the retry-cap check so it only fires when the mission
+        # is actually being marked Failed, not on requeue (which returns early
+        # at the increment_retry_count branch above).
+        try:
+            from app.experience_capture import capture_experience
+            capture_experience(
+                instance_dir=instance,
+                project_name=project_name,
+                mission_title=mission_title,
+                exit_code=exit_code,
+                outcome="reverted",
+                root_cause=f"Agent stuck in loop: {pattern}",
+                approach="(abandoned — stagnation cap hit)",
+            )
+        except Exception as e:
+            log("error", f"Experience capture for stagnation failed: {e}")
     else:
         # On success, clear all retry counters so the next run starts fresh.
         # On failure, leave counters intact so the human can see why the
