@@ -25,6 +25,24 @@ from app.messaging import register_provider
 
 # Rate limit: Slack allows ~1 msg/sec for chat.postMessage
 SLACK_RATE_LIMIT_SECONDS = 1.0
+# Minimum spacing between (re)connect attempts. A persistently-unreachable
+# workspace (network partition, revoked token, Slack outage) would otherwise be
+# re-dialed on every 3s bridge drain; connect() is blocking under
+# ``_connect_lock``, so tight retries also stall the poll loop.
+SLACK_RECONNECT_COOLDOWN_SECONDS = 30.0
+# Consecutive (re)connect failures before an escalated warning is logged. A
+# single failing attempt is expected and self-heals on the next cooldown; a
+# sustained run of failures (revoked token, permanent partition) means the
+# bridge is deaf, so make that observable once rather than burying it in the
+# per-attempt "connection failed" noise.
+SLACK_RECONNECT_ESCALATION_ATTEMPTS = 5
+# After the first escalation, re-emit the "bridge is deaf" warning every this
+# many further consecutive failures so a multi-hour outage keeps producing a
+# signal. Without this the warning fires exactly once and an operator who starts
+# watching ``make logs`` after that line scrolled off sees an apparently-healthy
+# quiet bridge that is actually still deaf. At one attempt per
+# SLACK_RECONNECT_COOLDOWN_SECONDS this re-emits roughly every few minutes.
+SLACK_RECONNECT_REESCALATION_ATTEMPTS = 10
 MAX_MESSAGE_SIZE = DEFAULT_MAX_MESSAGE_SIZE
 
 # Bounded memory for threading/dedup state. These cap unbounded growth on a
@@ -66,6 +84,20 @@ class SlackProvider(MessagingProvider):
         self._last_send_time: float = 0.0
         self._connect_lock = threading.Lock()
         self._connected: bool = False
+        # Wall-clock time of the last connect()/re-dial attempt. Used to space
+        # out retries (SLACK_RECONNECT_COOLDOWN_SECONDS) so a dead workspace
+        # doesn't hammer the SDK on every 3s drain.
+        self._last_connect_attempt: float = 0.0
+        # One-shot guard so the "no usable liveness probe" warning is logged
+        # once, not on every 3s drain.
+        self._probe_warned: bool = False
+        # Consecutive failed (re)connect attempts, and a one-shot guard so the
+        # escalated "bridge is deaf" warning fires once per outage (reset on the
+        # next successful connect). A persistently-failing connect() otherwise
+        # only shows as repeated per-attempt lines with no signal that reception
+        # has actually stopped.
+        self._consecutive_connect_failures: int = 0
+        self._connect_failure_escalated: bool = False
 
         # Threading state. Slack threads are keyed by ``thread_ts`` (a string),
         # but the bridge's reply-context plumbing carries an int
@@ -191,10 +223,7 @@ class SlackProvider(MessagingProvider):
         Socket Mode receives events asynchronously in a background thread.
         This method drains the queue and returns all buffered updates.
         """
-        if not self._connected and self._socket_client:
-            with self._connect_lock:
-                if not self._connected:
-                    self._start_socket_mode()
+        self._ensure_connected()
 
         updates: List[Update] = []
         while not self._message_queue.empty():
@@ -306,14 +335,138 @@ class SlackProvider(MessagingProvider):
         if elapsed < SLACK_RATE_LIMIT_SECONDS:
             time.sleep(SLACK_RATE_LIMIT_SECONDS - elapsed)
 
-    def _start_socket_mode(self):
-        """Start Socket Mode connection in a background thread."""
+    def _ensure_connected(self):
+        """Connect on first use, and re-dial if the socket has gone dead.
+
+        Socket Mode keeps a persistent WebSocket in a background thread. During
+        long idle periods that connection can drop; slack_sdk's monitor usually
+        reconnects, but if it dies silently the bridge goes deaf with no
+        recovery — inbound messages are simply never queued. We poll liveness
+        on every drain (cheap) and re-establish the link when it drops.
+        Telegram has no equivalent failure mode: it re-polls over a fresh HTTP
+        request each cycle, so it is self-healing by construction.
+
+        (Re)connect attempts are spaced by SLACK_RECONNECT_COOLDOWN_SECONDS:
+        ``connect()`` is blocking under this lock, so a persistently-unreachable
+        workspace is retried at most once per cooldown rather than every 3s,
+        which would stall the poll loop and spam stderr.
+        """
+        if not self._socket_client:
+            return
+        with self._connect_lock:
+            if self._connected and self._is_socket_alive():
+                return
+            if not self._can_attempt_connect():
+                return
+            if self._connected:
+                print("[slack] Socket Mode connection lost — reconnecting.",
+                      file=sys.stderr)
+                self._connected = False
+                # Tear down the dead client first: SocketModeClient runs its
+                # WebSocket on a background thread, so re-dialing without
+                # disconnecting can leak the old monitor/receiver threads (or
+                # raise on SDKs that reject connect() while still "connected").
+                try:
+                    self._socket_client.disconnect()
+                except Exception as e:
+                    # A failing disconnect is non-fatal (we re-dial regardless),
+                    # but log it: this teardown exists to avoid leaking the old
+                    # monitor/receiver threads, so a persistently-failing
+                    # disconnect must be observable rather than silent.
+                    print(f"[slack] Socket disconnect during reconnect failed: {e}",
+                          file=sys.stderr)
+            self._last_connect_attempt = time.time()
+            if self._start_socket_mode():
+                self._consecutive_connect_failures = 0
+                self._connect_failure_escalated = False
+            else:
+                self._note_connect_failure()
+
+    def _note_connect_failure(self):
+        """Count a failed (re)connect and escalate once when reception is dead.
+
+        ``_start_socket_mode()`` swallows its own exceptions and leaves
+        ``_connected`` False, so a permanently-broken workspace (revoked token,
+        network partition) would otherwise surface only as identical per-attempt
+        stderr lines with no indication the bridge has actually gone deaf. After
+        SLACK_RECONNECT_ESCALATION_ATTEMPTS consecutive failures we log an
+        escalated warning, then re-emit it every SLACK_RECONNECT_REESCALATION_ATTEMPTS
+        further failures so a sustained multi-hour outage keeps producing a
+        signal rather than going quiet after one line. There is no cross-channel
+        alert: the Slack provider is itself the dead channel, so this is surfaced
+        in the bridge log rather than pushed over Slack.
+        """
+        self._consecutive_connect_failures += 1
+        if self._consecutive_connect_failures < SLACK_RECONNECT_ESCALATION_ATTEMPTS:
+            return
+        # Fire on first crossing the threshold, then periodically thereafter.
+        past_threshold = (self._consecutive_connect_failures
+                          - SLACK_RECONNECT_ESCALATION_ATTEMPTS)
+        should_emit = (not self._connect_failure_escalated
+                       or past_threshold % SLACK_RECONNECT_REESCALATION_ATTEMPTS == 0)
+        if should_emit:
+            self._connect_failure_escalated = True
+            print(f"[slack] Socket Mode has failed to (re)connect "
+                  f"{self._consecutive_connect_failures} times in a row — the "
+                  f"bridge is NOT receiving Slack messages. Check the app token, "
+                  f"workspace reachability, and Slack status.",
+                  file=sys.stderr)
+
+    def _can_attempt_connect(self) -> bool:
+        """True if enough time has passed since the last connect attempt.
+
+        Gates both first-connect failures and dead-socket re-dials: a failed
+        ``_start_socket_mode()`` leaves ``_connected`` False, so without this
+        cooldown every 3s drain would call ``connect()`` again. The first ever
+        attempt (``_last_connect_attempt == 0.0``) is never delayed.
+        """
+        if not self._last_connect_attempt:
+            return True
+        return (time.time() - self._last_connect_attempt
+                >= SLACK_RECONNECT_COOLDOWN_SECONDS)
+
+    def _is_socket_alive(self) -> bool:
+        """Best-effort liveness probe; treat an unknown probe as alive and a raising probe as dead.
+
+        Returns True (assume alive) only when the SDK exposes no usable probe.
+        A probe that raises is treated as dead so a persistently-failing socket
+        biases toward reconnection rather than silently going deaf forever.
+        """
+        probe = getattr(self._socket_client, "is_connected", None)
+        if not callable(probe):
+            # No usable probe: we can't tell, so we assume alive to avoid
+            # churn. slack_sdk's SocketModeClient does expose is_connected(),
+            # so in practice this branch only fires on an unexpected SDK. Make
+            # the blind spot observable (once) rather than silently re-creating
+            # the 'bridge goes deaf with no signal' failure mode this PR fixes.
+            if not self._probe_warned:
+                print("[slack] SocketModeClient exposes no is_connected() probe; "
+                      "cannot detect a dead socket — assuming alive.",
+                      file=sys.stderr)
+                self._probe_warned = True
+            return True
+        try:
+            return bool(probe())
+        except Exception as e:
+            print(f"[slack] Socket liveness probe raised, treating as dead: {e}",
+                  file=sys.stderr)
+            return False
+
+    def _start_socket_mode(self) -> bool:
+        """Start Socket Mode in a background thread; return whether it connected.
+
+        The bool lets ``_ensure_connected()`` track consecutive failures and
+        escalate a sustained outage — without it a persistently-failing
+        reconnect is invisible beyond the per-attempt stderr line below.
+        """
         try:
             self._socket_client.connect()
             self._connected = True
             print("[slack] Socket Mode connected.", file=sys.stderr)
+            return True
         except Exception as e:
             print(f"[slack] Socket Mode connection failed: {e}", file=sys.stderr)
+            return False
 
     def _handle_socket_event(self, client, req):
         """Handle incoming Socket Mode events.

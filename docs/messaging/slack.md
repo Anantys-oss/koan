@@ -4,7 +4,7 @@ title: "Slack Setup Guide"
 description: "Step-by-step guide to configuring Kōan with Slack (Socket Mode app setup, scopes, env vars) plus Slack-specific behavior like threading, reactions, and the assistant \"thinking\" status."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-06-25
+updated: 2026-07-08
 ---
 
 # Slack Setup Guide
@@ -276,6 +276,37 @@ then replaces it with the answer — the same idea as Slack's own assistant
   rendering only, not where Kōan responds.
 - **Safe by design**: a failed status update is logged at most once to stderr
   and never blocks or alters the actual reply.
+
+## Connection lifecycle & idle reconnect
+
+Socket Mode holds a single persistent WebSocket in a background thread. Unlike
+Telegram — which re-polls over a fresh HTTP request every cycle and is therefore
+self-healing by construction — a dropped Slack socket does not recover on its own
+if slack_sdk's internal monitor dies silently. When that happens the bridge stops
+receiving events with no visible error: the exact "Slack goes quiet during idle
+while Telegram keeps working" symptom.
+
+Kōan closes this gap on every 3s poll drain:
+
+- It probes socket liveness (`is_connected()`, best-effort — an SDK that exposes
+  no probe is assumed alive, logged once) and **re-dials a dropped socket**,
+  tearing down the dead client first so the old monitor/receiver threads don't
+  leak.
+- Re-dials are rate-limited to **at most once per 30s**
+  (`SLACK_RECONNECT_COOLDOWN_SECONDS`), so a persistently-unreachable workspace
+  (revoked token, network partition, Slack outage) is retried gently rather than
+  hammered on every drain — `connect()` is blocking, so tight retries would also
+  stall the poll loop.
+- If (re)connect keeps failing across several cooldown cycles, an escalated
+  warning is logged to stderr and **re-emitted periodically** while the outage
+  persists (`SLACK_RECONNECT_REESCALATION_ATTEMPTS`), so a multi-hour outage
+  keeps producing a signal instead of going quiet after one line. There is no
+  cross-channel alert — the Slack provider *is* the dead channel, so a persistent
+  outage is surfaced in `make logs`, not over Slack itself.
+
+No behavior change when the socket is healthy. To watch this in `make logs`, look
+for `Socket Mode connection lost — reconnecting.` followed by `Socket Mode
+connected.`
 
 ## Architecture Notes
 

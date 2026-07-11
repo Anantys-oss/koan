@@ -2,6 +2,7 @@
 
 from unittest.mock import patch, MagicMock, PropertyMock
 import queue
+import time
 
 import pytest
 
@@ -134,6 +135,118 @@ class TestPollUpdates:
         provider._socket_client.connect.side_effect = Exception("connection failed")
         updates = provider.poll_updates()
         assert updates == []
+
+    def test_reconnects_when_socket_died(self, provider):
+        """A dropped socket (is_connected→False) is re-dialed on next poll.
+
+        Reproduces the 'Slack goes deaf during idle' symptom: the connection
+        drops mid-session, slack_sdk's monitor fails to recover, and without a
+        liveness check the bridge never reconnects.
+        """
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider.poll_updates()
+        provider._socket_client.connect.assert_called_once()
+        assert provider._connected is True
+
+    def test_reconnect_disconnects_dead_socket_first(self, provider):
+        """Reconnect tears down the dead client before re-dialing.
+
+        Re-calling connect() without disconnect() can leak the old WebSocket
+        monitor/receiver threads over long uptime.
+        """
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider.poll_updates()
+        provider._socket_client.disconnect.assert_called_once()
+        provider._socket_client.connect.assert_called_once()
+
+    def test_reconnects_when_liveness_probe_raises(self, provider):
+        """A probe that raises is treated as dead, biasing toward reconnect."""
+        provider._connected = True
+        provider._socket_client.is_connected.side_effect = Exception("boom")
+        provider.poll_updates()
+        provider._socket_client.connect.assert_called_once()
+
+    def test_no_reconnect_when_socket_alive(self, provider):
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = True
+        provider.poll_updates()
+        provider._socket_client.connect.assert_not_called()
+
+    def test_reconnect_held_within_cooldown(self, provider):
+        """A dead socket is not re-dialed again until the cooldown elapses.
+
+        Without the cooldown, a persistently-unreachable workspace would be
+        re-dialed on every 3s drain (connect() is blocking under the lock).
+        """
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider._last_connect_attempt = time.time()
+        provider.poll_updates()
+        provider._socket_client.connect.assert_not_called()
+        provider._socket_client.disconnect.assert_not_called()
+
+    def test_reconnects_again_after_cooldown(self, provider):
+        """Once the cooldown window has passed, the dead socket is re-dialed."""
+        from app.messaging.slack import SLACK_RECONNECT_COOLDOWN_SECONDS
+        provider._connected = True
+        provider._socket_client.is_connected.return_value = False
+        provider._last_connect_attempt = time.time() - SLACK_RECONNECT_COOLDOWN_SECONDS - 1
+        provider.poll_updates()
+        provider._socket_client.connect.assert_called_once()
+
+    def test_escalates_after_repeated_connect_failures(self, provider):
+        """A sustained run of failed connects logs one escalated 'deaf' warning.
+
+        Each attempt fails (connect raises); the cooldown is bypassed by resetting
+        the last-attempt clock so poll_updates() re-tries. The escalation must fire
+        exactly once, not on every failed attempt.
+        """
+        from app.messaging.slack import SLACK_RECONNECT_ESCALATION_ATTEMPTS
+        provider._connected = False
+        provider._socket_client.connect.side_effect = Exception("boom")
+        with patch("app.messaging.slack.sys.stderr"):
+            for _ in range(SLACK_RECONNECT_ESCALATION_ATTEMPTS + 3):
+                provider._last_connect_attempt = 0.0  # bypass cooldown
+                provider.poll_updates()
+        assert provider._connect_failure_escalated is True
+        assert provider._consecutive_connect_failures >= SLACK_RECONNECT_ESCALATION_ATTEMPTS
+
+    def test_escalation_reemits_during_sustained_outage(self, provider):
+        """The 'bridge is deaf' warning re-emits periodically, not just once.
+
+        A multi-hour outage would otherwise go quiet after a single line. Drive
+        enough failed attempts to cross the escalation threshold twice and assert
+        the deaf warning is logged more than once.
+        """
+        from app.messaging.slack import (
+            SLACK_RECONNECT_ESCALATION_ATTEMPTS,
+            SLACK_RECONNECT_REESCALATION_ATTEMPTS,
+        )
+        provider._connected = False
+        provider._socket_client.connect.side_effect = Exception("boom")
+        attempts = (SLACK_RECONNECT_ESCALATION_ATTEMPTS
+                    + SLACK_RECONNECT_REESCALATION_ATTEMPTS + 1)
+        with patch("builtins.print") as mock_print:
+            for _ in range(attempts):
+                provider._last_connect_attempt = 0.0  # bypass cooldown
+                provider.poll_updates()
+        deaf_emits = [
+            c for c in mock_print.call_args_list
+            if c.args and "NOT receiving Slack messages" in str(c.args[0])
+        ]
+        assert len(deaf_emits) >= 2
+
+    def test_failure_counter_resets_after_success(self, provider):
+        """A successful reconnect clears the failure count and escalation guard."""
+        provider._connected = False
+        provider._consecutive_connect_failures = 4
+        provider._connect_failure_escalated = True
+        provider._socket_client.connect.side_effect = None
+        provider.poll_updates()
+        assert provider._consecutive_connect_failures == 0
+        assert provider._connect_failure_escalated is False
 
 
 class TestHandleSocketEvent:
