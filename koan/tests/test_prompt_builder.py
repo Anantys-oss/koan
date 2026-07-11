@@ -2562,7 +2562,8 @@ class TestKoanMdSection:
         assert "{KOAN_PYTHON}" in section
 
     def test_koan_md_section_truncated(self, tmp_path):
-        from app.prompt_builder import _get_koan_md_section, _MAX_KOAN_MD_CHARS
+        from app.prompt_builder import _get_koan_md_section
+        from app.project_koan import _MAX_KOAN_MD_CHARS
         (tmp_path / "KOAN.md").write_text("x" * (_MAX_KOAN_MD_CHARS + 500))
         section = _get_koan_md_section(str(tmp_path))
         assert "truncated" in section.lower()
@@ -2570,6 +2571,29 @@ class TestKoanMdSection:
     def test_koan_md_section_empty_path(self, tmp_path):
         from app.prompt_builder import _get_koan_md_section
         assert _get_koan_md_section("") == ""
+
+    def test_koan_md_section_includes_dot_koan(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        (tmp_path / "KOAN.md").write_text("root")
+        d = tmp_path / ".koan"
+        d.mkdir()
+        (d / "KOAN.md").write_text("dot")
+        out = _get_koan_md_section(str(tmp_path))
+        assert "root" in out and "dot" in out
+        assert "BEGIN KOAN.md" in out  # still framed by the koan-md template
+
+    def test_koan_md_section_dot_only(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        d = tmp_path / ".koan"
+        d.mkdir()
+        (d / "KOAN.md").write_text("dot-only guidance")
+        out = _get_koan_md_section(str(tmp_path))
+        assert "dot-only guidance" in out
+        assert "BEGIN KOAN.md" in out
+
+    def test_koan_md_section_empty_when_both_absent(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        assert _get_koan_md_section(str(tmp_path)) == ""
 
 
 class TestKoanMdWiring:
