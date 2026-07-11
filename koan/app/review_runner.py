@@ -1693,7 +1693,14 @@ def _format_review_as_markdown(
     header = f"## PR Review — {title}" if title else "## PR Review"
     lines.append(header)
     lines.append("")
-    lines.append(summary_data["summary"])
+    summary_text = summary_data["summary"]
+    if not summary_data.get("lgtm", True):
+        # Blocked review: wrap the verdict in a native callout so it's
+        # un-missable in email digests and mobile (parsimony rule: one
+        # alert per comment for the verdict, not one per finding).
+        lines.extend(build_alert("IMPORTANT", summary_text).split("\n"))
+    else:
+        lines.append(summary_text)
     lines.append("")
     lines.append("---")
     lines.append("")
