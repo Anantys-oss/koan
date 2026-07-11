@@ -135,10 +135,17 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   (`failed`/`aborted` are failures, never success). Because haze streams,
   it uses the standard `supports_stream_json()` path — **no**
   incremental-progress capability flag and **no** agent-loop bypass may be
-  (re)introduced for it. The prompt is delivered via stdin using a
+  (re)introduced for it. Prompt delivery: the *target* design is stdin via a
   flag-REMOVAL `rewrite_prompt_for_stdin()` (haze reads stdin only when `-p`
   is absent; the base marker substitution would send the marker as the literal
-  prompt). Headless haze is one-shot (no session resume) and exposes no
+  prompt), but stdin passing is **disabled**
+  (`supports_stdin_prompt_passing()` False) until upstream fixes its stdin
+  gate — haze checks `process.stdin.isTTY === false` and Node reports
+  `undefined` for pipes/files, so piped runs fall into the interactive UI
+  (verified live 2026-07-10). Until then the prompt rides argv as `-p`
+  (subject to OS per-argument limits); the dormant rewrite stays implemented
+  and tested so the flip is one line. Headless haze is one-shot (no session
+  resume) and exposes no
   per-tool/MCP/plugin/max-turns/fallback-model/effort controls — those inputs
   are warned-and-skipped, never silently accepted. Quota/auth detection uses
   backend-agnostic patterns (haze fronts OpenAI/OpenRouter/local backends):

@@ -34,6 +34,8 @@ All findings below were verified directly against haze main (v0.8.0, `src/cli/co
 
 **Alternatives considered**: Always `-p` argv (PR #2211's choice, `supports_stdin_prompt_passing() = False`) — rejected in clarification: argv-size failure mode on large prompts. Threshold-based hybrid — rejected: two code paths for one job; stdin is already the universal Kōan mechanism.
 
+**Live-validation addendum (2026-07-10)**: piped-stdin runs against a real haze install drop into the interactive Ink UI and crash — haze gates its stdin fallback on `process.stdin.isTTY === false`, and Node reports `undefined` (not `false`) for pipes/files, so the gate never fires (source identical on upstream main; affects all versions). Decision amended contract-first: the flag-removal rewrite ships implemented+tested but **dormant** (`supports_stdin_prompt_passing()` returns False with the bug documented); delivery uses `-p` argv until upstream fixes the gate.
+
 ## R4. Pre-flight quota/auth probe (spec clarification #2)
 
 **Decision**: Cline-style minimal live probe: `haze --output json` with prompt `ok` piped per R3, classified through `detect_quota_exhaustion()`/`detect_auth_failure()`; any probe error/timeout returns available (never blocks work).

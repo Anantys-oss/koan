@@ -54,12 +54,18 @@ versions fail with a normal CLI error when Kōan requests streaming output.
 Kōan invokes haze in one-shot headless mode with streaming output:
 
 ```
-haze [-m <provider:model>] --output stream-json     # prompt piped via stdin
+haze [-m <provider:model>] --output stream-json -p "<prompt>"
 ```
 
-- **Prompt via stdin** — haze reads the prompt from stdin when `-p` is absent.
-  This keeps large mission prompts (which embed Kōan's system prompt) clear of
-  OS argument-size limits and out of `ps` listings.
+- **Prompt via `-p`** — for now the prompt is passed as a command-line
+  argument. Stdin delivery (which would keep very large mission prompts clear
+  of OS argument-size limits) is implemented but disabled: haze's stdin
+  fallback currently never fires for pipes — it checks
+  `process.stdin.isTTY === false` while Node reports `undefined` for
+  non-TTY input — so piped runs drop into the interactive UI. Kōan will flip
+  to stdin delivery once upstream fixes that gate. Until then, extremely
+  large prompts can hit OS per-argument limits (~128KB per argument on
+  Linux).
 - **Live progress** — haze streams NDJSON events (`turn_start`, message and
   tool lifecycle, `retry`, `context_overflow`, `turn_end`); Kōan renders each
   as a `[cli]` progress line, so liveness watchdogs and stagnation detection

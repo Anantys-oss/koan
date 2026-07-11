@@ -72,7 +72,9 @@ class TestHazeProviderBasics:
 
     def test_capability_profile(self):
         assert self.provider.supports_stream_json() is True
-        assert self.provider.supports_stdin_prompt_passing() is True
+        # Disabled pending the upstream haze isTTY stdin-fallback fix — see
+        # HazeProvider.supports_stdin_prompt_passing.
+        assert self.provider.supports_stdin_prompt_passing() is False
         assert self.provider.supports_session_resume() is False
         assert self.provider.supports_system_prompt_file() is False
         assert self.provider.supports_last_message_file() is False
@@ -199,6 +201,10 @@ class TestHazeCommandConstruction:
 
 # ---------------------------------------------------------------------------
 # T007 — stdin prompt delivery (flag-removal rewrite)
+#
+# The rewrite is implemented and tested but DORMANT: stdin passing is
+# disabled until upstream haze fixes its `isTTY === false` stdin gate
+# (Node reports undefined for pipes, so piped runs go interactive).
 # ---------------------------------------------------------------------------
 
 class TestHazeStdinRewrite:
@@ -225,12 +231,25 @@ class TestHazeStdinRewrite:
         assert prompt is None
         assert rewritten == cmd
 
-    def test_prepare_prompt_file_integration(self, tmp_path, monkeypatch):
+    def test_prepare_prompt_file_keeps_prompt_in_argv(self, tmp_path, monkeypatch):
+        """While stdin passing is disabled, the prompt must stay in argv."""
         monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
         from app.cli_exec import prepare_prompt_file
 
         cmd = self.provider.build_command("large prompt", output_format="stream-json")
         new_cmd, prompt_path = prepare_prompt_file(cmd, provider=self.provider)
+        assert prompt_path is None
+        assert new_cmd == cmd
+        assert new_cmd[-2:] == ["-p", "large prompt"]
+
+    def test_prepare_prompt_file_uses_stdin_once_reenabled(self, tmp_path, monkeypatch):
+        """The dormant rewrite works end-to-end when stdin passing is re-enabled."""
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
+        from app.cli_exec import prepare_prompt_file
+
+        cmd = self.provider.build_command("large prompt", output_format="stream-json")
+        with patch.object(HazeProvider, "supports_stdin_prompt_passing", return_value=True):
+            new_cmd, prompt_path = prepare_prompt_file(cmd, provider=self.provider)
         try:
             assert prompt_path is not None
             assert "-p" not in new_cmd

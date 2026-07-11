@@ -92,6 +92,16 @@ class HazeProvider(CLIProvider):
     def build_prompt_args(self, prompt: str) -> List[str]:
         return ["-p", prompt]
 
+    def supports_stdin_prompt_passing(self) -> bool:
+        # Target design is stdin delivery (rewrite_prompt_for_stdin below),
+        # but haze's stdin fallback is broken upstream: its gate checks
+        # `process.stdin.isTTY === false`, and Node sets isTTY to
+        # *undefined* (not false) for pipes/files, so piped runs fall into
+        # the interactive Ink UI and crash (verified live 2026-07-10 against
+        # haze 0.7.0; upstream main has the same gate). Flip to True once
+        # upstream reads stdin for any non-TTY input.
+        return False
+
     def rewrite_prompt_for_stdin(
         self,
         cmd: Sequence[str],
@@ -102,6 +112,11 @@ class HazeProvider(CLIProvider):
         Haze reads the prompt from stdin only when ``-p`` is absent, so the
         base marker substitution (``-p @stdin``) would send the marker as the
         literal prompt. *stdin_marker* is therefore unused here.
+
+        Currently dormant: only consulted when
+        :meth:`supports_stdin_prompt_passing` returns True (see the upstream
+        isTTY bug note there). Kept implemented and tested so enabling stdin
+        delivery is a one-line change once upstream ships the fix.
         """
         cmd_list = list(cmd)
         try:

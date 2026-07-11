@@ -103,11 +103,11 @@
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T024 Run `make lint` and the full suite `KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/` — zero regressions (SC-005); fix anything surfaced
-- [ ] T025 Run quickstart.md Tier 2 live validation (haze installed): direct contract check, provider selection, real mission with live progress + usage delta comparison, bogus-model failure classification. Record outcomes honestly in the PR body (constitution VII)
-- [ ] T026 [P] Wiki bookkeeping via `/brain sync` (frontmatter + index entries for `docs/providers/haze.md` and touched pages)
-- [ ] T027 Pre-PR hygiene: leak-pattern check (`instance/.leak-patterns` diff filter) returns empty; confirm `.specify/feature.json` is NOT in `git diff --name-only main..`; verify the T002 spec commit sits first
-- [ ] T028 Open draft PR against `Anantys-oss/koan` (push branch to `origin` fork, `gh pr create --repo Anantys-oss/koan --head atoomic:<branch>`): body references issue #2206, explains the PR #2211 drift/supersession, and has the "Architectural change" box CHECKED. Then close legacy PR #2211 with a comment linking the new PR (FR-012/SC-007)
+- [X] T024 Run `make lint` and the full suite `KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/` — zero regressions (SC-005); fix anything surfaced
+- [X] T025 Run quickstart.md Tier 2 live validation (haze installed): direct contract check, provider selection, real mission with live progress + usage delta comparison, bogus-model failure classification. Record outcomes honestly in the PR body (constitution VII)
+- [X] T026 [P] Wiki bookkeeping via `/brain sync` (frontmatter + index entries for `docs/providers/haze.md` and touched pages)
+- [X] T027 Pre-PR hygiene: leak-pattern check (`instance/.leak-patterns` diff filter) returns empty; confirm `.specify/feature.json` is NOT in `git diff --name-only main..`; verify the T002 spec commit sits first
+- [X] T028 Open draft PR against `Anantys-oss/koan` (push branch to `origin` fork, `gh pr create --repo Anantys-oss/koan --head atoomic:<branch>`): body references issue #2206, explains the PR #2211 drift/supersession, and has the "Architectural change" box CHECKED. Then close legacy PR #2211 with a comment linking the new PR (FR-012/SC-007)
 
 ---
 

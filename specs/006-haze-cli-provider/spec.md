@@ -13,6 +13,7 @@
 ### Session 2026-07-10
 
 - Q: How should Kōan deliver the (potentially very large) prompt to haze? → A: Via stdin — opt into Kōan's standard stdin prompt passing (drop the prompt flag; haze reads stdin when it is absent), avoiding OS argv-size limits.
+  - *Live-validation addendum (2026-07-10)*: haze's stdin fallback is broken upstream for ALL versions — it gates on `process.stdin.isTTY === false` while Node reports `undefined` for pipes, so piped runs fall into the interactive UI and crash. The stdin rewrite is implemented and tested but **dormant**; delivery uses the `-p` argument until upstream fixes the gate, then flips with a one-line change.
 - Q: Should the haze provider perform a pre-flight quota/auth probe, given haze exposes no free usage introspection? → A: Yes — a tiny live probe (minimal one-shot prompt, like the existing multi-backend provider precedent); it consumes a few tokens per check and probe errors/timeouts never block real work.
 
 ## User Scenarios & Testing *(mandatory)*
@@ -84,7 +85,7 @@ An operator discovering or adopting haze finds it treated as a first-class provi
 ### Functional Requirements
 
 - **FR-001**: Operators MUST be able to select haze as a CLI provider by the name `haze` through every existing provider-selection mechanism (global config, environment variable, per-role `cli:` section, per-project override), with the same resolution and fallback semantics as other providers.
-- **FR-002**: The system MUST invoke haze in one-shot headless mode: prompt delivered via stdin using Kōan's standard stdin prompt passing (haze reads the prompt from stdin when its prompt flag is absent), optional per-run model override, streaming JSON output requested, and the system prompt merged into the prompt text (haze has no separate system-prompt input). Stdin delivery avoids OS per-argument size limits on large mission prompts.
+- **FR-002**: The system MUST invoke haze in one-shot headless mode: prompt delivered via the prompt argument (stdin delivery is the target design and MUST remain implemented+tested, but stays disabled until the upstream haze stdin-gate bug is fixed — see Clarifications addendum), optional per-run model override, streaming JSON output requested, and the system prompt merged into the prompt text (haze has no separate system-prompt input).
 - **FR-003**: The system MUST consume haze's newline-delimited streaming events during the run and render each as a concise human-readable progress line, so existing liveness/stagnation monitoring functions without any provider-specific bypass in the agent loop.
 - **FR-004**: The system MUST capture the final assistant text from haze's terminal result envelope, and MUST fall back to text accumulated from streamed message events when the run dies before the terminal envelope.
 - **FR-005**: The system MUST record token usage from haze's reported usage fields (input, output, cache read, cache write, reasoning) into Kōan's usage accounting, translating haze's field naming so no reported quantity is silently dropped.

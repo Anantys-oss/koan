@@ -15,7 +15,7 @@ The provider instance selectable by name `haze`. Declared capabilities (each map
 | `name` | `"haze"` | Registry key; config/env value |
 | `binary()` | `"haze"` (override via constructor `binary_path`) | Availability = `shutil.which` |
 | `supports_stream_json()` | `True` | Routes through shared streaming path |
-| `supports_stdin_prompt_passing()` | `True` | With custom rewrite (drop `-p`) |
+| `supports_stdin_prompt_passing()` | `False` (dormant) | Custom flag-removal rewrite implemented; disabled pending the upstream haze `isTTY` stdin-gate fix (live validation 2026-07-10) |
 | `supports_session_resume()` | `False` | Headless haze is one-shot by design |
 | `supports_system_prompt_file()` | `False` | System prompt prepended to prompt text |
 | `supports_last_message_file()` | `False` | Result text comes from the envelope |
@@ -28,11 +28,7 @@ The provider instance selectable by name `haze`. Declared capabilities (each map
 ```
 haze [-m <provider:model>] --output stream-json -p <prompt>
 ```
-then, for streaming/mission execution, `cli_exec` rewrites via the provider override to:
-```
-haze [-m <provider:model>] --output stream-json          # prompt piped on stdin
-```
-The probe path uses `--output json` and the same stdin piping. Validation rules: `-m` emitted only when a model is configured (haze's active model otherwise); `fallback` model logged + skipped; `--output` mapping: `stream-json` → `stream-json`, `json` → `json`, empty → none (text).
+Stdin delivery (`cli_exec` rewrite dropping `-p`, prompt piped) is the target design but dormant pending the upstream haze `isTTY` fix — the prompt currently rides argv. The probe path uses `--output json`. Validation rules: `-m` emitted only when a model is configured (haze's active model otherwise); `fallback` model logged + skipped; `--output` mapping: `stream-json` → `stream-json`, `json` → `json`, empty → none (text).
 
 ### Stream event (haze → Kōan, one NDJSON line each)
 
