@@ -57,6 +57,19 @@ def run_ritual(ritual_type: str, instance_dir: Path) -> bool:
         print(f"[rituals] {e}", file=sys.stderr)
         return False
 
+    # Inject the configured language override. The ritual prompts default to
+    # soul.md's language, but a runtime `language.json` preference must win —
+    # same precedence honoured by the chat (awake.py) and outbox (format_outbox)
+    # paths. Without this, a French soul.md produced French rituals even when
+    # the human had set english.
+    try:
+        from app.language_preference import get_language_instruction
+        lang_instruction = get_language_instruction()
+        if lang_instruction:
+            prompt += f"\n\n{lang_instruction}"
+    except (ImportError, OSError):
+        pass
+
     koan_root = os.environ.get("KOAN_ROOT", "")
     if not koan_root:
         print("[rituals] KOAN_ROOT not set", file=sys.stderr)

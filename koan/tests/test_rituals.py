@@ -198,6 +198,51 @@ class TestRunRitual:
         assert "max turns" not in captured.out.lower()
 
 
+class TestRitualLanguagePreference:
+    """A configured language.json must override soul.md's language in rituals.
+
+    The prompt is delivered to the CLI via a stdin temp file, so we capture its
+    content through the ``stdin`` file handle at call time.
+    """
+
+    @staticmethod
+    def _capturing_run(sink):
+        def _run(cmd, **kwargs):
+            stdin = kwargs.get("stdin")
+            if stdin is not None and hasattr(stdin, "read"):
+                sink["prompt"] = stdin.read()
+            return MagicMock(returncode=0, stdout="ok", stderr="")
+        return _run
+
+    @patch("app.rituals.subprocess.run")
+    def test_language_preference_injected_into_prompt(
+        self, mock_run, prompt_dir, instance_dir, tmp_path, monkeypatch
+    ):
+        """With language.json=english, the morning prompt carries the english override."""
+        sink = {}
+        mock_run.side_effect = self._capturing_run(sink)
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "language.json").write_text('{"language": "english"}')
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        run_ritual("morning", instance_dir)
+
+        assert "reply in english" in sink["prompt"].lower()
+
+    @patch("app.rituals.subprocess.run")
+    def test_no_language_instruction_when_unset(
+        self, mock_run, prompt_dir, instance_dir, tmp_path, monkeypatch
+    ):
+        """With no language.json, no override text is appended to the prompt."""
+        sink = {}
+        mock_run.side_effect = self._capturing_run(sink)
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))  # no instance/language.json
+
+        run_ritual("evening", instance_dir)
+
+        assert "user-configured language preference" not in sink["prompt"]
+
+
 class TestRitualsCLI:
     """CLI tests call main() directly to avoid runpy re-import issues."""
 
