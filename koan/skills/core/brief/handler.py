@@ -45,17 +45,19 @@ def _add_loop_status(parts, koan_root):
 
 
 def _add_mission_summary(parts, instance_dir):
-    missions_file = instance_dir / "missions.md"
-    if not missions_file.exists():
-        parts.append("  Missions: no data")
-        return
-
+    # Store is authoritative; read_sections reads it (missions.md is a generated
+    # export), so don't gate on the export file's presence.
     try:
         from app.missions import extract_timestamps
         from app.mission_store.transition import read_sections
 
         sections = read_sections(instance_dir)
-    except (OSError, ImportError):
+    except Exception as e:
+        # sqlite3.DatabaseError is neither OSError nor ImportError, so catch broadly
+        # and degrade to "no data" — logged, not a silent crash or hidden failure.
+        import logging
+        logging.getLogger(__name__).warning(
+            "[brief] mission summary read failed: %s", e)
         parts.append("  Missions: no data")
         return
 

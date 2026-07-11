@@ -1778,14 +1778,16 @@ def _consume_check_notifications_signal(koan_root: str) -> bool:
 
 
 def check_pending_missions(instance_dir: str) -> bool:
-    """Check if there are pending missions in missions.md."""
+    """Check if there are pending missions in the authoritative mission store."""
     try:
         from app.mission_store.transition import read_sections
         return len(read_sections(instance_dir).get("pending", [])) > 0
-    except FileNotFoundError:
-        return False
-    except (OSError, ValueError) as e:
-        _log_loop("error", f"Error reading missions.md: {e}")
+    except Exception as e:
+        # read_sections now goes through SQLite; a sqlite3.DatabaseError is neither
+        # FileNotFoundError nor OSError/ValueError, so catch broadly and fail safe —
+        # treat a store read error as "no pending" (don't wake into a busy-loop on a
+        # broken store) and log it rather than letting it propagate uncaught.
+        _log_loop("error", f"Error reading pending missions from store: {e}")
         return False
 
 

@@ -66,7 +66,13 @@ def _count_pending_missions(missions_file) -> int:
 
     try:
         return len(read_sections(Path(missions_file).parent).get("pending", []))
-    except Exception:
+    except Exception as e:
+        # read_sections now goes through SQLite; a locked/corrupt DB
+        # (sqlite3.DatabaseError) must be logged, not reported as "0 pending" —
+        # a broken store must be distinguishable from an empty queue.
+        import logging
+        logging.getLogger(__name__).warning(
+            "[status] pending-mission count read failed: %s", e)
         return 0
 
 
@@ -90,7 +96,12 @@ def _get_in_progress_missions(missions_file) -> str:
             else:
                 summaries.append(text)
         return ", ".join(summaries)
-    except Exception:
+    except Exception as e:
+        # Same store-read concern as _count_pending_missions: log rather than
+        # silently blanking the in-progress display on a broken store.
+        import logging
+        logging.getLogger(__name__).warning(
+            "[status] in-progress mission read failed: %s", e)
         return ""
 
 

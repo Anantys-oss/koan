@@ -63,13 +63,24 @@ def _ingest_quarantine_file(instance: str) -> None:
         return
     from app.mission_store.aux_stores import QuarantineStore
     store = QuarantineStore(instance)
+    total = failed = 0
     for line in qpath.read_text().splitlines():
         line = line.strip()
         if not line.startswith("- "):
             continue
         m = _Q_RE.match(line)
         if m:
-            store.add(m.group("text"), m.group("reason").strip(),
-                      m.group("src").strip())
+            ok = store.add(m.group("text"), m.group("reason").strip(),
+                           m.group("src").strip())
         else:  # keep unparseable entries rather than dropping them
-            store.add(line[2:].strip(), "imported", "quarantine-file")
+            ok = store.add(line[2:].strip(), "imported", "quarantine-file")
+        total += 1
+        failed += not ok
+    if failed:
+        # QuarantineStore.add returns False (and logs) on a DB write failure. Post
+        # cutover the file is regenerated from the store on the next quarantine, so
+        # an unmigrated record would be silently dropped — surface a loud migration
+        # summary instead of proceeding as if every security record was preserved.
+        logger.error(
+            "[mission_store] quarantine migration incomplete: %s of %s records "
+            "failed to migrate into the store", failed, total)

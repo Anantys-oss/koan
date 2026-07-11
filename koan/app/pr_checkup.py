@@ -14,12 +14,15 @@ Deduplication:
 """
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from app.github import get_gh_username, run_gh
 from app.projects_config import load_projects_config, get_projects_from_config
+
+logger = logging.getLogger(__name__)
 
 
 def _get_all_github_repos(koan_root: str) -> List[Dict]:
@@ -96,15 +99,18 @@ def _has_conflicts(pr: dict) -> bool:
 
 
 def _get_pending_missions_text(instance_dir: Path) -> str:
-    """Read the pending section of missions.md."""
-    missions_path = instance_dir / "missions.md"
-    if not missions_path.exists():
-        return ""
+    """Read the pending section from the authoritative mission store."""
+    # Store is authoritative (missions.md is a generated export), so read the store
+    # directly rather than gating on the export file's presence.
     try:
         from app.mission_store.transition import read_sections
         sections = read_sections(instance_dir)
         return "\n".join(sections.get("pending", []))
-    except (OSError, ValueError):
+    except Exception as e:
+        # read_sections now goes through SQLite; a sqlite3.DatabaseError escapes
+        # (OSError, ValueError). Log the degradation instead of silently returning ""
+        # as if there were no pending missions.
+        logger.warning("[pr_checkup] pending-mission read failed: %s", e)
         return ""
 
 

@@ -111,20 +111,24 @@ CREATE TABLE IF NOT EXISTS ideas (
     added_at  TEXT,
     sequence  INTEGER NOT NULL DEFAULT 0
 );
--- was instance/missions-quarantine.md
+-- authoritative store for quarantined missions; missions-quarantine.md is a
+-- generated read-only export of this table (row-capped at _QUARANTINE_KEEP)
 CREATE TABLE IF NOT EXISTS quarantine (
-    id        TEXT PRIMARY KEY,   -- fingerprint/hash key used by quarantine_mission
+    id        INTEGER PRIMARY KEY,
     text      TEXT NOT NULL,
     reason    TEXT,
+    source    TEXT,       -- origin label (e.g. "telegram", "github/@user")
     added_at  TEXT
 );
 ```
 
 The one-time ingest imports the `## CI` and Ideas sections (and the separate
-`missions-quarantine.md`) into these tables; `export_view` renders them back into
-the read-only `missions.md`. Exact column shapes are finalized against the
-current `get_ci_items`/`parse_ideas`/`quarantine_mission` signatures during
-implementation.
+`missions-quarantine.md`) into these tables; `export_view` renders CI + Ideas back
+into the read-only `missions.md`. Quarantine is authoritative in its table too: the
+ongoing `quarantine_mission()` write path records to `QuarantineStore` and then
+regenerates `missions-quarantine.md` as its own read-only export (it is not part of
+the `missions.md` export). Exact column shapes are finalized against the current
+`get_ci_items`/`parse_ideas`/`quarantine_mission` signatures during implementation.
 
 ## Store-initialized marker (gates one-time ingestion — FR-006)
 

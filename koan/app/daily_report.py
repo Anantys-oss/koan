@@ -106,9 +106,10 @@ def _parse_completed_missions(target_date: Optional[date] = None) -> List[str]:
         target_date: If provided, only return missions completed on this date.
                      If None, return all completed missions (legacy behavior).
     """
-    if not MISSIONS_FILE.exists():
-        return []
-
+    # The SQLite store is authoritative; missions.md is only a generated export.
+    # Read the store directly rather than gating on the export file's presence —
+    # read_sections reads the store and returns empty sections when there are none,
+    # so guarding on the file would silently under-report when the export is absent.
     from app.mission_store.transition import read_sections
 
     sections = read_sections(MISSIONS_FILE.parent)
