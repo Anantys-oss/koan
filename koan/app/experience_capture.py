@@ -1,0 +1,153 @@
+"""Capture outcome-attributed experience entries for fix/implement/review missions.
+
+Experience entries are structured memory records that capture the single most
+valuable artifact the agent produces: 'for issue X the root cause was Y and
+approach Z worked (or failed).' Unlike flat session lines, they carry typed
+fields (outcome, mission_kind, root_cause, approach, artifact) that make them
+queryable by later recall/reflect work.
+
+All writes go through the existing append_memory_entry dual-write path.
+This module is purely additive -- it never blocks the caller's flow.
+"""
+
+import sys
+from typing import Optional
+
+from app.memory_manager import append_memory_entry
+
+
+def _log_safe(category: str, msg: str) -> None:
+    """Log to stderr without importing the full run_log module."""
+    print(f"[experience_capture] {category}: {msg}", file=sys.stderr)
+
+
+def _classify_mission_kind(mission_title: str) -> Optional[str]:
+    """Map a mission title to fix/implement/review, or None to suppress capture.
+
+    Uses keyword dispatch consistent with session_tracker.classify_mission_type
+    but collapses to the three mission kinds that produce actionable experience.
+    Returns None for non-code missions (chat, rebase, analysis, etc.), which
+    suppresses capture entirely.
+    """
+    if not mission_title or not mission_title.strip():
+        return None
+    lower = mission_title.lower()
+
+    # /fix missions
+    if "/fix" in lower:
+        return "fix"
+    # /implement, /implement_*, /ai missions
+    if "/implement" in lower or "/ai " in lower:
+        return "implement"
+    # /review, /review_rebase missions
+    if "/review" in lower:
+        return "review"
+    # Freetext fix/implement detection (autonomous missions without / prefix)
+    if any(kw in lower for kw in ("fix ", "bug", "broken", "crash")):
+        return "fix"
+    if any(kw in lower for kw in ("implement", "add feature", "build")):
+        return "implement"
+
+    return None
+
+
+def _is_significant_for_capture(
+    mission_title: str,
+    duration_minutes: int,
+    journal_content: str,
+    mission_kind: Optional[str],
+    exit_code: int,
+) -> bool:
+    """Gate capture to prevent low-signal entries from flooding the log.
+
+    Reuses the post_mission_reflection significance heuristic for successes.
+    Failures are always captured (when a mission kind is detected) since
+    they are the highest-signal data.
+    """
+    # Failures are always significant -- they're the highest-signal data
+    if exit_code != 0:
+        return mission_kind is not None
+
+    # For successes, require either significance heuristics or a minimum duration
+    try:
+        from app.post_mission_reflection import is_significant_mission
+        if is_significant_mission(mission_title, duration_minutes, journal_content):
+            return True
+    except Exception:
+        pass
+
+    # Also capture when we have a mission kind AND reasonable substance
+    return mission_kind is not None and duration_minutes >= 5
+
+
+def capture_experience(
+    instance_dir: str,
+    project_name: str,
+    mission_title: str,
+    exit_code: int,
+    outcome: str,
+    verify_result=None,
+    root_cause: str = "",
+    approach: str = "",
+    artifact: str = "",
+    duration_minutes: int = 0,
+    journal_content: str = "",
+) -> None:
+    """Capture a structured experience entry (fire-and-forget, never raises).
+
+    Args:
+        instance_dir: Path to instance directory.
+        project_name: Project name.
+        mission_title: Mission description.
+        exit_code: CLI exit code (0 = success, non-zero = failure).
+        outcome: One of 'success', 'failed', 'reverted'.
+        verify_result: Optional VerifyResult from mission verification.
+            Its .passed attribute is folded into the content string.
+        root_cause: Description of the root cause (best-effort, may be empty).
+        approach: What approach was taken (best-effort, may be empty).
+        artifact: PR/commit reference (best-effort, may be empty).
+        duration_minutes: Mission duration for significance gating.
+        journal_content: Journal content for significance gating.
+    """
+    try:
+        mission_kind = _classify_mission_kind(mission_title)
+        if mission_kind is None:
+            return
+
+        if not _is_significant_for_capture(
+            mission_title, duration_minutes, journal_content,
+            mission_kind, exit_code,
+        ):
+            return
+
+        # Build content string (capped at 2000 chars by append_memory_entry)
+        parts = [f"[{mission_kind}] {mission_title}"]
+        parts.append(f"Outcome: {outcome}")
+
+        if verify_result is not None:
+            verify_status = "verified" if verify_result.passed else "verification failed"
+            summary = getattr(verify_result, "summary", "")
+            if summary:
+                verify_status += f" ({summary})"
+            parts.append(verify_status)
+
+        if root_cause:
+            parts.append(f"Root cause: {root_cause}")
+        if approach:
+            parts.append(f"Approach: {approach}")
+        if artifact:
+            parts.append(f"Artifact: {artifact}")
+
+        content = " | ".join(parts)
+
+        append_memory_entry(
+            instance_dir, "experience", project_name or None, content,
+            outcome=outcome,
+            mission_kind=mission_kind,
+            root_cause=root_cause or None,
+            approach=approach or None,
+            artifact=artifact or None,
+        )
+    except Exception as e:
+        _log_safe("error", f"Experience capture failed: {e}")
+
