@@ -142,6 +142,8 @@ make lint           # Run ruff linter (must pass before committing)
 make test           # Run full test suite (pytest + coverage summary)
 make coverage       # Run tests with detailed coverage report (HTML in htmlcov/)
 make say m="..."    # Send test message as if from Telegram
+make missions [state=...]        # List the mission queue straight from the store (break-glass; bridge-independent)
+make mission-rm sel=i1           # Remove/abort a mission by selector (i<N>/p<N>/keyword) when the bridge is down
 make rename-project old=X new=Y [apply=1]  # Rename a project everywhere (dry-run by default)
 make clean          # Remove venv
 ```
