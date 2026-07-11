@@ -402,7 +402,6 @@ class TestBuildIssueBody:
             assert "> [!" not in body
 
 
-
 class TestBuildPrompt:
     def test_prompt_contains_project_name(self):
         prompt = build_audit_prompt(

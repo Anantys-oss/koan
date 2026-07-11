@@ -1061,7 +1061,6 @@ class TestFormatReviewAsMarkdown:
         assert "> [!" not in md
         assert "Clean code. Merge-ready." in md
 
-
     def test_lgtm_review(self):
         md = _format_review_as_markdown(LGTM_REVIEW_JSON)
         assert "## PR Review" in md

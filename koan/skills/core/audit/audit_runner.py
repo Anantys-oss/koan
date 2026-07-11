@@ -360,7 +360,6 @@ def _build_issue_body(finding: AuditFinding) -> str:
         f"<!-- koan-audit-id: {fingerprint} -->",
     ])
     return "\n".join(lines)
-    return "\n".join(lines)
 
 
 def _build_advisory_description(finding: AuditFinding) -> str:
