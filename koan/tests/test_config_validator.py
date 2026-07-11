@@ -981,3 +981,81 @@ class TestValidateConfigOrRaise:
         from app.config_validator import validate_config_or_raise
         self._write_config(tmp_path, "unknown_key: 42\n")
         validate_config_or_raise(str(tmp_path))
+
+
+class TestValidateModelsSection:
+    """models: accepts flat roles AND per-provider blocks (models.<flavor>).
+
+    Provider block names are an open set; role keys inside a block are
+    validated against the known-role set with typo suggestions.
+    """
+
+    def test_flat_role_form_accepted(self):
+        assert validate_config({"models": {"mission": "opus", "chat": ""}}) == []
+
+    def test_default_block_accepted(self):
+        config = {"models": {"default": {"mission": "", "reflect": "sonnet"}}}
+        assert validate_config(config) == []
+
+    def test_known_provider_blocks_accepted(self):
+        config = {"models": {
+            "claude": {"mission": "opus"},
+            "codex": {"review_mode": "gpt-5.5"},
+            "ollama-launch": {"mission": "some-model:cloud"},
+        }}
+        assert validate_config(config) == []
+
+    def test_provider_block_underscore_variant_accepted(self):
+        assert validate_config({"models": {"ollama_launch": {"mission": "m"}}}) == []
+
+    def test_mixed_flat_and_blocks_accepted(self):
+        config = {"models": {
+            "lightweight": "haiku",
+            "default": {"mission": ""},
+            "claude": {"chat": "haiku"},
+        }}
+        assert validate_config(config) == []
+
+    def test_unknown_block_name_accepted(self):
+        # Provider block names are an open set: any dict is treated as a
+        # provider block so a newly registered provider needs no validator
+        # edit. The trade-off is that a typo'd flavor is not flagged.
+        assert validate_config({"models": {"bogusflavor": {"mission": "x"}}}) == []
+
+    def test_unknown_role_inside_block_warned(self):
+        warnings = validate_config({"models": {"claude": {"missoin": "opus"}}})
+        assert len(warnings) == 1
+        assert "unrecognized key 'models.claude.missoin'" in warnings[0][1]
+        assert "did you mean 'models.claude.mission'" in warnings[0][1]
+
+    def test_non_dict_non_role_key_warned(self):
+        # A scalar under a non-role key is neither a provider block nor a
+        # legacy flat role, so it is reported as unrecognized.
+        warnings = validate_config({"models": {"claude": "opus"}})
+        assert len(warnings) == 1
+        assert "unrecognized key 'models.claude'" in warnings[0][1]
+
+    def test_role_value_must_be_str(self):
+        warnings = validate_config({"models": {"mission": 5}})
+        assert len(warnings) == 1
+        assert "'models.mission' should be str" in warnings[0][1]
+
+    def test_role_value_inside_block_must_be_str(self):
+        warnings = validate_config({"models": {"claude": {"mission": 5}}})
+        assert len(warnings) == 1
+        assert "'models.claude.mission' should be str" in warnings[0][1]
+
+    def test_flat_typo_gets_suggestion(self):
+        warnings = validate_config({"models": {"missin": "opus"}})
+        assert len(warnings) == 1
+        assert "did you mean 'models.mission'" in warnings[0][1]
+
+
+class TestPreflightCacheMinutesKey:
+    def test_key_accepted(self):
+        assert validate_config({"preflight_cache_minutes": 10}) == []
+
+    def test_type_checked(self):
+        warnings = validate_config({"preflight_cache_minutes": "ten"})
+        assert len(warnings) == 1
+        assert "should be int" in warnings[0][1]

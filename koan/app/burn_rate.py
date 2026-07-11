@@ -16,7 +16,7 @@ import json
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -30,6 +30,12 @@ MIN_SAMPLES_FOR_ESTIMATE = 5
 # absurd hourly rates like 286%/h. Require a minimum wall-clock window so the
 # estimate reflects sustained pace, not a single cluster of heavy work.
 MIN_SPAN_MINUTES = 15.0
+
+# Samples older than this are ignored by rate estimation (they stay in the
+# persisted buffer and age out naturally). Matches the 5h session quota
+# window: a state file surviving from an earlier session must not shape the
+# current session's estimate.
+SAMPLE_MAX_AGE_HOURS = 5
 
 # Single source of truth for autonomous-mode cost multipliers. Imported by
 # usage_tracker.can_afford_run() so prediction and gating stay aligned.
@@ -222,13 +228,27 @@ class BurnRateSnapshot:
         """Timestamp of the most recent exhaustion warning, if any."""
         return self._state.last_warned_at
 
+    def _fresh_samples(self) -> List[Sample]:
+        """Samples younger than :data:`SAMPLE_MAX_AGE_HOURS`.
+
+        Stale samples must not shape the estimate: right after a restart, a
+        buffer full of mutually-close but weeks-old samples computes a rate
+        over their (short) historical span and projects it onto the current
+        session — observed live as a spurious "est. 1 min to exhaustion"
+        mode downgrade driven entirely by month-old data.
+        """
+        cutoff = _now_utc() - timedelta(hours=SAMPLE_MAX_AGE_HOURS)
+        return [s for s in self._state.samples if s.timestamp >= cutoff]
+
     def burn_rate_pct_per_minute(self) -> Optional[float]:
         """Rolling burn rate in % session quota per minute.
 
-        Returns ``None`` if insufficient history (< 5 samples), zero span,
-        or wall-clock span shorter than :data:`MIN_SPAN_MINUTES`.
+        Only samples from the current session window (see
+        :data:`SAMPLE_MAX_AGE_HOURS`) participate. Returns ``None`` if
+        insufficient fresh history (< 5 samples), zero span, or wall-clock
+        span shorter than :data:`MIN_SPAN_MINUTES`.
         """
-        samples = self._state.samples
+        samples = self._fresh_samples()
         if len(samples) < MIN_SAMPLES_FOR_ESTIMATE:
             return None
 

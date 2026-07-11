@@ -944,6 +944,21 @@ def get_api_threads() -> int:
     return 2
 
 
+def get_preflight_cache_minutes() -> int:
+    """Minutes a successful pre-flight quota probe stays valid (default: 10).
+
+    The agent loop probes provider quota before every mission attempt. For
+    providers with no free usage introspection (haze, cline) the probe is a
+    real LLM call costing time and tokens, so a recent SUCCESS is reused for
+    this many minutes. Failures are never cached. ``0`` disables caching
+    (probe every mission, the historical behavior).
+
+    Config key: preflight_cache_minutes (default: 10)
+    """
+    config = _load_config()
+    return max(0, _safe_int(config.get("preflight_cache_minutes", 10), 10))
+
+
 def get_cli_output_journal() -> bool:
     """Check if CLI output journal streaming is enabled.
 

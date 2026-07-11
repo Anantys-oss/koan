@@ -1704,10 +1704,11 @@ class TestFormatBurnRateSingleLoad:
 
     def _seed(self, instance_dir):
         # Five samples over 20 minutes, 1.0% each → enough for an estimate
-        # (needs ≥ MIN_SAMPLES and ≥ MIN_SPAN_MINUTES).
+        # (needs ≥ MIN_SAMPLES and ≥ MIN_SPAN_MINUTES). Anchored to now so
+        # the samples stay inside the SAMPLE_MAX_AGE_HOURS freshness window.
         from datetime import datetime, timedelta, timezone
         from app import burn_rate
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        base = datetime.now(timezone.utc) - timedelta(minutes=20)
         for i in range(5):
             burn_rate.record_run(
                 instance_dir, 1.0, timestamp=base + timedelta(minutes=i * 5),

@@ -17,8 +17,12 @@ def instance_dir(tmp_path: Path) -> Path:
 
 
 def _record_series(instance_dir: Path, samples):
-    """Record a series of (offset_minutes, cost_pct) samples from a base time."""
-    base = datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc)
+    """Record a series of (offset_minutes, cost_pct) samples from a base time.
+
+    The base is recent (now - 1h) so samples fall inside the
+    SAMPLE_MAX_AGE_HOURS freshness window used by rate estimation.
+    """
+    base = datetime.now(timezone.utc) - timedelta(hours=1)
     for offset_min, cost in samples:
         burn_rate.record_run(
             instance_dir, cost_pct=cost,
@@ -128,8 +132,8 @@ class TestBurnRateEstimate:
         assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
 
     def test_zero_span_returns_none(self, instance_dir):
-        # 5 samples all at the same timestamp
-        base = datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc)
+        # 5 samples all at the same (recent) timestamp
+        base = datetime.now(timezone.utc) - timedelta(minutes=30)
         for _ in range(burn_rate.MIN_SAMPLES_FOR_ESTIMATE):
             burn_rate.record_run(instance_dir, cost_pct=1.0, timestamp=base)
         assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
@@ -384,3 +388,64 @@ class TestStateFile:
         assert "samples" in data
         assert "last_warned_at" in data
         assert data["samples"][0]["cost_pct"] == pytest.approx(2.5)
+
+
+class TestSampleAging:
+    """Stale samples must not shape the estimate (SAMPLE_MAX_AGE_HOURS)."""
+
+    def test_month_old_samples_yield_no_estimate(self, instance_dir):
+        # A buffer full of mutually-close but weeks-old samples used to
+        # compute a rate over their short historical span and project it
+        # onto the current session (observed live: spurious "est. 1 min to
+        # exhaustion" downgrade from month-old data).
+        base = datetime.now(timezone.utc) - timedelta(days=30)
+        for i in range(10):
+            burn_rate.record_run(
+                instance_dir, cost_pct=300.0,
+                timestamp=base + timedelta(minutes=i),
+            )
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
+        assert burn_rate.time_to_exhaustion(instance_dir, 8.0, mode="deep") is None
+
+    def test_mixed_buffer_uses_only_fresh_samples(self, instance_dir):
+        stale_base = datetime.now(timezone.utc) - timedelta(days=30)
+        for i in range(5):
+            burn_rate.record_run(
+                instance_dir, cost_pct=500.0,
+                timestamp=stale_base + timedelta(minutes=i),
+            )
+        # Fresh samples must span at least MIN_SPAN_MINUTES to produce an
+        # estimate at all, so space them 5 minutes apart.
+        fresh_base = datetime.now(timezone.utc) - timedelta(minutes=25)
+        for i in range(5):
+            burn_rate.record_run(
+                instance_dir, cost_pct=1.0,
+                timestamp=fresh_base + timedelta(minutes=i * 5),
+            )
+        rate = burn_rate.burn_rate_pct_per_minute(instance_dir)
+        # 5 fresh samples x 1% over a 20-minute span = 0.25/min; the 500%
+        # stale samples must not participate (including them would both
+        # stretch the span to ~30 days and inflate the consumed total).
+        assert rate == pytest.approx(0.25)
+
+    def test_too_few_fresh_samples_yield_no_estimate(self, instance_dir):
+        stale_base = datetime.now(timezone.utc) - timedelta(days=30)
+        for i in range(10):
+            burn_rate.record_run(
+                instance_dir, cost_pct=1.0,
+                timestamp=stale_base + timedelta(minutes=i),
+            )
+        fresh_base = datetime.now(timezone.utc) - timedelta(minutes=5)
+        for i in range(3):  # below MIN_SAMPLES_FOR_ESTIMATE
+            burn_rate.record_run(
+                instance_dir, cost_pct=1.0,
+                timestamp=fresh_base + timedelta(minutes=i),
+            )
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
+
+    def test_persisted_buffer_keeps_stale_samples(self, instance_dir):
+        # Aging is read-time only: the persisted buffer still holds stale
+        # entries (they age out of the circular buffer naturally).
+        base = datetime.now(timezone.utc) - timedelta(days=30)
+        burn_rate.record_run(instance_dir, cost_pct=1.0, timestamp=base)
+        assert len(burn_rate.get_samples(instance_dir)) == 1

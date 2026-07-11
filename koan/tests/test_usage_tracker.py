@@ -514,8 +514,10 @@ class TestBurnRateDowngrade:
 
         Records 5 samples evenly spaced so total_cost / span = pct_per_min.
         Span is 20 minutes (≥ MIN_SPAN_MINUTES) so the estimator accepts it.
+        Anchored to now (not a fixed date) so the samples stay inside the
+        SAMPLE_MAX_AGE_HOURS freshness window.
         """
-        base = datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc)
+        base = datetime.now(timezone.utc) - timedelta(minutes=20)
         # 5 samples over 20 minutes. Total cost / 20 = pct_per_min
         # → per_sample = (20/5) * pct_per_min = 4 * pct_per_min.
         per_sample = pct_per_min * 4.0
