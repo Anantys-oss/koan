@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-10
+updated: 2026-07-11
 ---
 
 # Kōan User Manual
@@ -158,6 +158,8 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 
 - **Usage:** `/abort`
 - The running Claude subprocess is killed, the mission is moved to Failed, and the agent loop picks the next pending item.
+
+> **Bridge unresponsive?** `/cancel`, `/abort`, and `/list` all go through the Telegram bridge, which can stop answering when the loop is badly stuck. From a terminal on the host you can inspect and edit the queue directly (no bridge needed): `make missions` to list, `make mission-rm sel=i1` to abort the stuck one, then `make stop && make start`. See [Mission-queue break-glass CLI](../operations/mission-cli.md).
 
 **`/priority`** — Move a pending mission to a different position in the queue.
 
