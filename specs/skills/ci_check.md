@@ -88,4 +88,5 @@ notification) while guaranteeing one failing PR cannot monopolize the queue for 
   and CI goes pending it re-enqueues for monitoring, otherwise it reports "still failing" as a
   one-shot. Auto retries are driven by the `## CI` budget, not the manual path.
 - `ci_check` config accepts both a bare bool (`ci_check: true`) and the dict form
-  (`ci_check: {enabled, timeout, max_fix_attempts_per_mission}`); both are honored and validated.
+  (`ci_check: {enabled, timeout, max_fix_attempts_per_mission, idle_timeout}`); both are honored
+  and validated (the strict startup validator also accepts the bool form).

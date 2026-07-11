@@ -965,6 +965,17 @@ class TestValidateConfigOrRaise:
         self._write_config(tmp_path, "stagnation: false\n")
         validate_config_or_raise(str(tmp_path))
 
+    def test_ci_check_bool_shorthand_accepted(self, tmp_path):
+        """ci_check: true bool shorthand must not hard-stop startup."""
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "ci_check: true\n")
+        validate_config_or_raise(str(tmp_path))
+
+    def test_ci_check_dict_form_accepted(self, tmp_path):
+        from app.config_validator import validate_config_or_raise
+        self._write_config(tmp_path, "ci_check:\n  enabled: true\n  timeout: 1800\n")
+        validate_config_or_raise(str(tmp_path))
+
     def test_unknown_keys_not_flagged(self, tmp_path):
         """Unknown keys are handled by validate_and_warn, not the strict check."""
         from app.config_validator import validate_config_or_raise

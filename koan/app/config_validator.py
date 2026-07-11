@@ -922,6 +922,11 @@ def validate_config_or_raise(koan_root: str) -> None:
                 continue
             if key == "stagnation" and value is False:
                 continue
+            # ci_check accepts a bare bool shorthand (ci_check: true) in addition
+            # to the dict form — is_ci_check_enabled honors both. Mirror the
+            # warning validator so the strict startup path does not regress it.
+            if key == "ci_check" and isinstance(value, bool):
+                continue
             if not isinstance(value, dict):
                 errors.append(
                     f"'{key}' must be a mapping, got {type(value).__name__}"
