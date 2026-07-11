@@ -53,25 +53,27 @@ handled as **sibling tables in `missions.db`** (`ci_queue`, `ideas`,
 `quarantine`; see `data-model.md`). Delivery: **one branch (`koan/mission-store-impl`),
 one commit per step** below, single PR.
 
-- **S1 (done, commit 1)** — Foundation: port + `SqliteMissionStore` + config + resolver + conformance/ingest tests.
-- **S2** — Sibling stores: `CiQueueStore`, `IdeaStore`, `QuarantineStore` + their ingest/export + tests.
-- **S3** — Startup wiring (T010–T011): resolve store, one-time ingest, `recover_stale`, export scheduling.
-- **S4** — Write callsites (T012–T013): lifecycle (`run.py`), all insert sites (utils, Telegram, GitHub/Jira, CI dispatch, schedulers, skills).
-- **S5** — Read callsites (T014–T015): picker, dashboard, API, status/list/brief/report/etc.
-- **S6** — ~~CI-queue + Ideas callsites onto the sibling stores.~~ **Folded into S8.**
-  Under the reader-first/file-authoritative transition, CI/Ideas writers can't move
-  store-only without desyncing the `## CI`/`## Ideas` sections that file-readers
-  (e.g. `/brief`'s ci count, `ci_queue_runner`) still consume — that would be a
-  dual-write. CI/Ideas are read+write mixed, so there's no clean read-only subset
-  to pre-migrate. They migrate wholesale at the S8 flip (writers → `CiQueueStore`/
-  `IdeaStore`; the sibling stores gain `reconcile_from_content` there).
-- **S7** — Visibility (T016–T017): `/list <state>`, done/failed history, export command.
-- **S8** — The flip. Writers → store (lifecycle in `run.py`/`utils.py` + all insert
-  sites + CI/Ideas + `pick_mission`); `missions.md` becomes a generated read-only
-  export; remove direct file reads/writes (incl. `startup_manager.py`, `recover.py`
-  unlocked writes); drop the transition `reconcile_from_*` reader calls; update the
-  file-is-truth tests.
-- **S9** — Docs/specs reconciliation (T018) + full suite + lint (T019).
+- **S1 ✅** — Foundation: port + `SqliteMissionStore` + config + resolver + conformance/ingest tests.
+- **S2 ✅** — Sibling stores: `CiQueueStore`, `IdeaStore`, `QuarantineStore` + their ingest/export + tests.
+- **S3 ✅** — Startup one-time ingest (additive, gated on `is_initialized`).
+- **S4 ✅** — Reader migration begins: `reconcile_from_file` helper + first readers (counts).
+- **S5 ✅** — Read callsites migrated via `read_sections`/`render_mission_line`/`read_content` (skills, dashboard, API, app-level counts).
+- **S6** — Folded into **S8** (rationale below).
+- **S7** — Visibility (`/list <state>` filter etc.) — deferred as a follow-up; not required for the cutover.
+- **S8 ✅** — The flip. Store is authoritative; `missions.md` is a generated read-only
+  export. Chokepoint `utils._locked_missions_rw` round-trips through the store
+  (render → transform → `reconcile_all` → export); readers read the store directly;
+  one-time `ensure_store_synced` (persisted `s8_synced` marker); CI/Ideas migrated
+  via the round-trip; `startup_manager` prune re-syncs the store. Fidelity fixes:
+  `### ` block terminator, `insert_mission` `- ` normalization. Verified green across
+  ~3,900 mission-touching tests (batches; full suite is CI's job).
+- **S9 ✅** — Docs/specs reconciliation: durable contract graduated into
+  `specs/components/core.md`; `CLAUDE.md` + `koan/app/CLAUDE.md`,
+  `docs/architecture/{mission-lifecycle,shared-state}.md` updated; constitution
+  Sync Impact Report marked done.
+
+  _Remaining before merge/deploy: a full-suite CI run (times out locally), and the
+  optional S7 visibility command (`/list done|failed`)._
 
 Traps to preserve (from the map): out-of-lock read-then-transactional-write (TOCTOU) in `ci_queue_runner`/parallel dispatch; startup unlocked writes in `startup_manager.py`; direct `read_text`/`atomic_write` on the missions path in `startup_manager.py`/`recover.py`; pure text helpers (`extract_project_tag`, `canonical_mission_key`, …) are NOT store access and stay as-is.
 

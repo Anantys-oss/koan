@@ -17,7 +17,8 @@ Communication between processes happens through shared files in `instance/` with
 
 **Core data & config:**
 
-- **`missions.py`** — Single source of truth for `missions.md` parsing (sections: Pending / In Progress / Done; French equivalents also accepted). Missions can be tagged `[project:name]`. Provides explicit lifecycle transitions: `start_mission()` (Pending→In Progress with stale-flush sanity enforcement), `complete_mission()`, `fail_mission()`.
+- **`mission_store/`** — The authoritative mission store behind the `MissionStore` port. `get_mission_store()` resolves `missions.backend` (default `sqlite`; a dotted `module:Class` loads an out-of-tree adapter). `SqliteMissionStore` keeps mission state in `instance/missions.db` (WAL); `CiQueueStore`/`IdeaStore`/`QuarantineStore` are sibling tables. Mutations round-trip through `utils._locked_missions_rw` (render → `missions.py` transform → `reconcile_all` → export). `missions.md` is a generated read-only export. See `specs/004-mission-store/`.
+- **`missions.py`** — Parsing + `content -> content` lifecycle transforms for the mission text form (sections: Pending / In Progress / Done; French equivalents also accepted). Missions can be tagged `[project:name]`. `start_mission()` (Pending→In Progress with stale-flush sanity), `complete_mission()`, `fail_mission()`, `insert_mission()` (normalizes to a `- ` prefix). Applied inside the store's write chokepoint; also used for one-time ingest and export rendering — **not** a separate source of truth.
 - **`projects_config.py`** — Project configuration loader for `projects.yaml`. `load_projects_config()`, `get_projects_from_config()`, `get_project_config()` (merged defaults + overrides), `get_project_auto_merge()`, `get_project_cli_provider()`, `get_project_models()`, `get_project_tools()`. Per-project overrides for CLI provider, model selection, and tool restrictions. `ensure_github_urls()` auto-populates `github_url` fields from git remotes at startup.
 - **`projects_migration.py`** — One-shot migration from env vars (`KOAN_PROJECTS`/`KOAN_PROJECT_PATH`) to `projects.yaml`. Runs at startup if `projects.yaml` doesn't exist.
 - **`utils.py`** — File locking (thread + file locks), config loading, atomic writes, `get_branch_prefix()`, `get_known_projects()` (projects.yaml > KOAN_PROJECTS), `koan_tmp_dir()` (per-uid scratch/lock dir)
@@ -142,7 +143,8 @@ Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `
 
 `instance/` (gitignored, copy from `instance.example/`) holds all runtime state:
 
-- `missions.md` — Task queue
+- `missions.db` — Authoritative SQLite mission store (missions + CI queue + ideas + quarantine tables)
+- `missions.md` — Generated **read-only export** of the mission store (human-readable; edits ignored after the one-time sync)
 - `outbox.md` — Bot → Telegram message queue (written atomically by `append_to_outbox()`)
 - `outbox-sending.md` — Crash-safety staging file for outbox flush; `OutboxManager.recover_staged()` re-sends on restart
 - `config.yaml` — Per-instance configuration (tools, auto-merge rules)
