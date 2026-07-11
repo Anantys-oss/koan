@@ -351,5 +351,110 @@ class TestBuildPlanCommentFailureJira(unittest.TestCase):
         assert "## Plan Update Failed" in result
 
 
+class TestGitHubAlertFlattening(unittest.TestCase):
+    def test_warning_block_flattened(self):
+        md = "> [!WARNING]\n> This is risky\n> Second line"
+        result = jira_readable_markdown(md)
+        assert ">" not in result
+        assert "[!" not in result
+        assert "WARNING: This is risky" in result
+        assert "Second line" in result
+
+    def test_all_five_kinds(self):
+        for kind in ("NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"):
+            md = f"> [!{kind}]\n> body text"
+            result = jira_readable_markdown(md)
+            assert f"{kind}: body text" in result
+            assert "[!" not in result
+
+    def test_alert_mixed_with_prose(self):
+        md = "Intro line\n\n> [!NOTE]\n> Remember this\n\nOutro line"
+        result = jira_readable_markdown(md)
+        assert "Intro line" in result
+        assert "NOTE: Remember this" in result
+        assert "Outro line" in result
+        assert ">" not in result
+
+    def test_plain_blockquote_untouched(self):
+        # A human's ordinary Jira blockquote is NOT a GitHub alert opener.
+        md = "> just a quoted sentence a human wrote"
+        result = jira_readable_markdown(md)
+        assert "just a quoted sentence a human wrote" in result
+        assert "NOTE:" not in result and "WARNING:" not in result
+
+    def test_opener_with_trailing_text_not_treated_as_alert(self):
+        # `> [!WARNING] inline` is not the exact opener form; leave it alone.
+        md = "> [!WARNING] not really an alert opener"
+        result = jira_readable_markdown(md)
+        assert "WARNING:" not in result
+
+    def test_adjacent_blocks_without_blank_line(self):
+        # A second opener terminates the first block's body run; both flatten
+        # independently instead of the second folding in as literal `[!NOTE]`.
+        md = "> [!WARNING]\n> a\n> [!NOTE]\n> b"
+        result = jira_readable_markdown(md)
+        assert "[!" not in result
+        assert "WARNING: a" in result
+        assert "NOTE: b" in result
+
+    def test_alert_syntax_inside_code_fence_preserved(self):
+        # Alert syntax inside a fenced code block is example text, not an
+        # alert to degrade — leave it verbatim.
+        md = "```\n> [!WARNING]\n> literal example\n```"
+        result = jira_readable_markdown(md)
+        assert "[!WARNING]" in result
+        assert "WARNING: literal example" not in result
+
+
+class TestPrCommentAlertSafety(unittest.TestCase):
+    def test_success_why_section_alert_flattened(self):
+        body = "## Why\n> [!WARNING]\n> Data loss possible\n\n## How\n- did it"
+        result = build_pr_comment_success(
+            provider="jira",
+            pr_url="https://github.com/org/repo/pull/7",
+            pr_title="fix",
+            pr_body=body,
+            skill_name="fix",
+        )
+        assert ">" not in result
+        assert "[!" not in result
+        assert "WARNING: Data loss possible" in result
+
+    def test_success_github_branch_keeps_native_alert(self):
+        body = "## Why\n> [!WARNING]\n> keep me native"
+        result = build_pr_comment_success(
+            provider="github",
+            pr_url="https://github.com/org/repo/pull/8",
+            pr_title="fix",
+            pr_body=body,
+        )
+        assert "[!WARNING]" in result  # GitHub renders alerts natively
+
+    def test_failure_reason_alert_flattened(self):
+        result = build_pr_comment_failure(
+            provider="jira",
+            reason="> [!CAUTION]\n> merge conflict in core",
+            skill_name="fix",
+        )
+        assert ">" not in result
+        assert "[!" not in result
+        assert "CAUTION: merge conflict in core" in result
+
+
+class TestBypassPathsAlertFree(unittest.TestCase):
+    def test_pr_submit_failure_body_is_alert_free(self):
+        # pr_submit._post_issue_comment forwards build_pr_comment_failure()
+        # output to upsert_jira_comment(); assert it carries no alert syntax.
+        body = build_pr_comment_failure(
+            provider="jira",
+            reason="> [!IMPORTANT]\n> auth token expired",
+            branch="koan/fix",
+            skill_name="fix",
+        )
+        assert ">" not in body
+        assert "[!" not in body
+        assert "IMPORTANT: auth token expired" in body
+
+
 if __name__ == "__main__":
     unittest.main()
