@@ -187,6 +187,8 @@ This is a top-level config key (not nested under `github:`). When enabled, Kōan
 
 When `enable_multiple_instances` is **false** (default, single-instance mode), notifications from unregistered repos are automatically marked as read to prevent inbox accumulation — no other instance will claim them.
 
+The @mention-dropped warning is one-shot per repo for the life of the process (it will not repeat every poll cycle). It resets once you add the repo to `projects.yaml`: the next time an @mention arrives it is acted on normally, and if the repo is ever removed again a fresh warning is emitted. Restarting Kōan also re-arms the warning as a standing reminder that the repo is still not registered.
+
 ### Per-project overrides (`projects.yaml`)
 
 Override `authorized_users` and `reply_authorized_users` for specific repositories:
