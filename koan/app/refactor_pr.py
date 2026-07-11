@@ -105,6 +105,7 @@ def run_refactor(
             notify_fn=notify_fn,
             run_tests=True,
             push=True,
+            head_remote=head_remote,
         )
     except Exception as e:
         _safe_checkout(original_branch, project_path)
@@ -117,6 +118,15 @@ def run_refactor(
         msg = f"PR #{pr_number}: no refactoring changes were needed."
         notify_fn(msg)
         return True, msg
+
+    # Tests stayed red after the one fix attempt — the commit was NOT pushed.
+    # Report failure and post no comment (don't advertise broken code).
+    if not result.tests_passed:
+        _safe_checkout(original_branch, project_path)
+        return False, (
+            f"Refactored `{branch}` but tests are still failing "
+            f"({result.tests}) — the commit was not pushed."
+        )
 
     if not result.pushed:
         _safe_checkout(original_branch, project_path)

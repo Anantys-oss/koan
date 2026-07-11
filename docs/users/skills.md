@@ -88,8 +88,11 @@ proceeds. Toggle with `plan_review.assumptions_check` in `config.yaml` (default 
 `/fix`, `/implement`, and `/rebase` run an internal refactor pass right before
 the review gate: the same engine as `/refactor` cleans up the freshly produced
 code, makes one extra commit, runs the tests, and pushes — silently (no PR
-comment, since it is part of the larger workflow). This makes large implement
-missions land cleaner code before review.
+comment, since it is part of the larger workflow). If the tests stay red after a
+single fix attempt, the commit is kept local and **not** pushed. This makes
+large implement missions land cleaner code before review. It is on by default;
+disable it with `refactor_pass: { enabled: false }` in `config.yaml` to avoid
+the extra per-mission cost.
 
 The private post-PR review gate for `/fix`, `/implement`, and `/rebase` is
 backend-only: it reuses `/review` analysis, fixes Blocking/Important findings
