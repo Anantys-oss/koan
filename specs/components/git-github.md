@@ -4,7 +4,7 @@ title: "Component Spec — Git & GitHub"
 description: "Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows."
 tags: [git-github]
 created: 2026-06-27
-updated: 2026-07-10
+updated: 2026-07-11
 ---
 
 # Component Spec — Git & GitHub
@@ -12,7 +12,7 @@ updated: 2026-07-10
 **Modules:** `git_sync.py`, `git_auto_merge.py`, `github.py`, `github_url_parser.py`,
 `github_skill_helpers.py`, `github_config.py`, `github_notifications.py`,
 `github_command_handler.py`, `github_webhook.py`, `rebase_pr.py`, `recreate_pr.py`,
-`claude_step.py`, `remote_rename_detector.py`, `head_tracker.py`
+`claude_step.py`, `remote_rename_detector.py`, `head_tracker.py`, `git_prep.py`
 
 ## Purpose
 
@@ -36,6 +36,7 @@ workflows.
 | `claude_step.py::_verify_rebase_result()` | Post-rebase gate: branch must sit on the target's current tip and its unique-commit count (`rev-list --count target..HEAD`) must not grow vs the pre-rebase baseline. On violation the branch is hard-reset to its pre-rebase commit and the rebase reported failed — nothing is pushed. |
 | `head_tracker.py` | Detects remote HEAD change (master→main), throttled 12h, state in `.head-tracker.json`. |
 | `github_url_parser.py` | Single PR/issue URL parsing path. |
+| `git_prep.py::prepare_project_branch()` | Pre-mission: fetch → **self-heal interrupted merge/rebase** → stash → checkout base → ff-only/reset to `<remote>/<base>`. Non-fatal; returns `PrepResult`. |
 
 ## Invariants
 
@@ -56,6 +57,11 @@ workflows.
   mission is recoverable; a polluted force-push is not (incident: PR #2309 — a rebase
   onto a 4-days-stale ref with the fork's 1,889-commits-behind `main` as cut point
   resurrected 33 already-merged commits and force-pushed them unchecked).
+- **Self-heal precedes stash.** An interrupted merge/rebase/cherry-pick/revert
+  (or bare unmerged paths / stale `index.lock`) is auto-aborted before stashing,
+  because git cannot stash a conflicted tree and the next step resets to the
+  remote base anyway. A **conflict-free** dirty tree is never discarded — the
+  stash data-loss guard still holds for genuine uncommitted work.
 
 ## Integration points
 
