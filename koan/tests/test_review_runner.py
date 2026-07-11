@@ -1026,8 +1026,9 @@ class TestFormatReviewAsMarkdown:
     def test_summary_preserves_paragraphs_and_bullets(self):
         """A structured summary (verdict + blank line + bullets) must survive
         formatting intact, so readers get skimmable output instead of one
-        dense block. The formatter passes the summary through verbatim, so the
-        blank-line break and bullet markers must appear in the rendered body.
+        dense block. When lgtm is False the summary is wrapped in a
+        [!IMPORTANT] callout, so every line (including blank paragraph
+        separators) is > -prefixed.
         """
         data = {
             "file_comments": [],
@@ -1038,8 +1039,27 @@ class TestFormatReviewAsMarkdown:
             },
         }
         md = _format_review_as_markdown(data)
-        assert "Needs work before merge.\n\n- Missing input validation" in md
-        assert "- No test coverage" in md
+        # All lines are prefixed by build_alert, including the blank separator.
+        assert "> Needs work before merge." in md
+        assert ">" in md  # blank line rendered as bare >
+        assert "> - Missing input validation" in md
+        assert "> - No test coverage" in md
+
+    def test_blocked_review_wraps_summary_in_important_alert(self):
+        """When lgtm is False, the summary must be wrapped in a > [!IMPORTANT]
+        callout so the merge verdict is un-missable in email digests and mobile.
+        """
+        md = _format_review_as_markdown(VALID_REVIEW_JSON, title="Fix auth")
+        assert "> [!IMPORTANT]" in md
+        assert "> Needs validation before merge." in md
+
+    def test_lgtm_review_does_not_wrap_summary_in_alert(self):
+        """When lgtm is True, the summary is plain text — no alert needed
+        per the parsimony rule (clean reviews need no callout).
+        """
+        md = _format_review_as_markdown(LGTM_REVIEW_JSON)
+        assert "> [!" not in md
+        assert "Clean code. Merge-ready." in md
 
     def test_lgtm_review(self):
         md = _format_review_as_markdown(LGTM_REVIEW_JSON)

@@ -61,6 +61,8 @@ the single most important thing the reader must not miss.
 
 - `koan/app/rebase_pr.py` — WARNING when review feedback was dropped.
 - `koan/app/review_runner.py` — IMPORTANT when the branch moved mid-review.
+- `koan/app/review_runner.py` — IMPORTANT for blocked-review (`lgtm: false`) verdict summaries.
+- `koan/skills/core/audit/audit_runner.py` — CAUTION for critical-severity audit findings.
 
 ## Invariants
 
