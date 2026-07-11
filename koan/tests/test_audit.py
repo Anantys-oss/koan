@@ -370,6 +370,38 @@ class TestBuildIssueBody:
             body = _build_issue_body(f)
             assert severity.capitalize() in body
 
+    def test_critical_finding_wraps_in_caution_alert(self):
+        """Critical-severity findings must lead with a > [!CAUTION] callout
+        so they're un-missable in email digests and mobile, where the 🔴
+        icon in the details table has no special color rendering.
+        """
+        finding = AuditFinding(
+            title="fix: SQL injection in query builder",
+            severity="critical",
+            category="security",
+            location="db.py:42",
+            problem="Unparameterized query.",
+        )
+        body = _build_issue_body(finding)
+        assert "> [!CAUTION]" in body
+        assert "fix: SQL injection in query builder" in body
+
+    def test_non_critical_finding_has_no_alert(self):
+        """High/medium/low findings must NOT get an alert — parsimony rule
+        reserves callouts for the single most important thing.
+        """
+        for severity in ("high", "medium", "low"):
+            finding = AuditFinding(
+                title="minor issue",
+                severity=severity,
+                category="robustness",
+                location="a.py:1",
+                problem="p",
+            )
+            body = _build_issue_body(finding)
+            assert "> [!" not in body
+
+
 
 class TestBuildPrompt:
     def test_prompt_contains_project_name(self):
