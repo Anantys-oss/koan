@@ -157,9 +157,11 @@ class TestListHandler:
     def test_no_missions_file(self, tmp_path):
         from skills.core.list.handler import handle
 
+        # At S8 the store (not a file) is authoritative; an empty instance means
+        # no active missions rather than "no file".
         ctx = self._make_ctx(tmp_path)
         result = handle(ctx)
-        assert "No missions file" in result
+        assert "No missions pending or in progress" in result
 
     def test_empty_missions(self, tmp_path):
         from skills.core.list.handler import handle

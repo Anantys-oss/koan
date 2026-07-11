@@ -3,12 +3,13 @@ name: list
 scope: core
 group: missions
 emoji: 📋
-description: List current missions
-version: 1.0.0
+description: List missions by state
+version: 1.1.0
 audience: bridge
 commands:
   - name: list
-    description: List current missions (pending + in progress)
+    description: List missions — default pending + in progress; also done/failed/all
+    usage: /list [pending|in_progress|done|failed|all]
     aliases: [queue, ls]
 handler: handler.py
 ---

@@ -59,7 +59,7 @@ one commit per step** below, single PR.
 - **S4 ✅** — Reader migration begins: `reconcile_from_file` helper + first readers (counts).
 - **S5 ✅** — Read callsites migrated via `read_sections`/`render_mission_line`/`read_content` (skills, dashboard, API, app-level counts).
 - **S6** — Folded into **S8** (rationale below).
-- **S7** — Visibility (`/list <state>` filter etc.) — deferred as a follow-up; not required for the cutover.
+- **S7 ✅** — Visibility: `/list [pending|in_progress|done|failed|all]` state filter (done/failed history that used to require reading missions.md).
 - **S8 ✅** — The flip. Store is authoritative; `missions.md` is a generated read-only
   export. Chokepoint `utils._locked_missions_rw` round-trips through the store
   (render → transform → `reconcile_all` → export); readers read the store directly;

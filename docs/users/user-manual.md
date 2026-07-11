@@ -131,7 +131,7 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 
 ### Managing Your Queue
 
-**`/list`** — See all pending and in-progress missions.
+**`/list [state]`** — See missions. With no argument, lists pending and in-progress. Add a state to see more: `/list done`, `/list failed`, or `/list all` (handy now that `missions.md` is a generated read-only export — the done/failed history is in the store).
 
 - **Aliases:** `/queue`, `/ls`
 
@@ -2263,7 +2263,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | Command | Aliases | Tier | Description |
 |---------|---------|:----:|-------------|
 | `/mission <text>` | — | B | Queue a new mission (`--now` for top priority) |
-| `/list` | `/queue`, `/ls` | B | List pending and in-progress missions |
+| `/list [state]` | `/queue`, `/ls` | B | List missions; default pending+in-progress, or `done`/`failed`/`all` |
 | `/cancel <n>` | `/remove`, `/clear` | B | Cancel a pending mission |
 | `/abort` | — | B | Abort current mission, pick next pending |
 | `/priority <n>` | — | B | Reorder a pending mission in the queue |
