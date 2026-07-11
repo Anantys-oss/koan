@@ -1194,6 +1194,21 @@ class TestReviewPlan:
             approved, issues = review_plan("## Plan", "/project", self._skill_dir())
         assert approved
 
+    def test_review_pass_honors_dot_koan_skill(self, tmp_path):
+        """Sibling sub-pass (plan-review) must also inject .koan/skills/plan/*.md."""
+        d = tmp_path / ".koan" / "skills" / "plan"
+        d.mkdir(parents=True)
+        (d / "house-style.md").write_text("REPO PLAN RULE")
+        captured = {}
+
+        def _capture(prompt, project_path, **kwargs):
+            captured["prompt"] = prompt
+            return "APPROVED\n"
+
+        with patch("app.cli_provider.run_command", side_effect=_capture):
+            review_plan("## Plan\nStep 1", str(tmp_path), self._skill_dir())
+        assert "REPO PLAN RULE" in captured["prompt"]
+
 
 # ---------------------------------------------------------------------------
 # _review_loop

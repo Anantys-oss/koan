@@ -279,7 +279,8 @@ def _maybe_append_project_skill_instructions(
     default ``project_path=None`` keeps every existing call byte-identical.
 
     Failures are swallowed (the append is additive guidance, not a correctness
-    feature); they surface to stderr so silent regressions stay visible.
+    feature); they surface via the module logger so silent regressions stay
+    visible in the daemon log.
     """
     try:
         if not project_path or not (skill_dir / "SKILL.md").is_file():

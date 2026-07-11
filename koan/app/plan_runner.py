@@ -341,7 +341,9 @@ def review_plan(plan_text: str, project_path: str, skill_dir) -> Tuple[bool, str
     from app.cli_provider import run_command
 
     try:
-        prompt = load_prompt_or_skill(skill_dir, "plan-review", PLAN=plan_text)
+        prompt = load_prompt_or_skill(
+            skill_dir, "plan-review", project_path=project_path, PLAN=plan_text,
+        )
     except Exception as e:
         print(f"[plan_runner] Review prompt load failed: {e}", file=sys.stderr)
         return True, ""
@@ -408,7 +410,7 @@ def review_plan_assumptions(
 
     try:
         prompt = load_prompt_or_skill(
-            skill_dir, "plan-assumptions", PLAN=plan_text,
+            skill_dir, "plan-assumptions", project_path=project_path, PLAN=plan_text,
         )
     except (FileNotFoundError, OSError) as e:
         logger.warning("Assumptions prompt load failed: %s", e)
@@ -470,7 +472,8 @@ def improve_plan(
 
     try:
         prompt = load_prompt_or_skill(
-            skill_dir, "plan-improve", PLAN=plan_text, ISSUES=issues_text
+            skill_dir, "plan-improve",
+            project_path=project_path, PLAN=plan_text, ISSUES=issues_text,
         )
     except Exception as e:
         print(f"[plan_runner] Improve prompt load failed: {e}", file=sys.stderr)
@@ -529,6 +532,7 @@ def _critic_loop(
         try:
             critic_prompt = load_prompt_or_skill(
                 skill_dir, "plan-critic",
+                project_path=project_path,
                 PLAN=current_plan,
                 IDEA=idea or issue_context[:500],
             )
@@ -572,6 +576,7 @@ def _critic_loop(
                 new_plan = _run_claude_plan(
                     load_prompt_or_skill(
                         skill_dir, "plan-iterate",
+                        project_path=project_path,
                         ISSUE_CONTEXT=issue_context + feedback_section,
                         PROJECT_MEMORY=project_memory,
                     ),
@@ -581,7 +586,9 @@ def _critic_loop(
                 feedback_context = (context or "") + feedback_section
                 new_plan = _run_claude_plan(
                     load_prompt_or_skill(
-                        skill_dir, "plan", IDEA=idea, CONTEXT=feedback_context,
+                        skill_dir, "plan",
+                        project_path=project_path,
+                        IDEA=idea, CONTEXT=feedback_context,
                         PROJECT_MEMORY=project_memory,
                     ),
                     project_path,
@@ -679,6 +686,7 @@ def _review_loop(
                 new_plan = _run_claude_plan(
                     load_prompt_or_skill(
                         skill_dir, "plan-iterate",
+                        project_path=project_path,
                         ISSUE_CONTEXT=issue_context + f"\n\n## Review Feedback\n\n{issues}",
                         PROJECT_MEMORY=project_memory,
                     ),
@@ -693,7 +701,9 @@ def _review_loop(
                 )
                 new_plan = _run_claude_plan(
                     load_prompt_or_skill(
-                        skill_dir, "plan", IDEA=idea, CONTEXT=feedback_context,
+                        skill_dir, "plan",
+                        project_path=project_path,
+                        IDEA=idea, CONTEXT=feedback_context,
                         PROJECT_MEMORY=project_memory,
                     ),
                     project_path,

@@ -3,7 +3,7 @@ type: doc
 title: "KOAN.md — koan-only project instructions"
 tags: [users]
 created: 2026-07-09
-updated: 2026-07-10
+updated: 2026-07-11
 ---
 
 # KOAN.md — koan-only project instructions
@@ -55,7 +55,14 @@ myrepo/
 - **`.koan/skills/<skill>/*.md`** — extra instructions appended (append-only)
   to that core skill's built-in prompt, for runner-based skills (`review`,
   `refactor`, `plan`, …). All `*.md` files in the directory are concatenated in
-  filename order. Per-skill content is capped at 16,000 characters.
+  filename order and appended to **every** pass of that skill (e.g. `review`'s
+  first-pass, reflection, and triage sub-passes all honor `.koan/skills/review/`).
+  Per-skill content is capped at 16,000 characters.
+
+`<skill>` is the **invoking skill's** name, not the prompt name. In particular
+the `/pr` handler drives its feedback, refactor, and quality-review sub-passes
+under a single `pr` skill, so steer all three via `.koan/skills/pr/` (there is
+no separate `.koan/skills/refactor/`).
 
 Everything is opt-in by file existence and a no-op when absent. Prompt-only
 skills do not read `.koan/skills/`; steer those with general `KOAN.md`.
