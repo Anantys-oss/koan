@@ -871,3 +871,64 @@ class TestDefaultPlaceholdersAlwaysResolved:
             {"OTHER": "x"},
         )
         assert "{KOAN_PYTHON}" not in result
+
+
+class TestMaybeAppendProjectSkillInstructions:
+    """Gating of _maybe_append_project_skill_instructions via load_skill_prompt."""
+
+    @staticmethod
+    def _make_skill(tmp_path):
+        sd = tmp_path / "skills" / "core" / "review"
+        (sd / "prompts").mkdir(parents=True)
+        (sd / "SKILL.md").write_text("group: pr\n")
+        (sd / "prompts" / "review.md").write_text("BUILTIN REVIEW PROMPT")
+        return sd
+
+    def test_skill_block_injected_when_present(self, tmp_path):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        d = proj / ".koan" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "extra-rules.md").write_text("REPO EXTRA RULE")
+        out = load_skill_prompt(sd, "review", project_path=str(proj))
+        assert "REPO EXTRA RULE" in out
+        assert "review skill" in out  # from the koan-skill template
+        assert "BUILTIN REVIEW PROMPT" in out
+
+    def test_no_block_without_project_path(self, tmp_path):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        d = proj / ".koan" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "extra-rules.md").write_text("REPO EXTRA RULE")
+        out = load_skill_prompt(sd, "review")  # default None
+        assert "REPO EXTRA RULE" not in out
+
+    def test_no_block_when_dir_absent(self, tmp_path):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        out = load_skill_prompt(sd, "review", project_path=str(proj))
+        assert "BUILTIN REVIEW PROMPT" in out
+        assert ".koan/skills/review" not in out
+
+    def test_no_block_when_skill_md_missing(self, tmp_path):
+        # A bare directory without SKILL.md must not inject (legacy-caller gate).
+        sd = tmp_path / "skills" / "core" / "review"
+        (sd / "prompts").mkdir(parents=True)
+        (sd / "prompts" / "review.md").write_text("BUILTIN REVIEW PROMPT")
+        proj = tmp_path / "proj"
+        d = proj / ".koan" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "extra-rules.md").write_text("REPO EXTRA RULE")
+        out = load_skill_prompt(sd, "review", project_path=str(proj))
+        assert "REPO EXTRA RULE" not in out
+
+    def test_no_block_when_fragments_blank(self, tmp_path):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        d = proj / ".koan" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "extra-rules.md").write_text("   \n")
+        out = load_skill_prompt(sd, "review", project_path=str(proj))
+        assert ".koan/skills/review" not in out

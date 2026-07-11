@@ -7116,3 +7116,38 @@ class TestReviewCalibrationConfig:
             cfg = get_review_calibration_config()
         assert cfg["batch_size"] == 15
         assert cfg["stale_days"] == 90
+
+
+class TestBuildReviewPromptDotKoanSkill:
+    """End-to-end: .koan/skills/review/*.md is appended via build_review_prompt."""
+
+    @staticmethod
+    def _core_review_dir():
+        import app.review_runner as rr
+        return Path(rr.__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    @staticmethod
+    def _ctx():
+        return dict(
+            title="t", author="a", branch="b", base="main", body="",
+            diff="", review_comments="", reviews="", issue_comments="",
+        )
+
+    def test_build_review_prompt_injects_dot_koan_skill(self, tmp_path):
+        import app.review_runner as rr
+        d = tmp_path / ".koan" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "security.md").write_text("REPO SECURITY RULE")
+        prompt, _ = rr.build_review_prompt(
+            self._ctx(), skill_dir=self._core_review_dir(),
+            project_path=str(tmp_path),
+        )
+        assert "REPO SECURITY RULE" in prompt
+
+    def test_build_review_prompt_noop_without_dot_koan(self, tmp_path):
+        import app.review_runner as rr
+        prompt, _ = rr.build_review_prompt(
+            self._ctx(), skill_dir=self._core_review_dir(),
+            project_path=str(tmp_path),
+        )
+        assert ".koan/skills/review" not in prompt

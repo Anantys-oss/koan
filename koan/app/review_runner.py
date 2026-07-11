@@ -789,7 +789,9 @@ def build_review_prompt(
             plan_body = _truncate_plan(plan_body)
         kwargs["PLAN"] = plan_body
 
-    prompt = load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+    prompt = load_prompt_or_skill(
+        skill_dir, prompt_name, project_path=project_path, **kwargs
+    )
     return prompt, coverage_note
 
 
@@ -1001,6 +1003,7 @@ def _reflect_findings(
         findings_json = json.dumps(findings, indent=2)
         prompt = load_skill_prompt(
             skill_dir, "reflect",
+            project_path=project_path,
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
             CALIBRATION_HINTS=calibration_hints or "(no calibration data available)",
@@ -1076,7 +1079,10 @@ def _run_error_hunter(
     Returns an empty string if no findings are produced.
     """
     if skill_dir is not None:
-        prompt = load_skill_prompt(skill_dir, "silent-failure-hunter", DIFF=diff)
+        prompt = load_skill_prompt(
+            skill_dir, "silent-failure-hunter",
+            project_path=project_path, DIFF=diff,
+        )
     else:
         prompt = load_prompt("silent-failure-hunter", DIFF=diff)
 
@@ -1232,6 +1238,7 @@ def _run_bot_comment_triage(
         if skill_dir is not None:
             prompt = load_skill_prompt(
                 skill_dir, "bot-review-triage",
+                project_path=project_path,
                 diff=truncated_diff, bot_comments=formatted_comments,
             )
         else:
