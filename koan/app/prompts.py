@@ -4,12 +4,15 @@ Loads prompt templates from koan/system-prompts/ and substitutes placeholders.
 Supports ``{@include partial-name}`` directives for composable prompt fragments.
 """
 
+import logging
 import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 PROMPT_DIR = Path(__file__).parent.parent / "system-prompts"
 PARTIALS_DIR_NAME = "_partials"
@@ -292,7 +295,5 @@ def _maybe_append_project_skill_instructions(
         )
         return f"{prompt}\n\n{block}"
     except Exception as e:
-        import sys
-        print(f"[prompts] .koan skill injection failed for {skill_dir}: {e}",
-              file=sys.stderr)
+        logger.warning(".koan skill injection failed for %s: %s", skill_dir, e)
         return prompt
