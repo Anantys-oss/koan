@@ -81,7 +81,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`setup/systemd-user.md`](docs/setup/systemd-user.md) — Describes running Koan as a per-user (rootless) systemd service on Linux, covering unit installation, linger for boot persistence, and PATH preservation for CLI providers.
 
 ### Users
-- [`users/koan-md.md`](docs/users/koan-md.md) — Documents the optional project-root `KOAN.md` file: a koan-only analogue of `CLAUDE.md` injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules and the 16k-char cap.
+- [`users/koan-md.md`](docs/users/koan-md.md) — Documents the optional project-root `KOAN.md` file and the `.koan/` directory (a second `.koan/KOAN.md` plus per-skill `.koan/skills/<skill>/*.md` hooks): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules and the 16k-char cap.
 - [`users/model-configuration.md`](docs/users/model-configuration.md) — Explains how to configure which model handles each Koan role (mission, chat, lightweight, fallback, etc.) per provider via `config.yaml`, including resolution order and CLI-provider-per-role routing.
 - [`users/onboarding.md`](docs/users/onboarding.md) — Documents the interactive 12-step onboarding wizard that sets up a new Koan instance, its resumability, personality presets, and non-interactive/CI mode.
 - [`users/quickstart.md`](docs/users/quickstart.md) — A 5-minute guide to the commands for driving Koan from GitHub PRs/issues, Jira, and messaging apps (Telegram/Slack), with minimal and context-augmented examples for each.

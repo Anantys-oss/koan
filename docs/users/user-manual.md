@@ -930,7 +930,9 @@ autonomous Kōan agent **only**. It uses the same format as `CLAUDE.md`, but
 interactive Claude Code sessions never load it — so you can steer koan's
 autonomous work (e.g. "prefer docs over code here", "always run `make lint`")
 without touching the shared `CLAUDE.md` your whole team sees. Precedence:
-mission instruction > `KOAN.md` > `CLAUDE.md`/defaults. See
+mission instruction > `KOAN.md` > `CLAUDE.md`/defaults. A project can also ship
+a `.koan/` directory to steer koan per-repo — a second general `.koan/KOAN.md`
+and per-skill `.koan/skills/<skill>/*.md` hooks. See
 [KOAN.md — koan-only project instructions](koan-md.md) for details.
 
 **`/gha_audit`** — Scan GitHub Actions workflows for security vulnerabilities.
