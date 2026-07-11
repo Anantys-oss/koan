@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -227,6 +228,7 @@ class PrepResult:
     previous_branch: str = ""
     success: bool = True
     error: Optional[str] = None
+    healed: Optional[str] = None  # description of any self-heal performed
 
 
 def _is_same_dir(path_a: str, path_b: str) -> bool:
@@ -274,6 +276,170 @@ def get_upstream_remote(
 
     # 3. Fall back to 'origin'
     return "origin"
+
+
+# Two-char porcelain-v1 status codes that indicate an unresolved merge
+# conflict (unmerged paths). See `git status --porcelain` docs.
+_UNMERGED_STATUS_CODES = frozenset(
+    {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+)
+
+# In-progress operation markers → the abort command that clears them.
+# Resolved via `git rev-parse --git-path` so worktrees/submodules (where
+# .git is a file) work correctly.
+_INPROGRESS_MARKERS = (
+    ("MERGE_HEAD", ("merge", "--abort")),
+    ("rebase-merge", ("rebase", "--abort")),
+    ("rebase-apply", ("rebase", "--abort")),
+    ("CHERRY_PICK_HEAD", ("cherry-pick", "--abort")),
+    ("REVERT_HEAD", ("revert", "--abort")),
+)
+
+# A git index.lock older than this is treated as orphaned (left by a killed
+# git process) and removed. Younger locks are left alone to avoid racing a
+# legitimately-active git invocation.
+_STALE_LOCK_AGE_SECONDS = 30
+
+# Max lines of `git status --porcelain` to include in a stash-failure error.
+_MAX_STATUS_LINES = 8
+
+
+def _git_path(name: str, project_path: str) -> str:
+    """Resolve a path inside the git dir (worktree/submodule safe).
+
+    Returns an absolute path, or "" when resolution fails.
+    """
+    rc, out, _ = run_git("rev-parse", "--git-path", name, cwd=project_path)
+    if rc != 0 or not out:
+        return ""
+    path = out.strip()
+    if not os.path.isabs(path):
+        path = os.path.join(project_path, path)
+    return path
+
+
+def _has_unmerged_paths(project_path: str) -> bool:
+    """Return True when the working tree has unresolved merge conflicts."""
+    rc, porcelain, _ = run_git("status", "--porcelain", cwd=project_path)
+    if rc != 0 or not porcelain:
+        return False
+    return any(
+        line[:2] in _UNMERGED_STATUS_CODES for line in porcelain.splitlines()
+    )
+
+
+def _detect_interrupted_operation(project_path: str):
+    """Return (marker, abort_cmd) for an interrupted op, or None.
+
+    Falls back to treating bare unmerged paths (no marker file) as a merge
+    to abort — this covers conflict states left by a killed `stash pop` or
+    `checkout` that carry no MERGE_HEAD.
+    """
+    for marker, abort_cmd in _INPROGRESS_MARKERS:
+        marker_path = _git_path(marker, project_path)
+        if marker_path and os.path.exists(marker_path):
+            return marker, abort_cmd
+    if _has_unmerged_paths(project_path):
+        return "unmerged-paths", ("merge", "--abort")
+    return None
+
+
+def _remove_stale_index_lock(project_path: str) -> bool:
+    """Remove a lingering .git/index.lock left by a killed git process.
+
+    Only removes a lock older than _STALE_LOCK_AGE_SECONDS. Returns True
+    when a lock was removed.
+    """
+    lock_path = _git_path("index.lock", project_path)
+    if not lock_path or not os.path.exists(lock_path):
+        return False
+    try:
+        age = time.time() - os.path.getmtime(lock_path)
+    except OSError:
+        return False
+    if age < _STALE_LOCK_AGE_SECONDS:
+        return False
+    try:
+        os.remove(lock_path)
+        logger.warning(
+            "Removed stale git index.lock in %s (age %.0fs)",
+            project_path, age,
+        )
+        return True
+    except OSError as e:
+        logger.warning(
+            "Failed to remove stale index.lock in %s: %s", project_path, e
+        )
+        return False
+
+
+def _heal_interrupted_operation(project_path: str) -> Optional[str]:
+    """Abort an interrupted merge/rebase/cherry-pick/revert if present.
+
+    Returns a human-readable description of what was healed, or None when
+    the tree was clean. Strictly safe: the caller's next steps discard
+    local divergence to match the remote base branch, so nothing worth
+    preserving exists in a conflicted intermediate state.
+    """
+    actions = []
+    # A stale index.lock blocks every subsequent git write, including the
+    # aborts below — clear it first.
+    if _remove_stale_index_lock(project_path):
+        actions.append("removed stale index.lock")
+
+    detected = _detect_interrupted_operation(project_path)
+    if detected:
+        marker, abort_cmd = detected
+        logger.warning(
+            "Interrupted git operation in %s (%s); auto-aborting",
+            project_path, marker,
+        )
+        run_git(*abort_cmd, cwd=project_path)
+        actions.append(f"aborted {marker} via `git {' '.join(abort_cmd)}`")
+        # If the abort could not clear the conflict (e.g. no MERGE_HEAD to
+        # abort against), hard-reset. The downstream ff/reset to the remote
+        # base finishes the job regardless.
+        if _has_unmerged_paths(project_path):
+            run_git("reset", "--hard", "HEAD", cwd=project_path)
+            actions.append("reset --hard to clear residual conflicts")
+
+    return "; ".join(actions) if actions else None
+
+
+def _diagnose_stash_failure(project_path: str, stderr: str) -> str:
+    """Build an informative error for a failed pre-mission stash.
+
+    Names the concrete blocker (unmerged paths / disk full / quota / stale
+    index.lock) and appends a truncated `git status --porcelain` snippet.
+    Always begins with the historical "stash failed on dirty tree:" prefix
+    so existing callers/tests keep matching.
+    """
+    stderr = stderr or ""
+    low = stderr.lower()
+    causes = []
+    if "no space" in low:
+        causes.append("disk full (No space left on device)")
+    if "quota exceeded" in low or "disk quota" in low:
+        causes.append("disk quota exceeded")
+    if _has_unmerged_paths(project_path):
+        causes.append("unmerged paths (conflict state)")
+    lock_path = _git_path("index.lock", project_path)
+    if "index.lock" in low or (lock_path and os.path.exists(lock_path)):
+        causes.append("index.lock present")
+
+    parts = [f"stash failed on dirty tree: {stderr}"]
+    if causes:
+        parts.append("cause(s): " + "; ".join(causes))
+
+    rc, porcelain, _ = run_git("status", "--porcelain", cwd=project_path)
+    if rc == 0 and porcelain:
+        lines = porcelain.splitlines()
+        snippet = "\n".join(lines[:_MAX_STATUS_LINES])
+        extra = len(lines) - _MAX_STATUS_LINES
+        if extra > 0:
+            snippet += f"\n… (+{extra} more)"
+        parts.append("git status --porcelain:\n" + snippet)
+    return "\n".join(parts)
 
 
 def prepare_project_branch(
@@ -367,6 +533,17 @@ def prepare_project_branch(
             result.error += _auth_diagnostics()
         return result
 
+    # Self-heal an interrupted merge/rebase/cherry-pick/revert left by a
+    # previously-killed mission (restart, OOM, stagnation-kill, deploy).
+    # git refuses to stash while conflicts are unresolved, so without this
+    # every subsequent mission loops forever on "stash failed on dirty
+    # tree". Safe: the ff-only/reset-hard below discards local divergence
+    # to match <remote>/<base> anyway.
+    healed = _heal_interrupted_operation(project_path)
+    if healed:
+        result.healed = healed
+        logger.info("git prep self-heal for %s: %s", project_name, healed)
+
     # Stash dirty state if needed
     rc, porcelain, _ = run_git("status", "--porcelain", cwd=project_path)
     if rc == 0 and porcelain:
@@ -377,9 +554,10 @@ def prepare_project_branch(
             result.stashed = True
         else:
             # Abort: continuing with a dirty tree risks data loss
-            # if a downstream reset --hard is needed
+            # if a downstream reset --hard is needed. Enrich the error with
+            # the concrete blocker so operators don't have to guess.
             result.success = False
-            result.error = f"stash failed on dirty tree: {stderr}"
+            result.error = _diagnose_stash_failure(project_path, stderr)
             return result
 
     # Checkout base branch

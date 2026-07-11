@@ -70,9 +70,19 @@ finalized Done without it. See `docs/architecture/daemon.md` →
 
 ### Pre-mission branch preparation
 
-Before a mission runs, `git_prep.prepare_project_branch()` fetches refs, stashes
-dirty state, checks out the project's base branch, and fast-forwards it to the
+Before a mission runs, `git_prep.prepare_project_branch()` fetches refs,
+**self-heals an interrupted merge/rebase left by a previously-killed mission**,
+stashes dirty state, checks out the project's base branch, and fast-forwards it to the
 remote — so each mission starts from a clean, up-to-date base.
+
+**Self-heal:** if a prior mission was killed mid-`merge`/`rebase`/`cherry-pick`
+(restart, OOM, stagnation-kill, deploy), the checkout is left with unmerged
+paths that git refuses to stash. Prep detects the in-progress operation, aborts
+it, and clears any stale `index.lock` before stashing. This is safe because the
+next step resets the branch to the remote base regardless. A conflict-free dirty
+tree is still stashed, not discarded. When a stash nonetheless fails, the error
+names the concrete cause (unmerged / disk full / quota / lock) with a `git
+status` snippet.
 
 **Launching-repo exception:** when the project being prepared resolves to the
 same directory as `KOAN_ROOT` (a self-hosting setup where Kōan works on the repo
