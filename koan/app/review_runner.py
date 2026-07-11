@@ -33,6 +33,7 @@ from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
+from app.github_alerts import build_alert
 from app.rebase_pr import fetch_pr_context
 from app.utils import KOAN_ROOT, truncate_diff_with_skips
 from app.review_markers import (
@@ -1871,12 +1872,12 @@ def _build_stale_head_alert(reviewed_sha: str, live_sha: str) -> str:
     """
     if not reviewed_sha or not live_sha or reviewed_sha == live_sha:
         return ""
-    return (
-        "\n\n> [!IMPORTANT]\n"
-        "> **The branch moved during review.** This review was performed "
+    return "\n\n" + build_alert(
+        "IMPORTANT",
+        "**The branch moved during review.** This review was performed "
         f"against `HEAD={reviewed_sha[:7]}`, but the PR branch now points at "
         f"`{live_sha[:7]}`. Commits pushed after the review started are not "
-        "reflected below — re-run `/review` to cover them."
+        "reflected below — re-run `/review` to cover them.",
     )
 
 

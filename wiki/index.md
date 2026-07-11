@@ -30,6 +30,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 ### Messaging
 - [`messaging/discord.md`](docs/messaging/discord.md) — Setup guide for using Discord as Kōan's messaging bridge via REST polling instead of the Gateway/WebSocket API.
+- [`messaging/github-alerts.md`](docs/messaging/github-alerts.md) — How to emit GitHub alert callouts (NOTE/TIP/IMPORTANT/WARNING/CAUTION) via the shared `build_alert()` helper, with the type→situation mapping and the ≤1–2-per-comment parsimony rule.
 - [`messaging/github-commands.md`](docs/messaging/github-commands.md) — Full reference for triggering Kōan via `@mention` commands in GitHub PR/issue comments, including config, dedup, security, and fallback scanning.
 - [`messaging/github-webhooks.md`](docs/messaging/github-webhooks.md) — Describes the opt-in push-based GitHub webhook receiver that collapses notification-polling latency while polling remains the reliability fallback.
 - [`messaging/jira-integration.md`](docs/messaging/jira-integration.md) — Full reference for controlling Kōan via `@mention` commands in Jira issue comments, including project mapping, ADF parsing, and coexistence with GitHub.
@@ -95,6 +96,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 - [`components/agent-loop.md`](specs-components/agent-loop.md) — Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state.
 - [`components/bridge.md`](specs-components/bridge.md) — Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely.
+- [`components/comment-formatting.md`](specs-components/comment-formatting.md) — Design contract for `build_alert()`, the single constructor for GitHub alert callouts, plus the type→situation mapping and the parsimony rule every skill must follow.
 - [`components/core.md`](specs-components/core.md) — Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on.
 - [`components/git-github.md`](specs-components/git-github.md) — Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows.
 - [`components/issue-tracking.md`](specs-components/issue-tracking.md) — Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer.
