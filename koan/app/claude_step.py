@@ -1843,6 +1843,12 @@ def _capture_ci_fix_experience(
             approach=winning_approach,
             artifact=full_repo,
             duration_minutes=0,
+            # A landed CI fix (or an exhausted fix loop) is inherently
+            # significant but carries no duration signal, so bypass the
+            # >=5-minute significance floor -- otherwise successful CI-fix
+            # experiences (the only seam populating both root_cause AND a
+            # working approach) are silently dropped.
+            force=True,
         )
     except Exception as e:
         print(f"[claude_step] Experience capture for CI fix failed: {e}", file=sys.stderr)

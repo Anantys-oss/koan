@@ -51,6 +51,83 @@ def _classify_mission_kind(mission_title: str) -> Optional[str]:
     return None
 
 
+# Markers that commonly precede a root-cause statement in an agent journal.
+_ROOT_CAUSE_MARKERS = (
+    "root cause",
+    "underlying cause",
+    "caused by",
+    "the cause",
+    "root of the problem",
+)
+
+# Markers that commonly precede a description of the fix/approach taken.
+_APPROACH_MARKERS = (
+    "approach",
+    "solution",
+    "the fix",
+    "fixed by",
+    "resolved by",
+    "changes made",
+    "how i fixed",
+)
+
+
+def _extract_marked_text(text: str, markers) -> str:
+    """Return the text following the first line containing any marker.
+
+    Best-effort: scans line by line; when a line contains a marker, returns
+    the remainder of that line after the marker plus any immediately
+    following non-blank lines, joined and truncated to 500 chars. Returns
+    '' when no marker is found.
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        low = line.lower()
+        for m in markers:
+            idx = low.find(m)
+            if idx == -1:
+                continue
+            rest = line[idx + len(m):].lstrip(" \t:.-–—>")
+            collected = [rest] if rest else []
+            for nxt in lines[i + 1:]:
+                if not nxt.strip():
+                    break
+                collected.append(nxt.strip())
+            joined = " ".join(p for p in collected if p).strip()
+            if joined:
+                return joined[:500]
+    return ""
+
+
+def _summarize_journal(text: str) -> str:
+    """Truncated summary fallback: first substantive paragraph of the journal."""
+    for para in re.split(r"\n\s*\n", text.strip()):
+        cleaned = " ".join(para.split())
+        # Skip pure headings / short markers that carry no real content.
+        if len(cleaned) >= 40:
+            return cleaned[:500]
+    flat = " ".join(text.split())
+    return flat[:500]
+
+
+def _extract_root_cause_approach(journal_content: str):
+    """Best-effort extraction of (root_cause, approach) from journal content.
+
+    Used on seams (e.g. the primary mission path) where the caller has no
+    typed root_cause/approach to hand. A truncated summary is better than an
+    empty structured field, so ``approach`` falls back to a journal summary
+    when no explicit marker is present. ``root_cause`` stays '' when no
+    marker is found -- guessing a cause from arbitrary prose is unreliable.
+    """
+    if not journal_content or not journal_content.strip():
+        return "", ""
+    root_cause = _extract_marked_text(journal_content, _ROOT_CAUSE_MARKERS)
+    approach = _extract_marked_text(journal_content, _APPROACH_MARKERS)
+    if not approach:
+        approach = _summarize_journal(journal_content)
+    return root_cause, approach
+
+
 def _is_significant_for_capture(
     mission_title: str,
     duration_minutes: int,
@@ -96,6 +173,7 @@ def capture_experience(
     artifact: str = "",
     duration_minutes: int = 0,
     journal_content: str = "",
+    force: bool = False,
 ) -> None:
     """Capture a structured experience entry (fire-and-forget, never raises).
 
@@ -111,18 +189,33 @@ def capture_experience(
         approach: What approach was taken (best-effort, may be empty).
         artifact: PR/commit reference (best-effort, may be empty).
         duration_minutes: Mission duration for significance gating.
-        journal_content: Journal content for significance gating.
+        journal_content: Journal content for significance gating; also mined
+            for best-effort root_cause/approach when the caller supplies none.
+        force: Bypass the significance gate. Used for seams that are
+            inherently significant but carry no duration signal -- notably a
+            successful CI fix, which lands with duration_minutes=0 and would
+            otherwise be dropped by the >=5-minute floor.
     """
     try:
         mission_kind = _classify_mission_kind(mission_title)
         if mission_kind is None:
             return
 
-        if not _is_significant_for_capture(
+        if not force and not _is_significant_for_capture(
             mission_title, duration_minutes, journal_content,
             mission_kind, exit_code,
         ):
             return
+
+        # On seams that hand us no typed root_cause/approach (the primary
+        # mission path), mine them best-effort from the journal so the
+        # headline "root cause was Y and approach Z" data is not left empty.
+        if journal_content and (not root_cause or not approach):
+            extracted_rc, extracted_ap = _extract_root_cause_approach(journal_content)
+            if not root_cause:
+                root_cause = extracted_rc
+            if not approach:
+                approach = extracted_ap
 
         # Build content string (capped at 2000 chars by append_memory_entry)
         parts = [f"[{mission_kind}] {mission_title}"]

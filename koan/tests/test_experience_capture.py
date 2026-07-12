@@ -266,6 +266,125 @@ class TestCaptureExperienceGating:
         assert "verified" not in content_arg.lower()
 
 
+class TestForceBypassesSignificanceGate:
+    """A successful CI fix arrives with duration_minutes=0 and must still be
+    captured -- it is the only seam that populates both root_cause and a
+    *working* approach. force=True bypasses the >=5-minute floor."""
+
+    def test_force_captures_zero_duration_success(self, tmp_path):
+        from app.experience_capture import capture_experience
+
+        with patch("app.experience_capture.append_memory_entry") as mock_append:
+            capture_experience(
+                instance_dir=str(tmp_path),
+                project_name="my-toolkit",
+                mission_title="/fix CI fix for koan/test",
+                exit_code=0,
+                outcome="success",
+                root_cause="assertion error in test_foo",
+                approach="widened the timeout window",
+                duration_minutes=0,
+                force=True,
+            )
+        mock_append.assert_called_once()
+        _, kwargs = mock_append.call_args
+        assert kwargs["outcome"] == "success"
+        assert kwargs["approach"] == "widened the timeout window"
+
+    def test_without_force_zero_duration_success_dropped(self, tmp_path):
+        """Regression guard: without force, the significance floor still drops
+        a zero-duration success (proving force is what rescues the CI-fix seam)."""
+        from app.experience_capture import capture_experience
+
+        with patch("app.experience_capture.append_memory_entry") as mock_append:
+            capture_experience(
+                instance_dir=str(tmp_path),
+                project_name="my-toolkit",
+                mission_title="/fix CI fix for koan/test",
+                exit_code=0,
+                outcome="success",
+                approach="widened the timeout window",
+                duration_minutes=0,
+            )
+        mock_append.assert_not_called()
+
+
+class TestBestEffortExtraction:
+    """The primary mission path hands no typed root_cause/approach, so they
+    are mined best-effort from the journal instead of being left empty."""
+
+    def test_extracts_root_cause_and_approach_from_journal(self, tmp_path):
+        from app.experience_capture import capture_experience
+
+        journal = (
+            "## Investigation\n"
+            "The root cause was a race condition in the session map that let two\n"
+            "requests share one connection.\n\n"
+            "## Fix\n"
+            "Solution: added a mutex around the session lookup and reused the\n"
+            "existing connection pool.\n"
+        )
+        with patch("app.experience_capture.append_memory_entry") as mock_append:
+            capture_experience(
+                instance_dir=str(tmp_path),
+                project_name="my-toolkit",
+                mission_title="/fix Fix race condition in session init",
+                exit_code=0,
+                outcome="success",
+                duration_minutes=30,
+                journal_content=journal,
+            )
+        mock_append.assert_called_once()
+        _, kwargs = mock_append.call_args
+        assert "race condition" in kwargs["root_cause"].lower()
+        assert "mutex" in kwargs["approach"].lower()
+
+    def test_approach_falls_back_to_journal_summary(self, tmp_path):
+        """With no explicit marker, approach still gets a truncated summary
+        rather than being left empty."""
+        from app.experience_capture import capture_experience
+
+        journal = (
+            "Rewrote the parser to stream tokens lazily and added a bounded\n"
+            "lookahead buffer so large inputs no longer exhaust memory.\n"
+        )
+        with patch("app.experience_capture.append_memory_entry") as mock_append:
+            capture_experience(
+                instance_dir=str(tmp_path),
+                project_name="my-toolkit",
+                mission_title="/implement Stream the parser",
+                exit_code=0,
+                outcome="success",
+                duration_minutes=30,
+                journal_content=journal,
+            )
+        mock_append.assert_called_once()
+        _, kwargs = mock_append.call_args
+        assert kwargs["approach"]
+        assert "stream" in kwargs["approach"].lower()
+
+    def test_explicit_fields_not_overwritten(self, tmp_path):
+        """Caller-supplied root_cause/approach win over journal extraction."""
+        from app.experience_capture import capture_experience
+
+        with patch("app.experience_capture.append_memory_entry") as mock_append:
+            capture_experience(
+                instance_dir=str(tmp_path),
+                project_name="my-toolkit",
+                mission_title="/fix Fix leak",
+                exit_code=0,
+                outcome="success",
+                root_cause="explicit cause",
+                approach="explicit approach",
+                duration_minutes=30,
+                journal_content="The root cause was something else entirely.",
+            )
+        mock_append.assert_called_once()
+        _, kwargs = mock_append.call_args
+        assert kwargs["root_cause"] == "explicit cause"
+        assert kwargs["approach"] == "explicit approach"
+
+
 # ---------------------------------------------------------------------------
 # Phase 3: run_post_mission capture (success + failure)
 # ---------------------------------------------------------------------------
