@@ -2069,9 +2069,11 @@ def _apply_review_feedback(
         from app.commit_conventions import strip_commit_subject_line
         change_summary = strip_commit_subject_line(change_summary)
 
-    # Truncate overly long summaries (keep last portion which is the summary)
-    if len(change_summary) > 1000:
-        change_summary = change_summary[-1000:]
+    # Truncate overly long summaries. Keep the HEAD: the structured summary leads
+    # with the APPLIED: section, so tail-trimming would drop the changes actually
+    # made and leave only skipped items.
+    if len(change_summary) > 1500:
+        change_summary = change_summary[:1500].rstrip()
 
     return change_summary
 
@@ -2237,6 +2239,44 @@ def _push_with_fallback(
     }
 
 
+# Section headers Claude emits in its rebase summary. Matched only when they are
+# the WHOLE line (the `$` anchor), so a content bullet like "Applied the fix to X"
+# is never mistaken for a header. Tolerant of surrounding bold/colon and the older
+# "**Changes**" / "**Skipped**" phrasings.
+_APPLIED_HDR_RE = re.compile(r"^\**\s*(?:applied|changes?)\s*:?\s*\**$", re.I)
+_SKIPPED_HDR_RE = re.compile(
+    r"^\**\s*(?:skipped|not\s+changed|no\s+change[sd]?)\s*:?\s*\**$", re.I
+)
+
+
+def _split_change_summary(change_summary: str) -> Tuple[List[str], List[str]]:
+    """Split Claude's rebase summary into ``(applied, skipped)`` bullet lists.
+
+    Recognizes the ``APPLIED:`` / ``SKIPPED:`` section headers the rebase prompt
+    asks for (plus looser ``Changes`` / ``Skipped`` / ``Not changed`` variants).
+    Lines before any recognized header default to *applied*, so a summary that
+    omits the structure still renders as changes — backward compatible with
+    older prompt outputs and non-conforming responses.
+    """
+    applied: List[str] = []
+    skipped: List[str] = []
+    bucket = applied
+    for raw in change_summary.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if _APPLIED_HDR_RE.match(line):
+            bucket = applied
+            continue
+        if _SKIPPED_HDR_RE.match(line):
+            bucket = skipped
+            continue
+        line = re.sub(r"^[-*]\s+", "", line).strip()  # drop a leading bullet marker
+        if line:
+            bucket.append(line)
+    return applied, skipped
+
+
 def _build_rebase_comment(
     pr_number: str,
     branch: str,
@@ -2271,13 +2311,33 @@ def _build_rebase_comment(
     )
     has_conflicts = any("conflict" in a.lower() for a in actions_log)
 
+    # Split the reviewer-feedback summary into what was actually changed vs. what
+    # was deliberately left alone (already fixed / advisory / disagreed). Rendered
+    # as two distinct sections so an unchanged point is never presented as a change.
+    applied_summary, skipped_summary = _split_change_summary(change_summary)
+    change_items = _extract_change_items(actions_log, "\n".join(applied_summary))
+
     # ── 1. Summary ──────────────────────────────────────────────────
     if has_feedback:
         rebase_type = "Rebase with requested adjustments"
-        summary_line = (
-            f"Branch `{branch}` was rebased onto `{base}` and review "
-            f"feedback was applied."
-        )
+        if change_items:
+            summary_line = (
+                f"Branch `{branch}` was rebased onto `{base}` and review "
+                f"feedback was applied."
+            )
+        elif skipped_summary:
+            # Feedback was reviewed but nothing needed changing — say so plainly
+            # instead of implying a fix was made.
+            summary_line = (
+                f"Branch `{branch}` was rebased onto `{base}`. No code changes "
+                f"were needed — each reviewer point was already addressed or "
+                f"advisory (see “Not changed” below)."
+            )
+        else:
+            summary_line = (
+                f"Branch `{branch}` was rebased onto `{base}` and review "
+                f"feedback was applied."
+            )
     elif feedback_failed:
         rebase_type = "Rebase completed; review feedback not applied"
         summary_line = (
@@ -2314,12 +2374,17 @@ def _build_rebase_comment(
             + "\n"
         )
 
-    # ── 2. Changes ──────────────────────────────────────────────────
-    # Only include when there are meaningful changes beyond rebasing
-    change_items = _extract_change_items(actions_log, change_summary)
+    # ── 2. Changes / Not changed ────────────────────────────────────
+    # Only include when there are meaningful changes beyond rebasing.
     if change_items:
         parts.append("### Changes applied\n")
         parts.extend(f"- {item}" for item in change_items)
+        parts.append("")
+    # Points the reviewer raised that were intentionally left as-is, in their own
+    # clearly-labeled section — so "already fixed" reads as skipped, not applied.
+    if skipped_summary:
+        parts.append("### Not changed (and why)\n")
+        parts.extend(f"- {item}" for item in skipped_summary)
         parts.append("")
 
     # ── 3. Stats ────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-10
+updated: 2026-07-11
 ---
 
 # Kōan User Manual
@@ -709,11 +709,12 @@ of labeling the result as a simple rebase.
 
 After completion, Kōan posts a structured comment on the PR with these sections:
 
-1. **Summary** — Classifies the rebase (simple / with adjustments / with conflict resolution)
-2. **Changes applied** — List of modifications beyond the rebase itself (review feedback, conflict resolution, CI fixes)
-3. **Stats** — Diff summary (files changed, insertions, deletions)
-4. **Actions performed** — Pipeline steps in a collapsible `<details>` block
-5. **CI status** — Test/CI outcome
+1. **Summary** — Classifies the rebase (simple / with adjustments / with conflict resolution). When feedback was reviewed but nothing needed changing, it says so explicitly ("no code changes were needed") rather than implying a fix.
+2. **Changes applied** — Only the modifications actually made beyond the rebase (review feedback that changed code, conflict resolution, CI fixes)
+3. **Not changed (and why)** — Reviewer points intentionally left as-is, each with the reason (already fixed in an earlier pass, advisory / below the severity filter, or disagreed). Kept separate from *Changes applied* so an unchanged point is never presented as if it were just fixed.
+4. **Stats** — Diff summary (files changed, insertions, deletions)
+5. **Actions performed** — Pipeline steps in a collapsible `<details>` block
+6. **CI status** — Test/CI outcome
 
 <details>
 <summary>Use cases</summary>
