@@ -25,6 +25,7 @@ import contextlib
 import os
 import json
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -2904,7 +2905,9 @@ def _requeue_mission_in_file(instance: str, mission_title: str):
         log("error", f"Could not requeue mission in missions.md: {e}")
 
 
-def _finalize_mission(instance: str, mission_title: str, project_name: str, exit_code: int):
+def _finalize_mission(instance: str, mission_title: str, project_name: str,
+                      exit_code: int, *, failure_reason: Optional[str] = None,
+                      failure_detail: Optional[str] = None):
     """Complete or fail a mission and record execution history.
 
     When the last mission was killed by the stagnation monitor, the
@@ -2995,6 +2998,33 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
     _update_mission_in_file(
         instance, mission_title, failed=failed, cause_tag=cause_tag,
     )
+    # Record the authoritative terminal outcome for the REST API. Best-effort:
+    # a log hiccup must not block finalization. record_outcome is imported
+    # locally (matches the record_execution convention below) — tests patch it
+    # at its source module, app.mission_outcome.record_outcome.
+    try:
+        from app.mission_outcome import classify_failure, record_outcome
+        status = "failed" if failed else "done"
+        reason = failure_reason if failed else None
+        if failed and reason is None:
+            reason = classify_failure(exit_code, stagnated=stagnated,
+                                      cause_tag=cause_tag)
+        recorded = record_outcome(instance, mission_title, status,
+                                  reason_category=reason,
+                                  detail=failure_detail or (cause_tag or None))
+        # A dropped authoritative write silently reverts the REST API to the
+        # known-buggy absence-inference heuristic (#2285). Surface it distinctly
+        # from a hard exception so a persistently failing outcome log is visible.
+        if not recorded:
+            log("error",
+                f"Authoritative outcome write dropped for '{mission_title}' "
+                f"(status={status}); GET /v1/missions falls back to inference")
+    except sqlite3.DatabaseError as e:
+        # Only the recoverable DB failure class degrades quietly. A programming
+        # error (ImportError from a bad path, TypeError from signature drift)
+        # must propagate so a broken outcome-recording path surfaces loudly
+        # instead of permanently reverting the REST API to inference (#2285).
+        log("error", f"Outcome recording DB error: {e}")
     try:
         from app.mission_history import record_execution
         record_execution(instance, mission_title, project_name, exit_code)

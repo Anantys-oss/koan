@@ -185,6 +185,7 @@ def get_mission_route(mission_id: str):
     rec = reconcile(_instance_dir(), _missions_file(), mission_id)
     rec.setdefault("result", None)
     rec.setdefault("result_ref", None)
+    rec.setdefault("outcome", None)
 
     from datetime import date, datetime
     from app.cost_tracker import aggregate_mission_usage

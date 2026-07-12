@@ -48,7 +48,7 @@ api/  (Flask blueprints via create_app())
 | `dashboard/state.py` | All patchable globals (paths, `CHAT_TIMEOUT`, `DASHBOARD_PWD`, caches, regexes). Route code reads `state.X` at call time → tests patch one target. |
 | `dashboard_service/*` | Pure business logic — unit-tested without a Flask client. **New logic goes here, not in routes.** |
 | `api/auth.require_token` | Bearer parse + `hmac.compare_digest`. Token: env `KOAN_API_TOKEN` → `api.token` → `""`. |
-| `api/mission_index.py` | Sidecar `instance/.api-missions.json` (atomic). `record/get/list/reconcile/cancel`; `reconcile()` maps stored text → current `missions.md` section. Typed `result`/`result_ref` store: `attach_result()` (size-cap spill, summary-preserving), `load_full_result()` (inline-or-spill). `find_active_mission_id()` resolves a mission title back to its id (in_progress→pending→recent) for usage attribution. |
+| `api/mission_index.py` | Sidecar `instance/.api-missions.json` (atomic). `record/get/list/reconcile/cancel`; `reconcile()` maps stored text → current `missions.md` section, and prefers the durable `OutcomeStore` for authoritative terminal status + the `outcome` field. Typed `result`/`result_ref` store: `attach_result()` (size-cap spill, summary-preserving), `load_full_result()` (inline-or-spill). `find_active_mission_id()` resolves a mission title back to its id (in_progress→pending→recent) for usage attribution. |
 | `api/mission_results.py` | Command→resolver registry (`register_resolver`, `resolve_mission_result`, `always_inline_keys`); built-in `/review`+`/ultrareview` resolver reads the PR-keyed findings sidecar. |
 | `routes_missions.get_mission_route()` | `GET /v1/missions/{id}` returns the reconciled record (with typed `result`/`result_ref`) **plus** a `usage` object (`aggregate_mission_usage()` over `created`→today): token/cache/cost totals, `call_count`, `models`/`providers`, and an `unattributed` block for id-less title matches. Response is a copy — the sidecar is never mutated with `usage`. |
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
@@ -94,6 +94,37 @@ it). Each mission attaches whatever the sidecar held at its own terminal
 transition; serialized re-reviews of the same PR therefore attach the correct
 run's result. Storage-agnostic: `attach_result`/`load_full_result`/resolver
 port unchanged onto the #2140 missions table.
+
+## Authoritative terminal status + `outcome` (issue #2285)
+
+`reconcile()` historically derived terminal status by *inference*: an
+`in_progress` record that had vanished from every `missions.md` section was
+guessed to be `done`. That mis-reports a mission whose row was pruned, renamed,
+or lost to a mid-write crash. The contract is now:
+
+- **The durable `OutcomeStore` (`mission_outcomes` table, keyed by
+  `canonical_mission_key`) is the authoritative source of terminal status —
+  but only once the mission has left the live sections.** When the section scan
+  places the mission in `pending`/`in_progress`, that live status wins and
+  `outcome` stays `null`; the outcome log is consulted only when the mission is
+  gone/terminal. This matters because a mission requeued after a prior terminal
+  run shares its `canonical_mission_key`, so a stale outcome row must never
+  override a fresh live state. When the mission is not live and
+  `OutcomeStore.latest(text)` yields a `done`/`failed` record, `reconcile()` uses
+  that status and **overrides** the absence inference. The agent loop writes the
+  row at the authoritative Done/Failed transition (`run._finalize_mission` →
+  `app.mission_outcome.record_outcome`), so terminal status comes from the state
+  machine, not file position.
+- The record gains an `outcome` field: `{status, reason_category, detail}` or
+  `null` until a terminal outcome exists. `reason_category` ∈
+  `quota|timeout|tool_error|agent_error|cancelled|stagnation` (`null` on `done`).
+- **Backward-compatible:** `status` and `result_line` are unchanged for existing
+  consumers; `outcome` is purely additive. When no authoritative outcome exists
+  yet, the section-scan path is retained as the fallback and `outcome` is `null`.
+
+| Field     | Type            | Contract |
+|-----------|-----------------|----------|
+| `outcome` | `object \| null`| Authoritative terminal record `{status, reason_category, detail}` from the durable log; `null` pre-terminal. |
 
 ## Invariants
 

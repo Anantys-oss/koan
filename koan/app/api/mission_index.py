@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -48,7 +49,31 @@ def _results_dir(instance_dir: Path) -> Path:
 def _with_result_defaults(rec: dict) -> dict:
     rec.setdefault("result", None)
     rec.setdefault("result_ref", None)
+    rec.setdefault("outcome", None)
     return rec
+
+
+def _authoritative_outcome(instance_dir: Path, text: str) -> Optional[dict]:
+    """Latest terminal outcome from the durable OutcomeStore, or None.
+
+    Narrowly catches only the recoverable DB error: a locked/corrupt outcome
+    log degrades to the section-scan fallback, but a programming error (bad
+    import, wrong signature) must surface rather than silently reverting the
+    #2285 fix to the absence-inference heuristic.
+    """
+    try:
+        from app.mission_store.aux_stores import OutcomeStore
+        latest = OutcomeStore(str(instance_dir)).latest(text)
+    except sqlite3.DatabaseError as e:
+        log.error("outcome lookup failed (DB error): %s", e)
+        return None
+    if not latest:
+        return None
+    return {
+        "status": latest["status"],
+        "reason_category": latest.get("reason_category"),
+        "detail": latest.get("detail"),
+    }
 
 
 def _load_index(instance_dir: Path) -> List[dict]:
@@ -255,9 +280,32 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
     else:
         # Not found in any section
         if prev_status == "in_progress":
-            new_status = "done"  # archived after completion
+            new_status = "done"  # archived after completion (inferred; see below)
         else:
             new_status = "removed"
+
+    # The durable OutcomeStore is the authoritative source of terminal status.
+    # It overrides the missions.md section scan / absence inference above, which
+    # mis-reports a pruned/renamed/crashed mission as "done" (issue #2285).
+    #
+    # But only when the mission is NOT live AND NOT genuinely removed: the outcome
+    # log is keyed by canonical_mission_key, so a mission requeued or re-created
+    # after a prior terminal run shares that key. A stale outcome row must never
+    # override a fresh pending/in_progress state, nor resurrect a "removed"
+    # mission (prev pending, now gone → a genuine deletion, never finalized) into
+    # a done/failed carried over from an unrelated prior run with the same text.
+    # The store only speaks for the absence-inferred "done" (prev in_progress,
+    # vanished) and positively-scanned done/failed cases that #2285 targets.
+    outcome = None
+    if new_status not in ("pending", "in_progress", "removed"):
+        outcome = _authoritative_outcome(instance_dir, stored_text)
+    if outcome and outcome["status"] in ("done", "failed"):
+        new_status = outcome["status"]
+        target["outcome"] = outcome
+        if outcome.get("detail") and not target.get("result_line"):
+            target["result_line"] = outcome["detail"][:200]
+    else:
+        target.setdefault("outcome", None)
 
     target["status"] = new_status
     records[target_idx] = target
