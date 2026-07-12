@@ -1701,13 +1701,11 @@ def _format_review_as_markdown(
     lines.append(header)
     lines.append("")
     summary_text = summary_data["summary"]
-    if not summary_data.get("lgtm", True):
-        # Blocked review: wrap the verdict in a native callout so it's
-        # un-missable in email digests and mobile (parsimony rule: one
-        # alert per comment for the verdict, not one per finding).
-        lines.extend(build_alert("IMPORTANT", summary_text).split("\n"))
-    else:
-        lines.append(summary_text)
+    # The summary is plain prose. The merge signal is carried by the
+    # severity-graded verdict alert (_build_verdict_body), not by wrapping the
+    # whole paragraph in a callout — a full-paragraph IMPORTANT block here
+    # over-emphasizes it (parsimony rule, comment-formatting.md).
+    lines.append(summary_text)
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -2457,7 +2455,15 @@ def _build_verdict_body(
     body_enabled: bool = True,
     include_blockers: bool = True,
 ) -> str:
-    """Build body text for a review verdict.
+    """Build body text for a review verdict, graded by severity.
+
+    The body is wrapped in a native GitHub alert whose color grades the
+    outcome at a glance (see specs/components/comment-formatting.md):
+
+    - ``> [!TIP]`` (green) — approved / merge-ready.
+    - ``> [!WARNING]`` (yellow) — blocked, but the only blockers are
+      ``warning``-level.
+    - ``> [!CAUTION]`` (red) — blocked with at least one ``critical`` finding.
 
     When *body_enabled* is False, returns ``""`` so the verdict is submitted
     with an empty body (the APPROVE / REQUEST_CHANGES state still shows in
@@ -2471,25 +2477,28 @@ def _build_verdict_body(
         return ""
 
     if approve:
-        return "No blocking issues found."
+        return build_alert("TIP", "No blocking issues found — ready to merge.")
 
-    base = "Blocking issues found."
+    comments = review_data.get("file_comments") or [] if isinstance(review_data, dict) else []
+    has_critical = any(c.get("severity") == "critical" for c in comments)
+    if has_critical:
+        kind, headline = "CAUTION", "Critical issues found."
+    else:
+        kind, headline = "WARNING", "Important issues found."
 
-    if not include_blockers or not isinstance(review_data, dict):
-        return base
+    if not include_blockers:
+        return build_alert(kind, headline)
 
-    comments = review_data.get("file_comments") or []
     blockers = [
         c["title"]
         for c in comments
         if c.get("severity") in ("critical", "warning") and c.get("title")
     ]
     if not blockers:
-        return base
+        return build_alert(kind, headline)
 
-    lines = [base, ""]
-    lines.extend(f"- {title}" for title in blockers)
-    return "\n".join(lines)
+    text = "\n".join([headline, "", *(f"- {title}" for title in blockers)])
+    return build_alert(kind, text)
 
 
 def _resolve_verdict_config(project_name: Optional[str] = None) -> dict:
