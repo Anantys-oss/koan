@@ -67,6 +67,13 @@ no separate `.koan/skills/refactor/`).
 Everything is opt-in by file existence and a no-op when absent. Prompt-only
 skills do not read `.koan/skills/`; steer those with general `KOAN.md`.
 
+## Discoverability
+
+Kōan advertises this feature once, unprompted: the first idle period after the
+feature ships, it sends a one-time 💡 hint (same format as skill tips) linking
+back to this page. The notice is tracked in `instance/.feature-notices.json` and
+never repeats.
+
 ## Example
 
 ```markdown
