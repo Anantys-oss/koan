@@ -293,38 +293,39 @@ def _handle_status(ctx) -> str:
     except Exception:
         pass
 
-    # Missions section
-    if missions_file.exists():
-        from app.mission_store.transition import read_content
-        missions_by_project = group_by_project(read_content(missions_file.parent))
+    # Missions section — store is authoritative; missions.md is a generated export
+    # that may be absent. read_content reads the store directly (empty when there is
+    # nothing), so gating on the export file would silently hide real missions.
+    from app.mission_store.transition import read_content
+    missions_by_project = group_by_project(read_content(missions_file.parent))
 
-        if missions_by_project:
-            has_missions = any(
-                m["pending"] or m["in_progress"]
-                for m in missions_by_project.values()
-            )
-            if has_missions:
-                parts.append("")
-                parts.append("◎ Missions")
-                for project in sorted(missions_by_project.keys()):
-                    missions = missions_by_project[project]
-                    pending = missions["pending"]
-                    in_progress = missions["in_progress"]
+    if missions_by_project:
+        has_missions = any(
+            m["pending"] or m["in_progress"]
+            for m in missions_by_project.values()
+        )
+        if has_missions:
+            parts.append("")
+            parts.append("◎ Missions")
+            for project in sorted(missions_by_project.keys()):
+                missions = missions_by_project[project]
+                pending = missions["pending"]
+                in_progress = missions["in_progress"]
 
-                    if pending or in_progress:
-                        parts.append(f"  {project}")
-                        if in_progress:
-                            parts.append(f"    ▶ In progress: {len(in_progress)}")
-                            parts.extend(
-                                f"      {_format_mission_display(m)}"
-                                for m in in_progress[:2]
-                            )
-                        if pending:
-                            parts.append(f"    ⏳ Pending: {len(pending)}")
-                            parts.extend(
-                                f"      {_format_mission_display(m)}"
-                                for m in pending[:3]
-                            )
+                if pending or in_progress:
+                    parts.append(f"  {project}")
+                    if in_progress:
+                        parts.append(f"    ▶ In progress: {len(in_progress)}")
+                        parts.extend(
+                            f"      {_format_mission_display(m)}"
+                            for m in in_progress[:2]
+                        )
+                    if pending:
+                        parts.append(f"    ⏳ Pending: {len(pending)}")
+                        parts.extend(
+                            f"      {_format_mission_display(m)}"
+                            for m in pending[:3]
+                        )
 
     # Skill metrics
     skill_metrics_lines = _build_skill_metrics_section(instance_dir)

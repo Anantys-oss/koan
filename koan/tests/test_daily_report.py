@@ -20,6 +20,39 @@ from app.daily_report import (
 
 
 # ---------------------------------------------------------------------------
+# store-authoritative reads (missions.md is a disposable export)
+# ---------------------------------------------------------------------------
+
+class TestReadsStoreWhenExportAbsent:
+    _SEED = (
+        "# Missions\n\n## Pending\n- alpha\n- beta\n\n"
+        "## In Progress\n- gamma\n\n## Done\n\n## Failed\n"
+    )
+
+    def test_count_pending_reads_store_when_missions_md_deleted(self, tmp_path):
+        # Regression: the store is authoritative; deleting the generated export must
+        # NOT make _count_pending_missions silently under-report (return 0).
+        from tests.store_helpers import seed_missions
+        inst = tmp_path / "instance"
+        seed_missions(inst, self._SEED)
+        (inst / "missions.md").unlink()  # operator deletes the disposable export
+        with patch("app.daily_report.MISSIONS_FILE", inst / "missions.md"):
+            assert _count_pending_missions() == 2
+
+    def test_generate_report_in_progress_reads_store_when_export_deleted(self, tmp_path):
+        from tests.store_helpers import seed_missions
+        inst = tmp_path / "instance"
+        seed_missions(inst, self._SEED)
+        (inst / "missions.md").unlink()
+        with patch("app.daily_report.MISSIONS_FILE", inst / "missions.md"), \
+             patch("app.daily_report.INSTANCE_DIR", inst), \
+             patch("app.daily_report._read_journal", return_value=""):
+            report = generate_report("evening")
+        assert "gamma" in report          # in-progress mission still surfaced
+        assert "Pending: 2" in report
+
+
+# ---------------------------------------------------------------------------
 # should_send_report
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,7 @@
 """One-time boot ingest (app.mission_store.startup.ensure_ingested)."""
 
+import pytest
+
 from app.mission_store import get_mission_store, reset_cache
 from app.mission_store.aux_stores import CiQueueStore, IdeaStore, QuarantineStore
 from app.mission_store.startup import ensure_ingested
@@ -73,6 +75,30 @@ def test_ensure_ingested_migrates_quarantine_file(tmp_path):
     rows = QuarantineStore(str(tmp_path)).list()
     assert len(rows) == 1
     assert rows[0]["source"] == "telegram" and "evil text" in rows[0]["text"]
+
+
+def test_quarantine_migration_failure_is_fatal_and_leaves_store_uninitialized(
+    tmp_path, monkeypatch
+):
+    # A failed security-record migration must abort the ingest step (raise), not
+    # log-and-continue: otherwise the initialized marker gets set, the file is later
+    # regenerated from the store, and the unmigrated records are dropped forever.
+    _fresh(tmp_path)
+    (tmp_path / "missions.md").write_text(FULL)
+    (tmp_path / "missions-quarantine.md").write_text(
+        "- \U0001f6e1️ [2026-07-01 10:00] (telegram) injection: bad\n"
+    )
+    from app.mission_store import aux_stores
+    monkeypatch.setattr(aux_stores.QuarantineStore, "add", lambda *a, **k: False)
+
+    with pytest.raises(RuntimeError, match="quarantine migration incomplete"):
+        ensure_ingested(str(tmp_path))
+
+    # Marker unset → next boot retries. And because quarantine ingests FIRST, the
+    # additive CI/Ideas inserts never ran, so the retry won't double-insert them.
+    assert get_mission_store(str(tmp_path)).is_initialized() is False
+    assert CiQueueStore(str(tmp_path)).get_items() == []
+    assert IdeaStore(str(tmp_path)).list() == []
 
 
 def test_ensure_ingested_no_file_is_safe(tmp_path):

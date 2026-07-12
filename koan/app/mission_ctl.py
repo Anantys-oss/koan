@@ -135,7 +135,11 @@ def cmd_delete(selector: str) -> int:
                 updated, _cancelled = _m.cancel_pending_mission(content, str(idx + 1))
                 result["ok"] = True
                 return updated
-            except ValueError:
+            except ValueError as e:
+                # Capture the cause (bad selector, empty section, …) so the failure
+                # message below explains WHY the break-glass delete failed, instead
+                # of swallowing it behind a generic error during an incident.
+                result["error"] = str(e)
                 return content
 
         done_verb = "Removed pending mission"
@@ -150,9 +154,12 @@ def cmd_delete(selector: str) -> int:
     modify_missions_file(missions_path, _transform)
 
     if not result["ok"]:
-        hint = ""
         if m.text.lstrip().startswith("### "):
             hint = " — complex ### missions cannot be removed this way"
+        elif result.get("error"):
+            hint = f" — {result['error']}"
+        else:
+            hint = ""
         print(f"✗ Could not remove mission {selector!r}{hint}.", file=sys.stderr)
         return 1
 

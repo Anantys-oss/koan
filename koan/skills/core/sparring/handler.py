@@ -38,19 +38,18 @@ def handle(ctx):
     if prefs_file.exists():
         prefs = prefs_file.read_text()
 
-    recent_missions = ""
-    missions_file = instance_dir / "missions.md"
-    if missions_file.exists():
-        from app.mission_store.transition import read_sections
-        sections = read_sections(instance_dir)
-        in_progress = sections.get("in_progress", [])
-        pending = sections.get("pending", [])
-        parts = []
-        if in_progress:
-            parts.append("In progress:\n" + "\n".join(in_progress[:5]))
-        if pending:
-            parts.append("Pending:\n" + "\n".join(pending[:5]))
-        recent_missions = "\n".join(parts)
+    # Store is authoritative; read it directly rather than gating on the (now
+    # generated, possibly-absent) missions.md export.
+    from app.mission_store.transition import read_sections
+    sections = read_sections(instance_dir)
+    in_progress = sections.get("in_progress", [])
+    pending = sections.get("pending", [])
+    parts = []
+    if in_progress:
+        parts.append("In progress:\n" + "\n".join(in_progress[:5]))
+    if pending:
+        parts.append("Pending:\n" + "\n".join(pending[:5]))
+    recent_missions = "\n".join(parts)
 
     hour = datetime.now().hour
     time_hint = (

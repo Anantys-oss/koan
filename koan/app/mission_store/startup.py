@@ -41,15 +41,18 @@ def ensure_ingested(instance: str) -> Optional[IngestReport]:
     md = Path(instance) / "missions.md"
     content = md.read_text() if md.exists() else ""
 
-    # Sibling populations first; the missions ingest sets the initialized marker
-    # last, so a crash mid-ingest simply retries the whole thing next boot.
+    # Quarantine first: it RAISES on a failed security-record migration, and must
+    # do so BEFORE the additive CI/Ideas inserts below — otherwise a retry next
+    # boot (marker still unset) would double-insert those sibling rows.
+    _ingest_quarantine_file(instance)
+
+    # Sibling populations; the missions ingest sets the initialized marker last,
+    # so a crash mid-ingest simply retries the whole thing next boot.
     if content:
         from app import missions
         from app.mission_store.aux_stores import CiQueueStore, IdeaStore
         CiQueueStore(instance).ingest_items(missions.get_ci_items(content))
         IdeaStore(instance).ingest_items(missions.parse_ideas(content))
-
-    _ingest_quarantine_file(instance)
 
     report = store.ingest_from_file(md)
     logger.info("[mission_store] one-time ingest: %s inserted, %s unparseable",
@@ -77,10 +80,12 @@ def _ingest_quarantine_file(instance: str) -> None:
         total += 1
         failed += not ok
     if failed:
-        # QuarantineStore.add returns False (and logs) on a DB write failure. Post
-        # cutover the file is regenerated from the store on the next quarantine, so
-        # an unmigrated record would be silently dropped — surface a loud migration
-        # summary instead of proceeding as if every security record was preserved.
-        logger.error(
-            "[mission_store] quarantine migration incomplete: %s of %s records "
-            "failed to migrate into the store", failed, total)
+        # A failed security-record (prompt-injection) migration must be FATAL for
+        # the ingest step, not logged-and-forgotten: ensure_ingested would otherwise
+        # still set the initialized marker and the file is later regenerated from the
+        # store, permanently dropping the unmigrated records with no retry. Raising
+        # leaves the marker unset, so _safe_run records the failure and the next boot
+        # retries the whole ingest. QuarantineStore.add already logged each failure.
+        raise RuntimeError(
+            f"[mission_store] quarantine migration incomplete: {failed} of {total} "
+            f"records failed to migrate into the store")
