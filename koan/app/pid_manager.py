@@ -568,11 +568,10 @@ def _read_runner_state(koan_root: Path) -> dict:
 def _in_progress_count(koan_root: Path) -> int:
     """Best-effort count of In Progress mission lines (#2086)."""
     try:
-        from app.missions import parse_sections
+        from app.mission_store.transition import read_sections
 
-        missions_file = Path(koan_root) / "instance" / "missions.md"
-        content = missions_file.read_text() if missions_file.exists() else ""
-        return len(parse_sections(content).get("in_progress", []))
+        instance = Path(koan_root) / "instance"
+        return len(read_sections(instance).get("in_progress", []))
     except Exception as e:
         # A chronic parse failure silently reports zero In Progress lines,
         # which would suppress the zombie warning for the exact "In Progress

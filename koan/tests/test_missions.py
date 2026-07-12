@@ -2325,7 +2325,11 @@ class TestModifyMissionsFileReturn:
         from app.utils import modify_missions_file
 
         result = modify_missions_file(missions_path, lambda c: c)
-        assert result == original
+        # At S8 the return is the store's canonical render; a no-op preserves the
+        # (empty) mission state rather than the exact seed bytes.
+        assert count_pending(result) == 0
+        assert parse_sections(result)["done"] == []
+        assert "## Pending" in result
 
 
 # ---------------------------------------------------------------------------

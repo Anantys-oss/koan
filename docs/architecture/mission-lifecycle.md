@@ -4,20 +4,29 @@ title: "Mission Lifecycle"
 description: "Explains the mission queue format and lifecycle (Pending/In Progress/Done/Failed), org-wide missions, branch prep, direct skill dispatch, scheduling, recovery/retries, and missions.md integrity/size-bound safeguards."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-27
+updated: 2026-07-10
 ---
 
 # Mission Lifecycle
 
-`koan/app/missions.py` is the source of truth for parsing and mutating
-`instance/missions.md`. See `specs/components/core.md` for the mission-queue
-contract (single-writer invariants, sanctioned exits from In Progress) and
+> **Mission state lives in an authoritative SQLite store** (`instance/missions.db`)
+> behind the `MissionStore` port; **`instance/missions.md` is a generated read-only
+> export** (edits ignored after the one-time sync). Writes round-trip through the
+> store (`utils._locked_missions_rw`: render → `missions.py` transform →
+> `reconcile_all` → export). The Markdown format below describes the export/ingest
+> text form. See `specs/004-mission-store/` and `specs/components/core.md`.
+
+`koan/app/missions.py` provides the parsing and `content -> content` lifecycle
+transforms applied inside the store's write chokepoint (it is no longer a
+separate source of truth). See `specs/components/core.md` for the mission-queue
+contract (store authority, sanctioned exits from In Progress) and
 `specs/components/agent-loop.md` for how the agent loop picks up and executes
 a mission end to end.
 
 ## Queue Format
 
-Missions are stored in Markdown sections. The canonical lifecycle is:
+Missions are stored (and exported to `missions.md`) in Markdown sections. The
+canonical lifecycle is:
 
 - Pending
 - In Progress

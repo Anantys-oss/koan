@@ -18,7 +18,10 @@ def test_parse_missions_sections(tmp_path):
 
 def test_parse_missions_empty(tmp_path):
     with patch.object(svc.state, "MISSIONS_FILE", tmp_path / "nope.md"):
-        assert svc.parse_missions() == {"pending": [], "in_progress": [], "done": []}
+        result = svc.parse_missions()
+    assert result["pending"] == []
+    assert result["in_progress"] == []
+    assert result["done"] == []
 
 
 def test_filter_missions_by_project():

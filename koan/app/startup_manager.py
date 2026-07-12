@@ -442,6 +442,16 @@ def prune_missions_done(instance: str):
     )
 
     if issues or pruned > 0 or new_content != content:
+        # S8: the store is authoritative. Reconcile it to the repaired/pruned
+        # content FIRST, then regenerate the missions.md export. If the store
+        # update fails we must NOT persist a diverged file (invariant 7: the
+        # authoritative store never swallows-and-diverges); the exception
+        # propagates to the _safe_run startup wrapper, leaving file + store both
+        # at their pre-prune state.
+        from app.mission_store import get_mission_store
+        from app.mission_store.transition import reconcile_all
+        reconcile_all(instance, new_content)
+        get_mission_store(instance).mark_synced()
         atomic_write(missions_path, new_content)
         if pruned > 0:
             log("health", f"Pruned {pruned} old Done/Failed items from missions.md")
@@ -728,6 +738,10 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Memory cleanup", cleanup_memory, instance)
         _safe_run("Missions pruning", prune_missions_done, instance)
         _safe_run("Mission history cleanup", cleanup_mission_history, instance)
+        # One-time ingest of missions.md into the SQLite store (idempotent;
+        # gated on MissionStore.is_initialized). Analog of memory SQLite indexing.
+        from app.mission_store.startup import ensure_ingested
+        _safe_run("Mission store ingest", ensure_ingested, instance)
         from app.utils import reap_stale_mission_tmp_dirs
         _safe_run("Stale mission tmp sweep", reap_stale_mission_tmp_dirs)
         _safe_run("Health check", check_health, koan_root)

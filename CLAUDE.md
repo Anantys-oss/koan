@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Kōan
 
-Kōan is an autonomous background agent that uses idle Claude API quota to work on local projects. It runs as a continuous loop, pulling missions from a shared file, executing them via Claude Code CLI, and communicating progress via Telegram. Philosophy: "The agent proposes. The human decides." — no unsupervised code modifications.
+Kōan is an autonomous background agent that uses idle Claude API quota to work on local projects. It runs as a continuous loop, pulling missions from a shared queue (an authoritative SQLite mission store; `missions.md` is a generated read-only export — see `specs/004-mission-store/`), executing them via Claude Code CLI, and communicating progress via Telegram. Philosophy: "The agent proposes. The human decides." — no unsupervised code modifications.
 
 ## On-demand guidance (nested CLAUDE.md)
 
@@ -142,6 +142,8 @@ make lint           # Run ruff linter (must pass before committing)
 make test           # Run full test suite (pytest + coverage summary)
 make coverage       # Run tests with detailed coverage report (HTML in htmlcov/)
 make say m="..."    # Send test message as if from Telegram
+make missions [state=...]        # List the mission queue straight from the store (break-glass; bridge-independent)
+make mission-rm sel=i1           # Remove/abort a mission by selector (i<N>/p<N>/keyword) when the bridge is down
 make rename-project old=X new=Y [apply=1]  # Rename a project everywhere (dry-run by default)
 make clean          # Remove venv
 ```

@@ -108,12 +108,16 @@ CORE_COMMANDS = frozenset({
 
 def _has_in_progress_mission() -> bool:
     """Check if any mission is currently in progress."""
-    from app.missions import count_in_progress
+    from app.mission_store.transition import read_sections
     try:
-        content = MISSIONS_FILE.read_text(encoding="utf-8")
-        return count_in_progress(content) > 0
-    except FileNotFoundError:
-        return False
+        return len(read_sections(MISSIONS_FILE.parent).get("in_progress", [])) > 0
+    except Exception as e:
+        # This gate decides whether a second mission may start. read_sections now
+        # goes through SQLite (sqlite3.DatabaseError is not FileNotFoundError), so
+        # on any unknown store state fail CLOSED — assume busy rather than risk a
+        # second concurrent mission.
+        log("warn", f"[command_handlers] in-progress check failed, assuming busy: {e}")
+        return True
 
 
 def _resolve_project_alias(command_name: str) -> Optional[str]:

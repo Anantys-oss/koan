@@ -62,30 +62,28 @@ def _truncate(text: str, max_len: int = 60) -> str:
 def _count_pending_missions(missions_file) -> int:
     """Return the total number of pending missions across all projects."""
     from pathlib import Path
-    from app.missions import parse_sections
+    from app.mission_store.transition import read_sections
 
-    path = Path(missions_file)
-    if not path.exists():
-        return 0
     try:
-        sections = parse_sections(path.read_text())
-        return len(sections.get("pending", []))
-    except Exception:
+        return len(read_sections(Path(missions_file).parent).get("pending", []))
+    except Exception as e:
+        # read_sections now goes through SQLite; a locked/corrupt DB
+        # (sqlite3.DatabaseError) must be logged, not reported as "0 pending" —
+        # a broken store must be distinguishable from an empty queue.
+        import logging
+        logging.getLogger(__name__).warning(
+            "[status] pending-mission count read failed: %s", e)
         return 0
 
 
 def _get_in_progress_missions(missions_file) -> str:
     """Return a short display of in-progress missions, or empty string."""
     from pathlib import Path
-    from app.missions import parse_sections
     from app.utils import parse_project
+    from app.mission_store.transition import read_sections
 
-    path = Path(missions_file)
-    if not path.exists():
-        return ""
     try:
-        content = path.read_text()
-        sections = parse_sections(content)
+        sections = read_sections(Path(missions_file).parent)
         in_progress = sections.get("in_progress", [])
         if not in_progress:
             return ""
@@ -98,7 +96,12 @@ def _get_in_progress_missions(missions_file) -> str:
             else:
                 summaries.append(text)
         return ", ".join(summaries)
-    except Exception:
+    except Exception as e:
+        # Same store-read concern as _count_pending_missions: log rather than
+        # silently blanking the in-progress display on a broken store.
+        import logging
+        logging.getLogger(__name__).warning(
+            "[status] in-progress mission read failed: %s", e)
         return ""
 
 
@@ -290,38 +293,39 @@ def _handle_status(ctx) -> str:
     except Exception:
         pass
 
-    # Missions section
-    if missions_file.exists():
-        content = missions_file.read_text()
-        missions_by_project = group_by_project(content)
+    # Missions section — store is authoritative; missions.md is a generated export
+    # that may be absent. read_content reads the store directly (empty when there is
+    # nothing), so gating on the export file would silently hide real missions.
+    from app.mission_store.transition import read_content
+    missions_by_project = group_by_project(read_content(missions_file.parent))
 
-        if missions_by_project:
-            has_missions = any(
-                m["pending"] or m["in_progress"]
-                for m in missions_by_project.values()
-            )
-            if has_missions:
-                parts.append("")
-                parts.append("◎ Missions")
-                for project in sorted(missions_by_project.keys()):
-                    missions = missions_by_project[project]
-                    pending = missions["pending"]
-                    in_progress = missions["in_progress"]
+    if missions_by_project:
+        has_missions = any(
+            m["pending"] or m["in_progress"]
+            for m in missions_by_project.values()
+        )
+        if has_missions:
+            parts.append("")
+            parts.append("◎ Missions")
+            for project in sorted(missions_by_project.keys()):
+                missions = missions_by_project[project]
+                pending = missions["pending"]
+                in_progress = missions["in_progress"]
 
-                    if pending or in_progress:
-                        parts.append(f"  {project}")
-                        if in_progress:
-                            parts.append(f"    ▶ In progress: {len(in_progress)}")
-                            parts.extend(
-                                f"      {_format_mission_display(m)}"
-                                for m in in_progress[:2]
-                            )
-                        if pending:
-                            parts.append(f"    ⏳ Pending: {len(pending)}")
-                            parts.extend(
-                                f"      {_format_mission_display(m)}"
-                                for m in pending[:3]
-                            )
+                if pending or in_progress:
+                    parts.append(f"  {project}")
+                    if in_progress:
+                        parts.append(f"    ▶ In progress: {len(in_progress)}")
+                        parts.extend(
+                            f"      {_format_mission_display(m)}"
+                            for m in in_progress[:2]
+                        )
+                    if pending:
+                        parts.append(f"    ⏳ Pending: {len(pending)}")
+                        parts.extend(
+                            f"      {_format_mission_display(m)}"
+                            for m in pending[:3]
+                        )
 
     # Skill metrics
     skill_metrics_lines = _build_skill_metrics_section(instance_dir)
@@ -561,22 +565,24 @@ def _handle_usage(ctx) -> str:
     if usage_path.exists():
         usage_text = usage_path.read_text().strip() or usage_text
 
+    # Store is authoritative; read it directly rather than gating on the (now
+    # disposable) missions.md export — read_sections returns empty when there is
+    # nothing, so missions_text stays "No missions." for a genuinely empty queue.
     missions_text = "No missions."
-    if missions_file.exists():
-        from app.missions import parse_sections
-        sections = parse_sections(missions_file.read_text())
-        parts = []
-        in_progress = sections.get("in_progress", [])
-        pending = sections.get("pending", [])
-        done = sections.get("done", [])
-        if in_progress:
-            parts.append("In progress:\n" + "\n".join(in_progress[:5]))
-        if pending:
-            parts.append(f"Pending ({len(pending)}):\n" + "\n".join(pending[:5]))
-        if done:
-            parts.append(f"Done: {len(done)}")
-        if parts:
-            missions_text = "\n\n".join(parts)
+    from app.mission_store.transition import read_sections
+    sections = read_sections(missions_file.parent)
+    parts = []
+    in_progress = sections.get("in_progress", [])
+    pending = sections.get("pending", [])
+    done = sections.get("done", [])
+    if in_progress:
+        parts.append("In progress:\n" + "\n".join(in_progress[:5]))
+    if pending:
+        parts.append(f"Pending ({len(pending)}):\n" + "\n".join(pending[:5]))
+    if done:
+        parts.append(f"Done: {len(done)}")
+    if parts:
+        missions_text = "\n\n".join(parts)
 
     pending_text = "No run in progress."
     pending_path = instance_dir / "journal" / "pending.md"

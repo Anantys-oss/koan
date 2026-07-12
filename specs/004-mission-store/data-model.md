@@ -83,6 +83,53 @@ In SQLite each is `ALTER TABLE missions ADD COLUMN …` plus one write-site and 
 
 Kōan ships **no** `FileMissionStore`. A file-backed queue is an **out-of-tree** adapter that whoever wants it maintains, selected via `missions.backend: their.module:TheirFileStore`. Such an adapter would realize the port over `missions.md` using the retained parsing helpers in `app.missions` (`parse_sections`, `extract_next_pending`, lifecycle functions, `canonical_mission_key`), derive `sequence` from line order, and no-op `export_view`. The port + the abstract conformance suite are its template — but Kōan neither ships nor tests it as a product. (`app.missions` itself is retained in-tree only for `ingest_from_file` parse-on-import and `export_view` render-on-export, not on the hot path.)
 
+## Additional `missions.md` sub-populations → sibling tables
+
+`missions.md` today holds more than the four lifecycle states. Since it becomes a
+read-only export, these move into **sibling tables in the same `missions.db`**
+(decision: 2026-07-09) so the file is fully retired. They are managed by small
+concrete helpers in the sqlite adapter (`CiQueueStore`, `IdeaStore`,
+`QuarantineStore`), sharing the store's connection handling; they are not part of
+the `MissionStore` lifecycle port (that stays mission-centric).
+
+```sql
+-- ## CI section: get_ci_items / add_ci_item / remove_ci_item / update_ci_item_attempt
+CREATE TABLE IF NOT EXISTS ci_queue (
+    id         INTEGER PRIMARY KEY,
+    pr         TEXT NOT NULL,
+    project    TEXT NOT NULL DEFAULT 'default',
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER,
+    added_at   TEXT,
+    sequence   INTEGER NOT NULL DEFAULT 0
+);
+-- Ideas section: parse_ideas / insert_idea / delete_idea / promote_idea
+CREATE TABLE IF NOT EXISTS ideas (
+    id        INTEGER PRIMARY KEY,
+    text      TEXT NOT NULL,
+    project   TEXT NOT NULL DEFAULT 'default',
+    added_at  TEXT,
+    sequence  INTEGER NOT NULL DEFAULT 0
+);
+-- authoritative store for quarantined missions; missions-quarantine.md is a
+-- generated read-only export of this table (row-capped at _QUARANTINE_KEEP)
+CREATE TABLE IF NOT EXISTS quarantine (
+    id        INTEGER PRIMARY KEY,
+    text      TEXT NOT NULL,
+    reason    TEXT,
+    source    TEXT,       -- origin label (e.g. "telegram", "github/@user")
+    added_at  TEXT
+);
+```
+
+The one-time ingest imports the `## CI` and Ideas sections (and the separate
+`missions-quarantine.md`) into these tables; `export_view` renders CI + Ideas back
+into the read-only `missions.md`. Quarantine is authoritative in its table too: the
+ongoing `quarantine_mission()` write path records to `QuarantineStore` and then
+regenerates `missions-quarantine.md` as its own read-only export (it is not part of
+the `missions.md` export). Exact column shapes are finalized against the current
+`get_ci_items`/`parse_ideas`/`quarantine_mission` signatures during implementation.
+
 ## Store-initialized marker (gates one-time ingestion — FR-006)
 
 "Uninitialized" (ingest) MUST be distinguished from "initialized but drained to zero" (do not ingest), or an operator who legitimately empties their queue would trigger a spurious re-import. Two candidate realizations (tasks.md picks one):

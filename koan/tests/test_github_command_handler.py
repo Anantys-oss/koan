@@ -51,6 +51,7 @@ from app.github_command_handler import (
     validate_command,
 )
 from app.skills import Skill, SkillCommand, SkillRegistry
+from tests.store_helpers import seed_missions
 
 pytestmark = pytest.mark.slow
 
@@ -3827,10 +3828,10 @@ class TestTryAssignmentNotification:
              patch("app.github_notification_tracker.is_review_on_cooldown", return_value=False):
             _try_assignment_notification(review_notification, review_registry, {})
             # Move first mission out of Pending so only the tracker decides.
-            missions_path.write_text(
-                "# Pending\n\n# In Progress\n\n"
+            seed_missions(
+                missions_path.parent,
+                "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
                 "- [project:koan] /review https://github.com/sukria/koan/pull/99 \U0001f4ec\n"
-                "\n# Done\n"
             )
 
         # New commits pushed → new head SHA → fresh dedup key → re-review.
@@ -4194,7 +4195,8 @@ class TestRequestedReviewScan:
                 str(instance_dir),
             )
 
-        missions_path.write_text(
+        seed_missions(
+            missions_path.parent,
             "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
             "- [project:koan] /review https://github.com/sukria/koan/pull/42 📬\n",
         )

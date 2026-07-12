@@ -342,6 +342,14 @@ def insert_mission(content: str, entry: str, *, urgent: bool = False) -> str:
     # Sanitize newlines in the entry to keep it on one line
     entry = re.sub(r"\r\n|\r|\n", " ", entry)
 
+    # Ensure a list-item prefix. Parsers (and the mission store) only treat
+    # "- "/"### " lines as items, so a caller passing raw text (e.g. hooks) would
+    # otherwise create an entry the picker never sees — and one the store drops
+    # on round-trip. Normalize it to a proper "- " mission line.
+    _stripped = entry.lstrip()
+    if _stripped and not (_stripped.startswith("- ") or _stripped.startswith("### ")):
+        entry = f"- {_stripped}"
+
     # Add queued timestamp if not already present
     if _QUEUED_MARKER not in entry:
         entry = stamp_queued(entry)
@@ -2219,33 +2227,52 @@ def quarantine_mission(
     reason: str,
     source: str = "unknown",
 ) -> bool:
-    """Append a flagged mission to the quarantine file.
+    """Quarantine a flagged mission in the authoritative store, then export the file.
+
+    The ``QuarantineStore`` table in ``missions.db`` is authoritative; the
+    ``missions-quarantine.md`` file is a generated read-only export kept for human
+    and log visibility (consistent with the ``missions.md`` export model). Ongoing
+    quarantines \u2014 the prompt-injection isolation path \u2014 therefore land in the store,
+    not only the file, so the table no longer freezes at the boot-ingest snapshot.
+    Row capping is owned by ``QuarantineStore`` (``_QUARANTINE_KEEP``); the export
+    mirrors whatever the store retains.
 
     Args:
-        quarantine_path: Path to missions-quarantine.md.
-        text: The mission text (truncated to 500 chars).
+        quarantine_path: Path to missions-quarantine.md (its parent is the instance dir).
+        text: The mission text (truncated to 500 chars by the store).
         reason: Why it was quarantined.
         source: Origin label (e.g. "telegram", "github/@user").
 
     Returns:
-        True if the entry was written, False on error.
+        True if the entry was recorded in the store, False on error.
     """
+    import sqlite3
     from pathlib import Path  # local to avoid top-level import
 
+    from app.mission_store.aux_stores import QuarantineStore
+    from app.utils import atomic_write
+
     quarantine_path = Path(quarantine_path)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    entry = f"- \U0001f6e1\ufe0f [{timestamp}] ({source}) {reason}: {text[:500]}\n"
     try:
-        _enforce_quarantine_cap(quarantine_path)
-        with open(quarantine_path, "a") as f:
-            f.write(entry)
+        store = QuarantineStore(str(quarantine_path.parent))
+        if not store.add(text, reason, source):
+            # store.add already logged loudly on a DB failure.
+            return False
+        # Regenerate the read-only export from the authoritative store.
+        lines = store.render_lines()
+        atomic_write(quarantine_path, "\n".join(lines) + ("\n" if lines else ""))
         return True
-    except OSError:
+    except (OSError, sqlite3.DatabaseError):
         return False
 
 
 def _enforce_quarantine_cap(path: "Path") -> None:
-    """If the quarantine file exceeds QUARANTINE_MAX_BYTES, prune oldest half."""
+    """If the quarantine file exceeds QUARANTINE_MAX_BYTES, prune oldest half.
+
+    Superseded by the store's row cap (``QuarantineStore`` ``_QUARANTINE_KEEP``) now
+    that ``quarantine_mission`` writes the store and regenerates the file from it;
+    retained for its direct unit coverage.
+    """
     from pathlib import Path
     from app.utils import atomic_write
 

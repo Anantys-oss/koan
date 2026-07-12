@@ -106,13 +106,13 @@ def _parse_completed_missions(target_date: Optional[date] = None) -> List[str]:
         target_date: If provided, only return missions completed on this date.
                      If None, return all completed missions (legacy behavior).
     """
-    if not MISSIONS_FILE.exists():
-        return []
+    # The SQLite store is authoritative; missions.md is only a generated export.
+    # Read the store directly rather than gating on the export file's presence —
+    # read_sections reads the store and returns empty sections when there are none,
+    # so guarding on the file would silently under-report when the export is absent.
+    from app.mission_store.transition import read_sections
 
-    from app.missions import parse_sections
-
-    content = MISSIONS_FILE.read_text()
-    sections = parse_sections(content)
+    sections = read_sections(MISSIONS_FILE.parent)
     completed = []
     for item in sections["done"]:
         first_line = item.split("\n")[0]
@@ -131,13 +131,14 @@ def _parse_completed_missions(target_date: Optional[date] = None) -> List[str]:
 
 
 def _count_pending_missions() -> int:
-    """Count pending missions."""
-    if not MISSIONS_FILE.exists():
-        return 0
+    """Count pending missions from the authoritative store."""
+    # Store is authoritative; missions.md is a generated export that may be absent.
+    # read_sections reads the store and returns empty when there is nothing, so
+    # gating on the export file would silently under-report (matches the sibling
+    # _parse_completed_missions and the other converted readers).
+    from app.mission_store.transition import read_sections
 
-    from app.missions import count_pending
-
-    return count_pending(MISSIONS_FILE.read_text())
+    return len(read_sections(MISSIONS_FILE.parent).get("pending", []))
 
 
 def generate_report(report_type: str = "morning") -> str:
@@ -190,28 +191,27 @@ def generate_report(report_type: str = "morning") -> str:
         lines.append("No activity recorded.")
         lines.append("")
 
-    # In-progress items
-    if MISSIONS_FILE.exists():
-        from app.missions import parse_sections
+    # In-progress items — store is authoritative; read unconditionally (missions.md
+    # is a generated export that may be absent post-cutover).
+    from app.mission_store.transition import read_sections
 
-        content = MISSIONS_FILE.read_text()
-        sections = parse_sections(content)
-        in_progress = []
-        for item in sections["in_progress"]:
-            first_line = item.split("\n")[0]
-            # Handle ### multi-line blocks (legacy)
-            stripped = first_line.strip()
-            if stripped.startswith("### "):
-                in_progress.append(stripped[4:].strip())
-            else:
-                title = _extract_mission_title(first_line)
-                if title:
-                    in_progress.append(title)
+    sections = read_sections(MISSIONS_FILE.parent)
+    in_progress = []
+    for item in sections["in_progress"]:
+        first_line = item.split("\n")[0]
+        # Handle ### multi-line blocks (legacy)
+        stripped = first_line.strip()
+        if stripped.startswith("### "):
+            in_progress.append(stripped[4:].strip())
+        else:
+            title = _extract_mission_title(first_line)
+            if title:
+                in_progress.append(title)
 
-        if in_progress:
-            lines.append("In Progress:")
-            lines.extend(f"  . {ip}" for ip in in_progress)
-            lines.append("")
+    if in_progress:
+        lines.append("In Progress:")
+        lines.extend(f"  . {ip}" for ip in in_progress)
+        lines.append("")
 
     lines.append("-- Kōan")
     return "\n".join(lines)

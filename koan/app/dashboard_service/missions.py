@@ -6,14 +6,14 @@ from app.utils import get_known_projects
 
 
 def parse_missions() -> dict:
-    """Parse missions.md into structured sections."""
-    from app.missions import parse_sections
+    """Parse missions.md into structured sections.
 
-    content = read_file(state.MISSIONS_FILE)
-    if not content:
-        return {"pending": [], "in_progress": [], "done": []}
+    Reads via the mission store, reconciled from the still-authoritative
+    missions.md during the transition (S4–S7).
+    """
+    from app.mission_store.transition import read_sections
 
-    return parse_sections(content)
+    return read_sections(state.MISSIONS_FILE.parent)
 
 
 def filter_missions_by_project(missions: dict, project: str) -> dict:

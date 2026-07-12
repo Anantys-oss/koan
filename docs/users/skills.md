@@ -25,7 +25,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/mission <text>` | — | Queue a new mission. Use `--now` to prioritize |
-| `/list` | `/queue`, `/ls` | List pending and in-progress missions |
+| `/list [state]` | `/queue`, `/ls` | List missions; default pending+in-progress, or `done`/`failed`/`all` |
 | `/priority <n> <pos>` | — | Reorder a pending mission in the queue |
 | `/cancel <n or keyword>` | `/remove`, `/clear` | Cancel a pending mission |
 | `/abort` | — | Abort the current in-progress mission |

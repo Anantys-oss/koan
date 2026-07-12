@@ -546,14 +546,22 @@ class TestInsertPendingMission:
         assert result is True
 
     def test_modify_missions_file_returns_new_content(self, tmp_path):
-        """modify_missions_file should return the transformed content."""
+        """modify_missions_file applies the transform and persists it.
+
+        At S8 the store is authoritative and missions.md is a read-only export,
+        so the file reflects the transform's *mission* changes (not arbitrary
+        appended text). The return value is the transform output.
+        """
+        from app.missions import count_pending, insert_mission
         from app.utils import modify_missions_file
         missions = tmp_path / "missions.md"
         missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
 
-        result = modify_missions_file(missions, lambda c: c + "# Extra\n")
-        assert result.endswith("# Extra\n")
-        assert missions.read_text() == result
+        result = modify_missions_file(missions, lambda c: insert_mission(c, "- do a thing"))
+        assert "do a thing" in result
+        content = missions.read_text()
+        assert "do a thing" in content
+        assert count_pending(content) == 1
 
     def test_modify_creates_file_if_missing(self, tmp_path):
         """modify_missions_file should create the file if it doesn't exist."""

@@ -244,3 +244,40 @@ class TestRunDiskSpaceCheck:
         result = run_disk_space_check(str(tmp_path))
         assert result is True
         mock_send.assert_not_called()
+
+
+class TestStoreErrorAlert:
+    """A store read fault must be surfaced, not silently reported as no-stale."""
+
+    def _raise(self, *a, **k):
+        import sqlite3
+        raise sqlite3.DatabaseError("database is locked")
+
+    def test_alerts_from_heartbeat_path(self, tmp_path):
+        with patch("app.mission_store.transition.read_sections", side_effect=self._raise), \
+             patch("app.notify.send_telegram") as mock_tg:
+            result = check_stale_missions(str(tmp_path), alert_on_error=True)
+        assert result == []
+        assert mock_tg.called
+        assert "store" in mock_tg.call_args[0][0].lower()
+
+    def test_silent_for_on_demand_callers(self, tmp_path):
+        # /status and other on-demand callers omit alert_on_error → no alert.
+        with patch("app.mission_store.transition.read_sections", side_effect=self._raise), \
+             patch("app.notify.send_telegram") as mock_tg:
+            result = check_stale_missions(str(tmp_path))
+        assert result == []
+        assert not mock_tg.called
+
+    def test_alerts_only_once_per_session(self, tmp_path):
+        with patch("app.mission_store.transition.read_sections", side_effect=self._raise), \
+             patch("app.notify.send_telegram") as mock_tg:
+            check_stale_missions(str(tmp_path), alert_on_error=True)
+            check_stale_missions(str(tmp_path), alert_on_error=True)
+        assert mock_tg.call_count == 1
+
+    def test_run_stale_mission_check_alerts_on_store_error(self, tmp_path):
+        with patch("app.mission_store.transition.read_sections", side_effect=self._raise), \
+             patch("app.notify.send_telegram") as mock_tg:
+            assert run_stale_mission_check(str(tmp_path)) == []
+        assert mock_tg.called
