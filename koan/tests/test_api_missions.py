@@ -321,6 +321,25 @@ class TestReconcileSubstringMatch:
         assert rec["status"] == "pending"
         assert rec["outcome"] is None
 
+    def test_stale_outcome_does_not_resurrect_removed_mission(self, instance_dir):
+        """A pending mission deleted from the queue (never finalized) shares its
+        canonical key with an unrelated prior terminal run of the same text; the
+        stale outcome must NOT resurrect it from 'removed' to done/failed."""
+        from app.api.mission_index import record_mission, reconcile
+        from app.mission_store.aux_stores import OutcomeStore
+
+        OutcomeStore(str(instance_dir)).record("- Retry me", "done", None, None)
+
+        mid = record_mission(instance_dir, "- Retry me", None)
+        missions_file = instance_dir / "missions.md"
+        # Gone from every section: operator deleted a pending row, never ran it.
+        missions_file.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+
+        rec = reconcile(instance_dir, missions_file, mid)
+        assert rec["status"] == "removed"
+        assert rec["outcome"] is None
+
 
 class TestRecordMissionDedup:
     def test_record_mission_dedup_returns_same_id(self, instance_dir):

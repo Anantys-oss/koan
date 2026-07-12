@@ -307,6 +307,11 @@ detail}`. It is `null` until the mission reaches a terminal state. `status` and
 | `tool_error` | A required tool/subprocess failed. |
 | `cancelled` | Operator-cancelled in-progress mission. |
 
+> **Note:** `classify_failure()` currently emits only `timeout`, `stagnation`,
+> and `agent_error`. `quota`, `tool_error`, and `cancelled` are reserved for
+> future callers that pass an explicit `failure_reason` to `_finalize_mission`;
+> no producer sets them today, so they will not appear on the API yet.
+
 On a successful `done` outcome, `reason_category` is `null`.
 
 `result` is a typed structured payload emitted by skills that produce one

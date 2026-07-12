@@ -32,8 +32,12 @@ def test_finalize_records_failed_outcome_with_category(monkeypatch, tmp_path):
 
 
 def test_finalize_outcome_error_does_not_block(monkeypatch, tmp_path):
+    import sqlite3
+
     def _boom(*a, **k):
-        raise RuntimeError("db locked")
+        # Only the recoverable DB failure class degrades quietly; a programming
+        # error would (correctly) propagate now that the catch is narrowed.
+        raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr("app.mission_outcome.record_outcome", _boom)
     hist = []

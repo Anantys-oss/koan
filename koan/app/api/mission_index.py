@@ -288,12 +288,16 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
     # It overrides the missions.md section scan / absence inference above, which
     # mis-reports a pruned/renamed/crashed mission as "done" (issue #2285).
     #
-    # But only when the mission is NOT currently live: a mission requeued after a
-    # prior terminal run shares its canonical_mission_key, so a stale outcome row
-    # must never override a fresh pending/in_progress state. The live section scan
-    # wins for those; the outcome log only speaks once the mission has left them.
+    # But only when the mission is NOT live AND NOT genuinely removed: the outcome
+    # log is keyed by canonical_mission_key, so a mission requeued or re-created
+    # after a prior terminal run shares that key. A stale outcome row must never
+    # override a fresh pending/in_progress state, nor resurrect a "removed"
+    # mission (prev pending, now gone → a genuine deletion, never finalized) into
+    # a done/failed carried over from an unrelated prior run with the same text.
+    # The store only speaks for the absence-inferred "done" (prev in_progress,
+    # vanished) and positively-scanned done/failed cases that #2285 targets.
     outcome = None
-    if new_status not in ("pending", "in_progress"):
+    if new_status not in ("pending", "in_progress", "removed"):
         outcome = _authoritative_outcome(instance_dir, stored_text)
     if outcome and outcome["status"] in ("done", "failed"):
         new_status = outcome["status"]

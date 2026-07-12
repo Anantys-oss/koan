@@ -25,6 +25,7 @@ import contextlib
 import os
 import json
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -3018,8 +3019,12 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str,
             log("error",
                 f"Authoritative outcome write dropped for '{mission_title}' "
                 f"(status={status}); GET /v1/missions falls back to inference")
-    except Exception as e:  # never let outcome logging fail finalization
-        log("error", f"Outcome recording error: {e}")
+    except sqlite3.DatabaseError as e:
+        # Only the recoverable DB failure class degrades quietly. A programming
+        # error (ImportError from a bad path, TypeError from signature drift)
+        # must propagate so a broken outcome-recording path surfaces loudly
+        # instead of permanently reverting the REST API to inference (#2285).
+        log("error", f"Outcome recording DB error: {e}")
     try:
         from app.mission_history import record_execution
         record_execution(instance, mission_title, project_name, exit_code)
