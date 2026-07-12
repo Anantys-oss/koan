@@ -2992,7 +2992,7 @@ def _finalize_mission(
     failure_detail: Optional[str] = None,
     verify_requeue: bool = False,
     verify_summary: str = "",
-):
+) -> bool:
     """Complete or fail a mission and record execution history.
 
     When the last mission was killed by the stagnation monitor, the
@@ -3011,6 +3011,11 @@ def _finalize_mission(
     On success, all retry counters are cleared. On failure (stagnation
     cap or crash) the counters are left intact for diagnostic visibility
     while the mission remains in Failed state.
+
+    Returns ``True`` when the mission was re-queued to Pending (verify-failure
+    or stagnation retry) instead of being completed/failed — callers must
+    treat this as "not actually finished" and skip end-of-mission notifications
+    that announce completion.
     """
     failed = exit_code != 0
     cause_tag = ""
@@ -3066,7 +3071,7 @@ def _finalize_mission(
                         record_execution(instance, mission_title, project_name, exit_code)
                     except (OSError, ValueError) as e:
                         log("error", f"Mission history recording error: {e}")
-                    return
+                    return True
                 log("error", "Verify re-queue write failed; completing normally")
         # Cap reached (or re-queue could not be applied) → fall through to normal
         # completion (Done). verify_blocking already prevented auto-merge, so a
@@ -3113,7 +3118,7 @@ def _finalize_mission(
                 record_execution(instance, mission_title, project_name, exit_code)
             except (OSError, ValueError) as e:
                 log("error", f"Mission history recording error: {e}")
-            return
+            return True
 
         # Retry cap reached (or retries disabled): mark Failed with cause tag.
         # Counter is preserved — cleared when the human retries the mission.
@@ -3195,6 +3200,7 @@ def _finalize_mission(
         record_execution(instance, mission_title, project_name, exit_code)
     except (OSError, ValueError) as e:
         log("error", f"Mission history recording error: {e}")
+    return False
 
 
 def _notify_stagnation(

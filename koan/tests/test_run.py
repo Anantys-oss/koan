@@ -7929,7 +7929,9 @@ class TestRunIterationPaths:
                 return_value=(False, plan.get("mission_title", ""))
             ),
             "_start_mission_in_file": MagicMock(return_value=True),
-            "_finalize_mission": MagicMock(),
+            # False = "completed, not re-queued" (the common case here) so the
+            # default doesn't suppress the _notify_mission_end call below.
+            "_finalize_mission": MagicMock(return_value=False),
             "_notify": MagicMock(),
             "_notify_mission_end": MagicMock(),
             "_commit_instance": MagicMock(),
@@ -8065,6 +8067,20 @@ class TestRunIterationPaths:
             mocks["run_claude_task"].assert_called_once()
             mocks["_finalize_mission"].assert_called_once()
             mocks["_notify_mission_end"].assert_called_once()
+            assert result is True
+
+    def test_verify_requeue_skips_completion_notification(self, tmp_path):
+        """When _finalize_mission re-queues (verify-failure), the completion
+        notification must be suppressed — it already sent its own re-queue
+        notice, and a "completed" message would contradict missions.md state."""
+        plan = self._make_plan("mission", mission_title="implement feature X")
+        with self._patched_iteration(
+            tmp_path, plan,
+            _finalize_mission=MagicMock(return_value=True),
+        ) as mocks:
+            result = self._call(tmp_path)
+            mocks["_finalize_mission"].assert_called_once()
+            mocks["_notify_mission_end"].assert_not_called()
             assert result is True
 
     # --- start_mission transition failure aborts run ---
@@ -8679,7 +8695,7 @@ class TestFinalizeVerifyRequeue:
              patch.object(run, "_requeue_mission_in_file") as requeue, \
              patch.object(run, "_notify_verify_requeue") as notify, \
              patch("app.config.get_verify_requeue_max", return_value=2):
-            run._finalize_mission(
+            result = run._finalize_mission(
                 inst, title, "my-toolkit", 0,
                 verify_requeue=True, verify_summary="no tests; no PR",
             )
@@ -8688,6 +8704,8 @@ class TestFinalizeVerifyRequeue:
         notify.assert_called_once()
         # The re-queue carries the verify-failed context tag.
         assert "verify-failed" in requeue.call_args.kwargs["append_tag"]
+        # Callers (mission_executor) key off this to skip the completion notice.
+        assert result is True
 
     def test_verify_requeue_completes_at_cap(self, tmp_path):
         from app import run
@@ -8715,8 +8733,9 @@ class TestFinalizeVerifyRequeue:
         title = "Implement feature Z"
         with patch.object(run, "_update_mission_in_file") as complete, \
              patch.object(run, "_requeue_mission_in_file") as requeue:
-            run._finalize_mission(inst, title, "my-toolkit", 0)
+            result = run._finalize_mission(inst, title, "my-toolkit", 0)
         complete.assert_called_once()
+        assert result is False
 
     def test_verify_requeue_aborts_when_counter_not_persisted(self, tmp_path):
         """If the counter can't be persisted (-1), skip the re-queue and complete

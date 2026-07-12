@@ -1610,8 +1610,9 @@ def _run_iteration(
 
         # Complete/fail mission in missions.md after quota handling has had a
         # chance to requeue transient quota failures.
+        _mission_requeued = False
         if original_mission_title:
-            _run._finalize_mission(
+            _mission_requeued = _run._finalize_mission(
                 instance, original_mission_title, project_name, claude_exit,
                 verify_requeue=bool(post_result.get("verify_requeue")),
                 verify_summary=post_result.get("verify_failure_summary", ""),
@@ -1645,14 +1646,17 @@ def _run_iteration(
             except Exception as e:
                 print(f"[run] plugin cleanup error: {e}", file=sys.stderr)
 
-    # Report result — always notify on completion (success or failure)
-    if claude_exit == 0:
-        log("mission", f"Run {run_num}/{max_runs} — [{project_name}] completed successfully")
-    _run._notify_mission_end(
-        instance, project_name, run_num, max_runs,
-        claude_exit, mission_title,
-        pr_url=_completion_pr_url,
-    )
+    # Report result — always notify on completion (success or failure), unless
+    # _finalize_mission re-queued the mission to Pending instead of completing
+    # it (verify-failure or stagnation retry already sent its own notification).
+    if not _mission_requeued:
+        if claude_exit == 0:
+            log("mission", f"Run {run_num}/{max_runs} — [{project_name}] completed successfully")
+        _run._notify_mission_end(
+            instance, project_name, run_num, max_runs,
+            claude_exit, mission_title,
+            pr_url=_completion_pr_url,
+        )
 
     # Commit instance
     _run._commit_instance(instance)

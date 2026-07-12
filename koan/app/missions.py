@@ -197,12 +197,14 @@ _CANONICAL_KEY_STRIP_RE = re.compile(
     r"|\s*[✅❌]\s*\([^)]*\)"       # ✅/❌ (completed-timestamp)
     r"|\s*\[r:\d+\]"                # [r:N] crash-recovery counter
     r"|\s*\[complexity:[^\]]*\]"    # [complexity:X] classifier tag
-    r"|\s*\[verify-failed:[^\]]*\]" # [verify-failed: …] context tag
+    r"|\s*\[verify-failed:?[^\]]*\]" # [verify-failed] or [verify-failed: …] tag
 )
 
 # Standalone matcher for the verify-failed context tag, used by requeue_mission
 # to drop a prior tag before appending a fresh one (so cycles don't stack tags).
-_VERIFY_FAILED_TAG_RE = re.compile(r"\s*\[verify-failed:[^\]]*\]")
+# The colon is optional so it also matches the bare "[verify-failed]" fallback
+# used when no summary text is available.
+_VERIFY_FAILED_TAG_RE = re.compile(r"\s*\[verify-failed:?[^\]]*\]")
 
 
 def canonical_mission_key(text: str) -> str:

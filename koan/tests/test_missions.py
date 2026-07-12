@@ -1837,6 +1837,24 @@ class TestRequeueMission:
         assert sections["pending"][0].count("[verify-failed:") == 1
         assert "[verify-failed: still no PR]" in sections["pending"][0]
 
+    def test_requeue_bare_verify_tag_does_not_stack(self):
+        """A prior bare `[verify-failed]` (no colon, from an empty-summary
+        fallback) must also be replaced rather than stacked."""
+        content = (
+            "## Pending\n\n"
+            "## In Progress\n\n"
+            "- Fix the parser [verify-failed] ▶(2026-06-27T11:00)\n"
+        )
+        result = requeue_mission(
+            content,
+            "Fix the parser [verify-failed]",
+            append_tag="[verify-failed: now has a summary]",
+        )
+        sections = parse_sections(result)
+        assert len(sections["pending"]) == 1
+        assert sections["pending"][0].count("[verify-failed") == 1
+        assert "[verify-failed: now has a summary]" in sections["pending"][0]
+
 
 # ---------------------------------------------------------------------------
 # canonical_mission_key — verify-failed tag stability
@@ -1849,6 +1867,11 @@ class TestCanonicalKeyVerifyFailed:
             "Fix the parser [verify-failed: no tests added; PR missing] "
             "[project:my-toolkit]"
         )
+        assert canonical_mission_key(tagged) == canonical_mission_key(base)
+
+    def test_canonical_key_strips_bare_verify_failed_tag(self):
+        base = "Fix the parser [project:my-toolkit]"
+        tagged = "Fix the parser [verify-failed] [project:my-toolkit]"
         assert canonical_mission_key(tagged) == canonical_mission_key(base)
 
 
