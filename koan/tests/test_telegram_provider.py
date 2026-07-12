@@ -5,7 +5,12 @@ from unittest.mock import patch, MagicMock
 import pytest
 import requests
 
-from app.messaging.telegram import TelegramProvider, FLOOD_WINDOW_SECONDS, _markdown_to_html
+from app.messaging.telegram import (
+    TelegramProvider,
+    FLOOD_WINDOW_SECONDS,
+    _chunk_html_preserving_pre,
+    _markdown_to_html,
+)
 
 
 @pytest.fixture
@@ -536,3 +541,72 @@ class TestAddReaction:
     def test_add_reaction_api_failure_returns_false(self, mock_post, provider):
         mock_post.return_value = MagicMock(json=lambda: {"ok": False})
         assert provider.add_reaction(55, "✅") is False
+
+
+class TestChunkHtmlPreservingPre:
+    """Chunking must never split a <pre>/</pre> pair (regression: /reports crash).
+
+    Production incident 2026-07-12: a long /reports digest was HTML-converted to
+    a big <pre> table, then char-sliced at 4000, cutting the block in half. Both
+    halves failed Telegram's HTML parser ("can't find end tag corresponding to
+    start tag pre" / "unexpected end tag") and the report was silently dropped.
+    """
+
+    def _balanced(self, chunk):
+        return chunk.count("<pre>") == chunk.count("</pre>")
+
+    def test_small_html_unchanged(self):
+        html = "<pre>hi</pre>"
+        assert _chunk_html_preserving_pre(html, 4000) == [html]
+
+    def test_large_single_pre_block_split_keeps_tags_balanced(self):
+        # One <pre> table far bigger than the limit — the real failure shape.
+        inner = "\n".join(f"row-{i:04d} some data here" for i in range(400))
+        html = f"<pre>{inner}</pre>"
+        assert len(html) > 4000
+        chunks = _chunk_html_preserving_pre(html, 4000)
+        assert len(chunks) > 1
+        for c in chunks:
+            assert len(c) <= 4000
+            assert self._balanced(c)
+            assert c.startswith("<pre>") and c.endswith("</pre>")
+        # No data lost: every row survives somewhere across the chunks
+        # (a boundary newline may move, but no row content is dropped).
+        joined = "".join(c[len("<pre>"):-len("</pre>")] for c in chunks)
+        for i in range(400):
+            assert f"row-{i:04d} some data here" in joined
+
+    def test_two_pre_blocks_never_split_mid_tag(self):
+        # Week + month digest: two blocks joined, total over the limit.
+        block = "<pre>" + "\n".join(f"line {i}" for i in range(300)) + "</pre>"
+        html = block + "\n\n" + block
+        assert len(html) > 4000
+        chunks = _chunk_html_preserving_pre(html, 4000)
+        for c in chunks:
+            assert len(c) <= 4000
+            assert self._balanced(c)
+
+    def test_oversized_single_line_hard_split_stays_balanced(self):
+        html = "<pre>" + "x" * 9000 + "</pre>"
+        chunks = _chunk_html_preserving_pre(html, 4000)
+        for c in chunks:
+            assert len(c) <= 4000
+            assert self._balanced(c)
+
+
+class TestSendRawPreChunking:
+    @patch("app.messaging.telegram.requests.post")
+    def test_long_report_every_sent_chunk_has_balanced_pre(self, mock_post, provider):
+        """Every chunk actually sent to Telegram must have balanced <pre> tags."""
+        mock_post.return_value = MagicMock(json=lambda: {"ok": True})
+        table = "\n".join(f"project-{i:03d}   {i:>5} {i:>5} 100% {i:>6} {i:>5}"
+                          for i in range(400))
+        report = f"PR Report\n```\n{table}\n```"
+        assert provider._send_raw(report) is True
+        assert mock_post.call_count > 1  # forced to chunk
+        for call in mock_post.call_args_list:
+            payload = call[1]["json"]
+            assert payload.get("parse_mode") == "HTML"
+            text = payload["text"]
+            assert len(text) <= 4000
+            assert text.count("<pre>") == text.count("</pre>")

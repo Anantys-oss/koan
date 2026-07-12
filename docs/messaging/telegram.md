@@ -99,7 +99,7 @@ Your `.env` file is missing or the variable name is wrong. Double-check the form
 
 ### Messages not delivered
 
-- Telegram has a 4000-character limit per message. Long messages are auto-chunked.
+- Telegram has a 4000-character limit per message. Long messages are auto-chunked. Messages containing ` ``` ` code blocks are converted to HTML `<pre>` and chunked at code-block boundaries so a split never leaves an unbalanced `<pre>` tag (which Telegram rejects with a parse error, dropping the whole message — e.g. a long `/report`).
 - Duplicate messages within 5 minutes are flood-protected (first duplicate triggers a warning, subsequent ones are silently dropped).
 
 ## Group chats
