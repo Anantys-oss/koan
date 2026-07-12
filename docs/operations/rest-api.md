@@ -257,6 +257,11 @@ Response (202):
     "review_summary": {"lgtm": false, "summary": "…", "checklist": []}
   },
   "result_ref": null,
+  "outcome": {
+    "status": "failed",
+    "reason_category": "timeout",
+    "detail": "killed after 1800s"
+  },
   "usage": {
     "input_tokens": 12000,
     "output_tokens": 3400,
@@ -278,7 +283,28 @@ Response (202):
 }
 ```
 
-Mission status is reconciled on each read against the live `missions.md` state.
+Mission status is reconciled on each read against the live `missions.md` state,
+but **terminal status is sourced from the durable outcome log** (the
+`mission_outcomes` table in `missions.db`, written by the agent loop at the
+Done/Failed transition) whenever an authoritative outcome exists. This corrects
+the previous absence-inference heuristic, which mis-reported an `in_progress`
+mission whose row was pruned, renamed, or lost to a mid-write crash as `done`
+(issue #2285).
+
+`outcome` is a machine-readable terminal record: `{status, reason_category,
+detail}`. It is `null` until the mission reaches a terminal state. `status` and
+`result_line` are unchanged for existing consumers. `reason_category` is one of:
+
+| Category | Meaning |
+|----------|---------|
+| `timeout` | Killed by the mission-timeout watchdog (SIGTERM/SIGKILL). |
+| `stagnation` | Aborted by the stagnation monitor (stuck-in-a-loop). |
+| `agent_error` | Non-zero CLI exit with no finer signal. |
+| `quota` | Hard quota exhaustion failed the run (rare — quota usually pauses). |
+| `tool_error` | A required tool/subprocess failed. |
+| `cancelled` | Operator-cancelled in-progress mission. |
+
+On a successful `done` outcome, `reason_category` is `null`.
 
 `result` is a typed structured payload emitted by skills that produce one
 (e.g. `/review`); other missions leave it `null`. `result_line` remains the

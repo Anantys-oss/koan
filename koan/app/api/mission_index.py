@@ -48,7 +48,25 @@ def _results_dir(instance_dir: Path) -> Path:
 def _with_result_defaults(rec: dict) -> dict:
     rec.setdefault("result", None)
     rec.setdefault("result_ref", None)
+    rec.setdefault("outcome", None)
     return rec
+
+
+def _authoritative_outcome(instance_dir: Path, text: str) -> Optional[dict]:
+    """Latest terminal outcome from the durable OutcomeStore, or None."""
+    try:
+        from app.mission_store.aux_stores import OutcomeStore
+        latest = OutcomeStore(str(instance_dir)).latest(text)
+    except Exception as e:
+        log.error("outcome lookup failed: %s", e)
+        return None
+    if not latest:
+        return None
+    return {
+        "status": latest["status"],
+        "reason_category": latest.get("reason_category"),
+        "detail": latest.get("detail"),
+    }
 
 
 def _load_index(instance_dir: Path) -> List[dict]:
@@ -255,9 +273,21 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
     else:
         # Not found in any section
         if prev_status == "in_progress":
-            new_status = "done"  # archived after completion
+            new_status = "done"  # archived after completion (inferred; see below)
         else:
             new_status = "removed"
+
+    # The durable OutcomeStore is the authoritative source of terminal status.
+    # It overrides the missions.md section scan / absence inference above, which
+    # mis-reports a pruned/renamed/crashed mission as "done" (issue #2285).
+    outcome = _authoritative_outcome(instance_dir, stored_text)
+    if outcome and outcome["status"] in ("done", "failed"):
+        new_status = outcome["status"]
+        target["outcome"] = outcome
+        if outcome.get("detail") and not target.get("result_line"):
+            target["result_line"] = outcome["detail"][:200]
+    else:
+        target.setdefault("outcome", None)
 
     target["status"] = new_status
     records[target_idx] = target
