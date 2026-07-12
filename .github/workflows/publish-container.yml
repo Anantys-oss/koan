@@ -1,0 +1,41 @@
+name: 🐳 Publish Container
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Docker tag to publish (default: devel)"
+        required: false
+        type: string
+        default: devel
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    name: validate
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: 🔍 Validate tag
+        id: check
+        env:
+          TAG: ${{ inputs.tag }}   # bound as data, never interpolated into the shell
+        run: |
+          if ! printf '%s' "$TAG" | grep -qE '^[a-z0-9][a-z0-9._-]{0,127}$'; then
+            echo "::error::Invalid Docker tag '$TAG'. Use lowercase alphanumerics, '.', '-', '_' (max 128 chars; must start alnum). Examples: devel, test, pr-123."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: validate
+    name: publish
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      tags: type=raw,value=${{ needs.validate.outputs.tag }}
+    secrets: inherit

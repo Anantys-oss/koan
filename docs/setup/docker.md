@@ -4,7 +4,7 @@ title: "Docker Setup"
 description: "Covers Docker Compose setup for Koan (pull vs. build from source), workspace project mounts, authentication (Claude/GitHub), volume layout, and troubleshooting common container issues."
 tags: [setup]
 created: 2026-05-28
-updated: 2026-07-08
+updated: 2026-07-12
 ---
 
 # Docker Setup
@@ -84,7 +84,19 @@ make docker-pull-up
 > make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:1.0   # major.minor
 > ```
 >
-> Available tags: `latest`, `stable`, and per-version (`X.Y` / `X.Y.Z`).
+> Available tags: `latest`, `stable`, per-version (`X.Y` / `X.Y.Z`), and a rolling
+> `devel` tag (see below).
+
+> **Rolling `:devel` image.** A fresh image can be published on demand — **without
+> cutting a release** — via the **🐳 Publish Container** workflow (repo Actions →
+> "Run workflow", tag defaults to `devel`). It is built by the same job that produces
+> release images, but pushes **only** the requested tag: `:devel` is a moving target
+> (overwritten on each manual publish) and never updates `:latest` or `:stable`,
+> which move only on a real release.
+>
+> ```bash
+> make docker-pull-up KOAN_IMAGE=ghcr.io/anantys-oss/koan:devel
+> ```
 
 > **UID/GID on the prebuilt image.** The published image runs as UID/GID
 > **1000**. On Linux hosts whose user isn't 1000, bind-mounted `instance/` and
