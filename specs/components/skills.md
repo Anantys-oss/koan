@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-07-10
+updated: 2026-07-12
 ---
 
 # Component Spec — Skills System
@@ -181,6 +181,19 @@ runner/loader-based skills that thread `project_path` (`review`, `refactor`, `pl
 prompt-only skills (`_execute_prompt` returns raw `prompt_body`, no loader) are out of
 scope and rely on general `KOAN.md`. Precedence: mission instruction > `.koan/skills/<skill>/*`
 > `KOAN.md`/`.koan/KOAN.md` > skill built-in prompt > `CLAUDE.md`/defaults.
+
+### `add_project` workspace resolution (contract)
+
+The clone target and project discovery MUST resolve the workspace directory
+through the single helper `app.workspace_discovery.resolve_workspace_dir`
+(prefers `<root>/instance/workspace` when present, else `<root>/workspace`).
+Any new writer of workspace projects resolves through this helper — a writer
+that hardcodes `<root>/workspace` will place clones where discovery does not
+scan on hosted deploys (the #2338 regression, where `/add_project` cloned into
+`<root>/workspace` while discovery read `<root>/instance/workspace`). The
+`add_project` handler, `discover_workspace_projects`, and the merged-registry
+cache-invalidation mtime (`projects_merged._get_workspace_mtime`) all share
+this one resolver so write-path, read-path, and cache-watch stay aligned.
 
 ## Known debt / watch-outs
 

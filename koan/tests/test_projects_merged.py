@@ -348,6 +348,27 @@ projects:
         assert "ws-proj" in names
 
 
+class TestInstanceWorkspaceResolution:
+    """Cache invalidation watches the resolved workspace dir (issue #2338)."""
+
+    def test_instance_workspace_add_invalidates_cache(self, tmp_path):
+        inst_ws = tmp_path / "instance" / "workspace"
+        inst_ws.mkdir(parents=True)
+        (inst_ws / "alpha").mkdir()
+
+        invalidate_cache()
+        first = {n for n, _ in get_all_projects(str(tmp_path))}
+        assert first == {"alpha"}
+
+        # Add a second project the way /add_project would (under instance/workspace).
+        (inst_ws / "beta").mkdir()
+        # Ensure mtime differs (filesystem resolution can be 1s on Linux)
+        os.utime(str(inst_ws), (inst_ws.stat().st_atime + 1, inst_ws.stat().st_mtime + 1))
+
+        second = {n for n, _ in get_all_projects(str(tmp_path))}
+        assert second == {"alpha", "beta"}  # cache saw the new dir, no restart needed
+
+
 class TestGithubUrlCache:
     def test_set_and_get(self):
         set_github_url("myproj", "https://github.com/me/myproj")

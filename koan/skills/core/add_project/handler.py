@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 from app.git_utils import run_git_strict
+from app.workspace_discovery import resolve_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +45,18 @@ def handle(ctx):
         return f"Invalid project name: {project_name}"
 
     koan_root = str(ctx.koan_root)
-    workspace_dir = Path(koan_root) / "workspace"
+    # Resolve the workspace through the SAME helper discovery uses, so the
+    # clone lands where /projects and the agent loop actually look. On hosted
+    # deploys this is <root>/instance/workspace; locally it's <root>/workspace.
+    workspace_dir = resolve_workspace_dir(koan_root)
     project_dir = workspace_dir / project_name
 
     # Check for existing project
     if project_dir.exists():
         return f"Project '{project_name}' already exists at {project_dir}"
 
-    # Ensure workspace directory exists
-    workspace_dir.mkdir(exist_ok=True)
+    # Ensure workspace directory exists (parents: instance/ may not pre-exist)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # Check push access BEFORE cloning — determines setup strategy
     has_push = _check_push_access_safe(owner, repo)
