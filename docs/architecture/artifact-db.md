@@ -1,3 +1,12 @@
+---
+type: doc
+title: "Artifact DB Harness"
+description: "Documents the artifact_db.py harness migrating markdown/JSONL artifacts to a rebuildable SQLite projection: TableSpec/ColumnSpec schemas, connect/create_tables/verify_schema, dual_write (replace/append), rebuild_from_file recovery, and read_from_db_or_file with file fallback."
+tags: [architecture]
+created: 2026-07-11
+updated: 2026-07-11
+---
+
 # Artifact DB harness
 
 `koan/app/artifact_db.py` is the shared harness for migrating markdown/JSONL

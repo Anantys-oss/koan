@@ -11,6 +11,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 ## Docs
 
 ### Architecture
+- [`architecture/artifact-db.md`](docs/architecture/artifact-db.md) — Documents the artifact_db.py harness migrating markdown/JSONL artifacts to a rebuildable SQLite projection: TableSpec/ColumnSpec schemas, connect/create_tables/verify_schema, dual_write (replace/append), rebuild_from_file recovery, and read_from_db_or_file with file fallback.
 - [`architecture/daemon.md`](docs/architecture/daemon.md) — Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture.
 - [`architecture/github-and-trackers.md`](docs/architecture/github-and-trackers.md) — Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work.
 - [`architecture/bridge-memory.md`](docs/architecture/bridge-memory.md) — How awake.py bounds RSS over long uptime: tail-read history, periodic mid-session compaction, one-cycle mission-store read cache, and an opt-in MemoryMonitor watchdog backstop.
