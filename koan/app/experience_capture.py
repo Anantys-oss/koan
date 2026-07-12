@@ -10,6 +10,7 @@ All writes go through the existing append_memory_entry dual-write path.
 This module is purely additive -- it never blocks the caller's flow.
 """
 
+import re
 import sys
 from typing import Optional
 
@@ -42,10 +43,14 @@ def _classify_mission_kind(mission_title: str) -> Optional[str]:
     # /review, /review_rebase missions
     if "/review" in lower:
         return "review"
-    # Freetext fix/implement detection (autonomous missions without / prefix)
-    if any(kw in lower for kw in ("fix ", "bug", "broken", "crash")):
+    # Freetext detection (autonomous missions without a / prefix). Word-boundary
+    # matching avoids substring misfires (e.g. "debug" -> "bug"). Review is
+    # checked before fix so "review the broken parser" is tagged review, not fix.
+    if re.search(r"\breview\b", lower):
+        return "review"
+    if any(re.search(rf"\b{kw}\b", lower) for kw in ("fix", "bug", "broken", "crash")):
         return "fix"
-    if any(kw in lower for kw in ("implement", "add feature", "build")):
+    if any(re.search(rf"\b{kw}\b", lower) for kw in ("implement", "feature", "build")):
         return "implement"
 
     return None
@@ -73,8 +78,8 @@ def _is_significant_for_capture(
         from app.post_mission_reflection import is_significant_mission
         if is_significant_mission(mission_title, duration_minutes, journal_content):
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        _log_safe("warn", f"is_significant_mission failed, using duration fallback: {e}")
 
     # Also capture when we have a mission kind AND reasonable substance
     return mission_kind is not None and duration_minutes >= 5
