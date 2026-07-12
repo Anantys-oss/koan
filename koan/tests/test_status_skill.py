@@ -824,6 +824,23 @@ class TestHandleUsage:
         assert "In progress" in result
         assert "Done: 3" in result
 
+    def test_missions_in_usage_when_export_deleted(self, tmp_path):
+        """Regression: store is authoritative — deleting the disposable export must
+        not make /usage report 'No missions.' while the store holds a queue."""
+        from tests.store_helpers import seed_missions
+        instance = tmp_path / "instance"
+        seed_missions(
+            instance,
+            "# Missions\n\n## Pending\n- task one\n- task two\n\n"
+            "## In Progress\n- current task\n\n## Done\n",
+        )
+        (instance / "missions.md").unlink()  # operator deletes the export
+        from skills.core.status.handler import _handle_usage
+        ctx = _make_ctx("usage", instance, tmp_path)
+        result = _handle_usage(ctx)
+        assert "Pending (2)" in result
+        assert "current task" in result
+
     def test_no_missions_file_in_usage(self, tmp_path):
         """No missions.md = 'No missions' message."""
         instance = tmp_path / "instance"

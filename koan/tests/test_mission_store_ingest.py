@@ -124,3 +124,42 @@ def test_recover_stale_requeues_then_escalates(tmp_path):
     # …until the recovery budget is exceeded, then escalate to failed.
     r2 = store.recover_stale(max_recover=1)
     assert r2.escalated and store.count_by_state("failed") == 1
+
+
+def test_reconcile_all_logs_dropped_unparseable(caplog):
+    """A store round-trip that drops a mission line the store can't re-parse must
+    log at ERROR, not silently no-op-delete it."""
+    from unittest.mock import MagicMock, patch
+
+    from app.mission_store import transition
+    from app.mission_store.base import IngestReport
+
+    store = MagicMock()
+    store.reconcile_from_content.return_value = IngestReport(
+        inserted=0, unparseable=["- a line the store could not re-parse"]
+    )
+    with patch.object(transition, "get_mission_store", return_value=store), \
+         patch("app.mission_store.aux_stores.CiQueueStore"), \
+         patch("app.mission_store.aux_stores.IdeaStore"), \
+         caplog.at_level("ERROR"):
+        transition.reconcile_all("/tmp/does-not-matter", "# Missions\n")
+
+    assert "unparseable" in caplog.text
+    assert "could not re-parse" in caplog.text
+
+
+def test_reconcile_all_quiet_when_all_parse(caplog):
+    from unittest.mock import MagicMock, patch
+
+    from app.mission_store import transition
+    from app.mission_store.base import IngestReport
+
+    store = MagicMock()
+    store.reconcile_from_content.return_value = IngestReport(inserted=3, unparseable=[])
+    with patch.object(transition, "get_mission_store", return_value=store), \
+         patch("app.mission_store.aux_stores.CiQueueStore"), \
+         patch("app.mission_store.aux_stores.IdeaStore"), \
+         caplog.at_level("ERROR"):
+        transition.reconcile_all("/tmp/does-not-matter", "# Missions\n")
+
+    assert "unparseable" not in caplog.text

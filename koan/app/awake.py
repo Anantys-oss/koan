@@ -315,7 +315,9 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     missions_context = ""
     if pending_context:
         missions_context = pending_context
-    elif MISSIONS_FILE.exists():
+    else:
+        # Store is authoritative; read it directly rather than gating on the (now
+        # disposable) missions.md export — the try/except below degrades safely.
         from app.mission_store.transition import read_sections
         try:
             sections = read_sections(MISSIONS_FILE.parent)

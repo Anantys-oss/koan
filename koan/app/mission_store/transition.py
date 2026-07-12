@@ -9,10 +9,13 @@ the store directly and writers round-trip through it. ``read_sections`` /
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from app.mission_store.base import TERMINAL_STATES, VALID_STATES, render_mission_line
 from app.mission_store.resolver import get_mission_store
+
+logger = logging.getLogger(__name__)
 
 
 def reconcile_all(instance, content: str) -> None:
@@ -23,7 +26,20 @@ def reconcile_all(instance, content: str) -> None:
     """
     from app.mission_store.aux_stores import CiQueueStore, IdeaStore
     inst = str(instance)
-    get_mission_store(inst).reconcile_from_content(content)
+    report = get_mission_store(inst).reconcile_from_content(content)
+    # reconcile_from_content DELETE+re-INSERTs from the text form; any line it
+    # cannot re-parse is dropped from the authoritative store while the caller's
+    # new_content still carries it (persisted state and return value diverge). Log
+    # loudly so that lossy round-trip is visible, not a silent no-op deletion. (We
+    # log rather than raise: this runs in the per-write chokepoint, so raising would
+    # brick every mission mutation on a single malformed line.)
+    if report is not None and getattr(report, "unparseable", None):
+        logger.error(
+            "[mission_store] reconcile dropped %d unparseable mission line(s) on "
+            "the store round-trip: %s",
+            len(report.unparseable),
+            " | ".join(s.replace("\n", " ")[:80] for s in report.unparseable[:5]),
+        )
     CiQueueStore(inst).reconcile_from_content(content)
     IdeaStore(inst).reconcile_from_content(content)
 

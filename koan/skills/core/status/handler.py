@@ -565,22 +565,24 @@ def _handle_usage(ctx) -> str:
     if usage_path.exists():
         usage_text = usage_path.read_text().strip() or usage_text
 
+    # Store is authoritative; read it directly rather than gating on the (now
+    # disposable) missions.md export — read_sections returns empty when there is
+    # nothing, so missions_text stays "No missions." for a genuinely empty queue.
     missions_text = "No missions."
-    if missions_file.exists():
-        from app.mission_store.transition import read_sections
-        sections = read_sections(missions_file.parent)
-        parts = []
-        in_progress = sections.get("in_progress", [])
-        pending = sections.get("pending", [])
-        done = sections.get("done", [])
-        if in_progress:
-            parts.append("In progress:\n" + "\n".join(in_progress[:5]))
-        if pending:
-            parts.append(f"Pending ({len(pending)}):\n" + "\n".join(pending[:5]))
-        if done:
-            parts.append(f"Done: {len(done)}")
-        if parts:
-            missions_text = "\n\n".join(parts)
+    from app.mission_store.transition import read_sections
+    sections = read_sections(missions_file.parent)
+    parts = []
+    in_progress = sections.get("in_progress", [])
+    pending = sections.get("pending", [])
+    done = sections.get("done", [])
+    if in_progress:
+        parts.append("In progress:\n" + "\n".join(in_progress[:5]))
+    if pending:
+        parts.append(f"Pending ({len(pending)}):\n" + "\n".join(pending[:5]))
+    if done:
+        parts.append(f"Done: {len(done)}")
+    if parts:
+        missions_text = "\n\n".join(parts)
 
     pending_text = "No run in progress."
     pending_path = instance_dir / "journal" / "pending.md"
