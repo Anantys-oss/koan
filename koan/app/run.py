@@ -3008,9 +3008,16 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str,
         if failed and reason is None:
             reason = classify_failure(exit_code, stagnated=stagnated,
                                       cause_tag=cause_tag)
-        record_outcome(instance, mission_title, status,
-                       reason_category=reason,
-                       detail=failure_detail or (cause_tag or None))
+        recorded = record_outcome(instance, mission_title, status,
+                                  reason_category=reason,
+                                  detail=failure_detail or (cause_tag or None))
+        # A dropped authoritative write silently reverts the REST API to the
+        # known-buggy absence-inference heuristic (#2285). Surface it distinctly
+        # from a hard exception so a persistently failing outcome log is visible.
+        if not recorded:
+            log("error",
+                f"Authoritative outcome write dropped for '{mission_title}' "
+                f"(status={status}); GET /v1/missions falls back to inference")
     except Exception as e:  # never let outcome logging fail finalization
         log("error", f"Outcome recording error: {e}")
     try:

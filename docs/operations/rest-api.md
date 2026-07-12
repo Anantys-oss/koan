@@ -286,7 +286,10 @@ Response (202):
 Mission status is reconciled on each read against the live `missions.md` state,
 but **terminal status is sourced from the durable outcome log** (the
 `mission_outcomes` table in `missions.db`, written by the agent loop at the
-Done/Failed transition) whenever an authoritative outcome exists. This corrects
+Done/Failed transition) once the mission has left the live sections and an
+authoritative outcome exists. A mission still present in `pending`/`in_progress`
+keeps its live status and reports `outcome: null`, so a stale outcome from a
+prior run of a requeued mission never overrides a fresh live state. This corrects
 the previous absence-inference heuristic, which mis-reported an `in_progress`
 mission whose row was pruned, renamed, or lost to a mid-write crash as `done`
 (issue #2285).

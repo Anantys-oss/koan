@@ -103,12 +103,18 @@ guessed to be `done`. That mis-reports a mission whose row was pruned, renamed,
 or lost to a mid-write crash. The contract is now:
 
 - **The durable `OutcomeStore` (`mission_outcomes` table, keyed by
-  `canonical_mission_key`) is the authoritative source of terminal status.**
-  When `OutcomeStore.latest(text)` yields a `done`/`failed` record, `reconcile()`
-  uses that status and **overrides** the section-scan / absence inference. The
-  agent loop writes the row at the authoritative Done/Failed transition
-  (`run._finalize_mission` → `app.mission_outcome.record_outcome`), so status
-  comes from the state machine, not file position.
+  `canonical_mission_key`) is the authoritative source of terminal status —
+  but only once the mission has left the live sections.** When the section scan
+  places the mission in `pending`/`in_progress`, that live status wins and
+  `outcome` stays `null`; the outcome log is consulted only when the mission is
+  gone/terminal. This matters because a mission requeued after a prior terminal
+  run shares its `canonical_mission_key`, so a stale outcome row must never
+  override a fresh live state. When the mission is not live and
+  `OutcomeStore.latest(text)` yields a `done`/`failed` record, `reconcile()` uses
+  that status and **overrides** the absence inference. The agent loop writes the
+  row at the authoritative Done/Failed transition (`run._finalize_mission` →
+  `app.mission_outcome.record_outcome`), so terminal status comes from the state
+  machine, not file position.
 - The record gains an `outcome` field: `{status, reason_category, detail}` or
   `null` until a terminal outcome exists. `reason_category` ∈
   `quota|timeout|tool_error|agent_error|cancelled|stagnation` (`null` on `done`).

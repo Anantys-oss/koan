@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -53,12 +54,18 @@ def _with_result_defaults(rec: dict) -> dict:
 
 
 def _authoritative_outcome(instance_dir: Path, text: str) -> Optional[dict]:
-    """Latest terminal outcome from the durable OutcomeStore, or None."""
+    """Latest terminal outcome from the durable OutcomeStore, or None.
+
+    Narrowly catches only the recoverable DB error: a locked/corrupt outcome
+    log degrades to the section-scan fallback, but a programming error (bad
+    import, wrong signature) must surface rather than silently reverting the
+    #2285 fix to the absence-inference heuristic.
+    """
     try:
         from app.mission_store.aux_stores import OutcomeStore
         latest = OutcomeStore(str(instance_dir)).latest(text)
-    except Exception as e:
-        log.error("outcome lookup failed: %s", e)
+    except sqlite3.DatabaseError as e:
+        log.error("outcome lookup failed (DB error): %s", e)
         return None
     if not latest:
         return None
@@ -280,7 +287,14 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
     # The durable OutcomeStore is the authoritative source of terminal status.
     # It overrides the missions.md section scan / absence inference above, which
     # mis-reports a pruned/renamed/crashed mission as "done" (issue #2285).
-    outcome = _authoritative_outcome(instance_dir, stored_text)
+    #
+    # But only when the mission is NOT currently live: a mission requeued after a
+    # prior terminal run shares its canonical_mission_key, so a stale outcome row
+    # must never override a fresh pending/in_progress state. The live section scan
+    # wins for those; the outcome log only speaks once the mission has left them.
+    outcome = None
+    if new_status not in ("pending", "in_progress"):
+        outcome = _authoritative_outcome(instance_dir, stored_text)
     if outcome and outcome["status"] in ("done", "failed"):
         new_status = outcome["status"]
         target["outcome"] = outcome
