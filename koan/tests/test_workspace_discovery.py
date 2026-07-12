@@ -6,7 +6,26 @@ from unittest.mock import patch, PropertyMock
 
 import pytest
 
-from app.workspace_discovery import _validate_entry, discover_workspace_projects
+from app.workspace_discovery import (
+    _validate_entry,
+    discover_workspace_projects,
+    resolve_workspace_dir,
+)
+
+
+class TestResolveWorkspaceDir:
+    def test_prefers_instance_workspace_when_present(self, tmp_path):
+        inst_ws = tmp_path / "instance" / "workspace"
+        inst_ws.mkdir(parents=True)
+        (tmp_path / "workspace").mkdir()
+        assert resolve_workspace_dir(tmp_path) == inst_ws
+
+    def test_falls_back_to_root_workspace(self, tmp_path):
+        # No instance/workspace present
+        assert resolve_workspace_dir(tmp_path) == tmp_path / "workspace"
+
+    def test_accepts_str_and_path(self, tmp_path):
+        assert resolve_workspace_dir(str(tmp_path)) == tmp_path / "workspace"
 
 
 @pytest.fixture
