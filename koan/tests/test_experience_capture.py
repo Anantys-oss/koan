@@ -487,7 +487,14 @@ class TestCiFixCapture:
     def test_ci_fix_success_captures(self, tmp_path):
         from app.claude_step import run_ci_fix_loop
 
-        mock_step_result = type("StepResult", (), {"quota_exhausted": False})()
+        mock_step_result = type(
+            "StepResult",
+            (),
+            {
+                "quota_exhausted": False,
+                "output": "Root cause: null deref; fixed by adding a guard",
+            },
+        )()
 
         def mock_step_runner(**kwargs):
             return mock_step_result, False, 1
@@ -525,8 +532,53 @@ class TestCiFixCapture:
         _, kwargs = mock_capture.call_args
         assert kwargs["outcome"] == "success"
         assert kwargs["exit_code"] == 0
+        # approach = the winning Claude step's fix summary, NOT the post-push
+        # CI recheck logs.
+        assert kwargs["approach"] == "Root cause: null deref; fixed by adding a guard"
+        assert "CI passed after fix" not in kwargs["approach"]
         # mission_kind is determined internally by _classify_mission_kind,
         # not passed by the caller — so it's not in kwargs.
+
+    def test_ci_fix_pending_does_not_capture(self, tmp_path):
+        # A pending terminal means the fix was pushed and CI is still running;
+        # capture must be deferred to the re-enqueued monitoring run rather than
+        # recording a false ``failed`` in the append-only truth log.
+        from app.claude_step import run_ci_fix_loop
+
+        mock_step_result = type(
+            "StepResult", (), {"quota_exhausted": False, "output": "pushed a fix"}
+        )()
+
+        def mock_step_runner(**kwargs):
+            return mock_step_result, False, 1
+
+        def mock_recheck(branch, repo):
+            return "none", None, "CI still running"
+
+        with patch("app.claude_step._force_push"), \
+             patch("app.claude_step._run_git", return_value=""), \
+             patch("app.utils.truncate_diff", return_value=""), \
+             patch("app.experience_capture.capture_experience") as mock_capture:
+            success, _logs = run_ci_fix_loop(
+                branch="koan/test",
+                base="main",
+                full_repo="owner/repo",
+                project_path=str(tmp_path),
+                ci_logs="CI failed: test error",
+                actions_log=[],
+                max_attempts=2,
+                use_polling=False,
+                prompt_builder=lambda logs, diff: "fix",
+                step_runner=mock_step_runner,
+                push_fn=lambda b, p: None,
+                recheck_fn=mock_recheck,
+                instance_dir=str(tmp_path),
+                project_name="my-toolkit",
+            )
+        # Fix was pushed, CI pending → treated as success by the loop return...
+        assert success is True
+        # ...but no experience entry is written for the deferred terminal.
+        mock_capture.assert_not_called()
 
     def test_ci_fix_no_capture_without_instance_dir(self, tmp_path):
         from app.claude_step import run_ci_fix_loop
