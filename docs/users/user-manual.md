@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-11
+updated: 2026-07-12
 ---
 
 # Kōan User Manual
@@ -2009,6 +2009,11 @@ See [docs/operations/auto-update.md](../operations/auto-update.md) for details.
 
 - **Usage:** `/add_project <github-url> [name]`
 - **Aliases:** —
+
+The repo is cloned into the **active workspace directory** — `instance/workspace/`
+on hosted deploys (persistent volume), or `workspace/` on local installs — and
+registered via auto-discovery. No manual `projects.yaml` edit is required; the
+project appears in `/projects` immediately.
 
 <details>
 <summary>Use cases</summary>
