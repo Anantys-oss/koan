@@ -31,6 +31,23 @@ _KEY_DEV_SKILLS = frozenset({
     "security_audit", "tech_debt", "explain",
 })
 
+# One-time feature announcements: sent once ever (tracked in
+# .feature-notices.json), riding the same idle throttle as skill tips and using
+# the same 💡 format, but with a link to the online doc. Add new (key, message)
+# tuples here to advertise future features.
+_ONE_TIME_NOTICES = (
+    (
+        "koan-md",
+        "💡 Did you know?\n"
+        "\n"
+        "Kōan now reads a project-root KOAN.md (and an optional .koan/ directory) "
+        "for koan-only guidance your team's CLAUDE.md never sees — steer autonomous "
+        "work without touching the shared instructions everyone else loads.\n"
+        "\n"
+        "Learn more: https://github.com/Anantys-oss/koan/blob/main/docs/users/koan-md.md",
+    ),
+)
+
 
 def _get_eligible_skills(registry) -> list:
     """Return core bridge-visible skills suitable for tips."""
@@ -135,6 +152,21 @@ def pick_tip(instance_dir: str) -> Optional[str]:
     return _format_tip(chosen_skill)
 
 
+def pick_one_time_notice(instance_dir: str) -> Optional[str]:
+    """Return the next unshown one-time feature notice, or None.
+
+    Side effect: records the notice as shown so it is never repeated.
+    """
+    from app.skill_usage import get_shown_notices, record_notice_shown
+
+    shown = get_shown_notices(instance_dir)
+    for key, message in _ONE_TIME_NOTICES:
+        if key not in shown:
+            record_notice_shown(instance_dir, key)
+            return message
+    return None
+
+
 def maybe_send_feature_tip(instance_dir: str) -> bool:
     """Send a feature tip if the throttle window has elapsed.
 
@@ -150,7 +182,10 @@ def maybe_send_feature_tip(instance_dir: str) -> bool:
     if _last_tip_time > 0 and (now - _last_tip_time) < _TIP_INTERVAL:
         return False
 
-    tip = pick_tip(instance_dir)
+    # One-time feature notices take priority over rotating skill tips.
+    tip = pick_one_time_notice(instance_dir)
+    if tip is None:
+        tip = pick_tip(instance_dir)
     if tip is None:
         return False
 

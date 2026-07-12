@@ -18,6 +18,7 @@ from app.feature_tips import (
     _score_skill,
     mark_active,
     maybe_send_feature_tip,
+    pick_one_time_notice,
     pick_tip,
     reset_tip_throttle,
 )
@@ -282,6 +283,36 @@ def test_mark_active_resets_idle_guard(tmp_path):
         assert maybe_send_feature_tip(str(tmp_path)) is True
         assert mock_outbox.call_count == 2
 
+    reset_tip_throttle()
+
+
+# --- pick_one_time_notice ---
+
+def test_one_time_notice_sent_once(tmp_path):
+    """The KOAN.md notice is returned once, then never again."""
+    first = pick_one_time_notice(str(tmp_path))
+    assert first is not None
+    assert "KOAN.md" in first
+    assert ".koan/" in first
+    assert "docs/users/koan-md.md" in first
+
+    # Recorded as shown → not repeated.
+    assert pick_one_time_notice(str(tmp_path)) is None
+
+
+def test_one_time_notice_takes_priority_over_tip(tmp_path):
+    """maybe_send_feature_tip surfaces the one-time notice before rotating tips."""
+    reset_tip_throttle()
+    skills = [_make_skill("status")]
+    registry = FakeRegistry(skills)
+
+    sent = []
+    with patch("app.skills.build_registry", return_value=registry), \
+         patch("app.utils.append_to_outbox", side_effect=lambda p, m: sent.append(m)):
+        assert maybe_send_feature_tip(str(tmp_path)) is True
+
+    assert len(sent) == 1
+    assert "KOAN.md" in sent[0]
     reset_tip_throttle()
 
 
