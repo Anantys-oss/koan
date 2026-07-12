@@ -61,7 +61,12 @@ the single most important thing the reader must not miss.
 
 - `koan/app/rebase_pr.py` — WARNING when review feedback was dropped.
 - `koan/app/review_runner.py` — IMPORTANT when the branch moved mid-review.
-- `koan/app/review_runner.py` — IMPORTANT for blocked-review (`lgtm: false`) verdict summaries.
+- `koan/app/review_runner.py` — severity-graded **verdict body** (`_build_verdict_body`):
+  TIP (approved / merge-ready), WARNING (warning-level blockers only), CAUTION
+  (any critical blocker). The color carries the merge signal at a glance. The
+  main review comment's summary paragraph is **not** wrapped — a full-paragraph
+  IMPORTANT callout there is noise; the one graded alert lives on the short
+  verdict message instead.
 - `koan/skills/core/audit/audit_runner.py` — CAUTION for critical-severity audit findings.
 
 ## Invariants

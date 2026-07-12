@@ -418,6 +418,8 @@ instance/                 # Your private data (gitignored)
 | `make logs` | Tail live output from all processes |
 | `make stop` | Stop all processes |
 | `make status` | Show running process status |
+| `make missions` | List the mission queue directly from the store (break-glass; works when the bridge is down) |
+| `make mission-rm sel=i1` | Remove/abort a mission by selector when the bridge is unresponsive ([docs](docs/operations/mission-cli.md)) |
 | `make dashboard` | Web UI (default: http://127.0.0.1:5001) |
 | `make test` | Run test suite |
 | `make say m="..."` | Send a test message |

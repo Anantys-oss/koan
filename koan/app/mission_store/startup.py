@@ -1,0 +1,91 @@
+"""One-time boot ingest: populate the store from ``missions.md`` (and the
+quarantine file) the first time a database backend comes up.
+
+Wired into ``startup_manager.run_startup`` as the ``Mission store ingest`` step —
+the analog of ``index_memory_sqlite`` for the memory DB. Idempotent: gated on
+``MissionStore.is_initialized()`` so it runs exactly once, after crash recovery
+and pruning have stabilized ``missions.md``.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from pathlib import Path
+from typing import Optional
+
+from app.mission_store.base import IngestReport
+
+logger = logging.getLogger(__name__)
+
+_Q_RE = re.compile(r"^-\s*\U0001f6e1️?\s*\[(?P<ts>[^\]]*)\]\s*"
+                   r"\((?P<src>[^)]*)\)\s*(?P<reason>[^:]*):\s*(?P<text>.*)$")
+
+
+def ensure_ingested(instance: str) -> Optional[IngestReport]:
+    """Ingest missions.md (+ CI / Ideas / quarantine) into the store, once.
+
+    Returns the missions IngestReport, or ``None`` if the store was already
+    initialized (nothing to do).
+    """
+    from app.mission_store import get_mission_store
+    store = get_mission_store(instance)
+    # Short-circuit if the store is already populated by EITHER path: the S3
+    # ingest marker (initialized_at) OR the S8 cutover sync marker (s8_synced,
+    # set by ensure_store_synced / prune_missions_done's re-sync). Without the
+    # is_synced() guard, a boot where startup pruning re-syncs first would then
+    # append a full SECOND copy here (ingest_from_file INSERTs without deleting).
+    if store.is_initialized() or store.is_synced():
+        return None
+
+    md = Path(instance) / "missions.md"
+    content = md.read_text() if md.exists() else ""
+
+    # Quarantine first: it RAISES on a failed security-record migration, and must
+    # do so BEFORE the additive CI/Ideas inserts below — otherwise a retry next
+    # boot (marker still unset) would double-insert those sibling rows.
+    _ingest_quarantine_file(instance)
+
+    # Sibling populations; the missions ingest sets the initialized marker last,
+    # so a crash mid-ingest simply retries the whole thing next boot.
+    if content:
+        from app import missions
+        from app.mission_store.aux_stores import CiQueueStore, IdeaStore
+        CiQueueStore(instance).ingest_items(missions.get_ci_items(content))
+        IdeaStore(instance).ingest_items(missions.parse_ideas(content))
+
+    report = store.ingest_from_file(md)
+    logger.info("[mission_store] one-time ingest: %s inserted, %s unparseable",
+                report.inserted, len(report.unparseable))
+    return report
+
+
+def _ingest_quarantine_file(instance: str) -> None:
+    qpath = Path(instance) / "missions-quarantine.md"
+    if not qpath.exists():
+        return
+    from app.mission_store.aux_stores import QuarantineStore
+    store = QuarantineStore(instance)
+    total = failed = 0
+    for line in qpath.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        m = _Q_RE.match(line)
+        if m:
+            ok = store.add(m.group("text"), m.group("reason").strip(),
+                           m.group("src").strip())
+        else:  # keep unparseable entries rather than dropping them
+            ok = store.add(line[2:].strip(), "imported", "quarantine-file")
+        total += 1
+        failed += not ok
+    if failed:
+        # A failed security-record (prompt-injection) migration must be FATAL for
+        # the ingest step, not logged-and-forgotten: ensure_ingested would otherwise
+        # still set the initialized marker and the file is later regenerated from the
+        # store, permanently dropping the unmigrated records with no retry. Raising
+        # leaves the marker unset, so _safe_run records the failure and the next boot
+        # retries the whole ingest. QuarantineStore.add already logged each failure.
+        raise RuntimeError(
+            f"[mission_store] quarantine migration incomplete: {failed} of {total} "
+            f"records failed to migrate into the store")

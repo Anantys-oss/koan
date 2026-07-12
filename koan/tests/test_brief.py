@@ -102,8 +102,10 @@ class TestDigestAssembly:
         missions = instance / "missions.md"
         missions.write_text(
             "# Missions\n\n## CI\n\n"
-            "- Fix build on PR #42\n"
-            "- Fix lint on PR #43\n\n"
+            "- [project:koan] https://github.com/o/r/pull/42 branch:b1 repo:o/r "
+            "queued:2026-07-01T10:00 (attempt 0/5)\n"
+            "- [project:koan] https://github.com/o/r/pull/43 branch:b2 repo:o/r "
+            "queued:2026-07-01T10:01 (attempt 0/5)\n\n"
             "## Pending\n\n## In Progress\n\n## Done\n\n## Failed\n"
         )
 

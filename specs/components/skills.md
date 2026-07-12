@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-07-09
+updated: 2026-07-10
 ---
 
 # Component Spec — Skills System
@@ -68,6 +68,10 @@ koan/skills/core/<name>/
   placeholders (`my_fix`, `my_team`, `PROJ-NNN`).
 - **Order-sensitive combos insert atomically** — one locked multi-entry write
   (`insert_pending_missions`), never two top-inserts (TOCTOU + reversed order).
+- **Per-skill project instructions are mechanism, not enumeration.** `.koan/skills/<name>/*.md`
+  is injected by `prompts._maybe_append_project_skill_instructions`, gated on the skill dir
+  having a `SKILL.md` and the caller passing `project_path` — never a hardcoded skill list.
+  New skills get it for free.
 
 ## Adding a core skill (full checklist)
 
@@ -162,6 +166,21 @@ behavioural unit tests instead):
   returned note — the two can never diverge. `_post_review_comment(..., coverage_note=)`
   prepends the note (a `⚠️ Partial review` block) above the review body, before the
   60 K GitHub-length truncation, so partial coverage is never silent.
+
+### Project-local skill instructions (.koan/skills/<name>/)
+
+A target project may ship `<project>/.koan/skills/<skill>/*.md` to append authoritative
+extra instructions on top of a core skill's built-in prompt (append-only; no override in
+this phase). `project_koan.read_skill_instructions()` reads the `*.md` files sorted by
+filename (each behind a `# <filename>` provenance marker), ignores non-`.md` files and
+subdirs, and caps the concatenation at `_MAX_KOAN_SKILL_CHARS` (16k).
+`prompts._maybe_append_project_skill_instructions(prompt, skill_dir, project_path)` frames
+the content via the `koan-skill` template and appends it — **only** when `skill_dir` has a
+`SKILL.md` and `project_path` is set (default `None` ⇒ byte-identical no-op). Scope:
+runner/loader-based skills that thread `project_path` (`review`, `refactor`, `plan`, …);
+prompt-only skills (`_execute_prompt` returns raw `prompt_body`, no loader) are out of
+scope and rely on general `KOAN.md`. Precedence: mission instruction > `.koan/skills/<skill>/*`
+> `KOAN.md`/`.koan/KOAN.md` > skill built-in prompt > `CLAUDE.md`/defaults.
 
 ## Known debt / watch-outs
 

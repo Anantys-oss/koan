@@ -3,7 +3,7 @@ type: doc
 title: "KOAN.md — koan-only project instructions"
 tags: [users]
 created: 2026-07-09
-updated: 2026-07-09
+updated: 2026-07-11
 ---
 
 # KOAN.md — koan-only project instructions
@@ -28,9 +28,51 @@ invisible to human sessions by construction.
 
 ## Limits
 
-- Read from the project root only (not nested directories).
-- Capped at 16,000 characters; longer files are truncated with a notice.
+- Read from `KOAN.md` at the project root **and** `.koan/KOAN.md` (both are
+  concatenated); nested directories other than `.koan/` are not scanned.
+- Capped at 16,000 characters (combined); longer content is truncated with a notice.
 - Blank/whitespace-only files are ignored.
+
+## The `.koan/` directory
+
+For finer control, a project can add an optional `.koan/` directory (checked
+into the target repo):
+
+```
+myrepo/
+├── KOAN.md                       # general — root, unchanged
+└── .koan/                        # optional
+    ├── KOAN.md                   # general — same role as root KOAN.md
+    └── skills/
+        ├── review/
+        │   └── extra-rules.md    # appended to the /review prompt
+        └── plan/
+            └── house-style.md    # appended to the /plan prompt
+```
+
+- **`.koan/KOAN.md`** — a second source for general koan-only guidance,
+  concatenated after the root `KOAN.md`.
+- **`.koan/skills/<skill>/*.md`** — extra instructions appended (append-only)
+  to that core skill's built-in prompt, for runner-based skills (`review`,
+  `refactor`, `plan`, …). All `*.md` files in the directory are concatenated in
+  filename order and appended to **every** pass of that skill (e.g. `review`'s
+  first-pass, reflection, and triage sub-passes all honor `.koan/skills/review/`).
+  Per-skill content is capped at 16,000 characters.
+
+`<skill>` is the **invoking skill's** name, not the prompt name. In particular
+the `/pr` handler drives its feedback, refactor, and quality-review sub-passes
+under a single `pr` skill, so steer all three via `.koan/skills/pr/` (there is
+no separate `.koan/skills/refactor/`).
+
+Everything is opt-in by file existence and a no-op when absent. Prompt-only
+skills do not read `.koan/skills/`; steer those with general `KOAN.md`.
+
+## Discoverability
+
+Kōan advertises this feature once, unprompted: the first idle period after the
+feature ships, it sends a one-time 💡 hint (same format as skill tips) linking
+back to this page. The notice is tracked in `instance/.feature-notices.json` and
+never repeats.
 
 ## Example
 

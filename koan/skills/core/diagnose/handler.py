@@ -47,10 +47,10 @@ def _find_last_failure(missions_path, project_filter=None):
     Returns dict with keys: text, date, time, project, cause_tag
     or None if no failures found.
     """
-    from app.missions import parse_sections, strip_timestamps
+    from app.missions import strip_timestamps
+    from app.mission_store.transition import read_sections
 
-    content = missions_path.read_text()
-    sections = parse_sections(content)
+    sections = read_sections(missions_path.parent)
     failed = sections.get("failed", [])
 
     if not failed:
@@ -75,13 +75,16 @@ def _find_last_failure(missions_path, project_filter=None):
         if project_filter and project and project.lower() != project_filter.lower():
             continue
 
-        cause_match = _CAUSE_TAG_RE.search(first_line)
+        # Extract the cause tag from the timestamp-stripped line so it is found
+        # regardless of marker order (the store re-renders ❌ markers at the end
+        # of the line, after any trailing [cause] tag).
+        no_ts = _FAILED_TS_RE.sub("", first_line).rstrip()
+        cause_match = _CAUSE_TAG_RE.search(no_ts)
         cause_tag = cause_match.group(1) if cause_match else None
 
-        clean_text = strip_timestamps(first_line)
+        clean_text = strip_timestamps(no_ts)
         clean_text = PROJECT_TAG_RE.sub("", clean_text).strip()
         clean_text = _CAUSE_TAG_RE.sub("", clean_text).strip()
-        clean_text = _FAILED_TS_RE.sub("", clean_text).strip()
 
         sort_key = f"{fail_date}T{fail_time}"
         if best is None or sort_key > best["sort_key"]:
@@ -133,10 +136,9 @@ def _get_journal_context(instance_dir, project, fail_date):
 
 def _is_already_queued(missions_path, failure_text):
     """Check if a diagnose mission for this failure is already pending."""
-    from app.missions import parse_sections
+    from app.mission_store.transition import read_sections
 
-    content = missions_path.read_text()
-    sections = parse_sections(content)
+    sections = read_sections(missions_path.parent)
     for item in sections.get("pending", []) + sections.get("in_progress", []):
         if "Diagnose and fix" in item and failure_text[:80] in item:
             return True

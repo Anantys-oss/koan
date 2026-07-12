@@ -634,12 +634,12 @@ class TestRecoveryCounterIntegration:
 
     def test_second_recovery_increments_tracker_again(self, instance_dir):
         """Second recovery increments crash_count to 2."""
-        missions = instance_dir / "missions.md"
+        from tests.store_helpers import seed_missions
 
-        missions.write_text(_missions(in_progress="- Fix the bug"))
+        seed_missions(instance_dir, _missions(in_progress="- Fix the bug"))
         recover_missions(str(instance_dir))
 
-        missions.write_text(_missions(in_progress="- Fix the bug"))
+        seed_missions(instance_dir, _missions(in_progress="- Fix the bug"))
         count, _ = recover_missions(str(instance_dir))
         assert count == 1
 
@@ -950,12 +950,12 @@ class TestRecoveryJSONLLog:
 
     def test_log_appends_across_runs(self, instance_dir):
         """Multiple recovery runs append to the same log."""
-        missions = instance_dir / "missions.md"
+        from tests.store_helpers import seed_missions
 
-        missions.write_text(_missions(in_progress="- Task A"))
+        seed_missions(instance_dir, _missions(in_progress="- Task A"))
         recover_missions(str(instance_dir))
 
-        missions.write_text(_missions(in_progress="- Task B"))
+        seed_missions(instance_dir, _missions(in_progress="- Task B"))
         recover_missions(str(instance_dir))
 
         log_path = instance_dir / "recovery.jsonl"

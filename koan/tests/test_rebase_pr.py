@@ -22,6 +22,7 @@ from app.rebase_pr import (
     _apply_review_feedback,
     _build_ci_fix_prompt,
     _build_rebase_comment,
+    _split_change_summary,
     _build_rebase_prompt,
     _build_rebase_recovery_guidance,
     _checkout_pr_branch,
@@ -697,6 +698,96 @@ class TestBuildRebaseComment:
         assert "<details>" in result
         assert "Actions performed" in result
         assert "</details>" in result
+
+    def test_applied_and_skipped_rendered_in_separate_sections(self):
+        # The reproducing scenario: one point fixed, one left as already-resolved.
+        # The skipped point must NOT appear under "Changes applied".
+        result = _build_rebase_comment(
+            "42", "koan/implement-37", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "App shell", "review_comments": "z-index + dot"},
+            change_summary=(
+                "APPLIED:\n"
+                "- MobileNav drawer z-index: raised overlay/content to z-[var(--z-modal)]\n"
+                "SKIPPED:\n"
+                "- text-muted dot fix — already resolved in an earlier pass\n"
+                "- main-frame padding — advisory, below severity filter\n"
+            ),
+        )
+        assert "### Changes applied" in result
+        assert "### Not changed (and why)" in result
+        # The applied change is under Changes applied, before Not changed.
+        changes_idx = result.index("### Changes applied")
+        skipped_idx = result.index("### Not changed")
+        assert result.index("drawer z-index") > changes_idx
+        assert result.index("drawer z-index") < skipped_idx
+        # The already-resolved point sits under Not changed, not Changes applied.
+        assert result.index("already resolved") > skipped_idx
+        assert "review feedback was applied" in result
+
+    def test_only_skipped_reports_no_changes_needed(self):
+        # Everything was already addressed / advisory — the comment must say so,
+        # not imply a fix was made.
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "Fix"},
+            change_summary=(
+                "SKIPPED:\n"
+                "- the requested change was already present on the branch\n"
+            ),
+        )
+        assert "No code changes were needed" in result
+        assert "### Not changed (and why)" in result
+        assert "### Changes applied" not in result
+        # Must not falsely claim feedback produced a change.
+        assert "review feedback was applied" not in result
+
+    def test_unstructured_summary_defaults_to_changes_applied(self):
+        # Backward compat: a summary without APPLIED/SKIPPED headers is all-applied.
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "Fix"},
+            change_summary="Renamed get_user() to fetch_user() per reviewer request",
+        )
+        assert "### Changes applied" in result
+        assert "fetch_user()" in result
+        assert "### Not changed (and why)" not in result
+
+
+class TestSplitChangeSummary:
+    def test_splits_applied_and_skipped(self):
+        applied, skipped = _split_change_summary(
+            "APPLIED:\n- raised z-index\nSKIPPED:\n- dot already fixed\n- padding advisory"
+        )
+        assert applied == ["raised z-index"]
+        assert skipped == ["dot already fixed", "padding advisory"]
+
+    def test_no_headers_all_applied(self):
+        applied, skipped = _split_change_summary("- did a thing\n- did another")
+        assert applied == ["did a thing", "did another"]
+        assert skipped == []
+
+    def test_only_skipped(self):
+        applied, skipped = _split_change_summary("SKIPPED:\n- already done")
+        assert applied == []
+        assert skipped == ["already done"]
+
+    def test_tolerates_bold_legacy_headers(self):
+        applied, skipped = _split_change_summary(
+            "**Changes**\n- fixed X\n**Skipped**\n- Y already resolved"
+        )
+        assert applied == ["fixed X"]
+        assert skipped == ["Y already resolved"]
+
+    def test_content_line_not_mistaken_for_header(self):
+        applied, skipped = _split_change_summary("- Applied the fix to the parser")
+        assert applied == ["Applied the fix to the parser"]
+        assert skipped == []
+
+    def test_empty_summary(self):
+        assert _split_change_summary("") == ([], [])
 
 
 # ---------------------------------------------------------------------------

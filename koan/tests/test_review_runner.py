@@ -1026,9 +1026,8 @@ class TestFormatReviewAsMarkdown:
     def test_summary_preserves_paragraphs_and_bullets(self):
         """A structured summary (verdict + blank line + bullets) must survive
         formatting intact, so readers get skimmable output instead of one
-        dense block. When lgtm is False the summary is wrapped in a
-        [!IMPORTANT] callout, so every line (including blank paragraph
-        separators) is > -prefixed.
+        dense block. The summary is plain prose — no callout prefix — so the
+        multi-line structure is preserved verbatim.
         """
         data = {
             "file_comments": [],
@@ -1039,19 +1038,19 @@ class TestFormatReviewAsMarkdown:
             },
         }
         md = _format_review_as_markdown(data)
-        # All lines are prefixed by build_alert, including the blank separator.
-        assert "> Needs work before merge." in md
-        assert ">" in md  # blank line rendered as bare >
-        assert "> - Missing input validation" in md
-        assert "> - No test coverage" in md
+        assert "Needs work before merge." in md
+        assert "- Missing input validation" in md
+        assert "- No test coverage" in md
 
-    def test_blocked_review_wraps_summary_in_important_alert(self):
-        """When lgtm is False, the summary must be wrapped in a > [!IMPORTANT]
-        callout so the merge verdict is un-missable in email digests and mobile.
+    def test_blocked_review_summary_is_plain_prose(self):
+        """When lgtm is False, the summary paragraph is NOT wrapped in a
+        callout — a full-paragraph [!IMPORTANT] block over-emphasizes it
+        (parsimony rule). The merge signal is carried by the graded verdict
+        alert instead (_build_verdict_body).
         """
         md = _format_review_as_markdown(VALID_REVIEW_JSON, title="Fix auth")
-        assert "> [!IMPORTANT]" in md
-        assert "> Needs validation before merge." in md
+        assert "> [!IMPORTANT]" not in md
+        assert "Needs validation before merge." in md
 
     def test_lgtm_review_does_not_wrap_summary_in_alert(self):
         """When lgtm is True, the summary is plain text — no alert needed
@@ -5918,16 +5917,35 @@ class TestIsReviewRequested:
         assert "acme/widget/pulls/7/requested_reviewers" in args[1]
 
 
-class TestBuildVerdictBody:
-    """_build_verdict_body formats verdict text from review data and config."""
+_WARNING_ONLY_REVIEW_OBJ = {
+    "file_comments": [
+        {
+            "file": "a.py", "line_start": 1, "line_end": 1,
+            "severity": "warning", "title": "Unhandled edge case",
+            "comment": "Guard the None branch.", "code_snippet": "",
+        },
+        {
+            "file": "b.py", "line_start": 2, "line_end": 2,
+            "severity": "suggestion", "title": "Rename for clarity",
+            "comment": "nit", "code_snippet": "",
+        },
+    ],
+    "review_summary": {"lgtm": False, "summary": "One item to address.", "checklist": []},
+}
 
-    def test_approve_default(self):
+
+class TestBuildVerdictBody:
+    """_build_verdict_body formats verdict text, graded by severity."""
+
+    def test_approve_is_green_tip(self):
+        """Merge-ready → a green > [!TIP] callout."""
         from app.review_runner import _build_verdict_body
         body = _build_verdict_body(
             approve=True, review_data=LGTM_REVIEW_JSON,
             body_enabled=True, include_blockers=True,
         )
-        assert body == "No blocking issues found."
+        assert "> [!TIP]" in body
+        assert "ready to merge" in body
 
     def test_approve_body_disabled(self):
         from app.review_runner import _build_verdict_body
@@ -5937,22 +5955,37 @@ class TestBuildVerdictBody:
         )
         assert body == ""
 
-    def test_request_changes_with_blockers(self):
+    def test_critical_blocker_is_red_caution(self):
+        """A critical finding → a red > [!CAUTION] callout listing the blockers."""
         from app.review_runner import _build_verdict_body
         body = _build_verdict_body(
             approve=False, review_data=_PR40_REVIEW_OBJ,
             body_enabled=True, include_blockers=True,
         )
-        assert "Blocking issues found" in body
+        assert "> [!CAUTION]" in body
+        assert "Critical issues found" in body
         assert "Command injection" in body
 
+    def test_warning_only_blocker_is_yellow_warning(self):
+        """No critical, only warning-level blockers → a yellow > [!WARNING]."""
+        from app.review_runner import _build_verdict_body
+        body = _build_verdict_body(
+            approve=False, review_data=_WARNING_ONLY_REVIEW_OBJ,
+            body_enabled=True, include_blockers=True,
+        )
+        assert "> [!WARNING]" in body
+        assert "Important issues found" in body
+        assert "Unhandled edge case" in body
+
     def test_request_changes_without_blockers(self):
+        """include_blockers=False keeps the graded headline, drops the list."""
         from app.review_runner import _build_verdict_body
         body = _build_verdict_body(
             approve=False, review_data=_PR40_REVIEW_OBJ,
             body_enabled=True, include_blockers=False,
         )
-        assert body == "Blocking issues found."
+        assert "> [!CAUTION]" in body
+        assert "Critical issues found" in body
         assert "Command injection" not in body
 
     def test_request_changes_body_disabled(self):
@@ -5964,12 +5997,14 @@ class TestBuildVerdictBody:
         assert body == ""
 
     def test_request_changes_no_review_data(self):
+        """No structured data → default to a yellow WARNING (blocked, severity unknown)."""
         from app.review_runner import _build_verdict_body
         body = _build_verdict_body(
             approve=False, review_data=None,
             body_enabled=True, include_blockers=True,
         )
-        assert body == "Blocking issues found."
+        assert "> [!WARNING]" in body
+        assert "Important issues found" in body
 
     def test_blockers_include_critical_and_warning(self):
         """Both critical and warning findings appear in the blocker list."""
@@ -6121,9 +6156,10 @@ class TestReviewVerdictInRunReview:
         )
         assert success is True
         assert "APPROVE" in summary
+        from app.github_alerts import build_alert
         mock_verdict.assert_called_once_with(
             "owner", "repo", "42", approve=True, head_sha="abc",
-            body="No blocking issues found.",
+            body=build_alert("TIP", "No blocking issues found — ready to merge."),
         )
 
     @patch("app.review_runner.get_review_verdict_config",
@@ -6148,9 +6184,10 @@ class TestReviewVerdictInRunReview:
         )
         assert success is True
         assert "REQUEST_CHANGES" in summary
+        from app.github_alerts import build_alert
         mock_verdict.assert_called_once_with(
             "owner", "repo", "42", approve=False, head_sha="abc",
-            body="Blocking issues found.\n\n- Missing validation",
+            body=build_alert("CAUTION", "Critical issues found.\n\n- Missing validation"),
         )
 
     @patch("app.review_runner.get_review_verdict_config",
@@ -7116,3 +7153,38 @@ class TestReviewCalibrationConfig:
             cfg = get_review_calibration_config()
         assert cfg["batch_size"] == 15
         assert cfg["stale_days"] == 90
+
+
+class TestBuildReviewPromptDotKoanSkill:
+    """End-to-end: .koan/skills/review/*.md is appended via build_review_prompt."""
+
+    @staticmethod
+    def _core_review_dir():
+        import app.review_runner as rr
+        return Path(rr.__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    @staticmethod
+    def _ctx():
+        return dict(
+            title="t", author="a", branch="b", base="main", body="",
+            diff="", review_comments="", reviews="", issue_comments="",
+        )
+
+    def test_build_review_prompt_injects_dot_koan_skill(self, tmp_path):
+        import app.review_runner as rr
+        d = tmp_path / ".koan" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "security.md").write_text("REPO SECURITY RULE")
+        prompt, _ = rr.build_review_prompt(
+            self._ctx(), skill_dir=self._core_review_dir(),
+            project_path=str(tmp_path),
+        )
+        assert "REPO SECURITY RULE" in prompt
+
+    def test_build_review_prompt_noop_without_dot_koan(self, tmp_path):
+        import app.review_runner as rr
+        prompt, _ = rr.build_review_prompt(
+            self._ctx(), skill_dir=self._core_review_dir(),
+            project_path=str(tmp_path),
+        )
+        assert ".koan/skills/review" not in prompt

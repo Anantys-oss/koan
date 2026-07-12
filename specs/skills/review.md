@@ -75,6 +75,14 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   `suggestion`; promote it before blocking. This mirrors the code-level fallback
   in `_normalize_review_data` (`blocking iff any critical/warning`) and the
   verdict body builder's definition of "blockers".
+- **Verdict presentation is severity-graded, not the summary paragraph.** The
+  formal APPROVE / request-changes verdict body (`_build_verdict_body`) is wrapped
+  in a native GitHub alert whose color grades the outcome: `> [!TIP]` (green) when
+  merge-ready, `> [!WARNING]` (yellow) when the only blockers are `warning`-level,
+  `> [!CAUTION]` (red) when any `critical` blocker exists. The main review comment's
+  summary paragraph stays plain text — wrapping the whole paragraph in `> [!IMPORTANT]`
+  over-emphasized it (parsimony rule, `comment-formatting.md`); the single graded
+  alert on the short verdict message is where the reader looks.
 - **Re-review comment handling:** on a re-review (new commits or a re-requested
   review) the bot posts a *fresh* summary comment (GitHub does not notify on
   edits). By default it first collapses the prior review comment to a short

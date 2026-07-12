@@ -59,11 +59,27 @@ Stay on the current branch. Your changes will be committed and pushed automatica
 3. **Be focused.** Only change what was requested — no drive-by refactoring, no extra improvements.
 4. **Do not run tests.** The caller handles testing separately.
 
-When you're done, output a concise summary of what you changed and why.
-This summary will be used in the git commit message and PR comment, so it must
-clearly explain each change and justify it by referencing the reviewer's request.
-Use bullet points if you made multiple changes. Be specific about what was
-modified (e.g. "Renamed `get_user()` to `fetch_user()` per reviewer request")
-rather than vague (e.g. "Applied feedback").
+When you're done, report a concise summary using these two labeled sections, so
+it renders unambiguously in the PR comment and commit message. Use the headers
+verbatim, and **omit a section that has no items** (do not write "none"):
+
+```
+APPLIED:
+- one bullet per change you actually made, specific and justified by the
+  reviewer's request — e.g. "Renamed `get_user()` to `fetch_user()` per reviewer
+  request", not vague like "Applied feedback".
+
+SKIPPED:
+- one bullet per reviewer point you deliberately did NOT change, each with the
+  reason: already fixed in an earlier pass, advisory / below the severity you
+  were asked to address, or you disagree (say which, with a short technical
+  reason).
+```
+
+Put each reviewer point under exactly one section. If you changed everything
+requested, omit `SKIPPED:`. If you changed **nothing** — because every point was
+already addressed or advisory — include only `SKIPPED:`, so the comment clearly
+shows no code change was needed and why (never present an unchanged point as if
+you had just fixed it).
 
 {COMMIT_SUBJECT_INSTRUCTION}

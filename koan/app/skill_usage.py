@@ -17,6 +17,7 @@ from app.utils import atomic_write
 
 _USAGE_FILE = ".skill-usage.json"
 _HINT_HISTORY_FILE = ".hint-history.json"
+_NOTICES_FILE = ".feature-notices.json"
 
 _USAGE_RETENTION_DAYS = 90
 _HINT_RETENTION_DAYS = 7
@@ -115,3 +116,24 @@ def get_recently_hinted(instance_dir: str, days: int = 7) -> Set[str]:
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     return {k for k, v in data.items() if v >= cutoff}
+
+
+def get_shown_notices(instance_dir: str) -> Set[str]:
+    """Return the set of one-time feature notices already shown (never expires)."""
+    path = Path(instance_dir) / _NOTICES_FILE
+    data = _load_json(path)
+    shown = data.get("shown", [])
+    return set(shown) if isinstance(shown, list) else set()
+
+
+def record_notice_shown(instance_dir: str, notice_key: str) -> None:
+    """Record that a one-time feature notice was shown. Persists forever."""
+    path = Path(instance_dir) / _NOTICES_FILE
+    data = _load_json(path)
+    shown = data.get("shown", [])
+    if not isinstance(shown, list):
+        shown = []
+    if notice_key not in shown:
+        shown.append(notice_key)
+    data["shown"] = shown
+    _save_json(path, data)

@@ -4,12 +4,15 @@ Loads prompt templates from koan/system-prompts/ and substitutes placeholders.
 Supports ``{@include partial-name}`` directives for composable prompt fragments.
 """
 
+import logging
 import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 PROMPT_DIR = Path(__file__).parent.parent / "system-prompts"
 PARTIALS_DIR_NAME = "_partials"
@@ -169,7 +172,9 @@ def load_prompt(name: str, **kwargs: str) -> str:
     return _substitute(template, kwargs)
 
 
-def load_skill_prompt(skill_dir: Path, name: str, **kwargs: str) -> str:
+def load_skill_prompt(
+    skill_dir: Path, name: str, project_path: Optional[str] = None, **kwargs: str
+) -> str:
     """Load a prompt from a skill's prompts/ directory.
 
     Looks for ``skill_dir/prompts/<name>.md`` first, then falls back to
@@ -179,9 +184,16 @@ def load_skill_prompt(skill_dir: Path, name: str, **kwargs: str) -> str:
     when the skill is not opted out — see :mod:`app.caveman` for resolution
     rules.
 
+    When ``project_path`` is supplied and the target repo ships
+    ``<project_path>/.koan/skills/<skill>/*.md`` steering files, those are framed
+    and appended to the built-in prompt (append-only) — see
+    :func:`_maybe_append_project_skill_instructions`.
+
     Args:
         skill_dir: Path to the skill directory (e.g. ``skills/core/plan``).
         name: Prompt file name without .md extension.
+        project_path: Target project checkout; enables ``.koan/skills/`` reads.
+            Default ``None`` keeps every existing caller byte-identical.
         **kwargs: Placeholder values to substitute. Keys map to {KEY} in the template.
 
     Returns:
@@ -195,11 +207,13 @@ def load_skill_prompt(skill_dir: Path, name: str, **kwargs: str) -> str:
         template = _read_prompt_with_git_fallback(get_prompt_path(name))
     template = _resolve_includes(template, skill_dir=skill_dir)
     prompt = _substitute(template, kwargs)
-    return _maybe_append_caveman(prompt, skill_dir)
+    prompt = _maybe_append_caveman(prompt, skill_dir)
+    return _maybe_append_project_skill_instructions(prompt, skill_dir, project_path)
 
 
 def load_prompt_or_skill(
-    skill_dir: Optional[Path], name: str, **kwargs: str
+    skill_dir: Optional[Path], name: str,
+    project_path: Optional[str] = None, **kwargs: str,
 ) -> str:
     """Load a prompt, preferring the skill directory when available.
 
@@ -218,13 +232,16 @@ def load_prompt_or_skill(
     Args:
         skill_dir: Path to the skill directory, or None for system prompts.
         name: Prompt file name without .md extension.
+        project_path: Target project checkout; threaded to
+            :func:`load_skill_prompt` for ``.koan/skills/`` reads. Default
+            ``None`` is a no-op.
         **kwargs: Placeholder values to substitute.
 
     Returns:
         The prompt string with placeholders replaced.
     """
     if skill_dir is not None:
-        return load_skill_prompt(skill_dir, name, **kwargs)
+        return load_skill_prompt(skill_dir, name, project_path=project_path, **kwargs)
     return load_prompt(name, **kwargs)
 
 
@@ -248,4 +265,36 @@ def _maybe_append_caveman(prompt: str, skill_dir: Path) -> str:
         import sys
         print(f"[prompts] caveman injection failed for {skill_dir}: {e}",
               file=sys.stderr)
+        return prompt
+
+
+def _maybe_append_project_skill_instructions(
+    prompt: str, skill_dir: Path, project_path: Optional[str],
+) -> str:
+    """Append the project's ``.koan/skills/<name>/`` instructions, when present.
+
+    No-op unless ``skill_dir`` has a ``SKILL.md`` AND ``project_path`` is set —
+    the same real-skill-package gate as :func:`_maybe_append_caveman`, so
+    arbitrary directory paths (tests, legacy callers) stay untouched and the
+    default ``project_path=None`` keeps every existing call byte-identical.
+
+    Failures are swallowed (the append is additive guidance, not a correctness
+    feature); they surface via the module logger so silent regressions stay
+    visible in the daemon log.
+    """
+    try:
+        if not project_path or not (skill_dir / "SKILL.md").is_file():
+            return prompt
+        from app.project_koan import read_skill_instructions  # lazy: avoid cycle
+        content = read_skill_instructions(project_path, skill_dir.name)
+        if not content:
+            return prompt
+        block = load_prompt(
+            "koan-skill",
+            SKILL_NAME=skill_dir.name,
+            KOAN_SKILL_CONTENT=content,
+        )
+        return f"{prompt}\n\n{block}"
+    except Exception as e:
+        logger.warning(".koan skill injection failed for %s: %s", skill_dir, e)
         return prompt

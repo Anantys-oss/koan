@@ -994,6 +994,27 @@ def get_missions_max_lines() -> int:
     return _safe_int(_missions_section().get("max_lines", 500), 500)
 
 
+def get_mission_backend() -> str:
+    """Mission-storage backend. Config: missions.backend (default 'sqlite').
+
+    Known in-tree name: 'sqlite'. Any other value is treated as a dotted
+    ``module:Class`` import path resolved by ``mission_store.get_mission_store``
+    (an out-of-tree adapter). See specs/004-mission-store.
+    """
+    val = _missions_section().get("backend", "sqlite")
+    return str(val).strip() or "sqlite"
+
+
+def get_mission_export_mode() -> str:
+    """When the read-only missions.md export is regenerated in a DB backend.
+
+    Config: missions.export — 'on_demand' (default; only via the export command)
+    or 'continuous' (refreshed after each transition, throttled).
+    """
+    val = str(_missions_section().get("export", "on_demand")).strip().lower()
+    return val if val in ("on_demand", "continuous", "off") else "on_demand"
+
+
 def get_mission_timeout() -> int:
     """Get timeout in seconds for regular mission execution.
 

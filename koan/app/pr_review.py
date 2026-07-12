@@ -34,10 +34,11 @@ from app.rebase_pr import fetch_pr_context, _find_remote_for_repo
 _SKILL_RE = re.compile(r'`?([a-zA-Z0-9_-]+\.(?:refactor|review))\b`?')
 
 
-def build_pr_prompt(context: dict, skill_dir: Path = None) -> str:
+def build_pr_prompt(context: dict, skill_dir: Path = None, project_path: str = "") -> str:
     """Build a prompt for Claude to address PR review feedback."""
     return load_prompt_or_skill(
         skill_dir, "pr-review",
+        project_path=project_path,
         TITLE=context["title"],
         BODY=context["body"],
         BRANCH=context["branch"],
@@ -51,7 +52,10 @@ def build_pr_prompt(context: dict, skill_dir: Path = None) -> str:
 
 def build_refactor_prompt(project_path: str, skill_name: str = "", skill_dir: Path = None) -> str:
     """Build a prompt for the refactor pass on recent changes."""
-    prompt = load_prompt_or_skill(skill_dir, "pr-refactor", PROJECT_PATH=project_path)
+    prompt = load_prompt_or_skill(
+        skill_dir, "pr-refactor",
+        project_path=project_path, PROJECT_PATH=project_path,
+    )
     if skill_name:
         prompt += (
             f"\n\n## Skill Invocation\n\n"
@@ -64,7 +68,10 @@ def build_refactor_prompt(project_path: str, skill_name: str = "", skill_dir: Pa
 
 def build_quality_review_prompt(project_path: str, skill_name: str = "", skill_dir: Path = None) -> str:
     """Build a prompt for the quality review pass on recent changes."""
-    prompt = load_prompt_or_skill(skill_dir, "pr-quality-review", PROJECT_PATH=project_path)
+    prompt = load_prompt_or_skill(
+        skill_dir, "pr-quality-review",
+        project_path=project_path, PROJECT_PATH=project_path,
+    )
     if skill_name:
         prompt += (
             f"\n\n## Skill Invocation\n\n"
@@ -256,7 +263,7 @@ def run_pr_review(
     if has_review_feedback:
         notify_fn(f"Addressing review comments on `{branch}`...")
         _run_claude_step(
-            prompt=build_pr_prompt(context, skill_dir=skill_dir),
+            prompt=build_pr_prompt(context, skill_dir=skill_dir, project_path=project_path),
             project_path=project_path,
             commit_msg=f"pr-review: address feedback on #{pr_number}",
             success_label="Addressed reviewer feedback",

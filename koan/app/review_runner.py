@@ -789,7 +789,9 @@ def build_review_prompt(
             plan_body = _truncate_plan(plan_body)
         kwargs["PLAN"] = plan_body
 
-    prompt = load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+    prompt = load_prompt_or_skill(
+        skill_dir, prompt_name, project_path=project_path, **kwargs
+    )
     return prompt, coverage_note
 
 
@@ -1001,6 +1003,7 @@ def _reflect_findings(
         findings_json = json.dumps(findings, indent=2)
         prompt = load_skill_prompt(
             skill_dir, "reflect",
+            project_path=project_path,
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
             CALIBRATION_HINTS=calibration_hints or "(no calibration data available)",
@@ -1076,7 +1079,10 @@ def _run_error_hunter(
     Returns an empty string if no findings are produced.
     """
     if skill_dir is not None:
-        prompt = load_skill_prompt(skill_dir, "silent-failure-hunter", DIFF=diff)
+        prompt = load_skill_prompt(
+            skill_dir, "silent-failure-hunter",
+            project_path=project_path, DIFF=diff,
+        )
     else:
         prompt = load_prompt("silent-failure-hunter", DIFF=diff)
 
@@ -1232,6 +1238,7 @@ def _run_bot_comment_triage(
         if skill_dir is not None:
             prompt = load_skill_prompt(
                 skill_dir, "bot-review-triage",
+                project_path=project_path,
                 diff=truncated_diff, bot_comments=formatted_comments,
             )
         else:
@@ -1694,13 +1701,11 @@ def _format_review_as_markdown(
     lines.append(header)
     lines.append("")
     summary_text = summary_data["summary"]
-    if not summary_data.get("lgtm", True):
-        # Blocked review: wrap the verdict in a native callout so it's
-        # un-missable in email digests and mobile (parsimony rule: one
-        # alert per comment for the verdict, not one per finding).
-        lines.extend(build_alert("IMPORTANT", summary_text).split("\n"))
-    else:
-        lines.append(summary_text)
+    # The summary is plain prose. The merge signal is carried by the
+    # severity-graded verdict alert (_build_verdict_body), not by wrapping the
+    # whole paragraph in a callout — a full-paragraph IMPORTANT block here
+    # over-emphasizes it (parsimony rule, comment-formatting.md).
+    lines.append(summary_text)
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -2450,7 +2455,15 @@ def _build_verdict_body(
     body_enabled: bool = True,
     include_blockers: bool = True,
 ) -> str:
-    """Build body text for a review verdict.
+    """Build body text for a review verdict, graded by severity.
+
+    The body is wrapped in a native GitHub alert whose color grades the
+    outcome at a glance (see specs/components/comment-formatting.md):
+
+    - ``> [!TIP]`` (green) — approved / merge-ready.
+    - ``> [!WARNING]`` (yellow) — blocked, but the only blockers are
+      ``warning``-level.
+    - ``> [!CAUTION]`` (red) — blocked with at least one ``critical`` finding.
 
     When *body_enabled* is False, returns ``""`` so the verdict is submitted
     with an empty body (the APPROVE / REQUEST_CHANGES state still shows in
@@ -2464,25 +2477,28 @@ def _build_verdict_body(
         return ""
 
     if approve:
-        return "No blocking issues found."
+        return build_alert("TIP", "No blocking issues found — ready to merge.")
 
-    base = "Blocking issues found."
+    comments = review_data.get("file_comments") or [] if isinstance(review_data, dict) else []
+    has_critical = any(c.get("severity") == "critical" for c in comments)
+    if has_critical:
+        kind, headline = "CAUTION", "Critical issues found."
+    else:
+        kind, headline = "WARNING", "Important issues found."
 
-    if not include_blockers or not isinstance(review_data, dict):
-        return base
+    if not include_blockers:
+        return build_alert(kind, headline)
 
-    comments = review_data.get("file_comments") or []
     blockers = [
         c["title"]
         for c in comments
         if c.get("severity") in ("critical", "warning") and c.get("title")
     ]
     if not blockers:
-        return base
+        return build_alert(kind, headline)
 
-    lines = [base, ""]
-    lines.extend(f"- {title}" for title in blockers)
-    return "\n".join(lines)
+    text = "\n".join([headline, "", *(f"- {title}" for title in blockers)])
+    return build_alert(kind, text)
 
 
 def _resolve_verdict_config(project_name: Optional[str] = None) -> dict:

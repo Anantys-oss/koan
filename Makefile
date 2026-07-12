@@ -2,7 +2,7 @@
 export
 
 .PHONY: install onboard setup start stop status restart
-.PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
+.PHONY: clean say missions mission-rm migrate test test-skills test-strict coverage lint sync-instance rename-project release
 .PHONY: awake run errand-run errand-awake dashboard koan api api-token openapi openapi-check webhook
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
@@ -98,6 +98,13 @@ run: setup
 say: setup
 	@test -n "$(m)" || (echo "Usage: make say m=\"your message\"" && exit 1)
 	@$(KOAN_RUN) -c "from app.awake import handle_message; handle_message('$(m)')"
+
+missions: setup
+	@$(KOAN_RUN) -m app.mission_ctl list $(state)
+
+mission-rm: setup
+	@test -n "$(sel)" || (echo "Usage: make mission-rm sel=i1  (or sel=p2, or a keyword)" && exit 1)
+	@$(KOAN_RUN) -m app.mission_ctl delete "$(sel)"
 
 lint: setup
 	$(VENV)/bin/pip install -q ruff 2>/dev/null

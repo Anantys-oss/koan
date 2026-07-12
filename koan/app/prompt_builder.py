@@ -311,9 +311,6 @@ def _get_submit_pr_section(project_path: str, project_name: str = "") -> str:
     )
 
 
-_MAX_KOAN_MD_CHARS = 16000
-
-
 def _get_koan_md_section(project_path: str) -> str:
     """Return project-local KOAN.md content wrapped for the system prompt.
 
@@ -323,36 +320,22 @@ def _get_koan_md_section(project_path: str) -> str:
     (via ``cwd``) but never KOAN.md, so koan must read it explicitly and inject
     it here.
 
-    Returns an empty string when ``project_path`` is empty or the file is
-    absent, unreadable, or blank. Content is capped at ``_MAX_KOAN_MD_CHARS``
-    because this rides on every mission's system prompt.
+    Reading of both the root ``KOAN.md`` and the optional ``.koan/KOAN.md`` (and
+    the combined-length cap) is delegated to ``project_koan.read_general_koan_md``;
+    the framing stays here next to the ``koan-md`` template. Returns an empty
+    string when ``project_path`` is empty or both sources are absent/blank/
+    unreadable.
     """
     if not project_path:
         return ""
-    koan_md_path = Path(project_path) / "KOAN.md"
-    try:
-        content = koan_md_path.read_text(errors="replace")
-    except FileNotFoundError:
-        # Absent KOAN.md is the normal case — no error, no log.
-        return ""
-    except OSError as e:
-        # File exists but can't be read (permission denied, I/O error, etc.):
-        # surface it, since the operator deliberately configured guidance that
-        # is now being silently dropped.
-        logger.warning("KOAN.md present but unreadable at %s: %s", koan_md_path, e)
-        return ""
-
-    content = content.strip()
+    from app.project_koan import read_general_koan_md
+    content = read_general_koan_md(project_path)
     if not content:
         return ""
 
-    logger.info("KOAN.md found and read (%d chars) from %s", len(content), koan_md_path)
-
-    if len(content) > _MAX_KOAN_MD_CHARS:
-        content = (
-            content[:_MAX_KOAN_MD_CHARS]
-            + f"\n\n[KOAN.md truncated — exceeded {_MAX_KOAN_MD_CHARS} chars]"
-        )
+    logger.info(
+        "KOAN.md (root + .koan/) read (%d chars) from %s", len(content), project_path
+    )
 
     from app.prompts import load_prompt
     return load_prompt("koan-md", KOAN_MD_CONTENT=content)
