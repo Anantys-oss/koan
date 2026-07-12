@@ -43,6 +43,7 @@ from app.claude_step import (
     run_claude_step,
     wait_for_ci,
 )
+from app.github_alerts import build_alert
 from app.config import (
     get_rebase_include_bot_feedback,
     get_rebase_ci_idle_timeout,
@@ -57,7 +58,12 @@ from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
 from app.retry import retry_with_backoff
-from app.utils import _GITHUB_REMOTE_RE, truncate_diff, truncate_text
+from app.utils import (
+    _GITHUB_REMOTE_RE,
+    truncate_diff,
+    truncate_diff_with_skips,
+    truncate_text,
+)
 
 def _resolve_own_login() -> str:
     """Resolve our own GitHub login (the configured ``github.nickname``).
@@ -399,11 +405,18 @@ def fetch_pr_context(
     repo: str,
     pr_number: str,
     project_path: Optional[str] = None,
+    max_diff_chars: int = 32000,
 ) -> dict:
     """Fetch PR details, diff, and all comments via gh CLI.
 
     Returns a dict with keys: title, body, branch, base, state, author, url,
-    diff, review_comments, reviews, issue_comments.
+    diff, diff_skipped_files, review_comments, reviews, issue_comments.
+
+    ``max_diff_chars`` caps the fetch-time diff size. The legacy 32K default
+    preserves behaviour for rebase/squash/recreate/ci_queue callers; ``/review``
+    passes a large budget-derived cap so the diff compressor (its real coverage
+    guardrail) receives the whole diff. Any files cut here are reported via the
+    returned ``diff_skipped_files`` list.
 
     When ``project_path`` is provided, oversized-PR diff failures
     (GitHub HTTP 406: > 300 files) trigger a local ``git fetch`` +
@@ -532,6 +545,8 @@ def fetch_pr_context(
     # there are invisible pending reviews.
     has_pending_reviews = api_review_comment_count > 0 and fetched_comment_count == 0
 
+    truncated_diff, diff_skipped_files = truncate_diff_with_skips(diff, max_diff_chars)
+
     return {
         "title": metadata.get("title", ""),
         "body": metadata.get("body", ""),
@@ -541,7 +556,8 @@ def fetch_pr_context(
         "author": metadata.get("author", {}).get("login", ""),
         "head_owner": metadata.get("headRepositoryOwner", {}).get("login", ""),
         "url": metadata.get("url", ""),
-        "diff": truncate_diff(diff, 32000),
+        "diff": truncated_diff,
+        "diff_skipped_files": diff_skipped_files,
         "diff_error": truncate_text(diff_error, 1000),
         "review_comments": truncate_text(comments_json, 4000),
         "reviews": truncate_text(reviews_json, 3000),
@@ -799,24 +815,31 @@ def _run_rebase_impl(
     # ── Step 3: Rebase onto target branch ─────────────────────────────
     print(f"[rebase] Rebasing `{branch}` onto `{base}`", flush=True)
     notify_fn(f"Rebasing `{branch}` onto `{base}`...")
+    rebase_meta: Dict[str, str] = {}
     rebase_remote = _rebase_with_conflict_resolution(
         base, project_path, context, actions_log,
         notify_fn=notify_fn, skill_dir=skill_dir,
         max_conflict_rounds=get_rebase_max_conflict_rounds(),
         preferred_remote=base_remote,
         head_remote=effective_head_remote,
+        result_meta=rebase_meta,
     )
     if rebase_remote:
         actions_log.append(f"Rebased `{branch}` onto `{rebase_remote}/{base}`")
     else:
         _safe_checkout(original_branch, project_path)
-        attempted_remotes = _ordered_remotes(base_remote, cwd=project_path)
-        attempted = ", ".join(attempted_remotes) if attempted_remotes else "none"
-        guidance = _build_rebase_recovery_guidance(project_path)
+        error_code = rebase_meta.get("error", "rebase_failed")
+        detail = rebase_meta.get("detail", "")
+        if error_code == "rebase_failed":
+            guidance = _build_rebase_recovery_guidance(project_path)
+            return False, (
+                "[conflict_unresolved] "
+                f"Rebase failed on `{base_remote or '?'}/{base}`. "
+                f"Could not resolve conflicts.\n{guidance}"
+            )
         return False, (
-            "[conflict_unresolved] "
-            f"Rebase failed on `{base}` (tried: {attempted}). "
-            f"Could not resolve conflicts.\n{guidance}"
+            f"[{error_code}] Rebase of `{branch}` onto "
+            f"`{base_remote or '?'}/{base}` aborted before any push: {detail}"
         )
 
     # Save the clean rebased state before optional review-feedback edits.
@@ -1288,20 +1311,22 @@ def _rebase_with_conflict_resolution(
     max_conflict_rounds: int = 10,
     preferred_remote: Optional[str] = None,
     head_remote: Optional[str] = None,
+    result_meta: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     """Rebase onto target branch, resolving conflicts via Claude if needed.
 
-    Delegates to :func:`claude_step._rebase_onto_target` for the core
-    fetch-and-rebase loop, injecting a conflict-resolution callback that
+    Delegates to :func:`claude_step._rebase_onto_target` for the strict
+    fetch-and-rebase flow, injecting a conflict-resolution callback that
     invokes Claude to resolve conflicted files.
 
     When ``git rebase`` hits conflicts, Claude is invoked to resolve the
     conflicted files, they are staged, and the rebase is continued.  This
-    loop repeats for up to *max_conflict_rounds* per remote (one round per
+    loop repeats for up to *max_conflict_rounds* rounds (one round per
     conflicting commit).
 
     Returns:
-        Remote name used (e.g. "origin") on success, None on total failure.
+        Remote name used (e.g. "origin") on success, None on total failure
+        (*result_meta*, when given, then carries ``error``/``detail``).
     """
 
     def _on_conflict(proj_path: str) -> bool:
@@ -1318,6 +1343,7 @@ def _rebase_with_conflict_resolution(
         preferred_remote=preferred_remote,
         head_remote=head_remote,
         on_conflict=_on_conflict,
+        result_meta=result_meta,
     )
 
 
@@ -2043,9 +2069,11 @@ def _apply_review_feedback(
         from app.commit_conventions import strip_commit_subject_line
         change_summary = strip_commit_subject_line(change_summary)
 
-    # Truncate overly long summaries (keep last portion which is the summary)
-    if len(change_summary) > 1000:
-        change_summary = change_summary[-1000:]
+    # Truncate overly long summaries. Keep the HEAD: the structured summary leads
+    # with the APPLIED: section, so tail-trimming would drop the changes actually
+    # made and leave only skipped items.
+    if len(change_summary) > 1500:
+        change_summary = change_summary[:1500].rstrip()
 
     return change_summary
 
@@ -2211,6 +2239,44 @@ def _push_with_fallback(
     }
 
 
+# Section headers Claude emits in its rebase summary. Matched only when they are
+# the WHOLE line (the `$` anchor), so a content bullet like "Applied the fix to X"
+# is never mistaken for a header. Tolerant of surrounding bold/colon and the older
+# "**Changes**" / "**Skipped**" phrasings.
+_APPLIED_HDR_RE = re.compile(r"^\**\s*(?:applied|changes?)\s*:?\s*\**$", re.I)
+_SKIPPED_HDR_RE = re.compile(
+    r"^\**\s*(?:skipped|not\s+changed|no\s+change[sd]?)\s*:?\s*\**$", re.I
+)
+
+
+def _split_change_summary(change_summary: str) -> Tuple[List[str], List[str]]:
+    """Split Claude's rebase summary into ``(applied, skipped)`` bullet lists.
+
+    Recognizes the ``APPLIED:`` / ``SKIPPED:`` section headers the rebase prompt
+    asks for (plus looser ``Changes`` / ``Skipped`` / ``Not changed`` variants).
+    Lines before any recognized header default to *applied*, so a summary that
+    omits the structure still renders as changes — backward compatible with
+    older prompt outputs and non-conforming responses.
+    """
+    applied: List[str] = []
+    skipped: List[str] = []
+    bucket = applied
+    for raw in change_summary.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if _APPLIED_HDR_RE.match(line):
+            bucket = applied
+            continue
+        if _SKIPPED_HDR_RE.match(line):
+            bucket = skipped
+            continue
+        line = re.sub(r"^[-*]\s+", "", line).strip()  # drop a leading bullet marker
+        if line:
+            bucket.append(line)
+    return applied, skipped
+
+
 def _build_rebase_comment(
     pr_number: str,
     branch: str,
@@ -2245,13 +2311,33 @@ def _build_rebase_comment(
     )
     has_conflicts = any("conflict" in a.lower() for a in actions_log)
 
+    # Split the reviewer-feedback summary into what was actually changed vs. what
+    # was deliberately left alone (already fixed / advisory / disagreed). Rendered
+    # as two distinct sections so an unchanged point is never presented as a change.
+    applied_summary, skipped_summary = _split_change_summary(change_summary)
+    change_items = _extract_change_items(actions_log, "\n".join(applied_summary))
+
     # ── 1. Summary ──────────────────────────────────────────────────
     if has_feedback:
         rebase_type = "Rebase with requested adjustments"
-        summary_line = (
-            f"Branch `{branch}` was rebased onto `{base}` and review "
-            f"feedback was applied."
-        )
+        if change_items:
+            summary_line = (
+                f"Branch `{branch}` was rebased onto `{base}` and review "
+                f"feedback was applied."
+            )
+        elif skipped_summary:
+            # Feedback was reviewed but nothing needed changing — say so plainly
+            # instead of implying a fix was made.
+            summary_line = (
+                f"Branch `{branch}` was rebased onto `{base}`. No code changes "
+                f"were needed — each reviewer point was already addressed or "
+                f"advisory (see “Not changed” below)."
+            )
+        else:
+            summary_line = (
+                f"Branch `{branch}` was rebased onto `{base}` and review "
+                f"feedback was applied."
+            )
     elif feedback_failed:
         rebase_type = "Rebase completed; review feedback not applied"
         summary_line = (
@@ -2279,18 +2365,26 @@ def _build_rebase_comment(
     if feedback_failed:
         reason = feedback_reason.strip() or "the feedback step did not complete"
         parts.append(
-            "> [!WARNING]\n"
-            f"> **Review feedback was NOT applied** — {reason}. The reviewer "
-            "comments above still need to be addressed: re-run `/rebase` or "
-            "apply them manually.\n"
+            build_alert(
+                "WARNING",
+                f"**Review feedback was NOT applied** — {reason}. The reviewer "
+                "comments above still need to be addressed: re-run `/rebase` or "
+                "apply them manually.",
+            )
+            + "\n"
         )
 
-    # ── 2. Changes ──────────────────────────────────────────────────
-    # Only include when there are meaningful changes beyond rebasing
-    change_items = _extract_change_items(actions_log, change_summary)
+    # ── 2. Changes / Not changed ────────────────────────────────────
+    # Only include when there are meaningful changes beyond rebasing.
     if change_items:
         parts.append("### Changes applied\n")
         parts.extend(f"- {item}" for item in change_items)
+        parts.append("")
+    # Points the reviewer raised that were intentionally left as-is, in their own
+    # clearly-labeled section — so "already fixed" reads as skipped, not applied.
+    if skipped_summary:
+        parts.append("### Not changed (and why)\n")
+        parts.extend(f"- {item}" for item in skipped_summary)
         parts.append("")
 
     # ── 3. Stats ────────────────────────────────────────────────────

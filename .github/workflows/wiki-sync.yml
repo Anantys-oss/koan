@@ -2,7 +2,7 @@ name: 📖 Wiki Sync
 
 # Backstop for koan's LLM Wiki (see wiki/SCHEMA.md). The primary mechanism is
 # LLM discipline — CLAUDE.md/AGENTS.md instruct any agent to keep wiki
-# bookkeeping (frontmatter, wiki/index.md, wiki/log.md, specs/<NNN-slug>/
+# bookkeeping (frontmatter, wiki/index.md, specs/<NNN-slug>/
 # status) current as part of the same change. This job catches what a session
 # missed and pushes a fix commit directly onto the PR's own branch — per the
 # documented exception in wiki/SCHEMA.md ("Workflow customizations") and
@@ -13,7 +13,7 @@ name: 📖 Wiki Sync
 # NOTE: uses `pull_request` (not `pull_request_target`), so it only has write
 # access to branches within this repo — it will not push fixes onto PRs from
 # forks. Fork PRs still get the deterministic report via the job log; a
-# maintainer can apply the same fix by re-running /wiki:lint locally.
+# maintainer can apply the same fix by re-running `/brain lint` locally.
 
 on:
   pull_request:
@@ -80,13 +80,18 @@ jobs:
           fi
           git config user.name "Koan-Bot"
           git config user.email "koan-bot@users.noreply.github.com"
-          git add wiki/ docs/ specs/components/ specs/skills/
+          # specs/*.md (non-recursive) picks up specs/README.md, specs/SCHEMA.md, and
+          # specs/index.md — root-level files in the specs/ bundle that live outside
+          # both specs/components/ and specs/skills/ and were previously never staged
+          # here. Never matches specs/<NNN-slug>/** (those are subdirectories, not
+          # files directly in specs/).
+          git add wiki/ docs/ specs/components/ specs/skills/ specs/*.md
           git commit -m "$(cat <<'EOF'
-          docs(wiki): sync frontmatter/index/log gaps
+          docs(wiki): sync frontmatter/index gaps
 
           Automated wiki-hygiene backstop — see .github/workflows/wiki-sync.yml
-          and wiki/SCHEMA.md. Frontmatter dates, wiki/index.md entries, and
-          wiki/log.md are exempt from a separate human-review step per the
+          and wiki/SCHEMA.md. Frontmatter dates and wiki/index.md entries
+          are exempt from a separate human-review step per the
           documented exception in wiki/SCHEMA.md and
           .specify/memory/constitution.md (Principle I); this commit only
           touches that bookkeeping, never spec/doc bodies or code.

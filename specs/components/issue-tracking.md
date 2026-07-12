@@ -1,9 +1,10 @@
 ---
 type: component-spec
 title: "Component Spec — Issue Tracking"
+description: "Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer."
 tags: [issue-tracking]
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-07-10
 ---
 
 # Component Spec — Issue Tracking
@@ -49,6 +50,15 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   awareness, and Jira-key mapping are applied uniformly.
 - **Enrichment is non-fatal.** Issue-context fetching is best-effort and must degrade to
   `""` — it must never block or fail a review.
+- **Jira-bound text is markdown-degraded at the builder layer, not the transport
+  layer.** `tracker_comment_format._flatten_github_alerts()` folds GitHub
+  `> [!TYPE]` alert blocks into plain `TYPE: text` before Jira output; it runs
+  inside `_strip_markdown_for_jira()` (plan comments) and the Jira branches of
+  `build_pr_comment_success/_failure` (PR comments). `jira_add_comment()` stays a
+  raw ADF poster so human `/comment` blockquotes are never mangled. The fold is
+  fence-aware (alert syntax inside a fenced code block is left verbatim) and
+  stops each block's body run at the next opener (adjacent blocks degrade
+  independently instead of merging).
 
 ## Integration points
 
@@ -62,6 +72,11 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
 - Jira and GitHub have different identity/permission models; `config.py` carries the
   mapping glue (Jira key → project, code-repo resolution) — keep it the single source.
 - `enrichment.py` caps context size; raising the cap risks prompt bloat in reviews.
+- `_flatten_github_alerts()` defines the plain-text form of a GitHub alert
+  (`TYPE: text`) independently of #2301's future `build_alert()`. When #2301
+  lands, `build_alert()`'s non-GitHub degradation path should import/reuse this
+  helper so there is one definition of "what alert kind X looks like in plain
+  text."
 
 ## Change protocol
 

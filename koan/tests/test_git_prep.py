@@ -1332,3 +1332,183 @@ class TestAuthDiagnostics:
         with patch("app.git_prep.subprocess.run", side_effect=OSError("no gh")):
             out = _auth_diagnostics()
         assert "gh auth status failed" in out
+
+
+# --- self-heal helpers ---
+
+from app.git_prep import (
+    _detect_interrupted_operation,
+    _diagnose_stash_failure,
+    _has_unmerged_paths,
+    _heal_interrupted_operation,
+    _remove_stale_index_lock,
+)
+
+
+class TestHealInterruptedOperation:
+    """Tests for self-healing an interrupted merge/rebase/cherry-pick."""
+
+    def _git_path_side_effect(self, existing_markers):
+        """run_git mock: --git-path resolves markers; status reports unmerged."""
+
+        def side_effect(*args, **kwargs):
+            if args[:2] == ("rev-parse", "--git-path"):
+                return (0, f"/proj/.git/{args[2]}", "")
+            if args[0] == "status":
+                if existing_markers.get("unmerged"):
+                    return (0, "UU conflicted.py", "")
+                return (0, "", "")
+            return (0, "", "")
+
+        return side_effect
+
+    def test_merge_in_progress_aborted(self):
+        with patch("app.git_prep.run_git",
+                   side_effect=self._git_path_side_effect({})) as mg, \
+             patch("app.git_prep.os.path.exists",
+                   side_effect=lambda p: p.endswith("MERGE_HEAD")):
+            healed = _heal_interrupted_operation("/proj")
+        assert healed is not None
+        assert "merge" in healed
+        abort = [c for c in mg.call_args_list
+                 if c.args[:2] == ("merge", "--abort")]
+        assert len(abort) == 1
+
+    def test_rebase_in_progress_aborted(self):
+        with patch("app.git_prep.run_git",
+                   side_effect=self._git_path_side_effect({})) as mg, \
+             patch("app.git_prep.os.path.exists",
+                   side_effect=lambda p: p.endswith("rebase-merge")):
+            healed = _heal_interrupted_operation("/proj")
+        assert healed is not None
+        assert "rebase" in healed
+        assert any(c.args[:2] == ("rebase", "--abort")
+                   for c in mg.call_args_list)
+
+    def test_unmerged_without_marker_resets(self):
+        """Unmerged paths, no marker file → merge --abort then reset --hard."""
+
+        def side_effect(*args, **kwargs):
+            if args[:2] == ("rev-parse", "--git-path"):
+                return (0, f"/proj/.git/{args[2]}", "")
+            if args[0] == "status":
+                return (0, "UU conflicted.py", "")
+            return (0, "", "")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect) as mg, \
+             patch("app.git_prep.os.path.exists", return_value=False):
+            healed = _heal_interrupted_operation("/proj")
+        assert healed is not None
+        assert any(c.args[:2] == ("reset", "--hard")
+                   for c in mg.call_args_list)
+
+    def test_clean_tree_no_heal(self):
+        with patch("app.git_prep.run_git",
+                   side_effect=self._git_path_side_effect({})), \
+             patch("app.git_prep.os.path.exists", return_value=False):
+            assert _heal_interrupted_operation("/proj") is None
+
+    def test_stale_index_lock_removed(self):
+        with patch("app.git_prep.run_git",
+                   return_value=(0, "/proj/.git/index.lock", "")), \
+             patch("app.git_prep.os.path.exists", return_value=True), \
+             patch("app.git_prep.os.path.getmtime", return_value=0.0), \
+             patch("app.git_prep.time.time", return_value=1000.0), \
+             patch("app.git_prep.os.remove") as rm:
+            assert _remove_stale_index_lock("/proj") is True
+            rm.assert_called_once()
+
+    def test_fresh_index_lock_kept(self):
+        """A lock younger than the threshold is left alone (may be live git)."""
+        with patch("app.git_prep.run_git",
+                   return_value=(0, "/proj/.git/index.lock", "")), \
+             patch("app.git_prep.os.path.exists", return_value=True), \
+             patch("app.git_prep.os.path.getmtime", return_value=999.0), \
+             patch("app.git_prep.time.time", return_value=1000.0), \
+             patch("app.git_prep.os.remove") as rm:
+            assert _remove_stale_index_lock("/proj") is False
+            rm.assert_not_called()
+
+
+class TestDiagnoseStashFailure:
+    """Tests for _diagnose_stash_failure naming the concrete blocker."""
+
+    def test_unmerged_paths_named_with_snippet(self):
+        def side_effect(*args, **kwargs):
+            if args[0] == "status":
+                return (0, "UU a.py\nUU b.py", "")
+            return (0, "", "")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect), \
+             patch("app.git_prep.os.path.exists", return_value=False):
+            msg = _diagnose_stash_failure("/proj", "error: could not write index")
+        assert "stash failed on dirty tree:" in msg
+        assert "unmerged" in msg.lower()
+        assert "UU a.py" in msg
+
+    def test_disk_full_named(self):
+        with patch("app.git_prep.run_git", return_value=(0, "", "")), \
+             patch("app.git_prep.os.path.exists", return_value=False):
+            msg = _diagnose_stash_failure(
+                "/proj", "fatal: write error: No space left on device")
+        assert "disk" in msg.lower()
+
+    def test_quota_named(self):
+        with patch("app.git_prep.run_git", return_value=(0, "", "")), \
+             patch("app.git_prep.os.path.exists", return_value=False):
+            msg = _diagnose_stash_failure("/proj", "error: Disk quota exceeded")
+        assert "quota" in msg.lower()
+
+    def test_index_lock_named(self):
+        with patch("app.git_prep.run_git",
+                   return_value=(0, "/proj/.git/index.lock", "")), \
+             patch("app.git_prep.os.path.exists", return_value=True):
+            msg = _diagnose_stash_failure(
+                "/proj", "fatal: Unable to create '.../index.lock': File exists")
+        assert "index.lock" in msg
+
+    def test_snippet_truncated(self):
+        many = "\n".join(f"UU f{i}.py" for i in range(20))
+
+        def side_effect(*args, **kwargs):
+            if args[0] == "status":
+                return (0, many, "")
+            return (0, "", "")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect), \
+             patch("app.git_prep.os.path.exists", return_value=False):
+            msg = _diagnose_stash_failure("/proj", "boom")
+        assert "more)" in msg  # "… (+N more)" truncation marker present
+
+
+class TestPrepareProjectBranchSelfHeal:
+    """prepare_project_branch integrates the heal step before stashing."""
+
+    def test_interrupted_merge_self_healed_then_proceeds(self):
+        side = _make_run_git_side_effect({"status": (0, "", "")})
+        with patch("app.git_prep.run_git", side_effect=side), \
+             patch("app.git_prep.load_projects_config", return_value=None), \
+             patch("app.git_prep.get_project_submit_to_repository",
+                   return_value={}), \
+             patch("app.git_prep.get_project_auto_merge",
+                   return_value={"base_branch": "main"}), \
+             patch("app.git_prep._heal_interrupted_operation",
+                   return_value="aborted MERGE_HEAD via `git merge --abort`") as mh:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+        assert result.success is True
+        assert result.healed == "aborted MERGE_HEAD via `git merge --abort`"
+        mh.assert_called_once_with("/proj")
+
+    def test_heal_not_run_for_launching_repo(self):
+        """Launching repo on a custom branch returns before the heal step."""
+        side = _make_run_git_side_effect()  # rev-parse → feature-branch
+        with patch("app.git_prep.run_git", side_effect=side), \
+             patch("app.git_prep.load_projects_config", return_value=None), \
+             patch("app.git_prep.get_project_submit_to_repository",
+                   return_value={}), \
+             patch("app.git_prep.get_project_auto_merge",
+                   return_value={"base_branch": "main"}), \
+             patch("app.git_prep._heal_interrupted_operation") as mh:
+            prepare_project_branch("/koan", "koan", "/koan")
+        mh.assert_not_called()
+

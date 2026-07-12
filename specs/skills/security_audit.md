@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — security_audit"
+description: "Documents the `/security_audit` skill that runs a background SDLC security audit of a project and files up to 5 critical-vulnerability tracker issues via the provider-neutral tracker service."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-06-27

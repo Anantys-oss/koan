@@ -16,6 +16,63 @@ _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 # into a plain "Label:" line above the (always-visible) code.
 _SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.IGNORECASE)
 _DETAILS_TAG_RE = re.compile(r"</?details\s*>", re.IGNORECASE)
+# GitHub-flavored alert blocks (`> [!WARNING]` etc.) render as literal
+# unrendered text on Jira. Detect the EXACT canonical opener (5 kinds only,
+# nothing trailing) so ordinary human blockquotes are never mangled.
+_ALERT_OPEN_RE = re.compile(
+    r"^>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*$",
+    re.IGNORECASE,
+)
+_BLOCKQUOTE_PREFIX_RE = re.compile(r"^>\s?")
+
+
+def _flatten_github_alerts(text: str) -> str:
+    """Fold GitHub ``> [!TYPE]`` alert blocks into plain ``TYPE: ...`` text.
+
+    The opener must be exactly ``> [!TYPE]`` (one of the 5 canonical kinds);
+    the block body is the contiguous run of ``>``-prefixed lines below it,
+    stopping at the next alert opener so back-to-back blocks stay separate.
+    The first body line is labelled ``TYPE: <text>`` and the rest follow as
+    plain lines. Alert syntax inside a fenced code block is left untouched.
+    This is the single definition of the plain-text degradation for a GitHub
+    alert on a markdown-less tracker; keep it in sync with the native-alert
+    helper once #2301's ``build_alert()`` lands.
+    """
+    if not text:
+        return ""
+
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: List[str] = []
+    i, n = 0, len(lines)
+    in_fence = False
+    while i < n:
+        if lines[i].strip().startswith("```"):
+            in_fence = not in_fence
+            out.append(lines[i])
+            i += 1
+            continue
+        match = None if in_fence else _ALERT_OPEN_RE.match(lines[i].strip())
+        if not match:
+            out.append(lines[i])
+            i += 1
+            continue
+        kind = match.group(1).upper()
+        body: List[str] = []
+        i += 1
+        while (
+            i < n
+            and lines[i].lstrip().startswith(">")
+            and not _ALERT_OPEN_RE.match(lines[i].strip())
+        ):
+            body.append(_BLOCKQUOTE_PREFIX_RE.sub("", lines[i].lstrip()).rstrip())
+            i += 1
+        content = [line for line in body if line.strip()]
+        if content:
+            out.append(f"{kind}: {content[0]}")
+            out.extend(content[1:])
+        else:
+            out.append(f"{kind}:")
+    return "\n".join(out)
 
 
 def _parse_markdown_sections(markdown: str) -> Dict[str, List[str]]:
@@ -66,6 +123,10 @@ def _strip_markdown_for_jira(text: str) -> str:
     if not text:
         return ""
 
+    # Degrade GitHub alert blocks before line-by-line stripping so a
+    # `> [!WARNING]` opener never survives as literal Jira text.
+    text = _flatten_github_alerts(text)
+
     out: List[str] = []
     in_fence = False
     for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
@@ -115,7 +176,12 @@ def build_pr_comment_success(
     base_branch: Optional[str] = None,
 ) -> str:
     """Build a mission-completion comment when draft PR creation succeeds."""
-    sections = _parse_markdown_sections(pr_body)
+    # Jira has no native alert rendering: flatten before section extraction so
+    # a `> [!TYPE]` line pulled into the Why/What summary never leaks literally.
+    body_for_sections = (
+        _flatten_github_alerts(pr_body) if provider == "jira" else pr_body
+    )
+    sections = _parse_markdown_sections(body_for_sections)
     what_bullets = _lines_to_bullets(
         _collect_section_lines(sections, "summary", "changes"),
     )
@@ -187,6 +253,7 @@ def build_pr_comment_failure(
     reason_text = (reason or "Unknown error").strip()
 
     if provider == "jira":
+        reason_text = _flatten_github_alerts(reason_text).strip()
         lines = [
             "Koan update: Pull request creation failed.",
             "",

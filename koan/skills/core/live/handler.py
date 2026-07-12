@@ -61,11 +61,11 @@ def _get_in_progress_missions(instance_dir):
         return []
 
     try:
-        from app.missions import parse_sections, extract_project_tag, strip_timestamps
+        from app.missions import extract_project_tag, strip_timestamps
         from app.utils import parse_project
+        from app.mission_store.transition import read_sections
 
-        content = missions_file.read_text()
-        sections = parse_sections(content)
+        sections = read_sections(instance_dir)
         in_progress = sections.get("in_progress", [])
         if not in_progress:
             return []

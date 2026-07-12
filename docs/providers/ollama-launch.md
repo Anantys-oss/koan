@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Ollama Launch Provider"
+description: "Documents the `ollama-launch` provider, which runs the Claude Code CLI through `ollama launch claude` for full tool-use/streaming parity with native Claude."
 tags: [providers]
 created: 2026-06-08
 updated: 2026-06-08

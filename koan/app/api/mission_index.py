@@ -33,9 +33,22 @@ log = logging.getLogger("koan.api")
 
 _INDEX_FILENAME = ".api-missions.json"
 
+DEFAULT_RESULT_CAP_BYTES = 256 * 1024  # inline cap; larger spills to a side file
+_RESULTS_DIRNAME = ".api-results"
+
 
 def _index_path(instance_dir: Path) -> Path:
     return instance_dir / _INDEX_FILENAME
+
+
+def _results_dir(instance_dir: Path) -> Path:
+    return instance_dir / _RESULTS_DIRNAME
+
+
+def _with_result_defaults(rec: dict) -> dict:
+    rec.setdefault("result", None)
+    rec.setdefault("result_ref", None)
+    return rec
 
 
 def _load_index(instance_dir: Path) -> List[dict]:
@@ -78,6 +91,8 @@ def record_mission(instance_dir: Path, text: str, project: Optional[str]) -> str
             "status": "pending",
             "created": time.time(),
             "result_line": None,
+            "result": None,
+            "result_ref": None,
         }
     )
     _save_index(instance_dir, records)
@@ -87,8 +102,77 @@ def record_mission(instance_dir: Path, text: str, project: Optional[str]) -> str
 def get_mission(instance_dir: Path, mission_id: str) -> Optional[dict]:
     for rec in _load_index(instance_dir):
         if rec.get("id") == mission_id:
-            return rec
+            return _with_result_defaults(rec)
     return None
+
+
+def attach_result(
+    instance_dir: Path,
+    mission_id: str,
+    result: dict,
+    *,
+    cap_bytes: Optional[int] = None,
+    always_inline: Optional[List[str]] = None,
+) -> bool:
+    """Attach a typed structured result to a mission record.
+
+    Stores the blob inline when its JSON serialization is <= cap_bytes.
+    Otherwise spills the full blob to instance/.api-results/<id>.json, sets a
+    relative ``result_ref``, and keeps a trimmed inline copy of ``always_inline``
+    keys (plus ``result_truncated=True``) so small, always-useful fields (e.g.
+    the review verdict/summary) remain readable without an HTTP round-trip.
+
+    No-op (returns False) if the record is missing or already has a non-null
+    result/result_ref (idempotent — runs once, on the terminal transition).
+    """
+    if cap_bytes is None:
+        cap_bytes = DEFAULT_RESULT_CAP_BYTES
+    records = _load_index(instance_dir)
+    for i, rec in enumerate(records):
+        if rec.get("id") != mission_id:
+            continue
+        if rec.get("result") is not None or rec.get("result_ref"):
+            return False
+        try:
+            encoded = json.dumps(result, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            log.error("attach_result: unserializable result for %s: %s", mission_id, e)
+            return False
+        if len(encoded.encode("utf-8")) <= cap_bytes:
+            rec["result"] = result
+            rec["result_ref"] = None
+        else:
+            _results_dir(instance_dir).mkdir(parents=True, exist_ok=True)
+            atomic_write_json(
+                _results_dir(instance_dir) / f"{mission_id}.json", result, indent=2
+            )
+            rec["result_ref"] = f"{_RESULTS_DIRNAME}/{mission_id}.json"
+            keep = [k for k in (always_inline or []) if k in result]
+            if keep:
+                trimmed = {k: result[k] for k in keep}
+                trimmed["result_truncated"] = True
+                rec["result"] = trimmed
+            else:
+                rec["result"] = None
+        records[i] = rec
+        _save_index(instance_dir, records)
+        return True
+    return False
+
+
+def load_full_result(instance_dir: Path, mission_id: str) -> Optional[dict]:
+    """Return the complete structured result (inline or spilled), or None."""
+    rec = get_mission(instance_dir, mission_id)
+    if rec is None:
+        return None
+    ref = rec.get("result_ref")
+    if ref:
+        try:
+            return json.loads((instance_dir / ref).read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            log.error("load_full_result: cannot read spill for %s: %s", mission_id, e)
+            return None
+    return rec.get("result")
 
 
 def list_missions(
@@ -101,7 +185,7 @@ def list_missions(
         records = [r for r in records if r.get("status") == status_filter]
     if project_filter:
         records = [r for r in records if r.get("project") == project_filter]
-    return records
+    return [_with_result_defaults(r) for r in records]
 
 
 def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
@@ -130,13 +214,12 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
 
     # If already in a terminal state, return as-is
     if target.get("status") in ("done", "failed", "removed"):
-        return target
+        return _with_result_defaults(target)
 
     # Parse missions.md to find current location
     try:
-        from app.missions import parse_sections
-        content = missions_file.read_text() if missions_file.exists() else ""
-        sections = parse_sections(content)
+        from app.mission_store.transition import read_sections
+        sections = read_sections(missions_file.parent)
     except Exception as e:
         log.error("reconcile error for mission %s: %s", mission_id, e)
         target["reconcile_error"] = str(e)
@@ -179,7 +262,29 @@ def reconcile(instance_dir: Path, missions_file: Path, mission_id: str) -> dict:
     target["status"] = new_status
     records[target_idx] = target
     _save_index(instance_dir, records)
-    return target
+
+    # Resolve+attach a structured result exactly once, on the terminal transition.
+    if (
+        new_status in ("done", "failed")
+        and target.get("result") is None
+        and not target.get("result_ref")
+    ):
+        try:
+            from app.api.mission_results import (
+                always_inline_keys,
+                resolve_mission_result,
+            )
+            resolved = resolve_mission_result(instance_dir, target.get("text", ""))
+            if resolved is not None:
+                attach_result(
+                    instance_dir, mission_id, resolved,
+                    always_inline=always_inline_keys(target.get("text", "")),
+                )
+                target = get_mission(instance_dir, mission_id) or target
+        except Exception as e:
+            log.error("result resolution failed for %s: %s", mission_id, e)
+
+    return _with_result_defaults(target)
 
 
 def cancel_mission(instance_dir: Path, mission_id: str) -> bool:
@@ -200,6 +305,41 @@ def _normalize_for_match(text: str) -> str:
     """Strip leading ``- ``, lifecycle timestamps, and whitespace."""
     text = text.lstrip("- ").strip()
     return _LIFECYCLE_TS.sub("", text).strip()
+
+
+_PROJECT_TAG = re.compile(r"\[project:[^\]]+\]")
+
+
+def _normalize_loose(text: str) -> str:
+    """Like _normalize_for_match but also strips the [project:...] tag,
+    so a title with the tag already removed still matches a stored entry."""
+    text = _normalize_for_match(text)
+    return _PROJECT_TAG.sub("", text).strip()
+
+
+# Match precedence: in_progress beats pending beats terminal states.
+_STATUS_RANK = {"in_progress": 0, "pending": 1}
+
+
+def find_active_mission_id(instance_dir: Path, text: str) -> Optional[str]:
+    """Resolve a mission title to its API mission id via the sidecar index.
+
+    Returns the id of the best-matching record (in_progress preferred, then
+    pending, then most-recently-created), or None when nothing matches.
+    """
+    needle = _normalize_loose(text)
+    if not needle:
+        return None
+    candidates = [
+        rec for rec in _load_index(instance_dir)
+        if _normalize_loose(rec.get("text", "")) == needle
+    ]
+    if not candidates:
+        return None
+    candidates.sort(
+        key=lambda r: (_STATUS_RANK.get(r.get("status"), 2), -r.get("created", 0.0))
+    )
+    return candidates[0].get("id")
 
 
 def update_mission_text(instance_dir: Path, mission_id: str, new_text: str) -> bool:

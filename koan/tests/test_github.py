@@ -384,6 +384,16 @@ class TestGetGhUsername:
         assert get_gh_username() == ""
 
     @patch("app.github_auth.get_github_user", return_value="")
+    @patch("app.github.run_gh", side_effect=RuntimeError("network error"))
+    def test_logs_warning_on_failure(self, mock_gh, mock_get_user, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.WARNING, logger="app.github"):
+            assert get_gh_username() == ""
+        assert "get_gh_username failed" in caplog.text
+        assert "network error" in caplog.text
+
+    @patch("app.github_auth.get_github_user", return_value="")
     @patch("app.github.run_gh", return_value="cached-user")
     def test_caches_gh_api_result(self, mock_gh, mock_get_user):
         assert get_gh_username() == "cached-user"
@@ -591,6 +601,15 @@ class TestFetchIssueState:
     @patch("app.github.api", side_effect=RuntimeError("gh failed"))
     def test_api_error_defaults_open(self, mock_api):
         assert fetch_issue_state("o", "r", 42) == "open"
+
+    @patch("app.github.api", side_effect=RuntimeError("connection refused"))
+    def test_logs_warning_on_api_error(self, mock_api, caplog):
+        import logging as _logging
+
+        with caplog.at_level(_logging.WARNING, logger="app.github"):
+            assert fetch_issue_state("o", "r", 42) == "open"
+        assert "fetch_issue_state failed" in caplog.text
+        assert "connection refused" in caplog.text
 
 
 class TestFetchIssueWithComments:
@@ -1231,6 +1250,49 @@ class TestFindBotComment:
         assert result is not None
         assert result["id"] == 101
 
+    @patch("app.github.run_gh")
+    def test_prefer_newest_returns_highest_id_match(self, mock_gh):
+        """prefer_newest returns the highest-id match, not the first.
+
+        Reproduces the preserve_previous case: two same-bot comments carry the
+        marker at once (the preserved prior review + the freshly-posted one).
+        The newest — highest comment id — is the current review."""
+        old = self._make_comment(101, f"{self.MARKER} preserved prior review")
+        new = self._make_comment(303, f"{self.MARKER} fresh review")
+        mock_gh.return_value = f"{old}\n{new}"
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, prefer_newest=True,
+        )
+        assert result["id"] == 303
+
+    @patch("app.github.run_gh")
+    def test_prefer_newest_ignores_input_ordering(self, mock_gh):
+        """The highest id wins even when it appears first in the response."""
+        new = self._make_comment(303, f"{self.MARKER} fresh review")
+        old = self._make_comment(101, f"{self.MARKER} preserved prior review")
+        mock_gh.return_value = f"{new}\n{old}"
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER, prefer_newest=True,
+        )
+        assert result["id"] == 303
+
+    @patch("app.github.run_gh")
+    def test_prefer_newest_respects_bot_username_filter(self, mock_gh):
+        """prefer_newest still honours the author filter: a newer comment by a
+        different bot is not selected over the current bot's own comment."""
+        mine = self._make_comment(
+            202, f"{self.MARKER} by me", user="koan-bot",
+        )
+        other_newer = self._make_comment(
+            303, f"{self.MARKER} by other", user="other-bot",
+        )
+        mock_gh.return_value = f"{mine}\n{other_newer}"
+        result = find_bot_comment(
+            "owner", "repo", 42, self.MARKER,
+            bot_username="koan-bot", prefer_newest=True,
+        )
+        assert result["id"] == 202
+
 
 class TestIssueEdit:
     def test_passes_repo_flag_when_provided(self):
@@ -1328,6 +1390,17 @@ class TestListOpenIssues:
         from app.github import list_open_issues
 
         assert list_open_issues(repo="o/r") == []
+
+    @patch("app.github.run_gh", side_effect=RuntimeError("timeout reached"))
+    def test_logs_warning_on_error(self, mock_gh, caplog):
+        import logging as _logging
+
+        from app.github import list_open_issues
+
+        with caplog.at_level(_logging.WARNING, logger="app.github"):
+            assert list_open_issues(repo="o/r") == []
+        assert "list_open_issues failed" in caplog.text
+        assert "timeout reached" in caplog.text
 
     @patch("app.github.run_gh", return_value="")
     def test_returns_empty_on_blank_output(self, mock_gh):

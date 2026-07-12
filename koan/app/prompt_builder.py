@@ -311,6 +311,36 @@ def _get_submit_pr_section(project_path: str, project_name: str = "") -> str:
     )
 
 
+def _get_koan_md_section(project_path: str) -> str:
+    """Return project-local KOAN.md content wrapped for the system prompt.
+
+    KOAN.md is the koan-only analogue of CLAUDE.md: instructions that apply to
+    autonomous Kōan sessions but that the project maintainer does not want
+    interactive Claude Code sessions to load. Claude Code auto-loads CLAUDE.md
+    (via ``cwd``) but never KOAN.md, so koan must read it explicitly and inject
+    it here.
+
+    Reading of both the root ``KOAN.md`` and the optional ``.koan/KOAN.md`` (and
+    the combined-length cap) is delegated to ``project_koan.read_general_koan_md``;
+    the framing stays here next to the ``koan-md`` template. Returns an empty
+    string when ``project_path`` is empty or both sources are absent/blank/
+    unreadable.
+    """
+    if not project_path:
+        return ""
+    from app.project_koan import read_general_koan_md
+    content = read_general_koan_md(project_path)
+    if not content:
+        return ""
+
+    logger.info(
+        "KOAN.md (root + .koan/) read (%d chars) from %s", len(content), project_path
+    )
+
+    from app.prompts import load_prompt
+    return load_prompt("koan-md", KOAN_MD_CONTENT=content)
+
+
 def _get_staleness_section(instance: str, project_name: str) -> str:
     """Get staleness warning for the current project.
 
@@ -766,6 +796,7 @@ def build_agent_prompt(
     available_pct: int,
     mission_title: str = "",
     spec_content: str = "",
+    host_project_path: str = "",
 ) -> str:
     """Build the complete agent prompt from template + dynamic sections.
 
@@ -825,6 +856,11 @@ def build_agent_prompt(
     # Append submit-pull-request section
     prompt += _get_submit_pr_section(project_path, project_name)
 
+    # Append project-local koan-only instructions (KOAN.md), host-path aware.
+    koan_md = _get_koan_md_section(host_project_path or project_path)
+    if koan_md:
+        prompt += "\n\n" + koan_md
+
     # Append staleness warning (all autonomous modes — cheap local read)
     if not mission_title and not budget["skip_staleness"]:
         prompt += _get_staleness_section(instance, project_name)
@@ -883,6 +919,7 @@ def build_agent_prompt_parts(
     available_pct: int,
     mission_title: str = "",
     spec_content: str = "",
+    host_project_path: str = "",
 ) -> Tuple[str, str]:
     """Build agent prompt split into system prompt and user prompt.
 
@@ -959,6 +996,13 @@ def build_agent_prompt_parts(
     # Tier 1: Always stable — identical for every mission on this project.
     sys_parts.append(_get_merge_policy(project_name))
     sys_parts.append(_get_submit_pr_section(project_path))
+
+    # Project-local koan-only instructions (KOAN.md). Read from the HOST path
+    # (host_project_path) because in devcontainer mode project_path is the
+    # container-side workspace, while the file lives on the host disk.
+    koan_md = _get_koan_md_section(host_project_path or project_path)
+    if koan_md:
+        sys_parts.append(koan_md)
 
     caveman = _get_caveman_section()
     if caveman:

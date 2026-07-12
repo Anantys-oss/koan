@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — implement"
+description: "Specifies the `/implement` skill, which queues an end-to-end implementation mission for a tracker issue that results in a draft PR, and is eval-exempt as pure orchestration."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-07-02

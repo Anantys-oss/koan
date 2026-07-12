@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "OpenRouter via Claude Code CLI"
+description: "Explains how to run Koan's Claude CLI provider against OpenRouter models via a local `claude-code-router` (CCR) translation server, including setup, model routing, and caveats."
 tags: [providers]
 created: 2026-06-13
 updated: 2026-06-13

@@ -1,9 +1,10 @@
 ---
 type: doc
 title: "Deploy Kōan on Railway"
+description: "Details deploying Koan as a single hosted container on Railway via `KOAN_DEPLOY=railway`, covering required service variables, the GitHub token bot-identity caveat, dashboard passphrase gating, and re-deploy behavior."
 tags: [setup]
 created: 2026-06-24
-updated: 2026-06-26
+updated: 2026-07-08
 ---
 
 # Deploy Kōan on Railway
@@ -141,3 +142,31 @@ chown and no `.env` regeneration. The only globally-active change is that
 `instance/projects.yaml` and `instance/workspace/` now take precedence when
 they exist; installs without those files keep resolving the repo-root
 `projects.yaml` and `workspace/` exactly as before.
+
+## Instance hydration (boot as *your* instance)
+
+Set **`KOAN_INSTANCE_REPO`** to your PRIVATE instance repository and, on cold
+boot with an empty volume, the entrypoint clones it (including `.git`) into
+`instance/` so Kōan boots as *your* instance: soul, projects, skills, memory,
+journal, and any in-flight mission state. Unset → seed from the bundled
+`instance.example/` template.
+
+| Variable | Purpose |
+|---|---|
+| `KOAN_INSTANCE_REPO` | `gh` slug (`owner/koan-instance`) or full git URL of your private instance repo. |
+| `KOAN_INSTANCE_REPO_BRANCH` | Optional branch to clone. Default: the repo's default branch. |
+| `KOAN_INSTANCE_SYNC_INTERVAL` | Optional seconds between background `git pull --rebase --autostash` of `instance/`. `0` (default) disables it. |
+
+**Full-mirror model.** Hydration restores the whole tree, not just config,
+because the running agent already commits **and pushes** the entire `instance/`
+directory via `mission_runner.commit_instance()` on every lifecycle beat. The
+clone is the only new piece; the agent keeps the remote in sync from then on,
+and a later redeploy re-clones the up-to-date remote and resumes.
+
+**Caveats.** The `gh` clone path uses `GH_TOKEN` directly; the `git clone`
+fallback needs a credential helper (`gh auth setup-git` runs in the entrypoint).
+Any clone error fails open to the template — boot never hard-fails. Don't edit
+the remote by hand while the agent runs (the next `commit_instance` push would
+be non-fast-forward and diverge); if you must, set `KOAN_INSTANCE_SYNC_INTERVAL`
+so a throttled `pull --rebase --autostash` reconciles first. Secrets stay out of
+the repo — `.env` lives at `$KOAN_ROOT/.env`, outside `instance/`.

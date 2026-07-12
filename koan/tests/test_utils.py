@@ -546,14 +546,22 @@ class TestInsertPendingMission:
         assert result is True
 
     def test_modify_missions_file_returns_new_content(self, tmp_path):
-        """modify_missions_file should return the transformed content."""
+        """modify_missions_file applies the transform and persists it.
+
+        At S8 the store is authoritative and missions.md is a read-only export,
+        so the file reflects the transform's *mission* changes (not arbitrary
+        appended text). The return value is the transform output.
+        """
+        from app.missions import count_pending, insert_mission
         from app.utils import modify_missions_file
         missions = tmp_path / "missions.md"
         missions.write_text("# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
 
-        result = modify_missions_file(missions, lambda c: c + "# Extra\n")
-        assert result.endswith("# Extra\n")
-        assert missions.read_text() == result
+        result = modify_missions_file(missions, lambda c: insert_mission(c, "- do a thing"))
+        assert "do a thing" in result
+        content = missions.read_text()
+        assert "do a thing" in content
+        assert count_pending(content) == 1
 
     def test_modify_creates_file_if_missing(self, tmp_path):
         """modify_missions_file should create the file if it doesn't exist."""
@@ -1152,6 +1160,46 @@ class TestTruncateDiff:
         result = truncate_diff(weird, 50)
         assert len(result) < 100
         assert "truncated" in result
+
+
+class TestTruncateDiffWithSkips:
+    """Tests for truncate_diff_with_skips() — surfaces the omitted-file list."""
+
+    def _make_file_block(self, filename, lines=10):
+        header = f"diff --git a/{filename} b/{filename}\n"
+        header += f"--- a/{filename}\n+++ b/{filename}\n"
+        header += "@@ -1,5 +1,5 @@\n"
+        body = "".join(f"+line {i}\n" for i in range(lines))
+        return header + body
+
+    def test_with_skips_reports_omitted_files(self):
+        from app.utils import truncate_diff_with_skips
+        block_a = self._make_file_block("a.py", lines=3)
+        block_b = self._make_file_block("b.py", lines=50)
+        diff = block_a + block_b
+        budget = len(block_a) + 120
+        text, skipped = truncate_diff_with_skips(diff, budget)
+        assert "b.py" in skipped
+        assert "Omitted files" in text  # footer still embedded for the prompt body
+
+    def test_truncate_diff_output_unchanged(self):
+        from app.utils import truncate_diff, truncate_diff_with_skips
+        block_a = self._make_file_block("a.py", lines=3)
+        block_b = self._make_file_block("b.py", lines=50)
+        diff = block_a + block_b
+        budget = len(block_a) + 120
+        assert truncate_diff(diff, budget) == truncate_diff_with_skips(diff, budget)[0]
+
+    def test_with_skips_no_truncation_when_under_cap(self):
+        from app.utils import truncate_diff_with_skips
+        diff = self._make_file_block("a.py", lines=3)
+        text, skipped = truncate_diff_with_skips(diff, 10_000)
+        assert skipped == []
+        assert text == diff
+
+    def test_empty_diff(self):
+        from app.utils import truncate_diff_with_skips
+        assert truncate_diff_with_skips("", 100) == ("", [])
 
 
 class TestIsKnownProject:

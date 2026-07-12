@@ -243,15 +243,6 @@ def _update_wiki_index(wiki_dir: Path, docs_dir: Path, filepath: Path, summary: 
     index_path.write_text(text)
 
 
-def _append_wiki_log(wiki_dir: Path, today: str, summary: str) -> None:
-    """Append one line to wiki/log.md, if it exists."""
-    log_path = wiki_dir / "log.md"
-    if not log_path.exists():
-        return
-    with log_path.open("a") as f:
-        f.write(f"\n## [{today}] ingest | /doc: {summary}\n")
-
-
 def _sync_wiki(project_dir: Path, docs_dir: Path, blocks: List["DocBlock"], written: List[str]) -> None:
     """Best-effort wiki bookkeeping for docs this run actually wrote.
 
@@ -274,8 +265,6 @@ def _sync_wiki(project_dir: Path, docs_dir: Path, blocks: List["DocBlock"], writ
         first_line = block.content.strip().splitlines()[0] if block.content.strip() else block.title
         summary = first_line.lstrip("#").strip()[:160]
         _update_wiki_index(wiki_dir, docs_dir, filepath, summary)
-
-    _append_wiki_log(wiki_dir, today, f"{len(written)} doc file(s) updated via /doc ({', '.join(written)})")
 
 
 def _describe_existing_docs(docs_dir: Path, categories: List[str]) -> str:

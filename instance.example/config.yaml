@@ -143,6 +143,16 @@ skill_timeout: 7200
 # Default: 600 (10 min). Set 0 to disable.
 # first_output_timeout: 600
 
+# Max Bash-tool foreground timeout for mission subprocesses, in SECONDS.
+# Injected as BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS (Claude CLI). Lets the
+# agent block on a long-but-bounded command in the foreground instead of
+# backgrounding it (backgrounded children are orphaned when the one-shot session
+# ends, so the mission is finalized Done without the promised result). Clamped
+# below mission_timeout (a 120s reporting buffer is reserved). Set to 0 to keep
+# the Claude CLI's built-in Bash default (~2 min).
+# Default: 900 (15 minutes).
+# bash_foreground_timeout: 900
+
 # Rebase first output timeout — optional override for /rebase skill runs.
 # Useful for large PRs where "Applying review feedback" can be quiet for longer.
 # Falls back to first_output_timeout when unset.
@@ -504,6 +514,15 @@ models:
   #   review_mode: "gpt-5.5"        # serious code review
   #   reflect: "gpt-5.4"            # summarize / reason about result
 
+  # Haze provider overrides (uncomment to customize). Values are haze model
+  # selectors: an unambiguous model name, or provider:model, as configured
+  # inside haze via /provider + /model. See docs/providers/haze.md.
+  # haze:
+  #   mission: "glm-5.2"       # main mission execution
+  #   review_mode: "glm-5.2"   # code review
+  #   chat: "glm-4.7"          # chat responses
+  #   lightweight: "glm-4.7"   # low-cost calls (format_outbox, pick_mission)
+
   # Ollama Launch provider overrides (uncomment to customize):
   # ollama-launch:
   #   mission: "kimi-k2.7:cloud"         # main mission execution
@@ -512,6 +531,33 @@ models:
   #   fallback: "minimax-m2.5:cloud"     # empty = use provider default
   #   review_mode: "glm-5:cloud"
   #   reflect: "glm-5:cloud"
+
+# Reasoning effort (optional) — sets the Claude Code `--effort` flag
+# (low/medium/high/max). Omit the section to keep the DYNAMIC default: effort
+# is then picked from the current budget mode (review→low, deep→high, else
+# none) so cheap audits and deep reasoning cost what they should.
+#
+# Keys below are MISSION TYPES, not budget modes. A pinned type wins over the
+# dynamic default regardless of the mode the mission runs in. NOTE: in practice
+# only `autonomous` (background work) and `freetext` (plain human-text missions)
+# take effect — those are the only types that reach build_mission_command. Every
+# named slash command is handled earlier: commands with a dedicated skill runner
+# (/review, /plan, /rebase, /recreate, /implement, /fix, /audit, /check, …) run
+# in their own runners, and commands with no runner (/refactor, /pr) are handled
+# by their bridge-side handler or fail as unknown. So pinning `review: low` — or
+# `refactor: high` — here has NO effect.
+#
+# Valid mission-type keys (the full classify_mission_type taxonomy):
+#   autonomous  freetext  plan   review    rebase    recreate  implement
+#   refactor    audit     check  maintenance  pr      chat      incident
+# Any other key never matches a mission, so pinning it does nothing. Of these,
+# only autonomous / freetext take effect today (the rest are skill-dispatched or
+# handler-dispatched, per the NOTE above).
+#
+# A single string applies to all missions; an empty value disables the flag.
+# effort:
+#   autonomous: low      # keep background autonomous work cheap
+#   freetext: medium
 
 # Per-role CLI provider (optional) — parallel to `models:`.
 # Pick a DIFFERENT provider (and optionally a custom binary) for each mission

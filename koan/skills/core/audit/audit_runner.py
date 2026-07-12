@@ -27,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
+from app.github_alerts import build_alert
 from app.prompts import load_prompt_or_skill
 
 DEFAULT_MAX_ISSUES = 5
@@ -320,8 +321,19 @@ def _build_issue_body(finding: AuditFinding) -> str:
     severity_icon = _SEVERITY_LABELS.get(finding.severity, "\u2753")
     effort_label = _EFFORT_LABELS.get(finding.effort, finding.effort)
     fingerprint = _compute_finding_fingerprint(finding)
+    lines = []
 
-    lines = [
+    # Critical findings get a CAUTION callout so they're un-missable in
+    # email digests and mobile, where the 🔴 icon in the details table
+    # has no special color rendering. Parsimony rule: only critical —
+    # high/medium/low rely on the emoji + severity label in the table.
+    if finding.severity == "critical":
+        lines.append(
+            build_alert("CAUTION", f"**Critical: {finding.title}**")
+        )
+        lines.append("")
+
+    lines.extend([
         "## Problem",
         "",
         f"{finding.problem}",
@@ -346,7 +358,7 @@ def _build_issue_body(finding: AuditFinding) -> str:
         "---",
         "\U0001f916 Created by K\u014dan from audit session",
         f"<!-- koan-audit-id: {fingerprint} -->",
-    ]
+    ])
     return "\n".join(lines)
 
 

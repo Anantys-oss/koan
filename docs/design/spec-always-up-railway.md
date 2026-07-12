@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Kōan \"Always Up\" — Docker + Railway Deployment Spec"
+description: "A deployment proposal for running Kōan as an always-on Docker service on Railway, covering CLI auth, persistent state via git, and security hardening."
 tags: [design]
 created: 2026-05-28
 updated: 2026-05-28

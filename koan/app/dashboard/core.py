@@ -107,7 +107,8 @@ def index():
     project_stats = {}
     projects_list = missions_svc.get_all_project_names()
     if len(projects_list) > 1:
-        by_project = group_by_project(read_file(state.MISSIONS_FILE))
+        from app.mission_store.transition import read_content
+        by_project = group_by_project(read_content(state.MISSIONS_FILE.parent))
         for pname, pdata in by_project.items():
             project_stats[pname] = {
                 "pending": len(pdata["pending"]),

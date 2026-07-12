@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "GitHub And Trackers"
+description: "Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work."
 tags: [architecture]
 created: 2026-05-28
 updated: 2026-06-23

@@ -6,9 +6,9 @@ which sets ``GH_TOKEN`` — this module has no auth logic.
 """
 
 import json
+import logging
 import re
 import subprocess
-import sys
 import time
 from typing import Dict, List, Optional
 
@@ -226,7 +226,10 @@ def list_open_issues(
         args.extend(["--repo", repo])
     try:
         output = run_gh(*args, cwd=cwd)
-    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
+        logging.getLogger(__name__).warning(
+            "list_open_issues failed: %s", exc, exc_info=True,
+        )
         return []
     if not output:
         return []
@@ -342,7 +345,9 @@ def fetch_issue_state(owner, repo, issue_number):
         state = result.strip().strip('"')
         return state if state in ("open", "closed") else "open"
     except Exception as e:
-        print(f"[github] fetch_issue_state error: {e}", file=sys.stderr)
+        logging.getLogger(__name__).warning(
+            "fetch_issue_state failed: %s", e, exc_info=True,
+        )
         return "open"
 
 
@@ -410,7 +415,10 @@ def get_gh_username() -> str:
 
     try:
         _cached_gh_username = run_gh("api", "user", "--jq", ".login", timeout=15)
-    except (RuntimeError, subprocess.SubprocessError, OSError):
+    except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+        logging.getLogger(__name__).warning(
+            "get_gh_username failed: %s", exc, exc_info=True,
+        )
         _cached_gh_username = ""
 
     return _cached_gh_username
@@ -705,6 +713,7 @@ def list_open_pr_branches(repo: str, author: str, cwd: str = None) -> List[str]:
 def find_bot_comment(
     owner: str, repo: str, pr_number: int, marker: str,
     bot_username: str = "",
+    prefer_newest: bool = False,
 ) -> Optional[dict]:
     """Search issue comments on a PR for a comment containing ``marker``.
 
@@ -720,6 +729,13 @@ def find_bot_comment(
     empty (unconfigured), the first marker match wins regardless of author —
     preserving backward-compatible behaviour.
 
+    When ``prefer_newest`` is True, the highest-id (most recently created)
+    match is returned instead of the first (oldest). This matters when more
+    than one comment can legitimately carry the marker at once — e.g. with
+    ``review_history.preserve_previous`` the prior review is left intact
+    alongside the freshly-posted one, both authored by the same bot, so the
+    author filter can't disambiguate and the newest match is the current one.
+
     Args:
         owner: Repository owner.
         repo: Repository name.
@@ -727,6 +743,8 @@ def find_bot_comment(
         marker: Marker string to search for (e.g. ``SUMMARY_TAG``).
         bot_username: If provided, only return a comment authored by this
             account (case-insensitive).
+        prefer_newest: If True, return the highest-id match rather than the
+            first one encountered.
 
     Returns:
         Dict with keys ``id``, ``body``, ``user`` from the GitHub API, or
@@ -747,6 +765,7 @@ def find_bot_comment(
         return None
 
     wanted_user = bot_username.strip().lower()
+    newest = None
     for line in raw.strip().split("\n"):
         try:
             comment = json.loads(line)
@@ -756,9 +775,12 @@ def find_bot_comment(
             continue
         if wanted_user and str(comment.get("user", "")).lower() != wanted_user:
             continue
-        return comment
+        if not prefer_newest:
+            return comment
+        if newest is None or comment.get("id", 0) > newest.get("id", 0):
+            newest = comment
 
-    return None
+    return newest
 
 
 def check_pvrs_enabled(repo: str, cwd: str = None) -> bool:

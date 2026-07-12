@@ -607,17 +607,16 @@ def truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars] + "\n...(truncated)"
 
 
-def truncate_diff(diff: str, max_chars: int) -> str:
-    """Truncate a unified diff intelligently, preserving whole file blocks.
+def truncate_diff_with_skips(diff: str, max_chars: int) -> tuple[str, list[str]]:
+    """Truncate a unified diff preserving whole file blocks, returning the
+    truncated text AND the list of omitted file paths.
 
-    Instead of cutting at an arbitrary character offset (which leaves the
-    reviewer guessing what was cut), this splits the diff into per-file
-    blocks and keeps as many complete blocks as fit within *max_chars*.
-    Files that don't fit are listed as a summary at the end so the
-    reviewer knows they exist.
+    Same packing logic as :func:`truncate_diff`; the omitted-file list is
+    surfaced so callers can report partial coverage instead of relying on
+    the in-body footer alone.
     """
     if not diff or len(diff) <= max_chars:
-        return diff
+        return diff, []
 
     # Split into per-file blocks at 'diff --git' boundaries.
     raw_blocks = re.split(r'(?=^diff --git )', diff, flags=re.MULTILINE)
@@ -625,7 +624,7 @@ def truncate_diff(diff: str, max_chars: int) -> str:
 
     if not blocks:
         # Can't parse structure — fall back to character truncation.
-        return truncate_text(diff, max_chars)
+        return truncate_text(diff, max_chars), []
 
     # Pre-scan filenames so we can estimate the worst-case footer size
     # and reserve budget for it, ensuring output stays within max_chars.
@@ -635,7 +634,7 @@ def truncate_diff(diff: str, max_chars: int) -> str:
         filenames.append(m.group(1) if m else "(unknown file)")
 
     # Greedy first pass: keep blocks that fit without any footer.
-    kept: list[str] = []
+    kept: list[tuple[str, str]] = []
     skipped: list[str] = []
     used = 0
 
@@ -660,7 +659,19 @@ def truncate_diff(diff: str, max_chars: int) -> str:
     result = "".join(b for b, _ in kept)
     if skipped:
         result += _build_footer(skipped, len(kept))
-    return result
+    return result, skipped
+
+
+def truncate_diff(diff: str, max_chars: int) -> str:
+    """Truncate a unified diff intelligently, preserving whole file blocks.
+
+    Instead of cutting at an arbitrary character offset (which leaves the
+    reviewer guessing what was cut), this splits the diff into per-file
+    blocks and keeps as many complete blocks as fit within *max_chars*.
+    Files that don't fit are listed as a summary at the end so the
+    reviewer knows they exist.
+    """
+    return truncate_diff_with_skips(diff, max_chars)[0]
 
 
 def _build_footer(skipped: list[str], kept_count: int) -> str:
@@ -698,30 +709,32 @@ def _locked_missions_rw(missions_path: Path, transform):
         with open(lock_path, "w") as lock_f:
             fcntl.flock(lock_f, fcntl.LOCK_EX)
             try:
-                # Read current content (or default if missing/empty)
-                if missions_path.exists():
-                    content = missions_path.read_text(encoding="utf-8")
-                else:
-                    content = ""
+                # S8: the mission store is authoritative. Render its current
+                # state to content, apply the (unchanged) transform, write the
+                # result back into the store, then regenerate missions.md as a
+                # read-only export. The flock still serializes the whole cycle
+                # across the bridge and run processes.
+                from app.mission_store import get_mission_store
+                from app.mission_store.transition import (
+                    ensure_store_synced,
+                    reconcile_all,
+                )
+                instance = str(missions_path.parent)
+                ensure_store_synced(instance)
+                store = get_mission_store(instance)
+                content = store.render_content()
                 if not content.strip():
                     content = _MISSIONS_DEFAULT
 
                 new_content = transform(content)
 
-                # Atomic write: temp file + rename (same dir = same filesystem)
-                fd, tmp = tempfile.mkstemp(
-                    dir=str(missions_path.parent), prefix=".missions-",
-                )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        f.write(new_content)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(tmp, str(missions_path))
-                except BaseException:
-                    with contextlib.suppress(OSError):
-                        os.unlink(tmp)
-                    raise
+                # A no-op transform (e.g. finalizing a mission that isn't present)
+                # neither touches the store nor rewrites the export, leaving an
+                # existing missions.md byte-identical — but a missing file is
+                # still created.
+                if new_content != content or not missions_path.exists():
+                    reconcile_all(instance, new_content)
+                    store.export_view(missions_path)
             finally:
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
 

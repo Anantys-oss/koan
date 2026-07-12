@@ -1,15 +1,16 @@
 ---
 type: component-spec
 title: "Component Spec — CLI Provider Abstraction"
+description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-01
+updated: 2026-07-10
 ---
 
 # Component Spec — CLI Provider Abstraction
 
 **Package:** `koan/app/provider/` (`base.py`, `claude.py`, `cline.py`, `codex.py`,
-`copilot.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
+`copilot.py`, `haze.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
 
 ## Purpose
 
@@ -26,7 +27,8 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
        ├─ claude.py    → ClaudeProvider (Claude Code CLI)
        ├─ cline.py     → ClineProvider
        ├─ codex.py     → CodexProvider (quota via stream-json summary only)
-       └─ copilot.py   → CopilotProvider (with tool-name mapping)
+       ├─ copilot.py   → CopilotProvider (with tool-name mapping)
+       └─ haze.py      → HazeProvider (haze ≥0.7.0 headless stream-json)
 ```
 
 ## Key types & functions
@@ -41,6 +43,7 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 | `base.custom_binary_name()` / `__init__.provider_cli_display(provider)` | Per-instance attribution helpers. `custom_binary_name()` returns the basename of a pinned custom binary (per-role `_binary_override` from `cli.<role>: flavor:path`; Claude also surfaces the global `KOAN_CLAUDE_CLI_PATH`), or `''` when no override is configured. `provider_cli_display(provider)` returns that basename or, failing that, the provider flavor name — used by `review_runner._review_attribution()` so the review footer shows the CLI that actually ran (e.g. `claude-deep`), not just the flavor. Only real overrides count: a provider's natural fallback (Copilot's `gh`) is never surfaced as "custom". |
 | `__init__.get_provider_for_role(role, project_name)` / `get_fallback_provider(project_name)` / `resolve_role_provider(role, project_name)` | Per-role provider selection (the `cli:` config section). `get_provider_for_role` returns the **global cached singleton** when the role is unset (parity) or a **fresh** `_PROVIDERS[flavor](binary_path=path)` otherwise — never written to `_cached_provider`. `get_fallback_provider` returns the single section-wide `cli.fallback` instance (or `None`). `resolve_role_provider` is the stateless-helper entry point: it pre-flight-swaps to the fallback when the role binary is unavailable. |
 | `cli:` config / `config.get_cli_config()` / `get_cli_fallback()` | New config section parallel to `models:`. `cli.default.<role>` (+ per-project flat `cli.<role>`) maps a mission role (`mission`/`chat`/`lightweight`/`review_mode`/`reflect`) to a `flavor` or `flavor:path`; a single `cli.fallback` provider is used on launch/auth failure. The role's MODEL resolves against that provider's `models.<provider>.<role>` block (`get_model_config(role_providers=…)`). Replaces the removed `KOAN_CLAUDE_CLI_FOR_REVIEW_PATH`. |
+| `effort:` config / `config.get_effort(mode, mission_type)` / `CLIProvider.build_effort_args()` | Reasoning-effort control for the Claude `--effort` flag (low/medium/high/max). `effort:` mapping keys are **mission types** (the `session_tracker.classify_mission_type` taxonomy: plan/review/implement/audit/…), not budget modes. Resolution in `get_effort()`: `effort.<mission_type>` → `effort.<autonomous_mode>` (legacy) → `_DEFAULT_EFFORT_MAP[mode]` (the dynamic default). The dynamic default — review→low, deep→high, else none — is preserved verbatim when `effort:` is absent; a per-type pin only layers on top. `build_mission_command()` classifies the mission type and passes it through, so a pin only reaches `get_effort()` for missions that run through the main agent loop — **not** for skill-dispatched commands (`/review`, `/plan`, …), which bypass `build_mission_command()` (see reach caveat below); `get_effort_for_mode()` is the type-unaware wrapper for callers outside the mission build path. `extended thinking` short-circuits effort to `max`. |
 | Provider resolution | Order: `KOAN_CLI_PROVIDER` env (fallback `CLI_PROVIDER`) → `projects.yaml`/`config.yaml` → default. Centralized in `utils.get_cli_provider_env()`. This resolves the GLOBAL provider; `cli.<role>` layers per-role selection on top via `get_provider_for_role`. |
 | `CLIProvider(binary_path="")` / `ClaudeProvider.binary()` | The base class takes an optional per-instance `binary_path` override (the replacement for the removed review ContextVar); `_resolve_binary_path()` is the shared resolver (absolute → as-is / relative → `normpath(join(KOAN_ROOT, …))` / bare name → PATH lookup). `ClaudeProvider.binary()`: `_binary_override` if set → else `KOAN_CLAUDE_CLI_PATH` → else `"claude"`. Every provider's `binary()` honors the override so `flavor:path` works uniformly. Relative paths root at `KOAN_ROOT` (not CWD — the agent runs from `KOAN_ROOT/koan`); bare names are never re-rooted. |
 
@@ -66,6 +69,29 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 - **The `cli:` absence contract is exact parity.** With no `cli:` section, every
   role resolves to `(get_provider_name(), "")` and `get_model_config(role_providers=None)`
   is byte-for-byte the historical behavior. Changes here must preserve that.
+- **The `effort:` absence contract is the dynamic default.** With no `effort:`
+  section, `get_effort()` returns `_DEFAULT_EFFORT_MAP[mode]` (review→low,
+  deep→high, else `""`) — the historical budget-mode-driven behavior, untouched.
+  Per-mission-type pins only layer on top: `effort.<mission_type>` (a
+  `classify_mission_type` category) wins over `effort.<mode>`, which wins over
+  the dynamic default. **Reach caveat:** this path is wired only into
+  `build_mission_command()`, which the main agent loop calls for missions that
+  are *not* dispatched to a dedicated skill runner. Skill-dispatched commands
+  (`/review`, `/plan`, `/rebase`, `/recreate`, `/implement`, `/fix`, `/audit`,
+  `/check`, …) are routed to their own runners before this path and are not
+  governed by `effort:` — so a `review: low` pin has no effect on `/review`,
+  which runs in `review_runner`. Slash commands *without* a dedicated runner
+  don't reach it either: `/refactor`/`/pr` are handled by their bridge-side
+  handler or failed as an unknown skill in `_handle_skill_dispatch` before
+  `build_mission_command`. In practice the only pins that fire are
+  **`autonomous`** and **`freetext`** (non-slash missions). A partial dict
+  leaves unlisted modes on the dynamic default (not disabled), preserving the
+  absence contract per-mode.
+  `get_effort_for_mode()` is the type-unaware wrapper and must stay equivalent
+  to `get_effort(mode, "")`. `config_validator` accepts any `effort.*` key (the
+  mission-type set is open) but validates every value — dict entries *and* the
+  scalar shorthand (`effort: "high"`) — against `_VALID_EFFORT_LEVELS`, so a
+  typo'd level warns rather than silently dropping the flag.
 - **Footer attribution shows the binary that ran, then falls back to the flavor.**
   `review_runner._review_attribution()` is the single source of truth for the review
   footer's CLI label: `provider_cli_display()` surfaces the basename of a pinned
@@ -91,13 +117,65 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   abstraction must translate, not leak provider-specific tool names upward.
 - **Quota/usage extraction is provider-specific.** Claude exposes usage in
   `modelUsage` (no top-level `model` field); codex surfaces quota only via the
-  stream-json summary (`rate_limit_rejected`, stdout JSONL — never stderr). Detectors
-  read the summary stream, not assistant text.
+  stream-json summary (`rate_limit_rejected`, stdout JSONL — never stderr); haze
+  reports usage only in its terminal result envelope with **camelCase** fields
+  (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`reasoningTokens`).
+  Detectors read the summary stream, not assistant text.
+- **Shared stream parsers extend by event SHAPE, never by provider name.** The
+  central summarizer/text/usage extractors in `provider/__init__.py` (and the
+  mission-stdout path in `token_parser.py`) branch on field presence
+  (e.g. `inputTokens` ⇒ camelCase usage) so the agent loop never learns which
+  provider is running (Provider Isolation). Adding a provider must not add
+  `if provider == …` branches to shared code.
+- **Haze headless contract (haze ≥ 0.7.0).** `HazeProvider` targets haze's
+  documented harness mode: `--output stream-json` NDJSON progress events
+  (`turn_start`/`message_*`/`tool_*`/`retry`/`context_overflow`/`turn_end`)
+  terminated by a result envelope `{type:"result", status, result, usage}` that is
+  byte-identical to `--output json`; exit code 0 ⇔ status `complete`
+  (`failed`/`aborted` are failures, never success). Because haze streams,
+  it uses the standard `supports_stream_json()` path — **no**
+  incremental-progress capability flag and **no** agent-loop bypass may be
+  (re)introduced for it. Prompt delivery: the *target* design is stdin via a
+  flag-REMOVAL `rewrite_prompt_for_stdin()` (haze reads stdin only when `-p`
+  is absent; the base marker substitution would send the marker as the literal
+  prompt), but stdin passing is **disabled**
+  (`supports_stdin_prompt_passing()` False) until upstream fixes its stdin
+  gate — haze checks `process.stdin.isTTY === false` and Node reports
+  `undefined` for pipes/files, so piped runs fall into the interactive UI
+  (verified live 2026-07-10). Until then the prompt rides argv as `-p`
+  (subject to OS per-argument limits); the dormant rewrite stays implemented
+  and tested so the flip is one line. Headless haze is one-shot (no session
+  resume) and exposes no
+  per-tool/MCP/plugin/max-turns/fallback-model/effort controls — those inputs
+  are skipped but never silently: a two-tier notice policy applies, deduped
+  once per process. Static capabilities driven by Kōan's OWN defaults
+  (per-tool allow/deny, max turns, fallback model — passed unconditionally by
+  the loop; the operator cannot act) log at **info**; operator-actionable
+  config (MCP, plugins, effort, resume, system-prompt file — removable) and
+  the safety-relevant no-permission-gates notice log at **warning**.
+  Quota/auth detection uses
+  backend-agnostic patterns (haze fronts OpenAI/OpenRouter/local backends):
+  stderr trusted fully, stdout only on non-zero exit with an error-marker gate.
+  Pre-flight quota check is a minimal token-consuming `--output json` probe
+  (cline precedent) run from a fresh EMPTY scratch directory — never the
+  project dir, whose CLAUDE.md/AGENTS.md context haze would ingest (~12K
+  tokens per probe); probe errors never block work. Invocation lock:
+  `haze-cli` (shared `~/.haze/settings.json` state).
 
 ## Integration points
 
 - Invoked by `run.run_claude_task()` and skill runners.
 - Usage flows to `usage_tracker.py` / `burn_rate.py` via the `record_usage()` hook.
+  Structured per-call events are written to `instance/usage/*.jsonl` by
+  `cost_tracker.record_usage()`, which now carries an optional `mission_id`
+  (resolved best-effort from `.api-missions.json` in `mission_runner._record_cost_event`).
+  `cost_tracker.aggregate_mission_usage(instance_dir, mission_id, mission_text=…)`
+  is the per-mission read path used by `GET /v1/missions/{id}`.
+- **Skill-dispatch token capture**: streaming skill runs persist per-call token
+  totals to `KOAN_STREAM_USAGE_FILE` (summed across calls), appended to the stdout
+  capture so `_ensure_tokens` parses real tokens. When that sidecar is empty,
+  `_record_cost_event` backfills `input/output/cost` from the provider session tail
+  (`get_session_data`) so command-missions do not record placeholder zeros.
 - Per-role provider selection from the `cli:` section (`config.get_cli_config()`),
   threaded into `mission_runner.build_mission_command()` (mission/review roles),
   the `run_command*` helpers (their `model_key` role), and

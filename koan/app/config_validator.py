@@ -14,7 +14,14 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from app.config import _VALID_EFFORT_LEVELS
 from app.run_log import log
+
+# Top-level keys whose nested contents are validated inline (not via
+# SECTION_SCHEMAS), because the sub-key set is open. ``effort`` keys are
+# mission types — an open set that grows as new skills land — so each key
+# is accepted and only its value (an effort level) is checked.
+_INLINE_VALIDATED_NESTED_KEYS = {"effort"}
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +46,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "skill_max_turns": "int",
     "analysis_max_turns": "int",
     "mission_timeout": "int",
+    "bash_foreground_timeout": "int",
     "first_output_timeout": "int",
     "rebase_first_output_timeout": "int",
     "rebase_review_idle_timeout": "int",
@@ -93,6 +101,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "thinking": _NESTED,
     "stagnation": _NESTED,
     "optimizations": _NESTED,
+    "ci_check": _NESTED,
 }
 
 # Top-level keys that are recognized but deprecated: they still work (honored
@@ -264,11 +273,6 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "automation_rules": {
         "max_fires_per_minute": "int",
     },
-    "effort": {
-        "review": "str",
-        "implement": "str",
-        "deep": "str",
-    },
     "thinking": {
         "enabled": "bool",
         "budget_tokens": "int",
@@ -288,6 +292,14 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "rtk": "dict",
         "review_compressor": "dict",
         "ponytail": "dict",
+    },
+    # ci_check also accepts a bare bool shorthand (``ci_check: true``); the
+    # dict form carries the toggle plus the queue-safety bounds.
+    "ci_check": {
+        "enabled": "bool",
+        "timeout": "int",
+        "max_fix_attempts_per_mission": "int",
+        "idle_timeout": "int",
     },
 }
 
@@ -389,9 +401,47 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
             # (e.g. effort: "high" vs effort: {review: low, deep: high}).
             # Accept strings silently for these keys.
             if not isinstance(value, dict):
+                # effort accepts a scalar shorthand (effort: "high") that
+                # applies to every mission — but validate the level so a typo
+                # (effort: "hihg") warns instead of silently dropping the flag,
+                # mirroring the per-key validation below.
                 if key == "effort" and isinstance(value, str):
+                    if value.strip().lower() not in _VALID_EFFORT_LEVELS:
+                        warnings.append((
+                            key,
+                            f"'effort' invalid effort '{value}' "
+                            f"(expected low/medium/high/max)",
+                        ))
+                    continue
+                # ci_check accepts a bare bool shorthand (ci_check: true) in
+                # addition to the dict form — is_ci_check_enabled honors both.
+                if key == "ci_check" and isinstance(value, bool):
                     continue
                 warnings.append((key, f"'{key}' should be a mapping, got {type(value).__name__}"))
+                continue
+            # effort: keys are mission types (plan/review/implement/…) plus
+            # legacy budget modes (deep/wait) — an open set that grows as new
+            # skills land. Accept any key; validate the VALUE is a real effort
+            # level (low/medium/high/max, or "" to disable the flag).
+            if key == "effort":
+                for sub_key, sub_value in value.items():
+                    path = f"effort.{sub_key}"
+                    if sub_value is None:
+                        continue
+                    if not isinstance(sub_value, str):
+                        warnings.append((
+                            path,
+                            f"'{path}' should be one of low/medium/high/max, "
+                            f"got {type(sub_value).__name__}",
+                        ))
+                        continue
+                    level = sub_value.strip().lower()
+                    if level not in _VALID_EFFORT_LEVELS:
+                        warnings.append((
+                            path,
+                            f"'{path}' invalid effort '{sub_value}' "
+                            f"(expected low/medium/high/max)",
+                        ))
                 continue
             section_schema = SECTION_SCHEMAS.get(key)
             if section_schema:
@@ -871,6 +921,11 @@ def validate_config_or_raise(koan_root: str) -> None:
             if key == "effort" and isinstance(value, str):
                 continue
             if key == "stagnation" and value is False:
+                continue
+            # ci_check accepts a bare bool shorthand (ci_check: true) in addition
+            # to the dict form — is_ci_check_enabled honors both. Mirror the
+            # warning validator so the strict startup path does not regress it.
+            if key == "ci_check" and isinstance(value, bool):
                 continue
             if not isinstance(value, dict):
                 errors.append(

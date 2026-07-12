@@ -80,13 +80,13 @@ def gather_project_structure(project_path: str) -> str:
 
 def get_missions_context(instance_dir: Path) -> str:
     """Get current missions context for exploration prompts."""
-    missions_file = instance_dir / "missions.md"
-    if not missions_file.exists():
-        return "No active missions."
+    # Store is authoritative; missions.md is a generated export. Read the store
+    # directly (read_sections returns empty sections when there is nothing) rather
+    # than gating on the export file's presence, which would hide real missions
+    # whenever the export is absent.
+    from app.mission_store.transition import read_sections
 
-    from app.missions import parse_sections
-
-    sections = parse_sections(missions_file.read_text())
+    sections = read_sections(instance_dir)
     in_progress = sections.get("in_progress", [])
     pending = sections.get("pending", [])
     parts = []

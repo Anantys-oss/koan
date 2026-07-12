@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Daemon Runtime"
+description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
 updated: 2026-06-26
@@ -102,6 +103,34 @@ marker (`.koan-restart-run`); stale legacy `.koan-restart` markers are ignored.
 
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.
+
+## One-shot execution model (no post-turn event loop)
+
+Koan invokes the CLI in headless print mode (`claude -p --output-format json`).
+Each mission is a **single non-interactive turn**: the CLI loops through tool
+calls internally until the model emits a final message with no further tool
+call, then exits. `run_claude_task()` blocks in the subprocess wait; the instant
+the CLI exits `0`, `_run_iteration()` runs the post-mission pipeline and
+`_finalize_mission()` marks the mission Done. **There is no event loop after the
+turn.** Any work the model defers to "after" its turn — armed monitors, "I'll
+report when it finishes", scheduled wake-ups — is silently dropped and the
+backgrounded child is killed with the process group.
+
+Consequences and safeguards:
+
+- **Result-bearing work must complete in-turn.** The agent is instructed (see
+  the `cli-execution-model` prompt partial) to block or poll within the turn
+  until a command finishes, then read its result before concluding.
+- **Foreground headroom.** For the Claude provider, Koan sets
+  `BASH_DEFAULT_TIMEOUT_MS` / `BASH_MAX_TIMEOUT_MS` (from
+  `bash_foreground_timeout`, default 15 min, clamped
+  below `mission_timeout` with a 120s reporting buffer) so a long-but-bounded
+  command can block in the foreground rather than being backgrounded and
+  orphaned. Set `bash_foreground_timeout: 0` to keep the CLI's built-in default.
+- **Not a `max_turns` issue.** Default missions pass no `--max-turns` flag; and a
+  genuine turn-cap hit surfaces as `subtype: "error_max_turns"`, which
+  `check_json_success()` treats as failure — not the clean "Done" this class of
+  bug produced. The trigger is a *natural* turn-end after backgrounding.
 
 ## Runtime Modes And Guards
 

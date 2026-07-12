@@ -9,14 +9,16 @@ All checks are pure Python file operations — no API calls, no subprocess.
 """
 
 import contextlib
+import logging
 import shutil
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from app.missions import parse_sections
 from app.utils import parse_project
+
+logger = logging.getLogger(__name__)
 
 
 # --- Stale mission detection ---
@@ -31,16 +33,48 @@ _alerted_stale_missions: set = set()
 STALE_CHECK_INTERVAL = 1800  # 30 minutes
 _last_stale_check: float = None
 
+# Track whether we've already alerted this session that the store read failed —
+# a store fault blinds the stale-mission check, so we notify once (avoid spam).
+_store_error_alerted: bool = False
+
 
 def reset_stale_state() -> None:
     """Reset module-level state. Used by tests."""
-    global _alerted_stale_missions, _last_stale_check
+    global _alerted_stale_missions, _last_stale_check, _store_error_alerted
     _alerted_stale_missions = set()
     _last_stale_check = None
+    _store_error_alerted = False
+
+
+def _send_store_error_alert(err: Exception) -> None:
+    """Notify once that the stale-mission health check cannot read the store.
+
+    A store fault (locked/corrupt ``missions.db``) makes ``check_stale_missions``
+    blind, so the passive stale-mission alert would never fire for the very
+    stuck-loop scenario it guards. Surface that as its own alert rather than
+    letting the operator wait on an alert that can't come.
+    """
+    global _store_error_alerted
+    if _store_error_alerted:
+        return
+    try:
+        from app.notify import send_telegram, NotificationPriority
+        send_telegram(
+            f"⚠️ Stale-mission health check can't read the mission store: {err}\n"
+            "The DB may be locked or corrupt — stale-mission alerts are paused "
+            "until it recovers. Inspect the queue with `make missions`.",
+            priority=NotificationPriority.WARNING,
+        )
+        _store_error_alerted = True
+    except (ImportError, OSError):
+        pass
 
 
 def check_stale_missions(
-    instance_dir: str, max_age_hours: float = STALE_MISSION_HOURS
+    instance_dir: str,
+    max_age_hours: float = STALE_MISSION_HOURS,
+    *,
+    alert_on_error: bool = False,
 ) -> List[str]:
     """Detect In Progress missions with no recent journal activity.
 
@@ -50,20 +84,27 @@ def check_stale_missions(
     Args:
         instance_dir: Path to instance directory.
         max_age_hours: Hours without journal activity before flagging.
+        alert_on_error: When True (the heartbeat path), a store read fault fires a
+            distinct Telegram alert instead of silently reporting "no stale". Left
+            False for on-demand callers like ``/status`` so they don't emit alerts.
 
     Returns:
         List of stale mission descriptions (already-alerted ones excluded).
     """
-    missions_path = Path(instance_dir) / "missions.md"
-    if not missions_path.exists():
-        return []
-
+    from app.mission_store.transition import read_sections
     try:
-        content = missions_path.read_text()
-    except OSError:
+        sections = read_sections(instance_dir)
+    except Exception as e:
+        # A store fault (locked/corrupt missions.db) is NOT "no stale missions":
+        # silently returning [] would suppress the stale-mission alert for exactly
+        # the stuck-loop scenario this check guards. Log loudly, and from the
+        # heartbeat path fire a distinct alert so the operator isn't left waiting
+        # on an alert that can never come. read_sections goes through SQLite, so
+        # this catches sqlite3.DatabaseError (not an OSError subclass) too.
+        logger.error("[heartbeat] stale-mission store read failed: %s", e)
+        if alert_on_error:
+            _send_store_error_alert(e)
         return []
-
-    sections = parse_sections(content)
     in_progress = sections.get("in_progress", [])
     if not in_progress:
         return []
@@ -158,7 +199,7 @@ def run_stale_mission_check(instance_dir: str) -> List[str]:
         return []
     _last_stale_check = now
 
-    stale = check_stale_missions(instance_dir)
+    stale = check_stale_missions(instance_dir, alert_on_error=True)
     if stale:
         _send_stale_alert(stale)
     return stale

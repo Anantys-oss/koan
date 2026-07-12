@@ -24,32 +24,44 @@ Code.
 
 ## Documentation First
 
+- `docs/` and `specs/` are each independent OKF v0.1 knowledge bundles — see
+  `docs/SPEC.md` for the normative spec and `docs/SCHEMA.md` / `specs/SCHEMA.md`
+  for the per-bundle conventions (page types, tag taxonomy, frontmatter).
 - Before planning or implementing a feature or important refactor, check
   `wiki/index.md` (a flat catalog of `docs/` and the durable half of `specs/` —
   see "Wiki Tooling" below) to find candidate pages, then read the matching
   pages under `docs/architecture/`, `docs/users/`, `docs/providers/`,
-  `docs/messaging/`, or `docs/operations/`.
+  `docs/messaging/`, `docs/operations/`, `docs/design/`, `docs/security/`, or
+  `docs/setup/`.
 - Treat docs as context to verify against code, not as unquestioned truth. If
   code and docs disagree, preserve current code behavior unless the task says
   otherwise, and update the docs to match the resulting behavior.
 - After changing user behavior, configuration, daemon flow, provider behavior,
   shared state, safety boundaries, or an important implementation decision,
-  update the relevant docs in the same branch.
+  update the relevant docs in the same branch (and the matching
+  `specs/components/<group>.md` if the change touches a component's contract).
 - For core skill changes, update both `docs/users/user-manual.md` and
   `docs/users/skills.md`.
+- When a web article, existing document, or stray idea worth preserving comes
+  up mid-task, capture it under `docs/reference/*.md` with `raw:`/`resource:`
+  frontmatter and a `# Citations` section (see `docs/SCHEMA.md`'s `reference`
+  page type) — the `raw/` acquisition directory is git-ignored except its
+  `.gitkeep`s, never commit a snapshot into it.
 
 ## Wiki Tooling
 
 `docs/` and the durable half of `specs/` (`specs/components/`, `specs/skills/`)
-are indexed together as an LLM Wiki — see `wiki/SCHEMA.md` for full
-conventions. `wiki/index.md` is a plain Markdown catalog readable by any agent
-via normal file search; `/wiki:query`/`/wiki:lint`/`/wiki:stats` are Claude Code
-slash commands specific to that plugin and are not available here — read
-`wiki/index.md` directly and open the obviously-relevant page(s) instead of
-grepping `docs/`/`specs/` blindly.
+are indexed together — see `wiki/SCHEMA.md` for full conventions. `wiki/index.md`
+is a plain Markdown catalog readable by any agent via normal file search.
+Claude Code sessions in this repo use the `/brain` project skill
+(`.claude/skills/brain/`) as their entrypoint for this, but that — like the
+`llm-wiki` plugin's `/wiki:*` commands, which this repo's own tooling doesn't
+rely on either (see `wiki/SCHEMA.md`) — is a Claude-Code-specific slash command
+not available here. Read `wiki/index.md` directly and open the
+obviously-relevant page(s) instead of grepping `docs/`/`specs/` blindly.
 
-Wiki bookkeeping (frontmatter dates, `wiki/index.md` entries, `wiki/log.md`
-lines, and `specs/<NNN-slug>/` computed status) is exempt from the
+Wiki bookkeeping (frontmatter dates, `wiki/index.md` entries, and
+`specs/<NNN-slug>/` computed status) is exempt from the
 "human decides" caution elsewhere in this file — commit it directly as part of
 the same change, no separate review step for that part specifically. This does
 not extend to actual spec/contract or code changes.

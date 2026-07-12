@@ -1,9 +1,10 @@
 ---
 type: doc
 title: "REST API"
+description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-06-27
+updated: 2026-07-10
 ---
 
 # REST API
@@ -68,6 +69,66 @@ Authorization: Bearer <your-token>
 | `403` | Token present but incorrect |
 
 Token comparison uses `hmac.compare_digest` to prevent timing attacks. If no token is configured, **all authenticated requests return 403** — the server never accepts unauthenticated control requests.
+
+---
+
+## OpenAPI specification
+
+The API ships a machine-readable **OpenAPI 3.1 document** at
+[`koan/openapi.yaml`](../../koan/openapi.yaml). It is **generated from the live Flask route
+table** — it can only describe endpoints that actually exist, so it never drifts from the
+code. Point any OpenAPI tool at it to preview docs, generate a client, or validate requests.
+
+### View & render the spec online
+
+The raw YAML is not fun to read by hand. To render it as browsable, interactive API docs
+in your browser — no install, no running server — open it in **Swagger Editor**:
+
+> **[▶ Open `koan/openapi.yaml` in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/Anantys-oss/koan/main/koan/openapi.yaml)**
+
+That link tells [editor.swagger.io](https://editor.swagger.io/) to fetch the spec from
+`main` and render it. The editor loads the file client-side (GitHub's raw host allows
+cross-origin reads), so nothing is uploaded anywhere. To preview a spec from a branch or a
+fork, swap the raw URL — the pattern is:
+
+```
+https://editor.swagger.io/?url=https://raw.githubusercontent.com/<owner>/<repo>/<ref>/koan/openapi.yaml
+```
+
+Prefer to render **local, uncommitted** changes (e.g. right after `make openapi`)? Any
+offline viewer works on the file directly:
+
+```bash
+npx @redocly/cli preview-docs koan/openapi.yaml   # Redoc, live-reloading, http://localhost:8080
+# or drag-and-drop koan/openapi.yaml into https://editor.swagger.io/
+```
+
+### Regenerate after any API change
+
+```bash
+make openapi                          # rewrite koan/openapi.yaml from the code
+git add koan/openapi.yaml && git commit
+```
+
+Generation needs **no running server, no token, and no `api.enabled: true`** — it inspects
+the app object in-process. The file is derived output: **never hand-edit it.**
+
+### Check for drift
+
+```bash
+make openapi-check   # exit non-zero (with a fix instruction) if the file is stale
+```
+
+CI runs this automatically via [`.github/workflows/openapi.yml`](../../.github/workflows/openapi.yml),
+but **only when an API-defining file changes** (`koan/app/api/**`, `koan/openapi.yaml`,
+`koan/requirements.txt`, the `Makefile`, or the workflow itself) — unrelated PRs spend no
+CI time on it. If the check
+fails, the log tells you to run `make openapi` and commit the result.
+
+> **Scope (iteration 1):** the document precisely covers **paths, methods, path parameters,
+> and bearer-auth security** for every route. Per-operation request/response **body** schemas
+> are a planned enrichment and are not yet included. Two known non-`200` successes are
+> reflected: `POST /v1/missions` → `202`, `POST /v1/projects` → `201`.
 
 ---
 
@@ -182,15 +243,70 @@ Response (202):
 ```json
 {
   "id": "uuid",
-  "text": "- [project:koan] /fix ...",
+  "text": "- /review https://github.com/o/r/pull/5",
   "project": "koan",
   "status": "pending|in_progress|done|failed|removed",
   "created": 1748700000.0,
-  "result_line": "✅ (2026-05-31 14:22) Fixed the bug"
+  "result_line": "✅ (2026-05-31 14:22) Review posted on PR #5",
+  "result": {
+    "kind": "review",
+    "file_comments": [
+      {"file": "a.py", "line_start": 1, "line_end": 1, "severity": "warning",
+       "title": "…", "comment": "…", "code_snippet": ""}
+    ],
+    "review_summary": {"lgtm": false, "summary": "…", "checklist": []}
+  },
+  "result_ref": null,
+  "usage": {
+    "input_tokens": 12000,
+    "output_tokens": 3400,
+    "cache_creation_input_tokens": 800,
+    "cache_read_input_tokens": 9000,
+    "cost_usd": 0.184200,
+    "call_count": 3,
+    "models": ["opus", "sonnet"],
+    "providers": ["claude"],
+    "unattributed": {
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cost_usd": 0.0,
+      "call_count": 0
+    }
+  }
 }
 ```
 
 Mission status is reconciled on each read against the live `missions.md` state.
+
+`result` is a typed structured payload emitted by skills that produce one
+(e.g. `/review`); other missions leave it `null`. `result_line` remains the
+short free-text summary for backward compatibility.
+
+When a result exceeds the inline size cap (`DEFAULT_RESULT_CAP_BYTES`, 256 KB)
+the full payload is written to `instance/.api-results/<id>.json` and
+`result_ref` points at that relative path. The record still carries a trimmed
+inline `result` with `kind`, the verdict/summary, and `"result_truncated": true`
+so the merge verdict is always readable without a second call.
+
+**GET /v1/missions/{id}/result** — returns the *complete* structured result
+(inline or spilled) as JSON, so a remote client that cannot read the instance
+filesystem can always retrieve the full findings. `404` if the mission has no
+structured result.
+
+The `usage` object aggregates every model call recorded for this mission id in
+`instance/usage/*.jsonl` over the mission's lifetime (its `created` date → today).
+Fields are zeroed and `call_count` is `0` when the mission has made no model calls yet.
+
+**Meter on token counts, not `cost_usd`.** `cost_usd` is best-effort and is `0`
+when the provider does not report a cost; `input_tokens`/`output_tokens` are the
+reliable billing signal.
+
+`usage.unattributed` sums calls whose title matches this mission but which could
+not be joined to its id (best-effort title→id resolution missed). A non-zero
+`unattributed.call_count` means the headline totals under-report — distinguish it
+from "0 because the mission was free" (`unattributed.call_count == 0`).
 
 **PATCH /v1/missions/{id}** body:
 ```json
@@ -361,3 +477,4 @@ Tokens are never written to the log.
 
 - [`docs/operations/dashboard.md`](dashboard.md) — web dashboard (separate process, same config pattern)
 - [`instance.example/config.yaml`](../../instance.example/config.yaml) — documented `api:` section
+- [`koan/openapi.yaml`](../../koan/openapi.yaml) — generated OpenAPI 3.1 document (`make openapi`) · [render in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/Anantys-oss/koan/main/koan/openapi.yaml)

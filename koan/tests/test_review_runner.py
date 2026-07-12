@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -26,8 +27,11 @@ from app.review_runner import (
     _extract_json_text,
     _build_review_footer,
     _post_review_comment,
+    _append_error_section_to_review,
     _post_comment_replies,
     _fetch_pr_commit_shas,
+    _fetch_pr_head_oid,
+    _build_stale_head_alert,
     _safe_code_fence,
     _fix_nested_fences,
     _github_blob_url,
@@ -99,7 +103,7 @@ def plan_review_skill_dir(tmp_path):
 class TestBuildReviewPrompt:
     def test_with_skill_dir(self, pr_context, review_skill_dir):
         """Prompt is built from skill dir template."""
-        prompt = build_review_prompt(pr_context, skill_dir=review_skill_dir)
+        prompt, _ = build_review_prompt(pr_context, skill_dir=review_skill_dir)
         assert "Fix auth bypass" in prompt
         assert "dev123" in prompt
         assert "fix-auth" in prompt
@@ -107,7 +111,7 @@ class TestBuildReviewPrompt:
 
     def test_placeholders_substituted(self, pr_context, review_skill_dir):
         """All {PLACEHOLDER} values are substituted."""
-        prompt = build_review_prompt(pr_context, skill_dir=review_skill_dir)
+        prompt, _ = build_review_prompt(pr_context, skill_dir=review_skill_dir)
         assert "{TITLE}" not in prompt
         assert "{AUTHOR}" not in prompt
         assert "{BRANCH}" not in prompt
@@ -146,15 +150,54 @@ class TestBuildReviewPrompt:
 
     def test_skipped_files_note_absent_for_small_diff(self, pr_context, review_skill_dir):
         """No skipped-files note when diff fits within budget."""
-        prompt = build_review_prompt(pr_context, skill_dir=review_skill_dir)
-        assert "omitted due to size" not in prompt
+        prompt, _ = build_review_prompt(pr_context, skill_dir=review_skill_dir)
+        assert "Partial review" not in prompt
+
+    def test_build_coverage_note_merges_all_sources(self):
+        from types import SimpleNamespace
+        from app.review_runner import _build_coverage_note
+        triaged = [SimpleNamespace(path="gen.pb.go", reason="generated")]
+        note = _build_coverage_note(
+            fetch_skipped=["huge.py"],
+            compressor_skipped=["big.py"],
+            triaged_files=triaged,
+        )
+        assert "Partial review" in note
+        assert "`huge.py`" in note and "`big.py`" in note
+        assert "Triaged" in note and "`gen.pb.go`" in note
+
+    def test_build_coverage_note_empty_when_nothing_skipped(self):
+        from app.review_runner import _build_coverage_note
+        assert _build_coverage_note([], [], None) == ""
+
+    def test_build_coverage_note_dedupes_across_stages(self):
+        from app.review_runner import _build_coverage_note
+        note = _build_coverage_note(
+            fetch_skipped=["dup.py"],
+            compressor_skipped=["dup.py"],
+            triaged_files=None,
+        )
+        assert note.count("`dup.py`") == 1
+        assert "1 file(s) omitted" in note
+
+    def test_build_review_prompt_returns_note_matching_prompt_slot(
+        self, pr_context, review_skill_dir,
+    ):
+        """The returned coverage_note is exactly what lands in the {SKIPPED_FILES} slot."""
+        pr_context = dict(pr_context, diff_skipped_files=["dropped.py"])
+        prompt, coverage_note = build_review_prompt(
+            pr_context, skill_dir=review_skill_dir,
+        )
+        assert "`dropped.py`" in coverage_note
+        # No divergence: the returned note is present verbatim in the prompt body.
+        assert coverage_note.strip() in prompt
 
     def test_explicit_issue_context_injected(self, pr_context, tmp_path):
         """An explicit issue_context lands in the {ISSUE_CONTEXT} slot."""
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
         (prompts_dir / "review.md").write_text("Body: {BODY}{ISSUE_CONTEXT}\nDiff: {DIFF}\n")
-        prompt = build_review_prompt(
+        prompt, _ = build_review_prompt(
             pr_context, skill_dir=tmp_path,
             issue_context="\n## Issue Tracker Context\n\n- PROJ-1: Fix it\n",
         )
@@ -179,7 +222,7 @@ class TestBuildReviewPrompt:
             "app.issue_tracker.enrichment.fetch_issue_context",
             return_value="\n## Issue Tracker Context\n\n- PROJ-9: Title\n",
         ) as fetch_mock:
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=tmp_path,
                 project_name="myproj", project_path="/tmp/myproj",
             )
@@ -197,7 +240,7 @@ class TestBuildReviewPrompt:
         ), patch(
             "app.issue_tracker.enrichment.fetch_issue_context",
         ) as fetch_mock:
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=tmp_path, project_name="myproj",
             )
         fetch_mock.assert_not_called()
@@ -257,7 +300,7 @@ class TestReviewVerdictContract:
 
     def test_partials_resolve_into_real_prompt(self, pr_context, real_review_skill_dir):
         """Sanity: the shipped prompt has its {@include} partials resolved."""
-        prompt = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
         assert "{@include" not in prompt
         # "Output ONLY the JSON object" lives in the review-output-rules partial,
         # so its presence proves the partial was rendered, not left as a token.
@@ -267,7 +310,7 @@ class TestReviewVerdictContract:
         self, pr_context, real_review_skill_dir
     ):
         """review.md carries an explicit Verdict Contract (body-only marker)."""
-        prompt = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
         # This sentence exists only in the review.md Verdict Contract section —
         # not in any partial — so it is a non-vacuous, single-source marker.
         assert "Never reject a PR" in prompt
@@ -282,7 +325,7 @@ class TestReviewVerdictContract:
         rendered prompt (not the source file) keeps the test honest about what
         the model actually sees.
         """
-        prompt = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
         assert "suggestion" in prompt.lower()
         # "non-blocking" is present only in the sharpened rule; the pre-fix
         # wording ("no blocking issues") did not contain it.
@@ -304,7 +347,7 @@ class TestPriorReviewSlot:
         with patch(
             "app.config.get_review_context_config", return_value=self._cfg(),
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_skill_dir,
                 prior_review="FINDING_ALPHA: validate the token",
             )
@@ -315,7 +358,7 @@ class TestPriorReviewSlot:
         with patch(
             "app.config.get_review_context_config", return_value=self._cfg(),
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_skill_dir, prior_review=None,
             )
         assert "(No prior automated review.)" in prompt
@@ -333,7 +376,7 @@ class TestPriorReviewSlot:
         with patch(
             "app.config.get_review_context_config", return_value=self._cfg(),
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_skill_dir,
                 prior_review="prior review text",
             )
@@ -351,7 +394,7 @@ class TestPriorReviewSlot:
         with patch(
             "app.config.get_review_context_config", return_value=self._cfg(),
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_skill_dir, prior_review=None,
             )
         assert "KEEP_THIS_BODY" in prompt
@@ -362,7 +405,7 @@ class TestPriorReviewSlot:
             "app.config.get_review_context_config",
             return_value=self._cfg(prior_review_max_chars=20),
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_skill_dir, prior_review=long_text,
             )
         assert "HEAD_KEPT" in prompt
@@ -374,7 +417,7 @@ class TestPriorReviewSlot:
             "app.config.get_review_context_config",
             return_value=self._cfg(include_bot_feedback=False),
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_skill_dir,
                 prior_review="SHOULD_NOT_APPEAR",
             )
@@ -394,7 +437,7 @@ class TestPriorReviewSlot:
         with patch(
             "app.config.get_review_context_config", return_value=self._cfg(),
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_dir,
                 prior_review="FINDING_BETA: handle the proxy case",
             )
@@ -441,7 +484,7 @@ class TestReviewProjectMemory:
             "app.config.get_review_memory_config",
             return_value={"enabled": False, "max_entries": 8},
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_skill_dir,
                 project_path="/fake/proj", project_name="my-toolkit",
             )
@@ -469,7 +512,7 @@ class TestReviewProjectMemory:
             "app.config.get_review_memory_config",
             return_value={"enabled": True, "max_entries": 8},
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_skill_dir,
                 project_path="/fake/proj", project_name="my-toolkit",
             )
@@ -492,7 +535,7 @@ class TestReviewProjectMemory:
             "app.config.get_review_memory_config",
             return_value={"enabled": True, "max_entries": 8},
         ):
-            prompt = build_review_prompt(
+            prompt, _ = build_review_prompt(
                 pr_context, skill_dir=review_skill_dir,
                 project_path="/fake/proj",
             )
@@ -983,8 +1026,8 @@ class TestFormatReviewAsMarkdown:
     def test_summary_preserves_paragraphs_and_bullets(self):
         """A structured summary (verdict + blank line + bullets) must survive
         formatting intact, so readers get skimmable output instead of one
-        dense block. The formatter passes the summary through verbatim, so the
-        blank-line break and bullet markers must appear in the rendered body.
+        dense block. The summary is plain prose — no callout prefix — so the
+        multi-line structure is preserved verbatim.
         """
         data = {
             "file_comments": [],
@@ -995,8 +1038,27 @@ class TestFormatReviewAsMarkdown:
             },
         }
         md = _format_review_as_markdown(data)
-        assert "Needs work before merge.\n\n- Missing input validation" in md
+        assert "Needs work before merge." in md
+        assert "- Missing input validation" in md
         assert "- No test coverage" in md
+
+    def test_blocked_review_summary_is_plain_prose(self):
+        """When lgtm is False, the summary paragraph is NOT wrapped in a
+        callout — a full-paragraph [!IMPORTANT] block over-emphasizes it
+        (parsimony rule). The merge signal is carried by the graded verdict
+        alert instead (_build_verdict_body).
+        """
+        md = _format_review_as_markdown(VALID_REVIEW_JSON, title="Fix auth")
+        assert "> [!IMPORTANT]" not in md
+        assert "Needs validation before merge." in md
+
+    def test_lgtm_review_does_not_wrap_summary_in_alert(self):
+        """When lgtm is True, the summary is plain text — no alert needed
+        per the parsimony rule (clean reviews need no callout).
+        """
+        md = _format_review_as_markdown(LGTM_REVIEW_JSON)
+        assert "> [!" not in md
+        assert "Clean code. Merge-ready." in md
 
     def test_lgtm_review(self):
         md = _format_review_as_markdown(LGTM_REVIEW_JSON)
@@ -1344,6 +1406,28 @@ class TestPostReviewComment:
         assert "truncated" in body.lower()
 
     @patch("app.review_runner.run_gh")
+    def test_coverage_note_prepended_to_posted_body(self, mock_gh):
+        """The coverage note is prepended to the posted review body, above the verdict."""
+        note = ("> ⚠️ **Partial review** — 2 file(s) omitted due to diff size "
+                "and NOT reviewed: `big.py`, `huge.py`")
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM, no issues found.",
+            coverage_note=note,
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "Partial review" in body
+        assert "`big.py`" in body and "`huge.py`" in body
+        # Warning appears before the verdict text.
+        assert body.index("Partial review") < body.index("LGTM")
+
+    @patch("app.review_runner.run_gh")
+    def test_no_coverage_note_leaves_body_clean(self, mock_gh):
+        """Empty coverage note adds no warning."""
+        _post_review_comment("owner", "repo", "42", "LGTM", coverage_note="")
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "Partial review" not in body
+
+    @patch("app.review_runner.run_gh")
     def test_no_double_heading_for_structured_review(self, mock_gh):
         """Reviews starting with ## don't get an extra ## Code Review header."""
         from app.review_markers import SUMMARY_TAG
@@ -1404,10 +1488,293 @@ class TestPostReviewComment:
         body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
         assert "<!-- koan-commits\nabc123\ndef456\n-->" in body
 
+    @patch("app.review_runner.run_gh")
+    def test_stale_head_alert_added_when_branch_moved(self, mock_gh):
+        """A differing live HEAD appends an IMPORTANT alert before the footer."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            commit_shas=["aaaaaaaful", "bbbbbbbful"],
+            live_head_sha="ccccccccful",
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "> [!IMPORTANT]" in body
+        assert "branch moved during review" in body
+        # Names both the reviewed short-SHA and the live short-SHA.
+        assert "HEAD=bbbbbbb" in body
+        assert "ccccccc" in body
+        # Alert sits after the review content and before the footer separator.
+        assert body.index("> [!IMPORTANT]") < body.index("\n---\n")
+
+    @patch("app.review_runner.run_gh")
+    def test_no_stale_head_alert_when_head_unchanged(self, mock_gh):
+        """Matching live HEAD yields no alert (body unchanged)."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            commit_shas=["aaaaaaaful", "bbbbbbbful"],
+            live_head_sha="bbbbbbbful",
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "[!IMPORTANT]" not in body
+
+    @patch("app.review_runner.run_gh")
+    def test_no_stale_head_alert_without_live_head(self, mock_gh):
+        """Default (no live_head_sha) never adds an alert."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            commit_shas=["aaaaaaaful", "bbbbbbbful"],
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "[!IMPORTANT]" not in body
+
+    @patch("app.review_runner.run_gh")
+    def test_no_stale_head_alert_without_commit_shas(self, mock_gh):
+        """No reviewed SHA to compare against ⇒ no alert even with a live HEAD."""
+        _post_review_comment(
+            "owner", "repo", "42", "LGTM",
+            live_head_sha="ccccccccful",
+        )
+        body = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
+        assert "[!IMPORTANT]" not in body
+
+
+# ---------------------------------------------------------------------------
+# _build_stale_head_alert / _fetch_pr_head_oid
+# ---------------------------------------------------------------------------
+
+class TestStaleHeadAlert:
+    def test_returns_empty_when_shas_equal(self):
+        assert _build_stale_head_alert("abc123full", "abc123full") == ""
+
+    def test_returns_empty_when_reviewed_missing(self):
+        assert _build_stale_head_alert("", "abc123full") == ""
+
+    def test_returns_empty_when_live_missing(self):
+        assert _build_stale_head_alert("abc123full", "") == ""
+
+    def test_alert_names_both_short_shas(self):
+        alert = _build_stale_head_alert("abcdef1234", "9876543210")
+        assert "> [!IMPORTANT]" in alert
+        assert "HEAD=abcdef1" in alert
+        assert "9876543" in alert
+        # Leading blank line so it appends cleanly to review content.
+        assert alert.startswith("\n\n")
+        # Every rendered line after the first is a valid alert continuation.
+        for line in alert.strip().splitlines():
+            assert line.startswith(">")
+
+
+class TestFetchPrHeadOid:
+    @patch("app.review_runner.run_gh", return_value="abc123full\n")
+    def test_returns_oid_on_success(self, _mock_gh):
+        assert _fetch_pr_head_oid("owner", "repo", "42") == "abc123full"
+
+    @patch("app.review_runner.run_gh", side_effect=RuntimeError("boom"))
+    def test_returns_empty_on_error(self, _mock_gh):
+        assert _fetch_pr_head_oid("owner", "repo", "42") == ""
+
+    @patch(
+        "app.review_runner.run_gh",
+        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30),
+    )
+    def test_returns_empty_on_timeout(self, _mock_gh):
+        # run_gh re-raises TimeoutExpired/OSError (not RuntimeError) after
+        # exhausting retries; this call is post-analysis, so it must never
+        # propagate and discard a completed review.
+        assert _fetch_pr_head_oid("owner", "repo", "42") == ""
+
+    @patch("app.review_runner.run_gh", side_effect=OSError("network down"))
+    def test_returns_empty_on_oserror(self, _mock_gh):
+        assert _fetch_pr_head_oid("owner", "repo", "42") == ""
+
 
 # ---------------------------------------------------------------------------
 # run_review (integration, mocked externals)
 # ---------------------------------------------------------------------------
+
+class TestAppendErrorSectionToReview:
+    """Fix #2: the silent-failure-hunter section is appended to the already
+    posted review comment (rather than baked into the initial post)."""
+
+    @patch("app.review_runner.run_gh")
+    @patch(
+        "app.review_runner.find_bot_comment",
+        return_value={"id": 555, "body": "## Code Review\n\nold body"},
+    )
+    def test_locates_and_patches_comment(self, _mock_find, mock_gh):
+        ok = _append_error_section_to_review(
+            "owner", "repo", "42",
+            review_body="## Code Review\n\nCore body",
+            error_section="### Silent failures\n\n- swallowed exception",
+            bot_username="bot",
+        )
+        assert ok is True
+        mock_gh.assert_called_once()
+        args = mock_gh.call_args[0]
+        assert "PATCH" in args  # in-place edit of the located comment
+        assert any("555" in str(a) for a in args)  # the located comment id
+        joined = " ".join(str(a) for a in args)
+        assert "Core body" in joined and "swallowed exception" in joined
+
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner.find_bot_comment", return_value=None)
+    def test_returns_false_when_comment_not_located(self, _mock_find, mock_gh):
+        ok = _append_error_section_to_review(
+            "owner", "repo", "42",
+            review_body="body", error_section="section", bot_username="bot",
+        )
+        assert ok is False
+        mock_gh.assert_not_called()  # nothing edited, core review left as-is
+
+    @patch("app.review_runner.run_gh")
+    @patch(
+        "app.review_runner.find_bot_comment",
+        return_value={"id": 555, "body": "## Code Review\n\nold body"},
+    )
+    def test_relocates_newest_comment(self, mock_find, _mock_gh):
+        """With preserve_previous, the preserved prior review still carries
+        SUMMARY_TAG; the append must target the newest (freshly-posted) comment,
+        so find_bot_comment is asked for prefer_newest."""
+        _append_error_section_to_review(
+            "owner", "repo", "42",
+            review_body="## Code Review\n\nCore body",
+            error_section="### Silent failures\n\n- x",
+            bot_username="bot",
+        )
+        assert mock_find.call_args.kwargs["prefer_newest"] is True
+
+    @patch("app.review_runner.run_gh")
+    @patch(
+        "app.review_runner.find_bot_comment",
+        return_value={"id": 555, "body": "## Code Review\n\nold body"},
+    )
+    def test_coverage_note_is_reprepended(self, _mock_find, mock_gh):
+        """Regression for the #2294 x #2299 overlap: the append path rebuilds
+        the comment from the clean review_body, so without re-forwarding
+        coverage_note the already-posted `Partial review` warning would be
+        silently dropped by this edit."""
+        note = ("> ⚠️ **Partial review** — 1 file(s) omitted due to diff size "
+                 "and NOT reviewed: `huge.py`")
+        ok = _append_error_section_to_review(
+            "owner", "repo", "42",
+            review_body="## Code Review\n\nCore body",
+            error_section="### Silent failures\n\n- swallowed exception",
+            bot_username="bot",
+            coverage_note=note,
+        )
+        assert ok is True
+        joined = " ".join(str(a) for a in mock_gh.call_args[0])
+        assert "Partial review" in joined and "`huge.py`" in joined
+        assert "swallowed exception" in joined
+
+
+class TestReviewPostsBeforeEnrichment:
+    """Fix #2: the core review is posted before the optional enrichment passes,
+    so no enrichment failure can cost the review that already landed."""
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch(
+        "app.review_runner._run_error_hunter",
+        side_effect=RuntimeError("provider stalled"),
+    )
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_review_still_posts_when_error_hunter_raises(
+        self, mock_fetch, mock_claude, mock_gh, _mock_repliable,
+        _mock_hunter, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """An enrichment pass raising after the post must not fail the run."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            errors=True,  # force the (raising) silent-failure-hunter pass
+        )
+
+        assert success is True
+        assert "42" in summary
+        mock_gh.assert_called()  # the core review was posted despite the raise
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner._append_error_section_to_review")
+    @patch(
+        "app.review_runner._run_error_hunter",
+        return_value="### Silent failures\n\n- swallowed exception at x",
+    )
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_error_section_appended_not_in_initial_post(
+        self, mock_fetch, mock_claude, mock_gh, _mock_repliable,
+        _mock_hunter, mock_append, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """The hunter's section goes through the append path, not the first post."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, _summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            errors=True,
+        )
+
+        assert success is True
+        # The section is routed to the append helper, carrying the hunter output.
+        mock_append.assert_called_once()
+        assert "swallowed exception at x" in mock_append.call_args.kwargs["error_section"]
+        # And it is NOT baked into the initial posted comment body.
+        posted = " ".join(str(c) for c in mock_gh.call_args_list)
+        assert "swallowed exception at x" not in posted
+
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch(
+        "app.review_runner._run_error_hunter",
+        return_value="### Silent failures\n\n- swallowed exception at x",
+    )
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner.build_review_prompt")
+    def test_coverage_note_survives_hunter_append_overlap(
+        self, mock_prompt, mock_fetch, mock_claude, mock_gh, _mock_repliable,
+        _mock_hunter, _mock_shas, mock_find, pr_context, review_skill_dir,
+    ):
+        """Regression for the #2294 x #2299 overlap flagged in
+        https://github.com/Anantys-oss/koan/pull/2299#issuecomment-4930545352:
+        a large PR (non-empty coverage_note) that also triggers the
+        silent-failure-hunter must keep the `Partial review` warning in the
+        final comment, not just the initial post."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        note = ("> ⚠️ **Partial review** — 1 file(s) omitted due to diff size "
+                 "and NOT reviewed: `huge.py`\n\n")
+        mock_prompt.return_value = ("REVIEW PROMPT", note)
+        # The append path re-locates the just-posted comment by SUMMARY_TAG.
+        mock_find.return_value = {"id": 999, "body": "## Code Review\n\nplaceholder"}
+
+        success, _summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            errors=True,  # force the silent-failure-hunter pass
+        )
+
+        assert success is True
+        # Two gh calls: the initial "pr comment" post, then the PATCH append.
+        assert mock_gh.call_count >= 2
+        final_call = mock_gh.call_args_list[-1]
+        final_body = " ".join(str(a) for a in final_call.args)
+        assert "Partial review" in final_body and "`huge.py`" in final_body
+        assert "swallowed exception at x" in final_body
+
 
 class TestRunReview:
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
@@ -1435,10 +1802,49 @@ class TestRunReview:
         assert "42" in summary
         assert review_data is not None
         assert review_data["review_summary"]["lgtm"] is True
-        mock_fetch.assert_called_once_with("owner", "repo", "42", "/tmp/project")
+        from app.config import get_review_max_diff_chars
+        mock_fetch.assert_called_once_with(
+            "owner", "repo", "42", "/tmp/project",
+            max_diff_chars=get_review_max_diff_chars(),
+        )
         mock_claude.assert_called_once()
         mock_gh.assert_called_once()  # post comment
         assert mock_notify.call_count >= 2
+
+    @patch("app.review_runner._maybe_post_inline_comments", return_value=(0, 0))
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._fetch_pr_head_oid", return_value="ffffffffff")
+    @patch(
+        "app.review_runner._fetch_pr_commit_shas",
+        return_value=["1111111111", "2222222222"],
+    )
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_stale_head_alert_when_branch_moved_during_review(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
+        _mock_head, _mock_verdict, _mock_inline, pr_context, review_skill_dir,
+    ):
+        """When the live HEAD differs from the reviewed tip, the posted comment
+        carries the stale-HEAD IMPORTANT alert."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, _summary, _rd = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        posted_bodies = [
+            a for c in mock_gh.call_args_list for a in c.args
+            if isinstance(a, str) and "> [!IMPORTANT]" in a
+        ]
+        assert posted_bodies, "expected a posted comment carrying the stale-HEAD alert"
+        assert "branch moved during review" in posted_bodies[0]
+        assert "HEAD=2222222" in posted_bodies[0]
 
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
@@ -2041,7 +2447,7 @@ class TestArchitectureFlag:
             "Issue: {ISSUE_COMMENTS}\n"
         )
 
-        prompt = build_review_prompt(
+        prompt, _ = build_review_prompt(
             pr_context, skill_dir=tmp_path, architecture=True,
         )
         assert "ARCH REVIEW:" in prompt
@@ -2051,7 +2457,7 @@ class TestArchitectureFlag:
         self, pr_context, review_skill_dir,
     ):
         """build_review_prompt without architecture uses standard review template."""
-        prompt = build_review_prompt(
+        prompt, _ = build_review_prompt(
             pr_context, skill_dir=review_skill_dir, architecture=False,
         )
         assert "Review PR:" in prompt
@@ -2237,7 +2643,7 @@ class TestUltraReview:
         """ultra=True selects the architecture prompt AND runs the error hunter,
         and the posted summary is labelled as an ultra review."""
         mock_fetch.return_value = pr_context
-        mock_build.return_value = "PROMPT"
+        mock_build.return_value = ("PROMPT", "")
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
         mock_notify = MagicMock()
 
@@ -2810,7 +3216,7 @@ class TestBuildReviewPromptWithPlan:
         (prompts_dir / "review.md").write_text("Standard review: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
         (prompts_dir / "review-with-plan.md").write_text("Plan review: {PLAN} {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
 
-        prompt = build_review_prompt(pr_context, skill_dir=tmp_path, plan_body="The plan content.")
+        prompt, _ = build_review_prompt(pr_context, skill_dir=tmp_path, plan_body="The plan content.")
         assert "Plan review:" in prompt
         assert "The plan content." in prompt
 
@@ -2821,7 +3227,7 @@ class TestBuildReviewPromptWithPlan:
         (prompts_dir / "review.md").write_text("Standard review: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
         (prompts_dir / "review-with-plan.md").write_text("Plan review: {PLAN} {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
 
-        prompt = build_review_prompt(pr_context, skill_dir=tmp_path, plan_body=None)
+        prompt, _ = build_review_prompt(pr_context, skill_dir=tmp_path, plan_body=None)
         assert "Standard review:" in prompt
         assert "Plan review:" not in prompt
 
@@ -2832,7 +3238,7 @@ class TestBuildReviewPromptWithPlan:
         (prompts_dir / "review-architecture.md").write_text("Architecture review: {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
         (prompts_dir / "review-with-plan.md").write_text("Plan review: {PLAN} {TITLE} {AUTHOR} {BRANCH} {BASE} {BODY} {DIFF} {REVIEWS} {REVIEW_COMMENTS} {ISSUE_COMMENTS} {REPLIABLE_COMMENTS}")
 
-        prompt = build_review_prompt(
+        prompt, _ = build_review_prompt(
             pr_context, skill_dir=tmp_path,
             architecture=True, plan_body="The plan.",
         )
@@ -2847,7 +3253,7 @@ class TestBuildReviewPromptWithPlan:
 
         large_plan = "## Summary\n\nShort summary.\n\n" + "x" * 90_000
         pr_context["diff"] = "small diff"
-        prompt = build_review_prompt(pr_context, skill_dir=tmp_path, plan_body=large_plan)
+        prompt, _ = build_review_prompt(pr_context, skill_dir=tmp_path, plan_body=large_plan)
         # The plan should have been truncated — not 90K chars
         assert len(prompt) < 90_000 + 5000
 
@@ -5511,16 +5917,35 @@ class TestIsReviewRequested:
         assert "acme/widget/pulls/7/requested_reviewers" in args[1]
 
 
-class TestBuildVerdictBody:
-    """_build_verdict_body formats verdict text from review data and config."""
+_WARNING_ONLY_REVIEW_OBJ = {
+    "file_comments": [
+        {
+            "file": "a.py", "line_start": 1, "line_end": 1,
+            "severity": "warning", "title": "Unhandled edge case",
+            "comment": "Guard the None branch.", "code_snippet": "",
+        },
+        {
+            "file": "b.py", "line_start": 2, "line_end": 2,
+            "severity": "suggestion", "title": "Rename for clarity",
+            "comment": "nit", "code_snippet": "",
+        },
+    ],
+    "review_summary": {"lgtm": False, "summary": "One item to address.", "checklist": []},
+}
 
-    def test_approve_default(self):
+
+class TestBuildVerdictBody:
+    """_build_verdict_body formats verdict text, graded by severity."""
+
+    def test_approve_is_green_tip(self):
+        """Merge-ready → a green > [!TIP] callout."""
         from app.review_runner import _build_verdict_body
         body = _build_verdict_body(
             approve=True, review_data=LGTM_REVIEW_JSON,
             body_enabled=True, include_blockers=True,
         )
-        assert body == "No blocking issues found."
+        assert "> [!TIP]" in body
+        assert "ready to merge" in body
 
     def test_approve_body_disabled(self):
         from app.review_runner import _build_verdict_body
@@ -5530,22 +5955,37 @@ class TestBuildVerdictBody:
         )
         assert body == ""
 
-    def test_request_changes_with_blockers(self):
+    def test_critical_blocker_is_red_caution(self):
+        """A critical finding → a red > [!CAUTION] callout listing the blockers."""
         from app.review_runner import _build_verdict_body
         body = _build_verdict_body(
             approve=False, review_data=_PR40_REVIEW_OBJ,
             body_enabled=True, include_blockers=True,
         )
-        assert "Blocking issues found" in body
+        assert "> [!CAUTION]" in body
+        assert "Critical issues found" in body
         assert "Command injection" in body
 
+    def test_warning_only_blocker_is_yellow_warning(self):
+        """No critical, only warning-level blockers → a yellow > [!WARNING]."""
+        from app.review_runner import _build_verdict_body
+        body = _build_verdict_body(
+            approve=False, review_data=_WARNING_ONLY_REVIEW_OBJ,
+            body_enabled=True, include_blockers=True,
+        )
+        assert "> [!WARNING]" in body
+        assert "Important issues found" in body
+        assert "Unhandled edge case" in body
+
     def test_request_changes_without_blockers(self):
+        """include_blockers=False keeps the graded headline, drops the list."""
         from app.review_runner import _build_verdict_body
         body = _build_verdict_body(
             approve=False, review_data=_PR40_REVIEW_OBJ,
             body_enabled=True, include_blockers=False,
         )
-        assert body == "Blocking issues found."
+        assert "> [!CAUTION]" in body
+        assert "Critical issues found" in body
         assert "Command injection" not in body
 
     def test_request_changes_body_disabled(self):
@@ -5557,12 +5997,14 @@ class TestBuildVerdictBody:
         assert body == ""
 
     def test_request_changes_no_review_data(self):
+        """No structured data → default to a yellow WARNING (blocked, severity unknown)."""
         from app.review_runner import _build_verdict_body
         body = _build_verdict_body(
             approve=False, review_data=None,
             body_enabled=True, include_blockers=True,
         )
-        assert body == "Blocking issues found."
+        assert "> [!WARNING]" in body
+        assert "Important issues found" in body
 
     def test_blockers_include_critical_and_warning(self):
         """Both critical and warning findings appear in the blocker list."""
@@ -5714,9 +6156,10 @@ class TestReviewVerdictInRunReview:
         )
         assert success is True
         assert "APPROVE" in summary
+        from app.github_alerts import build_alert
         mock_verdict.assert_called_once_with(
             "owner", "repo", "42", approve=True, head_sha="abc",
-            body="No blocking issues found.",
+            body=build_alert("TIP", "No blocking issues found — ready to merge."),
         )
 
     @patch("app.review_runner.get_review_verdict_config",
@@ -5741,9 +6184,10 @@ class TestReviewVerdictInRunReview:
         )
         assert success is True
         assert "REQUEST_CHANGES" in summary
+        from app.github_alerts import build_alert
         mock_verdict.assert_called_once_with(
             "owner", "repo", "42", approve=False, head_sha="abc",
-            body="Blocking issues found.\n\n- Missing validation",
+            body=build_alert("CAUTION", "Critical issues found.\n\n- Missing validation"),
         )
 
     @patch("app.review_runner.get_review_verdict_config",
@@ -6709,3 +7153,38 @@ class TestReviewCalibrationConfig:
             cfg = get_review_calibration_config()
         assert cfg["batch_size"] == 15
         assert cfg["stale_days"] == 90
+
+
+class TestBuildReviewPromptDotKoanSkill:
+    """End-to-end: .koan/skills/review/*.md is appended via build_review_prompt."""
+
+    @staticmethod
+    def _core_review_dir():
+        import app.review_runner as rr
+        return Path(rr.__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    @staticmethod
+    def _ctx():
+        return dict(
+            title="t", author="a", branch="b", base="main", body="",
+            diff="", review_comments="", reviews="", issue_comments="",
+        )
+
+    def test_build_review_prompt_injects_dot_koan_skill(self, tmp_path):
+        import app.review_runner as rr
+        d = tmp_path / ".koan" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "security.md").write_text("REPO SECURITY RULE")
+        prompt, _ = rr.build_review_prompt(
+            self._ctx(), skill_dir=self._core_review_dir(),
+            project_path=str(tmp_path),
+        )
+        assert "REPO SECURITY RULE" in prompt
+
+    def test_build_review_prompt_noop_without_dot_koan(self, tmp_path):
+        import app.review_runner as rr
+        prompt, _ = rr.build_review_prompt(
+            self._ctx(), skill_dir=self._core_review_dir(),
+            project_path=str(tmp_path),
+        )
+        assert ".koan/skills/review" not in prompt

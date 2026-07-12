@@ -168,6 +168,68 @@ projects:
         assert "workspace" in result[0][1]
 
 
+class TestDashDedup:
+    """A yaml entry and its workspace directory differing only by a dash/
+    underscore are one logical project (issue #2339).
+
+    All tests call refresh_projects() — the fresh-scan entrypoint that runs
+    _merge_projects() and populates the get_warnings() cache — matching the
+    existing pattern in test_duplicate_warning / test_no_warning_when_paths_identical.
+    get_all_projects() is just the mtime-cache wrapper around this same path.
+    """
+
+    def test_dashed_yaml_and_stripped_workspace_same_path(self, koan_root):
+        """Hand-added dashed yaml key pointing at the dash-less workspace dir
+        lists the project exactly once, under the yaml (canonical) name."""
+        ws = koan_root / "workspace"
+        (ws / "myrepo").mkdir()
+        repo_path = str(ws / "myrepo")
+        _write_projects_yaml(koan_root, f"""
+projects:
+  my-repo:
+    path: "{repo_path}"
+""")
+        result = refresh_projects(str(koan_root))
+        names = [n for n, _ in result]
+        assert names == ["my-repo"]            # exactly once, yaml name wins
+        assert len(result) == 1
+        # Same-path coexistence is expected — no duplicate warning.
+        assert not any("Duplicate" in w for w in get_warnings())
+
+    def test_dashed_yaml_and_stripped_workspace_different_paths(self, koan_root):
+        """Dash/no-dash name variants with genuinely different paths collapse
+        to the yaml entry and emit a duplicate warning."""
+        yaml_dir = koan_root / "elsewhere"
+        yaml_dir.mkdir()
+        _write_projects_yaml(koan_root, f"""
+projects:
+  my-repo:
+    path: "{yaml_dir}"
+""")
+        ws = koan_root / "workspace"
+        (ws / "myrepo").mkdir()
+
+        result = refresh_projects(str(koan_root))
+        names = [n for n, _ in result]
+        assert names == ["my-repo"]
+        assert result[0][1] == str(yaml_dir)   # yaml path wins
+        assert any("Duplicate" in w and "myrepo" in w for w in get_warnings())
+
+    def test_underscore_variant_also_dedupes(self, koan_root):
+        """Underscore vs dash-less names normalize identically."""
+        ws = koan_root / "workspace"
+        (ws / "myrepo").mkdir()
+        repo_path = str(ws / "myrepo")
+        _write_projects_yaml(koan_root, f"""
+projects:
+  my_repo:
+    path: "{repo_path}"
+""")
+        result = refresh_projects(str(koan_root))
+        assert [n for n, _ in result] == ["my_repo"]
+        assert len(result) == 1
+
+
 class TestProjectLimit:
     def test_limit_enforced(self, koan_root):
         """Projects exceeding 50 are truncated."""

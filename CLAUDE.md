@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Kōan
 
-Kōan is an autonomous background agent that uses idle Claude API quota to work on local projects. It runs as a continuous loop, pulling missions from a shared file, executing them via Claude Code CLI, and communicating progress via Telegram. Philosophy: "The agent proposes. The human decides." — no unsupervised code modifications.
+Kōan is an autonomous background agent that uses idle Claude API quota to work on local projects. It runs as a continuous loop, pulling missions from a shared queue (an authoritative SQLite mission store; `missions.md` is a generated read-only export — see `specs/004-mission-store/`), executing them via Claude Code CLI, and communicating progress via Telegram. Philosophy: "The agent proposes. The human decides." — no unsupervised code modifications.
 
 ## On-demand guidance (nested CLAUDE.md)
 
@@ -24,43 +24,107 @@ explain how to use it (see `specs/README.md` for the specs-vs-docs split). This 
 is **not optional**:
 
 1. **Before implementing** any feature or refactor, READ the relevant spec first — via
-   `wiki/index.md` (or `/wiki:query` for a fuzzy question) rather than blind grep, see
-   "Wiki tooling" below:
+   `/brain ask` rather than blind grep, see "Documentation first" below:
    - Component change → `specs/components/<group>.md` (core, agent-loop, bridge,
      providers, git-github, issue-tracking, skills, web).
    - Skill change → `specs/skills/<skill-name>.md`.
    The spec tells you the invariants you must not silently break. Do not skip this because
    a change "looks small" — small changes break contracts too.
-2. **After implementing**, UPDATE the spec in the same branch to reflect the new design:
-   new types/functions, changed integration points, resolved or newly-introduced debt. A
-   PR that alters a component's contract without updating its spec is **incomplete**.
+2. **A durable-contract change is an ARCHITECTURAL change** (`specs/components/**`,
+   `specs/skills/**`). Change the spec **contract-first** — write the *intended* design,
+   then make the code conform. NEVER edit a durable spec afterward to match code you
+   already wrote; that turns the source of truth into a mirror of the implementation and
+   defeats the discipline. Such changes should be **rare**, and the PR MUST **declare**
+   them — check the "Architectural change" box in the PR body so the new architecture is
+   reviewed before approval. CI enforces this: `scripts/spec_change_guard.py` fails an
+   undeclared durable-contract change. See `docs/design/spec-changes-are-architectural.md`.
 3. **No spec yet?** If you touch a component or skill that has no spec, WRITE one using
-   `specs/components/` conventions or `specs/skills/SKILL_SPEC_TEMPLATE.md`. Phase 1 ships
-   specs for the highest-impact pieces; the rest are added on-demand as they are touched.
-4. **`specs/<NNN-slug>/` (speckit) is a different, ephemeral population** — not the durable
-   contracts this discipline governs. See `specs/README.md`'s "components/, skills/ vs.
-   `<NNN-feature-slug>/`" section. When a speckit feature ships, step 2 above (updating the
-   matching `specs/components/<group>.md`) is what makes it durable — the speckit folder
-   itself stays as planning history.
+   `specs/components/` conventions or `specs/skills/SKILL_SPEC_TEMPLATE.md` — and declare
+   it (a new contract is an architectural decision). Phase 1 ships specs for the
+   highest-impact pieces; the rest are added on-demand as they are touched.
+4. **`specs/<NNN-slug>/` (speckit) is a different, ephemeral population** — the spec-first
+   *proposal* artifact, not the durable contracts this discipline governs. Change them
+   freely in-branch. See `specs/README.md`'s "components/, skills/ vs.
+   `<NNN-feature-slug>/`" section. When a speckit feature ships, the durable artifact is
+   the **updated `specs/components/<group>.md`** — landed contract-first and declared per
+   step 2, not retroactively bent to match the code you wrote.
+5. **NEVER commit `.specify/feature.json`** — it is speckit's local current-feature
+   pointer (repointed automatically by `/speckit.*` commands), not a deliverable. It is
+   trivially picked up as an unrelated diff that trips the "no scope creep" review gate.
+   Before staging, confirm your PR does not touch it: `git diff --name-only main.. | grep
+   -q '.specify/feature.json' && git checkout main -- .specify/feature.json`. Only include
+   it when the PR's explicit purpose is to change speckit's active-feature pointer.
 
-Specs and `docs/` coexist — most non-trivial changes update both. Use specs to anchor
-clean refactoring: change the spec's contract deliberately, then make the code match.
+Specs and `docs/` coexist — most non-trivial changes update `docs/`. Durable specs are
+different: anchor clean refactoring by changing the contract **deliberately and first**,
+then making the code match — never the reverse.
 
 ## Documentation first
 
-- Before planning or implementing a feature or important refactor, check `wiki/index.md` (or `/wiki:query` for a fuzzy question) to find candidate pages — see "Wiki tooling" below — then read the matching pages under `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`, `docs/operations/`, `docs/design/`, `docs/security/`, or `docs/setup/`.
-- Treat docs as context to verify against code, not as unquestioned truth. If code and docs disagree, preserve current code behavior unless the task says otherwise, and update the docs to match the resulting behavior.
-- After changing user behavior, configuration, daemon flow, provider behavior, shared state, safety boundaries, or an important implementation decision, update the relevant docs in the same branch.
-- For core skill changes, update both `docs/users/user-manual.md` and `docs/users/skills.md`.
+`docs/` and `specs/` are each independent OKF v0.1 knowledge bundles (see
+`docs/SPEC.md` for the normative, bundle-agnostic spec; `docs/SCHEMA.md` and
+`specs/SCHEMA.md` for the per-bundle conventions built on top of it), also jointly
+indexed via the `wiki/` directory (`wiki/index.md`, `wiki/docs`, `wiki/specs-components`,
+`wiki/specs-skills` symlinks — see `wiki/SCHEMA.md`). The **`/brain` skill**
+(`.claude/skills/brain/`) is the entrypoint for consulting and extending both bundles —
+it is fully self-sufficient (acquisition, index-first navigation, and OKF-conformance
+glue), with no dependency on the `llm-wiki` plugin's `/wiki:*` commands (see
+`wiki/SCHEMA.md` for why). Treat this as a hard rule on every feature, refactor, or
+architecture decision: **read it first (Consult), update it last (Capture)**.
 
-## Wiki tooling
+- **Consult — before you plan, research, or refactor.** Run `/brain ask "<question>"`
+  (or `/brain search`, an alias). It reads `wiki/index.md` first (never greps `docs/`/
+  `specs/` blindly), picks candidate pages from their one-line summaries, opens only
+  those (+ backlinks), and cites them by path. If the index doesn't clearly point to a
+  page, that's the signal coverage is missing — say so plainly rather than guessing.
+  State explicitly what you found (naming the docs) — or that nothing relevant existed
+  — before proposing changes. Never rely on source-code inspection alone when a
+  relevant doc exists. **In Plan Mode**, the plan file's Context section must state
+  what `docs/`/`specs/` said (or that nothing relevant was found) before the
+  recommended approach.
 
-`docs/` and the durable half of `specs/` (`components/`, `skills/`) are indexed together as an LLM Wiki (`praneybehl/llm-wiki-plugin`, real `wiki/` directory with `wiki/docs`, `wiki/specs-components`, `wiki/specs-skills` symlinks — see `wiki/SCHEMA.md` for full conventions, including why `specs/<NNN-slug>/` stays wiki-visible but unfrontmattered).
+  `/brain lint` (wrapping the broadened `scripts/wiki_check.py`) is a periodic health
+  check, not part of the per-task loop.
 
-- **Index-first.** Read `wiki/index.md`, open the obviously-relevant page(s) directly. Escalate to `/wiki:query "<topic>"` only for open-ended/fuzzy questions the index alone doesn't resolve. `/wiki:lint`/`/wiki:stats` are periodic health checks, not part of the per-task loop.
-- **In Plan Mode**, the plan's Context section must state what the wiki said (or that nothing relevant was found) before the recommended approach.
-- **Wiki bookkeeping is exempt from the "no unsupervised modification" principle below** — frontmatter dates, `wiki/index.md` entries, `wiki/log.md` lines, and `specs/<NNN-slug>/` computed status are committed directly as part of the same change/PR, no separate review step for that part specifically. This does not extend to actual spec/contract or code changes. A CI job (`.github/workflows/wiki-sync.yml`) backstops anything an LLM session missed by pushing a same-branch fix commit — never to `main`, never a separate PR.
-- `make setup` installs the `llm-wiki` plugin automatically (user scope, so it's available in every project on the machine — this is what makes `/wiki:*` work for both human sessions and koan's own headless CLI invocations, which never see the interactive plugin-install prompt). If `/wiki:*` commands aren't recognized (e.g. `claude` wasn't on `PATH` during `make setup`, or the plugin cache was cleared), run once: `claude plugin marketplace add praneybehl/llm-wiki-plugin && claude plugin install llm-wiki@llm-wiki --scope user`.
+- **Source of truth order.** (1) current source code, (2) `docs/`/`specs/`, (3) inline
+  code comments, (4) assumptions. If docs conflict with the code, trust the code and
+  propose a docs update in the same change — never silently pick a side.
+
+- **Capture — write/update after you implement.** After changing user behavior,
+  configuration, daemon flow, provider behavior, shared state, safety boundaries, or an
+  important implementation decision, create or update the relevant page under
+  `docs/architecture/`, `docs/users/`, `docs/providers/`, `docs/messaging/`,
+  `docs/operations/`, `docs/design/`, `docs/security/`, or `docs/setup/` (see
+  `docs/SCHEMA.md` for frontmatter/tagging conventions), and the matching
+  `specs/components/<group>.md` if the change touches a component's contract (see
+  "Specs discipline" above). Then run **`/brain sync`** to close the loop: it bumps
+  `updated:` frontmatter (and adds `description:` on new/touched pages only — existing
+  pages are not bulk-backfilled), regenerates any stale `index.md` via
+  `scripts/okf_backfill.py indexes`, and refreshes the page's `wiki/index.md` entry.
+  For core skill changes, also update `docs/users/user-manual.md` and
+  `docs/users/skills.md`.
+
+- **Acquire — capture external material.** When a web article, an existing document,
+  or a stray idea worth preserving comes up mid-task (not tied to a feature you just
+  built), run **`/brain ingest <path|url|"idea sentence">`** — it snapshots the source
+  into the git-ignored `raw/` directory and compiles a durable, cited
+  `docs/reference/*.md` page. This is separate from feature docs: it's for knowledge
+  that doesn't originate from code you wrote.
+
+- **Wiki bookkeeping is exempt from the "no unsupervised modification" principle
+  below** — frontmatter fields and `wiki/index.md`/`docs/index.md`/`specs/index.md`/
+  per-folder `index.md` entries are committed directly as part
+  of the same change/PR, no separate review step for that part specifically. This does
+  not extend to actual spec/contract, doc-body, or code changes. A CI job
+  (`.github/workflows/wiki-sync.yml`) backstops anything a session missed by pushing a
+  same-branch fix commit — never to `main`, never a separate PR.
+
+- **`.claude/skills/` vs. `koan/skills/core/`.** `brain` (like the `speckit-*` skills)
+  is a Claude-Code-native project skill under `.claude/skills/`, invoked directly in a
+  session — it is not a `koan/skills/core/` runtime skill dispatched via Telegram/
+  GitHub/Jira, has no attachment to `app/skill_evals.py`'s eval harness, and is out of
+  scope for `koan/skills/CLAUDE.md`'s "adding a new core skill" checklist. Never
+  conflate the two.
 
 ## Commands
 
@@ -78,6 +142,8 @@ make lint           # Run ruff linter (must pass before committing)
 make test           # Run full test suite (pytest + coverage summary)
 make coverage       # Run tests with detailed coverage report (HTML in htmlcov/)
 make say m="..."    # Send test message as if from Telegram
+make missions [state=...]        # List the mission queue straight from the store (break-glass; bridge-independent)
+make mission-rm sel=i1           # Remove/abort a mission by selector (i<N>/p<N>/keyword) when the bridge is down
 make rename-project old=X new=Y [apply=1]  # Rename a project everywhere (dry-run by default)
 make clean          # Remove venv
 ```
@@ -100,6 +166,7 @@ The full two-process detail, the complete per-module reference (`Key modules`), 
 - Project config via `projects.yaml` at KOAN_ROOT (primary), with `KOAN_PROJECTS` env var as fallback. Supports per-project overrides for `cli_provider`, `models`, `tools`, and `git_auto_merge`.
 - Environment config via `.env` file and `KOAN_*` variables for secrets and system settings. **CLI provider** is configured via `KOAN_CLI_PROVIDER` env var (primary), with fallback to `CLI_PROVIDER` for backward compatibility. The centralized `get_cli_provider_env()` helper in `utils.py` handles this resolution.
 - Multi-project support: up to 50 projects, each with isolated memory under `memory/projects/{name}/`
+- **`KOAN.md` convention** — An optional project-root `KOAN.md` (same format as `CLAUDE.md`) is injected into the autonomous agent's system prompt but is **not** loaded by interactive Claude Code sessions. Use it for koan-only, per-project guidance. Precedence: mission instruction > `KOAN.md` > `CLAUDE.md`/defaults. See `docs/users/koan-md.md`.
 - `system-prompt.md` defines the Claude agent's identity, priorities, and autonomous mode rules
 - **System prompts must be generic** — Never reference specific instance details like owner names in system prompts. Use generic terms like "your human" instead of personal names. Prompts are in English; instance-specific personality and language preferences come from `soul.md`.
 - **Never leak private skill/agent/project names** — The public repo must contain zero references to private identifiers from any operator's `instance/` tree. This applies to **source code, comments, docstrings, test fixtures, public docs, example configs, AND commit messages** (which `git log` exposes forever).
@@ -115,6 +182,7 @@ The full two-process detail, the complete per-module reference (`Key modules`), 
   - **If you find a pre-existing leak on `main`** while working in adjacent code, scrub it in the same branch — don't leave it as someone else's problem.
 - **User manual maintenance** — When adding, removing, or modifying a core skill, update `docs/users/user-manual.md` and `docs/users/skills.md` accordingly: add the skill to the appropriate tier section and the quick-reference appendix. The manual and skills reference must stay in sync with `koan/skills/core/`. (Skill authoring details and the full new-skill checklist live in `koan/skills/CLAUDE.md`.)
 - **Documentation maintenance** — When adding or modifying a feature, update the corresponding section in `README.md` and/or the relevant docs file. Use the nested docs layout in `docs/README.md`: user behavior in `docs/users/`, daemon design in `docs/architecture/`, providers in `docs/providers/`, messaging and tracker integrations in `docs/messaging/`, operations in `docs/operations/`, durable decisions in `docs/design/`, threat models and audit docs in `docs/security/`, and deployment guides in `docs/setup/`. If no documentation file exists for the feature, create one in the matching directory. Public-facing documentation and implementation references must stay in sync with the codebase — undocumented features are invisible to users.
+- **OpenAPI spec maintenance** — The REST API (`koan/app/api/`) has a generated OpenAPI document at `koan/openapi.yaml`. Whenever you **add, remove, or modify a REST API endpoint** (a route, its methods, its path params, or its auth), regenerate the document and commit it **in the same change**: `make openapi` then `git add koan/openapi.yaml`. It is derived from the live Flask route table — never hand-edit it. CI (`.github/workflows/openapi.yml`) runs `make openapi-check` only when API-defining files change and fails on drift with the exact fix command. See `docs/operations/rest-api.md`.
 
 > Python-specific conventions (temp files, linting, tests, prompt extraction) and skill-authoring conventions (help groups, naming, the new-skill checklist) live in `koan/CLAUDE.md` and `koan/skills/CLAUDE.md` respectively — see "On-demand guidance" above.
 

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Memory Injection into Skill Prompts"
+description: "Documents the shipped memory-injection feature threading project memory (learnings/context/priorities) into the five mission-driving skills plus anti-thrash and semantic-dedup safeguards for memory compaction."
 tags: [design]
 created: 2026-05-28
 updated: 2026-05-28

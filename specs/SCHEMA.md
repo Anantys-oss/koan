@@ -1,0 +1,104 @@
+---
+type: overview
+title: "Specs Bundle Schema"
+description: "OKF conventions specific to the specs/ bundle: page types, tag taxonomy, frontmatter requirements, and why speckit feature folders are excluded."
+tags: [core]
+created: 2026-07-08
+updated: 2026-07-08
+---
+
+# Specs Bundle Schema
+
+The durable half of `specs/` (`specs/components/`, `specs/skills/`, `specs/README.md`)
+is an independent OKF v0.1 bundle (see `../docs/SPEC.md` for the normative,
+bundle-agnostic spec this file layers repo-specific convention on top of). It carries
+`specs/index.md` as its bundle-root catalog (`okf_version: "0.1"` frontmatter) and one
+`index.md` per subdirectory (`specs/components/index.md`, `specs/skills/index.md`).
+Wiki-plugin-level concerns live in `../wiki/SCHEMA.md`, not here.
+
+## Page types
+
+- `overview` — `specs/README.md`, the hand-curated entry point covering the
+  specs-vs-docs distinction, layout, and spec discipline.
+- `component-spec` — `specs/components/*.md`, one per architectural module group
+  (agent-loop, bridge, core, git-github, issue-tracking, providers, skills, web).
+  Durable design contracts: why the component exists, what it upholds, what breaks if
+  you change it.
+- `skill-spec` — `specs/skills/*.md`, one per skill, **excluding
+  `SKILL_SPEC_TEMPLATE.md`** (a template, not a page). Only ~10 of ~80 skills have a
+  spec today, per `specs/README.md`'s coverage policy — the rest are added on-demand.
+- `feature-plan` — speckit's `specs/<NNN-slug>/` folders. **Excluded from this bundle's
+  OKF conformance entirely** — see "Why speckit feature folders are excluded" below.
+
+Add a new type only when a real category doesn't fit the above and needs distinct
+queryability — not for a one-off; use tags instead.
+
+## Why speckit feature folders are excluded (resolves `TODO(SPECS_DIR_COLLISION)`)
+
+`.specify/memory/constitution.md` carried an open TODO since koan's speckit adoption:
+koan's own `specs/` already holds durable component/skill design contracts, while
+speckit's templates write ephemeral per-feature planning folders into that same
+`specs/` root — a collision that was flagged but never reconciled, and several speckit
+feature folders (`001`–`003`, plus a second `003-*`) already exist.
+
+The answer: **don't rename or move anything, and don't fold them into this OKF bundle
+either.** The two populations are genuinely different things that coexist at different
+paths without literally colliding on disk:
+
+- `specs/components/*.md` + `specs/skills/*.md` — durable, wiki-indexed, frontmattered,
+  this bundle.
+- `specs/<NNN-slug>/*` — ephemeral planning scaffolding, owned entirely by speckit's own
+  tooling (`/speckit-plan`, `/speckit-clarify`, etc. rewrite these files wholesale on
+  each run). Injecting OKF frontmatter into them risks it being clobbered on the next
+  regeneration, and their existing bold-label metadata convention (`**Feature Branch**:
+  ... **Status**: Draft`) is speckit's own, not ours to change. They stay **entirely
+  excluded** from this bundle's conformance checks (`scripts/wiki_check.py` and
+  `/brain lint` both skip `specs/<NNN-slug>/**` explicitly) — not "conformant with no
+  frontmatter," genuinely out of scope.
+
+They remain wiki-*visible* (referenced from `wiki/index.md` with a computed status —
+see `wiki/SCHEMA.md`) but wiki-*lint-invisible*.
+
+The durable artifact from a *shipped* speckit feature is the **updated
+`specs/components/<group>.md`** — per the existing, mandatory `CLAUDE.md` "Specs
+discipline" rule. That update is what actually gets indexed and frontmattered; the
+speckit folder itself just flips its computed `wiki/index.md` status to `shipped` and
+remains as a historical record of how the feature was planned.
+
+## Tag taxonomy
+
+One tag per `specs/components/` subsystem, plus a shared tag for skill specs:
+
+- `agent-loop`, `bridge`, `core`, `git-github`, `issue-tracking`, `providers`, `web` —
+  the `specs/components/` subsystems (`providers` is shared with `docs/providers/*`,
+  deliberate cross-link)
+- `skill` — shared tag for every `specs/skills/*.md` page (the filename already
+  identifies which skill; a per-skill tag would be over-granular)
+
+## Frontmatter requirements
+
+Every page under `specs/components/`, `specs/skills/` (excluding
+`SKILL_SPEC_TEMPLATE.md`), plus `specs/README.md`, must have:
+
+```yaml
+---
+type: component-spec   # overview | component-spec | skill-spec
+title: "Human-readable title"
+description: "One-sentence summary"
+tags: [subsystem-tag]
+created: 2026-06-27
+updated: 2026-07-02
+---
+```
+
+`created`/`updated` are real dates from git history for that file. `description` is
+OKF-recommended, treated as required house style here (see `../docs/SPEC.md`'s note on
+`created`/`updated` replacing OKF's `timestamp`). `specs/<NNN-slug>/**` remains
+explicitly exempt from this requirement — see above.
+
+## Index files
+
+`specs/index.md` (bundle root, `okf_version: "0.1"` frontmatter), `specs/components/index.md`,
+and `specs/skills/index.md` are mechanically generated by `scripts/okf_backfill.py
+indexes` — never hand-edited. See `../wiki/SCHEMA.md`'s "Index structure" section for
+how these relate to `wiki/index.md`.

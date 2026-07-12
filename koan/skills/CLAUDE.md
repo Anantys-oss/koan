@@ -18,8 +18,15 @@ Extensible command plugin system. Each skill lives in `skills/<scope>/<skill-nam
 
 ## Skill authoring conventions
 
+- **Not covered by this file: `.claude/skills/` project skills.** `brain`
+  (`.claude/skills/brain/`, see `CLAUDE.md`'s "Documentation first" section) and the
+  `speckit-*` skills are Claude-Code-native project skills, invoked directly in a
+  session — not `koan/skills/core/` runtime skills. The "Adding a new core skill"
+  checklist below (runner registration, help-group enforcement, user-manual updates,
+  eval harness) does not apply to them.
 - **Help group enforcement** — Every core skill MUST have a `group:` field in its SKILL.md frontmatter (one of: missions, code, pr, status, config, ideas, system). This ensures commands are discoverable via `/help`. If adding a new hardcoded core command (not skill-based), add it to `_CORE_COMMAND_HELP` in `command_handlers.py`. The test suite enforces this — `TestCoreSkillGroupEnforcement` will fail if a core skill is missing its group. The `integrations` group is reserved for custom skills under `instance/skills/<scope>/` (team-specific integrations) — not for core skills.
 - **Custom skills on GitHub/Jira** — Skills under `instance/skills/<scope>/` can be exposed to GitHub and Jira @mentions with a single `github_enabled: true` flag (Jira reuses it; there is no separate `jira_enabled`). Custom skills with a `handler.py` are dispatched **in-process** by `koan/app/external_skill_dispatch.py` — the helper synthesizes a `SkillContext`, auto-feeds the originating Jira key when the author omits one, and calls `execute_skill()` directly. This avoids queueing a `/cmd …` slash mission that has no registered runner. Set `group: integrations` so they render in the dedicated help section.
+- **Runner skills should pass `project_path` to the prompt loader** (`load_skill_prompt` / `load_prompt_or_skill`) so a target repo's `.koan/skills/<name>/*.md` extra instructions are honored. Default `None` = no injection.
 - **No hyphens in skill names or aliases** — Skill command names, aliases, and directory names MUST use underscores (`_`), never hyphens (`-`). Hyphens break Telegram command parsing because Telegram treats the hyphen as a word boundary, cutting the command short. Example: use `dead_code` not `dead-code`, `scaffold_skill` not `scaffold-skill`.
 - **Adding a new core skill** — Every core skill requires ALL of the following. Missing any step leaves the skill broken or undiscoverable:
   1. **Skill directory**: Create `koan/skills/core/<skill_name>/SKILL.md` with frontmatter including `name`, `description`, `group` (one of: missions, code, pr, status, config, ideas, system), `commands`, and `audience`. Add `handler.py` if the skill needs Python logic (omit for prompt-only skills).

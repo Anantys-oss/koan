@@ -40,7 +40,6 @@ from app.constants import (
     NOTIF_CACHE_TTL as _NOTIF_CACHE_TTL,
 )
 from app.messaging_level import is_debug
-from app.missions import count_pending
 from app.run_log import log_safe as _log_loop, suppress_logged
 from app.utils import atomic_write
 
@@ -184,6 +183,51 @@ def format_project_list(projects: list) -> str:
 # --- CI queue drain during sleep ---
 
 _last_ci_queue_sleep_check: float = 0
+
+# --- Optional periodic instance/ pull (opt-in, default off) ---
+
+_last_instance_sync: float = float("-inf")
+# Set once instance/ is confirmed to not be a git repo (template-seeded): a pull
+# can never succeed there, so the tick self-disables for the rest of the boot
+# instead of logging a bogus recurring 'pull failed' every interval.
+_instance_sync_unavailable: bool = False
+
+
+def _maybe_sync_instance_repo(instance_dir: str) -> None:
+    """Opt-in low-frequency `git pull --rebase --autostash` of instance/.
+
+    Gated by KOAN_INSTANCE_SYNC_INTERVAL (0 = disabled). Reconciles operator
+    edits pushed directly to the remote so commit_instance()'s next push stays
+    fast-forwardable. Fail-open — never blocks the loop.
+    """
+    global _last_instance_sync, _instance_sync_unavailable
+    if _instance_sync_unavailable:
+        return
+    from app.config import get_instance_sync_interval
+    interval = get_instance_sync_interval()
+    if interval <= 0:
+        return
+    now = time.time()
+    if now - _last_instance_sync < interval:
+        return
+    _last_instance_sync = now
+    from app.instance_hydrator import pull_instance_repo
+    result = pull_instance_repo(instance_dir)
+    if result is None:
+        # instance/ isn't a git repo (template-seeded; hydration skipped/failed).
+        # This is an expected steady state, not a failure — stop ticking for this
+        # boot and log it once at info rather than a recurring false alarm.
+        _instance_sync_unavailable = True
+        _log_loop("sync", "instance/ is not a git repo; disabling periodic pull for this boot")
+        return
+    if result is False:
+        # Retry sooner than a full interval, but stay throttled: a persistent
+        # conflict must not hot-loop (pull + log every tick). Back off to ~60s
+        # (or the interval, if shorter) so a transient failure still recovers
+        # quickly while a permanent one keeps the log quiet and legible.
+        backoff = min(interval, 60)
+        _last_instance_sync = now - max(0, interval - backoff)
+        _log_loop("sync", f"instance/ pull --rebase failed; retrying in ~{backoff}s")
 
 
 def _drain_ci_queue_during_sleep(instance_dir: str, elapsed: float):
@@ -640,9 +684,16 @@ def get_known_repos_from_projects(koan_root: str) -> Optional[set]:
 def _warn_unregistered_mention_repos(
     skipped_mention_repos: dict,
     instance_dir: str,
+    known_repos: Optional[set] = None,
 ) -> None:
-    """Alert the user when @mentions are dropped from repos not in projects.yaml."""
-    if not skipped_mention_repos:
+    """Alert the user when @mentions are dropped from repos not in projects.yaml.
+
+    The per-repo warning is one-shot per process. It resets once the repo is
+    added to projects.yaml: any warned repo now present in ``known_repos`` is
+    pruned from the dedup set, so if it is later removed and drops a mention
+    again the operator is warned afresh (AC #3 of issue #2279).
+    """
+    if not skipped_mention_repos and not known_repos:
         return
 
     with suppress_logged(_log_loop, "error", "Multi-instance config check failed", ImportError, OSError):
@@ -651,6 +702,17 @@ def _warn_unregistered_mention_repos(
             return
 
     with _warned_unregistered_repos_lock:
+        # Reset-on-registration: drop any warned repo that is now known so a
+        # future de-registration + re-drop warns again instead of staying
+        # silently suppressed by a stale entry. known_repos are normalized
+        # lowercase while skipped_mention_repos keys keep original case, so
+        # compare case-insensitively.
+        if known_repos:
+            known_lower = {r.lower() for r in known_repos}
+            _warned_unregistered_repos.difference_update(
+                {r for r in _warned_unregistered_repos if r.lower() in known_lower}
+            )
+
         new_repos = {
             repo for repo in skipped_mention_repos
             if repo not in _warned_unregistered_repos
@@ -945,8 +1007,11 @@ def process_github_notifications(
         result = fetch_unread_notifications(known_repos, since=since_value)
         notifications = result.actionable
 
-        # Warn about @mentions dropped from unregistered repos (once per repo per session).
-        _warn_unregistered_mention_repos(result.skipped_mention_repos, instance_dir)
+        # Warn about @mentions dropped from unregistered repos (once per repo per
+        # session; resets if the repo is later added to projects.yaml).
+        _warn_unregistered_mention_repos(
+            result.skipped_mention_repos, instance_dir, known_repos=known_repos,
+        )
 
         # Record the check timestamp for the next ``since`` window.
         new_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1734,14 +1799,16 @@ def _consume_check_notifications_signal(koan_root: str) -> bool:
 
 
 def check_pending_missions(instance_dir: str) -> bool:
-    """Check if there are pending missions in missions.md."""
+    """Check if there are pending missions in the authoritative mission store."""
     try:
-        content = (Path(instance_dir) / "missions.md").read_text()
-        return count_pending(content) > 0
-    except FileNotFoundError:
-        return False
-    except (OSError, ValueError) as e:
-        _log_loop("error", f"Error reading missions.md: {e}")
+        from app.mission_store.transition import read_sections
+        return len(read_sections(instance_dir).get("pending", [])) > 0
+    except Exception as e:
+        # read_sections now goes through SQLite; a sqlite3.DatabaseError is neither
+        # FileNotFoundError nor OSError/ValueError, so catch broadly and fail safe —
+        # treat a store read error as "no pending" (don't wake into a busy-loop on a
+        # broken store) and log it rather than letting it propagate uncaught.
+        _log_loop("error", f"Error reading pending missions from store: {e}")
         return False
 
 
@@ -1802,6 +1869,7 @@ def interruptible_sleep(
         from app.heartbeat import run_stale_mission_check, run_disk_space_check
         run_stale_mission_check(instance_dir)
         run_disk_space_check(koan_root)
+        _maybe_sync_instance_repo(instance_dir)
 
         # Drain CI queue (throttled to once per 30s).
         # Completed CI runs inject missions or log success — detected faster

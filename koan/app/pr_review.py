@@ -16,7 +16,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Dict, List, Optional, Tuple
 
 from app.claude_step import (
     _force_push,
@@ -34,10 +34,11 @@ from app.rebase_pr import fetch_pr_context, _find_remote_for_repo
 _SKILL_RE = re.compile(r'`?([a-zA-Z0-9_-]+\.(?:refactor|review))\b`?')
 
 
-def build_pr_prompt(context: dict, skill_dir: Path = None) -> str:
+def build_pr_prompt(context: dict, skill_dir: Path = None, project_path: str = "") -> str:
     """Build a prompt for Claude to address PR review feedback."""
     return load_prompt_or_skill(
         skill_dir, "pr-review",
+        project_path=project_path,
         TITLE=context["title"],
         BODY=context["body"],
         BRANCH=context["branch"],
@@ -51,7 +52,10 @@ def build_pr_prompt(context: dict, skill_dir: Path = None) -> str:
 
 def build_refactor_prompt(project_path: str, skill_name: str = "", skill_dir: Path = None) -> str:
     """Build a prompt for the refactor pass on recent changes."""
-    prompt = load_prompt_or_skill(skill_dir, "pr-refactor", PROJECT_PATH=project_path)
+    prompt = load_prompt_or_skill(
+        skill_dir, "pr-refactor",
+        project_path=project_path, PROJECT_PATH=project_path,
+    )
     if skill_name:
         prompt += (
             f"\n\n## Skill Invocation\n\n"
@@ -64,7 +68,10 @@ def build_refactor_prompt(project_path: str, skill_name: str = "", skill_dir: Pa
 
 def build_quality_review_prompt(project_path: str, skill_name: str = "", skill_dir: Path = None) -> str:
     """Build a prompt for the quality review pass on recent changes."""
-    prompt = load_prompt_or_skill(skill_dir, "pr-quality-review", PROJECT_PATH=project_path)
+    prompt = load_prompt_or_skill(
+        skill_dir, "pr-quality-review",
+        project_path=project_path, PROJECT_PATH=project_path,
+    )
     if skill_name:
         prompt += (
             f"\n\n## Skill Invocation\n\n"
@@ -229,15 +236,22 @@ def run_pr_review(
     except Exception as e:
         return False, f"Failed to checkout branch {branch}: {e}"
 
-    # Rebase onto the upstream target branch (prefers the matched remote)
+    # Rebase onto the PR's target branch (strictly the matched base remote)
+    rebase_meta: Dict[str, str] = {}
     rebase_remote = _rebase_onto_target(
         base, project_path, preferred_remote=base_remote,
         head_remote=head_remote,
+        result_meta=rebase_meta,
     )
     if rebase_remote:
         actions_log.append(f"Rebased `{branch}` onto `{rebase_remote}/{base}`")
     else:
-        return False, f"Rebase conflict on {base} (tried origin and upstream)"
+        error_code = rebase_meta.get("error", "rebase_failed")
+        detail = rebase_meta.get("detail", "unresolved conflicts")
+        return False, (
+            f"[{error_code}] Rebase of `{branch}` onto "
+            f"`{base_remote or '?'}/{base}` aborted: {detail}"
+        )
 
     # ── Step 3: Address review feedback via Claude Code ───────────────
     has_review_feedback = bool(
@@ -249,7 +263,7 @@ def run_pr_review(
     if has_review_feedback:
         notify_fn(f"Addressing review comments on `{branch}`...")
         _run_claude_step(
-            prompt=build_pr_prompt(context, skill_dir=skill_dir),
+            prompt=build_pr_prompt(context, skill_dir=skill_dir, project_path=project_path),
             project_path=project_path,
             commit_msg=f"pr-review: address feedback on #{pr_number}",
             success_label="Addressed reviewer feedback",

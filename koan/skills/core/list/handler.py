@@ -164,57 +164,89 @@ def _strip_origin_markers(text: str) -> str:
     return " ".join(parts)
 
 
+# Which states each argument selects. Default (no arg) keeps the historical
+# behavior: pending + in progress.
+_STATE_ALIASES = {
+    "": ("in_progress", "pending"),
+    "active": ("in_progress", "pending"),
+    "pending": ("pending",),
+    "queue": ("pending",),
+    "in_progress": ("in_progress",),
+    "inprogress": ("in_progress",),
+    "running": ("in_progress",),
+    "progress": ("in_progress",),
+    "done": ("done",),
+    "completed": ("done",),
+    "failed": ("failed",),
+    "all": ("in_progress", "pending", "done", "failed"),
+}
+
+_SECTION_LABELS = {
+    "in_progress": "🔄 In Progress",
+    "pending": "⏳ Pending",
+    "done": "✅ Done (recent)",
+    "failed": "❌ Failed (recent)",
+}
+
+# Cap terminal-history output so /list done|failed stays chat-friendly.
+_TERMINAL_LIMIT = 20
+
+
+def _display_line(raw, now):
+    from app.missions import clean_mission_display
+    prefix = mission_prefix(raw)
+    display = _humanize_timestamps(clean_mission_display(raw), now)
+    origin = _detect_origin_marker(raw)
+    display = _strip_origin_markers(display)
+    return f"{origin}{prefix} {display}" if prefix else f"{origin}{display}"
+
+
 def handle(ctx):
-    """Handle /list command -- display numbered mission list."""
+    """Handle /list [pending|in_progress|done|failed|all] — display missions.
+
+    With no argument, lists pending + in progress (the historical default). A
+    state argument surfaces that section — e.g. ``/list done`` / ``/list failed``
+    give the done/failed history that used to require reading missions.md.
+    """
     # Reset emoji cache on each /list invocation to pick up new skills.
     global _emoji_cache
     _emoji_cache = None
 
-    missions_file = ctx.instance_dir / "missions.md"
+    arg = (getattr(ctx, "args", "") or "").strip().lower().replace(" ", "_")
+    states = _STATE_ALIASES.get(arg)
+    if states is None:
+        return ("Usage: /list [pending | in_progress | done | failed | all]\n"
+                "Default lists pending + in progress.")
 
-    if not missions_file.exists():
-        return "ℹ️ No missions file found."
+    from app.mission_store import get_mission_store
+    from app.mission_store.base import render_mission_line
+    from app.mission_store.transition import ensure_store_synced
 
-    from app.missions import parse_sections, clean_mission_display
-
-    content = missions_file.read_text()
-    sections = parse_sections(content)
-
-    in_progress = sections.get("in_progress", [])
-    pending = sections.get("pending", [])
-
-    if not in_progress and not pending:
-        return "ℹ️ No missions pending or in progress."
-
-    parts = []
+    # The store is authoritative; sync it once from missions.md if needed.
+    ensure_store_synced(str(ctx.instance_dir))
+    store = get_mission_store(str(ctx.instance_dir))
 
     now = datetime.now()
-
-    if in_progress:
-        parts.append("🔄 In Progress")
-        parts.append("```")
-        for m in in_progress:
-            prefix = mission_prefix(m)
-            display = _humanize_timestamps(clean_mission_display(m), now)
-            origin = _detect_origin_marker(m)
-            display = _strip_origin_markers(display)
-            if prefix:
-                parts.append(f"{origin}{prefix} {display}")
-            else:
-                parts.append(f"{origin}{display}")
-        parts.append("```")
+    parts = []
+    total = 0
+    for state in states:
+        limit = _TERMINAL_LIMIT if state in ("done", "failed") else None
+        raws = [render_mission_line(m) for m in store.list_by_state(state, limit=limit)]
+        if not raws:
+            continue
+        total += len(raws)
+        parts.append(_SECTION_LABELS[state])
+        if state == "in_progress":
+            parts.append("```")
+            parts.extend(_display_line(r, now) for r in raws)
+            parts.append("```")
+        else:
+            parts.extend(f"  {i}. {_display_line(r, now)}" for i, r in enumerate(raws, 1))
         parts.append("")
 
-    if pending:
-        parts.append("⏳ Pending")
-        for i, m in enumerate(pending, 1):
-            prefix = mission_prefix(m)
-            display = _humanize_timestamps(clean_mission_display(m), now)
-            origin = _detect_origin_marker(m)
-            display = _strip_origin_markers(display)
-            if prefix:
-                parts.append(f"  {i}. {origin}{prefix} {display}")
-            else:
-                parts.append(f"  {i}. {origin}{display}")
+    if total == 0:
+        if arg in ("", "active"):
+            return "ℹ️ No missions pending or in progress."
+        return f"ℹ️ No {arg.replace('_', ' ')} missions."
 
-    return "\n".join(parts)
+    return "\n".join(parts).rstrip()

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Provider Architecture"
+description: "Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Local)."
 tags: [architecture]
 created: 2026-05-28
 updated: 2026-06-09

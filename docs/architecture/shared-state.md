@@ -1,27 +1,32 @@
 ---
 type: doc
 title: "Shared State"
+description: "Explains Koan's shared state under instance/ — mostly local files (locking/atomic-write conventions, per-uid temp/scratch dirs, config sources), with mission state in an authoritative SQLite store (missions.db) exported to missions.md."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-11
+updated: 2026-07-10
 ---
 
 # Shared State
 
-Koan intentionally uses local files instead of a database. This keeps setup
-simple and makes state inspectable by humans and agents.
+Koan intentionally keeps most runtime state in local files, which keeps setup
+simple and makes state inspectable by humans and agents. **Mission state is the
+one exception** (Constitution v2.0.0): it is authoritative in an SQLite store
+(`instance/missions.db`) behind the `MissionStore` port, with `missions.md` as a
+generated read-only export. Everything else below remains file-based.
 
 ## Instance Directory
 
 `instance/` is gitignored runtime state. Important files and directories include:
 
-- `missions.md` - mission queue and lifecycle sections.
+- `missions.db` - authoritative SQLite mission store (missions + CI queue + ideas + quarantine).
+- `missions.md` - generated **read-only export** of the mission store (edits ignored after the one-time sync).
 - `outbox.md` - pending outbound messages for the bridge.
 - `config.yaml` - instance behavior and integration configuration.
 - `memory/` - global and per-project memory files.
 - `journal/` - daily logs and reflections.
 - `events/` - scheduled mission JSON files.
-- `hooks/` - user-defined lifecycle hooks.
+- `hooks/` - user-defined lifecycle hooks (see [Lifecycle Hooks & Automation Rules](hooks.md)).
 - hidden tracker files for pause, focus, passive mode, usage, CI dispatch,
   review dispatch, burn rate, and similar daemon state.
 

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Skills System"
+description: "Describes the skill definition format, dispatch paths, the private implementation review gate (challenge loop, cost controls, dedup), and the documentation contract for skill changes."
 tags: [architecture]
 created: 2026-05-28
 updated: 2026-06-23

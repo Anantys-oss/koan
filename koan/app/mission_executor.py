@@ -441,6 +441,7 @@ def _maybe_fallback_provider_rerun(
     host_tmp_dir,
     container_tmp_dir,
     dc=None,
+    mission_type: str = "",
 ) -> tuple:
     """Re-run the mission on the ``cli.fallback`` provider after a launch/auth failure.
 
@@ -534,6 +535,7 @@ def _maybe_fallback_provider_rerun(
         system_prompt_dir=host_tmp_dir,
         system_prompt_container_dir=container_tmp_dir,
         provider_override=fb,
+        mission_type=mission_type,
     )
     if dc is not None:
         cmd = dc.wrap_command(
@@ -1202,6 +1204,7 @@ def _run_iteration(
         available_pct=available_pct or 50,
         mission_title=mission_title,
         spec_content=spec_content,
+        host_project_path=project_path,  # real host path for KOAN.md read
     )
 
     # Create pending.md
@@ -1294,6 +1297,24 @@ def _run_iteration(
         _mission_role = "review_mode" if autonomous_mode == "review" else "mission"
         mission_cli_provider = get_provider_for_role(_mission_role, project_name)
 
+        # Classify the mission type so a per-mission-type effort pin
+        # (effort.autonomous / effort.freetext) can override the dynamic
+        # default. NB: only NON-skill missions reach here — slash commands are
+        # handled earlier in _handle_skill_dispatch (dedicated runner, or failed
+        # as unknown for /refactor, /pr, …), so only "autonomous" and "freetext"
+        # ever apply here.
+        try:
+            from app.session_tracker import classify_mission_type
+            mission_type = classify_mission_type(mission_title)
+        except ImportError as e:
+            # Version mismatch / partial update — degrade to mode-only effort.
+            # Log so a partial upgrade disabling effort pins is observable.
+            log("warning", f"classify_mission_type unavailable (effort pin disabled): {e}")
+            mission_type = ""
+        # classify_mission_type is pure regex (no I/O); any other exception is a
+        # programming bug and is left to propagate rather than silently disabling
+        # effort pins for every mission.
+
         cmd, cmd_cleanup_paths = build_mission_command(
             prompt=prompt,
             autonomous_mode=autonomous_mode,
@@ -1305,6 +1326,7 @@ def _run_iteration(
             system_prompt_dir=_host_tmp_dir,
             system_prompt_container_dir=_container_tmp_dir,
             provider_override=mission_cli_provider,
+            mission_type=mission_type,
         )
 
         cmd_display = [c[:100] + '...' if len(c) > 100 else c for c in cmd[:6]]
@@ -1391,6 +1413,7 @@ def _run_iteration(
                 host_tmp_dir=_host_tmp_dir,
                 container_tmp_dir=_container_tmp_dir,
                 dc=_dc if _dc_present else None,
+                mission_type=mission_type,
             )
 
         # --- JSON success override ---

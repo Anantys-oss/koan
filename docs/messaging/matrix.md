@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Matrix Setup Guide"
+description: "Setup guide for using a Matrix homeserver as Kōan's messaging provider via the Client-Server HTTP API."
 tags: [messaging]
 created: 2026-05-28
 updated: 2026-05-28

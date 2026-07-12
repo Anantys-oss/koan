@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Model Configuration"
+description: "Explains how to configure which model handles each Koan role (mission, chat, lightweight, fallback, etc.) per provider via `config.yaml`, including resolution order and CLI-provider-per-role routing."
 tags: [users]
 created: 2026-06-07
 updated: 2026-06-30
@@ -76,6 +77,54 @@ The role's **model** is then read from that role's provider block above. With
 `projects.yaml` as a flat `cli:` block. Full details, including the single
 `cli.fallback` provider (launch/auth-failure recovery), are in
 [../providers/claude.md](../providers/claude.md).
+
+## Reasoning effort per mission type (the `effort:` section)
+
+The Claude provider accepts an `--effort` flag (`low`/`medium`/`high`/`max`)
+that trades cost for reasoning depth. By default Kōan picks effort **dynamically
+from the current budget mode**: `review` → `low`, `deep` → `high`, otherwise no
+flag (provider default). This keeps cheap audits cheap and deep reasoning deep,
+and is left untouched when you omit the `effort:` section.
+
+To pin effort **per mission type**, add an `effort:` section. Keys are mission
+types — the categories Kōan classifies internally — not budget modes:
+
+```yaml
+effort:
+  autonomous: low      # keep background autonomous work cheap
+  freetext: medium     # plain human-text missions
+```
+
+A pinned type wins over the dynamic default regardless of the budget mode the
+mission happens to run in. Resolution order: `effort.<mission_type>` →
+`effort.<budget_mode>` (legacy) → dynamic default. A single string
+(`effort: high`) applies to all missions; an empty value (`effort: ""` or
+`effort: { refactor: "" }`) disables the flag.
+
+**Valid mission-type keys** (the full `classify_mission_type` taxonomy):
+`autonomous`, `freetext`, `plan`, `review`, `rebase`, `recreate`, `implement`,
+`refactor`, `audit`, `check`, `maintenance`, `pr`, `chat`, `incident`. Any key
+outside this set never matches a mission, so a pin on it is silently inert.
+Because the taxonomy is open (new skills add types), the config validator
+accepts any key and only checks that the value is a real level — a typo'd key
+will not warn, it just never fires. Of these, only the types listed under
+**Scope** below can actually take effect today.
+
+> **Scope.** A per-type pin only takes effect for missions that reach the main
+> agent loop's `build_mission_command` — in practice only **`autonomous`**
+> (background autonomous work) and **`freetext`** (plain human-text missions).
+> Every named slash-command type is handled *before* that point and is **not**
+> governed by the `effort:` section: commands with a dedicated skill runner —
+> `/review`, `/plan`, `/rebase`, `/recreate`, `/implement`, `/fix`, `/audit`,
+> `/check`, … — run in their own runners, and commands with no runner (e.g.
+> `/refactor`, `/pr`) are handled by their bridge-side handler or fail as an
+> unknown skill. So pinning `review: low` — or `refactor: high` — has no
+> effect. To control effort for one of those, configure that skill's runner
+> directly.
+
+> Note: effort is a no-op when extended thinking is active for a mission
+> (thinking already implies max effort) and is ignored by providers whose CLI
+> has no `--effort` flag.
 
 ## Migrating from the legacy layout
 

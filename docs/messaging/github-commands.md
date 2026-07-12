@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "GitHub Notification-Driven Commands"
+description: "Full reference for triggering Kōan via `@mention` commands in GitHub PR/issue comments, including config, dedup, security, and fallback scanning."
 tags: [messaging]
 created: 2026-05-28
 updated: 2026-06-24
@@ -185,6 +186,8 @@ enable_multiple_instances: true
 This is a top-level config key (not nested under `github:`). When enabled, Kōan silently skips @mentions from unregistered repos instead of logging warnings and sending Telegram alerts — the assumption is that another instance handles them. Notifications from unregistered repos are left unread so sibling instances can process them.
 
 When `enable_multiple_instances` is **false** (default, single-instance mode), notifications from unregistered repos are automatically marked as read to prevent inbox accumulation — no other instance will claim them.
+
+The @mention-dropped warning is one-shot per repo for the life of the process (it will not repeat every poll cycle). It resets once you add the repo to `projects.yaml`: the next time an @mention arrives it is acted on normally, and if the repo is ever removed again a fresh warning is emitted. Restarting Kōan also re-arms the warning as a standing reminder that the repo is still not registered.
 
 ### Per-project overrides (`projects.yaml`)
 

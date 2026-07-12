@@ -315,11 +315,17 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     missions_context = ""
     if pending_context:
         missions_context = pending_context
-    elif MISSIONS_FILE.exists():
-        from app.missions import parse_sections
+    else:
+        # Store is authoritative; read it directly rather than gating on the (now
+        # disposable) missions.md export — the try/except below degrades safely.
+        from app.mission_store.transition import read_sections
         try:
-            sections = parse_sections(MISSIONS_FILE.read_text())
-        except OSError:
+            sections = read_sections(MISSIONS_FILE.parent)
+        except Exception as e:
+            # read_sections now goes through SQLite; a DB read failure
+            # (sqlite3.DatabaseError, not an OSError) must degrade to empty
+            # chat-context rather than crash bridge chat-prompt building.
+            log("warn", f"[awake] chat-context mission read failed: {e}")
             sections = {}
         in_progress = sections.get("in_progress", [])
         pending = sections.get("pending", [])

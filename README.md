@@ -174,6 +174,7 @@ For implementation details, see the [architecture reference](docs/architecture/o
 ### Core
 
 - **Multi-project support** — Up to 50 projects with per-project config, memory isolation, and smart rotation
+- **`KOAN.md` project instructions** — Optional project-root `KOAN.md` (same format as `CLAUDE.md`) injected into the autonomous agent only — invisible to interactive Claude Code sessions. [Docs](docs/users/koan-md.md)
 - **Devcontainer support** — Run the agent inside your project's devcontainer, enabling fully consistent tooling
 - **Mission lifecycle** — Pending → In Progress → Done/Failed with crash recovery and stale-mission cleanup
 - **Budget-aware modes** — Automatically adapts work depth based on remaining API quota:
@@ -417,6 +418,8 @@ instance/                 # Your private data (gitignored)
 | `make logs` | Tail live output from all processes |
 | `make stop` | Stop all processes |
 | `make status` | Show running process status |
+| `make missions` | List the mission queue directly from the store (break-glass; works when the bridge is down) |
+| `make mission-rm sel=i1` | Remove/abort a mission by selector when the bridge is unresponsive ([docs](docs/operations/mission-cli.md)) |
 | `make dashboard` | Web UI (default: http://127.0.0.1:5001) |
 | `make test` | Run test suite |
 | `make say m="..."` | Send a test message |

@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Messaging level (bridge verbosity)"
+description: "Explains the `messaging.level` setting (`normal`/`debug`) that controls how much lifecycle/progress chatter Kōan's Telegram/Slack bridge sends versus only logs."
 tags: [messaging]
 created: 2026-06-24
 updated: 2026-06-25

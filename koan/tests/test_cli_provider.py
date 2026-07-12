@@ -546,6 +546,12 @@ class TestProviderResolution:
     def test_env_var_claude(self):
         assert get_provider_name() == "claude"
 
+    @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "haze"})
+    def test_env_var_haze(self):
+        assert get_provider_name() == "haze"
+        from app.provider.haze import HazeProvider
+        assert isinstance(get_provider(), HazeProvider)
+
     @patch.dict("os.environ", {"KOAN_CLI_PROVIDER": "invalid"})
     @patch("app.utils.load_config", return_value={})
     def test_env_var_invalid_falls_to_default(self, mock_config):

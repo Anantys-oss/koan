@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import patch
 
 from app.api import create_app
+from tests.store_helpers import seed_missions
 
 _TOKEN = "test-token"
 _AUTH = {"Authorization": f"Bearer {_TOKEN}"}
@@ -132,7 +133,7 @@ class TestGetMission:
             "## In Progress\n\n",
             f"## In Progress\n\n{pending_line}",
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.get(f"/v1/missions/{mission_id}", headers=_AUTH)
         data = resp.get_json()
@@ -180,7 +181,7 @@ class TestDeleteMission:
             "## In Progress\n\n",
             f"## In Progress\n\n{pending_line}",
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.delete(f"/v1/missions/{mission_id}", headers=_AUTH)
         assert resp.status_code == 409
@@ -419,7 +420,7 @@ class TestEditMission:
         content = content.replace(
             "## In Progress\n\n", f"## In Progress\n\n{pending_line}"
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.patch(
             f"/v1/missions/{mission_id}",
@@ -512,7 +513,7 @@ class TestEditMission:
         content = content.replace(
             "## In Progress", "- Duplicate task\n\n## In Progress"
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.patch(
             f"/v1/missions/{mission_id}",
@@ -578,7 +579,7 @@ class TestReorderMission:
         content = content.replace(
             "## In Progress\n\n", f"## In Progress\n\n{pending_line}"
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.post(
             "/v1/missions/reorder",
@@ -651,7 +652,7 @@ class TestReorderMission:
         content = content.replace(
             "## In Progress", "- Dup reorder\n\n## In Progress"
         )
-        (instance_dir / "missions.md").write_text(content)
+        seed_missions(instance_dir, content)
 
         resp = api_client.post(
             "/v1/missions/reorder",
@@ -660,3 +661,133 @@ class TestReorderMission:
         )
         assert resp.status_code == 409
         assert "Ambiguous" in resp.get_json()["error"]["message"]
+
+
+class TestStructuredResult:
+    def test_review_mission_get_returns_structured_result(self, api_client, instance_dir):
+        url = "https://github.com/o/r/pull/5"
+        mid = api_client.post("/v1/missions", json={"command": f"/review {url}"},
+                              headers=_AUTH).get_json()["id"]
+        records = json.loads((instance_dir / ".api-missions.json").read_text())
+        stored = next(r["text"] for r in records if r["id"] == mid)
+        seed_missions(
+            instance_dir,
+            f"# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n- {stored}\n")
+        fdir = instance_dir / ".review-findings"; fdir.mkdir()
+        (fdir / "o_r_5.json").write_text(json.dumps({
+            "file_comments": [{"file": "a.py", "line_start": 1, "line_end": 1,
+                               "severity": "warning", "title": "t", "comment": "c",
+                               "code_snippet": ""}],
+            "review_summary": {"lgtm": False, "summary": "s", "checklist": []},
+        }))
+        data = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()
+        assert data["status"] == "done"
+        assert data["result_line"] is not None
+        assert data["result"]["kind"] == "review"
+        assert data["result"]["review_summary"]["lgtm"] is False
+        assert data["result"]["file_comments"][0]["severity"] == "warning"
+
+    def test_non_structured_mission_result_is_null(self, api_client, instance_dir):
+        mid = api_client.post("/v1/missions", json={"text": "Fix a typo"},
+                              headers=_AUTH).get_json()["id"]
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n")
+        data = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()
+        assert data["result"] is None
+        assert data["result_ref"] is None
+
+    def test_result_endpoint_returns_full_blob_when_spilled(self, api_client, instance_dir, monkeypatch):
+        from app.api import mission_index as mi
+        monkeypatch.setattr(mi, "DEFAULT_RESULT_CAP_BYTES", 64)  # force spill
+        url = "https://github.com/o/r/pull/8"
+        mid = api_client.post("/v1/missions", json={"command": f"/review {url}"},
+                              headers=_AUTH).get_json()["id"]
+        records = json.loads((instance_dir / ".api-missions.json").read_text())
+        stored = next(r["text"] for r in records if r["id"] == mid)
+        seed_missions(
+            instance_dir,
+            f"# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n\n- {stored}\n")
+        fdir = instance_dir / ".review-findings"; fdir.mkdir()
+        (fdir / "o_r_8.json").write_text(json.dumps({
+            "file_comments": [{"file": "a.py", "line_start": i, "line_end": i,
+                               "severity": "warning", "title": "t",
+                               "comment": "x" * 200, "code_snippet": ""} for i in range(20)],
+            "review_summary": {"lgtm": False, "summary": "big", "checklist": []},
+        }))
+        rec = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()
+        assert rec["result_ref"] is not None
+        assert rec["result"]["review_summary"]["summary"] == "big"
+        full = api_client.get(f"/v1/missions/{mid}/result", headers=_AUTH).get_json()
+        assert len(full["file_comments"]) == 20
+
+    def test_result_endpoint_404_when_no_result(self, api_client, instance_dir):
+        mid = api_client.post("/v1/missions", json={"text": "Fix a typo"},
+                              headers=_AUTH).get_json()["id"]
+        assert api_client.get(f"/v1/missions/{mid}/result", headers=_AUTH).status_code == 404
+
+
+class TestFindActiveMissionId:
+    def test_find_active_mission_id_prefers_in_progress(self, tmp_path):
+        from app.api import mission_index as mi
+        inst = tmp_path / "instance"
+        inst.mkdir()
+        id_pending = mi.record_mission(inst, "- [project:koan] Fix the bug", "koan")
+        id_running = mi.record_mission(inst, "- Do the thing", None)
+        recs = mi._load_index(inst)
+        for r in recs:
+            if r["id"] == id_running:
+                r["status"] = "in_progress"
+        mi._save_index(inst, recs)
+
+        # title arriving with project tag already stripped still matches
+        assert mi.find_active_mission_id(inst, "Fix the bug") == id_pending
+        assert mi.find_active_mission_id(inst, "Do the thing") == id_running
+        assert mi.find_active_mission_id(inst, "unknown mission") is None
+
+
+class TestGetMissionUsage:
+    def test_get_mission_returns_aggregated_usage(self, api_client, instance_dir):
+        from app.mission_runner import _record_cost_event
+        from app.api import mission_index as mi
+
+        mid = mi.record_mission(instance_dir, "- Fix the bug", None)
+        recs = mi._load_index(instance_dir)
+        recs[0]["status"] = "in_progress"
+        mi._save_index(instance_dir, recs)
+
+        tokens = {"model": "opus", "input_tokens": 100, "output_tokens": 20,
+                  "cache_creation_input_tokens": 0, "cache_read_input_tokens": 5,
+                  "cost_usd": 0.12}
+        _record_cost_event(str(instance_dir), "koan", "/tmp/out.json",
+                           "implement", "Fix the bug", tokens=tokens)
+
+        resp = api_client.get(f"/v1/missions/{mid}", headers=_AUTH)
+        assert resp.status_code == 200
+        usage = resp.get_json()["usage"]
+        assert usage["input_tokens"] == 100
+        assert usage["output_tokens"] == 20
+        assert usage["cache_read_input_tokens"] == 5
+        assert usage["call_count"] == 1
+        assert usage["models"] == ["opus"]
+        assert usage["unattributed"]["call_count"] == 0
+
+    def test_get_mission_usage_reports_unattributed(self, api_client, instance_dir):
+        from app.cost_tracker import record_usage
+        from app.api import mission_index as mi
+
+        mid = mi.record_mission(instance_dir, "- Fix the bug", None)
+        # an id-less event whose title matches — attribution gap
+        record_usage(instance_dir=instance_dir, project="koan", model="opus",
+                     input_tokens=42, output_tokens=9, mission="Fix the bug")
+
+        usage = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()["usage"]
+        assert usage["call_count"] == 0
+        assert usage["unattributed"]["call_count"] == 1
+        assert usage["unattributed"]["input_tokens"] == 42
+
+    def test_get_mission_usage_zeroed_when_no_calls(self, api_client, instance_dir):
+        resp = api_client.post("/v1/missions", json={"text": "no calls yet"}, headers=_AUTH)
+        mid = resp.get_json()["id"]
+        usage = api_client.get(f"/v1/missions/{mid}", headers=_AUTH).get_json()["usage"]
+        assert usage["call_count"] == 0
+        assert usage["input_tokens"] == 0

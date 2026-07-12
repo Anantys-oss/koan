@@ -2533,3 +2533,108 @@ class TestContextBudgetIntegration:
         # Low pressure: memory_entries=10
         call_kwargs = mock_mem.call_args[1]
         assert call_kwargs["max_entries_override"] == 10
+
+
+class TestKoanMdSection:
+    """Tests for _get_koan_md_section() reader."""
+
+    def test_koan_md_section_absent(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        assert _get_koan_md_section(str(tmp_path)) == ""
+
+    def test_koan_md_section_present(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        (tmp_path / "KOAN.md").write_text("Always run make lint before pushing.")
+        section = _get_koan_md_section(str(tmp_path))
+        assert "Always run make lint before pushing." in section
+        assert "KOAN.md" in section  # framing heading is present
+
+    def test_koan_md_section_empty_file(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        (tmp_path / "KOAN.md").write_text("   \n  \t\n")
+        assert _get_koan_md_section(str(tmp_path)) == ""
+
+    def test_koan_md_section_braces_kept_literal(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        (tmp_path / "KOAN.md").write_text("Never rewrite {KOAN_PYTHON} paths.")
+        section = _get_koan_md_section(str(tmp_path))
+        # single-pass substitution: content is inserted, not re-scanned
+        assert "{KOAN_PYTHON}" in section
+
+    def test_koan_md_section_truncated(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        from app.project_koan import _MAX_KOAN_MD_CHARS
+        (tmp_path / "KOAN.md").write_text("x" * (_MAX_KOAN_MD_CHARS + 500))
+        section = _get_koan_md_section(str(tmp_path))
+        assert "truncated" in section.lower()
+
+    def test_koan_md_section_empty_path(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        assert _get_koan_md_section("") == ""
+
+    def test_koan_md_section_includes_dot_koan(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        (tmp_path / "KOAN.md").write_text("root")
+        d = tmp_path / ".koan"
+        d.mkdir()
+        (d / "KOAN.md").write_text("dot")
+        out = _get_koan_md_section(str(tmp_path))
+        assert "root" in out and "dot" in out
+        assert "BEGIN KOAN.md" in out  # still framed by the koan-md template
+
+    def test_koan_md_section_dot_only(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        d = tmp_path / ".koan"
+        d.mkdir()
+        (d / "KOAN.md").write_text("dot-only guidance")
+        out = _get_koan_md_section(str(tmp_path))
+        assert "dot-only guidance" in out
+        assert "BEGIN KOAN.md" in out
+
+    def test_koan_md_section_empty_when_both_absent(self, tmp_path):
+        from app.prompt_builder import _get_koan_md_section
+        assert _get_koan_md_section(str(tmp_path)) == ""
+
+
+class TestKoanMdWiring:
+    """Tests that KOAN.md content reaches the mission system prompt."""
+
+    @staticmethod
+    def _mk_instance(tmp_path):
+        inst = tmp_path / "instance"
+        (inst / "memory" / "projects" / "p").mkdir(parents=True, exist_ok=True)
+        return inst
+
+    def test_build_parts_includes_koan_md(self, tmp_path):
+        inst = self._mk_instance(tmp_path)
+        proj = tmp_path / "proj"; proj.mkdir()
+        (proj / "KOAN.md").write_text("KOAN-ONLY: prefer documentation over code.")
+        system_prompt, _user = build_agent_prompt_parts(
+            instance=str(inst), project_name="p", project_path=str(proj),
+            run_num=1, max_runs=5, autonomous_mode="implement",
+            focus_area="x", available_pct=50, mission_title="Fix a bug",
+        )
+        assert "KOAN-ONLY: prefer documentation over code." in system_prompt
+
+    def test_build_parts_no_koan_md_is_clean(self, tmp_path):
+        inst = self._mk_instance(tmp_path)
+        proj = tmp_path / "proj"; proj.mkdir()  # no KOAN.md
+        system_prompt, _user = build_agent_prompt_parts(
+            instance=str(inst), project_name="p", project_path=str(proj),
+            run_num=1, max_runs=5, autonomous_mode="implement",
+            focus_area="x", available_pct=50, mission_title="Fix a bug",
+        )
+        assert "BEGIN KOAN.md" not in system_prompt
+
+    def test_build_parts_reads_host_path_in_devcontainer(self, tmp_path):
+        inst = self._mk_instance(tmp_path)
+        host = tmp_path / "host"; host.mkdir()
+        (host / "KOAN.md").write_text("HOSTMARK-devcontainer")
+        container_path = "/workspaces/proj"  # does not exist on host
+        system_prompt, _user = build_agent_prompt_parts(
+            instance=str(inst), project_name="p", project_path=container_path,
+            run_num=1, max_runs=5, autonomous_mode="implement",
+            focus_area="x", available_pct=50, mission_title="Fix a bug",
+            host_project_path=str(host),
+        )
+        assert "HOSTMARK-devcontainer" in system_prompt

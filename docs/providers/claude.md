@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Claude Code CLI Provider"
+description: "Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode."
 tags: [providers]
 created: 2026-05-28
 updated: 2026-07-01

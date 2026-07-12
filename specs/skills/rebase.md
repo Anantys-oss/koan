@@ -1,6 +1,7 @@
 ---
 type: skill-spec
 title: "Skill Spec — rebase"
+description: "Documents the `/rebase` skill that rebases a PR onto its current base and addresses review feedback, including its already-solved detection JSON scored by the eval harness."
 tags: [skill]
 created: 2026-06-27
 updated: 2026-07-02

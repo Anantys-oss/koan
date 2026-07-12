@@ -22,6 +22,7 @@ from app.rebase_pr import (
     _apply_review_feedback,
     _build_ci_fix_prompt,
     _build_rebase_comment,
+    _split_change_summary,
     _build_rebase_prompt,
     _build_rebase_recovery_guidance,
     _checkout_pr_branch,
@@ -373,31 +374,46 @@ class TestGetConflictedFiles:
 # ---------------------------------------------------------------------------
 
 class TestRebaseOntoTarget:
-    def test_successful_rebase_on_origin(self):
-        mock_result = MagicMock(returncode=0, stdout="", stderr="")
-        with patch("app.claude_step.subprocess.run", return_value=mock_result):
-            result = _rebase_onto_target("main", "/project")
+    def test_successful_rebase_on_base_remote(self):
+        def mock_git(cmd, **kwargs):
+            if "rev-parse" in cmd or "merge-base" in cmd:
+                return "tip"
+            if "rev-list" in cmd:
+                return "2"
+            return ""
+
+        with patch("app.claude_step._run_git", side_effect=mock_git):
+            result = _rebase_onto_target(
+                "main", "/project", preferred_remote="origin",
+            )
             assert result == "origin"
 
-    def test_falls_back_to_upstream(self):
-        def mock_run(cmd, **kwargs):
-            result = MagicMock(returncode=0, stdout="", stderr="")
-            if "rebase" in cmd and any("origin" in a for a in cmd) and "--abort" not in cmd:
-                raise RuntimeError("rebase failed")
-            return result
-
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run):
-            result = _rebase_onto_target("main", "/project")
-            assert result == "upstream"
+    def test_no_base_remote_refuses_to_guess(self):
+        """Without a remote matching the PR's base repo, the rebase fails
+        instead of falling back to some other remote (PR #2309 regression)."""
+        meta = {}
+        with patch("app.claude_step._run_git") as mock_git:
+            result = _rebase_onto_target("main", "/project", result_meta=meta)
+        assert result is None
+        assert meta["error"] == "no_base_remote"
+        mock_git.assert_not_called()
 
     def test_returns_none_on_conflict(self):
-        def mock_run(cmd, **kwargs):
-            if "rebase" in cmd and "--abort" not in cmd:
+        def mock_git(cmd, **kwargs):
+            if "rebase" in cmd:
                 raise RuntimeError("conflict")
-            return MagicMock(returncode=0, stdout="", stderr="")
+            if "rev-parse" in cmd or "merge-base" in cmd:
+                return "tip"
+            if "rev-list" in cmd:
+                return "2"
+            return ""
 
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run):
-            result = _rebase_onto_target("main", "/project")
+        mock_abort = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("app.claude_step._run_git", side_effect=mock_git), \
+             patch("app.claude_step.subprocess.run", return_value=mock_abort):
+            result = _rebase_onto_target(
+                "main", "/project", preferred_remote="origin",
+            )
             assert result is None
 
 
@@ -683,6 +699,96 @@ class TestBuildRebaseComment:
         assert "Actions performed" in result
         assert "</details>" in result
 
+    def test_applied_and_skipped_rendered_in_separate_sections(self):
+        # The reproducing scenario: one point fixed, one left as already-resolved.
+        # The skipped point must NOT appear under "Changes applied".
+        result = _build_rebase_comment(
+            "42", "koan/implement-37", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "App shell", "review_comments": "z-index + dot"},
+            change_summary=(
+                "APPLIED:\n"
+                "- MobileNav drawer z-index: raised overlay/content to z-[var(--z-modal)]\n"
+                "SKIPPED:\n"
+                "- text-muted dot fix — already resolved in an earlier pass\n"
+                "- main-frame padding — advisory, below severity filter\n"
+            ),
+        )
+        assert "### Changes applied" in result
+        assert "### Not changed (and why)" in result
+        # The applied change is under Changes applied, before Not changed.
+        changes_idx = result.index("### Changes applied")
+        skipped_idx = result.index("### Not changed")
+        assert result.index("drawer z-index") > changes_idx
+        assert result.index("drawer z-index") < skipped_idx
+        # The already-resolved point sits under Not changed, not Changes applied.
+        assert result.index("already resolved") > skipped_idx
+        assert "review feedback was applied" in result
+
+    def test_only_skipped_reports_no_changes_needed(self):
+        # Everything was already addressed / advisory — the comment must say so,
+        # not imply a fix was made.
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "Fix"},
+            change_summary=(
+                "SKIPPED:\n"
+                "- the requested change was already present on the branch\n"
+            ),
+        )
+        assert "No code changes were needed" in result
+        assert "### Not changed (and why)" in result
+        assert "### Changes applied" not in result
+        # Must not falsely claim feedback produced a change.
+        assert "review feedback was applied" not in result
+
+    def test_unstructured_summary_defaults_to_changes_applied(self):
+        # Backward compat: a summary without APPLIED/SKIPPED headers is all-applied.
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Applied review feedback"],
+            {"title": "Fix"},
+            change_summary="Renamed get_user() to fetch_user() per reviewer request",
+        )
+        assert "### Changes applied" in result
+        assert "fetch_user()" in result
+        assert "### Not changed (and why)" not in result
+
+
+class TestSplitChangeSummary:
+    def test_splits_applied_and_skipped(self):
+        applied, skipped = _split_change_summary(
+            "APPLIED:\n- raised z-index\nSKIPPED:\n- dot already fixed\n- padding advisory"
+        )
+        assert applied == ["raised z-index"]
+        assert skipped == ["dot already fixed", "padding advisory"]
+
+    def test_no_headers_all_applied(self):
+        applied, skipped = _split_change_summary("- did a thing\n- did another")
+        assert applied == ["did a thing", "did another"]
+        assert skipped == []
+
+    def test_only_skipped(self):
+        applied, skipped = _split_change_summary("SKIPPED:\n- already done")
+        assert applied == []
+        assert skipped == ["already done"]
+
+    def test_tolerates_bold_legacy_headers(self):
+        applied, skipped = _split_change_summary(
+            "**Changes**\n- fixed X\n**Skipped**\n- Y already resolved"
+        )
+        assert applied == ["fixed X"]
+        assert skipped == ["Y already resolved"]
+
+    def test_content_line_not_mistaken_for_header(self):
+        applied, skipped = _split_change_summary("- Applied the fix to the parser")
+        assert applied == ["Applied the fix to the parser"]
+        assert skipped == []
+
+    def test_empty_summary(self):
+        assert _split_change_summary("") == ([], [])
+
 
 # ---------------------------------------------------------------------------
 # fetch_pr_context
@@ -719,6 +825,52 @@ class TestFetchPrContext:
         assert "Please fix" in context["reviews"]
         assert "Will do" in context["issue_comments"]
         assert context["has_pending_reviews"] is False  # comments fetched OK
+        assert context["diff_skipped_files"] == []  # small diff, nothing cut
+
+    @staticmethod
+    def _big_two_file_diff():
+        a = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n+y\n"
+        b = (
+            "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1 +1 @@\n"
+            + "+x\n" * 5000
+        )
+        return a + b
+
+    @patch("app.github.subprocess.run")
+    def test_records_diff_skips_under_small_cap(self, mock_run):
+        big = self._big_two_file_diff()
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "T", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="0"),
+            MagicMock(returncode=0, stdout=big),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        context = fetch_pr_context("o", "r", "1", max_diff_chars=500)
+        assert "b.py" in context["diff_skipped_files"]
+
+    @patch("app.github.subprocess.run")
+    def test_large_cap_admits_full_diff(self, mock_run):
+        big = self._big_two_file_diff()
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout=json.dumps({
+                "title": "T", "headRefName": "br", "baseRefName": "main",
+                "state": "OPEN", "author": {"login": "dev"},
+                "url": "https://github.com/o/r/pull/1",
+            })),
+            MagicMock(returncode=0, stdout="0"),
+            MagicMock(returncode=0, stdout=big),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        context = fetch_pr_context("o", "r", "1", max_diff_chars=1_000_000)
+        assert context["diff_skipped_files"] == []
 
     @patch("app.github.subprocess.run")
     def test_handles_empty_responses(self, mock_run):
@@ -1543,22 +1695,34 @@ class TestRunRebase:
 
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.fetch_pr_context")
-    def test_rebase_conflict_lists_actual_attempted_remotes(self, mock_ctx, mock_safe):
+    def test_rebase_failure_surfaces_structured_reason(self, mock_ctx, mock_safe):
+        """A structured failure code from the rebase (e.g. the post-rebase
+        sanity gate) must reach the mission summary — and make clear that
+        nothing was pushed."""
         mock_ctx.return_value = {
             "title": "T", "body": "", "branch": "feat",
             "base": "main", "state": "", "author": "", "url": "",
             "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
         }
+
+        def fake_rebase(*args, **kwargs):
+            kwargs["result_meta"]["error"] = "sanity_check_failed"
+            kwargs["result_meta"]["detail"] = (
+                "rebase grew the branch from 20 to 53 unique commits"
+            )
+            return None
+
         notify = MagicMock()
         with patch("app.rebase_pr._get_current_branch", return_value="original"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
-             patch("app.rebase_pr._ordered_remotes", return_value=["origin"]), \
-             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value=None):
+             patch("app.rebase_pr._rebase_with_conflict_resolution",
+                   side_effect=fake_rebase):
             success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify)
 
         assert success is False
-        assert "tried: origin" in summary
-        assert "upstream" not in summary
+        assert "[sanity_check_failed]" in summary
+        assert "20 to 53" in summary
+        assert "aborted before any push" in summary
 
     @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
@@ -2422,21 +2586,29 @@ class TestMain:
 
 
 # ---------------------------------------------------------------------------
-# --onto rebase (cross-fork PR support)
+# Cross-fork PR rebase (strict target, no --onto)
 # ---------------------------------------------------------------------------
 
-class TestRebaseOntoTarget_OntoMode:
-    """Tests for --onto rebase when head_remote differs from target remote."""
+class TestRebaseOntoTargetCrossFork:
+    """Cross-fork PRs rebase onto the target remote only — never --onto.
 
-    def test_uses_onto_when_fork_diverged(self):
-        """--onto should be used when fork has genuinely diverged from upstream."""
-        calls = []
+    Rebasing with a fork's base branch as the --onto cut point is how
+    PR #2309 replayed ~1,900 commits and resurrected 33 merged ones; a
+    plain rebase onto the fresh target ref replays exactly the PR's own
+    commits (git cuts at merge-base and drops patch-identical commits).
+    """
+
+    @staticmethod
+    def _record_git(calls):
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
+        return mock_run
 
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
-             patch("app.claude_step._is_ancestor", return_value=False):
+    def test_cross_fork_uses_plain_rebase_on_target(self):
+        calls = []
+        with patch("app.claude_step.subprocess.run",
+                   side_effect=self._record_git(calls)):
             result = _rebase_onto_target(
                 "main", "/project",
                 preferred_remote="upstream",
@@ -2444,44 +2616,19 @@ class TestRebaseOntoTarget_OntoMode:
             )
 
         assert result == "upstream"
-        # Should have fetched both remotes' base branches
         fetch_cmds = [c for c in calls if c[:2] == ["git", "fetch"]]
-        assert ["git", "fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"] in fetch_cmds
-        # Should use --onto
-        rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
-        assert len(rebase_cmds) == 1
-        assert "--onto" in rebase_cmds[0]
-        assert "upstream/main" in rebase_cmds[0]
-        assert "origin/main" in rebase_cmds[0]
-
-    def test_skips_onto_when_fork_is_behind(self):
-        """When fork is simply behind upstream, skip --onto and use plain rebase."""
-        calls = []
-        def mock_run(cmd, **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
-             patch("app.claude_step._is_ancestor", return_value=True):
-            result = _rebase_onto_target(
-                "main", "/project",
-                preferred_remote="upstream",
-                head_remote="origin",
-            )
-
-        assert result == "upstream"
+        assert ["git", "fetch", "upstream",
+                "+refs/heads/main:refs/remotes/upstream/main"] in fetch_cmds
         rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
         assert len(rebase_cmds) == 1
         assert "--onto" not in rebase_cmds[0]
+        assert "upstream/main" in rebase_cmds[0]
+        assert "origin/main" not in rebase_cmds[0]
 
-    def test_plain_rebase_when_head_remote_same_as_target(self):
-        """When head_remote == target remote, use plain rebase (same-repo PR)."""
+    def test_same_remote_uses_plain_rebase(self):
         calls = []
-        def mock_run(cmd, **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run):
+        with patch("app.claude_step.subprocess.run",
+                   side_effect=self._record_git(calls)):
             result = _rebase_onto_target(
                 "main", "/project",
                 preferred_remote="origin",
@@ -2493,53 +2640,13 @@ class TestRebaseOntoTarget_OntoMode:
         assert len(rebase_cmds) == 1
         assert "--onto" not in rebase_cmds[0]
 
-    def test_plain_rebase_when_head_remote_is_none(self):
-        """When head_remote is None, use plain rebase."""
+    def test_failed_rebase_never_retries_another_remote(self):
+        """The old fallback loop rebased onto other remotes' (stale) mains."""
         calls = []
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run):
-            result = _rebase_onto_target("main", "/project", head_remote=None)
-
-        assert result == "origin"
-        rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
-        assert len(rebase_cmds) == 1
-        assert "--onto" not in rebase_cmds[0]
-
-    def test_onto_failure_falls_back_to_plain_rebase(self):
-        """If --onto rebase fails, fall back to plain rebase."""
-        calls = []
-        def mock_run(cmd, **kwargs):
-            calls.append(cmd)
-            if "rebase" in cmd and "--onto" in cmd:
-                raise RuntimeError("onto rebase conflict")
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
-             patch("app.claude_step._is_ancestor", return_value=False):
-            result = _rebase_onto_target(
-                "main", "/project",
-                preferred_remote="upstream",
-                head_remote="origin",
-            )
-
-        assert result == "upstream"
-        rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
-        # Should have tried --onto first, then plain rebase
-        assert len(rebase_cmds) == 2
-        assert "--onto" in rebase_cmds[0]
-        assert "--onto" not in rebase_cmds[1]
-
-    def test_onto_head_remote_fetch_failure_falls_back(self):
-        """If fetching head_remote/base fails, fall back to plain rebase."""
-        calls = []
-        def mock_run(cmd, **kwargs):
-            calls.append(cmd)
-            # head_remote fetch fails
-            if cmd[:3] == ["git", "fetch", "origin"] and any("main" in arg for arg in cmd):
-                raise RuntimeError("fetch failed")
+            if "rebase" in cmd and "--abort" not in cmd:
+                raise RuntimeError("conflict")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("app.claude_step.subprocess.run", side_effect=mock_run):
@@ -2549,15 +2656,14 @@ class TestRebaseOntoTarget_OntoMode:
                 head_remote="origin",
             )
 
-        assert result == "upstream"
-        # Should have fallen back to plain rebase
+        assert result is None
         rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
         assert len(rebase_cmds) == 1
-        assert "--onto" not in rebase_cmds[0]
+        assert "upstream/main" in rebase_cmds[0]
 
 
-class TestRebaseWithConflictResolution_OntoMode:
-    """Tests for --onto rebase in _rebase_with_conflict_resolution."""
+class TestRebaseWithConflictResolutionCrossFork:
+    """_rebase_with_conflict_resolution follows the same strict contract."""
 
     def _base_context(self):
         return {
@@ -2566,27 +2672,7 @@ class TestRebaseWithConflictResolution_OntoMode:
             "reviews": "", "issue_comments": "",
         }
 
-    def test_uses_onto_when_fork_diverged(self):
-        """--onto should be used when fork has genuinely diverged."""
-        calls = []
-        def mock_run(cmd, **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
-             patch("app.claude_step._is_ancestor", return_value=False):
-            result = _rebase_with_conflict_resolution(
-                "main", "/project", self._base_context(), [],
-                preferred_remote="upstream",
-                head_remote="origin",
-            )
-
-        assert result == "upstream"
-        rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
-        assert any("--onto" in c for c in rebase_cmds)
-
-    def test_plain_rebase_when_same_remote(self):
-        """Same-repo PR: head_remote == target, no --onto."""
+    def test_cross_fork_plain_rebase_on_target(self):
         calls = []
         def mock_run(cmd, **kwargs):
             calls.append(cmd)
@@ -2595,39 +2681,33 @@ class TestRebaseWithConflictResolution_OntoMode:
         with patch("app.claude_step.subprocess.run", side_effect=mock_run):
             result = _rebase_with_conflict_resolution(
                 "main", "/project", self._base_context(), [],
-                preferred_remote="origin",
-                head_remote="origin",
-            )
-
-        assert result == "origin"
-        rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
-        assert all("--onto" not in c for c in rebase_cmds)
-
-    def test_onto_failure_falls_back_to_plain_rebase(self):
-        """If --onto fails (non-conflict), should fall back to plain rebase."""
-        calls = []
-        rebase_dir = MagicMock()
-        rebase_dir.exists.return_value = False
-
-        def mock_run(cmd, **kwargs):
-            calls.append(cmd)
-            if "rebase" in cmd and "--onto" in cmd:
-                raise RuntimeError("onto failed")
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
-             patch("app.claude_step._is_ancestor", return_value=False), \
-             patch("app.claude_step.has_rebase_in_progress", return_value=False):
-            result = _rebase_with_conflict_resolution(
-                "main", "/project", self._base_context(), [],
                 preferred_remote="upstream",
                 head_remote="origin",
             )
 
         assert result == "upstream"
         rebase_cmds = [c for c in calls if "rebase" in c and "--abort" not in c]
-        plain_rebases = [c for c in rebase_cmds if "--onto" not in c]
-        assert len(plain_rebases) >= 1
+        assert rebase_cmds
+        assert all("--onto" not in c for c in rebase_cmds)
+
+    def test_failure_reports_structured_reason(self):
+        def mock_run(cmd, **kwargs):
+            if "rebase" in cmd and "--abort" not in cmd:
+                raise RuntimeError("conflict")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        meta = {}
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.claude_step.has_rebase_in_progress", return_value=False):
+            result = _rebase_with_conflict_resolution(
+                "main", "/project", self._base_context(), [],
+                preferred_remote="upstream",
+                head_remote="origin",
+                result_meta=meta,
+            )
+
+        assert result is None
+        assert meta["error"] == "rebase_failed"
 
 
 class TestFetchPrContextHeadOwner:

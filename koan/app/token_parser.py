@@ -139,6 +139,10 @@ def _extract_tokens_from_dict(data: dict) -> Optional[TokenResult]:
     if codex_result is not None:
         return codex_result
 
+    camel_result = _extract_camelcase_usage(data)
+    if camel_result is not None:
+        return camel_result
+
     model = data.get("model") or _primary_model_from_usage(data) or "unknown"
 
     # Try top-level fields
@@ -175,6 +179,43 @@ def _has_usage(result: TokenResult) -> bool:
         or result.cache_creation_input_tokens > 0
         or result.cache_read_input_tokens > 0
     )
+
+
+def _extract_camelcase_usage(data: dict) -> Optional[TokenResult]:
+    """Extract camelCase ``usage`` objects (haze-style result envelopes).
+
+    Haze >= 0.7.0 reports usage in its terminal envelope as
+    ``{"usage": {"inputTokens": N, "outputTokens": N, "cacheReadTokens": N,
+    "cacheWriteTokens": N, "reasoningTokens": N}}``. Shape-keyed on field
+    presence so any camelCase-reporting CLI benefits — no provider names.
+    Returns None when the shape is absent or every bucket is zero.
+    """
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    if "inputTokens" not in usage and "outputTokens" not in usage:
+        return None
+
+    input_tokens = int(usage.get("inputTokens", 0) or 0)
+    # reasoningTokens is a SUBSET of outputTokens in AI-SDK-based reporting
+    # (OpenAI completion_tokens_details semantics) — already accounted inside
+    # outputTokens; adding it would double-count reasoning-model output.
+    output_tokens = int(usage.get("outputTokens", 0) or 0)
+    cache_read = int(usage.get("cacheReadTokens", 0) or 0)
+    cache_write = int(usage.get("cacheWriteTokens", 0) or 0)
+
+    # Align with the rest of Koan accounting: input_tokens excludes cache hits.
+    if cache_read > 0:
+        input_tokens = max(0, input_tokens - cache_read)
+
+    result = TokenResult(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        model=str(data.get("model") or "unknown"),
+        cache_creation_input_tokens=cache_write,
+        cache_read_input_tokens=cache_read,
+    )
+    return result if _has_usage(result) else None
 
 
 def _extract_codex_token_count(data: dict) -> Optional[TokenResult]:

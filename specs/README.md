@@ -1,9 +1,10 @@
 ---
 type: overview
 title: "Kōan Specs"
+description: "The top-level index and conventions doc for `specs/`, explaining the specs-vs-docs distinction, directory layout, naming rules, and the mandatory read-before/update-after spec discipline."
 tags: [core]
 created: 2026-06-27
-updated: 2026-06-27
+updated: 2026-07-08
 ---
 
 # Kōan Specs
@@ -26,10 +27,15 @@ Specs and docs coexist — they do not replace each other. When a feature change
 *behavior*, update `docs/`. When it changes *design or contracts*, update `specs/`.
 Most non-trivial changes touch both.
 
-`specs/components/`, `specs/skills/`, and this file are indexed as part of an LLM
-Wiki spanning this directory and `docs/` — see
+This directory (`specs/components/`, `specs/skills/`, and this file) is an independent
+OKF v0.1 knowledge bundle — see [`../docs/SPEC.md`](../docs/SPEC.md) for the normative
+format spec (shared with `docs/`) and [`SCHEMA.md`](SCHEMA.md) for the conventions
+specific to this bundle, including why `specs/<NNN-slug>/` stays excluded. It is also
+indexed, together with `docs/`, as an LLM Wiki — see
 [`../wiki/index.md`](../wiki/index.md) for the flat catalog and
-[`../wiki/SCHEMA.md`](../wiki/SCHEMA.md) for frontmatter/tagging conventions.
+[`../wiki/SCHEMA.md`](../wiki/SCHEMA.md) for the plugin-level conventions. The
+**`/brain` skill** is the preferred entrypoint for consulting or extending either
+bundle — see `../.claude/skills/brain/SKILL.md`.
 
 ## Layout
 
@@ -85,17 +91,32 @@ non-colliding paths with different lifecycles. This resolves the
 
 ## Spec discipline (the rule that makes this matter)
 
-This is mirrored in `CLAUDE.md` under *Specs discipline* and is **mandatory**:
+This is mirrored in `CLAUDE.md` under *Specs discipline* and in the Constitution
+(Principle II), and is **mandatory**:
 
 1. **Before implementing** a feature or refactor, read the relevant component spec
    (and any skill spec you are touching). The spec tells you the contract you must
    not silently break.
-2. **After implementing**, update the spec to reflect the new design — new types,
-   changed integration points, resolved or newly-introduced debt. A PR that changes
-   a component's contract without updating its spec is incomplete.
+2. **A durable-contract change is an architectural change.** The durable contracts
+   are `specs/components/**` and `specs/skills/**` (see the two-populations section
+   above) — they *constrain* the code, they do not mirror it. When you must change
+   one:
+   - do it **contract-first** — write the *intended* design in the spec, then make
+     the code conform. **Never** edit a durable spec afterward to match code you
+     already wrote; that turns the source of truth into a rubber stamp;
+   - keep it **rare** — most PRs change zero durable contracts;
+   - **declare** it — check the "Architectural change" box in the PR body so the new
+     architecture is reviewed before approval. Landing the contract change in its own
+     spec-first PR ahead of the code is recommended.
+   This is git-enforced: `scripts/spec_change_guard.py` (CI) fails an undeclared
+   durable-contract change. Rationale:
+   [`../docs/design/spec-changes-are-architectural.md`](../docs/design/spec-changes-are-architectural.md).
+   (Ephemeral `specs/<NNN-slug>/` speckit folders are the spec-first *proposal*
+   artifact — change them freely in-branch; they are not durable contracts.)
 3. **No spec yet?** If you touch a component or skill that has no spec, write one
-   using the relevant template. Phase 1 ships specs for the highest-impact pieces;
-   the rest are added on-demand as they are touched.
+   using the relevant template — and declare it (a new contract is an architectural
+   decision). Phase 1 ships specs for the highest-impact pieces; the rest are added
+   on-demand as they are touched.
 
 ## Coverage status (phase 1)
 

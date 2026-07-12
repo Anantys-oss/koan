@@ -1,22 +1,32 @@
 ---
 type: doc
 title: "Mission Lifecycle"
+description: "Explains the mission queue format and lifecycle (Pending/In Progress/Done/Failed), org-wide missions, branch prep, direct skill dispatch, scheduling, recovery/retries, and missions.md integrity/size-bound safeguards."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-27
+updated: 2026-07-10
 ---
 
 # Mission Lifecycle
 
-`koan/app/missions.py` is the source of truth for parsing and mutating
-`instance/missions.md`. See `specs/components/core.md` for the mission-queue
-contract (single-writer invariants, sanctioned exits from In Progress) and
+> **Mission state lives in an authoritative SQLite store** (`instance/missions.db`)
+> behind the `MissionStore` port; **`instance/missions.md` is a generated read-only
+> export** (edits ignored after the one-time sync). Writes round-trip through the
+> store (`utils._locked_missions_rw`: render → `missions.py` transform →
+> `reconcile_all` → export). The Markdown format below describes the export/ingest
+> text form. See `specs/004-mission-store/` and `specs/components/core.md`.
+
+`koan/app/missions.py` provides the parsing and `content -> content` lifecycle
+transforms applied inside the store's write chokepoint (it is no longer a
+separate source of truth). See `specs/components/core.md` for the mission-queue
+contract (store authority, sanctioned exits from In Progress) and
 `specs/components/agent-loop.md` for how the agent loop picks up and executes
 a mission end to end.
 
 ## Queue Format
 
-Missions are stored in Markdown sections. The canonical lifecycle is:
+Missions are stored (and exported to `missions.md`) in Markdown sections. The
+canonical lifecycle is:
 
 - Pending
 - In Progress
@@ -59,11 +69,29 @@ into `workspace/`).
 6. Post-mission reflection, journal writing, PR creation, security review,
    auto-merge checks, and autoreview queuing run only when their conditions apply.
 
+### In-turn completion before finalization
+
+Finalization runs the instant the one-shot CLI turn ends. There is no event loop
+that re-invokes the model afterward, so any command whose result the mission owes
+**must finish and be read within the same turn** — otherwise the mission is
+finalized Done without it. See `docs/architecture/daemon.md` →
+"One-shot execution model".
+
 ### Pre-mission branch preparation
 
-Before a mission runs, `git_prep.prepare_project_branch()` fetches refs, stashes
-dirty state, checks out the project's base branch, and fast-forwards it to the
+Before a mission runs, `git_prep.prepare_project_branch()` fetches refs,
+**self-heals an interrupted merge/rebase left by a previously-killed mission**,
+stashes dirty state, checks out the project's base branch, and fast-forwards it to the
 remote — so each mission starts from a clean, up-to-date base.
+
+**Self-heal:** if a prior mission was killed mid-`merge`/`rebase`/`cherry-pick`
+(restart, OOM, stagnation-kill, deploy), the checkout is left with unmerged
+paths that git refuses to stash. Prep detects the in-progress operation, aborts
+it, and clears any stale `index.lock` before stashing. This is safe because the
+next step resets the branch to the remote base regardless. A conflict-free dirty
+tree is still stashed, not discarded. When a stash nonetheless fails, the error
+names the concrete cause (unmerged / disk full / quota / lock) with a `git
+status` snippet.
 
 **Launching-repo exception:** when the project being prepared resolves to the
 same directory as `KOAN_ROOT` (a self-hosting setup where Kōan works on the repo

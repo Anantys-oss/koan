@@ -3,6 +3,32 @@ instance
 .koan*
 .claude/*
 !.claude/settings.json
+!.claude/skills
+.claude/skills/*
+!.claude/skills/brain
+!.claude/skills/speckit-agent-context-update
+!.claude/skills/speckit-analyze
+!.claude/skills/speckit-checklist
+!.claude/skills/speckit-clarify
+!.claude/skills/speckit-constitution
+!.claude/skills/speckit-converge
+!.claude/skills/speckit-implement
+!.claude/skills/speckit-plan
+!.claude/skills/speckit-specify
+!.claude/skills/speckit-tasks
+!.claude/skills/speckit-taskstoissues
+
+# /brain ingest acquisition scratch — snapshots only, never committed
+raw/*
+!raw/articles
+!raw/notes
+!raw/files
+raw/articles/*
+raw/notes/*
+raw/files/*
+!raw/articles/.gitkeep
+!raw/notes/.gitkeep
+!raw/files/.gitkeep
 
 # Python
 __pycache__/
@@ -64,3 +90,4 @@ claude-auth/
 .spec/
 
 devcontainer-tmp/
+.haze

@@ -1,9 +1,10 @@
 ---
 type: component-spec
 title: "Component Spec — Agent Loop Pipeline"
+description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-01
+updated: 2026-07-10
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -58,9 +59,41 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `stagnation_monitor` | Daemon thread hashing last-N stdout lines; kills the subprocess group after K identical hashes; requeues up to `max_retry_on_stagnation`. |
 | `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
 | `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, each error-isolated. |
+| `prompt_builder._get_koan_md_section()` | Delegates reading to `project_koan.read_general_koan_md()` (root `KOAN.md` + `.koan/KOAN.md`, combined cap `_MAX_KOAN_MD_CHARS` 16k), frames via the `koan-md` template. Returns `""` for absent/blank/unreadable. |
+
+### KOAN.md injection
+
+`prompt_builder._get_koan_md_section(project_path)` delegates file reading to
+`project_koan.read_general_koan_md(project_path)`, which reads **both**
+`<project>/KOAN.md` and `<project>/.koan/KOAN.md` (root first, `.koan/KOAN.md`
+behind a `# .koan/KOAN.md` marker), strips and concatenates them, and caps the
+*combined* length at `_MAX_KOAN_MD_CHARS`. When the result is non-empty it is
+appended (framed via the `koan-md` system-prompt template) as a **Tier-1 stable
+system-prompt section** — placed right after the submit-PR section so the
+prompt-cache prefix stays intact. Root `KOAN.md` stays fully backward-compatible:
+a project with no `.koan/` sees byte-identical output. `build_agent_prompt_parts()` /
+`build_agent_prompt()` take an optional `host_project_path`; the reader uses it
+in preference to `project_path` so the on-disk files are read from the host even
+when `project_path` is the devcontainer workspace. Invariant: both sources
+absent/blank leaves the system prompt unchanged. KOAN.md is koan-only — Claude
+Code auto-loads `CLAUDE.md` but never `KOAN.md`, so interactive sessions never
+see it.
 
 ## Invariants
 
+- **One-shot headless invocation, in-turn completion.** Missions run via
+  `claude -p --output-format json` — a single non-interactive turn with no
+  post-turn event loop. Deferred re-invocation (background monitors, scheduled
+  wake-ups, "report later") is NOT available; such work is dropped and the child
+  is killed. Result-bearing work MUST complete before the model ends its turn —
+  enforced at the prompt layer (`_partials/cli-execution-model.md`) and supported
+  by a raised Bash foreground timeout (`get_bash_foreground_timeout_ms()`,
+  injected into the mission subprocess env as `BASH_DEFAULT_TIMEOUT_MS` /
+  `BASH_MAX_TIMEOUT_MS` for the Claude provider only, clamped below
+  `mission_timeout`). `max_turns` is
+  orthogonal: default missions impose no `--max-turns` cap (`build_mission_command`
+  passes `0` unless `complexity_routing` assigns a tier), and a cap-hit is
+  classified as failure (`subtype: "error_max_turns"`), not a clean success.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary
   enforced by prompt + convention; the loop's job is to host the subprocess, not to
   alter git state itself.

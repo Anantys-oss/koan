@@ -599,3 +599,25 @@ class TestRailwayBootstrap:
     def test_railway_bootstrap_wired_into_start(self):
         body = (REPO_ROOT / "docker-entrypoint.sh").read_text()
         assert body.count("railway_bootstrap") >= 3  # def + start + agent
+
+
+class TestInstanceHydration:
+    """Cold-boot instance/ hydration wiring in docker-entrypoint.sh."""
+
+    @pytest.fixture(autouse=True)
+    def load_entrypoint(self):
+        self.entrypoint = (REPO_ROOT / "docker-entrypoint.sh").read_text()
+
+    def test_setup_instance_invokes_hydrator(self):
+        assert "app.instance_hydrator hydrate" in self.entrypoint
+
+    def test_template_copy_is_the_fallback(self):
+        # The instance.example copy must remain, guarded behind the hydrator.
+        assert 'cp -r "$KOAN_ROOT/instance.example/"' in self.entrypoint
+
+    def test_entrypoint_still_valid_bash(self):
+        result = subprocess.run(
+            ["bash", "-n", str(REPO_ROOT / "docker-entrypoint.sh")],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr

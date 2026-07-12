@@ -27,14 +27,15 @@ from typing import List, Optional, Tuple
 from urllib.parse import quote
 
 from app.claude_step import resolve_pr_location
-from app.config import get_review_bot_triage_config, get_review_history_config, get_review_inline_comments_config, get_review_reply_config, get_review_verdict_config, is_review_compressor_enabled
+from app.config import get_review_bot_triage_config, get_review_compressor_token_budget, get_review_history_config, get_review_inline_comments_config, get_review_max_diff_chars, get_review_reply_config, get_review_uncompressed_max_diff_chars, get_review_verdict_config, is_review_compressor_enabled
 from app.run_log import log
 from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
+from app.github_alerts import build_alert
 from app.rebase_pr import fetch_pr_context
-from app.utils import KOAN_ROOT
+from app.utils import KOAN_ROOT, truncate_diff_with_skips
 from app.review_markers import (
     SUMMARY_TAG,
     COMMIT_IDS_START,
@@ -614,6 +615,40 @@ def _resolve_issue_context(
         return ""
 
 
+def _build_coverage_note(
+    fetch_skipped: list,
+    compressor_skipped: list,
+    triaged_files: Optional[list],
+) -> str:
+    """Build ONE unified coverage note used for both the review prompt's
+    {SKIPPED_FILES} slot and the note prepended to the posted GitHub review.
+
+    - fetch_skipped:      files cut at diff-fetch time (oversized-diff backstop)
+    - compressor_skipped: files packed out by the token-budget compressor
+    - triaged_files:      trivial files intentionally skipped (informational)
+
+    Returning a single value (no copy-then-append) guarantees the prompt and
+    the posted body never diverge.
+    """
+    # dict.fromkeys preserves order and dedupes (a file cut at fetch never
+    # reaches the compressor, but dedupe defensively).
+    omitted = list(dict.fromkeys([*(fetch_skipped or []), *(compressor_skipped or [])]))
+    parts: list[str] = []
+    if omitted:
+        listing = ", ".join(f"`{f}`" for f in omitted)
+        parts.append(
+            f"> ⚠️ **Partial review** — {len(omitted)} file(s) omitted "
+            f"due to diff size and NOT reviewed: {listing}"
+        )
+    if triaged_files:
+        triaged_list = ", ".join(f"`{t.path}` ({t.reason})" for t in triaged_files)
+        parts.append(
+            f"> ℹ️ Triaged {len(triaged_files)} trivial file(s) "
+            f"(not reviewed): {triaged_list}"
+        )
+    return ("\n>\n".join(parts) + "\n\n") if parts else ""
+
+
 def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
@@ -626,7 +661,7 @@ def build_review_prompt(
     project_name: str = "",
     prior_review: Optional[str] = None,
     issue_context: Optional[str] = None,
-) -> str:
+) -> Tuple[str, str]:
     """Build a prompt for Claude to review a PR.
 
     When plan_body is provided, selects the plan-aware prompt variant
@@ -690,31 +725,42 @@ def build_review_prompt(
         project_memory += _build_review_session_memory(project_name, task_text)
 
     raw_diff = context["diff"]
-    skipped_note = ""
+    # Files skipped to fit the token budget — either packed out by the
+    # compressor (on-path) or cut by the token-safe backstop (off-path).
+    budget_skipped: list = []
     if is_review_compressor_enabled():
-        compressed = compress_diff(raw_diff)
+        compressed = compress_diff(raw_diff, get_review_compressor_token_budget())
         raw_diff = compressed.diff_text
-        if compressed.skipped_files:
+        budget_skipped = compressed.skipped_files
+        if budget_skipped:
             log(
                 "review",
-                f"Diff compressed — {len(compressed.skipped_files)} file(s) skipped: "
-                + ", ".join(compressed.skipped_files),
+                f"Diff compressed — {len(budget_skipped)} file(s) skipped: "
+                + ", ".join(budget_skipped),
             )
-            skipped_list = ", ".join(f"`{f}`" for f in compressed.skipped_files)
-            skipped_note = (
-                f"> ⚠️ Diff compressed — {len(compressed.skipped_files)} file(s) omitted"
-                f" due to size: {skipped_list}\n\n"
+    else:
+        # Compressor off: no packer re-shrinks the fetch-time diff, so apply a
+        # token-safe backstop here or the raw diff (up to the generous fetch
+        # cap) could overflow the model context and hard-fail the review. Skips
+        # flow into the same coverage note as compressor skips.
+        raw_diff, budget_skipped = truncate_diff_with_skips(
+            raw_diff, get_review_uncompressed_max_diff_chars()
+        )
+        if budget_skipped:
+            log(
+                "review",
+                f"Compressor off — diff truncated, {len(budget_skipped)} "
+                f"file(s) skipped: " + ", ".join(budget_skipped),
             )
 
-    if triaged_files:
-        triaged_list = ", ".join(
-            f"`{t.path}` ({t.reason})" for t in triaged_files
-        )
-        triage_note = (
-            f"> ℹ️ Triaged {len(triaged_files)} trivial file(s)"
-            f" (not reviewed): {triaged_list}\n\n"
-        )
-        skipped_note = skipped_note + triage_note
+    # ONE unified coverage note — the same value feeds the {SKIPPED_FILES}
+    # prompt slot AND is returned for prepending to the posted review, so the
+    # prompt and the posted body can never diverge.
+    coverage_note = _build_coverage_note(
+        fetch_skipped=context.get("diff_skipped_files", []),
+        compressor_skipped=budget_skipped,
+        triaged_files=triaged_files,
+    )
 
     if issue_context is None:
         issue_context = _resolve_issue_context(context, project_name, project_path)
@@ -732,7 +778,7 @@ def build_review_prompt(
         REPLIABLE_COMMENTS=repliable_text,
         PRIOR_REVIEW=prior_review_block,
         PROJECT_MEMORY=project_memory,
-        SKIPPED_FILES=skipped_note,
+        SKIPPED_FILES=coverage_note,   # same value returned below
         ISSUE_CONTEXT=issue_context or "",
     )
 
@@ -743,7 +789,10 @@ def build_review_prompt(
             plan_body = _truncate_plan(plan_body)
         kwargs["PLAN"] = plan_body
 
-    return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+    prompt = load_prompt_or_skill(
+        skill_dir, prompt_name, project_path=project_path, **kwargs
+    )
+    return prompt, coverage_note
 
 
 def _review_attribution(project_name: str = "") -> Tuple[str, str]:
@@ -848,8 +897,14 @@ def _write_review_findings_sidecar(
     base_ref: str,
     head_sha: str,
     project_name: str = "",
+    review_summary: Optional[dict] = None,
 ) -> None:
-    """Write structured review findings to a sidecar JSON for post-merge outcome tracking."""
+    """Write structured review findings + summary to a sidecar JSON.
+
+    Consumed by pr_review_learning (post-merge outcome tracking, reads
+    file_comments) and by the REST API result resolver (reads both
+    file_comments and review_summary). review_summary is additive.
+    """
     try:
         import time as _time
         sidecar_dir = Path(instance_dir) / ".review-findings"
@@ -862,6 +917,7 @@ def _write_review_findings_sidecar(
             "head_sha": head_sha,
             "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
             "file_comments": file_comments,
+            "review_summary": review_summary or {},
         }
         from app.utils import atomic_write_json
         atomic_write_json(sidecar_path, data, indent=2)
@@ -947,6 +1003,7 @@ def _reflect_findings(
         findings_json = json.dumps(findings, indent=2)
         prompt = load_skill_prompt(
             skill_dir, "reflect",
+            project_path=project_path,
             FINDINGS_JSON=findings_json,
             DIFF=diff or "(diff not available)",
             CALIBRATION_HINTS=calibration_hints or "(no calibration data available)",
@@ -1022,7 +1079,10 @@ def _run_error_hunter(
     Returns an empty string if no findings are produced.
     """
     if skill_dir is not None:
-        prompt = load_skill_prompt(skill_dir, "silent-failure-hunter", DIFF=diff)
+        prompt = load_skill_prompt(
+            skill_dir, "silent-failure-hunter",
+            project_path=project_path, DIFF=diff,
+        )
     else:
         prompt = load_prompt("silent-failure-hunter", DIFF=diff)
 
@@ -1178,6 +1238,7 @@ def _run_bot_comment_triage(
         if skill_dir is not None:
             prompt = load_skill_prompt(
                 skill_dir, "bot-review-triage",
+                project_path=project_path,
                 diff=truncated_diff, bot_comments=formatted_comments,
             )
         else:
@@ -1639,7 +1700,12 @@ def _format_review_as_markdown(
     header = f"## PR Review — {title}" if title else "## PR Review"
     lines.append(header)
     lines.append("")
-    lines.append(summary_data["summary"])
+    summary_text = summary_data["summary"]
+    # The summary is plain prose. The merge signal is carried by the
+    # severity-graded verdict alert (_build_verdict_body), not by wrapping the
+    # whole paragraph in a callout — a full-paragraph IMPORTANT block here
+    # over-emphasizes it (parsimony rule, comment-formatting.md).
+    lines.append(summary_text)
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -1804,6 +1870,29 @@ def _build_review_footer(
     return footer
 
 
+def _build_stale_head_alert(reviewed_sha: str, live_sha: str) -> str:
+    """Return a GitHub IMPORTANT alert when the branch moved during review.
+
+    Compares the SHA the review was performed against (``reviewed_sha`` — the
+    same value shown as ``HEAD=<short>`` in the footer) to the PR branch's live
+    HEAD (``live_sha``). When they differ, commits were pushed (or force-pushed)
+    after the review captured its diff, so the findings may be stale.
+
+    Returns a leading-blank-line alert block suitable for appending to the end
+    of the review content, or "" when either SHA is missing or they match (in
+    which case the posted comment is byte-identical to today's output).
+    """
+    if not reviewed_sha or not live_sha or reviewed_sha == live_sha:
+        return ""
+    return "\n\n" + build_alert(
+        "IMPORTANT",
+        "**The branch moved during review.** This review was performed "
+        f"against `HEAD={reviewed_sha[:7]}`, but the PR branch now points at "
+        f"`{live_sha[:7]}`. Commits pushed after the review started are not "
+        "reflected below — re-run `/review` to cover them.",
+    )
+
+
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
     existing_comment: Optional[dict] = None,
@@ -1811,6 +1900,8 @@ def _post_review_comment(
     provider_name: str = "",
     model: str = "",
     duration_seconds: float = 0,
+    live_head_sha: str = "",
+    coverage_note: str = "",
 ) -> Tuple[bool, str]:
     """Post (or update) the review as a comment on the PR.
 
@@ -1823,8 +1914,21 @@ def _post_review_comment(
     absent, preserves any COMMIT_IDS block from ``existing_comment`` so
     a re-review without SHA info doesn't clobber prior state.
 
+    When ``live_head_sha`` is provided and differs from the reviewed tip
+    (``commit_shas[-1]``), a stale-HEAD IMPORTANT alert is appended at the
+    end of the review content (the branch moved during review). Empty
+    ``live_head_sha`` (the default) leaves the body byte-identical.
+
+    When ``coverage_note`` is non-empty, it is prepended to the review body
+    *before* the GitHub-length truncation so the partial-review warning is
+    never the part that gets cut.
+
     Returns (True, "") on success, (False, error_detail) on failure.
     """
+    # Surface partial-coverage warning at the very top, before truncation.
+    if coverage_note:
+        review_text = f"{coverage_note.rstrip()}\n\n{review_text}"
+
     # Truncate if too long for GitHub (max ~65536 chars)
     max_len = 60000
     if len(review_text) > max_len:
@@ -1836,11 +1940,14 @@ def _post_review_comment(
         duration_seconds=duration_seconds,
     )
 
+    # Stale-HEAD alert: appended after truncation so it is never dropped.
+    stale_alert = _build_stale_head_alert(head_sha, live_head_sha)
+
     # If body already starts with a ## heading, don't add another
     if review_text.startswith("## "):
-        body = f"{SUMMARY_TAG}\n{review_text}\n\n---\n{footer}"
+        body = f"{SUMMARY_TAG}\n{review_text}{stale_alert}\n\n---\n{footer}"
     else:
-        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}\n\n---\n{footer}"
+        body = f"{SUMMARY_TAG}\n## Code Review\n\n{review_text}{stale_alert}\n\n---\n{footer}"
 
     # Embed commit SHAs in a single hidden HTML comment (fully invisible).
     if commit_shas:
@@ -1881,6 +1988,70 @@ def _post_review_comment(
     except Exception as e:
         print(f"[review_runner] failed to post comment: {e}", file=sys.stderr)
         return False, str(e)
+
+
+def _append_error_section_to_review(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    *,
+    review_body: str,
+    error_section: str,
+    bot_username: str = "",
+    commit_shas: Optional[List[str]] = None,
+    provider_name: str = "",
+    model: str = "",
+    duration_seconds: float = 0,
+    coverage_note: str = "",
+) -> bool:
+    """Append the silent-failure-hunter section to the posted review comment.
+
+    The core review is posted *before* the enrichment passes run (so a slow or
+    failing enrichment pass can never cost the review). This re-locates that
+    comment via ``SUMMARY_TAG`` and rewrites it in place with the extra section
+    appended. Best-effort: on any failure the core review still stands and only
+    the extra section is lost.
+
+    ``prefer_newest=True`` re-locates the *most recent* marked comment: with
+    ``review_history.preserve_previous`` the superseded prior review is left
+    intact and still carries ``SUMMARY_TAG``, so the (default) first-match
+    lookup would append onto the old comment. The freshly-posted review always
+    has the highest comment id, so the newest match is the correct target.
+
+    ``coverage_note``, when passed, is forwarded to ``_post_review_comment``
+    so it is re-prepended here too. This rebuild replaces the whole comment
+    body (``combined``), so without it the ``⚠️ Partial review`` warning that
+    the initial post prepended would be silently dropped by this edit.
+
+    Returns True when the comment was updated.
+    """
+    located = find_bot_comment(
+        owner, repo, pr_number, SUMMARY_TAG, bot_username=bot_username,
+        prefer_newest=True,
+    )
+    if not located:
+        print(
+            "[review_runner] could not re-locate review comment to append "
+            "silent-failure-hunter section; leaving core review as-is",
+            file=sys.stderr,
+        )
+        return False
+    combined = review_body + "\n\n---\n\n" + error_section
+    updated, err = _post_review_comment(
+        owner, repo, pr_number, combined, located,
+        commit_shas=commit_shas,
+        provider_name=provider_name,
+        model=model,
+        duration_seconds=duration_seconds,
+        coverage_note=coverage_note,
+    )
+    if not updated:
+        print(
+            f"[review_runner] failed to append silent-failure-hunter "
+            f"section: {err}",
+            file=sys.stderr,
+        )
+    return updated
 
 
 def _collapse_old_review(
@@ -2215,6 +2386,32 @@ def _fetch_pr_commit_shas(owner: str, repo: str, pr_number: str) -> List[str]:
         return []
 
 
+def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
+    """Return the PR branch's current HEAD commit OID (full SHA), or "" on error.
+
+    Unlike ``_fetch_pr_commit_shas`` (which pages the commits list and can
+    truncate at GitHub's 250-commit cap), ``headRefOid`` always reflects the
+    true branch tip — including after a force-push. Best-effort: any failure
+    yields "" so callers treat it as "unknown" and skip the staleness check.
+
+    Catches ``Exception`` deliberately: this call sits *after* the (expensive)
+    provider analysis and just *before* posting, so a transient ``gh`` failure
+    (``run_gh`` re-raises ``OSError`` / ``subprocess.TimeoutExpired`` after
+    exhausting retries — neither a ``RuntimeError``) must never propagate and
+    discard an otherwise-complete review.
+    """
+    try:
+        return run_gh(
+            "pr", "view", pr_number,
+            "--repo", f"{owner}/{repo}",
+            "--json", "headRefOid",
+            "--jq", ".headRefOid",
+        ).strip()
+    except Exception as e:
+        log("review", f"Could not read live HEAD for PR #{pr_number}: {e}")
+        return ""
+
+
 def _fetch_pr_state(owner: str, repo: str, pr_number: str) -> str:
     """Return the PR state (OPEN, MERGED, CLOSED) or empty string on error."""
     try:
@@ -2258,7 +2455,15 @@ def _build_verdict_body(
     body_enabled: bool = True,
     include_blockers: bool = True,
 ) -> str:
-    """Build body text for a review verdict.
+    """Build body text for a review verdict, graded by severity.
+
+    The body is wrapped in a native GitHub alert whose color grades the
+    outcome at a glance (see specs/components/comment-formatting.md):
+
+    - ``> [!TIP]`` (green) — approved / merge-ready.
+    - ``> [!WARNING]`` (yellow) — blocked, but the only blockers are
+      ``warning``-level.
+    - ``> [!CAUTION]`` (red) — blocked with at least one ``critical`` finding.
 
     When *body_enabled* is False, returns ``""`` so the verdict is submitted
     with an empty body (the APPROVE / REQUEST_CHANGES state still shows in
@@ -2272,25 +2477,28 @@ def _build_verdict_body(
         return ""
 
     if approve:
-        return "No blocking issues found."
+        return build_alert("TIP", "No blocking issues found — ready to merge.")
 
-    base = "Blocking issues found."
+    comments = review_data.get("file_comments") or [] if isinstance(review_data, dict) else []
+    has_critical = any(c.get("severity") == "critical" for c in comments)
+    if has_critical:
+        kind, headline = "CAUTION", "Critical issues found."
+    else:
+        kind, headline = "WARNING", "Important issues found."
 
-    if not include_blockers or not isinstance(review_data, dict):
-        return base
+    if not include_blockers:
+        return build_alert(kind, headline)
 
-    comments = review_data.get("file_comments") or []
     blockers = [
         c["title"]
         for c in comments
         if c.get("severity") in ("critical", "warning") and c.get("title")
     ]
     if not blockers:
-        return base
+        return build_alert(kind, headline)
 
-    lines = [base, ""]
-    lines.extend(f"- {title}" for title in blockers)
-    return "\n".join(lines)
+    text = "\n".join([headline, "", *(f"- {title}" for title in blockers)])
+    return build_alert(kind, text)
 
 
 def _resolve_verdict_config(project_name: Optional[str] = None) -> dict:
@@ -2572,7 +2780,10 @@ def run_private_review(
     notify_fn(f"Privately reviewing PR #{pr_number} ({full_repo})...")
 
     try:
-        context = fetch_pr_context(owner, repo, pr_number, project_path)
+        context = fetch_pr_context(
+            owner, repo, pr_number, project_path,
+            max_diff_chars=get_review_max_diff_chars(),
+        )
     except Exception as e:
         return False, f"Failed to fetch PR context: {e}", None, {}
 
@@ -2587,7 +2798,7 @@ def run_private_review(
 
     plan_body = _resolve_plan_body(plan_url, context.get("body", ""))
 
-    prompt = build_review_prompt(
+    prompt, _coverage_note = build_review_prompt(
         context,
         skill_dir=skill_dir,
         architecture=architecture,
@@ -2703,6 +2914,7 @@ def run_review(
         with ThreadPoolExecutor(max_workers=min(2, github_workers)) as pool:
             f_context = pool.submit(
                 fetch_pr_context, owner, repo, pr_number, project_path,
+                max_diff_chars=get_review_max_diff_chars(),
             )
             f_comments = pool.submit(
                 fetch_repliable_comments, owner, repo, pr_number, True, bot_username,
@@ -2714,7 +2926,10 @@ def run_review(
             repliable_comments = f_comments.result()
     else:
         try:
-            context = fetch_pr_context(owner, repo, pr_number, project_path)
+            context = fetch_pr_context(
+                owner, repo, pr_number, project_path,
+                max_diff_chars=get_review_max_diff_chars(),
+            )
         except Exception as e:
             return False, f"Failed to fetch PR context: {e}", None
         repliable_comments = fetch_repliable_comments(
@@ -2807,7 +3022,7 @@ def run_review(
         extract_prior_review_body(existing_comment.get("body", ""))
         if existing_comment else None
     )
-    prompt = build_review_prompt(
+    prompt, coverage_note = build_review_prompt(
         context, skill_dir=skill_dir, architecture=architecture,
         comments=comments, repliable_comments=repliable_comments,
         plan_body=plan_body or None, project_path=project_path,
@@ -2874,58 +3089,18 @@ def run_review(
                 file=sys.stderr,
             )
 
-    # Step 6b: Bot comment triage pass (optional)
-    bot_triage_cfg = get_review_bot_triage_config()
-    bot_triage_enabled = bot_comments or bot_triage_cfg["enabled"]
-    extra_bot_usernames = bot_triage_cfg["bot_usernames"]
+    full_repo = f"{owner}/{repo}"
 
-    if bot_triage_enabled:
-        full_repo = f"{owner}/{repo}"
-        bot_inline = _fetch_bot_inline_comments(
-            full_repo, pr_number, bot_username, extra_bot_usernames,
-        )
-        if bot_inline:
-            notify_fn(f"Triaging {len(bot_inline)} bot comment(s) on PR #{pr_number}...")
-            triage_replies = _run_bot_comment_triage(
-                bot_inline, context.get("diff", ""), skill_dir,
-                project_path=project_path,
-                project_name=project_name or "",
-            )
-            if triage_replies:
-                bot_reply_results = _post_comment_replies(
-                    owner, repo, pr_number, triage_replies, bot_inline,
-                )
-                if bot_reply_results:
-                    print(
-                        f"[review_runner] posted {len(bot_reply_results)} bot triage reply(ies)",
-                        file=sys.stderr,
-                    )
-
-    # Step 6a: Silent-failure-hunter pass (explicit flag or auto-detected)
-    diff = context.get("diff", "")
-    run_error_hunter = errors or _should_run_error_hunter(diff)
-    if run_error_hunter:
-        notify_fn(f"Running silent-failure-hunter on PR #{pr_number}...")
-        error_section = _run_error_hunter(
-            diff, project_path, skill_dir,
-            owner=owner, repo=repo,
-            head_sha=(current_shas[-1] if current_shas else ""),
-            project_name=project_name or "",
-        )
-        if error_section:
-            review_body = review_body + "\n\n---\n\n" + error_section
-        else:
-            print(
-                "[review_runner] silent-failure-hunter: no findings",
-                file=sys.stderr,
-            )
-
-    # Step 7: Post (or update) review comment (Phase 3 — idempotent upsert)
-    # Commit SHAs are embedded in the body upfront to avoid extra API calls.
+    # Step 7 (posted BEFORE the optional enrichment passes): post (or update)
+    # the core review comment first, so a slow or failing enrichment pass (bot
+    # triage, silent-failure-hunter) can never cost the review that's already
+    # in hand. The silent-failure-hunter section, when produced, is appended to
+    # this comment via a follow-up edit below (Step 6a).
     #
-    # Re-review with new commits: post a FRESH comment instead of PATCHing.
-    # GitHub does not send notifications for edited comments, so an in-place
-    # update is invisible to the reviewer — they never see the updated review.
+    # Phase 3 — idempotent upsert. Commit SHAs are embedded in the body upfront
+    # to avoid extra API calls. Re-review with new commits: post a FRESH
+    # comment instead of PATCHing — GitHub does not notify on edits, so an
+    # in-place update is invisible to the reviewer.
     post_target = existing_comment
     new_commits = prior_shas and current_shas and set(current_shas) != set(prior_shas)
     if existing_comment and (new_commits or review_was_requested):
@@ -2940,6 +3115,11 @@ def run_review(
             _collapse_old_review(owner, repo, existing_comment)
         post_target = None
 
+    # Re-read the branch's live HEAD just before posting so we can flag a
+    # review whose diff was captured before the author pushed new commits.
+    # Best-effort: "" on any error ⇒ no alert (never blocks the post).
+    live_head_sha = _fetch_pr_head_oid(owner, repo, pr_number) if current_shas else ""
+
     notify_fn(f"Posting review on PR #{pr_number}...")
     _review_duration = time.monotonic() - _review_start
     posted, post_error = _post_review_comment(
@@ -2948,7 +3128,95 @@ def run_review(
         provider_name=review_provider_name,
         model=review_model,
         duration_seconds=_review_duration,
+        live_head_sha=live_head_sha,
+        coverage_note=coverage_note,
     )
+
+    # Steps 6b + 6a run AFTER the core post and are strictly best-effort: the
+    # whole enrichment block is wrapped so that once the review has landed, no
+    # enrichment failure (stall, provider error, or an unexpected exception)
+    # can flip the run's outcome to failure. run_error_hunter is pre-set so the
+    # summary reference below is defined even if the block aborts early.
+    run_error_hunter = errors or _should_run_error_hunter(context.get("diff", ""))
+    try:
+        # Step 6b: Bot comment triage — posts its own independent reply
+        # comments and never touched review_body, so running it after the post
+        # means a stall here can't delay or lose the review.
+        bot_triage_cfg = get_review_bot_triage_config()
+        bot_triage_enabled = bot_comments or bot_triage_cfg["enabled"]
+        extra_bot_usernames = bot_triage_cfg["bot_usernames"]
+
+        if bot_triage_enabled:
+            bot_inline = _fetch_bot_inline_comments(
+                full_repo, pr_number, bot_username, extra_bot_usernames,
+            )
+            if bot_inline:
+                notify_fn(f"Triaging {len(bot_inline)} bot comment(s) on PR #{pr_number}...")
+                triage_replies = _run_bot_comment_triage(
+                    bot_inline, context.get("diff", ""), skill_dir,
+                    project_path=project_path,
+                    project_name=project_name or "",
+                )
+                if triage_replies:
+                    bot_reply_results = _post_comment_replies(
+                        owner, repo, pr_number, triage_replies, bot_inline,
+                    )
+                    if bot_reply_results:
+                        print(
+                            f"[review_runner] posted {len(bot_reply_results)} bot triage reply(ies)",
+                            file=sys.stderr,
+                        )
+
+        # Step 6a: Silent-failure-hunter pass (explicit flag or auto-detected).
+        # Its section is appended to the already-posted review comment via an
+        # edit. If the core post failed, or the comment can't be re-located, the
+        # section is dropped (the core review still stands).
+        if run_error_hunter:
+            notify_fn(f"Running silent-failure-hunter on PR #{pr_number}...")
+            error_section = _run_error_hunter(
+                context.get("diff", ""), project_path, skill_dir,
+                owner=owner, repo=repo,
+                head_sha=(current_shas[-1] if current_shas else ""),
+                project_name=project_name or "",
+            )
+            if error_section and posted:
+                _append_error_section_to_review(
+                    owner, repo, pr_number,
+                    review_body=review_body,
+                    error_section=error_section,
+                    bot_username=bot_username,
+                    commit_shas=current_shas or None,
+                    provider_name=review_provider_name,
+                    model=review_model,
+                    duration_seconds=_review_duration,
+                    coverage_note=coverage_note,
+                )
+            elif error_section and not posted:
+                print(
+                    "[review_runner] silent-failure-hunter findings dropped: "
+                    "core review comment was not posted",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[review_runner] silent-failure-hunter: no findings",
+                    file=sys.stderr,
+                )
+    except Exception as exc:
+        # Never let a post-hoc enrichment failure undo an already-posted review.
+        # The catch is broad on purpose (a stall or provider error must not flip
+        # the run), but surface it through notify_fn too — not stderr alone — so
+        # a persistently-broken enrichment pass (e.g. a real defect introduced by
+        # a later refactor) is visible rather than silently swallowed on every PR.
+        print(
+            f"[review_runner] enrichment pass failed after posting review "
+            f"on PR #{pr_number}: {exc}",
+            file=sys.stderr,
+        )
+        notify_fn(
+            f"Enrichment pass failed after posting review on PR #{pr_number} "
+            f"(review still landed): {exc}"
+        )
 
     # Step 7c: Optionally post each finding as an inline PR comment (opt-in).
     # Additive to the summary comment above and independently failable, so an
@@ -2980,6 +3248,7 @@ def run_review(
                 base_ref=_sidecar_base,
                 head_sha=_sidecar_head,
                 project_name=project_name or "",
+                review_summary=review_data.get("review_summary") or {},
             )
         else:
             print(

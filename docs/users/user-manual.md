@@ -1,9 +1,10 @@
 ---
 type: doc
 title: "Kōan User Manual"
+description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-02
+updated: 2026-07-11
 ---
 
 # Kōan User Manual
@@ -130,7 +131,7 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 
 ### Managing Your Queue
 
-**`/list`** — See all pending and in-progress missions.
+**`/list [state]`** — See missions. With no argument, lists pending and in-progress. Add a state to see more: `/list done`, `/list failed`, or `/list all` (handy now that `missions.md` is a generated read-only export — the done/failed history is in the store).
 
 - **Aliases:** `/queue`, `/ls`
 
@@ -157,6 +158,8 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 
 - **Usage:** `/abort`
 - The running Claude subprocess is killed, the mission is moved to Failed, and the agent loop picks the next pending item.
+
+> **Bridge unresponsive?** `/cancel`, `/abort`, and `/list` all go through the Telegram bridge, which can stop answering when the loop is badly stuck. From a terminal on the host you can inspect and edit the queue directly (no bridge needed): `make missions` to list, `make mission-rm sel=i1` to abort the stuck one, then `make stop && make start`. See [Mission-queue break-glass CLI](../operations/mission-cli.md).
 
 **`/priority`** — Move a pending mission to a different position in the queue.
 
@@ -308,6 +311,11 @@ Kōan can manage multiple projects simultaneously. It rotates between them based
 
 - **Aliases:** `/proj`
 - Shows each project's configured issue tracker when set.
+- A repository registered in both `projects.yaml` and the auto-discovered
+  `instance/workspace/` directory — even under names that differ only by a
+  dash or underscore (e.g. `my-repo` vs `myrepo`) — is listed **once**, under
+  its `projects.yaml` (canonical) name. `projects.yaml` settings take
+  precedence over the auto-discovered defaults.
 
 <details>
 <summary>Use cases</summary>
@@ -687,6 +695,17 @@ reported in the rebase summary but do not fail an otherwise successful rebase.
 
 When `/rebase` runs long, Kōan uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout), Kōan now restores the clean rebased checkpoint and still pushes the rebase (without partial feedback edits), so timeout noise does not discard a valid rebase. If the feedback step hits a *provider quota limit*, the rebase still stops so you can retry after quota reset. Any other transient feedback error remains best-effort and does not block pushing the rebase.
 
+`/rebase` is strict about *what* it rebases onto: the branch is rebased only
+onto the PR's actual base repository's branch, freshly fetched. The mission
+fails loudly — instead of pushing a suspect result — when no local git remote
+matches the PR's base repository (`[no_base_remote]`; fix with
+`git remote add`), when the base branch can't be fetched (`[fetch_failed]`),
+or when a post-rebase sanity check finds the branch not sitting on the base's
+current tip or carrying *more* unique commits than before the rebase
+(`[sanity_check_failed]` — the branch is restored to its pre-rebase state and
+nothing is pushed). A correct rebase can only keep or shrink a PR's commit
+count; growth means already-merged commits were resurrected.
+
 When a target repository pre-commit hook formats files during the feedback
 commit, Kōan stages the hook-created edits and retries the commit once. If local
 hooks still reject the feedback commit, Kōan commits the feedback with
@@ -697,11 +716,12 @@ of labeling the result as a simple rebase.
 
 After completion, Kōan posts a structured comment on the PR with these sections:
 
-1. **Summary** — Classifies the rebase (simple / with adjustments / with conflict resolution)
-2. **Changes applied** — List of modifications beyond the rebase itself (review feedback, conflict resolution, CI fixes)
-3. **Stats** — Diff summary (files changed, insertions, deletions)
-4. **Actions performed** — Pipeline steps in a collapsible `<details>` block
-5. **CI status** — Test/CI outcome
+1. **Summary** — Classifies the rebase (simple / with adjustments / with conflict resolution). When feedback was reviewed but nothing needed changing, it says so explicitly ("no code changes were needed") rather than implying a fix.
+2. **Changes applied** — Only the modifications actually made beyond the rebase (review feedback that changed code, conflict resolution, CI fixes)
+3. **Not changed (and why)** — Reviewer points intentionally left as-is, each with the reason (already fixed in an earlier pass, advisory / below the severity filter, or disagreed). Kept separate from *Changes applied* so an unchanged point is never presented as if it were just fixed.
+4. **Stats** — Diff summary (files changed, insertions, deletions)
+5. **Actions performed** — Pipeline steps in a collapsible `<details>` block
+6. **CI status** — Test/CI outcome
 
 <details>
 <summary>Use cases</summary>
@@ -860,6 +880,8 @@ Fetches the PR diff or issue description, compares it against the current main b
 
 Usually auto-triggered when CI fails after a `/rebase`, but can also be invoked manually. Fetches failure logs, checks out the PR branch, and runs Claude to attempt a fix. If the fix produces a commit, it force-pushes and re-enqueues the PR for CI monitoring. Requires `ci_check.enabled: true` in config.yaml (the default).
 
+CI fixing is designed to stay out of the queue's way: the auto-injected fix mission is queued **non-urgently** (behind your other work), each fix mission performs **one** bounded Claude fix attempt and then yields the slot, and retries are spread across iterations up to the `ci_fix_max_attempts` total budget. A single unfixable PR can no longer freeze the agent for hours. Tunables (all optional): `ci_check.timeout` (per-step wall-clock cap, default 3600s), `ci_check.max_fix_attempts_per_mission` (default 1), and `ci_check.idle_timeout` (between-output watchdog, default `first_output_timeout`).
+
 <details>
 <summary>Use cases</summary>
 
@@ -910,6 +932,18 @@ Reads the Failed section of `missions.md`, finds the most recent failure (option
 - `/claudemd webapp` — Update the CLAUDE.md after a big refactor
 - `/claudemd` — Refresh for the default/focused project
 </details>
+
+#### Project-specific instructions (`KOAN.md`)
+
+Drop an optional `KOAN.md` at a project's root to give instructions to the
+autonomous Kōan agent **only**. It uses the same format as `CLAUDE.md`, but
+interactive Claude Code sessions never load it — so you can steer koan's
+autonomous work (e.g. "prefer docs over code here", "always run `make lint`")
+without touching the shared `CLAUDE.md` your whole team sees. Precedence:
+mission instruction > `KOAN.md` > `CLAUDE.md`/defaults. A project can also ship
+a `.koan/` directory to steer koan per-repo — a second general `.koan/KOAN.md`
+and per-skill `.koan/skills/<skill>/*.md` hooks. See
+[KOAN.md — koan-only project instructions](koan-md.md) for details.
 
 **`/gha_audit`** — Scan GitHub Actions workflows for security vulnerabilities.
 
@@ -1074,7 +1108,7 @@ Not ready to commit to a mission? Save it as an idea.
 - `/stats webapp` — How's Kōan doing on a specific project?
 </details>
 
-**`/report`** — Pull-Request activity report per-project and global, posted as a markdown code block. A plain `/report` emits both the weekly and the monthly digest; add `--week` or `--month` to narrow it. Shortcuts: `/weekly_report`, `/monthly_report`.
+**`/report`** — Pull-Request activity report per-project and global, posted as a markdown code block. A plain `/report` emits both the weekly and the monthly digest; add `--week` or `--month` to narrow it. Shortcuts: `/reports` (same as `/report`), `/weekly_report`, `/monthly_report`.
 
 - **Usage:** `/report` (both) | `/report --week` | `/report --month`
 - **Metrics:**
@@ -1557,7 +1591,7 @@ projects:
 ```
 
 Key per-project settings:
-- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `local`, or `ollama-launch`
+- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `haze`, `local`, or `ollama-launch`
 - **`models`** — Override model selection per role
 - **`tools`** — Restrict available tools
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
@@ -1742,6 +1776,7 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **Cline** | Multi-backend (OpenRouter, Anthropic, OpenAI) | [cline.md](../providers/cline.md) |
 | **OpenAI Codex** | ChatGPT users who want Codex models | [codex.md](../providers/codex.md) |
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
+| **Haze** | Minimal multi-backend agentic CLI (OpenAI, OpenRouter, local endpoints) — [official docs](https://denizokcu.github.io/haze/) | [haze.md](../providers/haze.md) |
 | **Ollama Launch** | Local/offline models behind the Claude CLI harness | [ollama-launch.md](../providers/ollama-launch.md) |
 | **OpenRouter** (via Claude CLI) | Claude CLI behavior with OpenRouter's model catalog/billing | [openrouter.md](../providers/openrouter.md) |
 
@@ -1922,8 +1957,22 @@ The CI check system monitors your PRs for CI failures and can automatically atte
 
 ```yaml
 ci_check:
-  enabled: true              # Master switch (default: true)
+  enabled: true                     # Master switch (default: true)
+  timeout: 3600                     # Per-step wall-clock cap in seconds (default: 3600).
+                                    # Bounds a single CI-fix Claude step so a stalled fix
+                                    # cannot hold the serial mission queue for the full
+                                    # 2-hour skill_timeout.
+  max_fix_attempts_per_mission: 1   # Claude fix attempts inside one /ci_check mission
+                                    # (default: 1). Total per-PR retries are governed
+                                    # separately by ci_fix_max_attempts and interleaved
+                                    # with other work by the async monitor.
+  idle_timeout: 600                 # Idle (between-output) watchdog in seconds for a
+                                    # CI-fix step (default: first_output_timeout, 600).
+                                    # Dedicated knob so tuning first_output_timeout does
+                                    # not silently change CI-fix idle behavior. 0 disables.
 ```
+
+The auto-injected `/ci_check` fix mission is queued **non-urgently**, so CI fixing never jumps ahead of your backlog; each mission does one bounded attempt and yields, so a failing PR cannot monopolize the queue.
 
 When disabled, all CI-related automation is skipped: queue draining, CI dispatch, CI enqueue after rebase, and the `/ci_check` command returns an error.
 
@@ -2223,6 +2272,14 @@ For advanced deployment scenarios, see the existing documentation:
 - [SSH tunnel setup](../setup/ssh-setup.md)
 - [Always-up Railway deployment](../design/spec-always-up-railway.md)
 
+### Contributing to Kōan's Own Docs
+
+If you're working on Kōan's codebase (not just running it), `docs/` and `specs/` are
+each an OKF-conformant knowledge bundle consulted via Claude Code's `/brain` project
+skill (`ask`/`sync`/`ingest`/`lint`/`init`) — see `docs/SPEC.md`/`docs/SCHEMA.md` and
+the root `CLAUDE.md`'s "Documentation first" section. This is a contributor-facing
+convention, not a Kōan runtime command — it isn't triggerable from Telegram or GitHub.
+
 ---
 
 ## Quick Reference
@@ -2232,7 +2289,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | Command | Aliases | Tier | Description |
 |---------|---------|:----:|-------------|
 | `/mission <text>` | — | B | Queue a new mission (`--now` for top priority) |
-| `/list` | `/queue`, `/ls` | B | List pending and in-progress missions |
+| `/list [state]` | `/queue`, `/ls` | B | List missions; default pending+in-progress, or `done`/`failed`/`all` |
 | `/cancel <n>` | `/remove`, `/clear` | B | Cancel a pending mission |
 | `/abort` | — | B | Abort current mission, pick next pending |
 | `/priority <n>` | — | B | Reorder a pending mission in the queue |
@@ -2306,7 +2363,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/journal` | `/log` | I | View journal entries |
 | `/email` | — | I | Email digest status or test |
 | `/stats [project]` | — | I | Session outcome statistics |
-| `/report [--week\|--month]` | `/weekly_report`, `/monthly_report` | I | PR activity report (created, merged %, interacted) per-project + global; defaults to both weekly and monthly |
+| `/report [--week\|--month]` | `/reports`, `/weekly_report`, `/monthly_report` | I | PR activity report (created, merged %, interacted) per-project + global; defaults to both weekly and monthly |
 | `/done [project]` | `/merged` | I | List PRs merged in the last 24 hours |
 | `/explore [project]` | `/exploration` | I | Enable/show exploration mode |
 | `/noexplore [project]` | — | I | Disable exploration mode |

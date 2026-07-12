@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Local Ollama via the Claude CLI"
+description: "Describes the `bin/ollama-claude` wrapper that routes Koan's default `claude` provider through a local Ollama model via `ollama launch claude`, without changing `cli_provider`."
 tags: [providers]
 created: 2026-06-26
 updated: 2026-06-26

@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from app.cli_exec import popen_cli, stream_with_timeout
 from app.cli_provider import build_full_command, run_command
@@ -123,42 +123,97 @@ def has_rebase_in_progress(project_path: str) -> bool:
 _ordered_remotes = ordered_remotes
 
 
-def _is_ancestor(maybe_ancestor: str, descendant: str, cwd: str) -> bool:
-    """Return True if *maybe_ancestor* is an ancestor of (or equal to) *descendant*."""
+def _set_rebase_error(result_meta: Optional[Dict[str, str]], code: str, detail: str) -> None:
+    """Record a structured failure reason for the caller's error message."""
+    if result_meta is not None:
+        result_meta["error"] = code
+        result_meta["detail"] = detail
+
+
+def _capture_rebase_baseline(
+    target_ref: str, project_path: str,
+) -> Optional[Tuple[str, int]]:
+    """Snapshot ``(head_sha, unique_commit_count)`` before a rebase.
+
+    The unique-commit count is ``git rev-list --count <target_ref>..HEAD``
+    against the freshly fetched target ref — the number of commits GitHub
+    would show on the PR. A correct rebase can only keep or shrink this
+    number (patch-identical commits get dropped); growth means the rebase
+    resurrected already-merged commits. Returns None if the snapshot itself
+    fails (callers then skip the sanity gate rather than block the rebase).
+    """
+    try:
+        head = _run_git(
+            ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=10,
+        ).strip()
+        count = int(_run_git(
+            ["git", "rev-list", "--count", f"{target_ref}..HEAD"],
+            cwd=project_path, timeout=30,
+        ).strip())
+        return head, count
+    except (RuntimeError, ValueError, subprocess.TimeoutExpired, OSError) as e:
+        print(f"[claude_step] Could not capture rebase baseline: {e}", file=sys.stderr)
+        return None
+
+
+def _verify_rebase_result(
+    target_ref: str,
+    project_path: str,
+    pre_count: int,
+) -> Optional[str]:
+    """Sanity-check a completed rebase before anything gets pushed.
+
+    Verifies two invariants and returns a human-readable violation
+    description (None when the rebase is sane):
+
+    1. The branch sits on the target ref's current tip
+       (``merge-base HEAD <target_ref>`` == ``rev-parse <target_ref>``).
+    2. The branch's unique-commit count did not grow
+       (``rev-list --count <target_ref>..HEAD`` <= *pre_count*).
+
+    Incident reference: PR #2309, where a rebase onto a stale ref rewrote
+    33 already-merged upstream commits into the branch (20 → 53 commits)
+    and was force-pushed unchecked.
+    """
+    try:
+        target_tip = _run_git(
+            ["git", "rev-parse", target_ref], cwd=project_path, timeout=10,
+        ).strip()
+        merge_base = _run_git(
+            ["git", "merge-base", "HEAD", target_ref], cwd=project_path, timeout=10,
+        ).strip()
+        post_count = int(_run_git(
+            ["git", "rev-list", "--count", f"{target_ref}..HEAD"],
+            cwd=project_path, timeout=30,
+        ).strip())
+    except (RuntimeError, ValueError, subprocess.TimeoutExpired, OSError) as e:
+        return f"post-rebase sanity check could not run: {e}"
+
+    if merge_base != target_tip:
+        return (
+            f"branch is not based on the current tip of {target_ref} "
+            f"(base {merge_base[:12]}, tip {target_tip[:12]}) — the target "
+            f"ref was stale or the rebase used the wrong base"
+        )
+    if post_count > pre_count:
+        return (
+            f"rebase grew the branch from {pre_count} to {post_count} unique "
+            f"commits — it resurrected commits already merged on {target_ref}"
+        )
+    return None
+
+
+def _restore_branch_head(project_path: str, pre_head: str) -> None:
+    """Hard-reset the checked-out branch back to its pre-rebase commit."""
     try:
         _run_git(
-            ["git", "merge-base", "--is-ancestor", maybe_ancestor, descendant],
-            cwd=cwd, timeout=10,
+            ["git", "reset", "--hard", pre_head], cwd=project_path, timeout=30,
         )
-        return True
-    except (RuntimeError, subprocess.TimeoutExpired, OSError):
-        return False
-
-
-def _prefetch_all_remotes(
-    base: str,
-    project_path: str,
-    preferred_remote: Optional[str] = None,
-    head_remote: Optional[str] = None,
-) -> None:
-    """Eagerly fetch the base branch from all relevant remotes.
-
-    Ensures every remote tracking ref is current before the rebase loop
-    starts, so that ancestry checks and --onto calculations use fresh data.
-    Failures are logged but never prevent the rebase attempt.
-    """
-    remotes_to_fetch: List[str] = list(
-        _ordered_remotes(preferred_remote, cwd=project_path)
-    )
-    if head_remote and head_remote not in remotes_to_fetch:
-        remotes_to_fetch.append(head_remote)
-    for remote in remotes_to_fetch:
-        try:
-            _fetch_branch(remote, base, cwd=project_path)
-        except _REBASE_EXCEPTIONS as e:
-            print(f"[claude_step] Pre-fetch {remote}/{base} failed (non-fatal): {e}",
-                  file=sys.stderr)
-
+    except _REBASE_EXCEPTIONS as e:
+        print(
+            f"[claude_step] Could not restore pre-rebase head {pre_head[:12]}: {e}",
+            file=sys.stderr,
+        )
 
 
 def _rebase_onto_target(
@@ -167,70 +222,98 @@ def _rebase_onto_target(
     preferred_remote: Optional[str] = None,
     head_remote: Optional[str] = None,
     on_conflict: Optional[Callable[[str], bool]] = None,
+    result_meta: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
-    """Rebase onto target branch, trying *preferred_remote* first.
+    """Rebase the checked-out PR branch onto the PR's target branch.
 
-    When *preferred_remote* is given (e.g. the remote matching the PR's
-    target repository), it is tried before the default ``origin`` /
-    ``upstream`` fallbacks.  When *head_remote* is known and differs from
-    the target remote, uses ``--onto`` to replay only the PR's commits.
+    The rebase target is strictly ``{preferred_remote}/{base}`` — the remote
+    matching the PR's base repository — and its tracking ref must be
+    freshly fetched. There is deliberately no fallback to other remotes and
+    no proceeding on a failed fetch: rebasing onto a fork's (or stale)
+    copy of the base branch rewrites already-merged upstream commits into
+    the PR (incident: PR #2309, 33 duplicated commits force-pushed).
 
-    All relevant remotes are pre-fetched before the rebase loop so that
-    tracking refs are guaranteed fresh for ancestry checks and --onto.
+    A plain ``git rebase`` onto the fresh target ref replays exactly the
+    PR's own commits — git cuts at ``merge-base(HEAD, target)`` and drops
+    patch-identical commits — so no ``--onto`` cut point is needed.
+    *head_remote* is accepted for backward compatibility but no longer
+    influences the rebase.
+
+    After a successful rebase, a sanity gate verifies the branch sits on
+    the target's current tip and that its unique-commit count did not grow;
+    on violation the branch is restored to its pre-rebase commit and the
+    rebase is reported as failed.
 
     Args:
-        on_conflict: Optional callback invoked when a rebase fails and a
-            rebase-in-progress is detected (i.e. conflicts exist).
-            Receives ``project_path`` and should return True if the
-            conflicts were resolved and the rebase completed, False
-            otherwise.  When None (default), conflicts cause an immediate
-            abort.
+        on_conflict: Optional callback invoked when the rebase stops on
+            conflicts. Receives ``project_path`` and returns True if the
+            conflicts were resolved and the rebase completed. When None
+            (default), conflicts cause an immediate abort.
+        result_meta: Optional dict populated with ``error`` (stable code:
+            ``no_base_remote`` / ``fetch_failed`` / ``rebase_failed`` /
+            ``sanity_check_failed``) and ``detail`` on failure.
 
     Returns:
-        Remote name used (e.g. "origin" or "upstream") on success, None on failure.
+        The remote name used on success, None on failure.
     """
-    _prefetch_all_remotes(base, project_path, preferred_remote, head_remote)
+    if not preferred_remote:
+        detail = (
+            "no git remote matches the PR's base repository — refusing to "
+            "rebase onto a guessed remote (a fork's copy of the base branch "
+            "may be stale). Add one with `git remote add <name> <url>`."
+        )
+        print(f"[claude_step] {detail}", file=sys.stderr)
+        _set_rebase_error(result_meta, "no_base_remote", detail)
+        return None
 
-    for remote in _ordered_remotes(preferred_remote, cwd=project_path):
-        if head_remote and head_remote != remote:
-            # Only use --onto when the fork has genuinely diverged from
-            # upstream (i.e. has commits that upstream doesn't).  When the
-            # fork is simply behind, --onto replays upstream commits that
-            # already exist on the target, causing spurious conflicts in
-            # files the PR never touched.
-            use_onto = not _is_ancestor(
-                f"{head_remote}/{base}", f"{remote}/{base}", project_path,
-            )
-            if use_onto:
-                try:
-                    _run_git(
-                        ["git", "rebase", "--onto", f"{remote}/{base}",
-                         f"{head_remote}/{base}", "--autostash"],
-                        cwd=project_path,
-                    )
-                    return remote
-                except _REBASE_EXCEPTIONS as e:
-                    print(f"[claude_step] --onto rebase failed: {e}", file=sys.stderr)
-                    if on_conflict and has_rebase_in_progress(project_path):
-                        if on_conflict(project_path):
-                            return remote
-                    _abort_rebase_safely(project_path)
-                    # Fall through to plain rebase
+    remote = preferred_remote
+    target_ref = f"{remote}/{base}"
 
-        # Fallback: plain rebase
-        try:
-            _run_git(
-                ["git", "rebase", "--autostash", f"{remote}/{base}"],
-                cwd=project_path,
-            )
-            return remote
-        except _REBASE_EXCEPTIONS as e:
-            print(f"[claude_step] Rebase onto {remote}/{base} failed: {e}", file=sys.stderr)
-            if on_conflict and has_rebase_in_progress(project_path):
-                if on_conflict(project_path):
-                    return remote
+    # Mandatory freshness: a stale tracking ref is exactly how a rebase
+    # rebases the branch onto an old base and resurrects merged commits.
+    try:
+        _fetch_branch(remote, base, cwd=project_path)
+    except _REBASE_EXCEPTIONS as e:
+        detail = f"fetch of {target_ref} failed: {e}"
+        print(
+            f"[claude_step] {detail} — aborting rebase instead of using a "
+            f"possibly-stale ref",
+            file=sys.stderr,
+        )
+        _set_rebase_error(result_meta, "fetch_failed", detail)
+        return None
+
+    baseline = _capture_rebase_baseline(target_ref, project_path)
+
+    try:
+        _run_git(
+            ["git", "rebase", "--autostash", target_ref],
+            cwd=project_path,
+        )
+    except _REBASE_EXCEPTIONS as e:
+        print(f"[claude_step] Rebase onto {target_ref} failed: {e}", file=sys.stderr)
+        resolved = False
+        if on_conflict and has_rebase_in_progress(project_path):
+            resolved = on_conflict(project_path)
+        if not resolved:
             _abort_rebase_safely(project_path)
-    return None
+            _set_rebase_error(result_meta, "rebase_failed", str(e))
+            return None
+
+    if baseline is not None:
+        pre_head, pre_count = baseline
+        violation = _verify_rebase_result(target_ref, project_path, pre_count)
+        if violation:
+            print(
+                f"[claude_step] Post-rebase sanity check failed: {violation} — "
+                f"restoring {pre_head[:12]} and refusing to push",
+                file=sys.stderr,
+            )
+            _restore_branch_head(project_path, pre_head)
+            _set_rebase_error(result_meta, "sanity_check_failed", violation)
+            return None
+
+    return remote
 
 
 def strip_cli_noise(text: str) -> str:

@@ -2,8 +2,8 @@
 export
 
 .PHONY: install onboard setup start stop status restart
-.PHONY: clean say migrate test test-skills test-strict coverage lint sync-instance rename-project release
-.PHONY: awake run errand-run errand-awake dashboard koan api api-token webhook
+.PHONY: clean say missions mission-rm migrate test test-skills test-strict coverage lint sync-instance rename-project release
+.PHONY: awake run errand-run errand-awake dashboard koan api api-token openapi openapi-check webhook
 .PHONY: ollama logs ssh-forward
 .PHONY: install-systemctl-service uninstall-systemctl-service
 .PHONY: install-user-service uninstall-user-service
@@ -87,11 +87,6 @@ setup: $(VENV)/.installed
 $(VENV)/.installed: koan/requirements.txt
 	$(PYTHON_BIN) -m venv $(VENV)
 	$(VENV)/bin/pip install -r koan/requirements.txt
-	@command -v claude >/dev/null 2>&1 && ( \
-		claude plugin marketplace add praneybehl/llm-wiki-plugin >/dev/null 2>&1; \
-		claude plugin install llm-wiki@llm-wiki --scope user >/dev/null 2>&1; \
-		echo "claude plugin: llm-wiki installed (user scope)" \
-	) || echo "claude CLI not found; skipping llm-wiki plugin install (see CLAUDE.md 'Wiki tooling')"
 	@touch $@
 
 awake: setup
@@ -103,6 +98,13 @@ run: setup
 say: setup
 	@test -n "$(m)" || (echo "Usage: make say m=\"your message\"" && exit 1)
 	@$(KOAN_RUN) -c "from app.awake import handle_message; handle_message('$(m)')"
+
+missions: setup
+	@$(KOAN_RUN) -m app.mission_ctl list $(state)
+
+mission-rm: setup
+	@test -n "$(sel)" || (echo "Usage: make mission-rm sel=i1  (or sel=p2, or a keyword)" && exit 1)
+	@$(KOAN_RUN) -m app.mission_ctl delete "$(sel)"
 
 lint: setup
 	$(VENV)/bin/pip install -q ruff 2>/dev/null
@@ -161,6 +163,16 @@ api-token:
 		echo "Or set in instance/config.yaml:" && \
 		echo "  api:" && \
 		echo "    token: \"$$token\""
+
+# Regenerate the committed OpenAPI document (koan/openapi.yaml) from the live
+# REST API route table. Run this after adding/removing/modifying an API endpoint,
+# then commit koan/openapi.yaml in the same change.
+openapi: setup
+	$(KOAN_RUN) -m app.api.openapi_gen --output openapi.yaml
+
+# Fail if koan/openapi.yaml has drifted from the REST API code (what CI runs).
+openapi-check: setup
+	$(KOAN_RUN) -m app.api.openapi_gen --check --output openapi.yaml
 
 # Standalone GitHub webhook receiver (alternative to the bridge-embedded one).
 # Requires KOAN_GITHUB_WEBHOOK_SECRET. Front with a tunnel (smee/cloudflared).

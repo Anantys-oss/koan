@@ -1053,6 +1053,50 @@ class TestGetMissionTimeout:
             assert get_mission_timeout() == 0
 
 
+# --- get_bash_foreground_timeout_ms ---
+
+
+class TestGetBashForegroundTimeoutMs:
+    def test_default(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({}):
+            # Default 900s (15 min) with default mission_timeout 3600s.
+            assert get_bash_foreground_timeout_ms() == 900_000
+
+    def test_custom_honored(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({"mission_timeout": 3600,
+                           "bash_foreground_timeout": 600}):
+            assert get_bash_foreground_timeout_ms() == 600_000
+
+    def test_clamped_below_mission_timeout(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        # Requested 3600s must clamp strictly under mission_timeout 600s.
+        with _mock_config({"mission_timeout": 600,
+                           "bash_foreground_timeout": 3600}):
+            ms = get_bash_foreground_timeout_ms()
+            assert ms > 0
+            assert ms < 600 * 1000
+
+    def test_zero_disables(self):
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({"bash_foreground_timeout": 0}):
+            assert get_bash_foreground_timeout_ms() == 0
+
+    def test_mission_timeout_zero_is_unbounded(self):
+        """mission_timeout: 0 disables the watchdog — the Bash foreground
+        timeout must honor the requested value as-is, not clamp to 60s."""
+        from app.config import get_bash_foreground_timeout_ms
+
+        with _mock_config({"mission_timeout": 0,
+                           "bash_foreground_timeout": 900}):
+            assert get_bash_foreground_timeout_ms() == 900_000
+
+
 # --- get_post_mission_timeout ---
 
 
@@ -1688,6 +1732,92 @@ class TestGetEffortForMode:
             assert get_effort_for_mode("deep") == "high"
 
 
+# --- get_effort (per-mission-type) ---
+
+
+class TestGetEffortMissionType:
+    def test_mission_type_overrides_dynamic_default(self):
+        """A pinned mission type wins over the budget-mode dynamic default.
+
+        A /review mission running in deep mode would normally get "high";
+        with effort.review pinned it stays "low" regardless of mode.
+        """
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": "low"}}):
+            assert get_effort("deep", mission_type="review") == "low"
+            assert get_effort("implement", mission_type="review") == "low"
+
+    def test_mission_type_absent_falls_back_to_dynamic_default(self):
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": "low"}}):
+            # "plan" not pinned → dynamic default by mode
+            assert get_effort("deep", mission_type="plan") == "high"
+            assert get_effort("review", mission_type="plan") == "low"
+
+    def test_no_config_preserves_dynamic_default(self):
+        from app.config import get_effort
+        with _mock_config({}):
+            assert get_effort("deep", mission_type="review") == "high"
+            assert get_effort("review", mission_type="plan") == "low"
+            assert get_effort("implement", mission_type="implement") == ""
+
+    def test_no_mission_type_resolves_per_mode(self):
+        """Without a mission type, resolution is the per-mode config value.
+
+        Asserts hardcoded expected values (not equality with the wrapper, which
+        would be trivially true since get_effort_for_mode just calls get_effort
+        with mission_type="").
+        """
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": "low", "deep": "max"}}):
+            assert get_effort("review") == "low"   # pinned
+            assert get_effort("deep") == "max"     # pinned
+            # Unlisted modes whose dynamic default is "" stay "".
+            assert get_effort("implement") == ""
+            assert get_effort("wait") == ""
+
+    def test_partial_dict_unlisted_mode_uses_dynamic_default(self):
+        """A partial dict leaves unlisted modes on the DYNAMIC default.
+
+        Pins behavior flagged in review: with only `implement` listed, an
+        unlisted mode whose dynamic default is non-empty (deep→high, review→low)
+        resolves to that default rather than being disabled. This is the
+        intended semantics ("dynamic default preserved unless config pins a
+        value"); the test locks it so the fall-through can't regress silently.
+        """
+        from app.config import get_effort
+        with _mock_config({"effort": {"implement": "high"}}):
+            assert get_effort("implement") == "high"   # pinned
+            assert get_effort("deep") == "high"        # dynamic default
+            assert get_effort("review") == "low"       # dynamic default
+            assert get_effort("wait") == ""            # dynamic default (none)
+
+    def test_mission_type_disables_with_empty_string(self):
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": ""}}):
+            # Explicit "" disables the flag for this mission type
+            assert get_effort("deep", mission_type="review") == ""
+
+    def test_mission_type_takes_precedence_over_mode_key(self):
+        """When both a mission-type and a mode key could match, the type wins."""
+        from app.config import get_effort
+        with _mock_config({"effort": {"review": "low", "deep": "max"}}):
+            # review mission in deep mode: type "review" wins over mode "deep"
+            assert get_effort("deep", mission_type="review") == "low"
+
+    def test_invalid_mission_type_value_falls_back(self):
+        from app.config import get_effort
+        with _mock_config({"effort": {"plan": "turbo"}}):
+            # Invalid value → ignore pin, use dynamic default
+            assert get_effort("deep", mission_type="plan") == "high"
+
+    def test_string_config_ignores_mission_type(self):
+        from app.config import get_effort
+        with _mock_config({"effort": "high"}):
+            assert get_effort("deep", mission_type="review") == "high"
+            assert get_effort("implement", mission_type="plan") == "high"
+
+
 # --- get_thinking_config / should_enable_thinking ---
 
 
@@ -1974,3 +2104,65 @@ class TestMemoryMonitorConfig:
             conf = get_memory_monitor_config()
         assert conf["enabled"] is False
         assert conf["threshold_mb"] == 1200
+
+
+class TestReviewCompressorBudget:
+    def test_token_budget_default(self):
+        from app.config import get_review_compressor_token_budget
+        with _mock_config({}):
+            assert get_review_compressor_token_budget() == 80_000
+
+    def test_token_budget_override(self):
+        from app.config import get_review_compressor_token_budget
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": 120_000}}}
+        ):
+            assert get_review_compressor_token_budget() == 120_000
+
+    def test_token_budget_malformed_falls_back(self):
+        from app.config import get_review_compressor_token_budget
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": "huge"}}}
+        ):
+            assert get_review_compressor_token_budget() == 80_000
+
+    def test_token_budget_bool_falls_back(self):
+        from app.config import get_review_compressor_token_budget
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": True}}}
+        ):
+            assert get_review_compressor_token_budget() == 80_000
+
+    def test_max_diff_chars_derived_from_budget(self):
+        from app.config import get_review_max_diff_chars
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": 80_000}}}
+        ):
+            # 80_000 tokens * 3.5 chars/token * 4 headroom
+            assert get_review_max_diff_chars() == 1_120_000
+
+    def test_max_diff_chars_scales_with_budget(self):
+        from app.config import get_review_max_diff_chars
+        with _mock_config(
+            {"optimizations": {"review_compressor": {"token_budget": 40_000}}}
+        ):
+            assert get_review_max_diff_chars() == 560_000
+
+
+class TestInstanceSyncInterval:
+    """KOAN_INSTANCE_SYNC_INTERVAL parsing."""
+
+    def test_instance_sync_interval_default_disabled(self, monkeypatch):
+        monkeypatch.delenv("KOAN_INSTANCE_SYNC_INTERVAL", raising=False)
+        from app.config import get_instance_sync_interval
+        assert get_instance_sync_interval() == 0
+
+    def test_instance_sync_interval_from_env(self, monkeypatch):
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "900")
+        from app.config import get_instance_sync_interval
+        assert get_instance_sync_interval() == 900
+
+    def test_instance_sync_interval_malformed_disabled(self, monkeypatch):
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "nope")
+        from app.config import get_instance_sync_interval
+        assert get_instance_sync_interval() == 0

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.cost_tracker import (
     record_usage,
+    aggregate_mission_usage,
     summarize_day,
     summarize_range,
     summarize_by_project,
@@ -1189,3 +1190,75 @@ class TestTopMissions:
                 result = top_missions(instance_dir, today, today)
         assert result[0]["cost_usd"] == 0.0
         assert len(call_count) == 0
+
+
+class TestRecordUsageMissionId:
+    def test_record_usage_persists_mission_id(self, instance_dir):
+        record_usage(
+            instance_dir=instance_dir, project="koan", model="opus",
+            input_tokens=100, output_tokens=20, mission="Fix bug",
+            mission_id="abc-123",
+        )
+        line = (instance_dir / "usage" / f"{date.today().isoformat()}.jsonl").read_text().strip()
+        assert json.loads(line)["mission_id"] == "abc-123"
+
+    def test_record_usage_omits_empty_mission_id(self, instance_dir):
+        record_usage(
+            instance_dir=instance_dir, project="koan", model="opus",
+            input_tokens=100, output_tokens=20, mission="Fix bug",
+        )
+        entry = json.loads(
+            (instance_dir / "usage" / f"{date.today().isoformat()}.jsonl").read_text().strip()
+        )
+        assert "mission_id" not in entry
+
+
+class TestAggregateMissionUsage:
+    def test_aggregate_mission_usage_sums_matching_id(self, instance_dir):
+        record_usage(instance_dir=instance_dir, project="koan", model="opus",
+                     input_tokens=100, output_tokens=20, cost_usd=0.10,
+                     provider="claude", mission_id="m1")
+        record_usage(instance_dir=instance_dir, project="koan", model="sonnet",
+                     input_tokens=50, output_tokens=10, cost_usd=0.02,
+                     cache_read_input_tokens=7, provider="claude", mission_id="m1")
+        record_usage(instance_dir=instance_dir, project="koan", model="opus",
+                     input_tokens=999, output_tokens=999, mission_id="other")
+
+        today = date.today()
+        agg = aggregate_mission_usage(instance_dir, "m1", start=today, end=today)
+        assert agg["input_tokens"] == 150
+        assert agg["output_tokens"] == 30
+        assert agg["cache_read_input_tokens"] == 7
+        assert round(agg["cost_usd"], 6) == 0.12
+        assert agg["call_count"] == 2
+        assert agg["models"] == ["opus", "sonnet"]
+        assert agg["providers"] == ["claude"]
+
+    def test_aggregate_mission_usage_reports_unattributed(self, instance_dir):
+        # attributed event
+        record_usage(instance_dir=instance_dir, project="koan", model="opus",
+                     input_tokens=100, output_tokens=20, mission="Fix the bug",
+                     mission_id="m1")
+        # id-less event whose title matches (tag + leading dash on the query side)
+        record_usage(instance_dir=instance_dir, project="koan", model="opus",
+                     input_tokens=40, output_tokens=8, mission="Fix the bug")
+        # id-less event with a different title — must NOT be pulled in
+        record_usage(instance_dir=instance_dir, project="koan", model="opus",
+                     input_tokens=5, output_tokens=1, mission="something else")
+
+        today = date.today()
+        agg = aggregate_mission_usage(instance_dir, "m1",
+                                      mission_text="- [project:koan] Fix the bug",
+                                      start=today, end=today)
+        assert agg["input_tokens"] == 100          # attributed only
+        assert agg["unattributed"]["call_count"] == 1
+        assert agg["unattributed"]["input_tokens"] == 40
+
+    def test_aggregate_mission_usage_empty(self, instance_dir):
+        today = date.today()
+        agg = aggregate_mission_usage(instance_dir, "nope",
+                                      start=today, end=today)
+        assert agg["call_count"] == 0
+        assert agg["input_tokens"] == 0
+        assert agg["models"] == []
+        assert "unattributed" not in agg   # absent unless mission_text given

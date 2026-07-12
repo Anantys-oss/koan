@@ -129,6 +129,21 @@ def get_contemplative_tools(project_name: str = "") -> str:
     return _get_tools_for_role("contemplative", ["Read", "Write", "Glob", "Grep"], project_name)
 
 
+def get_instance_sync_interval() -> int:
+    """Seconds between periodic `instance/` pulls; 0 disables (default).
+
+    Read from KOAN_INSTANCE_SYNC_INTERVAL. When > 0, the loop periodically
+    runs `git pull --rebase --autostash` on instance/ to reconcile operator
+    edits pushed directly to the remote, keeping commit_instance()'s push
+    fast-forwardable.
+    """
+    raw = os.environ.get("KOAN_INSTANCE_SYNC_INTERVAL", "0")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 # Backward compatibility alias
 def get_allowed_tools() -> str:
     """Deprecated: Use get_chat_tools() or get_mission_tools() instead."""
@@ -960,6 +975,64 @@ def get_skill_timeout() -> int:
     return _safe_int(config.get("skill_timeout", 7200), 7200)
 
 
+def _ci_check_section() -> dict:
+    """Return the ``ci_check`` config as a dict.
+
+    Tolerates the two accepted shapes (mirrors ``is_ci_check_enabled``): a
+    mapping (``ci_check: {enabled: true, ...}``) or a bare bool
+    (``ci_check: true``). Anything else yields an empty dict so callers fall
+    back to documented defaults.
+    """
+    ci_cfg = _load_config().get("ci_check", {})
+    return ci_cfg if isinstance(ci_cfg, dict) else {}
+
+
+def get_ci_check_step_timeout() -> int:
+    """Overall wall-clock timeout (seconds) for a single CI-fix Claude step.
+
+    The auto-injected ``/ci_check`` fix mission runs in the single-slot mission
+    queue, so an unbounded step blocks all other work. This dedicated cap keeps
+    a stuck fix step from holding the queue for the full ``skill_timeout``
+    (2 hours). Paired with an idle guard (``ci_check.idle_timeout``, see
+    ``get_ci_check_idle_timeout``) in the CI-fix step runner.
+
+    Config key: ci_check.timeout (default: 3600 — 1 hour).
+    """
+    return _safe_int(_ci_check_section().get("timeout", 3600), 3600)
+
+
+def get_ci_check_max_fix_attempts() -> int:
+    """Max Claude fix attempts performed *within a single* ``/ci_check`` mission.
+
+    Decoupled from ``ci_fix_max_attempts`` (the total per-PR budget enforced by
+    ``ci_queue_runner.drain_one`` across interleaved re-injections). Keeping this
+    at 1 means each fix mission does one attempt and yields the queue, so a
+    failing PR cannot monopolize the single mission slot with a compounding
+    multi-attempt loop.
+
+    Config key: ci_check.max_fix_attempts_per_mission (default: 1). Floored at 1.
+    """
+    value = _safe_int(_ci_check_section().get("max_fix_attempts_per_mission", 1), 1)
+    return max(1, value)
+
+
+def get_ci_check_idle_timeout() -> int:
+    """Idle (between-output) watchdog (seconds) for a CI-fix Claude step.
+
+    Kills a stalled fix step early instead of waiting the full
+    ``ci_check.timeout`` overall cap. Defaults to ``first_output_timeout`` so
+    existing tuning carries over, but is a dedicated knob so operators can tune
+    the first-output guard without silently changing CI-fix idle behavior (and
+    vice versa). Set to 0 to disable (the overall cap still bounds the step).
+
+    Config key: ci_check.idle_timeout (default: first_output_timeout).
+    """
+    value = _ci_check_section().get("idle_timeout")
+    if value is None:
+        return get_first_output_timeout()
+    return _safe_int(value, get_first_output_timeout())
+
+
 def _missions_section() -> dict:
     return _load_config().get("missions", {}) or {}
 
@@ -979,6 +1052,27 @@ def get_missions_max_lines() -> int:
     return _safe_int(_missions_section().get("max_lines", 500), 500)
 
 
+def get_mission_backend() -> str:
+    """Mission-storage backend. Config: missions.backend (default 'sqlite').
+
+    Known in-tree name: 'sqlite'. Any other value is treated as a dotted
+    ``module:Class`` import path resolved by ``mission_store.get_mission_store``
+    (an out-of-tree adapter). See specs/004-mission-store.
+    """
+    val = _missions_section().get("backend", "sqlite")
+    return str(val).strip() or "sqlite"
+
+
+def get_mission_export_mode() -> str:
+    """When the read-only missions.md export is regenerated in a DB backend.
+
+    Config: missions.export — 'on_demand' (default; only via the export command)
+    or 'continuous' (refreshed after each transition, throttled).
+    """
+    val = str(_missions_section().get("export", "on_demand")).strip().lower()
+    return val if val in ("on_demand", "continuous", "off") else "on_demand"
+
+
 def get_mission_timeout() -> int:
     """Get timeout in seconds for regular mission execution.
 
@@ -993,6 +1087,32 @@ def get_mission_timeout() -> int:
     """
     config = _load_config()
     return _safe_int(config.get("mission_timeout", 3600), 3600)
+
+
+def get_bash_foreground_timeout_ms() -> int:
+    """Max Bash-tool foreground timeout (ms) for mission subprocesses.
+
+    Lets the agent block on a long-but-bounded command in the foreground
+    instead of backgrounding it (which orphans the child when the one-shot
+    session ends). Clamped strictly below ``mission_timeout`` so the model
+    keeps a buffer to read the result and write its conclusion before the
+    mission watchdog SIGTERMs the process group.
+
+    Config key: bash_foreground_timeout (seconds, default: 900 — 15 min).
+    Returns 0 to signal "leave the CLI default" when explicitly disabled.
+    """
+    config = _load_config()
+    requested_s = _safe_int(config.get("bash_foreground_timeout", 900), 900)
+    if requested_s <= 0:
+        return 0
+    mission_s = get_mission_timeout()
+    if mission_s <= 0:
+        # Mission watchdog disabled (unlimited mission time) — no ceiling to
+        # keep a buffer under, so honor the requested value as-is.
+        return requested_s * 1000
+    # Keep a 120s reporting buffer under the mission watchdog; never exceed it.
+    ceiling_s = max(60, mission_s - 120)
+    return min(requested_s, ceiling_s) * 1000
 
 
 def get_first_output_timeout() -> int:
@@ -1204,6 +1324,9 @@ def get_notify_mission_results() -> bool:
 # Keys are autonomous modes, values are Claude CLI --effort levels.
 # "medium" is the provider default when no flag is passed — omitted here
 # so no flag is emitted unless the user configures an override.
+# This is the *dynamic* default: when ``effort:`` is absent from config.yaml,
+# effort is picked from the current budget mode — review reads cheap, deep
+# reasons hard. Per-mission-type overrides (see get_effort) layer on top.
 _DEFAULT_EFFORT_MAP = {
     "review": "low",
     "implement": "",
@@ -1214,25 +1337,103 @@ _DEFAULT_EFFORT_MAP = {
 _VALID_EFFORT_LEVELS = {"low", "medium", "high", "max", ""}
 
 
-def get_effort_for_mode(autonomous_mode: str = "") -> str:
-    """Get the reasoning effort level for the given autonomous mode.
+def _resolve_effort_dict(
+    effort_config: dict, autonomous_mode: str, mission_type: str
+) -> Optional[str]:
+    """Resolve an effort level from a mapping ``effort:`` config.
 
-    Reads ``effort:`` section from config.yaml. Supports per-mode overrides:
+    Returns the level string when a config match is found, or ``None`` when
+    nothing in config applies (caller falls back to the dynamic default).
 
+    Resolution order:
+      1. ``effort.<mission_type>`` — explicit per-mission-type pin. A present
+         key wins even when empty ("" disables the flag for that type); an
+         *invalid* value is ignored so the pin silently no-ops.
+      2. ``effort.<autonomous_mode>`` — legacy per-budget-mode override.
+    """
+    # 1. Per-mission-type override (the user-facing axis).
+    if mission_type and mission_type in effort_config:
+        raw = str(effort_config.get(mission_type, ""))
+        level = raw.strip().lower()
+        if level in _VALID_EFFORT_LEVELS:
+            return level
+        # Present-but-invalid pin: discard and fall through to the dynamic
+        # default. config_validator warns at load time, but log here too so
+        # runtime behavior is traceable on paths that skip validation.
+        print(
+            f"[config] effort.{mission_type} invalid value {raw!r} "
+            f"(expected low/medium/high/max); ignoring pin",
+            file=sys.stderr,
+        )
+    # 2. Legacy per-mode override (e.g. effort.deep / effort.wait).
+    if autonomous_mode and autonomous_mode in effort_config:
+        raw = str(effort_config.get(autonomous_mode, ""))
+        level = raw.strip().lower()
+        if level in _VALID_EFFORT_LEVELS:
+            return level
+        # Present-but-invalid mode pin: log before falling through, mirroring
+        # step 1 so an invalid effort.deep/effort.wait is traceable at runtime
+        # on paths that skip config_validator.
+        print(
+            f"[config] effort.{autonomous_mode} invalid value {raw!r} "
+            f"(expected low/medium/high/max); ignoring pin",
+            file=sys.stderr,
+        )
+    return None
+
+
+def get_effort(autonomous_mode: str = "", mission_type: str = "") -> str:
+    """Get the reasoning effort level for a mission.
+
+    Reads the ``effort:`` section from config.yaml. The *dynamic* default —
+    effort picked from the current budget mode via ``_DEFAULT_EFFORT_MAP`` —
+    is preserved unless config pins a value.
+
+    Config shapes (mapping keys are **mission types** from
+    ``session_tracker.classify_mission_type``):
+
+        # Per mission type — wins over the dynamic default
         effort:
-          review: low
-          implement: medium
-          deep: high
+          autonomous: low     # keep background autonomous work cheap
+          freetext: medium
 
-    Or a single value to apply to all modes:
-
+        # Single value applied to every mission
         effort: high
 
-    Set ``effort: ""`` or omit the section entirely to disable effort
-    control (no ``--effort`` flag will be emitted).
+        # Empty string disables the --effort flag entirely
+        effort: ""
+
+    Resolution order:
+      1. ``effort.<mission_type>`` when set.
+      2. ``effort.<autonomous_mode>`` when set (legacy per-budget-mode pin).
+      3. ``_DEFAULT_EFFORT_MAP[autonomous_mode]`` — the dynamic default.
+
+    .. note::
+
+       Only missions that flow through the main agent loop reach this function
+       (via ``build_mission_command``). In that loop ``mission_type`` comes
+       from ``classify_mission_type(mission_title)``, so the only pins that can
+       actually take effect are the types returned for missions that are **not**
+       slash commands: ``autonomous`` (empty / "Autonomous …" titles) and
+       ``freetext`` (plain human-text missions). Every named slash-command type
+       is handled before this path: commands with a dedicated runner —
+       ``/review``, ``/plan``, ``/rebase``, ``/recreate``, ``/implement``,
+       ``/fix``, ``/audit``, ``/check`` … — are routed to those runners, and
+       commands with no runner (e.g. ``/refactor``, ``/pr``) are dispatched by
+       their bridge-side handler or failed as an unknown skill in
+       ``_handle_skill_dispatch`` — they never reach ``build_mission_command``.
+       So a pin like ``effort.refactor`` or ``effort.review`` is inert.
+       config_validator still accepts any mission-type key as valid config,
+       since the dispatch taxonomy is open.
+
+    A single-string config is validated whole: an invalid value (not
+    low/medium/high/max/"") disables the flag, matching the legacy behavior.
 
     Args:
-        autonomous_mode: Current mode (review/implement/deep/wait).
+        autonomous_mode: Current budget mode (review/implement/deep/wait).
+        mission_type: Mission category from classify_mission_type. Optional;
+            when empty, only the mode-based paths apply (preserving the
+            pre-mission-type behavior).
 
     Returns:
         Effort level string (e.g. "low", "high", "max") or empty string.
@@ -1241,23 +1442,31 @@ def get_effort_for_mode(autonomous_mode: str = "") -> str:
     effort_config = config.get("effort")
 
     if effort_config is None:
-        # No config — use defaults
+        # No config — dynamic default by budget mode.
         return _DEFAULT_EFFORT_MAP.get(autonomous_mode, "")
 
     if isinstance(effort_config, str):
-        # Single value for all modes
+        # Single value for everything; invalid → disable (legacy behavior).
         level = effort_config.strip().lower()
         return level if level in _VALID_EFFORT_LEVELS else ""
 
     if isinstance(effort_config, dict):
-        # Per-mode overrides
-        level = str(effort_config.get(autonomous_mode, "")).strip().lower()
-        if level in _VALID_EFFORT_LEVELS:
-            return level
-        # Fall back to defaults if mode not in config
-        return _DEFAULT_EFFORT_MAP.get(autonomous_mode, "")
+        resolved = _resolve_effort_dict(effort_config, autonomous_mode, mission_type)
+        if resolved is not None:
+            return resolved
 
-    return ""
+    # Mapping with no applicable key — dynamic default by budget mode.
+    return _DEFAULT_EFFORT_MAP.get(autonomous_mode, "")
+
+
+def get_effort_for_mode(autonomous_mode: str = "") -> str:
+    """Get the reasoning effort level for the given autonomous mode.
+
+    Backward-compatible wrapper around :func:`get_effort` for callers that
+    do not know the mission type. Prefer ``get_effort(...)`` at mission build
+    time so per-mission-type config is honored.
+    """
+    return get_effort(autonomous_mode, mission_type="")
 
 
 # -- Thinking / extended reasoning configuration ----------------------------
@@ -2499,6 +2708,53 @@ def is_review_compressor_enabled() -> bool:
     """
     enabled = _get_review_compressor_dict().get("enabled", True)
     return bool(enabled) if isinstance(enabled, bool) else True
+
+
+# Exact inverse of diff_compressor.estimate_tokens (chars / 3.5). Keeping the
+# two in sync means a diff that fits get_review_max_diff_chars() also fits the
+# compressor's token budget by its own estimate.
+_REVIEW_CHARS_PER_TOKEN = 3.5
+# Headroom multiplier: the fetch-time char cap is a coarse OOM backstop, NOT
+# the coverage guardrail. It must sit well ABOVE the compressor budget so the
+# compressor receives the whole diff (it needs every file to prioritise) and
+# does the intelligent packing + skip-reporting. The blind fetch cut only
+# fires on pathological diffs far larger than any realistic PR.
+_REVIEW_FETCH_HEADROOM = 4
+
+
+def get_review_compressor_token_budget() -> int:
+    """Token budget for the review diff compressor.
+
+    Reads ``optimizations.review_compressor.token_budget`` (default 80_000).
+    This is the single knob controlling review diff size — the fetch-time
+    char cap (:func:`get_review_max_diff_chars`) is derived from it.
+    """
+    raw = _get_review_compressor_dict().get("token_budget", 80_000)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        return 80_000
+    return raw
+
+
+def get_review_max_diff_chars() -> int:
+    """Fetch-time character cap for review diffs, derived from the token budget.
+
+    = token_budget × 3.5 chars/token × 4 headroom. Generous by design so the
+    compressor (the real coverage guardrail) sees the full diff.
+    """
+    budget = get_review_compressor_token_budget()
+    return int(budget * _REVIEW_CHARS_PER_TOKEN * _REVIEW_FETCH_HEADROOM)
+
+
+def get_review_uncompressed_max_diff_chars() -> int:
+    """Token-safe diff cap for the compressor-*off* path.
+
+    = token_budget × 3.5 chars/token (NO headroom multiplier). When
+    ``review_compressor.enabled`` is false, no intelligent packer re-shrinks the
+    fetched diff, so the raw diff must itself stay within the budget or it would
+    overflow the model context and hard-fail the review. This keeps the
+    single-knob property while preserving a size backstop in every config.
+    """
+    return int(get_review_compressor_token_budget() * _REVIEW_CHARS_PER_TOKEN)
 
 
 def _get_rtk_dict() -> dict:

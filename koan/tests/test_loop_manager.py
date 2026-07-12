@@ -2419,6 +2419,49 @@ class TestWarnUnregisteredMentionRepos:
         )
         mock_send.assert_not_called()
 
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_reset_after_repo_registered(self, mock_send, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+
+        # First drop while unregistered → warns once.
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 2}, str(tmp_path), known_repos={"other/known"},
+        )
+        assert mock_send.call_count == 1
+
+        # Repo gets registered: now present in known_repos. A stray drop in the
+        # same cycle (e.g. a notification fetched before the filter caught up)
+        # must prune the warned entry rather than stay suppressed.
+        mock_send.reset_mock()
+        _warn_unregistered_mention_repos(
+            {}, str(tmp_path), known_repos={"other/known", "owner/repo"},
+        )
+        assert mock_send.call_count == 0  # nothing to warn, but entry pruned
+
+        # Repo removed again and drops once more → warns afresh (no stale suppression).
+        mock_send.reset_mock()
+        _warn_unregistered_mention_repos(
+            {"owner/repo": 1}, str(tmp_path), known_repos={"other/known"},
+        )
+        assert mock_send.call_count == 1
+
+    @patch("app.notify.send_telegram", return_value=True)
+    def test_prune_is_case_insensitive(self, mock_send, tmp_path):
+        from app.loop_manager import _warn_unregistered_mention_repos
+        import app.loop_manager as lm
+
+        _warn_unregistered_mention_repos(
+            {"Owner/Repo": 1}, str(tmp_path), known_repos=None,
+        )
+        # known_repos are normalized lowercase; prune must still match.
+        _warn_unregistered_mention_repos(
+            {}, str(tmp_path), known_repos={"owner/repo"},
+        )
+        with lm._warned_unregistered_repos_lock:
+            assert not any(
+                r.lower() == "owner/repo" for r in lm._warned_unregistered_repos
+            )
+
 
 class TestSingleInstanceDrainSkipped:
     """Verify single-instance mode drains notifications from unregistered repos."""
@@ -4260,3 +4303,53 @@ class TestKnownReposNullProjects:
         # No configured repos → None sentinel ("watch all") or an empty set.
         result = _get_known_repos_from_projects(str(tmp_path))
         assert result is None or isinstance(result, set)
+
+
+class TestInstanceRepoSync:
+    """Opt-in periodic instance/ pull tick (_maybe_sync_instance_repo)."""
+
+    def test_noop_when_interval_disabled(self, monkeypatch):
+        import app.loop_manager as lm
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "0")
+        called = []
+        monkeypatch.setattr(
+            "app.instance_hydrator.pull_instance_repo",
+            lambda d: called.append(d),
+        )
+        lm._maybe_sync_instance_repo("/tmp/does-not-matter")
+        assert called == []
+
+    def test_pull_invoked_when_enabled_and_throttled(self, monkeypatch):
+        import app.loop_manager as lm
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "900")
+        monkeypatch.setattr(lm, "_last_instance_sync", float("-inf"), raising=False)
+        monkeypatch.setattr(lm, "_instance_sync_unavailable", False, raising=False)
+        called = []
+        monkeypatch.setattr(
+            "app.instance_hydrator.pull_instance_repo",
+            lambda d: called.append(d) or True,
+        )
+        lm._maybe_sync_instance_repo("/tmp/inst")
+        assert called == ["/tmp/inst"]
+        # Second immediate call is throttled (interval not elapsed).
+        lm._maybe_sync_instance_repo("/tmp/inst")
+        assert called == ["/tmp/inst"]
+
+    def test_not_a_repo_disables_tick_for_boot(self, monkeypatch):
+        # None from pull_instance_repo (template-seeded, no .git) is a benign
+        # steady state: the tick self-disables instead of retrying/logging forever.
+        import app.loop_manager as lm
+        monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "900")
+        monkeypatch.setattr(lm, "_last_instance_sync", float("-inf"), raising=False)
+        monkeypatch.setattr(lm, "_instance_sync_unavailable", False, raising=False)
+        calls = []
+        monkeypatch.setattr(
+            "app.instance_hydrator.pull_instance_repo",
+            lambda d: calls.append(d) or None,
+        )
+        lm._maybe_sync_instance_repo("/tmp/inst")
+        assert calls == ["/tmp/inst"]
+        assert lm._instance_sync_unavailable is True
+        # Subsequent ticks short-circuit — no repeated pulls, no recurring warning.
+        lm._maybe_sync_instance_repo("/tmp/inst")
+        assert calls == ["/tmp/inst"]

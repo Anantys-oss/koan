@@ -31,6 +31,23 @@ _KEY_DEV_SKILLS = frozenset({
     "security_audit", "tech_debt", "explain",
 })
 
+# One-time feature announcements: sent once ever (tracked in
+# .feature-notices.json), riding the same idle throttle as skill tips and using
+# the same 💡 format, but with a link to the online doc. Add new (key, message)
+# tuples here to advertise future features.
+_ONE_TIME_NOTICES = (
+    (
+        "koan-md",
+        "💡 Did you know?\n"
+        "\n"
+        "Kōan now reads a project-root KOAN.md (and an optional .koan/ directory) "
+        "for koan-only guidance your team's CLAUDE.md never sees — steer autonomous "
+        "work without touching the shared instructions everyone else loads.\n"
+        "\n"
+        "Learn more: https://github.com/Anantys-oss/koan/blob/main/docs/users/koan-md.md",
+    ),
+)
+
 
 def _get_eligible_skills(registry) -> list:
     """Return core bridge-visible skills suitable for tips."""
@@ -135,6 +152,22 @@ def pick_tip(instance_dir: str) -> Optional[str]:
     return _format_tip(chosen_skill)
 
 
+def pick_one_time_notice(instance_dir: str) -> Optional[tuple]:
+    """Return ``(key, message)`` for the next unshown one-time notice, or None.
+
+    Pure lookup — does not record the notice as shown. The caller records it
+    only after the message is successfully queued (see ``maybe_send_feature_tip``)
+    so a failure between picking and delivery does not lose a "once ever" notice.
+    """
+    from app.skill_usage import get_shown_notices
+
+    shown = get_shown_notices(instance_dir)
+    for key, message in _ONE_TIME_NOTICES:
+        if key not in shown:
+            return key, message
+    return None
+
+
 def maybe_send_feature_tip(instance_dir: str) -> bool:
     """Send a feature tip if the throttle window has elapsed.
 
@@ -150,7 +183,9 @@ def maybe_send_feature_tip(instance_dir: str) -> bool:
     if _last_tip_time > 0 and (now - _last_tip_time) < _TIP_INTERVAL:
         return False
 
-    tip = pick_tip(instance_dir)
+    # One-time feature notices take priority over rotating skill tips.
+    notice = pick_one_time_notice(instance_dir)
+    tip = notice[1] if notice is not None else pick_tip(instance_dir)
     if tip is None:
         return False
 
@@ -158,6 +193,13 @@ def maybe_send_feature_tip(instance_dir: str) -> bool:
 
     outbox_path = Path(instance_dir) / "outbox.md"
     append_to_outbox(outbox_path, tip)
+
+    # Record a one-time notice only after it is queued, so an append failure
+    # does not permanently consume a "once ever" announcement.
+    if notice is not None:
+        from app.skill_usage import record_notice_shown
+
+        record_notice_shown(instance_dir, notice[0])
 
     _last_tip_time = now
     _idle_tip_sent = True

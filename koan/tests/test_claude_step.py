@@ -12,10 +12,10 @@ import pytest
 
 from app.claude_step import (
     StepResult,
-    _is_ancestor,
-    _prefetch_all_remotes,
+    _capture_rebase_baseline,
     _rebase_onto_target,
     _run_git,
+    _verify_rebase_result,
     commit_if_changes,
     is_hook_rejection,
     resolve_pr_location,
@@ -140,86 +140,212 @@ class TestStripCliNoise:
 # ---------- _rebase_onto_target ----------
 
 
+def _fake_rebase_git(
+    rebase_error=None,
+    fetch_error=None,
+    pre_count=2,
+    post_count=None,
+    merge_base_matches=True,
+):
+    """Build a ``_run_git`` side_effect simulating a rebase flow.
+
+    Returns ``(side_effect, state)`` where *state* records the commands
+    seen and whether the rebase command ran. ``rev-list --count`` returns
+    *pre_count* before the rebase and *post_count* (when given) after it,
+    letting tests exercise the post-rebase sanity gate.
+    """
+    state = {"rebased": False, "cmds": []}
+
+    def side_effect(cmd, **kwargs):
+        state["cmds"].append(cmd)
+        if "fetch" in cmd:
+            if fetch_error:
+                raise fetch_error
+            return ""
+        if "rebase" in cmd:
+            if rebase_error:
+                raise rebase_error
+            state["rebased"] = True
+            return ""
+        if "rev-parse" in cmd:
+            return "prehead" if cmd[-1] == "HEAD" else "targettip"
+        if "merge-base" in cmd:
+            return "targettip" if merge_base_matches else "staletip"
+        if "rev-list" in cmd:
+            if state["rebased"] and post_count is not None:
+                return str(post_count)
+            return str(pre_count)
+        return ""
+
+    return side_effect
+
+
 class TestRebaseOntoTarget:
-    """Tests for _rebase_onto_target."""
+    """Tests for _rebase_onto_target — strict-target contract."""
 
     @patch("app.claude_step._run_git")
-    def test_origin_success(self, mock_git):
-        result = _rebase_onto_target("main", "/project")
-        assert result == "origin"
-        mock_git.assert_any_call(
-            ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
-            cwd="/project", timeout=60,
+    def test_no_base_remote_fails_without_touching_git(self, mock_git):
+        """No remote matching the PR's base repo → fail, never guess."""
+        meta = {}
+        result = _rebase_onto_target("main", "/project", result_meta=meta)
+        assert result is None
+        assert meta["error"] == "no_base_remote"
+        assert "git remote add" in meta["detail"]
+        mock_git.assert_not_called()
+
+    @patch("app.claude_step._run_git")
+    def test_success_plain_rebase_on_target_remote(self, mock_git):
+        mock_git.side_effect = _fake_rebase_git()
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream",
         )
+        assert result == "upstream"
         mock_git.assert_any_call(
             ["git", "fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"],
             cwd="/project", timeout=60,
         )
+        rebase_cmds = [
+            c[0][0] for c in mock_git.call_args_list if "rebase" in c[0][0]
+        ]
+        assert rebase_cmds == [["git", "rebase", "--autostash", "upstream/main"]]
 
     @patch("app.cli_exec.subprocess.run")
     @patch("app.claude_step._run_git")
-    def test_origin_fails_upstream_succeeds(self, mock_git, mock_subprocess):
-        def side_effect(cmd, **kwargs):
-            if "rebase" in cmd and any("origin" in a for a in cmd):
-                raise RuntimeError("rebase failed")
+    def test_never_falls_back_to_other_remotes(self, mock_git, mock_subprocess):
+        """A failed rebase on the target remote must not retry other remotes.
+
+        Regression: PR #2309 — the old fallback loop rebased onto a fork's
+        stale main and resurrected 33 already-merged commits.
+        """
+        def selective_fail(cmd, **kwargs):
+            if "rebase" in cmd:
+                raise RuntimeError("conflict")
             return ""
-
-        mock_git.side_effect = side_effect
-        result = _rebase_onto_target("main", "/project")
-        assert result == "upstream"
-
-    @patch("app.cli_exec.subprocess.run")
-    @patch("app.claude_step._run_git")
-    def test_both_fail_returns_none(self, mock_git, mock_subprocess):
-        mock_git.side_effect = RuntimeError("fail")
-        result = _rebase_onto_target("main", "/project")
+        mock_git.side_effect = selective_fail
+        meta = {}
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream", result_meta=meta,
+        )
         assert result is None
+        assert meta["error"] == "rebase_failed"
+        rebase_cmds = [
+            c[0][0] for c in mock_git.call_args_list if "rebase" in c[0][0]
+        ]
+        assert len(rebase_cmds) == 1
+        assert rebase_cmds[0][-1] == "upstream/main"
+
+    @patch("app.claude_step._run_git")
+    def test_fetch_failure_fails_closed(self, mock_git, capsys):
+        """A failed fetch of the target ref aborts — no rebase on stale refs."""
+        mock_git.side_effect = _fake_rebase_git(
+            fetch_error=RuntimeError("network down"),
+        )
+        meta = {}
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream", result_meta=meta,
+        )
+        assert result is None
+        assert meta["error"] == "fetch_failed"
+        assert not any(
+            "rebase" in c[0][0] for c in mock_git.call_args_list
+        )
+        captured = capsys.readouterr()
+        assert "possibly-stale" in captured.err
+
+    @patch("app.claude_step.has_rebase_in_progress", return_value=True)
+    @patch("app.claude_step._run_git")
+    def test_conflict_callback_resolving_returns_remote(self, mock_git, mock_prog):
+        mock_git.side_effect = _fake_rebase_git(
+            rebase_error=RuntimeError("conflict"),
+        )
+        on_conflict = MagicMock(return_value=True)
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream",
+            on_conflict=on_conflict,
+        )
+        assert result == "upstream"
+        on_conflict.assert_called_once_with("/project")
 
     @patch("app.cli_exec.subprocess.run")
+    @patch("app.claude_step.has_rebase_in_progress", return_value=True)
     @patch("app.claude_step._run_git")
-    def test_rebase_abort_called_on_failure(self, mock_git, mock_subprocess):
-        def selective_fail(cmd, **kwargs):
-            if "rebase" in cmd:
-                raise RuntimeError("conflict")
-            return ""
-        mock_git.side_effect = selective_fail
-        _rebase_onto_target("main", "/project")
+    def test_conflict_callback_failing_aborts(
+        self, mock_git, mock_prog, mock_subprocess,
+    ):
+        mock_git.side_effect = _fake_rebase_git(
+            rebase_error=RuntimeError("conflict"),
+        )
+        meta = {}
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream",
+            on_conflict=MagicMock(return_value=False), result_meta=meta,
+        )
+        assert result is None
+        assert meta["error"] == "rebase_failed"
         abort_calls = [
-            c
-            for c in mock_subprocess.call_args_list
+            c for c in mock_subprocess.call_args_list
             if "rebase" in c[0][0] and "--abort" in c[0][0]
         ]
-        assert len(abort_calls) == 2
+        assert len(abort_calls) == 1
+        assert abort_calls[0][1].get("timeout", 0) > 0
 
-    @patch("app.cli_exec.subprocess.run")
     @patch("app.claude_step._run_git")
-    def test_rebase_abort_called_with_timeout(self, mock_git, mock_subprocess):
-        """git rebase --abort must have a timeout to prevent hangs in cleanup."""
-        def selective_fail(cmd, **kwargs):
-            if "rebase" in cmd:
-                raise RuntimeError("conflict")
-            return ""
-        mock_git.side_effect = selective_fail
-        _rebase_onto_target("main", "/project")
-        abort_calls = [
-            c
-            for c in mock_subprocess.call_args_list
-            if "rebase" in c[0][0] and "--abort" in c[0][0]
+    def test_sanity_gate_blocks_commit_growth(self, mock_git, capsys):
+        """A rebase that grows the unique-commit count must not survive.
+
+        Regression: PR #2309 went from 20 to 53 commits after a rebase onto
+        a stale ref and was force-pushed unchecked.
+        """
+        mock_git.side_effect = _fake_rebase_git(pre_count=20, post_count=53)
+        meta = {}
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream", result_meta=meta,
+        )
+        assert result is None
+        assert meta["error"] == "sanity_check_failed"
+        assert "20 to 53" in meta["detail"]
+        reset_cmds = [
+            c[0][0] for c in mock_git.call_args_list if "reset" in c[0][0]
         ]
-        assert len(abort_calls) >= 1
-        for call in abort_calls:
-            assert call[1].get("timeout", 0) > 0
+        assert reset_cmds == [["git", "reset", "--hard", "prehead"]]
+        assert "refusing to push" in capsys.readouterr().err
+
+    @patch("app.claude_step._run_git")
+    def test_sanity_gate_blocks_stale_base(self, mock_git):
+        """Post-rebase, the branch must sit on the target's current tip."""
+        mock_git.side_effect = _fake_rebase_git(merge_base_matches=False)
+        meta = {}
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream", result_meta=meta,
+        )
+        assert result is None
+        assert meta["error"] == "sanity_check_failed"
+        assert "stale" in meta["detail"]
+
+    @patch("app.claude_step._run_git")
+    def test_head_remote_never_used_for_onto(self, mock_git):
+        """head_remote is accepted for compat but must not produce --onto."""
+        mock_git.side_effect = _fake_rebase_git()
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream",
+            head_remote="origin",
+        )
+        assert result == "upstream"
+        for c in mock_git.call_args_list:
+            assert "--onto" not in c[0][0]
+            if "rebase" in c[0][0]:
+                assert "origin/main" not in c[0][0]
 
     @patch("app.cli_exec.subprocess.run")
     @patch("app.claude_step._run_git")
     def test_timeout_caught_and_logged(self, mock_git, mock_subprocess, capsys):
         """TimeoutExpired should be caught (not just Exception) and logged."""
-        def selective_fail(cmd, **kwargs):
-            if "rebase" in cmd:
-                raise subprocess.TimeoutExpired("git", 60)
-            return ""
-        mock_git.side_effect = selective_fail
-        result = _rebase_onto_target("main", "/project")
+        mock_git.side_effect = _fake_rebase_git(
+            rebase_error=subprocess.TimeoutExpired("git", 60),
+        )
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream",
+        )
         assert result is None
         captured = capsys.readouterr()
         assert "Rebase onto" in captured.err
@@ -229,12 +355,12 @@ class TestRebaseOntoTarget:
     @patch("app.claude_step._run_git")
     def test_os_error_caught_and_logged(self, mock_git, mock_subprocess, capsys):
         """OSError (e.g. git not found) should be caught and logged."""
-        def selective_fail(cmd, **kwargs):
-            if "rebase" in cmd:
-                raise OSError("No such file or directory: 'git'")
-            return ""
-        mock_git.side_effect = selective_fail
-        result = _rebase_onto_target("main", "/project")
+        mock_git.side_effect = _fake_rebase_git(
+            rebase_error=OSError("No such file or directory: 'git'"),
+        )
+        result = _rebase_onto_target(
+            "main", "/project", preferred_remote="upstream",
+        )
         assert result is None
         captured = capsys.readouterr()
         assert "Rebase onto" in captured.err
@@ -245,169 +371,156 @@ class TestRebaseOntoTarget:
         """Unexpected exceptions (e.g. ValueError) should propagate, not be swallowed."""
         mock_git.side_effect = ValueError("unexpected error")
         with pytest.raises(ValueError, match="unexpected"):
-            _rebase_onto_target("main", "/project")
+            _rebase_onto_target(
+                "main", "/project", preferred_remote="upstream",
+            )
 
 
-# ---------- _is_ancestor ----------
+# ---------- _capture_rebase_baseline / _verify_rebase_result ----------
 
 
-class TestIsAncestor:
-    """Tests for _is_ancestor helper."""
-
-    @patch("app.claude_step._run_git")
-    def test_returns_true_when_ancestor(self, mock_git):
-        mock_git.return_value = ""
-        assert _is_ancestor("origin/main", "upstream/main", "/project") is True
-        mock_git.assert_called_once()
-        cmd = mock_git.call_args[0][0]
-        assert cmd == ["git", "merge-base", "--is-ancestor", "origin/main", "upstream/main"]
+class TestCaptureRebaseBaseline:
+    """Tests for the pre-rebase snapshot helper."""
 
     @patch("app.claude_step._run_git")
-    def test_returns_false_when_not_ancestor(self, mock_git):
-        mock_git.side_effect = RuntimeError("exit 1")
-        assert _is_ancestor("origin/main", "upstream/main", "/project") is False
+    def test_returns_head_and_count(self, mock_git):
+        mock_git.side_effect = ["abc123\n", "20\n"]
+        assert _capture_rebase_baseline("upstream/main", "/project") == ("abc123", 20)
 
     @patch("app.claude_step._run_git")
-    def test_returns_false_on_timeout(self, mock_git):
-        mock_git.side_effect = subprocess.TimeoutExpired("git", 10)
-        assert _is_ancestor("origin/main", "upstream/main", "/project") is False
+    def test_returns_none_on_git_error(self, mock_git):
+        mock_git.side_effect = RuntimeError("boom")
+        assert _capture_rebase_baseline("upstream/main", "/project") is None
 
-
-# ---------- _rebase_onto_target with head_remote ----------
-
-
-class TestRebaseOntoTargetForkAware:
-    """Tests for --onto logic when head_remote (fork) differs from target."""
-
-    @patch("app.claude_step._is_ancestor", return_value=True)
     @patch("app.claude_step._run_git")
-    def test_stale_fork_skips_onto_uses_plain_rebase(self, mock_git, mock_ancestor):
-        """When fork/main is ancestor of upstream/main, --onto is skipped.
+    def test_returns_none_on_unparseable_count(self, mock_git):
+        mock_git.side_effect = ["abc123\n", "not-a-number\n"]
+        assert _capture_rebase_baseline("upstream/main", "/project") is None
 
-        This is the bug scenario: fork is simply behind upstream. Using
-        --onto would replay upstream commits that already exist, causing
-        spurious conflicts in files the PR never touched.
+
+class TestVerifyRebaseResult:
+    """Tests for the post-rebase sanity gate."""
+
+    @patch("app.claude_step._run_git")
+    def test_sane_rebase_passes(self, mock_git):
+        mock_git.side_effect = ["tip\n", "tip\n", "18\n"]
+        assert _verify_rebase_result("upstream/main", "/project", 20) is None
+
+    @patch("app.claude_step._run_git")
+    def test_commit_growth_is_a_violation(self, mock_git):
+        mock_git.side_effect = ["tip\n", "tip\n", "53\n"]
+        violation = _verify_rebase_result("upstream/main", "/project", 20)
+        assert violation is not None
+        assert "20 to 53" in violation
+
+    @patch("app.claude_step._run_git")
+    def test_not_on_target_tip_is_a_violation(self, mock_git):
+        mock_git.side_effect = ["tip\n", "oldbase\n", "20\n"]
+        violation = _verify_rebase_result("upstream/main", "/project", 20)
+        assert violation is not None
+        assert "not based on the current tip" in violation
+
+    @patch("app.claude_step._run_git")
+    def test_check_error_reported_as_violation(self, mock_git):
+        """If the gate itself can't run, that is a violation, not a pass."""
+        mock_git.side_effect = RuntimeError("boom")
+        violation = _verify_rebase_result("upstream/main", "/project", 20)
+        assert violation is not None
+        assert "could not run" in violation
+
+
+# ---------- _rebase_onto_target with real git repos ----------
+
+
+def _git(cwd, *args):
+    """Run git in *cwd*, raising on failure."""
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", *args],
+        cwd=cwd, check=True, capture_output=True, text=True,
+    )
+
+
+def _git_out(cwd, *args) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _commit_file(repo, name, content, message):
+    (repo / name).write_text(content)
+    _git(repo, "add", name)
+    _git(repo, "commit", "-m", message)
+
+
+class TestRebaseOntoTargetRealGit:
+    """End-to-end tests of the strict rebase flow against real repos."""
+
+    @pytest.fixture
+    def work_repo(self, tmp_path):
+        """A bare base repo, a seed clone advancing it, and a work clone.
+
+        The work clone's remote is named ``target`` and holds a checked-out
+        ``feature`` branch with 2 commits, forked before the base advanced
+        by 1 more commit.
         """
+        bare = tmp_path / "base.git"
+        bare.mkdir()
+        _git(bare, "init", "--bare", "-b", "main", ".")
+
+        seed = tmp_path / "seed"
+        _git(tmp_path, "clone", str(bare), "seed")
+        _commit_file(seed, "a.txt", "one", "c1")
+        _git(seed, "push", "origin", "main")
+
+        work = tmp_path / "work"
+        _git(tmp_path, "clone", "-o", "target", str(bare), "work")
+        _git(work, "config", "user.email", "t@t")
+        _git(work, "config", "user.name", "t")
+        _git(work, "checkout", "-b", "feature")
+        _commit_file(work, "f1.txt", "f1", "feature 1")
+        _commit_file(work, "f2.txt", "f2", "feature 2")
+
+        # Advance the base after the feature branch forked
+        _commit_file(seed, "b.txt", "two", "c2")
+        _git(seed, "push", "origin", "main")
+        return work
+
+    def test_happy_path_rebases_onto_fresh_tip(self, work_repo):
         result = _rebase_onto_target(
-            "main", "/project",
-            preferred_remote="upstream",
-            head_remote="origin",
+            "main", str(work_repo), preferred_remote="target",
         )
-        assert result == "upstream"
-        # Should have fetched upstream/main and origin/main, then plain rebase
-        rebase_calls = [
-            c for c in mock_git.call_args_list
-            if any("rebase" in str(a) for a in c[0][0])
-        ]
-        assert len(rebase_calls) == 1
-        rebase_cmd = rebase_calls[0][0][0]
-        assert "--onto" not in rebase_cmd
+        assert result == "target"
+        assert _git_out(work_repo, "rev-list", "--count", "target/main..HEAD") == "2"
+        assert _git_out(work_repo, "merge-base", "HEAD", "target/main") == \
+            _git_out(work_repo, "rev-parse", "target/main")
 
-    @patch("app.claude_step._is_ancestor", return_value=False)
-    @patch("app.claude_step._run_git")
-    def test_diverged_fork_uses_onto(self, mock_git, mock_ancestor):
-        """When fork/main has diverged from upstream/main, --onto is used."""
+    def test_unreachable_remote_fails_closed(self, work_repo, tmp_path):
+        """If the target can't be fetched, no rebase happens on stale refs."""
+        pre_head = _git_out(work_repo, "rev-parse", "HEAD")
+        _git(work_repo, "remote", "set-url", "target", str(tmp_path / "gone.git"))
+        meta = {}
         result = _rebase_onto_target(
-            "main", "/project",
-            preferred_remote="upstream",
-            head_remote="origin",
+            "main", str(work_repo), preferred_remote="target", result_meta=meta,
         )
-        assert result == "upstream"
-        rebase_calls = [
-            c for c in mock_git.call_args_list
-            if any("rebase" in str(a) for a in c[0][0])
-        ]
-        assert len(rebase_calls) == 1
-        rebase_cmd = rebase_calls[0][0][0]
-        assert "--onto" in rebase_cmd
-        assert "upstream/main" in rebase_cmd
-        assert "origin/main" in rebase_cmd
+        assert result is None
+        assert meta["error"] == "fetch_failed"
+        assert _git_out(work_repo, "rev-parse", "HEAD") == pre_head
 
-    @patch("app.claude_step._run_git")
-    def test_head_remote_fetch_fails_falls_through(self, mock_git):
-        """When fetching fork's base branch fails, falls through to plain rebase."""
-        def side_effect(cmd, **kwargs):
-            if "origin" in cmd and "fetch" in cmd[1]:
-                raise RuntimeError("fetch failed")
-            return ""
-        mock_git.side_effect = side_effect
-        result = _rebase_onto_target(
-            "main", "/project",
-            preferred_remote="upstream",
-            head_remote="origin",
-        )
-        assert result == "upstream"
-        rebase_calls = [
-            c for c in mock_git.call_args_list
-            if any("rebase" in str(a) for a in c[0][0])
-        ]
-        assert len(rebase_calls) == 1
-        rebase_cmd = rebase_calls[0][0][0]
-        assert "--onto" not in rebase_cmd
+    def test_verify_flags_branch_left_behind_target(self, work_repo):
+        """_verify_rebase_result catches a branch based below the target tip."""
+        _git(work_repo, "fetch", "target",
+             "+refs/heads/main:refs/remotes/target/main")
+        # No rebase ran: feature still forks from c1 while target/main is at c2
+        violation = _verify_rebase_result("target/main", str(work_repo), 2)
+        assert violation is not None
+        assert "not based on the current tip" in violation
 
-
-# ---------- _prefetch_all_remotes ----------
-
-
-class TestPrefetchAllRemotes:
-    """Tests for _prefetch_all_remotes — eager base branch sync."""
-
-    @patch("app.claude_step._run_git")
-    def test_fetches_origin_and_upstream(self, mock_git):
-        _prefetch_all_remotes("main", "/project")
-        assert mock_git.call_count == 2
-        mock_git.assert_any_call(
-            ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
-            cwd="/project", timeout=60,
-        )
-        mock_git.assert_any_call(
-            ["git", "fetch", "upstream", "+refs/heads/main:refs/remotes/upstream/main"],
-            cwd="/project", timeout=60,
-        )
-
-    @patch("app.claude_step._run_git")
-    def test_includes_head_remote(self, mock_git):
-        _prefetch_all_remotes("main", "/project", head_remote="myfork")
-        fetched = [c[0][0][2] for c in mock_git.call_args_list]
-        assert "myfork" in fetched
-        assert "origin" in fetched
-        assert "upstream" in fetched
-
-    @patch("app.claude_step._run_git")
-    def test_preferred_remote_first(self, mock_git):
-        _prefetch_all_remotes("main", "/project", preferred_remote="upstream")
-        first_call_remote = mock_git.call_args_list[0][0][0][2]
-        assert first_call_remote == "upstream"
-
-    @patch("app.claude_step._run_git")
-    def test_no_duplicate_when_head_in_ordered(self, mock_git):
-        _prefetch_all_remotes("main", "/project", head_remote="origin")
-        assert mock_git.call_count == 2
-
-    @patch("app.claude_step._run_git")
-    def test_failure_is_nonfatal(self, mock_git, capsys):
-        mock_git.side_effect = RuntimeError("network down")
-        _prefetch_all_remotes("main", "/project")
-        captured = capsys.readouterr()
-        assert "Pre-fetch" in captured.err
-        assert "non-fatal" in captured.err
-
-    @patch("app.claude_step._run_git")
-    def test_timeout_is_nonfatal(self, mock_git, capsys):
-        mock_git.side_effect = subprocess.TimeoutExpired("git", 60)
-        _prefetch_all_remotes("main", "/project")
-        captured = capsys.readouterr()
-        assert "Pre-fetch" in captured.err
-
-    @patch("app.claude_step._ordered_remotes", return_value=["origin"])
-    @patch("app.claude_step._run_git")
-    def test_origin_only_repo_skips_upstream(self, mock_git, mock_remotes):
-        _prefetch_all_remotes("main", "/project")
-        mock_remotes.assert_called_once_with(None, cwd="/project")
-        mock_git.assert_called_once_with(
-            ["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
-            cwd="/project", timeout=60,
-        )
+    def test_verify_passes_after_correct_rebase(self, work_repo):
+        assert _rebase_onto_target(
+            "main", str(work_repo), preferred_remote="target",
+        ) == "target"
+        assert _verify_rebase_result("target/main", str(work_repo), 2) is None
 
 
 

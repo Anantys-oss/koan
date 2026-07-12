@@ -1,9 +1,10 @@
 ---
 type: doc
 title: "Skills Reference"
+description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-06-29
+updated: 2026-07-09
 ---
 
 # Skills Reference
@@ -24,7 +25,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/mission <text>` | — | Queue a new mission. Use `--now` to prioritize |
-| `/list` | `/queue`, `/ls` | List pending and in-progress missions |
+| `/list [state]` | `/queue`, `/ls` | List missions; default pending+in-progress, or `done`/`failed`/`all` |
 | `/priority <n> <pos>` | — | Reorder a pending mission in the queue |
 | `/cancel <n or keyword>` | `/remove`, `/clear` | Cancel a pending mission |
 | `/abort` | — | Abort the current in-progress mission |
@@ -62,7 +63,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |
 | `/check <url>` | `/inspect` | Run project health checks on a PR or issue (rebase, review, plan) | — |
 | `/check_need <url>` | `/need`, `/needs` | Analyze if a PR or issue is still needed vs. current main | — |
-| `/ci_check <PR>\|--enable\|--disable` | — | Check and fix CI failures on a PR; toggle CI system | — |
+| `/ci_check <PR>\|--enable\|--disable` | — | Check and fix CI failures on a PR (non-blocking, bounded, one attempt per mission); toggle CI system | — |
 | `/pr <PR>` | — | Review and update a GitHub pull request | — |
 | `/claudemd [project]` | `/claude`, `/claude.md` | Refresh or create a project's CLAUDE.md | — |
 | `/doc <project> [cats]` | `/docs` | Extract structured documentation to docs/ | Yes |
@@ -90,6 +91,26 @@ detail, so reviewers can react or resolve in place. Cap the volume with
 `review_inline_comments.max_comments` (default 25). Re-running `/review` is
 idempotent (already-anchored findings are skipped); multi-line findings anchor
 to their full range; if all posts fail, you are notified. Disabled by default.
+
+**Stale-HEAD alert:** the review comment's footer shows the commit it was run
+against (`HEAD=<short-sha>`). A review can take minutes, and you may push (or
+force-push) new commits meanwhile. If the branch tip moved between when the
+review started and when the comment is posted, Kōan appends an **IMPORTANT**
+banner to the comment noting that the findings predate your latest push — so you
+don't act on stale feedback. Re-run `/review` to cover the new commits. Nothing
+changes for the common case where the branch didn't move.
+
+**Large diffs & partial-coverage warning:** Review diffs are packed to fit a
+token budget by the diff compressor (`optimizations.review_compressor.token_budget`,
+default 80,000 tokens — the single knob controlling review diff size). The
+fetch-time character cap is *derived* from that budget (budget × 3.5 chars/token
+× 4 headroom), so the compressor — not a blind character cut — decides coverage
+on large-context models. If the compressor is disabled, a token-safe backstop
+(budget × 3.5, no headroom) truncates the diff instead, so the size guard holds
+in every config. Whenever any file is omitted (fetch-time backstop,
+compressor packing, or trivial-file triage), the posted review opens with a
+`⚠️ Partial review` block listing every omitted file, so partial coverage is
+never silent.
 
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
@@ -148,7 +169,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | `/quota [N]` | `/q` | Check LLM quota (live), or override remaining % |
 | `/usage` | — | Detailed quota and progress |
 | `/metrics` | — | Mission success rates and reliability stats |
-| `/report [--week\|--month]` | `/weekly_report`, `/monthly_report` | PR activity report (created, merged %, interacted) per-project + global; defaults to both weekly and monthly |
+| `/report [--week\|--month]` | `/reports`, `/weekly_report`, `/monthly_report` | PR activity report (created, merged %, interacted) per-project + global; defaults to both weekly and monthly |
 | `/doctor` | — | Diagnostic self-checks; `--fix` auto-repairs, `--full` adds connectivity |
 | `/models` | `/model` | Show resolved model config for the active CLI provider |
 | `/config_check` | `/cfgcheck`, `/configcheck` | Detect drift between instance/config.yaml and the template |

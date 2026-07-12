@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Auto-Update"
+description: "Describes Kōan's opt-in auto-update feature that checks for and pulls upstream commits, plus the always-on release-tag notification."
 tags: [operations]
 created: 2026-05-28
 updated: 2026-06-10

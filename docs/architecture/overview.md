@@ -1,6 +1,7 @@
 ---
 type: doc
 title: "Architecture Overview"
+description: "High-level architecture summary of Koan's two main processes (bridge and agent loop), major subsystems, and the human-decides safety model."
 tags: [architecture]
 created: 2026-05-28
 updated: 2026-05-28
