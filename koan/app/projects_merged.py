@@ -68,13 +68,19 @@ def _is_yaml_stale(koan_root: str) -> bool:
 
 
 def _get_workspace_mtime(koan_root: str) -> Optional[float]:
-    """Get workspace/ directory mtime, or None if missing.
+    """Get the active workspace directory mtime, or None if missing.
+
+    Resolves through resolve_workspace_dir so cache invalidation watches the
+    exact directory discover_workspace_projects scans (instance/workspace on
+    hosted deploys, else <root>/workspace). Watching the wrong directory would
+    leave a freshly added project invisible until restart (issue #2338).
 
     The directory mtime changes whenever entries are added or removed,
     which is exactly when workspace project discovery needs to re-scan.
     """
+    from app.workspace_discovery import resolve_workspace_dir
     try:
-        return (Path(koan_root) / "workspace").stat().st_mtime
+        return resolve_workspace_dir(koan_root).stat().st_mtime
     except OSError:
         return None
 
