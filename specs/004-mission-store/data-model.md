@@ -122,6 +122,35 @@ CREATE TABLE IF NOT EXISTS quarantine (
 );
 ```
 
+### `mission_outcomes` (authoritative terminal-outcome log — issue #2285)
+
+```sql
+-- append-only audit trail of terminal Done/Failed transitions, keyed by
+-- canonical_mission_key so it survives requeue/recovery and the per-write
+-- reconcile_all DELETE+re-INSERT of the missions table. NOT part of any
+-- missions.md export; read by the REST API (GET /v1/missions/{id}.outcome).
+CREATE TABLE IF NOT EXISTS mission_outcomes (
+    id              INTEGER PRIMARY KEY,
+    key             TEXT NOT NULL,   -- canonical_mission_key(text)
+    status          TEXT NOT NULL,   -- "done" | "failed"
+    reason_category TEXT,            -- quota|timeout|tool_error|agent_error|cancelled|stagnation
+    detail          TEXT,            -- free-text context, capped at 500 chars
+    recorded_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outcomes_key ON mission_outcomes(key);
+```
+
+Owned by `OutcomeStore` (alongside `QuarantineStore`). The agent loop writes one
+row at the authoritative Done/Failed transition (`run._finalize_mission`);
+`OutcomeStore.latest(text)` returns the newest row for a key. Row-capped at
+`OutcomeStore.KEEP` (newest retained). Critically, because `reconcile_all`
+DELETE+re-INSERTs the `missions` table on every write (churning mission-row
+ids), terminal outcomes must live in a sibling table it never rebuilds — the
+same durability guarantee `QuarantineStore` relies on. The REST API prefers this
+log over the `missions.md` section scan for terminal status, eliminating the
+absence-inference heuristic that mis-reported pruned/renamed/crashed missions as
+`done`.
+
 The one-time ingest imports the `## CI` and Ideas sections (and the separate
 `missions-quarantine.md`) into these tables; `export_view` renders CI + Ideas back
 into the read-only `missions.md`. Quarantine is authoritative in its table too: the

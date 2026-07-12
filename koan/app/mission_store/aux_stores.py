@@ -62,6 +62,18 @@ CREATE TABLE IF NOT EXISTS quarantine (
 
 _QUARANTINE_KEEP = 200  # cap rows (mirrors _enforce_quarantine_cap's byte cap intent)
 
+_OUTCOME_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mission_outcomes (
+    id              INTEGER PRIMARY KEY,
+    key             TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    reason_category TEXT,
+    detail          TEXT,
+    recorded_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outcomes_key ON mission_outcomes(key);
+"""
+
 
 @contextmanager
 def _connect(db_path: str):
@@ -268,3 +280,52 @@ class QuarantineStore:
             rows = conn.execute("SELECT * FROM quarantine ORDER BY id").fetchall()
         return [f"- \U0001f6e1️ [{r['added_at']}] ({r['source']}) "
                 f"{r['reason']}: {r['text']}" for r in rows]
+
+
+class OutcomeStore:
+    """Append-only authoritative terminal-outcome log.
+
+    Keyed by ``canonical_mission_key`` so it survives requeue/recovery and the
+    per-write ``reconcile_all`` DELETE+re-INSERT of the missions table. Never
+    part of the ``missions.md`` export — a pure audit trail read by the REST API.
+    """
+
+    KEEP = 500  # cap rows; newest retained
+
+    def __init__(self, instance: str):
+        self._db = str(Path(instance) / "missions.db")
+        with _connect(self._db) as conn:
+            conn.executescript(_OUTCOME_SCHEMA)
+
+    @staticmethod
+    def _key(text: str) -> str:
+        from app.missions import canonical_mission_key
+        return canonical_mission_key(text)
+
+    def record(self, text: str, status: str, reason_category: Optional[str] = None,
+               detail: Optional[str] = None) -> bool:
+        """Append a terminal outcome; caps the log to the most recent KEEP rows."""
+        try:
+            with _connect(self._db) as conn:
+                conn.execute(
+                    "INSERT INTO mission_outcomes(key, status, reason_category, detail, recorded_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (self._key(text), status, reason_category,
+                     (detail or "")[:500] or None, strftime("%Y-%m-%d %H:%M")))
+                conn.execute(
+                    "DELETE FROM mission_outcomes WHERE id NOT IN "
+                    "(SELECT id FROM mission_outcomes ORDER BY id DESC LIMIT ?)",
+                    (self.KEEP,))
+            return True
+        except sqlite3.DatabaseError as e:
+            logger.error("outcome record failed for %r: %s", text[:60], e)
+            return False
+
+    def latest(self, text: str) -> Optional[dict]:
+        """Return the newest recorded outcome for a mission key, or None."""
+        with _connect(self._db) as conn:
+            row = conn.execute(
+                "SELECT status, reason_category, detail, recorded_at "
+                "FROM mission_outcomes WHERE key=? ORDER BY id DESC LIMIT 1",
+                (self._key(text),)).fetchone()
+        return dict(row) if row else None
