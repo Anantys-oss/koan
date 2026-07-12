@@ -23,8 +23,9 @@ jobs:
     steps:
       - name: 🔍 Validate tag
         id: check
+        env:
+          TAG: ${{ inputs.tag }}   # bound as data, never interpolated into the shell
         run: |
-          TAG="${{ inputs.tag }}"
           if ! printf '%s' "$TAG" | grep -qE '^[a-z0-9][a-z0-9._-]{0,127}$'; then
             echo "::error::Invalid Docker tag '$TAG'. Use lowercase alphanumerics, '.', '-', '_' (max 128 chars; must start alnum). Examples: devel, test, pr-123."
             exit 1
