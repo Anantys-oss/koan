@@ -101,6 +101,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "thinking": _NESTED,
     "stagnation": _NESTED,
     "optimizations": _NESTED,
+    "ci_check": _NESTED,
 }
 
 # Top-level keys that are recognized but deprecated: they still work (honored
@@ -292,6 +293,14 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "review_compressor": "dict",
         "ponytail": "dict",
     },
+    # ci_check also accepts a bare bool shorthand (``ci_check: true``); the
+    # dict form carries the toggle plus the queue-safety bounds.
+    "ci_check": {
+        "enabled": "bool",
+        "timeout": "int",
+        "max_fix_attempts_per_mission": "int",
+        "idle_timeout": "int",
+    },
 }
 
 # Type name → Python type(s) for isinstance checks
@@ -403,6 +412,10 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                             f"'effort' invalid effort '{value}' "
                             f"(expected low/medium/high/max)",
                         ))
+                    continue
+                # ci_check accepts a bare bool shorthand (ci_check: true) in
+                # addition to the dict form — is_ci_check_enabled honors both.
+                if key == "ci_check" and isinstance(value, bool):
                     continue
                 warnings.append((key, f"'{key}' should be a mapping, got {type(value).__name__}"))
                 continue
@@ -908,6 +921,11 @@ def validate_config_or_raise(koan_root: str) -> None:
             if key == "effort" and isinstance(value, str):
                 continue
             if key == "stagnation" and value is False:
+                continue
+            # ci_check accepts a bare bool shorthand (ci_check: true) in addition
+            # to the dict form — is_ci_check_enabled honors both. Mirror the
+            # warning validator so the strict startup path does not regress it.
+            if key == "ci_check" and isinstance(value, bool):
                 continue
             if not isinstance(value, dict):
                 errors.append(

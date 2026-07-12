@@ -875,6 +875,8 @@ Fetches the PR diff or issue description, compares it against the current main b
 
 Usually auto-triggered when CI fails after a `/rebase`, but can also be invoked manually. Fetches failure logs, checks out the PR branch, and runs Claude to attempt a fix. If the fix produces a commit, it force-pushes and re-enqueues the PR for CI monitoring. Requires `ci_check.enabled: true` in config.yaml (the default).
 
+CI fixing is designed to stay out of the queue's way: the auto-injected fix mission is queued **non-urgently** (behind your other work), each fix mission performs **one** bounded Claude fix attempt and then yields the slot, and retries are spread across iterations up to the `ci_fix_max_attempts` total budget. A single unfixable PR can no longer freeze the agent for hours. Tunables (all optional): `ci_check.timeout` (per-step wall-clock cap, default 3600s), `ci_check.max_fix_attempts_per_mission` (default 1), and `ci_check.idle_timeout` (between-output watchdog, default `first_output_timeout`).
+
 <details>
 <summary>Use cases</summary>
 
@@ -1950,8 +1952,22 @@ The CI check system monitors your PRs for CI failures and can automatically atte
 
 ```yaml
 ci_check:
-  enabled: true              # Master switch (default: true)
+  enabled: true                     # Master switch (default: true)
+  timeout: 3600                     # Per-step wall-clock cap in seconds (default: 3600).
+                                    # Bounds a single CI-fix Claude step so a stalled fix
+                                    # cannot hold the serial mission queue for the full
+                                    # 2-hour skill_timeout.
+  max_fix_attempts_per_mission: 1   # Claude fix attempts inside one /ci_check mission
+                                    # (default: 1). Total per-PR retries are governed
+                                    # separately by ci_fix_max_attempts and interleaved
+                                    # with other work by the async monitor.
+  idle_timeout: 600                 # Idle (between-output) watchdog in seconds for a
+                                    # CI-fix step (default: first_output_timeout, 600).
+                                    # Dedicated knob so tuning first_output_timeout does
+                                    # not silently change CI-fix idle behavior. 0 disables.
 ```
+
+The auto-injected `/ci_check` fix mission is queued **non-urgently**, so CI fixing never jumps ahead of your backlog; each mission does one bounded attempt and yields, so a failing PR cannot monopolize the queue.
 
 When disabled, all CI-related automation is skipped: queue draining, CI dispatch, CI enqueue after rebase, and the `/ci_check` command returns an error.
 
