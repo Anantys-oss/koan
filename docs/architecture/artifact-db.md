@@ -49,7 +49,9 @@ columns are pinned to `memory_db._EXPECTED_COLUMNS` so the two indexes agree.
 - `read_from_db_or_file(conn, table, file_reader=, order_key=None)` — reads the
   DB when populated and in-sync, else parses the file; preserves file-parse
   ordering **and dict shape** (surrogate `id` PK columns are excluded) so a
-  consumer can't tell which source served the read. The in-sync gate is enforced
+  consumer can't tell which source served the read — including value *type*:
+  `is_bool` columns (e.g. `audit_log.has_checkpoint`) are normalized back from
+  SQLite's INTEGER affinity to `bool` on read, not just whole-dict equality. The in-sync gate is enforced
   via `verify_schema` — a column drift falls back to the file rather than serving
   a divergent shape. A dirty
   projection (last write failed to mirror) always falls back to the file.

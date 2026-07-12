@@ -323,6 +323,41 @@ def test_dual_read_shape_matches_file_no_surrogate_id(tmp_path):
     conn.close()
 
 
+def test_dual_read_bool_column_normalized_to_bool(tmp_path):
+    # audit_log.has_checkpoint is an is_bool INTEGER column: SQLite reads it back
+    # as int, so read_from_db_or_file must re-normalize to bool to match the
+    # file's value *type*, not just whole-dict equality (True == 1).
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    file_recs = [{"timestamp": "t", "mission": "m", "state": "s",
+                  "action": "a", "attempts": 2, "has_checkpoint": True},
+                 {"timestamp": "t2", "mission": "m2", "state": "s2",
+                  "action": "a2", "attempts": 0, "has_checkpoint": None}]
+    artifact_db.dual_write(file_recs, file_writer=lambda r: None,
+                           conn=conn, table="audit_log", mode="append")
+    from_db = artifact_db.read_from_db_or_file(
+        conn, "audit_log", file_reader=lambda: file_recs)
+    assert from_db == file_recs
+    assert from_db[0]["has_checkpoint"] is True     # bool, not int 1
+    assert from_db[1]["has_checkpoint"] is None      # NULL preserved
+    assert isinstance(from_db[0]["attempts"], int)   # non-bool INTEGER stays int
+    conn.close()
+
+
+def test_dual_read_unknown_artifact_logs_and_falls_back(tmp_path, caplog):
+    # An unknown/typo'd table must log (like dual_write/rebuild_from_file) rather
+    # than silently serving file-only with zero signal.
+    conn = artifact_db.connect(tmp_path / "a.db")
+    artifact_db.create_tables(conn)
+    file_recs = [{"x": 1}]
+    with caplog.at_level("WARNING"):
+        out = artifact_db.read_from_db_or_file(
+            conn, "nonexistent_table", file_reader=lambda: file_recs)
+    assert out == file_recs
+    assert any("unknown artifact" in r.message for r in caplog.records)
+    conn.close()
+
+
 def test_dual_read_falls_back_when_db_empty(tmp_path):
     conn = artifact_db.connect(tmp_path / "a.db")
     artifact_db.create_tables(conn)

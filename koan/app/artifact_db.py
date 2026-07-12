@@ -27,6 +27,10 @@ class ColumnSpec:
     sql_type: str = "TEXT"  # TEXT / INTEGER / REAL
     primary_key: bool = False
     nullable: bool = True
+    # A boolean stored in an INTEGER column round-trips from SQLite as ``int``
+    # (0/1), not ``bool`` — breaking source-indistinguishability for consumers
+    # using ``is``/``type()``. Flag it so read_from_db_or_file re-normalizes.
+    is_bool: bool = False
 
     def ddl(self) -> str:
         parts = [self.name, self.sql_type]
@@ -105,7 +109,7 @@ ARTIFACT_SCHEMAS: Dict[str, TableSpec] = {
         ColumnSpec("state"),
         ColumnSpec("action"),
         ColumnSpec("attempts", "INTEGER"),
-        ColumnSpec("has_checkpoint", "INTEGER"),
+        ColumnSpec("has_checkpoint", "INTEGER", is_bool=True),
     ]),
 }
 
@@ -350,10 +354,17 @@ def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,
     for artifacts whose file order is semantic; it is validated against the
     declared (non-PK) columns to avoid interpolating an arbitrary identifier into
     SQL. Surrogate primary-key columns are excluded from the result so a
-    DB-served read carries the same dict shape as ``file_reader()``.
+    DB-served read carries the same dict shape as ``file_reader()``; ``is_bool``
+    columns are re-normalized from SQLite's INTEGER affinity back to ``bool`` so
+    the read matches the file's value *type*, not just whole-dict equality.
     """
     spec = ARTIFACT_SCHEMAS.get(table)
-    if conn is None or spec is None:
+    if spec is None:
+        # Match dual_write/rebuild_from_file: a typo'd/unknown table would else
+        # get permanent file-only behavior with zero signal, hiding the misconfig.
+        logger.warning("[artifact_db] read: unknown artifact %r", table)
+        return file_reader()
+    if conn is None:
         return file_reader()
     if _is_dirty(conn, table):
         return file_reader()        # projection known-divergent -> trust the file
@@ -380,4 +391,14 @@ def read_from_db_or_file(conn: Optional[sqlite3.Connection], table: str, *,
         return file_reader()
     if not rows:
         return file_reader()        # empty projection -> trust the file
-    return [dict(zip(cols, row)) for row in rows]
+    # SQLite reads INTEGER-affinity bool columns back as int; re-normalize the
+    # flagged ones so a DB-served read matches the file's dict value *type*, not
+    # just whole-dict equality (True == 1). Preserve NULL as None.
+    bool_cols = [c.name for c in spec.columns if c.is_bool and not c.primary_key]
+    result = [dict(zip(cols, row)) for row in rows]
+    if bool_cols:
+        for rec in result:
+            for bc in bool_cols:
+                if rec.get(bc) is not None:
+                    rec[bc] = bool(rec[bc])
+    return result
