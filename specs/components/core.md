@@ -4,7 +4,7 @@ title: "Component Spec — Core Data & Config"
 description: "Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on."
 tags: [core]
 created: 2026-06-27
-updated: 2026-07-10
+updated: 2026-07-11
 ---
 
 # Component Spec — Core Data & Config
@@ -43,6 +43,7 @@ is documented in `docs/architecture/shared-state.md`.
 | `utils.py::atomic_write()` | Temp file + rename + `fcntl.flock()`. **Every shared-file write goes through this** — never write `instance/*` directly. |
 | `utils.py::koan_tmp_dir()` | Per-uid scratch/lock dir (`$XDG_RUNTIME_DIR/koan` or `/tmp/koan-<uid>/`, mode 0700). All `tempfile.*` in `koan/app/` must pass `dir=koan_tmp_dir()`. |
 | `utils.py::get_known_projects()` | Resolution order: `projects.yaml` > `KOAN_PROJECTS`. |
+| `projects_merged.py::_merge_projects()` | Unifies `projects.yaml` + auto-discovered `instance/workspace/` projects into one logical set (called by `refresh_projects()`, wrapped by the mtime-cached `get_all_projects()`, consumed by `utils.get_known_projects()`). Dedup identity: resolved filesystem path first (silent), normalized name (case/dash/underscore-insensitive) second (appends a warning surfaced via `get_warnings()` on path mismatch). `projects.yaml` always wins name + path + config. |
 | `config.py` | Centralized config access — tool config, model selection, CLI flag building, behavioral settings. New config keys get an accessor here, not scattered `os.environ` reads. |
 | `constants.py` | Numeric tuning constants. Import-as pattern preserves module-level names for test patching. |
 | `commit_conventions.py::get_project_commit_guidance()` | Detects commit style from CLAUDE.md or recent history; feeds rebase/CI commit messages. |

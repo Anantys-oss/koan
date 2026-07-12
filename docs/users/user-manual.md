@@ -311,6 +311,11 @@ Kōan can manage multiple projects simultaneously. It rotates between them based
 
 - **Aliases:** `/proj`
 - Shows each project's configured issue tracker when set.
+- A repository registered in both `projects.yaml` and the auto-discovered
+  `instance/workspace/` directory — even under names that differ only by a
+  dash or underscore (e.g. `my-repo` vs `myrepo`) — is listed **once**, under
+  its `projects.yaml` (canonical) name. `projects.yaml` settings take
+  precedence over the auto-discovered defaults.
 
 <details>
 <summary>Use cases</summary>
