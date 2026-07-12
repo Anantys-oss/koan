@@ -17,11 +17,6 @@ from typing import Optional
 from app.memory_manager import append_memory_entry
 
 
-def _log_safe(category: str, msg: str) -> None:
-    """Log to stderr without importing the full run_log module."""
-    print(f"[experience_capture] {category}: {msg}", file=sys.stderr)
-
-
 def _classify_mission_kind(mission_title: str) -> Optional[str]:
     """Map a mission title to fix/implement/review, or None to suppress capture.
 
@@ -79,7 +74,11 @@ def _is_significant_for_capture(
         if is_significant_mission(mission_title, duration_minutes, journal_content):
             return True
     except Exception as e:
-        _log_safe("warn", f"is_significant_mission failed, using duration fallback: {e}")
+        print(
+            f"[experience_capture] warn: is_significant_mission failed, "
+            f"using duration fallback: {e}",
+            file=sys.stderr,
+        )
 
     # Also capture when we have a mission kind AND reasonable substance
     return mission_kind is not None and duration_minutes >= 5
@@ -154,5 +153,5 @@ def capture_experience(
             artifact=artifact or None,
         )
     except Exception as e:
-        _log_safe("error", f"Experience capture failed: {e}")
+        print(f"[experience_capture] error: Experience capture failed: {e}", file=sys.stderr)
 
