@@ -3,7 +3,7 @@ type: doc
 title: "KOAN.md — koan-only project instructions"
 tags: [users]
 created: 2026-07-09
-updated: 2026-07-12
+updated: 2026-07-11
 ---
 
 # KOAN.md — koan-only project instructions

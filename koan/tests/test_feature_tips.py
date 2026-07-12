@@ -290,13 +290,18 @@ def test_mark_active_resets_idle_guard(tmp_path):
 
 def test_one_time_notice_sent_once(tmp_path):
     """The KOAN.md notice is returned once, then never again."""
+    from app.skill_usage import record_notice_shown
+
     first = pick_one_time_notice(str(tmp_path))
     assert first is not None
-    assert "KOAN.md" in first
-    assert ".koan/" in first
-    assert "docs/users/koan-md.md" in first
+    key, message = first
+    assert "KOAN.md" in message
+    assert ".koan/" in message
+    assert "docs/users/koan-md.md" in message
 
-    # Recorded as shown → not repeated.
+    # pick is pure — repeats until the caller records it as shown.
+    assert pick_one_time_notice(str(tmp_path)) is not None
+    record_notice_shown(str(tmp_path), key)
     assert pick_one_time_notice(str(tmp_path)) is None
 
 

@@ -152,18 +152,19 @@ def pick_tip(instance_dir: str) -> Optional[str]:
     return _format_tip(chosen_skill)
 
 
-def pick_one_time_notice(instance_dir: str) -> Optional[str]:
-    """Return the next unshown one-time feature notice, or None.
+def pick_one_time_notice(instance_dir: str) -> Optional[tuple]:
+    """Return ``(key, message)`` for the next unshown one-time notice, or None.
 
-    Side effect: records the notice as shown so it is never repeated.
+    Pure lookup — does not record the notice as shown. The caller records it
+    only after the message is successfully queued (see ``maybe_send_feature_tip``)
+    so a failure between picking and delivery does not lose a "once ever" notice.
     """
-    from app.skill_usage import get_shown_notices, record_notice_shown
+    from app.skill_usage import get_shown_notices
 
     shown = get_shown_notices(instance_dir)
     for key, message in _ONE_TIME_NOTICES:
         if key not in shown:
-            record_notice_shown(instance_dir, key)
-            return message
+            return key, message
     return None
 
 
@@ -183,9 +184,8 @@ def maybe_send_feature_tip(instance_dir: str) -> bool:
         return False
 
     # One-time feature notices take priority over rotating skill tips.
-    tip = pick_one_time_notice(instance_dir)
-    if tip is None:
-        tip = pick_tip(instance_dir)
+    notice = pick_one_time_notice(instance_dir)
+    tip = notice[1] if notice is not None else pick_tip(instance_dir)
     if tip is None:
         return False
 
@@ -193,6 +193,13 @@ def maybe_send_feature_tip(instance_dir: str) -> bool:
 
     outbox_path = Path(instance_dir) / "outbox.md"
     append_to_outbox(outbox_path, tip)
+
+    # Record a one-time notice only after it is queued, so an append failure
+    # does not permanently consume a "once ever" announcement.
+    if notice is not None:
+        from app.skill_usage import record_notice_shown
+
+        record_notice_shown(instance_dir, notice[0])
 
     _last_tip_time = now
     _idle_tip_sent = True
