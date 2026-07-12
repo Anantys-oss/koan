@@ -465,6 +465,33 @@ class TestHandle:
         assert "Clone failed" in result
         assert "timeout" in result
 
+    def test_clones_into_instance_workspace_when_present(self, handler, ctx):
+        """On hosted layout (instance/workspace exists), the clone lands there
+        and discovery immediately sees the new project (issue #2338)."""
+        from app.workspace_discovery import discover_workspace_projects
+
+        tmp_path = ctx.koan_root
+        inst_ws = tmp_path / "instance" / "workspace"
+        inst_ws.mkdir(parents=True)
+        ctx.args = "owner/repo"
+
+        def fake_clone(url, target_dir):
+            # Simulate gh cloning a real git repo into the resolved target.
+            (Path(target_dir) / ".git").mkdir(parents=True)
+
+        with patch.object(handler, "_check_push_access_safe", return_value=True), \
+             patch.object(handler, "_git_clone", side_effect=fake_clone), \
+             patch("app.projects_merged.refresh_projects"):
+            result = handler.handle(ctx)
+
+        # Clone target is under instance/workspace, NOT <root>/workspace
+        assert (inst_ws / "repo" / ".git").is_dir()
+        assert not (tmp_path / "workspace" / "repo").exists()
+        assert "added to workspace." in result
+        # Discovery (which prefers instance/workspace) now finds it.
+        names = [n for n, _ in discover_workspace_projects(str(tmp_path))]
+        assert "repo" in names
+
 
 # ===========================================================================
 # _check_push_access_safe
