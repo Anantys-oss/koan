@@ -64,8 +64,8 @@ def _resolve_config(project_name: str) -> dict:
         cfg = load_projects_config(os.environ.get("KOAN_ROOT", ""))
         if cfg:
             return get_project_running_indicator(cfg, project_name)
-    except Exception:
-        pass
+    except Exception as e:
+        log("koan", f"running-indicator config fallback to global: {e}")
     from app.config import get_running_indicator_config
     return get_running_indicator_config()
 
@@ -104,8 +104,8 @@ def _resolve_link(instance: str, mission_title: str,
             repo = _repo_from_github_url(url or "")
             if repo:
                 return {"repo": repo, "issue": None}
-    except Exception:
-        pass
+    except Exception as e:
+        log("koan", f"running-indicator link resolve skipped: {e}")
     return None
 
 
@@ -208,7 +208,9 @@ def reconcile_stale_indicators(instance: str, active_titles) -> None:
     """
     try:
         from app.missions import canonical_mission_key
-    except Exception:
+    except Exception as e:
+        log("koan", f"running-indicator: canonical key unavailable, "
+                    f"using raw titles: {e}")
         canonical_mission_key = None
 
     def _key(title: str) -> str:
