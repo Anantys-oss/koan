@@ -4,7 +4,7 @@ title: "Component Spec — Git & GitHub"
 description: "Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows."
 tags: [git-github]
 created: 2026-06-27
-updated: 2026-07-11
+updated: 2026-07-13
 ---
 
 # Component Spec — Git & GitHub

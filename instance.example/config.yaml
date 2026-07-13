@@ -828,6 +828,17 @@ memory_monitor:
 #   cooldown_minutes: 30       # Min time between checks per project (default: 30)
 #   log_snippet_bytes: 4096    # Max CI log snippet in mission text (default: 4096)
 
+# Running indicator: live "Kōan is working" signal on GitHub while a
+# GitHub-linked mission runs — a koan:working issue label plus a koan/mission
+# commit status on the pushed branch head. Reuses gh auth (no GitHub App).
+# On by default; best-effort; a no-op for local-only missions. Can be
+# overridden per-project under projects.<name>.running_indicator in projects.yaml.
+# running_indicator:
+#   enabled: true              # Master switch (default: true; set false to opt out)
+#   commit_status: true        # Post the koan/mission commit status (default: true)
+#   issue_label: true          # Toggle the koan:working issue label (default: true)
+#   label_name: "koan:working" # Label text (default: koan:working)
+
 
 # memory:
 #  learnings_max_lines: 100        # Target after semantic compaction

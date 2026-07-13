@@ -4,7 +4,7 @@ title: "GitHub And Trackers"
 description: "Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-23
+updated: 2026-07-13
 ---
 
 # GitHub And Trackers
@@ -55,6 +55,41 @@ feedback takes a fast-path. The review-learning extraction additionally records
 pushback outcomes (validated vs. overridden) so the agent learns which pushbacks to
 trust.
 
+## Mission status indicators (`koan/mission`)
+
+While a GitHub-linked mission runs, Kōan surfaces a live "Running" indicator on
+GitHub with no GitHub App — a `koan:working` issue label plus a `koan/mission`
+commit status — reusing the existing `gh` auth. See
+`specs/components/git-github.md` (Mission status indicators) for the contract
+and [GitHub commands](../messaging/github-commands.md#running-indicator-koanmission)
+for the user-facing config.
+
+The orchestration lives in `koan/app/mission_status.py` and hangs off the
+mission lifecycle:
+
+1. **Start** — `_start_mission_in_file` (`run.py`) confirms the Pending→In
+   Progress transition, then `start_indicator` resolves the linked issue/repo
+   (from an issue URL in the mission text, else the project's `github_url`),
+   adds the `koan:working` label, and records a tracker entry.
+2. **First push** — `on_branch_pushed` (called from `pr_submit.py` right after
+   the branch is pushed) fills the head SHA into the tracker and posts the
+   `pending` commit status. The commit status is complementary: koan pushes
+   late, so the label is the primary live signal.
+3. **Finalize** — `resolve_indicator` (called from `_finalize_mission`) posts
+   the final `success`/`failure` status and removes the label on every terminal
+   path. A **stagnation requeue** deliberately leaves the indicator up (the
+   mission returns to Pending and is still "running").
+4. **Crash recovery** — a hard crash skips finalize, stranding a yellow
+   `pending`. `startup_manager.reconcile_running_indicators` (run right after
+   crash recovery) resolves any tracked mission no longer Pending/In Progress
+   as `error` and removes its label.
+
+Cross-stage state lives in `instance/.running-indicator.json`, keyed by mission
+title (mirroring `.stagnation-retries.json`). It carries `{repo, issue, sha,
+branch, project}` across the start → push → finalize gap. Local-only missions
+(no issue URL, no `github_url`) write nothing. Every entrypoint is best-effort:
+a `gh` failure is logged and never blocks the mission.
+
 ## Review Issue-Tracker Enrichment
 
 See `specs/components/issue-tracking.md` for the design contract behind the
@@ -93,6 +128,9 @@ Examples include:
 - CI dispatch fingerprints keyed by PR, SHA, and job.
 - Remote rename and default-branch tracking.
 - Burn-rate and quota-related state.
+- Running-indicator state (`.running-indicator.json`), keyed by mission title,
+  carrying the linked issue/repo/SHA across a mission's lifecycle. Stale entries
+  from a crashed run are reconciled at startup.
 
 Use the existing tracker module for a behavior when one exists. If a new tracker
 is needed, keep its state local to `instance/`, make keys stable, and document
