@@ -13,6 +13,15 @@ Do not hand-edit released entries — they are the source for `changes/stable.md
 
 ## Unreleased
 
+### Merged 2026-07-13 — main @ bc71e88e (2 commits)
+
+**Features**
+- **GitHub "Running" indicator (#2365)** — new `mission_status.py`: applies a `koan:working` label and a `koan/mission` commit status while a mission runs, with hooks in `github.py`, `run.py`, `pr_submit.py`, and `startup_manager.py`; new config options; documented in `docs/architecture/github-and-trackers.md`, `docs/messaging/github-commands.md`, and `specs/components/git-github.md`.
+- **Pretty `make logs` formatter (#2366)** — new `log_fmt.py` human-readable formatter with a `raw=1` Makefile bypass; new `docs/operations/log-formatting.md`.
+
+**Docs / tests / CI**
+- ~760 lines of new tests across 7 files covering both features; user manual, troubleshooting, and wiki index updated.
+
 ### Merged 2026-07-13 — main @ 51262b36 (35 commits)
 
 **Features**
