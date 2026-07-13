@@ -1305,6 +1305,11 @@ class MemoryManager:
         tags: Optional[List[str]] = None,
         confidence: Optional[float] = None,
         expires_at: Optional[str] = None,
+        outcome: Optional[str] = None,
+        mission_kind: Optional[str] = None,
+        root_cause: Optional[str] = None,
+        approach: Optional[str] = None,
+        artifact: Optional[str] = None,
     ) -> None:
         """Append one entry to memory/log.jsonl (append-only truth log).
 
@@ -1314,6 +1319,13 @@ class MemoryManager:
 
         Optional metadata fields are only included when non-None to keep
         existing entries compact and backward-compatible.
+
+        Structured experience fields (``outcome``, ``mission_kind``,
+        ``root_cause``, ``approach``, ``artifact``) ride the same
+        optional-field pattern — they are serialised into the JSONL dict
+        but are NOT SQLite columns, so no FTS5 schema migration is needed.
+        The content string (which includes root-cause/approach text) is
+        what FTS5 searches.
         """
         entry = {
             "ts": ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1329,6 +1341,16 @@ class MemoryManager:
             entry["confidence"] = confidence
         if expires_at:
             entry["expires_at"] = expires_at
+        if outcome:
+            entry["outcome"] = outcome
+        if mission_kind:
+            entry["mission_kind"] = mission_kind
+        if root_cause:
+            entry["root_cause"] = root_cause[:500]
+        if approach:
+            entry["approach"] = approach[:500]
+        if artifact:
+            entry["artifact"] = artifact
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         new_line = json.dumps(entry, ensure_ascii=False) + "\n"
         with open(self._log_path, "a", encoding="utf-8") as f:
@@ -1698,6 +1720,11 @@ def append_memory_entry(
     tags: Optional[List[str]] = None,
     confidence: Optional[float] = None,
     expires_at: Optional[str] = None,
+    outcome: Optional[str] = None,
+    mission_kind: Optional[str] = None,
+    root_cause: Optional[str] = None,
+    approach: Optional[str] = None,
+    artifact: Optional[str] = None,
 ) -> None:
     """Append one entry to memory/log.jsonl."""
     MemoryManager(instance_dir).append_memory_entry(
@@ -1706,6 +1733,11 @@ def append_memory_entry(
         tags=tags,
         confidence=confidence,
         expires_at=expires_at,
+        outcome=outcome,
+        mission_kind=mission_kind,
+        root_cause=root_cause,
+        approach=approach,
+        artifact=artifact,
     )
 
 

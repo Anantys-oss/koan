@@ -1564,6 +1564,8 @@ def run_ci_fix_loop(
     push_fn: Optional[Callable[[str, str], None]] = None,
     recheck_fn: Optional[Callable[[str, str], Tuple[str, object, str]]] = None,
     outcome: Optional[dict] = None,
+    instance_dir: str = "",
+    project_name: str = "",
 ) -> Tuple[bool, str]:
     """Core CI fix loop: diff-fetch -> prompt -> Claude step -> push -> recheck.
 
@@ -1677,6 +1679,11 @@ def run_ci_fix_loop(
         total_step_attempts += step_attempts
 
         result: dict = {"ci_logs": current_ci_logs}
+        if fixed:
+            # The Claude step's cleaned output is the diagnostic + change
+            # summary that produced the fix — the real "approach". Thread it
+            # through so experience capture records the fix, not CI logs.
+            result["fix_summary"] = str(getattr(fixed, "output", "") or "")
 
         if getattr(fixed, "quota_exhausted", False):
             actions_log.append(CI_QUOTA_STOP_ACTION)
@@ -1766,8 +1773,10 @@ def run_ci_fix_loop(
     attempts = loop_outcome.get("attempts", [])
     last_result = attempts[-1]["result"] if attempts else None
 
+    _loop_result = "exhausted"
     if last_result and isinstance(last_result, dict) and "_terminal" in last_result:
         term_name, success, term_logs = last_result["_terminal"]
+        _loop_result = term_name
         extra: dict = {}
         if "push_error" in last_result:
             extra["push_error"] = last_result["push_error"]
@@ -1775,14 +1784,97 @@ def run_ci_fix_loop(
 
         if term_name == "no_changes":
             actions_log.append(f"CI still failing after {max_attempts} fix attempts")
+            _capture_ci_fix_experience(
+                instance_dir, project_name, branch, full_repo, ci_logs,
+                loop_outcome, _loop_result,
+            )
             return False, current_ci_logs
 
+        _capture_ci_fix_experience(
+            instance_dir, project_name, branch, full_repo, ci_logs,
+            loop_outcome, _loop_result,
+        )
         return success, term_logs
 
     actions_log.append(f"CI still failing after {max_attempts} fix attempts")
     if outcome is not None and "result" not in outcome:
         _set_outcome("exhausted", max_attempts, current_ci_logs)
+    _capture_ci_fix_experience(
+        instance_dir, project_name, branch, full_repo, ci_logs,
+        loop_outcome, _loop_result,
+    )
     return False, current_ci_logs
+
+
+def _capture_ci_fix_experience(
+    instance_dir: str,
+    project_name: str,
+    branch: str,
+    full_repo: str,
+    ci_logs: str,
+    loop_outcome: dict,
+    loop_result: str,
+) -> None:
+    """Capture experience for CI-fix outcome (after loop, never inside it).
+
+    Only fires when both ``instance_dir`` and ``project_name`` are provided,
+    and only for genuinely terminal outcomes: ``fixed`` (success) and
+    ``no_changes``/``exhausted`` (failure). Deferred/interrupted terminals
+    (``pending``, ``blocked_approval``, ``quota``, ``timeout``,
+    ``push_failed``, ``step_error``) are skipped — recording them would write
+    a false failure into the append-only truth log, and for ``pending``/
+    ``blocked_approval`` the re-enqueued monitoring run reaches a real
+    terminal and captures then.
+
+    The ``approach`` field is populated from the winning Claude step's fix
+    summary (its cleaned output — the diagnostic + change it made), not the
+    post-push CI recheck logs.
+    """
+    if not instance_dir or not project_name:
+        return
+    if loop_result == "fixed":
+        ci_outcome = "success"
+    elif loop_result in ("no_changes", "exhausted"):
+        ci_outcome = "failed"
+    else:
+        # Not a genuine fix terminal — defer to a later run that reaches one.
+        return
+    try:
+        from app.experience_capture import capture_experience
+
+        # Root cause = the CI failure that triggered the fix loop.
+        root_cause = (ci_logs or "")[:500]
+        # Approach = the winning step's fix summary (its own output), threaded
+        # through by _ci_step_fn as ``fix_summary``. Left empty rather than
+        # mislabeling CI recheck logs as the approach when unavailable.
+        winning_approach = ""
+        attempts_list = loop_outcome.get("attempts", [])
+        if attempts_list:
+            last_attempt = attempts_list[-1]
+            result_obj = last_attempt.get("result")
+            if isinstance(result_obj, dict) and result_obj.get("fix_summary"):
+                winning_approach = str(result_obj["fix_summary"])[:500]
+
+        capture_experience(
+            instance_dir=instance_dir,
+            project_name=project_name,
+            mission_title=f"/fix CI fix for {branch}",
+            exit_code=0 if ci_outcome == "success" else 1,
+            outcome=ci_outcome,
+            root_cause=root_cause,
+            approach=winning_approach,
+            artifact=full_repo,
+            duration_minutes=0,
+            # A landed CI fix (or an exhausted fix loop) is inherently
+            # significant but carries no duration signal, so bypass the
+            # >=5-minute significance floor -- otherwise these CI-fix
+            # experiences, which carry a concrete root_cause (and, when the
+            # step summary is available, the approach that resolved it), are
+            # silently dropped.
+            force=True,
+        )
+    except Exception as e:
+        print(f"[claude_step] Experience capture for CI fix failed: {e}", file=sys.stderr)
 
 
 def _is_permission_error(error_msg: str) -> bool:

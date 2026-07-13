@@ -1885,9 +1885,9 @@ def run_post_mission(
                         "archived" if result["pending_archived"] else "nothing to archive")
 
         # 5. Post-mission processing (only on success)
+        verify_result = None
         quality_report = None
         if exit_code == 0:
-            verify_result = None
             quality_report = {}
             lint_result = None
 
@@ -2018,6 +2018,26 @@ def run_post_mission(
             exit_code=exit_code,
         )
         tracker.record("session_outcome", "success")
+
+        # 7a-quater. Capture structured experience for fix/implement/review.
+        # verify_result is threaded directly (not via locals().get()) so both
+        # the success branch (VerifyResult or None) and the failure branch
+        # (always None) pass the correct value.
+        try:
+            from app.experience_capture import capture_experience
+            capture_experience(
+                instance_dir=instance_dir,
+                project_name=project_name,
+                mission_title=mission_title,
+                exit_code=exit_code,
+                outcome="success" if exit_code == 0 else "failed",
+                verify_result=verify_result,
+                artifact=result.get("pr_url", ""),
+                duration_minutes=duration_minutes,
+                journal_content=pending_content,
+            )
+        except Exception as e:
+            _log_runner("error", f"Experience capture in post-mission failed: {e}")
 
         # 7a-bis. Record skill-level metrics for fix/implement missions.
         _record_skill_metric(
