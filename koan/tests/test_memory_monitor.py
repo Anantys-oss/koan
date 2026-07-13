@@ -4,7 +4,12 @@ from unittest.mock import patch
 
 import pytest
 
-from app.memory_monitor import MemoryMonitor, read_rss_mb, get_memory_status
+from app.memory_monitor import (
+    MemoryMonitor,
+    get_memory_status,
+    read_cgroup_memory_stat,
+    read_rss_mb,
+)
 
 _HAS_PROC = Path("/proc/self/status").exists()
 
@@ -82,6 +87,32 @@ def test_get_memory_status_flags_config_error():
     assert status.get("config_error") is True
     assert status["watchdog_enabled"] is None
     assert status["threshold_mb"] is None
+
+
+# --- read_cgroup_memory_stat (#2354 follow-up) ---
+
+def test_read_cgroup_memory_stat_parses_fields(tmp_path):
+    stat = tmp_path / "memory.stat"
+    mib = 1024 * 1024
+    stat.write_text(
+        f"anon {294 * mib}\n"
+        f"file {1018 * mib}\n"
+        f"kernel_stack {2 * mib}\n"
+        f"slab {413 * mib}\n"
+        f"shmem 0\n"
+    )
+    out = read_cgroup_memory_stat(str(stat))
+    assert out == {"anon_mb": 294.0, "file_mb": 1018.0, "slab_mb": 413.0}
+
+
+def test_read_cgroup_memory_stat_missing_file_returns_none(tmp_path):
+    assert read_cgroup_memory_stat(str(tmp_path / "nope.stat")) is None
+
+
+def test_read_cgroup_memory_stat_ignores_malformed_lines(tmp_path):
+    stat = tmp_path / "memory.stat"
+    stat.write_text("anon notanumber\nfile\ngarbage line here\n")
+    assert read_cgroup_memory_stat(str(stat)) is None
 
 
 def test_tracemalloc_error_recorded_on_start_failure():

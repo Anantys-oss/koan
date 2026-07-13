@@ -2212,3 +2212,29 @@ class TestBridgeMemoryConfig:
         from app.config import get_conversation_compact_interval
         with _mock_config({"conversation": {"compact_interval_seconds": 0}}):
             assert get_conversation_compact_interval() == 0
+
+
+class TestCleanupExtraTmpGlobs:
+    def test_defaults(self):
+        from app.config import get_cleanup_extra_tmp_globs
+        with _mock_config({}):
+            globs = get_cleanup_extra_tmp_globs()
+        assert "/tmp/pytest-of-*" in globs
+        assert "/tmp/test-koan*" in globs
+        assert "/tmp/jest_rs" in globs
+
+    def test_override(self):
+        from app.config import get_cleanup_extra_tmp_globs
+        with _mock_config({"cleanup": {"extra_tmp_globs": ["/tmp/foo-*"]}}):
+            assert get_cleanup_extra_tmp_globs() == ["/tmp/foo-*"]
+
+    def test_empty_list_disables(self):
+        from app.config import get_cleanup_extra_tmp_globs
+        with _mock_config({"cleanup": {"extra_tmp_globs": []}}):
+            assert get_cleanup_extra_tmp_globs() == []
+
+    def test_malformed_falls_back_to_defaults(self):
+        from app.config import get_cleanup_extra_tmp_globs
+        with _mock_config({"cleanup": {"extra_tmp_globs": "nope"}}):
+            globs = get_cleanup_extra_tmp_globs()
+        assert "/tmp/pytest-of-*" in globs

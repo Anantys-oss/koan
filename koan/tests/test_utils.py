@@ -1951,6 +1951,89 @@ class TestMissionTmpDirs:
         assert target.is_dir()
 
 
+class TestPytestAddoptsBasetemp:
+    def test_empty_existing_returns_basetemp_only(self):
+        from app.utils import pytest_addopts_with_basetemp
+        out = pytest_addopts_with_basetemp("", "/scratch/mission-1")
+        assert out == "--basetemp=/scratch/mission-1/pytest"
+
+    def test_existing_preserved_and_appended(self):
+        from app.utils import pytest_addopts_with_basetemp
+        out = pytest_addopts_with_basetemp("-q -p no:cacheprovider", "/scratch/m")
+        assert out == "-q -p no:cacheprovider --basetemp=/scratch/m/pytest"
+
+    def test_none_existing_treated_as_empty(self):
+        from app.utils import pytest_addopts_with_basetemp
+        out = pytest_addopts_with_basetemp(None, "/scratch/m")
+        assert out == "--basetemp=/scratch/m/pytest"
+
+
+class TestSweepStrayTmpDirs:
+    """sweep_stray_tmp_dirs (#2354 follow-up). Uses a unique token under the
+    real /tmp so the actual parent/symlink/uid guards are exercised."""
+
+    def _token(self):
+        import uuid
+        return f"koan-sweeptest-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+    def test_removes_matching_tree_and_reports_size(self):
+        token = self._token()
+        d = Path("/tmp") / f"{token}-a"
+        (d / "sub").mkdir(parents=True)
+        (d / "sub" / "f").write_bytes(b"x" * 100)
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs([f"/tmp/{token}-*"])
+            assert len(removed) == 1
+            assert removed[0][0] == str(d)
+            assert removed[0][1] >= 100
+            assert not d.exists()
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_never_follows_or_removes_symlinks(self):
+        token = self._token()
+        target = Path("/tmp") / f"{token}-target"
+        target.mkdir()
+        link = Path("/tmp") / f"{token}-link"
+        link.symlink_to(target)
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs([f"/tmp/{token}-*"])
+            assert [r[0] for r in removed] == [str(target)]
+            assert link.is_symlink()  # symlink skipped, not followed
+        finally:
+            import shutil
+            link.unlink(missing_ok=True)
+            shutil.rmtree(target, ignore_errors=True)
+
+    def test_never_removes_live_scratch_dir(self, monkeypatch):
+        from app import utils
+        token = self._token()
+        live = Path("/tmp") / f"{token}-live"
+        live.mkdir()
+        monkeypatch.setattr(utils, "koan_tmp_dir", lambda: str(live))
+        try:
+            removed = utils.sweep_stray_tmp_dirs([f"/tmp/{token}-*"])
+            assert removed == []
+            assert live.is_dir()
+        finally:
+            import shutil
+            shutil.rmtree(live, ignore_errors=True)
+
+    def test_ignores_patterns_outside_tmp(self):
+        # Patterns not rooted at /tmp/ are refused before any globbing.
+        from app.utils import sweep_stray_tmp_dirs
+        assert sweep_stray_tmp_dirs(
+            ["/var/tmp/koan-*", "/home/*/scratch", "relative-*"]
+        ) == []
+
+    def test_empty_globs_returns_empty(self):
+        from app.utils import sweep_stray_tmp_dirs
+        assert sweep_stray_tmp_dirs([]) == []
+
+
 class TestGetTelegramChatId:
     def test_strips_trailing_newline(self, monkeypatch):
         from app.utils import get_telegram_chat_id

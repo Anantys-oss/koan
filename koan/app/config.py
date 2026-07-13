@@ -616,6 +616,37 @@ def get_conversation_compact_interval() -> int:
     return max(300, raw) if raw > 0 else 0
 
 
+# Stray tmp trees test suites leave outside the per-mission TMPDIR (#2354
+# follow-up). pytest → /tmp/pytest-of-*, koan test runs → /tmp/test-koan*,
+# koan scratch leftovers → /tmp/koan-*, jest → /tmp/jest_rs. The live
+# koan_tmp_dir() is guarded against in sweep_stray_tmp_dirs even though it
+# matches /tmp/koan-*.
+_DEFAULT_EXTRA_TMP_GLOBS = [
+    "/tmp/pytest-of-*",
+    "/tmp/test-koan*",
+    "/tmp/koan-*",
+    "/tmp/jest_rs",
+]
+
+
+def get_cleanup_extra_tmp_globs() -> list:
+    """Glob list of stray /tmp trees to sweep post-mission (#2354 follow-up).
+
+    Reads ``cleanup.extra_tmp_globs`` (defaults cover pytest/koan/jest tmp
+    trees). Only ``/tmp/*`` patterns are honored by
+    :func:`app.utils.sweep_stray_tmp_dirs`; anything else is ignored there.
+    Return an empty list (``cleanup.extra_tmp_globs: []``) to disable the sweep.
+    """
+    config = _load_config()
+    section = config.get("cleanup", {})
+    if not isinstance(section, dict):
+        section = {}
+    globs = section.get("extra_tmp_globs", _DEFAULT_EXTRA_TMP_GLOBS)
+    if not isinstance(globs, list):
+        return list(_DEFAULT_EXTRA_TMP_GLOBS)
+    return [str(g) for g in globs if isinstance(g, str) and g]
+
+
 def get_start_on_pause() -> bool:
     """Check if start_on_pause is enabled in config.yaml.
 

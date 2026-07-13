@@ -512,6 +512,94 @@ def reap_stale_mission_tmp_dirs() -> int:
     return reaped
 
 
+def pytest_addopts_with_basetemp(existing: str, tmpdir: str) -> str:
+    """Return a ``PYTEST_ADDOPTS`` value routing pytest's tmp factory into ``tmpdir``.
+
+    Missions run with a per-mission ``TMPDIR`` that is reaped when the mission
+    ends, but pytest's tmp factory writes to ``/tmp/pytest-of-<user>`` (outside
+    ``$TMPDIR``) unless told otherwise. Appending ``--basetemp`` lands those
+    trees inside the already-reaped per-mission dir (#2354 follow-up). Existing
+    ``PYTEST_ADDOPTS`` is preserved (space-joined), never clobbered; nested
+    invocations (e.g. ``make test``) inherit it through the environment.
+    """
+    basetemp = str(Path(tmpdir) / "pytest")
+    opt = f"--basetemp={basetemp}"
+    existing = (existing or "").strip()
+    return f"{existing} {opt}".strip() if existing else opt
+
+
+def sweep_stray_tmp_dirs(globs: List[str]) -> List[tuple]:
+    """Remove well-known stray tmp trees not covered by the per-mission TMPDIR.
+
+    Test suites run by missions write outside ``$TMPDIR``: pytest's tmp factory
+    creates ``/tmp/pytest-of-*``, koan's own test runs create ``/tmp/test-koan*``
+    (KOAN_ROOT test dirs), jest creates ``/tmp/jest_rs``. These accumulate across
+    missions forever, inflating the container's page cache. This is the
+    post-mission safety net for the source-level fix (see
+    :func:`pytest_addopts_with_basetemp`).
+
+    Safety invariants: only paths **directly under /tmp** matching a glob are
+    considered; symlinks are never followed/removed; the live
+    :func:`koan_tmp_dir` scratch/lock dir is never removed even if a glob would
+    match it; and paths not owned by the current uid are skipped so a shared
+    host can't be clobbered. Returns a list of ``(path, bytes_freed)`` tuples for
+    the caller to log. Best-effort: individual removal failures are ignored.
+    """
+    import shutil
+    removed: List[tuple] = []
+    tmp_root = Path("/tmp")
+    try:
+        live_scratch = Path(koan_tmp_dir()).resolve()
+    except OSError:
+        live_scratch = None
+    try:
+        my_uid = os.getuid()
+    except AttributeError:  # pragma: no cover - non-POSIX
+        my_uid = None
+    for pattern in globs or []:
+        if not pattern.startswith("/tmp/"):
+            # Refuse anything outside /tmp: the whole point is a bounded sweep.
+            continue
+        for match in tmp_root.glob(pattern[len("/tmp/"):]):
+            if match.parent != tmp_root or match.is_symlink():
+                continue
+            try:
+                if match.resolve() == live_scratch:
+                    continue
+                st = match.stat()
+                if my_uid is not None and st.st_uid != my_uid:
+                    continue
+            except OSError:
+                continue
+            size = _dir_size_bytes(match)
+            try:
+                if match.is_dir():
+                    shutil.rmtree(match, ignore_errors=True)
+                else:
+                    match.unlink()
+            except OSError:
+                continue
+            removed.append((str(match), size))
+    return removed
+
+
+def _dir_size_bytes(path: Path) -> int:
+    """Total size of a file or directory tree in bytes (symlinks not followed)."""
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for root, _dirs, files in os.walk(path, followlinks=False):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
 def atomic_write(path: Path, content: str):
     """Write content to a file atomically using write-to-temp + rename.
 

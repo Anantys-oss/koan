@@ -60,4 +60,12 @@ should show `awake.py` near its boot RSS (~40 MB). Remaining tall plateaus on
 the deployment memory graph should correlate 1:1 with live `claude -p`
 subprocesses.
 
-See also: [shared-state](shared-state.md), `specs/components/bridge.md`.
+The bridge hardening here bounds `awake.py`'s own RSS, but it is **not** what
+drives the container's `memory.current` graph — that is dominated by
+reclaimable page cache and slab from mission file I/O and stray `/tmp` test
+leftovers. See [memory-footprint](../operations/memory-footprint.md) for that
+diagnosis and the post-mission sweep that reduces the billed RAM.
+
+See also: [shared-state](shared-state.md),
+[memory-footprint](../operations/memory-footprint.md),
+`specs/components/bridge.md`.

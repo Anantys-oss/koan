@@ -134,5 +134,13 @@ if __name__ == "__main__":
     else:
         print("[health] Run loop: no heartbeat file")
 
+    # cgroup memory breakdown — anon is the real leak signal, not memory.current
+    # (which counts reclaimable page cache + slab). See docs/operations/memory-footprint.md.
+    from app.memory_monitor import read_cgroup_memory_stat
+    cgroup = read_cgroup_memory_stat()
+    if cgroup:
+        parts = ", ".join(f"{k.removesuffix('_mb')}={v:.0f} MB" for k, v in cgroup.items())
+        print(f"[health] cgroup memory: {parts} (anon = leak signal)")
+
     all_healthy = bridge_healthy and run_healthy
     sys.exit(0 if all_healthy else 1)

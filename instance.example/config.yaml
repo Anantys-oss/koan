@@ -794,6 +794,21 @@ memory_monitor:
 # conversation:
 #   compact_interval_seconds: 3600   # Seconds between mid-session compactions (default: 3600)
 
+# Post-mission tmp sweep (#2354 follow-up). Test suites run by missions write
+# outside the per-mission $TMPDIR (pytest → /tmp/pytest-of-*, koan test runs →
+# /tmp/test-koan*, jest → /tmp/jest_rs); left behind, they inflate the
+# container's reclaimable page cache across missions. After each mission Kōan
+# sweeps these stray /tmp trees. Only paths directly under /tmp matching a glob
+# are removed; symlinks are never followed, the live scratch dir is never
+# touched, and dirs owned by other users are skipped. Set extra_tmp_globs: []
+# to disable the sweep.
+# cleanup:
+#   extra_tmp_globs:
+#     - /tmp/pytest-of-*
+#     - /tmp/test-koan*
+#     - /tmp/koan-*
+#     - /tmp/jest_rs
+
 # CI check: master switch for the entire CI monitoring pipeline.
 # Controls queue draining, auto-dispatch of fix missions, CI enqueue
 # after rebase, and the /ci_check skill command. Disable to save tokens
