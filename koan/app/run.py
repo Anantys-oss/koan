@@ -3050,6 +3050,15 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str,
     _update_mission_in_file(
         instance, mission_title, failed=failed, cause_tag=cause_tag,
     )
+    # Lower the GitHub "Running" indicator now that the mission has reached a
+    # terminal state. The stagnation-requeue path returns early above (mission
+    # goes back to Pending), so it deliberately leaves the indicator up.
+    # Best-effort — never block finalization.
+    try:
+        from app.mission_status import resolve_indicator
+        resolve_indicator(instance, mission_title, success=(not failed))
+    except Exception as e:
+        log("error", f"running-indicator resolve error: {e}")
     # Record the authoritative terminal outcome for the REST API. Best-effort:
     # a log hiccup must not block finalization. record_outcome is imported
     # locally (matches the record_execution convention below) — tests patch it

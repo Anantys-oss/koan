@@ -122,6 +122,69 @@ class TestClearIfCapHit:
             assert run._clear_if_cap_hit(str(tmp_path), "Fix bug", "tight") is False
 
 
+class TestFinalizeRunningIndicator:
+    """_finalize_mission lowers the GitHub 'Running' indicator on terminal
+    paths, and deliberately leaves it up on a stagnation requeue."""
+
+    def _patch_downstream(self, monkeypatch):
+        from app import run
+        monkeypatch.setattr(run, "_update_mission_in_file", lambda *a, **k: True)
+        monkeypatch.setattr("app.mission_outcome.record_outcome",
+                            lambda *a, **k: True)
+        monkeypatch.setattr("app.mission_outcome.classify_failure",
+                            lambda *a, **k: None)
+        monkeypatch.setattr("app.mission_history.record_execution",
+                            lambda *a, **k: None)
+
+    def test_terminal_success_resolves_green(self, tmp_path, monkeypatch):
+        from app import run
+        import app.mission_status as ms
+        run._last_mission_stagnated.clear()
+        self._patch_downstream(monkeypatch)
+        got = {}
+        monkeypatch.setattr(ms, "resolve_indicator",
+                            lambda i, t, *, success: got.update(t=t, ok=success))
+        run._finalize_mission(str(tmp_path), "mission", "proj", 0)
+        assert got == {"t": "mission", "ok": True}
+
+    def test_terminal_failure_resolves_red(self, tmp_path, monkeypatch):
+        from app import run
+        import app.mission_status as ms
+        run._last_mission_stagnated.clear()
+        self._patch_downstream(monkeypatch)
+        got = {}
+        monkeypatch.setattr(ms, "resolve_indicator",
+                            lambda i, t, *, success: got.update(t=t, ok=success))
+        run._finalize_mission(str(tmp_path), "mission", "proj", 1)
+        assert got == {"t": "mission", "ok": False}
+
+    def test_stagnation_requeue_does_not_resolve(self, tmp_path, monkeypatch):
+        from app import run
+        import app.mission_status as ms
+        run._last_mission_stagnated.set()
+        monkeypatch.setattr(
+            "app.config.get_stagnation_config",
+            lambda project_name="": {"max_retry_on_stagnation": 3,
+                                     "max_total_retries": 0},
+        )
+        monkeypatch.setattr("app.stagnation_monitor.get_retry_count",
+                            lambda i, t: 0)
+        monkeypatch.setattr("app.stagnation_monitor.get_total_attempts",
+                            lambda i, t: 0)
+        monkeypatch.setattr("app.stagnation_monitor.increment_retry_count",
+                            lambda *a, **k: 1)
+        monkeypatch.setattr(run, "_requeue_mission_in_file", lambda *a, **k: None)
+        monkeypatch.setattr(run, "_notify_stagnation_retry", lambda *a, **k: None)
+        monkeypatch.setattr("app.mission_history.record_execution",
+                            lambda *a, **k: None)
+        called = []
+        monkeypatch.setattr(ms, "resolve_indicator",
+                            lambda *a, **k: called.append(1))
+        run._finalize_mission(str(tmp_path), "m", "proj", 1)
+        assert called == []
+        run._last_mission_stagnated.clear()
+
+
 # ---------------------------------------------------------------------------
 # Test: Colored logging
 # ---------------------------------------------------------------------------
