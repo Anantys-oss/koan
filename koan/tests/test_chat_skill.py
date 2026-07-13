@@ -5,12 +5,13 @@ from unittest.mock import MagicMock
 from app.skills import SkillContext
 
 
-def _make_ctx(args="", handle_chat=None):
+def _make_ctx(args="", handle_chat=None, chat_id=""):
     """Create a minimal SkillContext for testing."""
     ctx = MagicMock(spec=SkillContext)
     ctx.command_name = "chat"
     ctx.args = args
     ctx.handle_chat = handle_chat
+    ctx.chat_id = chat_id
     return ctx
 
 
@@ -31,20 +32,20 @@ class TestChatSkill:
 
         # Whitespace-only args are truthy, so they get passed to handle_chat
         mock_chat = MagicMock()
-        ctx = _make_ctx("   ", handle_chat=mock_chat)
+        ctx = _make_ctx("   ", handle_chat=mock_chat, chat_id="c1")
         result = handle(ctx)
 
-        mock_chat.assert_called_once_with("   ")
+        mock_chat.assert_called_once_with("   ", "c1")
         assert result == ""
 
     def test_calls_handle_chat_with_args(self):
         from skills.core.chat.handler import handle
 
         mock_chat = MagicMock()
-        ctx = _make_ctx("hello world", handle_chat=mock_chat)
+        ctx = _make_ctx("hello world", handle_chat=mock_chat, chat_id="c1")
         result = handle(ctx)
 
-        mock_chat.assert_called_once_with("hello world")
+        mock_chat.assert_called_once_with("hello world", "c1")
         assert result == ""
 
     def test_returns_empty_string_on_success(self):
@@ -69,20 +70,20 @@ class TestChatSkill:
 
         mock_chat = MagicMock()
         message = "fix the login bug for user authentication"
-        ctx = _make_ctx(message, handle_chat=mock_chat)
+        ctx = _make_ctx(message, handle_chat=mock_chat, chat_id="c1")
         handle(ctx)
 
-        mock_chat.assert_called_once_with(message)
+        mock_chat.assert_called_once_with(message, "c1")
 
     def test_handles_multiline_messages(self):
         from skills.core.chat.handler import handle
 
         mock_chat = MagicMock()
         message = "line one\nline two\nline three"
-        ctx = _make_ctx(message, handle_chat=mock_chat)
+        ctx = _make_ctx(message, handle_chat=mock_chat, chat_id="c1")
         result = handle(ctx)
 
-        mock_chat.assert_called_once_with(message)
+        mock_chat.assert_called_once_with(message, "c1")
         assert result == ""
 
     def test_handles_special_characters(self):
@@ -90,8 +91,8 @@ class TestChatSkill:
 
         mock_chat = MagicMock()
         message = "test with émojis 🎉 and spëcial chars"
-        ctx = _make_ctx(message, handle_chat=mock_chat)
+        ctx = _make_ctx(message, handle_chat=mock_chat, chat_id="c1")
         result = handle(ctx)
 
-        mock_chat.assert_called_once_with(message)
+        mock_chat.assert_called_once_with(message, "c1")
         assert result == ""
