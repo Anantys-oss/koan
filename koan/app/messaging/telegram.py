@@ -62,6 +62,94 @@ def _markdown_to_html(text: str) -> str:
     return "".join(result)
 
 
+_PRE_BLOCK_RE = re.compile(r"<pre>.*?</pre>", re.DOTALL)
+
+
+def _hard_split(text: str, max_size: int) -> List[str]:
+    """Blind character slicing — last resort for a single oversized token."""
+    return [text[i:i + max_size] for i in range(0, len(text), max_size)]
+
+
+def _split_pre_block(block: str, max_size: int) -> List[str]:
+    """Divide one ``<pre>...</pre>`` block into <= max_size self-contained blocks.
+
+    Splits at line boundaries so each piece is a valid, independently
+    parseable ``<pre>`` block. A single line longer than the budget is
+    hard-sliced.
+    """
+    inner = block[len("<pre>"):-len("</pre>")]
+    budget = max_size - len("<pre></pre>")
+    if budget <= 0:  # pathological max_size — cannot wrap, slice blindly
+        return _hard_split(block, max_size)
+
+    out: List[str] = []
+    cur = ""
+    for line in inner.split("\n"):
+        candidate = line if not cur else cur + "\n" + line
+        if len(candidate) <= budget:
+            cur = candidate
+            continue
+        if cur:
+            out.append(f"<pre>{cur}</pre>")
+            cur = ""
+        while len(line) > budget:
+            out.append(f"<pre>{line[:budget]}</pre>")
+            line = line[budget:]
+        cur = line
+    if cur:
+        out.append(f"<pre>{cur}</pre>")
+    return out
+
+
+def _chunk_html_preserving_pre(html: str, max_size: int) -> List[str]:
+    """Chunk HTML into <= max_size pieces without splitting a ``<pre>`` pair.
+
+    Telegram rejects a message whose ``<pre>``/``</pre>`` tags are unbalanced
+    ("can't find end tag corresponding to start tag pre"). The default
+    character-based chunker slices blindly and can cut a code block in half,
+    which makes *both* halves fail to parse — the whole message is silently
+    dropped. This splitter keeps every ``<pre>`` block intact; a block larger
+    than max_size is divided at line boundaries and each piece re-wrapped in
+    its own ``<pre>``.
+    """
+    if len(html) <= max_size:
+        return [html]
+
+    # Tokenize into <pre> blocks and the plain text around them.
+    segments: List[str] = []
+    pos = 0
+    for m in _PRE_BLOCK_RE.finditer(html):
+        if m.start() > pos:
+            segments.append(html[pos:m.start()])
+        segments.append(m.group(0))
+        pos = m.end()
+    if pos < len(html):
+        segments.append(html[pos:])
+
+    # Break any oversized segment into <= max_size pieces.
+    pieces: List[str] = []
+    for seg in segments:
+        if len(seg) <= max_size:
+            pieces.append(seg)
+        elif seg.startswith("<pre>") and seg.endswith("</pre>"):
+            pieces.extend(_split_pre_block(seg, max_size))
+        else:
+            pieces.extend(_hard_split(seg, max_size))
+
+    # Greedily pack pieces into chunks without exceeding max_size.
+    chunks: List[str] = []
+    cur = ""
+    for piece in pieces:
+        if cur and len(cur) + len(piece) > max_size:
+            chunks.append(cur)
+            cur = piece
+        else:
+            cur += piece
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
 @register_provider("telegram")
 class TelegramProvider(MessagingProvider):
     """Telegram Bot API provider.
@@ -299,7 +387,11 @@ class TelegramProvider(MessagingProvider):
             parse_mode = "HTML"
 
         self._last_message_ids = []
-        chunks = self.chunk_message(text, max_size=MAX_MESSAGE_SIZE)
+        if parse_mode == "HTML":
+            # Preserve <pre> pairs so a split never breaks Telegram's parser.
+            chunks = _chunk_html_preserving_pre(text, MAX_MESSAGE_SIZE)
+        else:
+            chunks = self.chunk_message(text, max_size=MAX_MESSAGE_SIZE)
         total = len(chunks)
         sent = 0
         failed = 0

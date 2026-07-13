@@ -277,16 +277,17 @@ def _direct_send(text: str, reply_to: int = 0) -> bool:
     api_base = f"https://api.telegram.org/bot{bot_token}"
 
     # Auto-detect markdown code blocks and convert to HTML for rendering
+    from app.messaging.base import DEFAULT_MAX_MESSAGE_SIZE
     parse_mode = None
     if "```" in text:
-        from app.messaging.telegram import _markdown_to_html
+        from app.messaging.telegram import _chunk_html_preserving_pre, _markdown_to_html
         text = _markdown_to_html(text)
         parse_mode = "HTML"
-
-    # Use same chunking algorithm as MessagingProvider.chunk_message()
-    # to ensure consistent behavior between provider and fallback path
-    from app.messaging.base import DEFAULT_MAX_MESSAGE_SIZE
-    chunks = [text[i:i + DEFAULT_MAX_MESSAGE_SIZE] for i in range(0, len(text), DEFAULT_MAX_MESSAGE_SIZE)] if text else [text]
+        # <pre>-aware split so a chunk boundary never breaks the HTML parser.
+        chunks = _chunk_html_preserving_pre(text, DEFAULT_MAX_MESSAGE_SIZE)
+    else:
+        # Same character-based chunking as MessagingProvider.chunk_message().
+        chunks = [text[i:i + DEFAULT_MAX_MESSAGE_SIZE] for i in range(0, len(text), DEFAULT_MAX_MESSAGE_SIZE)] if text else [text]
 
     total = len(chunks)
     sent = 0
