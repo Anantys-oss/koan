@@ -33,10 +33,12 @@ short-lived allocations, not a classic reference leak.
    300; 0 disables).
 3. **Read-cache** — `_read_sections_cached` caches the mission-store read for
    one poll cycle (3 s).
-4. **Watchdog backstop** — an opt-in `MemoryMonitor`
-   (`memory_monitor.bridge.enabled`, default threshold 600 MB) samples RSS
-   each cycle and self-restarts via `reexec_bridge()` only when all worker
-   lanes are idle.
+4. **Watchdog backstop** — a `MemoryMonitor`
+   (`memory_monitor.bridge`, enabled by default, threshold 600 MB) samples
+   RSS each cycle and self-restarts via `reexec_bridge()` only when all worker
+   lanes are idle. Set `memory_monitor.bridge.enabled: false` to opt out; a
+   baseline-safety guard also refuses to arm when the threshold isn't safely
+   above the current RSS.
 
 ## Configuration
 
@@ -44,7 +46,7 @@ short-lived allocations, not a classic reference leak.
 # instance/config.yaml
 memory_monitor:
   bridge:
-    enabled: true
+    enabled: true            # on by default; set false to opt out
     threshold_mb: 600
     sustained_samples: 3
 conversation:

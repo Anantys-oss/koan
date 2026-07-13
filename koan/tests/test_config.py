@@ -2175,9 +2175,15 @@ class TestBridgeMemoryConfig:
         from app.config import get_bridge_memory_monitor_config
         with _mock_config({}):
             conf = get_bridge_memory_monitor_config()
-        assert conf["enabled"] is False
+        assert conf["enabled"] is True   # on by default (#2354)
         assert conf["threshold_mb"] == 600
         assert conf["sustained_samples"] == 3
+
+    def test_bridge_monitor_opt_out(self):
+        from app.config import get_bridge_memory_monitor_config
+        with _mock_config({"memory_monitor": {"bridge": {"enabled": False}}}):
+            conf = get_bridge_memory_monitor_config()
+        assert conf["enabled"] is False
 
     def test_bridge_monitor_subblock_override(self):
         from app.config import get_bridge_memory_monitor_config

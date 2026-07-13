@@ -779,13 +779,13 @@ memory_monitor:
   min_runs_before_restart: 1  # Don't restart before completing N runs this session
   tracemalloc: false        # Opt-in: capture top allocation sites at restart (adds overhead)
   # Bridge (awake.py) RSS watchdog (#2354). Independent of the master switch
-  # above — opt in separately. Lower default threshold since the bridge
-  # baseline RSS (~40 MB) is far below the agent loop's. Restarts only when no
-  # worker lane is busy (re-execs the bridge, same PID).
-  # bridge:
-  #   enabled: false          # Opt-in bridge RSS watchdog (default: false)
-  #   threshold_mb: 600        # Restart when RSS stays at/above this (MB)
-  #   sustained_samples: 3     # Consecutive over-threshold poll cycles required
+  # above. Enabled by default with a lower threshold since the bridge baseline
+  # RSS (~40 MB) is far below the agent loop's. Restarts only when no worker
+  # lane is busy (re-execs the bridge, same PID). Set enabled: false to opt out.
+  bridge:
+    enabled: true           # Bridge RSS watchdog (default: true)
+    threshold_mb: 600        # Restart when RSS stays at/above this (MB)
+    sustained_samples: 3     # Consecutive over-threshold poll cycles required
 
 # Conversation history retention (#2354). Mid-session compaction of
 # conversation-history.jsonl so the append-only file stays bounded over long

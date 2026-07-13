@@ -74,11 +74,13 @@ awake.py (loop, ~3s poll)
   **and** periodically mid-session (`conversation.compact_interval_seconds`,
   default 3600, floored at 300; 0 disables) so the history file stays
   bounded; (3) the mission-store read in `_build_chat_prompt` is cached for
-  one poll cycle (`_read_sections_cached`). An optional `MemoryMonitor`
-  watchdog (`memory_monitor.bridge:` sub-block, opt-in, default threshold
-  600 MB) samples RSS once per poll cycle and, **only when no worker lane is
-  busy**, self-restarts via `reexec_bridge()` (`os.execv`, same PID) as a
-  backstop. The watchdog must never restart mid-worker.
+  one poll cycle (`_read_sections_cached`). A `MemoryMonitor` watchdog
+  (`memory_monitor.bridge:` sub-block, **enabled by default**, threshold
+  600 MB; set `enabled: false` to opt out) samples RSS once per poll cycle
+  and, **only when no worker lane is busy**, self-restarts via
+  `reexec_bridge()` (`os.execv`, same PID) as a backstop. The watchdog must
+  never restart mid-worker, and a baseline-safety guard refuses to arm when
+  the threshold isn't safely above the current RSS.
 
 ## Integration points
 

@@ -576,8 +576,11 @@ def get_bridge_memory_monitor_config() -> dict:
     Reads the ``memory_monitor.bridge:`` sub-block. The bridge baseline RSS
     (~40 MB) is far below the agent loop's, so it gets a much lower default
     threshold (600 MB) than the shared 1200 MB. The bridge watchdog is
-    opt-in via ``memory_monitor.bridge.enabled`` and does NOT inherit the
-    top-level ``enabled`` flag, so the two watchdogs are independent.
+    enabled by default and does NOT inherit the top-level ``enabled`` flag,
+    so the two watchdogs are independent (set ``memory_monitor.bridge.enabled:
+    false`` to opt out). The baseline-safety guard in
+    ``awake._build_bridge_memory_monitor`` still refuses to arm if the
+    threshold isn't safely above the current RSS.
     """
     config = _load_config()
     section = config.get("memory_monitor", {})
@@ -587,7 +590,7 @@ def get_bridge_memory_monitor_config() -> dict:
     if not isinstance(bridge, dict):
         bridge = {}
     return {
-        "enabled": bool(bridge.get("enabled", False)),
+        "enabled": bool(bridge.get("enabled", True)),
         "threshold_mb": _safe_int(bridge.get("threshold_mb", 600), 600),
         "sustained_samples": _safe_int(
             bridge.get("sustained_samples", section.get("sustained_samples", 3)), 3
