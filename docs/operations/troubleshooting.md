@@ -4,7 +4,7 @@ title: "Troubleshooting"
 description: "Catalogs common operational issues (agent loop, git/worktrees, memory, bridge, GitHub, CLI provider, parallel sessions, config) and their fixes."
 tags: [operations]
 created: 2026-06-04
-updated: 2026-06-11
+updated: 2026-07-13
 ---
 
 # Troubleshooting
@@ -50,6 +50,10 @@ If `make stop` reports processes "stopped" but `pgrep -fl app/run.py` still show
 1. Check `make status` to see which processes are alive.
 2. Check log files: `make logs` or `tail -100 instance/logs/run.log`.
 3. If the process crashed, check for a stale PID file — `/doctor --fix` removes orphaned PID files.
+
+> `make logs` now renders the agent's `[cli]` activity stream in a compact,
+> human-readable form (see `docs/operations/log-formatting.md`). To inspect the
+> exact unmodified log bytes, run `make logs raw=1`.
 
 ## Git & Worktree Issues
 
