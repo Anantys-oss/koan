@@ -1694,8 +1694,10 @@ def get_plan_review_config() -> dict:
           - max_rounds (int): Maximum re-generation rounds (default: 3)
           - implement_gate (bool): Whether /implement runs a plan-review
             gate before execution (default: True)
-          - assumptions_check (bool): Whether to run assumptions
-            pressure-test before structural critic (default: True)
+          - assumptions_check (bool): Whether to run the advisory
+            assumptions pressure-test (default: True). Never blocks:
+            /plan folds findings into the plan's Open Questions before
+            posting; /implement injects them as verification context.
     """
     config = _load_config()
     plan_review = config.get("plan_review", {})

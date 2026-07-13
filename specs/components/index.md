@@ -2,7 +2,7 @@
 
 * [Component Spec — Agent Loop Pipeline](agent-loop.md) - Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state.
 * [Component Spec — Telegram Bridge](bridge.md) - Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely.
-* [Component Spec — Comment Formatting (GitHub alert callouts)](comment-formatting.md) - Design contract for `build_alert()`, the single constructor for GitHub alert callouts, plus the type→situation mapping and the parsimony rule every skill must follow.
+* [Component Spec — Comment Formatting (GitHub alert callouts)](comment-formatting.md) - Design contract for build_alert(), the single constructor for GitHub alert callouts, plus the type→situation mapping and the parsimony rule every skill must follow.
 * [Component Spec — Core Data & Config](core.md) - Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on.
 * [Component Spec — Git & GitHub](git-github.md) - Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows.
 * [Component Spec — Issue Tracking](issue-tracking.md) - Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer.

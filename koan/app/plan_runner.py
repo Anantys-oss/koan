@@ -404,7 +404,9 @@ def review_plan_assumptions(
           - ASSUMPTIONS_CRITICAL: a critical assumption is unverified.
           - ASSUMPTIONS_REVIEWER_ERROR: reviewer infrastructure failed. The
             return only signals the error; the caller decides open vs. closed.
-            The current consumer (_run_plan_review_gate) fails open (does not block).
+            Both current consumers (_apply_assumptions_audit here and
+            /implement's _run_plan_review_gate) fail open — the audit is
+            advisory and never blocks.
     """
     from app.cli_provider import run_command
 
@@ -447,6 +449,78 @@ def review_plan_assumptions(
         first_line,
     )
     return ASSUMPTIONS_REVIEWER_ERROR, "assumptions check produced unparseable output — manual review needed"
+
+
+# Heading of the section the plan template mandates for genuine unknowns
+# (see system-prompts/_partials/plan-tail-sections.md).
+_OPEN_QUESTIONS_RE = re.compile(r"^#{2,4}\s+open questions\s*$", re.IGNORECASE | re.MULTILINE)
+
+_ASSUMPTIONS_AUDIT_HEADER = (
+    "**Assumptions audit (auto):** the following plan assumptions were flagged "
+    "as unverified — confirm or embed evidence before implementing:"
+)
+
+
+def _merge_assumptions_into_open_questions(plan_text: str, findings: str) -> str:
+    """Fold assumptions-audit findings into the plan's Open Questions section.
+
+    Appends the findings at the end of the Open Questions section (i.e. just
+    before the next same-or-higher-level heading), or appends a new section at
+    the end of the plan when none exists. Pure text transform — no LLM round.
+    """
+    block = f"{_ASSUMPTIONS_AUDIT_HEADER}\n\n{findings.strip()}"
+
+    match = _OPEN_QUESTIONS_RE.search(plan_text)
+    if not match:
+        return f"{plan_text.rstrip()}\n\n### Open Questions\n\n{block}\n"
+
+    heading_level = match.group(0).strip().split(" ", 1)[0]  # "##", "###" or "####"
+    next_heading = re.compile(
+        rf"^#{{2,{len(heading_level)}}}\s+", re.MULTILINE,
+    )
+    section_start = match.end()
+    next_match = next_heading.search(plan_text, section_start)
+    insert_at = next_match.start() if next_match else len(plan_text)
+
+    before = plan_text[:insert_at].rstrip()
+    after = plan_text[insert_at:]
+    return f"{before}\n\n{block}\n\n{after.lstrip()}" if after.strip() else f"{before}\n\n{block}\n"
+
+
+def _apply_assumptions_audit(
+    plan_text: str,
+    project_path: str,
+    skill_dir,
+    notify_fn=None,
+    project_name: str = "",
+) -> str:
+    """Pressure-test the final plan's assumptions before it is posted.
+
+    Advisory and fail-open: unverified critical assumptions are folded into
+    the plan's Open Questions section so the human can resolve them on the
+    tracker before /implement; any auditor error leaves the plan unchanged.
+    """
+    from app.config import get_plan_review_config
+
+    if is_simple_plan(plan_text):
+        return plan_text
+    if not get_plan_review_config().get("assumptions_check", True):
+        return plan_text
+
+    status, reason = review_plan_assumptions(plan_text, project_path, skill_dir)
+    if status == ASSUMPTIONS_CRITICAL:
+        logger.info("Assumptions audit flagged unverified assumptions — adding to Open Questions")
+        if notify_fn:
+            with suppress(Exception):
+                notify_fn(
+                    "🔍 Assumptions audit flagged unverified assumptions — "
+                    "added to the plan's Open Questions"
+                )
+        return _merge_assumptions_into_open_questions(plan_text, reason)
+
+    if status == ASSUMPTIONS_REVIEWER_ERROR:
+        logger.warning("Assumptions audit skipped (reviewer error): %s", reason)
+    return plan_text
 
 
 def improve_plan(
@@ -792,7 +866,10 @@ def _generate_plan(
             project_name=project_name, instance_dir=instance_dir,
         )
 
-    return plan
+    return _apply_assumptions_audit(
+        plan, project_path, skill_dir, notify_fn=notify_fn,
+        project_name=project_name,
+    )
 
 
 def _generate_iteration_plan(
@@ -839,7 +916,10 @@ def _generate_iteration_plan(
             project_name=project_name, instance_dir=instance_dir,
         )
 
-    return plan
+    return _apply_assumptions_audit(
+        plan, project_path, skill_dir, notify_fn=notify_fn,
+        project_name=project_name,
+    )
 
 
 # Regex matching preamble transition lines — everything up to and including

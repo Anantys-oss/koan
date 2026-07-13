@@ -1,7 +1,7 @@
 # Messaging
 
 * [Discord Messaging Provider](discord.md) - Setup guide for using Discord as Kōan's messaging bridge via REST polling instead of the Gateway/WebSocket API.
-* [GitHub alert callouts](github-alerts.md) - How to emit GitHub alert callouts (NOTE/TIP/IMPORTANT/WARNING/CAUTION) via the shared `build_alert()` helper, with the type→situation mapping and the ≤1–2-per-comment parsimony rule.
+* [GitHub alert callouts](github-alerts.md) - How to emit GitHub alert callouts (NOTE/TIP/IMPORTANT/WARNING/CAUTION) via build_alert(), when to reach for each type, and the parsimony rule.
 * [GitHub Notification-Driven Commands](github-commands.md) - Full reference for triggering Kōan via `@mention` commands in GitHub PR/issue comments, including config, dedup, security, and fallback scanning.
 * [GitHub Webhooks — Push-Based Notification Triggering](github-webhooks.md) - Describes the opt-in push-based GitHub webhook receiver that collapses notification-polling latency while polling remains the reliability fallback.
 * [Jira Integration](jira-integration.md) - Full reference for controlling Kōan via `@mention` commands in Jira issue comments, including project mapping, ADF parsing, and coexistence with GitHub.
