@@ -295,7 +295,12 @@ logs:
 		exit 1; \
 	fi
 	@echo "→ Watching Kōan logs + live progress (Ctrl-C to stop watching — Kōan keeps running)"
-	@tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null
+	@if [ "$(raw)" = "1" ]; then \
+		tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null; \
+	else \
+		tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null \
+			| ( cd koan && PYTHONPATH=. $(PYTHON_ABS) -m app.log_fmt ); \
+	fi
 
 install:
 	@$(MAKE) --no-print-directory setup

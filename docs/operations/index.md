@@ -3,6 +3,7 @@
 * [Auto-Update](auto-update.md) - Describes Kōan's opt-in auto-update feature that checks for and pulls upstream commits, plus the always-on release-tag notification.
 * [Web Dashboard](dashboard.md) - Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, and design-system integration.
 * [Interactive launcher (make koan)](interactive-launcher.md) - Describes `make koan`, the TTY-gated interactive launcher and its textual terminal dashboard (tabs, toggles, keybindings).
+* [make logs formatting](log-formatting.md) - Documents the display-side [cli] log formatter (log_fmt.py) behind make logs, its glyph legend, tick-collapse behavior, and the raw=1 escape hatch.
 * [Maintenance & Release](maint.md) - Covers Kōan's release process and branch philosophy (`main` vs `stable`), the `make release` procedure, versioning scheme, and recovery steps.
 * [Memory footprint: process RSS vs cgroup memory.current](memory-footprint.md) - Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, and the anon-first triage rule.
 * [Memory watchdog (#2232)](memory-watchdog.md) - Explains the memory watchdog that restarts the agent loop between missions when RSS stays over a threshold, its config knobs, and health-endpoint observability.
