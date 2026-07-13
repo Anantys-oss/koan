@@ -4,7 +4,7 @@
 * [Web Dashboard](dashboard.md) - Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, and design-system integration.
 * [Interactive launcher (make koan)](interactive-launcher.md) - Describes `make koan`, the TTY-gated interactive launcher and its textual terminal dashboard (tabs, toggles, keybindings).
 * [make logs formatting](log-formatting.md) - Documents the display-side [cli] log formatter (log_fmt.py) behind make logs, its glyph legend, tool-input previews, accumulating thinking dots, and the raw=1 escape hatch.
-* [Maintenance & Release](maint.md) - Covers Kōan's release process and branch philosophy (`main` vs `stable`), the `make release` procedure, versioning scheme, and recovery steps.
+* [Maintenance & Release](maint.md) - Covers Kōan's release pipeline (incubate → incubating → release workflow), branch philosophy (`main` / `incubating` / `stable`), the curated changelog flow, versioning scheme, and recovery steps.
 * [Memory footprint: process RSS vs cgroup memory.current](memory-footprint.md) - Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, and the anon-first triage rule.
 * [Memory watchdog (#2232)](memory-watchdog.md) - Explains the memory watchdog that restarts the agent loop between missions when RSS stays over a threshold, its config knobs, and health-endpoint observability.
 * [Mission-queue break-glass CLI](mission-cli.md) - Terminal commands (make missions / make mission-rm, or python -m app.mission_ctl) to inspect and edit the SQLite mission store directly when the Telegram bridge is unresponsive.

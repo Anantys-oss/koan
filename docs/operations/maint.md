@@ -1,51 +1,61 @@
 ---
 type: doc
 title: "Maintenance & Release"
-description: "Covers Kōan's release process and branch philosophy (`main` vs `stable`), the `make release` procedure, versioning scheme, and recovery steps."
+description: "Covers Kōan's release pipeline (incubate → incubating → release workflow), branch philosophy (`main` / `incubating` / `stable`), the curated changelog flow, versioning scheme, and recovery steps."
 tags: [operations]
 created: 2026-05-28
-updated: 2026-07-01
+updated: 2026-07-13
 ---
 
 # Maintenance & Release
 
 ## Philosophy
 
-Kōan has two channels:
+Kōan has three channels:
 
-- **`main`** — bleeding edge. Every merged PR lands here. Contributors and adventurous users track this branch.
-- **`stable`** — contains *only* tagged releases. Fast-forwarded at each `make release`. Users who want a predictable experience track this.
+- **`main`** — bleeding edge, the *unstable integration branch*. Every merged PR lands here. It moves constantly and may contain commits that have not been validated nor documented yet. **Releases are never cut from `main`.**
+- **`incubating`** — the validated pre-release branch, and the *authority for releases*. It only receives `main` through reviewed `/koan.incubate` merges, each of which appends a curated, human-reviewed changelog entry to `changes/incubating.md`. An operator instance runs this branch continuously, so its content is field-tested.
+- **`stable`** — contains *only* tagged releases, fast-forwarded from `incubating` at each release. Users who want a predictable experience track this branch (or the moving `stable` tag).
 
-A release is cut **when `main` is healthy and something worth shipping has landed** — not on a fixed cadence. Typical triggers:
+A release is cut **when `incubating` is healthy and something worth shipping has landed** — not on a fixed cadence. Typical triggers:
 
-- A noteworthy feature is merged and validated.
+- A noteworthy feature has landed on `incubating` and been validated by the operator instance.
 - A cluster of fixes / polish commits has accumulated (roughly 5–20 commits since the last tag).
-- A bug fix on `main` is important enough that stable users need it now.
+- A bug fix is important enough that stable users need it now.
 
 Do **not** release if:
 
 - The test suite is not 100% green.
 - Work-in-progress is merged behind feature flags that aren't ready.
-- You haven't actually run the code in your own instance since the last tag.
+- The candidate commits haven't actually run in an instance since the last tag.
 
-The human decides. `make release` just enforces the hygiene.
+The human decides. The tooling just enforces the hygiene.
 
-## Procedure
+## Pipeline: incubate → incubating → release workflow
 
-```bash
-make release
-```
+The release pipeline has a single source of truth for release notes — the curated
+changelog built by incubate merges — and a single place that tags: the
+`release.yml` GitHub Actions workflow.
 
-What it does, in order:
+1. **`/koan.incubate`** (skill, human-reviewed) — merges `main` into `incubating`
+   after a summarized diff review and go/no-go, and appends a grouped changelog
+   entry (`### Merged <date> — main @ <sha>`) under `## Unreleased` in
+   `changes/incubating.md`.
+2. **`/koan.release`** (skill, human-confirmed version) — rolls everything under
+   `## Unreleased` into a `## <version>` section of `changes/stable.md`, resets
+   the incubating journal, commits on `incubating`, fast-forwards the `stable`
+   branch, pushes, then dispatches the release workflow:
+   `gh workflow run release.yml --ref stable -f version=<version>`.
+3. **`release.yml`** (GitHub Actions, `workflow_dispatch`) — refuses to run from
+   any ref other than `incubating` or `stable`; validates the version format and
+   tag uniqueness; **extracts the release notes from the `## <version>` section
+   of `changes/stable.md`** (it fails if the section is missing — it never falls
+   back to a raw git log); creates the annotated tag, moves the `stable` tag,
+   publishes the GitHub release, and builds/pushes the Docker images (semver
+   tags, `latest`, `stable`).
 
-1. **Preflight** — must be on `main`, clean tree, synced with `origin/main`, `gh` authenticated.
-2. **`make test-strict`** — full pytest run. Any failure aborts the release.
-3. **Version prompt** — suggests the next patch bump (e.g. `v0.61` → `v0.62`). You can type any valid `vX.Y` or `vX.Y.Z`.
-4. **Changelog** — invokes Claude (Haiku) on `git log <last-tag>..HEAD` to produce a categorized markdown changelog. Falls back to the raw commit list if Claude is unavailable. You can edit it before proceeding.
-5. **Confirmation** — nothing is pushed until you confirm.
-6. **Tag + push** — `git tag -a vX.Y.Z` with the changelog as the message, then `git push origin vX.Y.Z`.
-7. **Fast-forward `stable`** — points `stable` at the new tag and pushes. Creates the branch if it doesn't exist yet.
-8. **GitHub release** — `gh release create ... --latest` with the changelog.
+The ad-hoc `publish-container.yml` workflow remains the out-of-band channel for
+publishing dev images (`devel`, `pr-123`, …) without cutting a release.
 
 ## Version scheme
 
@@ -63,13 +73,20 @@ If stable needs a fix and `main` has unreleasable work in flight:
 git checkout -b hotfix/xyz stable
 # fix + commit
 git checkout main && git cherry-pick hotfix/xyz
-# merge PR to main, then:
-make release   # on main, will fast-forward stable
+# merge PR to main, then run /koan.incubate followed by /koan.release
 ```
 
-Do not commit directly to `stable`. It must only ever be a fast-forward of a tagged commit on `main`.
+Do not commit directly to `stable`. It must only ever be a fast-forward of a
+tagged commit on `incubating`.
+
+## Legacy: `make release`
+
+The old `make release` target (`scripts/release.sh`) tagged directly from `main`
+with a Claude-generated changelog. It predates the incubating pipeline and is
+**deprecated**: it bypasses the incubate validation pass and the curated
+changelog. Use `/koan.incubate` + `/koan.release` instead.
 
 ## Recovery
 
-- **Bad tag pushed** — `git tag -d vX.Y && git push origin :refs/tags/vX.Y && gh release delete vX.Y`. Then re-run `make release`.
+- **Bad tag pushed** — `git tag -d vX.Y && git push origin :refs/tags/vX.Y && gh release delete vX.Y`. Then re-dispatch the release workflow.
 - **`stable` diverged** — reset it to the latest tag: `git branch -f stable vX.Y && git push --force-with-lease origin stable`. Force-push is acceptable on `stable` *only* to realign it with a tag.

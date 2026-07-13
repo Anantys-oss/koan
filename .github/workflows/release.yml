@@ -29,6 +29,19 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: 🔍 Refuse to release from main
+        run: |
+          # main is the unstable integration branch: it may contain commits not
+          # yet validated by an incubate pass nor documented in the changelog.
+          # Releases are cut from incubating (or the stable branch derived from it).
+          case "${{ github.ref_name }}" in
+            incubating|stable) ;;
+            *)
+              echo "::error::Releases must be dispatched on 'incubating' or 'stable', not '${{ github.ref_name }}'. main is the unstable integration branch."
+              exit 1
+              ;;
+          esac
+
       - name: 🔍 Validate version format
         run: |
           if ! echo "${{ inputs.version }}" | grep -qE '^v[0-9]+(\.[0-9]+){1,2}$'; then
@@ -44,24 +57,37 @@ jobs:
           fi
 
       - name: 📝 Check for commits since last tag
-        id: changelog
         run: |
           LAST_TAG=$(git tag --sort=-v:refname --list 'v*' | head -1)
           if [ -n "$LAST_TAG" ]; then
-            RANGE="${LAST_TAG}..HEAD"
-            COMMIT_COUNT=$(git rev-list --count "$RANGE")
+            COMMIT_COUNT=$(git rev-list --count "${LAST_TAG}..HEAD")
             if [ "$COMMIT_COUNT" -eq 0 ]; then
               echo "::error::No commits since $LAST_TAG — nothing to release"
               exit 1
             fi
-            NOTES=$(git log "$RANGE" --pretty=format:"- %s (%h)")
-          else
-            NOTES=$(git log --pretty=format:"- %s (%h)")
           fi
 
-          # Write notes to file (multi-line safe)
-          echo "$NOTES" > /tmp/release-notes.md
-          echo "last_tag=${LAST_TAG:-none}" >> "$GITHUB_OUTPUT"
+      - name: 📝 Extract release notes from changes/stable.md
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          # The curated changelog is rolled into changes/stable.md by /koan.release
+          # before this workflow is dispatched. Releasing without it is a process
+          # error, so the absence of the section is fatal — never fall back to a
+          # raw git log.
+          if [ ! -f changes/stable.md ]; then
+            echo "::error::changes/stable.md not found — run /koan.release to roll the changelog before dispatching this workflow"
+            exit 1
+          fi
+          awk -v ver="$VERSION" '
+            $0 ~ "^## " ver " " || $0 ~ "^## " ver "$" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' changes/stable.md > /tmp/release-notes.md
+          if ! grep -q '[^[:space:]]' /tmp/release-notes.md; then
+            echo "::error::No '## $VERSION' section found in changes/stable.md — run /koan.release to roll the changelog first"
+            exit 1
+          fi
 
       - name: 🏷️ Create and push tag
         run: |
