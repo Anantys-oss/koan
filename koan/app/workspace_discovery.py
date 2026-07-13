@@ -13,6 +13,27 @@ from typing import List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
+def resolve_workspace_dir(koan_root) -> Path:
+    """Return the canonical workspace directory for a koan_root.
+
+    Prefers ``<root>/instance/workspace`` (the persistent volume on hosted
+    deploys) when it exists, else ``<root>/workspace`` (local/dev installs).
+
+    This is the SINGLE source of truth for where workspace projects live.
+    Both the reader (:func:`discover_workspace_projects`) and any writer
+    (the ``/add_project`` skill) MUST resolve through here, otherwise a
+    cloned repo can land in a directory discovery never scans (issue #2338).
+
+    Accepts both ``str`` and ``Path`` (``ctx.koan_root`` is a ``Path``;
+    ``projects_merged`` passes ``str``).
+    """
+    root = Path(koan_root)
+    inst_ws = root / "instance" / "workspace"
+    if inst_ws.is_dir():
+        return inst_ws
+    return root / "workspace"
+
+
 def discover_workspace_projects(koan_root: str) -> List[Tuple[str, str]]:
     """Scan workspace/ directory for projects.
 
@@ -21,10 +42,10 @@ def discover_workspace_projects(koan_root: str) -> List[Tuple[str, str]]:
     Returns empty list if workspace/ doesn't exist.
 
     Prefers instance/workspace (persistent volume on hosted deploys),
-    falling back to <root>/workspace for local/dev installs.
+    falling back to <root>/workspace for local/dev installs — resolved
+    through :func:`resolve_workspace_dir`.
     """
-    inst_ws = Path(koan_root) / "instance" / "workspace"
-    workspace_dir = inst_ws if inst_ws.is_dir() else Path(koan_root) / "workspace"
+    workspace_dir = resolve_workspace_dir(koan_root)
     if not workspace_dir.is_dir():
         return []
 

@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-11
+updated: 2026-07-12
 ---
 
 # Kōan User Manual
@@ -472,7 +472,7 @@ The master tracking issue then synthesizes the set with three optional sections:
 
 **`/plan`** — Deep-think an idea and produce a structured, task-level implementation plan as a tracker issue.
 
-Plans include a **File Map** (table of every file to create/modify/test), **checkbox steps** within each phase (write test → implement → verify → commit), and **actual code blocks** in steps that change code. Each code block is wrapped in a collapsible `<details>` block so the plan stays scannable — readers see step descriptions first and expand the code only when needed. A built-in self-review pass checks spec coverage, scans for placeholders, and verifies name consistency across phases before output. Multi-subsystem ideas trigger a scope check suggesting separate plans per subsystem.
+Plans include a **File Map** (table of every file to create/modify/test), **checkbox steps** within each phase (write test → implement → verify → commit), and **actual code blocks** in steps that change code. Each code block is wrapped in a collapsible `<details>` block so the plan stays scannable — readers see step descriptions first and expand the code only when needed. A built-in self-review pass checks spec coverage, scans for placeholders, and verifies name consistency across phases before output. Multi-subsystem ideas trigger a scope check suggesting separate plans per subsystem. Before posting, an advisory **assumptions audit** pressure-tests the plan's hidden assumptions and folds any unverified-critical ones into the plan's *Open Questions* section — so you can resolve them on the issue before `/implement` (which receives the same findings as "verify before coding" context; the audit never blocks either skill — toggle with `plan_review.assumptions_check`).
 
 - **Usage:** `/plan [--iterations N] <idea>`, `/plan <project> <idea>`, `/plan <issue-url>` (iterate on existing)
 - **GitHub @mention:** `@koan-bot /plan <idea>` on an issue
@@ -1520,7 +1520,7 @@ Caveman appends a "no filler, 3–6 word sentences, direct answers" directive to
 
 **Core skills shipping with caveman opted out (`caveman: false`)** — terseness directly hurts these (kept explicit for clarity, even though it matches the default):
 
-`/plan`, `/deepplan`, `/review`, `/security_audit`, `/audit`, `/brainstorm`, `/sparring`, `/incident`, `/claudemd`, `/chat`.
+`/plan`, `/deepplan`, `/review`, `/security_audit`, `/audit`, `/brainstorm`, `/sparring`, `/incident`, `/claudemd`, `/chat`, `/explain`.
 
 **Operator override — the `include:` list:**
 
@@ -1790,12 +1790,12 @@ cli_provider: "codex"
 models:
   # Provider-specific overrides (resolved before models.default)
   codex:
-    mission: "gpt-5.5"
-    chat: "gpt-5.5"
-    lightweight: "gpt-5.4-mini"
-    fallback: ""              # empty = use provider default
-    review_mode: "gpt-5.3-codex"
-    reflect: "gpt-5.5"
+    mission: "gpt-5.6-sol"
+    chat: "gpt-5.6-terra"
+    lightweight: "gpt-5.6-luna"
+    fallback: ""  # Codex has no fallback mechanism (ignored)
+    review_mode: "gpt-5.6-sol"
+    reflect: "gpt-5.6-luna"
 
   claude:
     review_mode: "haiku"      # use haiku for cheaper REVIEW mode audits
@@ -2009,6 +2009,11 @@ See [docs/operations/auto-update.md](../operations/auto-update.md) for details.
 
 - **Usage:** `/add_project <github-url> [name]`
 - **Aliases:** —
+
+The repo is cloned into the **active workspace directory** — `instance/workspace/`
+on hosted deploys (persistent volume), or `workspace/` on local installs — and
+registered via auto-discovery. No manual `projects.yaml` edit is required; the
+project appears in `/projects` immediately.
 
 <details>
 <summary>Use cases</summary>

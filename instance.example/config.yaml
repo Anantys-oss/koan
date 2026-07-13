@@ -507,12 +507,12 @@ models:
 
   # Codex (OpenAI) provider overrides (uncomment to customize):
   # codex:
-  #   mission: "gpt-5.5"            # complex implementation
-  #   chat: "gpt-5.4"               # general discussion / planning
-  #   lightweight: "gpt-5.4-min"    # simple tasks if cost is acceptable
-  #   fallback: "gpt-5.4"           # empty = use provider default
-  #   review_mode: "gpt-5.5"        # serious code review
-  #   reflect: "gpt-5.4"            # summarize / reason about result
+  #   mission: "gpt-5.6-sol"        # complex implementation
+  #   chat: "gpt-5.6-terra"         # general discussion / planning
+  #   lightweight: "gpt-5.6-luna"   # simple tasks if cost is acceptable
+  #   fallback: ""                  # ignored by Codex (no --fallback-model)
+  #   review_mode: "gpt-5.6-sol"    # serious code review
+  #   reflect: "gpt-5.6-luna"       # summarize / reason about result
 
   # Haze provider overrides (uncomment to customize). Values are haze model
   # selectors: an unambiguous model name, or provider:model, as configured
@@ -697,7 +697,9 @@ usage:
 #   enabled: true       # Run review loop after plan generation (default: true)
 #   max_rounds: 3       # Maximum re-generation rounds per plan (default: 3)
 #   implement_gate: true  # Run plan-review gate before /implement execution (default: true)
-#   assumptions_check: true  # Pressure-test plan assumptions before structural critic (default: true)
+#   assumptions_check: true  # Advisory assumptions audit (never blocks): /plan folds
+#                             # findings into Open Questions before posting; /implement
+#                             # injects them as verification context (default: true)
 
 # Private review gate for /fix, /implement, and /rebase — after a PR branch
 # is updated, privately run the /review analysis path, fix Blocking/Important
@@ -776,6 +778,40 @@ memory_monitor:
   sustained_samples: 3      # Consecutive over-threshold loop iterations required
   min_runs_before_restart: 1  # Don't restart before completing N runs this session
   tracemalloc: false        # Opt-in: capture top allocation sites at restart (adds overhead)
+  # Bridge (awake.py) RSS watchdog (#2354). Independent of the master switch
+  # above. Enabled by default with a lower threshold since the bridge baseline
+  # RSS (~40 MB) is far below the agent loop's. Restarts only when no worker
+  # lane is busy (re-execs the bridge, same PID). Set enabled: false to opt out.
+  bridge:
+    enabled: true           # Bridge RSS watchdog (default: true)
+    threshold_mb: 600        # Restart when RSS stays at/above this (MB)
+    sustained_samples: 3     # Consecutive over-threshold poll cycles required
+
+# Conversation history retention (#2354). Mid-session compaction of
+# conversation-history.jsonl so the append-only file stays bounded over long
+# bridge uptime. Floored at 300s; 0 disables mid-session compaction (startup
+# compaction still runs).
+# conversation:
+#   compact_interval_seconds: 3600   # Seconds between mid-session compactions (default: 3600)
+
+# Post-mission tmp sweep (#2354 follow-up). Test suites run by missions write
+# outside the per-mission $TMPDIR (pytest → /tmp/pytest-of-*, koan test runs →
+# /tmp/test-koan*, jest → /tmp/jest_rs); left behind, they inflate the
+# container's reclaimable page cache across missions. After each mission Kōan
+# sweeps these stray /tmp trees. Only paths directly under /tmp matching a glob
+# are removed; symlinks are never followed, the live scratch dir is never
+# touched, and dirs owned by other users are skipped. A tree is also spared if
+# anything inside it was touched within min_tmp_age_seconds (default 600s), so a
+# concurrent parallel session mid-`make test` on the koan repo isn't deleted out
+# from under itself. Set extra_tmp_globs: [] to disable the sweep, or lower
+# min_tmp_age_seconds (0 disables the age gate).
+# cleanup:
+#   extra_tmp_globs:
+#     - /tmp/pytest-of-*
+#     - /tmp/test-koan*
+#     - /tmp/koan-*
+#     - /tmp/jest_rs
+#   min_tmp_age_seconds: 600   # Skip trees touched within this window (default: 600)
 
 # CI check: master switch for the entire CI monitoring pipeline.
 # Controls queue draining, auto-dispatch of fix missions, CI enqueue

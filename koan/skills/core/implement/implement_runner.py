@@ -148,17 +148,25 @@ def run_implement(
     )
     improvement_context = ""
     if isinstance(gate_result, _GateImproved):
+        if gate_result.plan != plan and gate_result.issues_fixed:
+            improvement_context += (
+                "\n\n## Plan Improvement Notes\n\n"
+                "The plan was autonomously improved before implementation. "
+                "The original plan had these issues that were addressed:\n"
+                f"{gate_result.issues_fixed}\n\n"
+                "The plan above is the corrected version. Pay attention to the "
+                "specific file paths and details added during improvement."
+            )
+        if gate_result.assumptions_advisory:
+            improvement_context += (
+                "\n\n## Assumption Verification Required\n\n"
+                "A pre-implementation audit flagged these plan assumptions as "
+                "unverified and critical. Before writing any code, verify each "
+                "one against the actual codebase (Read/Grep). If one turns out "
+                "false, adapt the approach and note it in the PR:\n"
+                f"{gate_result.assumptions_advisory}"
+            )
         plan = gate_result.plan
-        improvement_context = (
-            "\n\n## Plan Improvement Notes\n\n"
-            "The plan was autonomously improved before implementation. "
-            "The original plan had these issues that were addressed:\n"
-            f"{gate_result.issues_fixed}\n\n"
-            "The plan above is the corrected version. Pay attention to the "
-            "specific file paths and details added during improvement."
-        )
-    elif gate_result is not None:
-        return gate_result
 
     # Resolve the effective base branch once; both the implementation prompt
     # and the post-implementation guard need to agree on what counts as
@@ -432,13 +440,18 @@ def _write_plan_cache(
 
 
 class _GateImproved:
-    """Result when the gate self-healed the plan."""
+    """Result when the gate self-healed the plan and/or flagged assumptions.
 
-    __slots__ = ("plan", "issues_fixed")
+    Carries the (possibly improved) plan plus an advisory listing unverified
+    critical assumptions the implementer must verify before writing code.
+    """
 
-    def __init__(self, plan: str, issues_fixed: str):
+    __slots__ = ("plan", "issues_fixed", "assumptions_advisory")
+
+    def __init__(self, plan: str, issues_fixed: str, assumptions_advisory: str = ""):
         self.plan = plan
         self.issues_fixed = issues_fixed
+        self.assumptions_advisory = assumptions_advisory
 
 
 def _run_plan_review_gate(
@@ -447,16 +460,18 @@ def _run_plan_review_gate(
     notify_fn=None,
     issue_url: str = "",
     project_name: str = "",
-) -> Union[None, _GateImproved, Tuple[bool, str]]:
+) -> Union[None, _GateImproved]:
     """Run plan-review gate with autonomous improvement loop.
+
+    The gate is fail-open by contract: it may improve or annotate the plan,
+    but it never blocks implementation on a reviewer verdict.
 
     Returns:
         None — proceed with original plan (simple/cached/disabled).
-        _GateImproved — proceed with improved plan + context about what was fixed.
-        (False, msg) — block (only on catastrophic internal error).
+        _GateImproved — proceed with improved plan and/or assumptions advisory.
     """
     from app.plan_runner import (
-        ASSUMPTIONS_CRITICAL, ASSUMPTIONS_OK, ASSUMPTIONS_REVIEWER_ERROR,
+        ASSUMPTIONS_CRITICAL, ASSUMPTIONS_REVIEWER_ERROR,
         improve_plan, is_simple_plan, review_plan, review_plan_assumptions,
     )
 
@@ -475,25 +490,28 @@ def _run_plan_review_gate(
         logger.info("Plan-review gate: cache hit — skipping review")
         return None
 
-    # Assumptions pressure-test: surface unverified critical assumptions
-    # before spending tokens on the structural critic loop.
+    # Assumptions pressure-test: surface unverified critical assumptions so
+    # the implementer verifies them first. Advisory only — never blocks.
+    assumptions_advisory = ""
     if review_cfg.get("assumptions_check", True):
         logger.info("Plan-review gate: running assumptions check...")
         assumptions_status, assumptions_reason = review_plan_assumptions(
             plan, project_path, _PLAN_SKILL_DIR,
         )
         if assumptions_status == ASSUMPTIONS_CRITICAL:
-            label = "critical unverified assumption"
-            logger.warning("Plan-review gate: %s — blocking", label)
+            assumptions_advisory = assumptions_reason
+            logger.warning(
+                "Plan-review gate: critical unverified assumption — "
+                "proceeding with advisory (fail open)",
+            )
             if notify_fn:
                 try:
                     notify_fn(
-                        f"🛑 Plan blocked — {label}:\n"
-                        f"{assumptions_reason}"
+                        "⚠️ Plan assumptions flagged — proceeding; implementer "
+                        f"will verify before coding:\n{assumptions_reason}"
                     )
                 except Exception:
-                    logger.warning("Failed to send assumption-block notification", exc_info=True)
-            return (False, f"{label.capitalize()}: {assumptions_reason}")
+                    logger.warning("Failed to send assumption-advisory notification", exc_info=True)
         elif assumptions_status == ASSUMPTIONS_REVIEWER_ERROR:
             logger.warning(
                 "Plan-review gate: assumptions reviewer error — failing open: %s",
@@ -522,7 +540,11 @@ def _run_plan_review_gate(
             _write_plan_cache(project_path, final_hash, project_name)
             if current_plan != plan:
                 _post_improved_plan(current_plan, issue_url, notify_fn)
-                return _GateImproved(current_plan, "\n".join(all_issues))
+                return _GateImproved(
+                    current_plan, "\n".join(all_issues), assumptions_advisory,
+                )
+            if assumptions_advisory:
+                return _GateImproved(current_plan, "", assumptions_advisory)
             return None
 
         all_issues.append(issues)
@@ -561,7 +583,11 @@ def _run_plan_review_gate(
 
     if current_plan != plan:
         _post_improved_plan(current_plan, issue_url, notify_fn)
-        return _GateImproved(current_plan, "\n".join(all_issues))
+        return _GateImproved(
+            current_plan, "\n".join(all_issues), assumptions_advisory,
+        )
+    if assumptions_advisory:
+        return _GateImproved(current_plan, "", assumptions_advisory)
     return None
 
 

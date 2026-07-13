@@ -35,8 +35,8 @@ models:
     chat: "claude-3-5-haiku-20241022"
 
   codex:                    # Provider-specific overrides for the Codex harness
-    mission: "gpt-5.3-codex"
-    chat: "gpt-5.5"
+    mission: "gpt-5.6-sol"
+    chat: "gpt-5.6-terra"
 ```
 
 - `models.default` applies to all providers.

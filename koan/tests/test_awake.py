@@ -3773,3 +3773,90 @@ class TestLoadCachedContext:
             assert _load_cached_context(f) == ""
         finally:
             f.chmod(0o644)
+
+
+# ---------------------------------------------------------------------------
+# Bridge memory management (#2354): watchdog, periodic compaction, read-cache.
+# ---------------------------------------------------------------------------
+
+import app.awake as awake  # noqa: E402
+
+
+def test_workers_idle_true_when_all_none():
+    with patch.dict(awake._worker_threads, {"chat": None, "bg": None}, clear=True):
+        assert awake._workers_idle() is True
+
+
+def test_workers_idle_false_when_lane_alive():
+    alive = MagicMock()
+    alive.is_alive.return_value = True
+    with patch.dict(awake._worker_threads, {"chat": alive, "bg": None}, clear=True):
+        assert awake._workers_idle() is False
+
+
+def test_watchdog_restarts_when_idle():
+    monitor = MagicMock()
+    monitor.sample.return_value = True
+    with patch.dict(awake._worker_threads, {"chat": None, "bg": None}, clear=True):
+        assert awake._bridge_should_restart(monitor) is True
+
+
+def test_watchdog_skips_restart_when_worker_busy():
+    monitor = MagicMock()
+    monitor.sample.return_value = True
+    alive = MagicMock()
+    alive.is_alive.return_value = True
+    with patch.dict(awake._worker_threads, {"chat": alive, "bg": None}, clear=True):
+        assert awake._bridge_should_restart(monitor) is False
+
+
+def test_watchdog_no_monitor_never_restarts():
+    assert awake._bridge_should_restart(None) is False
+
+
+def test_periodic_compaction_fires_on_interval():
+    with patch("app.awake.compact_history", return_value=5) as mock_compact, \
+         patch("app.awake.time.time", return_value=10_000.0):
+        new_ts = awake._maybe_periodic_compact(last_compact=0.0, interval=3600)
+        mock_compact.assert_called_once()
+        assert new_ts == 10_000.0
+
+
+def test_periodic_compaction_skips_before_interval():
+    with patch("app.awake.compact_history") as mock_compact, \
+         patch("app.awake.time.time", return_value=100.0):
+        new_ts = awake._maybe_periodic_compact(last_compact=90.0, interval=3600)
+        mock_compact.assert_not_called()
+        assert new_ts == 90.0
+
+
+def test_periodic_compaction_disabled_when_interval_zero():
+    with patch("app.awake.compact_history") as mock_compact:
+        new_ts = awake._maybe_periodic_compact(last_compact=0.0, interval=0)
+        mock_compact.assert_not_called()
+        assert new_ts == 0.0
+
+
+def test_read_sections_cached_serves_within_ttl():
+    awake._sections_cache["ts"] = 0.0
+    awake._sections_cache["value"] = None
+    with patch("app.mission_store.transition.read_sections",
+               return_value={"pending": ["m"]}) as mock_read, \
+         patch("app.awake.time.time", side_effect=[100.0, 101.0]):
+        first = awake._read_sections_cached("/x")
+        second = awake._read_sections_cached("/x")
+    assert first == second == {"pending": ["m"]}
+    mock_read.assert_called_once()  # second call served from cache
+
+
+def test_read_sections_cached_expires_after_ttl():
+    awake._sections_cache["ts"] = 0.0
+    awake._sections_cache["value"] = None
+    with patch("app.mission_store.transition.read_sections",
+               side_effect=[{"pending": ["a"]}, {"pending": ["b"]}]) as mock_read, \
+         patch("app.awake.time.time", side_effect=[100.0, 200.0]):
+        first = awake._read_sections_cached("/x")
+        second = awake._read_sections_cached("/x")
+    assert first == {"pending": ["a"]}
+    assert second == {"pending": ["b"]}  # TTL expired → re-read
+    assert mock_read.call_count == 2

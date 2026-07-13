@@ -686,12 +686,12 @@ _PROVIDER_MODEL_DEFAULTS: dict[str, dict[str, str]] = {
         "reflect": "",
     },
     "codex": {
-        "mission": "gpt-5.3-codex",
-        "chat": "gpt-5.5",
-        "lightweight": "gpt-5.5",
-        "fallback": "",
-        "review_mode": "gpt-5.3-codex",
-        "reflect": "gpt-5.5",
+        "mission": "gpt-5.6-sol",
+        "chat": "gpt-5.6-terra",
+        "lightweight": "gpt-5.6-luna",
+        "fallback": "",  # Codex has no --fallback-model; leave unset
+        "review_mode": "gpt-5.6-sol",
+        "reflect": "gpt-5.6-luna",
     },
     "copilot": {
         "mission": "",

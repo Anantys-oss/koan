@@ -4,7 +4,7 @@ title: "Skill Spec — implement"
 description: "Specifies the `/implement` skill, which queues an end-to-end implementation mission for a tracker issue that results in a draft PR, and is eval-exempt as pure orchestration."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-02
+updated: 2026-07-12
 ---
 
 # Skill Spec — `implement`
@@ -56,6 +56,11 @@ See `docs/users/skills.md` for the end-user `/implement` reference and
 - Always a draft PR on a `<prefix>/*` branch; never commits to main, never merges.
 - `_work_landed()` must detect the landed branch even when the agent checks out main
   after pushing (fallback checks the expected `{prefix}implement-{issue}` branch).
+- The plan-review gate (`_run_plan_review_gate`, including the assumptions
+  pressure-test) is **fail-open**: it may improve the plan or annotate the
+  implementation context (e.g. "Assumption Verification Required"), but it never
+  blocks implementation on a reviewer verdict. Reviewer/auditor infrastructure
+  errors also fail open.
 
 ## Evaluation
 

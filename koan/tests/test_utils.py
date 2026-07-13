@@ -1,6 +1,7 @@
 """Tests for koan/utils.py — shared utilities."""
 import os
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1949,6 +1950,149 @@ class TestMissionTmpDirs:
         assert (base / "koan-prompt-x").is_dir()
         assert (base / "mission-99999999-alink").is_symlink()
         assert target.is_dir()
+
+
+class TestPytestAddoptsBasetemp:
+    def test_empty_existing_returns_basetemp_only(self):
+        from app.utils import pytest_addopts_with_basetemp
+        out = pytest_addopts_with_basetemp("", "/scratch/mission-1")
+        assert out == "--basetemp=/scratch/mission-1/pytest"
+
+    def test_existing_preserved_and_appended(self):
+        from app.utils import pytest_addopts_with_basetemp
+        out = pytest_addopts_with_basetemp("-q -p no:cacheprovider", "/scratch/m")
+        assert out == "-q -p no:cacheprovider --basetemp=/scratch/m/pytest"
+
+    def test_none_existing_treated_as_empty(self):
+        from app.utils import pytest_addopts_with_basetemp
+        out = pytest_addopts_with_basetemp(None, "/scratch/m")
+        assert out == "--basetemp=/scratch/m/pytest"
+
+
+class TestSweepStrayTmpDirs:
+    """sweep_stray_tmp_dirs (#2354 follow-up). Uses a unique token under the
+    real /tmp so the actual parent/symlink/uid guards are exercised."""
+
+    def _token(self):
+        import uuid
+        return f"koan-sweeptest-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+    def test_removes_matching_tree_and_reports_size(self):
+        token = self._token()
+        d = Path("/tmp") / f"{token}-a"
+        (d / "sub").mkdir(parents=True)
+        (d / "sub" / "f").write_bytes(b"x" * 100)
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs([f"/tmp/{token}-*"])
+            assert len(removed) == 1
+            assert removed[0][0] == str(d)
+            assert removed[0][1] >= 100
+            assert not d.exists()
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_never_follows_or_removes_symlinks(self):
+        token = self._token()
+        target = Path("/tmp") / f"{token}-target"
+        target.mkdir()
+        link = Path("/tmp") / f"{token}-link"
+        link.symlink_to(target)
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs([f"/tmp/{token}-*"])
+            assert [r[0] for r in removed] == [str(target)]
+            assert link.is_symlink()  # symlink skipped, not followed
+        finally:
+            import shutil
+            link.unlink(missing_ok=True)
+            shutil.rmtree(target, ignore_errors=True)
+
+    def test_never_removes_live_scratch_dir(self, monkeypatch):
+        from app import utils
+        token = self._token()
+        live = Path("/tmp") / f"{token}-live"
+        live.mkdir()
+        monkeypatch.setattr(utils, "koan_tmp_dir", lambda: str(live))
+        try:
+            removed = utils.sweep_stray_tmp_dirs([f"/tmp/{token}-*"])
+            assert removed == []
+            assert live.is_dir()
+        finally:
+            import shutil
+            shutil.rmtree(live, ignore_errors=True)
+
+    def test_ignores_patterns_outside_tmp(self):
+        # Patterns not rooted at /tmp/ are refused before any globbing.
+        from app.utils import sweep_stray_tmp_dirs
+        assert sweep_stray_tmp_dirs(
+            ["/var/tmp/koan-*", "/home/*/scratch", "relative-*"]
+        ) == []
+
+    def test_empty_globs_returns_empty(self):
+        from app.utils import sweep_stray_tmp_dirs
+        assert sweep_stray_tmp_dirs([]) == []
+
+    def test_age_gate_skips_recently_touched_tree(self):
+        # A tree touched within min_age_seconds is left alone: it may belong to
+        # a concurrent parallel session mid-`make test` (#2354).
+        token = self._token()
+        d = Path("/tmp") / f"{token}-fresh"
+        (d / "sub").mkdir(parents=True)
+        (d / "sub" / "f").write_bytes(b"x" * 100)  # just-written == fresh mtime
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs(
+                [f"/tmp/{token}-*"], min_age_seconds=3600
+            )
+            assert removed == []
+            assert d.is_dir()  # not deleted out from under a live session
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_age_gate_removes_stale_tree(self):
+        # A tree whose newest mtime predates the age window is swept.
+        token = self._token()
+        d = Path("/tmp") / f"{token}-stale"
+        (d / "sub").mkdir(parents=True)
+        (d / "sub" / "f").write_bytes(b"x" * 100)
+        old = time.time() - 7200  # 2h ago, older than the 1h gate below
+        for p in (d, d / "sub", d / "sub" / "f"):
+            os.utime(p, (old, old))
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs(
+                [f"/tmp/{token}-*"], min_age_seconds=3600
+            )
+            assert [r[0] for r in removed] == [str(d)]
+            assert not d.exists()
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_age_gate_detects_fresh_file_under_stale_root(self):
+        # Root dir mtime is old but a nested file is fresh (active xdist worker
+        # writing inside an older basetemp) — the whole tree must be spared.
+        token = self._token()
+        d = Path("/tmp") / f"{token}-mixed"
+        (d / "sub").mkdir(parents=True)
+        fresh = d / "sub" / "active"
+        fresh.write_bytes(b"x" * 10)  # fresh mtime deep in the tree
+        old = time.time() - 7200
+        os.utime(d, (old, old))  # stale top-level dir mtime only
+        os.utime(d / "sub", (old, old))
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs(
+                [f"/tmp/{token}-*"], min_age_seconds=3600
+            )
+            assert removed == []
+            assert d.is_dir()
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
 
 
 class TestGetTelegramChatId:

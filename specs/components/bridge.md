@@ -4,7 +4,7 @@ title: "Component Spec — Telegram Bridge"
 description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-07-08
+updated: 2026-07-13
 ---
 
 # Component Spec — Telegram Bridge
@@ -66,6 +66,21 @@ awake.py (loop, ~3s poll)
   returns `chat not found` for a quoted group ID but accepts the JSON integer. The stored
   identity string (`get_telegram_chat_id()` / `bridge_state.CHAT_ID`) stays a string for
   inbound `chat.id` equality checks; coercion happens only where the payload is built.
+- **Memory management is bounded over uptime (#2354).** The bridge is
+  long-lived, so per-message allocations must not grow with session length.
+  Three guarantees hold: (1) `load_recent_history` tails the last N lines
+  from EOF (`locked_jsonl_tail`), never reading the whole append-only
+  `conversation-history.jsonl`; (2) `compact_history` runs both at startup
+  **and** periodically mid-session (`conversation.compact_interval_seconds`,
+  default 3600, floored at 300; 0 disables) so the history file stays
+  bounded; (3) the mission-store read in `_build_chat_prompt` is cached for
+  one poll cycle (`_read_sections_cached`). A `MemoryMonitor` watchdog
+  (`memory_monitor.bridge:` sub-block, **enabled by default**, threshold
+  600 MB; set `enabled: false` to opt out) samples RSS once per poll cycle
+  and, **only when no worker lane is busy**, self-restarts via
+  `reexec_bridge()` (`os.execv`, same PID) as a backstop. The watchdog must
+  never restart mid-worker, and a baseline-safety guard refuses to arm when
+  the threshold isn't safely above the current RSS.
 
 ## Integration points
 

@@ -25,6 +25,7 @@ import contextlib
 import os
 import json
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -380,7 +381,14 @@ def run_claude_task(
             # binary the command was built for. None → global provider.
             popen_kwargs = {"env": mission_env}
             if mission_tmp:
-                popen_kwargs["env"] = {**mission_env, "TMPDIR": mission_tmp}
+                # Route pytest's tmp factory into the reaped per-mission dir so
+                # /tmp/pytest-of-* trees don't accumulate across missions (#2354).
+                from app.utils import pytest_addopts_with_basetemp
+                child_env = {**mission_env, "TMPDIR": mission_tmp}
+                child_env["PYTEST_ADDOPTS"] = pytest_addopts_with_basetemp(
+                    child_env.get("PYTEST_ADDOPTS", ""), mission_tmp
+                )
+                popen_kwargs["env"] = child_env
             proc, cleanup = popen_cli(
                 cmd,
                 provider=provider,
@@ -491,6 +499,26 @@ def run_claude_task(
         # on POSIX (open fds survive) and the mission is already failed.
         if mission_tmp:
             cleanup_mission_tmp_dir(mission_tmp)
+        # Safety net: sweep stray tmp trees test suites leave outside $TMPDIR
+        # (pytest-of-*, test-koan*, jest_rs). Best-effort; never touches the
+        # live scratch dir or other users' files, and age-gates removal so a
+        # concurrent parallel session mid-`make test` isn't clobbered (#2354).
+        try:
+            from app.config import (
+                get_cleanup_extra_tmp_globs,
+                get_cleanup_min_tmp_age_seconds,
+            )
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs(
+                get_cleanup_extra_tmp_globs(),
+                min_age_seconds=get_cleanup_min_tmp_age_seconds(),
+            )
+            if removed:
+                total_mb = sum(b for _p, b in removed) / (1024 * 1024)
+                log("health",
+                    f"Swept {len(removed)} stray tmp tree(s), freed {total_mb:.0f} MB")
+        except Exception as e:
+            log("error", f"stray tmp sweep failed: {e}")
         # Clear the liveness signal on every exit path — including exceptions
         # raised before the subprocess wait loop — so no stale .koan-active
         # survives to be misread as a live (then zombie) mission (#2086).
@@ -2904,7 +2932,9 @@ def _requeue_mission_in_file(instance: str, mission_title: str):
         log("error", f"Could not requeue mission in missions.md: {e}")
 
 
-def _finalize_mission(instance: str, mission_title: str, project_name: str, exit_code: int):
+def _finalize_mission(instance: str, mission_title: str, project_name: str,
+                      exit_code: int, *, failure_reason: Optional[str] = None,
+                      failure_detail: Optional[str] = None):
     """Complete or fail a mission and record execution history.
 
     When the last mission was killed by the stagnation monitor, the
@@ -2981,6 +3011,24 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
         else:
             cause_tag = f"stagnation:{pattern}"
         _notify_stagnation(mission_title, project_name, pattern, excerpt)
+
+        # Capture experience for stagnation-cap failures (outcome='reverted').
+        # Placed after the retry-cap check so it only fires when the mission
+        # is actually being marked Failed, not on requeue (which returns early
+        # at the increment_retry_count branch above).
+        try:
+            from app.experience_capture import capture_experience
+            capture_experience(
+                instance_dir=instance,
+                project_name=project_name,
+                mission_title=mission_title,
+                exit_code=exit_code,
+                outcome="reverted",
+                root_cause=f"Agent stuck in loop: {pattern}",
+                approach="(abandoned — stagnation cap hit)",
+            )
+        except Exception as e:
+            log("error", f"Experience capture for stagnation failed: {e}")
     else:
         # On success, clear all retry counters so the next run starts fresh.
         # On failure, leave counters intact so the human can see why the
@@ -2995,6 +3043,33 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str, exit
     _update_mission_in_file(
         instance, mission_title, failed=failed, cause_tag=cause_tag,
     )
+    # Record the authoritative terminal outcome for the REST API. Best-effort:
+    # a log hiccup must not block finalization. record_outcome is imported
+    # locally (matches the record_execution convention below) — tests patch it
+    # at its source module, app.mission_outcome.record_outcome.
+    try:
+        from app.mission_outcome import classify_failure, record_outcome
+        status = "failed" if failed else "done"
+        reason = failure_reason if failed else None
+        if failed and reason is None:
+            reason = classify_failure(exit_code, stagnated=stagnated,
+                                      cause_tag=cause_tag)
+        recorded = record_outcome(instance, mission_title, status,
+                                  reason_category=reason,
+                                  detail=failure_detail or (cause_tag or None))
+        # A dropped authoritative write silently reverts the REST API to the
+        # known-buggy absence-inference heuristic (#2285). Surface it distinctly
+        # from a hard exception so a persistently failing outcome log is visible.
+        if not recorded:
+            log("error",
+                f"Authoritative outcome write dropped for '{mission_title}' "
+                f"(status={status}); GET /v1/missions falls back to inference")
+    except sqlite3.DatabaseError as e:
+        # Only the recoverable DB failure class degrades quietly. A programming
+        # error (ImportError from a bad path, TypeError from signature drift)
+        # must propagate so a broken outcome-recording path surfaces loudly
+        # instead of permanently reverting the REST API to inference (#2285).
+        log("error", f"Outcome recording DB error: {e}")
     try:
         from app.mission_history import record_execution
         record_execution(instance, mission_title, project_name, exit_code)

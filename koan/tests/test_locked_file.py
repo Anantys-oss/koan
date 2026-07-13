@@ -200,3 +200,50 @@ class TestLockedJsonlRead:
         lines = locked_jsonl_read(path)
         # Lines include trailing newline
         assert lines[0].endswith("\n")
+
+
+# ---------------------------------------------------------------------------
+# locked_jsonl_tail  (#2354)
+# ---------------------------------------------------------------------------
+
+class TestLockedJsonlTail:
+    def _write_jsonl(self, path, n):
+        with open(path, "w", encoding="utf-8") as f:
+            for i in range(n):
+                f.write(json.dumps({"i": i}) + "\n")
+
+    def test_tail_returns_last_n(self, tmp_path):
+        from app.locked_file import locked_jsonl_tail
+        p = tmp_path / "h.jsonl"
+        self._write_jsonl(p, 100)
+        lines = locked_jsonl_tail(p, 10)
+        assert len(lines) == 10
+        assert json.loads(lines[0])["i"] == 90
+        assert json.loads(lines[-1])["i"] == 99
+
+    def test_tail_file_shorter_than_n(self, tmp_path):
+        from app.locked_file import locked_jsonl_tail
+        p = tmp_path / "h.jsonl"
+        self._write_jsonl(p, 3)
+        assert len(locked_jsonl_tail(p, 10)) == 3
+
+    def test_tail_missing_file(self, tmp_path):
+        from app.locked_file import locked_jsonl_tail
+        assert locked_jsonl_tail(tmp_path / "nope.jsonl", 10) == []
+
+    def test_tail_zero_lines(self, tmp_path):
+        from app.locked_file import locked_jsonl_tail
+        p = tmp_path / "h.jsonl"
+        self._write_jsonl(p, 5)
+        assert locked_jsonl_tail(p, 0) == []
+
+    def test_tail_multi_chunk(self, tmp_path):
+        from app.locked_file import locked_jsonl_tail
+        # Each line ~200 bytes so 100 lines span several 4096-byte chunks.
+        p = tmp_path / "h.jsonl"
+        with open(p, "w", encoding="utf-8") as f:
+            for i in range(100):
+                f.write(json.dumps({"i": i, "pad": "x" * 180}) + "\n")
+        lines = locked_jsonl_tail(p, 10)
+        assert len(lines) == 10
+        assert json.loads(lines[0])["i"] == 90

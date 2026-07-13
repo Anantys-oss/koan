@@ -316,13 +316,12 @@ def _build_chat_prompt(text: str, *, lite: bool = False) -> str:
     if pending_context:
         missions_context = pending_context
     else:
-        # Store is authoritative; read it directly rather than gating on the (now
-        # disposable) missions.md export — the try/except below degrades safely.
-        from app.mission_store.transition import read_sections
+        # Store is authoritative; read it (cached one poll cycle) rather than
+        # gating on the disposable missions.md export — try/except degrades safely.
         try:
-            sections = read_sections(MISSIONS_FILE.parent)
+            sections = _read_sections_cached(MISSIONS_FILE.parent)
         except Exception as e:
-            # read_sections now goes through SQLite; a DB read failure
+            # read_sections goes through SQLite; a DB read failure
             # (sqlite3.DatabaseError, not an OSError) must degrade to empty
             # chat-context rather than crash bridge chat-prompt building.
             log("warn", f"[awake] chat-context mission read failed: {e}")
@@ -707,6 +706,105 @@ def _run_in_worker(fn, *args, lane: str = "chat") -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Bridge memory management (#2354): watchdog, periodic compaction, read-cache.
+# ---------------------------------------------------------------------------
+
+def _build_bridge_memory_monitor():
+    """Construct a MemoryMonitor for the bridge, or None when disabled (#2354).
+
+    Mirrors run.py's _build_memory_monitor guards: refuses to arm a watchdog
+    whose threshold isn't safely above the current baseline RSS (that would
+    restart-loop forever).
+    """
+    from app.config import get_bridge_memory_monitor_config
+    conf = get_bridge_memory_monitor_config()
+    if not conf.get("enabled"):
+        return None
+    from app.memory_monitor import MemoryMonitor, read_rss_mb
+    threshold_mb = conf["threshold_mb"]
+    baseline = read_rss_mb()
+    if baseline <= 0 or threshold_mb <= 0 or threshold_mb <= baseline:
+        log("health",
+            f"Bridge memory watchdog disabled: threshold {threshold_mb} MB not "
+            f"safely above baseline RSS {baseline:.0f} MB.")
+        return None
+    log("init", f"Bridge memory watchdog armed: threshold {threshold_mb} MB")
+    return MemoryMonitor(
+        threshold_mb=threshold_mb,
+        sustained_samples=conf["sustained_samples"],
+        tracemalloc_enabled=conf.get("tracemalloc", False),
+    )
+
+
+def _workers_idle() -> bool:
+    """True when no worker lane has a live thread.
+
+    Reuses the pre-existing module globals ``_worker_threads`` and
+    ``_worker_lock`` — the same ones ``_run_in_worker`` uses for
+    back-pressure. Introduces no new lock.
+    """
+    with _worker_lock:
+        return all(
+            t is None or not t.is_alive()
+            for t in _worker_threads.values()
+        )
+
+
+def _bridge_should_restart(monitor) -> bool:
+    """True when the watchdog wants a restart AND it's safe (lanes idle).
+
+    Factored out of _bridge_loop so it is unit-testable: the loop itself
+    calls reexec_bridge() (os.execv), which never returns.
+    """
+    if monitor is None:
+        return False
+    if not monitor.sample():
+        return False
+    return _workers_idle()
+
+
+def _maybe_periodic_compact(last_compact: float, interval: int) -> float:
+    """Run compact_history if ``interval`` seconds elapsed since last_compact.
+
+    Returns the (possibly updated) last-compaction timestamp. Startup
+    compaction alone leaves conversation-history.jsonl append-only for the
+    whole session; four writers grow it every 3 s cycle (#2354).
+    """
+    if not interval:
+        return last_compact
+    now = time.time()
+    if (now - last_compact) < interval:
+        return last_compact
+    try:
+        n = compact_history(CONVERSATION_HISTORY_FILE, TOPICS_FILE)
+        if n:
+            log("health", f"Compacted {n} messages mid-session")
+    except Exception as e:
+        log("error", f"periodic compaction failed: {e}")
+    return now
+
+
+# Cache read_sections() for one poll cycle. _build_chat_prompt runs on every
+# chat message; without the store-existence gate (removed in 4c0c60c4) each
+# call opened/closed several SQLite connections, feeding arena fragmentation.
+_SECTIONS_CACHE_TTL = 3.0  # seconds — one poll cycle
+_sections_cache: Dict[str, object] = {"ts": 0.0, "value": None}
+
+
+def _read_sections_cached(missions_dir):
+    """read_sections() with a one-poll-cycle TTL cache (#2354)."""
+    from app.mission_store.transition import read_sections
+    now = time.time()
+    cached = _sections_cache["value"]
+    if cached is not None and (now - _sections_cache["ts"]) < _SECTIONS_CACHE_TTL:
+        return cached
+    sections = read_sections(missions_dir)
+    _sections_cache["ts"] = now
+    _sections_cache["value"] = sections
+    return sections
+
+
+# ---------------------------------------------------------------------------
 # Outbox flush thread — delegated to OutboxManager
 # ---------------------------------------------------------------------------
 
@@ -957,6 +1055,12 @@ def _bridge_loop():
     if compacted:
         log("health", f"Compacted {compacted} old messages at startup")
 
+    # Bridge memory management (#2354): watchdog + periodic mid-session compaction.
+    from app.config import get_conversation_compact_interval
+    bridge_monitor = _build_bridge_memory_monitor()
+    compact_interval = get_conversation_compact_interval()
+    last_compact = startup_time
+
     # Purge stale heartbeat so health_check doesn't report STALE on restart
     heartbeat_file = KOAN_ROOT / HEARTBEAT_FILE
     heartbeat_file.unlink(missing_ok=True)
@@ -1128,6 +1232,20 @@ def _bridge_loop():
                 clear_shutdown(str(KOAN_ROOT))
                 release_pidfile(pidfile_lock, KOAN_ROOT, "awake")
                 sys.exit(0)
+
+            # --- Periodic conversation-history compaction (#2354) ---
+            last_compact = _maybe_periodic_compact(last_compact, compact_interval)
+
+            # --- Bridge memory watchdog (#2354) ---
+            # Sample once per cycle; restart only when idle so an in-flight
+            # reply/skill is never killed. reexec_bridge() (os.execv) reclaims
+            # RSS to baseline with the same PID.
+            if _bridge_should_restart(bridge_monitor):
+                log("koan",
+                    f"Bridge RSS {bridge_monitor.last_rss_mb:.0f} MB ≥ "
+                    f"{bridge_monitor.threshold_mb} MB — restarting to reclaim.")
+                release_pidfile(pidfile_lock, KOAN_ROOT, "awake")
+                reexec_bridge()
 
             time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:

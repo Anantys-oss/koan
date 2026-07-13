@@ -440,3 +440,30 @@ class TestBackwardCompat:
         assert callable(load_recent_telegram_history)
         assert callable(format_conversation_history)
         assert callable(compact_telegram_history)
+
+
+# --- load_recent_history tail-read parity (#2354) ---
+
+def test_load_recent_history_returns_last_n(tmp_path):
+    from app.conversation_history import save_conversation_message, load_recent_history
+    hist = tmp_path / "conversation-history.jsonl"
+    for i in range(50):
+        save_conversation_message(hist, "user", f"msg-{i}")
+    recent = load_recent_history(hist, max_messages=10)
+    assert len(recent) == 10
+    assert recent[0]["text"] == "msg-40"
+    assert recent[-1]["text"] == "msg-49"
+
+
+def test_load_recent_history_skips_blank_and_malformed(tmp_path):
+    from app.conversation_history import save_conversation_message, load_recent_history
+    hist = tmp_path / "conversation-history.jsonl"
+    for i in range(12):
+        save_conversation_message(hist, "user", f"msg-{i}")
+    # Inject blank + malformed lines near the tail.
+    with open(hist, "a", encoding="utf-8") as f:
+        f.write("\n")
+        f.write("{ not json }\n")
+    recent = load_recent_history(hist, max_messages=10)
+    assert len(recent) == 10
+    assert recent[-1]["text"] == "msg-11"

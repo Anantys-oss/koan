@@ -2166,3 +2166,102 @@ class TestInstanceSyncInterval:
         monkeypatch.setenv("KOAN_INSTANCE_SYNC_INTERVAL", "nope")
         from app.config import get_instance_sync_interval
         assert get_instance_sync_interval() == 0
+
+
+# --- get_bridge_memory_monitor_config / get_conversation_compact_interval (#2354) ---
+
+class TestBridgeMemoryConfig:
+    def test_bridge_monitor_defaults(self):
+        from app.config import get_bridge_memory_monitor_config
+        with _mock_config({}):
+            conf = get_bridge_memory_monitor_config()
+        assert conf["enabled"] is True   # on by default (#2354)
+        assert conf["threshold_mb"] == 600
+        assert conf["sustained_samples"] == 3
+
+    def test_bridge_monitor_opt_out(self):
+        from app.config import get_bridge_memory_monitor_config
+        with _mock_config({"memory_monitor": {"bridge": {"enabled": False}}}):
+            conf = get_bridge_memory_monitor_config()
+        assert conf["enabled"] is False
+
+    def test_bridge_monitor_subblock_override(self):
+        from app.config import get_bridge_memory_monitor_config
+        with _mock_config({
+            "memory_monitor": {
+                "enabled": False,
+                "bridge": {"enabled": True, "threshold_mb": 500, "sustained_samples": 5},
+            }
+        }):
+            conf = get_bridge_memory_monitor_config()
+        assert conf["enabled"] is True          # sub-block opts in independently
+        assert conf["threshold_mb"] == 500
+        assert conf["sustained_samples"] == 5
+
+    def test_compact_interval_default(self):
+        from app.config import get_conversation_compact_interval
+        with _mock_config({}):
+            assert get_conversation_compact_interval() == 3600
+
+    def test_compact_interval_floored(self):
+        from app.config import get_conversation_compact_interval
+        with _mock_config({"conversation": {"compact_interval_seconds": 30}}):
+            assert get_conversation_compact_interval() == 300
+
+    def test_compact_interval_disabled(self):
+        from app.config import get_conversation_compact_interval
+        with _mock_config({"conversation": {"compact_interval_seconds": 0}}):
+            assert get_conversation_compact_interval() == 0
+
+
+class TestCleanupExtraTmpGlobs:
+    def test_defaults(self):
+        from app.config import get_cleanup_extra_tmp_globs
+        with _mock_config({}):
+            globs = get_cleanup_extra_tmp_globs()
+        assert "/tmp/pytest-of-*" in globs
+        assert "/tmp/test-koan*" in globs
+        assert "/tmp/jest_rs" in globs
+
+    def test_override(self):
+        from app.config import get_cleanup_extra_tmp_globs
+        with _mock_config({"cleanup": {"extra_tmp_globs": ["/tmp/foo-*"]}}):
+            assert get_cleanup_extra_tmp_globs() == ["/tmp/foo-*"]
+
+    def test_empty_list_disables(self):
+        from app.config import get_cleanup_extra_tmp_globs
+        with _mock_config({"cleanup": {"extra_tmp_globs": []}}):
+            assert get_cleanup_extra_tmp_globs() == []
+
+    def test_malformed_falls_back_to_defaults(self):
+        from app.config import get_cleanup_extra_tmp_globs
+        with _mock_config({"cleanup": {"extra_tmp_globs": "nope"}}):
+            globs = get_cleanup_extra_tmp_globs()
+        assert "/tmp/pytest-of-*" in globs
+
+
+class TestCleanupMinTmpAgeSeconds:
+    def test_default(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({}):
+            assert get_cleanup_min_tmp_age_seconds() == 600.0
+
+    def test_override(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({"cleanup": {"min_tmp_age_seconds": 120}}):
+            assert get_cleanup_min_tmp_age_seconds() == 120.0
+
+    def test_zero_disables_gate(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({"cleanup": {"min_tmp_age_seconds": 0}}):
+            assert get_cleanup_min_tmp_age_seconds() == 0.0
+
+    def test_malformed_falls_back_to_default(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({"cleanup": {"min_tmp_age_seconds": "nope"}}):
+            assert get_cleanup_min_tmp_age_seconds() == 600.0
+
+    def test_negative_clamped_to_zero(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({"cleanup": {"min_tmp_age_seconds": -5}}):
+            assert get_cleanup_min_tmp_age_seconds() == 0.0

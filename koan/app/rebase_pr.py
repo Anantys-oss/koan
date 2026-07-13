@@ -1729,6 +1729,13 @@ def _run_ci_check_and_fix(
     # implementation, injecting the activity-aware (heartbeat + timeout-retry)
     # step runner so long-but-active CI fixes keep running while stalled ones
     # are killed. The structured ``outcome`` drives the PR-comment summary.
+    import os
+
+    koan_root = os.environ.get("KOAN_ROOT", "")
+    ci_instance_dir = os.path.join(koan_root, "instance") if koan_root else ""
+    from app.utils import project_name_for_path as _project_name_for_path
+    ci_project_name = _project_name_for_path(project_path)
+
     outcome: Dict[str, object] = {}
     _success, last_ci_logs = run_ci_fix_loop(
         branch=branch,
@@ -1748,6 +1755,8 @@ def _run_ci_check_and_fix(
         push_fn=lambda b, p: _force_push("origin", b, p),
         recheck_fn=lambda b, repo: wait_for_ci(b, repo),
         outcome=outcome,
+        instance_dir=ci_instance_dir,
+        project_name=ci_project_name,
     )
 
     result = str(outcome.get("result", "exhausted"))

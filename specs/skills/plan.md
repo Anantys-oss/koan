@@ -4,7 +4,7 @@ title: "Skill Spec — plan"
 description: "Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-02
+updated: 2026-07-12
 ---
 
 # Skill Spec — `plan`
@@ -54,6 +54,11 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
 
 - Only the final iteration is posted — intermediate critic passes are internal.
 - `find_existing_plan_issue()` is consulted before creating a duplicate plan issue.
+- The final plan is assumption-audited before posting (`_apply_assumptions_audit`,
+  gated by `plan_review.assumptions_check`): unverified-critical findings are folded
+  into the plan's `### Open Questions` section so humans can resolve them on the
+  tracker before `/implement`. The audit is **advisory and fail-open** — auditor
+  errors leave the plan unchanged; it never blocks or suppresses posting.
 
 ## Evaluation
 

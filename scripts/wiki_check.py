@@ -365,10 +365,17 @@ def check_feature_status(path, index_text):
 
 
 def run_legacy_checks(files, index_text):
-    """Exactly today's behavior — used whenever --strict is NOT passed."""
+    """Default (non --strict) checks on the changed-file set.
+
+    Reserved index.md files are excluded via is_concept_page: they are generated
+    by scripts/okf_backfill.py (which wiki_sync_ci.py runs unconditionally, so
+    they routinely appear in the diff), carry no frontmatter by design, and are
+    never listed in wiki/index.md. Strict mode audits their structure separately
+    (check_index_md_structure).
+    """
     findings = []
     for path in files:
-        if is_frontmatter_eligible(path):
+        if is_concept_page(path):
             findings.extend(check_frontmatter(path))
             findings.extend(check_index_entry(path, index_text))
         findings.extend(check_feature_status(path, index_text))

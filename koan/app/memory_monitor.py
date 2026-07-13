@@ -208,6 +208,33 @@ def _read_run_pid(koan_root) -> int | None:
         return None
 
 
+def read_cgroup_memory_stat(path: str = "/sys/fs/cgroup/memory.stat") -> dict | None:
+    """cgroup v2 memory breakdown in MB, or None when unreadable (#2354 triage).
+
+    When assessing a suspected leak, per-process RSS / ``anon`` is the signal —
+    NOT ``memory.current``, which also counts reclaimable page cache (``file``)
+    and kernel slab. Missions do heavy file I/O so the kernel keeps those pages
+    warm with no memory pressure, inflating the container graph without any real
+    process growth. Returns the ``anon`` / ``file`` / ``slab`` fields (MB) so
+    triage starts from the right number. Missing file → None (non-Linux / cgroup
+    v1 / no cgroupfs).
+    """
+    wanted = ("anon", "file", "slab")
+    out: dict = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) == 2 and parts[0] in wanted:
+                    try:
+                        out[f"{parts[0]}_mb"] = round(int(parts[1]) / (1024 * 1024), 1)
+                    except ValueError:
+                        continue
+    except OSError:
+        return None
+    return out or None
+
+
 def get_memory_status(koan_root=None) -> dict:
     """Lightweight memory snapshot for observability endpoints.
 
@@ -263,4 +290,7 @@ def get_memory_status(koan_root=None) -> dict:
     }
     if config_error:
         status["config_error"] = True
+    cgroup = read_cgroup_memory_stat()
+    if cgroup is not None:
+        status["cgroup"] = cgroup
     return status
