@@ -51,7 +51,8 @@ def _supports_color() -> bool:
         return False
     try:
         return bool(sys.stdout.isatty())
-    except Exception:
+    except Exception as e:
+        print(f"[log_fmt] isatty probe error: {e}", file=sys.stderr)
         return False
 
 
@@ -144,13 +145,14 @@ def run(inp: TextIO, out: TextIO) -> None:
                 last_tick = False
                 out.write(line + "\n")
             out.flush()
-        except Exception:
+        except Exception as e:
             # A single malformed line must never kill the stream.
+            print(f"[log_fmt] render error: {e}", file=sys.stderr)
             try:
                 out.write(line + "\n")
                 out.flush()
-            except Exception:
-                pass
+            except Exception as e2:
+                print(f"[log_fmt] passthrough error: {e2}", file=sys.stderr)
 
 
 def main() -> int:
