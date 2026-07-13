@@ -510,7 +510,7 @@ models:
   #   mission: "gpt-5.6-sol"        # complex implementation
   #   chat: "gpt-5.6-terra"         # general discussion / planning
   #   lightweight: "gpt-5.6-luna"   # simple tasks if cost is acceptable
-  #   fallback: "gpt-5.6-terra"     # empty = use provider default
+  #   fallback: ""                  # ignored by Codex (no --fallback-model)
   #   review_mode: "gpt-5.6-sol"    # serious code review
   #   reflect: "gpt-5.6-luna"       # summarize / reason about result
 
