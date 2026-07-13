@@ -174,6 +174,50 @@ def test_resolve_posts_status_and_removes_label(tmp_path, monkeypatch):
     assert json.loads(_tracker(tmp_path).read_text()) == {}
 
 
+def test_resolve_fork_removes_label_from_issue_repo(tmp_path, monkeypatch):
+    """Fork workflow: label removed from the issue's repo, status on the fork.
+
+    ``start`` records the upstream issue repo; ``on_branch_pushed`` overwrites
+    ``repo`` with the fork push-target. Finalize must remove the label from the
+    upstream issue repo, not the fork (which has no such issue).
+    """
+    import app.github as github
+    import app.mission_status as ms
+
+    # Emulate the persisted entry after start + push in a fork workflow:
+    # issue_repo = upstream, repo = fork push-target.
+    _tracker(tmp_path).write_text(json.dumps(
+        {"fix the bug": {"repo": "me/fork", "issue_repo": "upstream/proj",
+                         "issue": "7", "sha": "deadbee", "project": "proj"}}))
+    monkeypatch.setattr(ms, "_resolve_config", lambda p: _cfg())
+    posted, removed = [], []
+    monkeypatch.setattr(github, "set_commit_status",
+                        lambda r, s, st, **k: posted.append((r, s, st)))
+    monkeypatch.setattr(github, "remove_issue_label",
+                        lambda r, n, label, **k: removed.append((r, n, label)))
+    ms.resolve_indicator(str(tmp_path), "fix the bug", success=True)
+    assert posted == [("me/fork", "deadbee", "success")]
+    assert removed == [("upstream/proj", "7", "koan:working")]
+
+
+def test_start_then_push_preserves_issue_repo(tmp_path, monkeypatch):
+    """A fork push must not clobber the issue repo recorded at start."""
+    import app.github as github
+    import app.mission_status as ms
+
+    monkeypatch.setattr(ms, "_resolve_config", lambda p: _cfg())
+    monkeypatch.setattr(ms, "_resolve_link",
+                        lambda i, t, p: {"repo": "upstream/proj", "issue": "7"})
+    monkeypatch.setattr(github, "ensure_label", lambda *a, **k: "")
+    monkeypatch.setattr(github, "add_issue_label", lambda *a, **k: None)
+    monkeypatch.setattr(github, "set_commit_status", lambda *a, **k: None)
+    ms.start_indicator(str(tmp_path), "fix the bug", "proj")
+    ms.on_branch_pushed(str(tmp_path), "proj", "me/fork", "koan/x", "deadbee")
+    entry = json.loads(_tracker(tmp_path).read_text())["fix the bug"]
+    assert entry["issue_repo"] == "upstream/proj"
+    assert entry["repo"] == "me/fork"
+
+
 def test_resolve_failure_posts_red(tmp_path, monkeypatch):
     import app.github as github
     import app.mission_status as ms

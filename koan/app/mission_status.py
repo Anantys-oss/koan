@@ -124,8 +124,9 @@ def start_indicator(instance: str, mission_title: str,
         link = _resolve_link(instance, mission_title, project_name)
         if not link:
             return  # local-only / non-GitHub mission
-        entry = {"repo": link["repo"], "issue": link["issue"],
-                 "sha": None, "branch": None, "project": project_name}
+        entry = {"repo": link["repo"], "issue_repo": link["repo"],
+                 "issue": link["issue"], "sha": None, "branch": None,
+                 "project": project_name}
         if cfg.get("issue_label") and link["issue"]:
             github.ensure_label(link["repo"], cfg["label_name"])
             github.add_issue_label(link["repo"], link["issue"], cfg["label_name"])
@@ -157,6 +158,9 @@ def on_branch_pushed(instance: str, project_name: str, repo: str,
         )
         if title is None:
             return
+        # ``repo`` here is the push-target repo (used for the commit status);
+        # leave ``issue_repo`` untouched so the label is removed from the
+        # issue's repo at finalize even when they differ (fork workflow).
         data[title].update(sha=sha, branch=branch, repo=repo)
         _save(instance, data)
         github.set_commit_status(repo, sha, "pending", context=_CONTEXT,
@@ -185,7 +189,11 @@ def resolve_indicator(instance: str, mission_title: str, *,
             github.set_commit_status(entry["repo"], entry["sha"], gh_state,
                                      context=_CONTEXT, description=_DESC)
         if entry.get("issue") and cfg.get("issue_label"):
-            github.remove_issue_label(entry["repo"], entry["issue"],
+            # The label lives on the issue's repo, which may differ from the
+            # push-target repo recorded in ``repo`` (fork workflow). Fall back
+            # to ``repo`` for entries persisted before ``issue_repo`` existed.
+            issue_repo = entry.get("issue_repo") or entry["repo"]
+            github.remove_issue_label(issue_repo, entry["issue"],
                                       cfg["label_name"])
     except Exception as e:
         log("koan", f"running-indicator resolve skipped: {e}")
