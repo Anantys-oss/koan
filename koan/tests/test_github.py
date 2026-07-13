@@ -1688,3 +1688,80 @@ class TestDetectEcosystem:
         from app.github import detect_ecosystem
 
         assert detect_ecosystem(str(tmp_path)) == "other"
+
+
+# ---------------------------------------------------------------------------
+# Mission status indicators (koan/mission)
+# ---------------------------------------------------------------------------
+
+
+class TestSetCommitStatus:
+    def test_posts_raw_json(self, monkeypatch):
+        import app.github as github
+
+        calls = {}
+
+        def fake_api(endpoint, method="GET", input_data=None,
+                     raw_body=False, cwd=None, **kw):
+            calls.update(endpoint=endpoint, method=method,
+                         body=json.loads(input_data), raw_body=raw_body)
+            return "{}"
+
+        monkeypatch.setattr(github, "api", fake_api)
+        github.set_commit_status("o/r", "abc123", "pending",
+                                 description="Kōan is working on this mission")
+        assert calls["endpoint"] == "repos/o/r/statuses/abc123"
+        assert calls["method"] == "POST"
+        assert calls["raw_body"] is True
+        assert calls["body"]["state"] == "pending"
+        assert calls["body"]["context"] == "koan/mission"
+
+    def test_description_truncated_to_140(self, monkeypatch):
+        import app.github as github
+
+        captured = {}
+        monkeypatch.setattr(
+            github, "api",
+            lambda endpoint, **kw: captured.update(
+                body=json.loads(kw["input_data"])) or "{}",
+        )
+        github.set_commit_status("o/r", "sha", "success", description="x" * 300)
+        assert len(captured["body"]["description"]) == 140
+
+    def test_target_url_included(self, monkeypatch):
+        import app.github as github
+
+        captured = {}
+        monkeypatch.setattr(
+            github, "api",
+            lambda endpoint, **kw: captured.update(
+                body=json.loads(kw["input_data"])) or "{}",
+        )
+        github.set_commit_status("o/r", "sha", "success",
+                                 target_url="https://pr/1")
+        assert captured["body"]["target_url"] == "https://pr/1"
+
+
+class TestIssueLabelToggle:
+    def test_add_and_remove_label(self, monkeypatch):
+        import app.github as github
+
+        seen = []
+        monkeypatch.setattr(github, "run_gh",
+                            lambda *a, **k: seen.append(a) or "")
+        github.add_issue_label("o/r", 42, "koan:working")
+        github.remove_issue_label("o/r", 42, "koan:working")
+        assert seen[0] == ("issue", "edit", "42", "--repo", "o/r",
+                           "--add-label", "koan:working")
+        assert seen[1][5] == "--remove-label"
+
+    def test_ensure_label_uses_force(self, monkeypatch):
+        import app.github as github
+
+        seen = []
+        monkeypatch.setattr(github, "run_gh",
+                            lambda *a, **k: seen.append(a) or "")
+        github.ensure_label("o/r", "koan:working")
+        assert seen[0][:5] == ("label", "create", "koan:working",
+                               "--repo", "o/r")
+        assert "--force" in seen[0]

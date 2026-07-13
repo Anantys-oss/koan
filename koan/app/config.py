@@ -960,6 +960,35 @@ def is_ci_check_enabled() -> bool:
     return True
 
 
+def get_running_indicator_config() -> dict:
+    """Resolve the GitHub "Running" indicator config.
+
+    Controls the live indicator Kōan surfaces on GitHub while it works a
+    mission linked to an issue: a ``koan:working`` label on the issue plus a
+    ``koan/mission`` commit status on the pushed branch head.
+
+    Config key: ``running_indicator`` (a dict, or a bare bool for the
+    ``enabled`` toggle). Enabled by default — it is a no-op for local-only
+    missions and best-effort for GitHub ones, so there is no downside to
+    leaving it on. Set ``running_indicator.enabled: false`` to opt out.
+
+    Returns a dict with keys: ``enabled`` (bool), ``commit_status`` (bool),
+    ``issue_label`` (bool), ``label_name`` (str).
+    """
+    config = _load_config()
+    ri = config.get("running_indicator", {})
+    if isinstance(ri, bool):
+        ri = {"enabled": ri}
+    if not isinstance(ri, dict):
+        ri = {}
+    return {
+        "enabled": bool(ri.get("enabled", True)),
+        "commit_status": bool(ri.get("commit_status", True)),
+        "issue_label": bool(ri.get("issue_label", True)),
+        "label_name": str(ri.get("label_name", "koan:working")),
+    }
+
+
 def is_unlimited_quota() -> bool:
     """Return True when the operator declares the CLI provider has no quota limit.
 

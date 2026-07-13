@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-12
+updated: 2026-07-13
 ---
 
 # Kōan User Manual
@@ -2257,6 +2257,9 @@ unchanged and remains the launcher used by services and scripts.
 
 The terminal dashboard requires `textual` (installed by `make setup`); if it is
 missing, Kōan stays running and you can follow it with `make logs`.
+
+- `make logs` — watch Kōan work as a readable feed (🧠 thoughts, ✏️/📖/💻 tool
+  calls, ↩ results); `make logs raw=1` shows the raw log stream.
 
 ### Web Dashboard
 

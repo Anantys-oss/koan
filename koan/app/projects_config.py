@@ -371,6 +371,29 @@ def get_project_auto_merge(config: dict, project_name: str) -> dict:
     }
 
 
+def get_project_running_indicator(config: dict, project_name: str) -> dict:
+    """Per-project override for the GitHub "Running" indicator.
+
+    Merges the global ``running_indicator`` config (see
+    ``app.config.get_running_indicator_config``) with a per-project
+    ``running_indicator`` block from projects.yaml. Only keys explicitly set
+    (non-None) on the project override the global values, so a project can flip
+    ``enabled`` without restating ``label_name``.
+
+    Returns a dict with the same keys as the global resolver.
+    """
+    from app.config import get_running_indicator_config
+
+    base = get_running_indicator_config()
+    project_cfg = get_project_config(config, project_name)
+    ri = project_cfg.get("running_indicator", {})
+    if isinstance(ri, bool):
+        ri = {"enabled": ri}
+    if not isinstance(ri, dict):
+        ri = {}
+    return {**base, **{k: v for k, v in ri.items() if v is not None}}
+
+
 def resolve_base_branch(
     project_name: str, project_path: Optional[str] = None
 ) -> str:

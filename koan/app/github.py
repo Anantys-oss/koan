@@ -295,6 +295,50 @@ def issue_edit(number, body, cwd=None, repo=None):
     return run_gh(*args, cwd=cwd, idempotent=False)
 
 
+def set_commit_status(repo, sha, state, *, context="koan/mission",
+                      description="", target_url=None, cwd=None):
+    """POST a commit status on a branch head via ``gh api`` (raw JSON body).
+
+    Mirrors ``security_advisory_report``'s raw-body transport. ``description``
+    is capped at GitHub's 140-char limit. Lets ``RuntimeError`` propagate so
+    the best-effort caller can degrade.
+
+    Args:
+        repo: Repository in ``owner/repo`` format.
+        sha: Commit SHA the status is attached to.
+        state: One of ``pending``, ``success``, ``failure``, ``error``.
+        context: Status context label (default ``koan/mission``).
+        description: Short human-readable description (truncated to 140 chars).
+        target_url: Optional URL the status links to.
+        cwd: Optional working directory.
+    """
+    payload = {"state": state, "context": context,
+               "description": (description or "")[:140]}
+    if target_url:
+        payload["target_url"] = target_url
+    return api(f"repos/{repo}/statuses/{sha}", method="POST",
+               input_data=json.dumps(payload), raw_body=True, cwd=cwd)
+
+
+def add_issue_label(repo, number, label, cwd=None):
+    """Add a label to an issue via ``gh issue edit --add-label`` (idempotent)."""
+    return run_gh("issue", "edit", str(number), "--repo", repo,
+                  "--add-label", label, cwd=cwd)
+
+
+def remove_issue_label(repo, number, label, cwd=None):
+    """Remove a label from an issue via ``gh issue edit --remove-label``."""
+    return run_gh("issue", "edit", str(number), "--repo", repo,
+                  "--remove-label", label, cwd=cwd)
+
+
+def ensure_label(repo, label, *, color="fbca04",
+                 description="Kōan is working on this issue", cwd=None):
+    """Create-or-update a repo label idempotently via ``gh label create --force``."""
+    return run_gh("label", "create", label, "--repo", repo, "--color", color,
+                  "--description", description, "--force", cwd=cwd)
+
+
 def api(endpoint, method="GET", jq=None, input_data=None, cwd=None,
         extra_args=None, timeout=30, raw_body=False):
     """Call ``gh api`` for lower-level GitHub API access.

@@ -4,7 +4,7 @@ title: "GitHub Notification-Driven Commands"
 description: "Full reference for triggering Kōan via `@mention` commands in GitHub PR/issue comments, including config, dedup, security, and fallback scanning."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-06-24
+updated: 2026-07-13
 ---
 
 # GitHub Notification-Driven Commands
@@ -210,6 +210,62 @@ This is useful when the global config allows `["*"]` but a specific repo needs t
 |----------|---------|
 | `GH_TOKEN` | GitHub authentication for the `gh` CLI (required) |
 | `GITHUB_USER` | Override bot username for API calls (optional, falls back to `github.nickname`) |
+
+## Running indicator (`koan/mission`)
+
+While Kōan works a GitHub-linked mission, it surfaces a live "Running" signal
+directly on GitHub — **no GitHub App or Action required**, it reuses the same
+`gh` auth as everything else:
+
+- **Issue label** `koan:working` — added to the linked issue at mission start
+  and removed when the mission reaches a terminal state. This is the **primary
+  live signal**, because the issue is already known when the mission starts.
+- **Commit status** `context=koan/mission` — posted `pending` on the pushed
+  branch head at first push, then resolved to `success` / `failure` / `error`
+  when the mission finishes. This is the durable green/red on the PR.
+
+It is **on by default** and best-effort: a `gh` write failure (e.g. a PAT
+missing `repo:status` scope) is logged and never blocks the mission. It is a
+**no-op for local-only missions** — those with no issue URL in the mission text
+and no `github_url` configured for the project write nothing.
+
+Every terminal path tears the indicator down — normal completion, failure,
+abort, and stagnation-cap. A hard crash that skips teardown is reconciled at
+the next `run.py` startup (any stranded `pending` becomes `error` and the label
+is removed).
+
+### Global settings (`instance/config.yaml`)
+
+```yaml
+running_indicator:
+  enabled: true            # Master switch (default: true). Set false to opt out.
+  commit_status: true      # Post the koan/mission commit status (default: true)
+  issue_label: true        # Toggle the koan:working issue label (default: true)
+  label_name: "koan:working"  # Label text (default: koan:working)
+```
+
+A bare bool is also accepted as shorthand for `enabled`:
+
+```yaml
+running_indicator: false   # equivalent to { enabled: false }
+```
+
+### Per-project override (`projects.yaml`)
+
+Any subset of the global keys can be overridden per project; unset keys inherit
+the global values:
+
+```yaml
+projects:
+  my-toolkit:
+    path: "/path/to/my-toolkit"
+    running_indicator:
+      enabled: false       # disable the indicator for just this project
+```
+
+See also the sibling Telegram progress channel in
+[messaging-level.md](messaging-level.md), and the flow/tracker detail in
+[../architecture/github-and-trackers.md](../architecture/github-and-trackers.md).
 
 ## How It Works
 

@@ -4,7 +4,7 @@ title: "Component Spec — Git & GitHub"
 description: "Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows."
 tags: [git-github]
 created: 2026-06-27
-updated: 2026-07-11
+updated: 2026-07-13
 ---
 
 # Component Spec — Git & GitHub
@@ -62,6 +62,36 @@ workflows.
   because git cannot stash a conflicted tree and the next step resets to the
   remote base anyway. A **conflict-free** dirty tree is never discarded — the
   stash data-loss guard still holds for genuine uncommitted work.
+
+### Mission status indicators (koan/mission)
+
+While a GitHub-linked mission runs, Kōan surfaces a live indicator with no
+GitHub App:
+
+- **Issue label** `koan:working` — toggled on the linked issue for the whole
+  run (primary live signal; the issue is known at mission start).
+- **Commit status** `context=koan/mission` — posted `pending` on the pushed
+  branch head at first push, resolved `success`/`failure`/`error` at finalize.
+
+**Invariants**
+
+- All writes go through `github.run_gh()`/`github.api()` (gh-only transport),
+  honoring the existing `gh`-only invariant above.
+- Indicators are best-effort: a write failure logs and degrades, never blocks
+  the mission.
+- Every terminal path (success, failure, abort, stagnation-cap, crash
+  recovery) resolves the commit status and removes the label. The two writes
+  are independent (one failing never skips the other or orphans the label), and
+  the tracker entry is dropped **only when both required writes succeed** — a
+  failed teardown retains the entry so the next startup reconcile retries it,
+  guaranteeing no stale `koan/mission` status or `koan:working` label is left on
+  GitHub. A hard crash is likewise reconciled at next startup
+  (`mission_status.reconcile_stale_indicators`).
+- Cross-stage state lives in `instance/.running-indicator.json`, keyed by
+  mission title; local-only missions (no issue URL, no `github_url`) write
+  nothing.
+- Gated by a global `running_indicator` config block plus a per-project
+  override; on by default, opt-out via `running_indicator.enabled: false`.
 
 ## Integration points
 

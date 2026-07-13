@@ -2805,6 +2805,13 @@ def _start_mission_in_file(instance: str, mission_title: str, project_name: str 
                         f"recover.py missed them "
                         f"(see _flush_in_progress_to_failed): {titles}"
                     ))
+                # Raise the GitHub "Running" indicator now that the transition
+                # is confirmed. Best-effort — never block the mission start.
+                try:
+                    from app.mission_status import start_indicator
+                    start_indicator(instance, mission_title, project_name)
+                except Exception as e:
+                    log("error", f"running-indicator start error: {e}")
                 return True
         log("warning", f"Mission transition unconfirmed — '{clean_title[:60]}' "
             "not found in In Progress after start_mission(). "
@@ -3043,6 +3050,15 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str,
     _update_mission_in_file(
         instance, mission_title, failed=failed, cause_tag=cause_tag,
     )
+    # Lower the GitHub "Running" indicator now that the mission has reached a
+    # terminal state. The stagnation-requeue path returns early above (mission
+    # goes back to Pending), so it deliberately leaves the indicator up.
+    # Best-effort — never block finalization.
+    try:
+        from app.mission_status import resolve_indicator
+        resolve_indicator(instance, mission_title, success=(not failed))
+    except Exception as e:
+        log("error", f"running-indicator resolve error: {e}")
     # Record the authoritative terminal outcome for the REST API. Best-effort:
     # a log hiccup must not block finalization. record_outcome is imported
     # locally (matches the record_execution convention below) — tests patch it
