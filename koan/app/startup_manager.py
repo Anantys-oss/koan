@@ -94,6 +94,48 @@ def recover_crashed_missions(instance: str):
     recover_missions(instance)
 
 
+def _current_active_titles(instance: str):
+    """Titles currently Pending or In Progress in the mission export.
+
+    Returns a set of mission-line strings, or ``None`` if the export cannot be
+    read/parsed — the caller then skips reconciliation (fail-open) rather than
+    treating "couldn't read" as "nothing active" and wrongly clearing every
+    live indicator. Called after crash recovery, so a requeued mission is back
+    in Pending and correctly keeps its indicator until it re-runs.
+    """
+    import os
+
+    from app import missions
+
+    path = os.path.join(instance, "missions.md")
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            content = fh.read()
+        sections = missions.parse_sections(content)
+        titles = set()
+        for key in ("pending", "in_progress"):
+            titles.update(sections.get(key, []))
+        return titles
+    except (OSError, ValueError):
+        return None
+
+
+def reconcile_running_indicators(instance: str) -> None:
+    """Tear down stale GitHub 'Running' indicators left by a hard crash.
+
+    A SIGKILL / power loss skips ``_finalize_mission``'s teardown, stranding a
+    yellow ``pending`` status and a ``koan:working`` label. Resolve any tracked
+    mission that is no longer active as an ``error``.
+    """
+    active = _current_active_titles(instance)
+    if active is None:
+        return  # could not read active set — do not wrongly clear
+    from app.mission_status import reconcile_stale_indicators
+    reconcile_stale_indicators(instance, active)
+
+
 def run_migrations(koan_root: str):
     """Auto-migrate env vars to projects.yaml (one-shot, idempotent)."""
     from app.projects_migration import run_migration
@@ -708,6 +750,7 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
         _safe_run("Config validation", validate_config, koan_root)
         _safe_run("Crash recovery", recover_crashed_missions, instance)
+        _safe_run("Running-indicator reconcile", reconcile_running_indicators, instance)
         _safe_run("Projects migration", run_migrations, koan_root)
         msgs = _safe_run("Ensure projects.yaml", ensure_projects_yaml, koan_root)
         if msgs:

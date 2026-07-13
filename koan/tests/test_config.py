@@ -1931,6 +1931,49 @@ class TestCiCheckConfig:
         assert "unexpected type" in capsys.readouterr().err
 
 
+class TestRunningIndicatorConfig:
+    """Tests for get_running_indicator_config()."""
+
+    def test_defaults_on(self):
+        from app.config import get_running_indicator_config
+        with _mock_config({}):
+            cfg = get_running_indicator_config()
+        assert cfg == {
+            "enabled": True,
+            "commit_status": True,
+            "issue_label": True,
+            "label_name": "koan:working",
+        }
+
+    def test_explicit_block_overrides(self):
+        from app.config import get_running_indicator_config
+        with _mock_config(
+            {"running_indicator": {"enabled": False, "commit_status": False}}
+        ):
+            cfg = get_running_indicator_config()
+        assert cfg["enabled"] is False
+        assert cfg["commit_status"] is False
+        assert cfg["issue_label"] is True
+        assert cfg["label_name"] == "koan:working"
+
+    def test_custom_label_name(self):
+        from app.config import get_running_indicator_config
+        with _mock_config({"running_indicator": {"label_name": "wip"}}):
+            cfg = get_running_indicator_config()
+        assert cfg["label_name"] == "wip"
+
+    def test_bare_bool(self):
+        from app.config import get_running_indicator_config
+        with _mock_config({"running_indicator": False}):
+            assert get_running_indicator_config()["enabled"] is False
+
+    def test_non_dict_non_bool_uses_defaults(self):
+        from app.config import get_running_indicator_config
+        with _mock_config({"running_indicator": "yes"}):
+            cfg = get_running_indicator_config()
+        assert cfg["enabled"] is True
+
+
 # --- get_review_verdict_config ---
 
 

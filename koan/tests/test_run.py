@@ -122,6 +122,69 @@ class TestClearIfCapHit:
             assert run._clear_if_cap_hit(str(tmp_path), "Fix bug", "tight") is False
 
 
+class TestFinalizeRunningIndicator:
+    """_finalize_mission lowers the GitHub 'Running' indicator on terminal
+    paths, and deliberately leaves it up on a stagnation requeue."""
+
+    def _patch_downstream(self, monkeypatch):
+        from app import run
+        monkeypatch.setattr(run, "_update_mission_in_file", lambda *a, **k: True)
+        monkeypatch.setattr("app.mission_outcome.record_outcome",
+                            lambda *a, **k: True)
+        monkeypatch.setattr("app.mission_outcome.classify_failure",
+                            lambda *a, **k: None)
+        monkeypatch.setattr("app.mission_history.record_execution",
+                            lambda *a, **k: None)
+
+    def test_terminal_success_resolves_green(self, tmp_path, monkeypatch):
+        from app import run
+        import app.mission_status as ms
+        run._last_mission_stagnated.clear()
+        self._patch_downstream(monkeypatch)
+        got = {}
+        monkeypatch.setattr(ms, "resolve_indicator",
+                            lambda i, t, *, success: got.update(t=t, ok=success))
+        run._finalize_mission(str(tmp_path), "mission", "proj", 0)
+        assert got == {"t": "mission", "ok": True}
+
+    def test_terminal_failure_resolves_red(self, tmp_path, monkeypatch):
+        from app import run
+        import app.mission_status as ms
+        run._last_mission_stagnated.clear()
+        self._patch_downstream(monkeypatch)
+        got = {}
+        monkeypatch.setattr(ms, "resolve_indicator",
+                            lambda i, t, *, success: got.update(t=t, ok=success))
+        run._finalize_mission(str(tmp_path), "mission", "proj", 1)
+        assert got == {"t": "mission", "ok": False}
+
+    def test_stagnation_requeue_does_not_resolve(self, tmp_path, monkeypatch):
+        from app import run
+        import app.mission_status as ms
+        run._last_mission_stagnated.set()
+        monkeypatch.setattr(
+            "app.config.get_stagnation_config",
+            lambda project_name="": {"max_retry_on_stagnation": 3,
+                                     "max_total_retries": 0},
+        )
+        monkeypatch.setattr("app.stagnation_monitor.get_retry_count",
+                            lambda i, t: 0)
+        monkeypatch.setattr("app.stagnation_monitor.get_total_attempts",
+                            lambda i, t: 0)
+        monkeypatch.setattr("app.stagnation_monitor.increment_retry_count",
+                            lambda *a, **k: 1)
+        monkeypatch.setattr(run, "_requeue_mission_in_file", lambda *a, **k: None)
+        monkeypatch.setattr(run, "_notify_stagnation_retry", lambda *a, **k: None)
+        monkeypatch.setattr("app.mission_history.record_execution",
+                            lambda *a, **k: None)
+        called = []
+        monkeypatch.setattr(ms, "resolve_indicator",
+                            lambda *a, **k: called.append(1))
+        run._finalize_mission(str(tmp_path), "m", "proj", 1)
+        assert called == []
+        run._last_mission_stagnated.clear()
+
+
 # ---------------------------------------------------------------------------
 # Test: Colored logging
 # ---------------------------------------------------------------------------
@@ -6754,6 +6817,46 @@ class TestStartMissionSanityFlushLog:
         sections = parse_sections(missions.read_text())
         assert "leftover stale" in "\n".join(sections["in_progress"])
         assert "leftover stale" not in "\n".join(sections.get("failed", []))
+
+
+class TestStartMissionRunningIndicator:
+    """The confirmed Pending→In Progress transition raises the GitHub
+    'Running' indicator via mission_status.start_indicator."""
+
+    def test_start_fires_indicator_on_confirmed_transition(self, tmp_path):
+        import app.mission_status as ms
+        from app.run import _start_mission_in_file
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n- do the thing\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        called = {}
+        with patch.object(ms, "start_indicator",
+                          lambda i, t, p: called.update(i=i, t=t, p=p)):
+            assert _start_mission_in_file(
+                str(missions.parent), "do the thing", "proj") is True
+        assert called == {"i": str(missions.parent),
+                          "t": "do the thing", "p": "proj"}
+
+    def test_start_does_not_fire_on_unconfirmed_transition(self, tmp_path):
+        import app.mission_status as ms
+        from app.run import _start_mission_in_file
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        # Mission absent from Pending → transition not confirmed.
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        called = []
+        with patch.object(ms, "start_indicator",
+                          lambda *a, **k: called.append(a)):
+            assert _start_mission_in_file(
+                str(missions.parent), "absent", "proj") is False
+        assert called == []
 
 
 class TestStartMissionComplexityTagTOCTOU:

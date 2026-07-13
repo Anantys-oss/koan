@@ -1,0 +1,267 @@
+"""GitHub "Running" indicator: koan:working label + koan/mission commit status.
+
+While a GitHub-linked mission runs, Kōan surfaces a live indicator with no
+GitHub App, reusing the existing ``gh`` auth:
+
+- an issue **label** (``koan:working``) toggled on the linked issue for the
+  whole run — the primary live signal, since the issue is known at start; and
+- a **commit status** (``context=koan/mission``) posted ``pending`` on the
+  pushed branch head at first push and resolved ``success``/``failure``/
+  ``error`` at finalize.
+
+This module owns the cross-stage bookkeeping (which SHA/issue a mission maps
+to, and what has already been posted) via ``instance/.running-indicator.json``,
+keyed by mission title. Every public entrypoint is best-effort: no failure
+escapes into the mission lifecycle. Local-only missions (no issue URL in the
+text and no ``github_url`` configured) are a silent no-op.
+
+See ``specs/components/git-github.md`` (Mission status indicators) for the
+contract, and ``docs/architecture/github-and-trackers.md`` for the flow.
+"""
+
+import json
+import os
+import re
+from pathlib import Path
+from typing import Optional
+
+from app import github, utils
+from app.github_url_parser import search_issue_url
+from app.run_log import log_safe as log
+
+_TRACKER = ".running-indicator.json"
+_CONTEXT = "koan/mission"
+_DESC = "Kōan is working on this mission"
+
+# owner/repo out of any github(.com|GHE) URL, ignoring a trailing path/.git
+_REPO_URL_RE = re.compile(r"https?://[^/]*github[^/]*/([^/\s]+)/([^/\s#?]+)")
+
+
+def _tracker_path(instance: str) -> str:
+    return os.path.join(instance, _TRACKER)
+
+
+def _load(instance: str) -> dict:
+    path = _tracker_path(instance)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        # Unreadable (permissions/IO): do not clobber — the file still exists,
+        # so a following _save would only overwrite a readable copy anyway. Log
+        # and treat as empty for this call.
+        log("koan", f"running-indicator tracker unreadable: {e}")
+        return {}
+    except ValueError as e:
+        # Corrupt JSON. Returning {} here would let the next _save silently
+        # clobber the file and permanently drop every other tracked mission
+        # (labels/statuses never torn down). Move the corrupt file aside first
+        # so its entries can be recovered by hand, then start fresh.
+        log("koan", f"running-indicator tracker corrupt, backing up: {e}")
+        try:
+            os.replace(path, path + ".corrupt")
+        except OSError as move_err:
+            log("koan", f"running-indicator tracker backup failed: {move_err}")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save(instance: str, data: dict) -> None:
+    utils.atomic_write_json(Path(_tracker_path(instance)), data)
+
+
+def _resolve_config(project_name: str) -> dict:
+    """Resolve the per-project running-indicator config, falling back to global."""
+    try:
+        from app.projects_config import (
+            get_project_running_indicator,
+            load_projects_config,
+        )
+        cfg = load_projects_config(os.environ.get("KOAN_ROOT", ""))
+        if cfg:
+            return get_project_running_indicator(cfg, project_name)
+    except Exception as e:
+        # Fail closed: the global default is enabled-by-default, so falling back
+        # to it on a transient projects.yaml read error would flip the indicator
+        # back ON for a project that explicitly opted out. Disable instead.
+        log("koan", f"running-indicator config resolve failed, disabling: {e}")
+        return {"enabled": False, "commit_status": False,
+                "issue_label": False, "label_name": "koan:working"}
+    # No projects.yaml at all (cfg falsy) — legitimately global, not a failure.
+    from app.config import get_running_indicator_config
+    return get_running_indicator_config()
+
+
+def _repo_from_github_url(url: str) -> Optional[str]:
+    """Extract ``owner/repo`` from a project's configured github_url."""
+    if not url:
+        return None
+    match = _REPO_URL_RE.search(url)
+    if not match:
+        return None
+    repo = match.group(2)
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    return f"{match.group(1)}/{repo}"
+
+
+def _resolve_link(instance: str, mission_title: str,
+                  project_name: str) -> Optional[dict]:
+    """Derive ``{repo, issue}`` for a mission.
+
+    Priority: an issue URL embedded in the mission text (gives both repo and
+    issue number), then the project's ``github_url`` (repo only, no issue).
+    Returns ``None`` for local-only / non-GitHub missions.
+    """
+    try:
+        owner, name, num = search_issue_url(mission_title)
+        return {"repo": f"{owner}/{name}", "issue": num}
+    except ValueError:
+        pass
+    try:
+        from app.projects_config import get_project_config, load_projects_config
+        cfg = load_projects_config(os.environ.get("KOAN_ROOT", ""))
+        if cfg:
+            url = (get_project_config(cfg, project_name) or {}).get("github_url")
+            repo = _repo_from_github_url(url or "")
+            if repo:
+                return {"repo": repo, "issue": None}
+    except Exception as e:
+        log("koan", f"running-indicator link resolve skipped: {e}")
+    return None
+
+
+def start_indicator(instance: str, mission_title: str,
+                    project_name: str = "") -> None:
+    """Raise the live indicator at the confirmed Pending→In Progress transition.
+
+    Sets the ``koan:working`` label on the linked issue (when there is one) and
+    records a tracker entry so a later push / finalize can complete the flow.
+    Best-effort — never blocks the mission.
+    """
+    cfg = _resolve_config(project_name)
+    if not cfg.get("enabled"):
+        return
+    try:
+        link = _resolve_link(instance, mission_title, project_name)
+        if not link:
+            return  # local-only / non-GitHub mission
+        entry = {"repo": link["repo"], "issue_repo": link["repo"],
+                 "issue": link["issue"], "sha": None, "branch": None,
+                 "project": project_name}
+        if cfg.get("issue_label") and link["issue"]:
+            github.ensure_label(link["repo"], cfg["label_name"])
+            github.add_issue_label(link["repo"], link["issue"], cfg["label_name"])
+        data = _load(instance)
+        data[mission_title] = entry
+        _save(instance, data)
+    except Exception as e:  # best-effort — never block the mission
+        log("koan", f"running-indicator start skipped: {e}")
+
+
+def on_branch_pushed(instance: str, project_name: str, repo: str,
+                     branch: str, sha: str) -> None:
+    """Post the ``pending`` commit status when a mission branch is first pushed.
+
+    The tracker entry created at start has no SHA yet (koan pushes late); this
+    fills it in, matched by project (only one main-loop mission runs at a time).
+    """
+    cfg = _resolve_config(project_name)
+    if not cfg.get("enabled") or not cfg.get("commit_status"):
+        return
+    try:
+        data = _load(instance)
+        # Match the single active main-loop mission for this project that has
+        # not yet had a SHA recorded.
+        title = next(
+            (t for t, e in data.items()
+             if e.get("project") == project_name and not e.get("sha")),
+            None,
+        )
+        if title is None:
+            return
+        # ``repo`` here is the push-target repo (used for the commit status);
+        # leave ``issue_repo`` untouched so the label is removed from the
+        # issue's repo at finalize even when they differ (fork workflow).
+        data[title].update(sha=sha, branch=branch, repo=repo)
+        _save(instance, data)
+        github.set_commit_status(repo, sha, "pending", context=_CONTEXT,
+                                 description=_DESC)
+    except Exception as e:
+        log("koan", f"running-indicator push skipped: {e}")
+
+
+def resolve_indicator(instance: str, mission_title: str, *,
+                      success: bool, state: Optional[str] = None) -> None:
+    """Lower the indicator on a terminal transition.
+
+    Posts the final commit status (green/red, or an explicit ``state``) when a
+    SHA was recorded, removes the ``koan:working`` label, and drops the tracker
+    entry. Best-effort — never blocks finalization.
+
+    The two GitHub writes are independent: one failing must not skip the other
+    or orphan the label. The tracker entry is dropped **only when both writes
+    that were required actually succeeded**, so a failed write is retried by the
+    next startup reconcile and never leaves a stale ``koan/mission`` status or
+    ``koan:working`` label on GitHub.
+    """
+    try:
+        data = _load(instance)
+        entry = data.get(mission_title)
+        if entry is None:
+            return
+        cfg = _resolve_config(entry.get("project") or "")
+        gh_state = state or ("success" if success else "failure")
+        all_ok = True
+        if entry.get("sha") and cfg.get("commit_status"):
+            try:
+                github.set_commit_status(entry["repo"], entry["sha"], gh_state,
+                                         context=_CONTEXT, description=_DESC)
+            except Exception as e:  # keep the entry so reconcile retries later
+                all_ok = False
+                log("koan", f"running-indicator resolve commit-status skipped: {e}")
+        if entry.get("issue") and cfg.get("issue_label"):
+            # The label lives on the issue's repo, which may differ from the
+            # push-target repo recorded in ``repo`` (fork workflow). Fall back
+            # to ``repo`` for entries persisted before ``issue_repo`` existed.
+            issue_repo = entry.get("issue_repo") or entry["repo"]
+            try:
+                github.remove_issue_label(issue_repo, entry["issue"],
+                                          cfg["label_name"])
+            except Exception as e:  # independent of the commit-status write
+                all_ok = False
+                log("koan", f"running-indicator resolve label skipped: {e}")
+        if all_ok:
+            data = _load(instance)
+            data.pop(mission_title, None)
+            _save(instance, data)
+    except Exception as e:
+        log("koan", f"running-indicator resolve skipped: {e}")
+
+
+def reconcile_stale_indicators(instance: str, active_titles) -> None:
+    """Resolve any tracked mission no longer active as an ``error`` (crash net).
+
+    A hard crash skips ``resolve_indicator``, stranding a yellow ``pending``.
+    Called at startup with the set of currently Pending/In Progress mission
+    keys (canonicalized); anything tracked but not active is torn down.
+    """
+    try:
+        from app.missions import canonical_mission_key
+    except Exception as e:
+        log("koan", f"running-indicator: canonical key unavailable, "
+                    f"using raw titles: {e}")
+        canonical_mission_key = None
+
+    def _key(title: str) -> str:
+        if canonical_mission_key is None:
+            return re.sub(r"\s+", " ", title).strip()
+        return re.sub(r"\s+", " ", canonical_mission_key(title)).strip()
+
+    active = {_key(t) for t in (active_titles or set())}
+    data = _load(instance)
+    for title in [t for t in data if _key(t) not in active]:
+        log("koan", f"running-indicator: reconciling orphan {title[:50]!r}")
+        resolve_indicator(instance, title, success=False, state="error")

@@ -329,6 +329,44 @@ class TestSubmitDraftPr:
             )
             assert kw["draft"] is True
 
+    def test_posts_running_indicator_on_push(self, monkeypatch):
+        """After a successful push, the pending koan/mission commit status is
+        posted on the resolved head SHA via mission_status.on_branch_pushed."""
+        import app.mission_status as ms
+
+        monkeypatch.setenv("KOAN_ROOT", "/tmp/test-koan")
+        seen = {}
+        monkeypatch.setattr(
+            ms, "on_branch_pushed",
+            lambda instance, project, repo, branch, sha: seen.update(
+                instance=instance, project=project, repo=repo,
+                branch=branch, sha=sha),
+        )
+
+        def fake_git(*args, **kwargs):
+            if args[:1] == ("rev-parse",):
+                return "deadbeef\n"
+            return ""
+
+        with patch(f"{_M}.get_current_branch", return_value="koan/feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
+             patch(f"{_M}.run_gh", side_effect=["", ""]), \
+             patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
+             patch(f"{_M}.run_git_strict", side_effect=fake_git), \
+             patch(f"{_M}.resolve_submit_target",
+                   return_value={"repo": "o/r", "is_fork": False}), \
+             patch(f"{_M}.pr_create", return_value="https://pr/99"):
+            result = submit_draft_pr(
+                "/p", "proj", "o", "r", "42",
+                pr_title="fix: bug", pr_body="## Summary\nFixed.",
+                footer_enabled=False,
+            )
+        assert result == "https://pr/99"
+        assert seen == {
+            "instance": "/tmp/test-koan/instance", "project": "proj",
+            "repo": "o/r", "branch": "koan/feat", "sha": "deadbeef",
+        }
+
     def test_replaces_existing_koan_footer(self):
         old_body = (
             "## Summary\nFixed.\n\n---\n"

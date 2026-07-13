@@ -102,6 +102,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "stagnation": _NESTED,
     "optimizations": _NESTED,
     "ci_check": _NESTED,
+    "running_indicator": _NESTED,
 }
 
 # Top-level keys that are recognized but deprecated: they still work (honored
@@ -301,6 +302,14 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "max_fix_attempts_per_mission": "int",
         "idle_timeout": "int",
     },
+    # running_indicator also accepts a bare bool shorthand
+    # (``running_indicator: true``); the dict form carries the sub-toggles.
+    "running_indicator": {
+        "enabled": "bool",
+        "commit_status": "bool",
+        "issue_label": "bool",
+        "label_name": "str",
+    },
 }
 
 # Type name → Python type(s) for isinstance checks
@@ -416,6 +425,10 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                 # ci_check accepts a bare bool shorthand (ci_check: true) in
                 # addition to the dict form — is_ci_check_enabled honors both.
                 if key == "ci_check" and isinstance(value, bool):
+                    continue
+                # running_indicator likewise accepts a bare bool shorthand
+                # (running_indicator: true) — get_running_indicator_config honors both.
+                if key == "running_indicator" and isinstance(value, bool):
                     continue
                 warnings.append((key, f"'{key}' should be a mapping, got {type(value).__name__}"))
                 continue
@@ -926,6 +939,8 @@ def validate_config_or_raise(koan_root: str) -> None:
             # to the dict form — is_ci_check_enabled honors both. Mirror the
             # warning validator so the strict startup path does not regress it.
             if key == "ci_check" and isinstance(value, bool):
+                continue
+            if key == "running_indicator" and isinstance(value, bool):
                 continue
             if not isinstance(value, dict):
                 errors.append(

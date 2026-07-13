@@ -383,6 +383,23 @@ def submit_draft_pr(
     # Resolve where to submit
     target = resolve_submit_target(project_path, project_name, owner, repo)
 
+    # Post the pending "koan/mission" commit status on the freshly-pushed head.
+    # Best-effort: a failure here must never abort PR submission.
+    try:
+        from app.mission_status import on_branch_pushed
+
+        koan_root = os.environ.get("KOAN_ROOT", "")
+        if koan_root:
+            instance_dir = os.path.join(koan_root, "instance")
+            head_sha = run_git_strict(
+                "rev-parse", "HEAD", cwd=project_path, timeout=15,
+            ).strip()
+            on_branch_pushed(
+                instance_dir, project_name, target["repo"], branch, head_sha,
+            )
+    except Exception as e:
+        logger.warning("running-indicator push hook skipped: %s", e)
+
     if footer_enabled:
         from app.pr_footer import append_koan_footer, build_pr_footer
 
