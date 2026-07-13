@@ -1520,7 +1520,7 @@ Caveman appends a "no filler, 3–6 word sentences, direct answers" directive to
 
 **Core skills shipping with caveman opted out (`caveman: false`)** — terseness directly hurts these (kept explicit for clarity, even though it matches the default):
 
-`/plan`, `/deepplan`, `/review`, `/security_audit`, `/audit`, `/brainstorm`, `/sparring`, `/incident`, `/claudemd`, `/chat`.
+`/plan`, `/deepplan`, `/review`, `/security_audit`, `/audit`, `/brainstorm`, `/sparring`, `/incident`, `/claudemd`, `/chat`, `/explain`.
 
 **Operator override — the `include:` list:**
 
