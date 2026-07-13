@@ -298,8 +298,14 @@ logs:
 	@if [ "$(raw)" = "1" ]; then \
 		tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null; \
 	else \
-		tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null \
-			| ( cd koan && PYTHONPATH=. $(PYTHON_ABS) -m app.log_fmt ); \
+		fmt_py="$(PYTHON_ABS)"; \
+		[ -x "$$fmt_py" ] || fmt_py="$$(command -v python3 || command -v python)"; \
+		if [ -z "$$fmt_py" ]; then \
+			tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null; \
+		else \
+			tail -F logs/run.log logs/awake.log logs/ollama.log instance/journal/pending.md 2>/dev/null \
+				| ( cd koan && PYTHONPATH=. "$$fmt_py" -m app.log_fmt ); \
+		fi; \
 	fi
 
 install:
