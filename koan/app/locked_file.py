@@ -16,6 +16,7 @@ Two locking strategies are used, matching existing conventions:
 
 import fcntl
 import json
+import os
 from pathlib import Path
 from typing import Any, Callable, List, Optional, TypeVar
 
@@ -182,3 +183,37 @@ def locked_jsonl_read(path: Path) -> List[str]:
             return f.readlines()
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def locked_jsonl_tail(path: Path, max_lines: int) -> List[str]:
+    """Read the last ``max_lines`` lines of a JSONL file under a shared lock.
+
+    Seeks backwards from EOF in fixed-size chunks so a long-lived,
+    append-only file is never fully read into memory (unlike
+    :func:`locked_jsonl_read`). Returns raw line strings including trailing
+    newlines. Returns an empty list when the file is missing or
+    ``max_lines <= 0``.
+    """
+    if not path.exists() or max_lines <= 0:
+        return []
+
+    with open(path, "rb") as f:
+        fcntl.flock(f, fcntl.LOCK_SH)
+        try:
+            f.seek(0, os.SEEK_END)
+            pos = f.tell()
+            block = 4096
+            data = b""
+            # Stop once we've seen one more newline than requested: that
+            # guarantees `max_lines` complete lines are inside `data`.
+            while pos > 0 and data.count(b"\n") <= max_lines:
+                read_size = min(block, pos)
+                pos -= read_size
+                f.seek(pos)
+                data = f.read(read_size) + data
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines(keepends=True)
+    return lines[-max_lines:] if len(lines) > max_lines else lines
