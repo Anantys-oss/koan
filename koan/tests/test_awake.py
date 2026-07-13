@@ -322,7 +322,7 @@ class TestPromoteBareSkillCommand:
     def test_handle_message_routes_bare_skill_to_command(self, mock_worker, mock_cmd):
         """A bare skill word reaches handle_command as its slash form, not chat."""
         handle_message("time")
-        mock_cmd.assert_called_once_with("/time")
+        mock_cmd.assert_called_once_with("/time", chat_id="")
         mock_worker.assert_not_called()
 
 
@@ -1402,7 +1402,7 @@ class TestHandleMessage:
     @patch("app.awake.handle_command")
     def test_dispatches_command(self, mock_cmd):
         handle_message("/stop")
-        mock_cmd.assert_called_once_with("/stop")
+        mock_cmd.assert_called_once_with("/stop", chat_id="")
 
     @patch("app.awake.handle_mission")
     def test_dispatches_mission(self, mock_mission):
