@@ -553,10 +553,14 @@ def sweep_stray_tmp_dirs(globs: List[str], min_age_seconds: float = 0.0) -> List
     live MUST pass a non-zero value (see :func:`run.run_claude_task`). The
     default of ``0`` disables the gate (every match is removed).
 
-    Returns a list of ``(path, bytes_freed)`` tuples for the caller to log.
-    Best-effort: individual removal failures are ignored.
+    Returns a list of ``(path, bytes_freed)`` tuples for the caller to log —
+    only trees actually removed are counted, so the caller never reports space
+    it did not free. A removal that fails (or only partially succeeds) is logged
+    via :func:`app.run_log.log_safe` and skipped rather than silently swallowed.
     """
     import shutil
+
+    from app.run_log import log_safe
     removed: List[tuple] = []
     tmp_root = Path("/tmp")
     now = time.time()
@@ -589,10 +593,19 @@ def sweep_stray_tmp_dirs(globs: List[str], min_age_seconds: float = 0.0) -> List
             size = _dir_size_bytes(match)
             try:
                 if match.is_dir():
-                    shutil.rmtree(match, ignore_errors=True)
+                    # No ignore_errors: a failed removal must surface, not be
+                    # masked as success. rmtree raises on the first failure,
+                    # possibly leaving a partial tree — we skip counting it.
+                    shutil.rmtree(match)
                 else:
                     match.unlink()
-            except OSError:
+            except OSError as e:
+                log_safe("error", f"could not remove stray tmp tree {match}: {e}")
+                continue
+            if match.exists():
+                # Defensive: rmtree returned without raising but the path is
+                # still present. Report it rather than claim it was freed.
+                log_safe("error", f"stray tmp tree still present after sweep: {match}")
                 continue
             removed.append((str(match), size))
     return removed
@@ -606,11 +619,16 @@ def _tree_newest_mtime(path: Path) -> float:
     including ``pytest-xdist`` ``gw*`` worker subtrees) has a fresh mtime
     somewhere inside even when its top-level dir mtime is stale, so the whole
     subtree is scanned rather than just the root.
+
+    Fails safe toward preservation: if any entry cannot be ``lstat``-ed (it may
+    be an entry a live session is mutating right now), return the current time
+    so the age gate treats the tree as freshly touched and spares it, rather
+    than silently ignoring the entry and risking deleting a live tree.
     """
     try:
         newest = path.lstat().st_mtime
     except OSError:
-        return 0.0
+        return time.time()
     if path.is_symlink() or not path.is_dir():
         return newest
     for root, dirs, files in os.walk(path, followlinks=False):
@@ -618,7 +636,9 @@ def _tree_newest_mtime(path: Path) -> float:
             try:
                 mt = os.lstat(os.path.join(root, name)).st_mtime
             except OSError:
-                continue
+                # An entry we couldn't stat is churning under us — treat the
+                # whole tree as just-touched so the age gate preserves it.
+                return time.time()
             if mt > newest:
                 newest = mt
     return newest
