@@ -24,6 +24,7 @@ presentational — the log **files** and the `[cli]` grammar emitted by
 | `assistant — text: <preview>`       | `🧠 <preview>`   |
 | `assistant — tool_use: Edit`        | `✏️ Edit` (per-tool icons; `🔧` default) |
 | `tool_result …`                     | dim `↩`         |
+| `tool_result … (error)`             | `❌ tool error` (high-signal; never collapses) |
 | `result: success (12s)`             | `✅ result: success (12s)` |
 | `retry …`, `context_overflow …`, `rate_limit_rejected …` | `⚠ …` |
 

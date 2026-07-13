@@ -107,6 +107,9 @@ def render_cli(body: str, pal: "_Palette") -> Tuple[str, bool]:
         return "  ".join(real), False
 
     if body.startswith("tool_result"):
+        if "(error)" in body:
+            # Tool failures are high-signal: never collapse them.
+            return pal.red("❌ tool error"), False
         return pal.dim("↩"), True
 
     if body.startswith("tool_end: "):

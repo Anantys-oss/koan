@@ -49,6 +49,11 @@ def test_tool_result_is_dim_return_arrow():
     assert is_tick("tool_result toolu_015i88") is True
 
 
+def test_errored_tool_result_gets_error_glyph_and_never_collapses():
+    assert r("tool_result toolu_015i88 (error)") == "❌ tool error"
+    assert is_tick("tool_result toolu_015i88 (error)") is False
+
+
 def test_result_line_gets_check():
     assert r("result: success (12s)") == "✅ result: success (12s)"
 
