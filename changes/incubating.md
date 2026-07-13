@@ -13,6 +13,27 @@ Do not hand-edit released entries — they are the source for `changes/stable.md
 
 ## Unreleased
 
+### Merged 2026-07-13 — main @ 51262b36 (35 commits)
+
+**Features**
+- **Bridge memory retention (#2360)** — fixes `awake.py` RSS ratcheting up over uptime: bounded caches/buffers in the bridge, memory-footprint monitoring, new `docs/architecture/bridge-memory.md` and `docs/operations/memory-footprint.md`.
+- Authoritative mission outcomes: append-only `OutcomeStore`, `mission_outcome` façade (`classify_failure` + `record_outcome`), terminal outcome recorded at mission finalization and reported on `GET /v1/missions/{id}`.
+- Experience capture: new `experience_capture` module hooked into `run_post_mission`, structured experience fields in memory entries, capture of stagnation-cap and CI-fix outcomes.
+- CI: manual GHCR publish workflow, sharing build code with release.
+
+**Refactors / perf**
+- `resolve_workspace_dir` extracted as single source of truth for workspace resolution.
+
+**Fixes** — highlights
+- Security: CI shell-injection closed in dispatch-tag validation (bind tag to env var).
+- API: stale outcomes no longer resurrect removed missions; outcome override gated to non-live missions; dropped outcome writes surfaced; narrowed finalize catch.
+- Telegram: long `/report` HTML chunked at `<pre>` boundaries so delivery succeeds.
+- Workspace: `add_project` clones into the resolved workspace dir; projects cache watches the resolved dir.
+- Plan gate restored to fail-open for `/implement` (assumptions audit advisory); caveman mode disabled in `/explain`; wiki-check excludes generated `index.md`.
+
+**Docs / tests / CI**
+- Codex docs updated to GPT-5.6 model tiers; shared-workspace resolution contract documented; large test additions (experience capture, mission outcomes, locked file, plan runner, wiki check).
+
 ### Merged 2026-07-12 — main @ 9f9467b6 (188 commits)
 
 **Features**
