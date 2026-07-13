@@ -507,12 +507,12 @@ models:
 
   # Codex (OpenAI) provider overrides (uncomment to customize):
   # codex:
-  #   mission: "gpt-5.5"            # complex implementation
-  #   chat: "gpt-5.4"               # general discussion / planning
-  #   lightweight: "gpt-5.4-min"    # simple tasks if cost is acceptable
-  #   fallback: "gpt-5.4"           # empty = use provider default
-  #   review_mode: "gpt-5.5"        # serious code review
-  #   reflect: "gpt-5.4"            # summarize / reason about result
+  #   mission: "gpt-5.6-sol"        # complex implementation
+  #   chat: "gpt-5.6-terra"         # general discussion / planning
+  #   lightweight: "gpt-5.6-luna"   # simple tasks if cost is acceptable
+  #   fallback: ""                  # ignored by Codex (no --fallback-model)
+  #   review_mode: "gpt-5.6-sol"    # serious code review
+  #   reflect: "gpt-5.6-luna"       # summarize / reason about result
 
   # Haze provider overrides (uncomment to customize). Values are haze model
   # selectors: an unambiguous model name, or provider:model, as configured

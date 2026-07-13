@@ -1790,12 +1790,12 @@ cli_provider: "codex"
 models:
   # Provider-specific overrides (resolved before models.default)
   codex:
-    mission: "gpt-5.5"
-    chat: "gpt-5.5"
-    lightweight: "gpt-5.4-mini"
-    fallback: ""              # empty = use provider default
-    review_mode: "gpt-5.3-codex"
-    reflect: "gpt-5.5"
+    mission: "gpt-5.6-sol"
+    chat: "gpt-5.6-terra"
+    lightweight: "gpt-5.6-luna"
+    fallback: ""  # Codex has no fallback mechanism (ignored)
+    review_mode: "gpt-5.6-sol"
+    reflect: "gpt-5.6-luna"
 
   claude:
     review_mode: "haiku"      # use haiku for cheaper REVIEW mode audits
