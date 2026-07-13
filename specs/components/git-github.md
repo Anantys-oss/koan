@@ -80,8 +80,13 @@ GitHub App:
 - Indicators are best-effort: a write failure logs and degrades, never blocks
   the mission.
 - Every terminal path (success, failure, abort, stagnation-cap, crash
-  recovery) resolves the commit status and removes the label. A hard crash is
-  reconciled at next startup (`mission_status.reconcile_stale_indicators`).
+  recovery) resolves the commit status and removes the label. The two writes
+  are independent (one failing never skips the other or orphans the label), and
+  the tracker entry is dropped **only when both required writes succeed** — a
+  failed teardown retains the entry so the next startup reconcile retries it,
+  guaranteeing no stale `koan/mission` status or `koan:working` label is left on
+  GitHub. A hard crash is likewise reconciled at next startup
+  (`mission_status.reconcile_stale_indicators`).
 - Cross-stage state lives in `instance/.running-indicator.json`, keyed by
   mission title; local-only missions (no issue URL, no `github_url`) write
   nothing.

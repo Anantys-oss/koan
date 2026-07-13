@@ -42,12 +42,30 @@ def _tracker_path(instance: str) -> str:
 
 
 def _load(instance: str) -> dict:
+    path = _tracker_path(instance)
     try:
-        with open(_tracker_path(instance), encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-            return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
+    except OSError as e:
+        # Unreadable (permissions/IO): do not clobber — the file still exists,
+        # so a following _save would only overwrite a readable copy anyway. Log
+        # and treat as empty for this call.
+        log("koan", f"running-indicator tracker unreadable: {e}")
+        return {}
+    except ValueError as e:
+        # Corrupt JSON. Returning {} here would let the next _save silently
+        # clobber the file and permanently drop every other tracked mission
+        # (labels/statuses never torn down). Move the corrupt file aside first
+        # so its entries can be recovered by hand, then start fresh.
+        log("koan", f"running-indicator tracker corrupt, backing up: {e}")
+        try:
+            os.replace(path, path + ".corrupt")
+        except OSError as move_err:
+            log("koan", f"running-indicator tracker backup failed: {move_err}")
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _save(instance: str, data: dict) -> None:
@@ -65,7 +83,13 @@ def _resolve_config(project_name: str) -> dict:
         if cfg:
             return get_project_running_indicator(cfg, project_name)
     except Exception as e:
-        log("koan", f"running-indicator config fallback to global: {e}")
+        # Fail closed: the global default is enabled-by-default, so falling back
+        # to it on a transient projects.yaml read error would flip the indicator
+        # back ON for a project that explicitly opted out. Disable instead.
+        log("koan", f"running-indicator config resolve failed, disabling: {e}")
+        return {"enabled": False, "commit_status": False,
+                "issue_label": False, "label_name": "koan:working"}
+    # No projects.yaml at all (cfg falsy) — legitimately global, not a failure.
     from app.config import get_running_indicator_config
     return get_running_indicator_config()
 
@@ -176,25 +200,43 @@ def resolve_indicator(instance: str, mission_title: str, *,
     Posts the final commit status (green/red, or an explicit ``state``) when a
     SHA was recorded, removes the ``koan:working`` label, and drops the tracker
     entry. Best-effort — never blocks finalization.
+
+    The two GitHub writes are independent: one failing must not skip the other
+    or orphan the label. The tracker entry is dropped **only when both writes
+    that were required actually succeeded**, so a failed write is retried by the
+    next startup reconcile and never leaves a stale ``koan/mission`` status or
+    ``koan:working`` label on GitHub.
     """
     try:
         data = _load(instance)
-        entry = data.pop(mission_title, None)
+        entry = data.get(mission_title)
         if entry is None:
             return
-        _save(instance, data)
         cfg = _resolve_config(entry.get("project") or "")
         gh_state = state or ("success" if success else "failure")
+        all_ok = True
         if entry.get("sha") and cfg.get("commit_status"):
-            github.set_commit_status(entry["repo"], entry["sha"], gh_state,
-                                     context=_CONTEXT, description=_DESC)
+            try:
+                github.set_commit_status(entry["repo"], entry["sha"], gh_state,
+                                         context=_CONTEXT, description=_DESC)
+            except Exception as e:  # keep the entry so reconcile retries later
+                all_ok = False
+                log("koan", f"running-indicator resolve commit-status skipped: {e}")
         if entry.get("issue") and cfg.get("issue_label"):
             # The label lives on the issue's repo, which may differ from the
             # push-target repo recorded in ``repo`` (fork workflow). Fall back
             # to ``repo`` for entries persisted before ``issue_repo`` existed.
             issue_repo = entry.get("issue_repo") or entry["repo"]
-            github.remove_issue_label(issue_repo, entry["issue"],
-                                      cfg["label_name"])
+            try:
+                github.remove_issue_label(issue_repo, entry["issue"],
+                                          cfg["label_name"])
+            except Exception as e:  # independent of the commit-status write
+                all_ok = False
+                log("koan", f"running-indicator resolve label skipped: {e}")
+        if all_ok:
+            data = _load(instance)
+            data.pop(mission_title, None)
+            _save(instance, data)
     except Exception as e:
         log("koan", f"running-indicator resolve skipped: {e}")
 

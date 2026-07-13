@@ -278,6 +278,55 @@ def test_reconcile_marks_orphan_as_error(tmp_path, monkeypatch):
     assert json.loads(_tracker(tmp_path).read_text()) == {}
 
 
+def test_resolve_keeps_entry_when_commit_status_fails(tmp_path, monkeypatch):
+    """A failed commit-status write must keep the entry for reconcile retry and
+    still attempt the independent label removal (no orphaned label)."""
+    import app.github as github
+    import app.mission_status as ms
+
+    _tracker(tmp_path).write_text(json.dumps(
+        {"m": {"repo": "o/r", "issue": "7", "sha": "abc", "project": "p"}}))
+    monkeypatch.setattr(ms, "_resolve_config", lambda p: _cfg())
+    removed = []
+
+    def boom(*a, **k):
+        raise RuntimeError("no repo:status scope")
+
+    monkeypatch.setattr(github, "set_commit_status", boom)
+    monkeypatch.setattr(github, "remove_issue_label",
+                        lambda r, n, label, **k: removed.append((n, label)))
+    ms.resolve_indicator(str(tmp_path), "m", success=True)
+    # Label still removed despite the commit-status failure...
+    assert removed == [("7", "koan:working")]
+    # ...and the entry is retained so the next startup reconcile can retry.
+    assert "m" in json.loads(_tracker(tmp_path).read_text())
+
+
+def test_load_backs_up_corrupt_tracker(tmp_path, monkeypatch):
+    """Corrupt JSON is moved aside (not clobbered) so entries can be recovered."""
+    import app.mission_status as ms
+
+    tracker = _tracker(tmp_path)
+    tracker.write_text("{not valid json")
+    assert ms._load(str(tmp_path)) == {}
+    assert not tracker.exists()
+    assert (tmp_path / ".running-indicator.json.corrupt").read_text() == \
+        "{not valid json"
+
+
+def test_resolve_config_fails_closed_on_error(tmp_path, monkeypatch):
+    """A projects.yaml read error disables the indicator (fail-closed) instead
+    of reverting to the enabled-by-default global config."""
+    import app.mission_status as ms
+
+    def boom(_root):
+        raise RuntimeError("transient read error")
+
+    monkeypatch.setattr("app.projects_config.load_projects_config", boom)
+    cfg = ms._resolve_config("proj")
+    assert cfg["enabled"] is False
+
+
 def test_reconcile_keeps_active(tmp_path, monkeypatch):
     import app.github as github
     import app.mission_status as ms
