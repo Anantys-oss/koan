@@ -570,6 +570,105 @@ def get_memory_monitor_config() -> dict:
     }
 
 
+def get_bridge_memory_monitor_config() -> dict:
+    """Bridge (awake.py) memory watchdog config (#2354).
+
+    Reads the ``memory_monitor.bridge:`` sub-block. The bridge baseline RSS
+    (~40 MB) is far below the agent loop's, so it gets a much lower default
+    threshold (600 MB) than the shared 1200 MB. The bridge watchdog is
+    enabled by default and does NOT inherit the top-level ``enabled`` flag,
+    so the two watchdogs are independent (set ``memory_monitor.bridge.enabled:
+    false`` to opt out). The baseline-safety guard in
+    ``awake._build_bridge_memory_monitor`` still refuses to arm if the
+    threshold isn't safely above the current RSS.
+    """
+    config = _load_config()
+    section = config.get("memory_monitor", {})
+    if not isinstance(section, dict):
+        section = {}
+    bridge = section.get("bridge", {})
+    if not isinstance(bridge, dict):
+        bridge = {}
+    return {
+        "enabled": bool(bridge.get("enabled", True)),
+        "threshold_mb": _safe_int(bridge.get("threshold_mb", 600), 600),
+        "sustained_samples": _safe_int(
+            bridge.get("sustained_samples", section.get("sustained_samples", 3)), 3
+        ),
+        "tracemalloc": bool(
+            bridge.get("tracemalloc", section.get("tracemalloc", False))
+        ),
+    }
+
+
+def get_conversation_compact_interval() -> int:
+    """Seconds between mid-session conversation-history compactions (#2354).
+
+    Reads ``conversation.compact_interval_seconds`` (default 3600). Floored
+    at 300 s so a misconfigured tiny value can't turn the 3 s poll loop into
+    a compaction hot path. Returns 0 to disable mid-session compaction.
+    """
+    config = _load_config()
+    section = config.get("conversation", {})
+    if not isinstance(section, dict):
+        section = {}
+    raw = _safe_int(section.get("compact_interval_seconds", 3600), 3600)
+    return max(300, raw) if raw > 0 else 0
+
+
+# Stray tmp trees test suites leave outside the per-mission TMPDIR (#2354
+# follow-up). pytest → /tmp/pytest-of-*, koan test runs → /tmp/test-koan*,
+# koan scratch leftovers → /tmp/koan-*, jest → /tmp/jest_rs. The live
+# koan_tmp_dir() is guarded against in sweep_stray_tmp_dirs even though it
+# matches /tmp/koan-*.
+_DEFAULT_EXTRA_TMP_GLOBS = [
+    "/tmp/pytest-of-*",
+    "/tmp/test-koan*",
+    "/tmp/koan-*",
+    "/tmp/jest_rs",
+]
+
+
+def get_cleanup_extra_tmp_globs() -> list:
+    """Glob list of stray /tmp trees to sweep post-mission (#2354 follow-up).
+
+    Reads ``cleanup.extra_tmp_globs`` (defaults cover pytest/koan/jest tmp
+    trees). Only ``/tmp/*`` patterns are honored by
+    :func:`app.utils.sweep_stray_tmp_dirs`; anything else is ignored there.
+    Return an empty list (``cleanup.extra_tmp_globs: []``) to disable the sweep.
+    """
+    config = _load_config()
+    section = config.get("cleanup", {})
+    if not isinstance(section, dict):
+        section = {}
+    globs = section.get("extra_tmp_globs", _DEFAULT_EXTRA_TMP_GLOBS)
+    if not isinstance(globs, list):
+        return list(_DEFAULT_EXTRA_TMP_GLOBS)
+    return [str(g) for g in globs if isinstance(g, str) and g]
+
+
+def get_cleanup_min_tmp_age_seconds() -> float:
+    """Age gate (seconds) for the post-mission stray-tmp sweep (#2354 follow-up).
+
+    A stray tree is removed only if nothing inside it has been touched within
+    this many seconds. This protects a concurrently-running parallel session
+    (``session_manager.spawn_session``) that is mid-``make test`` on the koan
+    repo — its ``/tmp/test-koan*`` (KOAN_ROOT) tree is same-uid and not the
+    live scratch dir, so only the age gate keeps the sweep from deleting it out
+    from under the running session. Reads ``cleanup.min_tmp_age_seconds``
+    (default 600s = 10 min). A value ``<= 0`` disables the gate.
+    """
+    config = _load_config()
+    section = config.get("cleanup", {})
+    if not isinstance(section, dict):
+        section = {}
+    raw = section.get("min_tmp_age_seconds", 600)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 600.0
+
+
 def get_start_on_pause() -> bool:
     """Check if start_on_pause is enabled in config.yaml.
 

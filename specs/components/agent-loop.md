@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-10
+updated: 2026-07-13
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -94,6 +94,26 @@ see it.
   orthogonal: default missions impose no `--max-turns` cap (`build_mission_command`
   passes `0` unless `complexity_routing` assigns a tier), and a cap-hit is
   classified as failure (`subtype: "error_max_turns"`), not a clean success.
+- **Mission scratch is bounded across missions (#2354 follow-up).** A long-lived
+  container's memory graph must not ratchet up from test-suite tmp leftovers. Each
+  mission subprocess runs with a per-mission `TMPDIR` (reaped in the outer `finally`)
+  **and** `PYTEST_ADDOPTS=--basetemp=$TMPDIR/pytest` (appended, never clobbering an
+  existing value via `pytest_addopts_with_basetemp`) so pytest tmp trees land inside
+  the reaped dir. As a safety net for tools that ignore `$TMPDIR`, the post-mission
+  step sweeps stray `/tmp` trees (`sweep_stray_tmp_dirs`, globs from
+  `cleanup.extra_tmp_globs`). The sweep MUST only remove paths directly under `/tmp`
+  matching a glob, MUST NOT follow symlinks, MUST NOT remove the live `koan_tmp_dir()`
+  scratch/lock dir (even though it matches `/tmp/koan-*`), and MUST skip paths owned
+  by another uid. Because same-uid `/tmp/test-koan*` (KOAN_ROOT) trees written by a
+  concurrent parallel session (`session_manager.spawn_session`) are covered by none of
+  those guards, the sweep MUST additionally be **age-gated**
+  (`cleanup.min_tmp_age_seconds`, default 600s): a tree is skipped if the newest mtime
+  anywhere in it (the whole subtree, not just the top-level dir) is within the window,
+  so a session mid-`make test` is never `rmtree`d out from under itself. Triage rule:
+  `anon` / per-process RSS is the leak signal, not cgroup
+  `memory.current` (which counts reclaimable page cache + slab); the cgroup breakdown
+  is surfaced via `get_memory_status`/`health_check` when `/sys/fs/cgroup/memory.stat`
+  is readable. See `docs/operations/memory-footprint.md`.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary
   enforced by prompt + convention; the loop's job is to host the subprocess, not to
   alter git state itself.

@@ -84,9 +84,11 @@ def load_recent_history(history_file: Path, max_messages: int = 10) -> List[Dict
         return []
 
     try:
-        from app.locked_file import locked_jsonl_read
-        lines = locked_jsonl_read(history_file)
-
+        from app.locked_file import locked_jsonl_tail
+        # Tail from EOF instead of reading the whole append-only file (#2354).
+        # Over-read a few lines so blank/malformed lines dropped by the parser
+        # can't shrink the window below max_messages.
+        lines = locked_jsonl_tail(history_file, max_messages + 5)
         messages = _parse_jsonl_lines(lines)
         return messages[-max_messages:] if len(messages) > max_messages else messages
     except OSError as e:

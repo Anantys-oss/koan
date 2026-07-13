@@ -1,5 +1,6 @@
 # Architecture
 
+* [Bridge memory profile and retention controls](bridge-memory.md) - How awake.py bounds RSS over long uptime: tail-read history, periodic mid-session compaction, one-cycle mission-store read cache, and an opt-in MemoryMonitor watchdog backstop.
 * [Daemon Runtime](daemon.md) - Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture.
 * [GitHub And Trackers](github-and-trackers.md) - Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work.
 * [Lifecycle Hooks & Automation Rules](hooks.md) - Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission): instance-wide and skill-bound Python hooks via `HookRegistry`, plus the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard.

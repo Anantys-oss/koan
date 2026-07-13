@@ -512,6 +512,155 @@ def reap_stale_mission_tmp_dirs() -> int:
     return reaped
 
 
+def pytest_addopts_with_basetemp(existing: str, tmpdir: str) -> str:
+    """Return a ``PYTEST_ADDOPTS`` value routing pytest's tmp factory into ``tmpdir``.
+
+    Missions run with a per-mission ``TMPDIR`` that is reaped when the mission
+    ends, but pytest's tmp factory writes to ``/tmp/pytest-of-<user>`` (outside
+    ``$TMPDIR``) unless told otherwise. Appending ``--basetemp`` lands those
+    trees inside the already-reaped per-mission dir (#2354 follow-up). Existing
+    ``PYTEST_ADDOPTS`` is preserved (space-joined), never clobbered; nested
+    invocations (e.g. ``make test``) inherit it through the environment.
+    """
+    basetemp = str(Path(tmpdir) / "pytest")
+    opt = f"--basetemp={basetemp}"
+    existing = (existing or "").strip()
+    return f"{existing} {opt}".strip() if existing else opt
+
+
+def sweep_stray_tmp_dirs(globs: List[str], min_age_seconds: float = 0.0) -> List[tuple]:
+    """Remove well-known stray tmp trees not covered by the per-mission TMPDIR.
+
+    Test suites run by missions write outside ``$TMPDIR``: pytest's tmp factory
+    creates ``/tmp/pytest-of-*``, koan's own test runs create ``/tmp/test-koan*``
+    (KOAN_ROOT test dirs), jest creates ``/tmp/jest_rs``. These accumulate across
+    missions forever, inflating the container's page cache. This is the
+    post-mission safety net for the source-level fix (see
+    :func:`pytest_addopts_with_basetemp`).
+
+    Safety invariants: only paths **directly under /tmp** matching a glob are
+    considered; symlinks are never followed/removed; the live
+    :func:`koan_tmp_dir` scratch/lock dir is never removed even if a glob would
+    match it; and paths not owned by the current uid are skipped so a shared
+    host can't be clobbered.
+
+    ``min_age_seconds`` age-gates removal: a tree whose newest mtime anywhere in
+    it is within ``min_age_seconds`` of now is left alone. This protects a
+    concurrently-running **parallel session** (``session_manager.spawn_session``)
+    that is mid-``make test`` on the koan repo — its ``/tmp/test-koan*``
+    (KOAN_ROOT) tree is same-uid, not the live scratch dir, and thus otherwise
+    unprotected. Callers that finalize a mission while other sessions may be
+    live MUST pass a non-zero value (see :func:`run.run_claude_task`). The
+    default of ``0`` disables the gate (every match is removed).
+
+    Returns a list of ``(path, bytes_freed)`` tuples for the caller to log —
+    only trees actually removed are counted, so the caller never reports space
+    it did not free. A removal that fails (or only partially succeeds) is logged
+    via :func:`app.run_log.log_safe` and skipped rather than silently swallowed.
+    """
+    import shutil
+
+    from app.run_log import log_safe
+    removed: List[tuple] = []
+    tmp_root = Path("/tmp")
+    now = time.time()
+    try:
+        live_scratch = Path(koan_tmp_dir()).resolve()
+    except OSError:
+        live_scratch = None
+    try:
+        my_uid = os.getuid()
+    except AttributeError:  # pragma: no cover - non-POSIX
+        my_uid = None
+    for pattern in globs or []:
+        if not pattern.startswith("/tmp/"):
+            # Refuse anything outside /tmp: the whole point is a bounded sweep.
+            continue
+        for match in tmp_root.glob(pattern[len("/tmp/"):]):
+            if match.parent != tmp_root or match.is_symlink():
+                continue
+            try:
+                if match.resolve() == live_scratch:
+                    continue
+                st = match.stat()
+                if my_uid is not None and st.st_uid != my_uid:
+                    continue
+            except OSError:
+                continue
+            if min_age_seconds > 0 and (now - _tree_newest_mtime(match)) < min_age_seconds:
+                # Recently touched — a live session may still be writing here.
+                continue
+            size = _dir_size_bytes(match)
+            try:
+                if match.is_dir():
+                    # No ignore_errors: a failed removal must surface, not be
+                    # masked as success. rmtree raises on the first failure,
+                    # possibly leaving a partial tree — we skip counting it.
+                    shutil.rmtree(match)
+                else:
+                    match.unlink()
+            except OSError as e:
+                log_safe("error", f"could not remove stray tmp tree {match}: {e}")
+                continue
+            if match.exists():
+                # Defensive: rmtree returned without raising but the path is
+                # still present. Report it rather than claim it was freed.
+                log_safe("error", f"stray tmp tree still present after sweep: {match}")
+                continue
+            removed.append((str(match), size))
+    return removed
+
+
+def _tree_newest_mtime(path: Path) -> float:
+    """Most recent mtime anywhere in a file or directory tree (symlinks not followed).
+
+    Used to age-gate :func:`sweep_stray_tmp_dirs`: a tree a concurrent parallel
+    session is actively writing (e.g. a KOAN_ROOT test dir mid-``make test``,
+    including ``pytest-xdist`` ``gw*`` worker subtrees) has a fresh mtime
+    somewhere inside even when its top-level dir mtime is stale, so the whole
+    subtree is scanned rather than just the root.
+
+    Fails safe toward preservation: if any entry cannot be ``lstat``-ed (it may
+    be an entry a live session is mutating right now), return the current time
+    so the age gate treats the tree as freshly touched and spares it, rather
+    than silently ignoring the entry and risking deleting a live tree.
+    """
+    try:
+        newest = path.lstat().st_mtime
+    except OSError:
+        return time.time()
+    if path.is_symlink() or not path.is_dir():
+        return newest
+    for root, dirs, files in os.walk(path, followlinks=False):
+        for name in (*dirs, *files):
+            try:
+                mt = os.lstat(os.path.join(root, name)).st_mtime
+            except OSError:
+                # An entry we couldn't stat is churning under us — treat the
+                # whole tree as just-touched so the age gate preserves it.
+                return time.time()
+            if mt > newest:
+                newest = mt
+    return newest
+
+
+def _dir_size_bytes(path: Path) -> int:
+    """Total size of a file or directory tree in bytes (symlinks not followed)."""
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    for root, _dirs, files in os.walk(path, followlinks=False):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                continue
+    return total
+
+
 def atomic_write(path: Path, content: str):
     """Write content to a file atomically using write-to-temp + rename.
 

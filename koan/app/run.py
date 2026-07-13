@@ -381,7 +381,14 @@ def run_claude_task(
             # binary the command was built for. None → global provider.
             popen_kwargs = {"env": mission_env}
             if mission_tmp:
-                popen_kwargs["env"] = {**mission_env, "TMPDIR": mission_tmp}
+                # Route pytest's tmp factory into the reaped per-mission dir so
+                # /tmp/pytest-of-* trees don't accumulate across missions (#2354).
+                from app.utils import pytest_addopts_with_basetemp
+                child_env = {**mission_env, "TMPDIR": mission_tmp}
+                child_env["PYTEST_ADDOPTS"] = pytest_addopts_with_basetemp(
+                    child_env.get("PYTEST_ADDOPTS", ""), mission_tmp
+                )
+                popen_kwargs["env"] = child_env
             proc, cleanup = popen_cli(
                 cmd,
                 provider=provider,
@@ -492,6 +499,26 @@ def run_claude_task(
         # on POSIX (open fds survive) and the mission is already failed.
         if mission_tmp:
             cleanup_mission_tmp_dir(mission_tmp)
+        # Safety net: sweep stray tmp trees test suites leave outside $TMPDIR
+        # (pytest-of-*, test-koan*, jest_rs). Best-effort; never touches the
+        # live scratch dir or other users' files, and age-gates removal so a
+        # concurrent parallel session mid-`make test` isn't clobbered (#2354).
+        try:
+            from app.config import (
+                get_cleanup_extra_tmp_globs,
+                get_cleanup_min_tmp_age_seconds,
+            )
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs(
+                get_cleanup_extra_tmp_globs(),
+                min_age_seconds=get_cleanup_min_tmp_age_seconds(),
+            )
+            if removed:
+                total_mb = sum(b for _p, b in removed) / (1024 * 1024)
+                log("health",
+                    f"Swept {len(removed)} stray tmp tree(s), freed {total_mb:.0f} MB")
+        except Exception as e:
+            log("error", f"stray tmp sweep failed: {e}")
         # Clear the liveness signal on every exit path — including exceptions
         # raised before the subprocess wait loop — so no stale .koan-active
         # survives to be misread as a live (then zombie) mission (#2086).

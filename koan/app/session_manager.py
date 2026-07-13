@@ -311,7 +311,12 @@ def spawn_session(
         err_f = open(stderr_file, "w")  # noqa: SIM115
         popen_kwargs = {}
         if session_tmp:
-            popen_kwargs["env"] = {**os.environ, "TMPDIR": session_tmp}
+            from app.utils import pytest_addopts_with_basetemp
+            child_env = {**os.environ, "TMPDIR": session_tmp}
+            child_env["PYTEST_ADDOPTS"] = pytest_addopts_with_basetemp(
+                child_env.get("PYTEST_ADDOPTS", ""), session_tmp
+            )
+            popen_kwargs["env"] = child_env
         proc, cli_cleanup = popen_cli(
             cmd,
             provider=session_cli_provider,
