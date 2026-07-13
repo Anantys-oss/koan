@@ -727,10 +727,25 @@ def _content_text(content: Any) -> str:
     return ""
 
 
+# Leading lines that carry no readable preview on their own: code-fence
+# markers (```/```json), bare structural punctuation ({, }, [], ...), and
+# horizontal rules. Skipped when picking a preview so a text block that opens
+# with ```json renders its actual content instead of "🧠 {".
+_LOW_SIGNAL_PREVIEW = re.compile(r"^(?:`{3,}[\w+-]*|[-{}\[\]()]+|-{3,})$")
+
+
 def _first_line(value: Any, limit: int = 80) -> str:
-    """First line of *value* as a bounded preview string ('' when empty)."""
-    lines = str(value or "").strip().splitlines()
-    return lines[0][:limit] if lines else ""
+    """First meaningful line of *value* as a bounded preview ('' when empty).
+
+    Skips leading blank lines and low-signal markers (code fences, bare
+    brackets, rules) so a block that opens with ```json or ``{`` surfaces its
+    real content instead of the marker.
+    """
+    for line in str(value or "").splitlines():
+        stripped = line.strip()
+        if stripped and not _LOW_SIGNAL_PREVIEW.match(stripped):
+            return stripped[:limit]
+    return ""
 
 
 def _summarize_stream_event(event: Dict[str, Any]) -> str:
@@ -762,7 +777,7 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
             elif btype == "text":
                 text = (block.get("text") or "").strip()
                 if text:
-                    preview = text.splitlines()[0][:80]
+                    preview = _first_line(text) or text.splitlines()[0][:80]
                     parts.append(f"text: {preview}")
                 else:
                     parts.append("text")
@@ -858,7 +873,8 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
         if item_type == "message" or item.get("role") == "assistant":
             text = _content_text(item.get("content")).strip()
             if text:
-                return f"[cli] assistant — text: {text.splitlines()[0][:80]}"
+                preview = _first_line(text) or text.splitlines()[0][:80]
+                return f"[cli] assistant — text: {preview}"
             return "[cli] assistant — message"
         if item_type:
             suffix = f" ({status})" if status else ""

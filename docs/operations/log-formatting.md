@@ -21,7 +21,7 @@ presentational — the log **files** and the `[cli]` grammar emitted by
 | Raw `[cli]` line                    | Shown as        |
 |-------------------------------------|-----------------|
 | `assistant — thinking`, `system: thinking_tokens` | dim `•` (consecutive collapse) |
-| `assistant — text: <preview>`       | `🧠 <preview>`   |
+| `assistant — text: <preview>`       | `🧠 <preview>` (preview skips leading code fences / bare brackets, e.g. ```` ```json ```` → first real line) |
 | `assistant — tool_use: Edit`        | `✏️ Edit` (per-tool icons; `🔧` default) |
 | `tool_result …`                     | dim `↩`         |
 | `tool_result … (error)`             | `❌ tool error` (high-signal; never collapses) |
