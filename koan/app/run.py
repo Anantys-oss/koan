@@ -501,11 +501,18 @@ def run_claude_task(
             cleanup_mission_tmp_dir(mission_tmp)
         # Safety net: sweep stray tmp trees test suites leave outside $TMPDIR
         # (pytest-of-*, test-koan*, jest_rs). Best-effort; never touches the
-        # live scratch dir or other users' files (#2354 follow-up).
+        # live scratch dir or other users' files, and age-gates removal so a
+        # concurrent parallel session mid-`make test` isn't clobbered (#2354).
         try:
-            from app.config import get_cleanup_extra_tmp_globs
+            from app.config import (
+                get_cleanup_extra_tmp_globs,
+                get_cleanup_min_tmp_age_seconds,
+            )
             from app.utils import sweep_stray_tmp_dirs
-            removed = sweep_stray_tmp_dirs(get_cleanup_extra_tmp_globs())
+            removed = sweep_stray_tmp_dirs(
+                get_cleanup_extra_tmp_globs(),
+                min_age_seconds=get_cleanup_min_tmp_age_seconds(),
+            )
             if removed:
                 total_mb = sum(b for _p, b in removed) / (1024 * 1024)
                 log("health",

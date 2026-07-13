@@ -57,7 +57,16 @@ dropped `memory.current` from 1.53 GB to 952 MB instantly (−580 MB).
    paths directly under `/tmp` matching a glob are removed; symlinks are never
    followed, the live `koan_tmp_dir()` scratch/lock dir is never touched even
    though it matches `/tmp/koan-*`, and dirs owned by another uid are skipped.
-   Set `extra_tmp_globs: []` to disable.
+   The sweep is also **age-gated** (`cleanup.min_tmp_age_seconds`, default
+   600s): a tree is spared if anything inside it — the whole subtree is scanned,
+   not just the top-level dir — was touched within the window. This protects a
+   concurrently-running **parallel session** (`session_manager.spawn_session`)
+   that is mid-`make test` on the koan repo itself: its `/tmp/test-koan*`
+   (KOAN_ROOT) tree is same-uid and not the live scratch dir, so only the age
+   gate keeps the post-mission sweep from `rmtree`-ing it out from under the
+   running session (which would cause spurious test failures and a wrong verdict
+   — the koan-on-koan-with-parallel-sessions case). Set `extra_tmp_globs: []` to
+   disable the sweep, or `min_tmp_age_seconds: 0` to disable just the age gate.
 
 Expected steady state after this ships: ~500–700 MB (`anon` ~300 MB + slab +
 incompressible cache) instead of 1.4–1.5 GB.

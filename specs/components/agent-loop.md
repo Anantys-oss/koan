@@ -104,7 +104,13 @@ see it.
   `cleanup.extra_tmp_globs`). The sweep MUST only remove paths directly under `/tmp`
   matching a glob, MUST NOT follow symlinks, MUST NOT remove the live `koan_tmp_dir()`
   scratch/lock dir (even though it matches `/tmp/koan-*`), and MUST skip paths owned
-  by another uid. Triage rule: `anon` / per-process RSS is the leak signal, not cgroup
+  by another uid. Because same-uid `/tmp/test-koan*` (KOAN_ROOT) trees written by a
+  concurrent parallel session (`session_manager.spawn_session`) are covered by none of
+  those guards, the sweep MUST additionally be **age-gated**
+  (`cleanup.min_tmp_age_seconds`, default 600s): a tree is skipped if the newest mtime
+  anywhere in it (the whole subtree, not just the top-level dir) is within the window,
+  so a session mid-`make test` is never `rmtree`d out from under itself. Triage rule:
+  `anon` / per-process RSS is the leak signal, not cgroup
   `memory.current` (which counts reclaimable page cache + slab); the cgroup breakdown
   is surfaced via `get_memory_status`/`health_check` when `/sys/fs/cgroup/memory.stat`
   is readable. See `docs/operations/memory-footprint.md`.

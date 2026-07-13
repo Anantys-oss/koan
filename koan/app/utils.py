@@ -528,7 +528,7 @@ def pytest_addopts_with_basetemp(existing: str, tmpdir: str) -> str:
     return f"{existing} {opt}".strip() if existing else opt
 
 
-def sweep_stray_tmp_dirs(globs: List[str]) -> List[tuple]:
+def sweep_stray_tmp_dirs(globs: List[str], min_age_seconds: float = 0.0) -> List[tuple]:
     """Remove well-known stray tmp trees not covered by the per-mission TMPDIR.
 
     Test suites run by missions write outside ``$TMPDIR``: pytest's tmp factory
@@ -542,12 +542,24 @@ def sweep_stray_tmp_dirs(globs: List[str]) -> List[tuple]:
     considered; symlinks are never followed/removed; the live
     :func:`koan_tmp_dir` scratch/lock dir is never removed even if a glob would
     match it; and paths not owned by the current uid are skipped so a shared
-    host can't be clobbered. Returns a list of ``(path, bytes_freed)`` tuples for
-    the caller to log. Best-effort: individual removal failures are ignored.
+    host can't be clobbered.
+
+    ``min_age_seconds`` age-gates removal: a tree whose newest mtime anywhere in
+    it is within ``min_age_seconds`` of now is left alone. This protects a
+    concurrently-running **parallel session** (``session_manager.spawn_session``)
+    that is mid-``make test`` on the koan repo — its ``/tmp/test-koan*``
+    (KOAN_ROOT) tree is same-uid, not the live scratch dir, and thus otherwise
+    unprotected. Callers that finalize a mission while other sessions may be
+    live MUST pass a non-zero value (see :func:`run.run_claude_task`). The
+    default of ``0`` disables the gate (every match is removed).
+
+    Returns a list of ``(path, bytes_freed)`` tuples for the caller to log.
+    Best-effort: individual removal failures are ignored.
     """
     import shutil
     removed: List[tuple] = []
     tmp_root = Path("/tmp")
+    now = time.time()
     try:
         live_scratch = Path(koan_tmp_dir()).resolve()
     except OSError:
@@ -571,6 +583,9 @@ def sweep_stray_tmp_dirs(globs: List[str]) -> List[tuple]:
                     continue
             except OSError:
                 continue
+            if min_age_seconds > 0 and (now - _tree_newest_mtime(match)) < min_age_seconds:
+                # Recently touched — a live session may still be writing here.
+                continue
             size = _dir_size_bytes(match)
             try:
                 if match.is_dir():
@@ -581,6 +596,32 @@ def sweep_stray_tmp_dirs(globs: List[str]) -> List[tuple]:
                 continue
             removed.append((str(match), size))
     return removed
+
+
+def _tree_newest_mtime(path: Path) -> float:
+    """Most recent mtime anywhere in a file or directory tree (symlinks not followed).
+
+    Used to age-gate :func:`sweep_stray_tmp_dirs`: a tree a concurrent parallel
+    session is actively writing (e.g. a KOAN_ROOT test dir mid-``make test``,
+    including ``pytest-xdist`` ``gw*`` worker subtrees) has a fresh mtime
+    somewhere inside even when its top-level dir mtime is stale, so the whole
+    subtree is scanned rather than just the root.
+    """
+    try:
+        newest = path.lstat().st_mtime
+    except OSError:
+        return 0.0
+    if path.is_symlink() or not path.is_dir():
+        return newest
+    for root, dirs, files in os.walk(path, followlinks=False):
+        for name in (*dirs, *files):
+            try:
+                mt = os.lstat(os.path.join(root, name)).st_mtime
+            except OSError:
+                continue
+            if mt > newest:
+                newest = mt
+    return newest
 
 
 def _dir_size_bytes(path: Path) -> int:

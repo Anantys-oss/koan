@@ -1,6 +1,7 @@
 """Tests for koan/utils.py — shared utilities."""
 import os
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -2032,6 +2033,66 @@ class TestSweepStrayTmpDirs:
     def test_empty_globs_returns_empty(self):
         from app.utils import sweep_stray_tmp_dirs
         assert sweep_stray_tmp_dirs([]) == []
+
+    def test_age_gate_skips_recently_touched_tree(self):
+        # A tree touched within min_age_seconds is left alone: it may belong to
+        # a concurrent parallel session mid-`make test` (#2354).
+        token = self._token()
+        d = Path("/tmp") / f"{token}-fresh"
+        (d / "sub").mkdir(parents=True)
+        (d / "sub" / "f").write_bytes(b"x" * 100)  # just-written == fresh mtime
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs(
+                [f"/tmp/{token}-*"], min_age_seconds=3600
+            )
+            assert removed == []
+            assert d.is_dir()  # not deleted out from under a live session
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_age_gate_removes_stale_tree(self):
+        # A tree whose newest mtime predates the age window is swept.
+        token = self._token()
+        d = Path("/tmp") / f"{token}-stale"
+        (d / "sub").mkdir(parents=True)
+        (d / "sub" / "f").write_bytes(b"x" * 100)
+        old = time.time() - 7200  # 2h ago, older than the 1h gate below
+        for p in (d, d / "sub", d / "sub" / "f"):
+            os.utime(p, (old, old))
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs(
+                [f"/tmp/{token}-*"], min_age_seconds=3600
+            )
+            assert [r[0] for r in removed] == [str(d)]
+            assert not d.exists()
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_age_gate_detects_fresh_file_under_stale_root(self):
+        # Root dir mtime is old but a nested file is fresh (active xdist worker
+        # writing inside an older basetemp) — the whole tree must be spared.
+        token = self._token()
+        d = Path("/tmp") / f"{token}-mixed"
+        (d / "sub").mkdir(parents=True)
+        fresh = d / "sub" / "active"
+        fresh.write_bytes(b"x" * 10)  # fresh mtime deep in the tree
+        old = time.time() - 7200
+        os.utime(d, (old, old))  # stale top-level dir mtime only
+        os.utime(d / "sub", (old, old))
+        try:
+            from app.utils import sweep_stray_tmp_dirs
+            removed = sweep_stray_tmp_dirs(
+                [f"/tmp/{token}-*"], min_age_seconds=3600
+            )
+            assert removed == []
+            assert d.is_dir()
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
 
 
 class TestGetTelegramChatId:

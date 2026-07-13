@@ -2238,3 +2238,30 @@ class TestCleanupExtraTmpGlobs:
         with _mock_config({"cleanup": {"extra_tmp_globs": "nope"}}):
             globs = get_cleanup_extra_tmp_globs()
         assert "/tmp/pytest-of-*" in globs
+
+
+class TestCleanupMinTmpAgeSeconds:
+    def test_default(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({}):
+            assert get_cleanup_min_tmp_age_seconds() == 600.0
+
+    def test_override(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({"cleanup": {"min_tmp_age_seconds": 120}}):
+            assert get_cleanup_min_tmp_age_seconds() == 120.0
+
+    def test_zero_disables_gate(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({"cleanup": {"min_tmp_age_seconds": 0}}):
+            assert get_cleanup_min_tmp_age_seconds() == 0.0
+
+    def test_malformed_falls_back_to_default(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({"cleanup": {"min_tmp_age_seconds": "nope"}}):
+            assert get_cleanup_min_tmp_age_seconds() == 600.0
+
+    def test_negative_clamped_to_zero(self):
+        from app.config import get_cleanup_min_tmp_age_seconds
+        with _mock_config({"cleanup": {"min_tmp_age_seconds": -5}}):
+            assert get_cleanup_min_tmp_age_seconds() == 0.0

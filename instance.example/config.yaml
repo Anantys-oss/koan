@@ -800,14 +800,18 @@ memory_monitor:
 # container's reclaimable page cache across missions. After each mission Kōan
 # sweeps these stray /tmp trees. Only paths directly under /tmp matching a glob
 # are removed; symlinks are never followed, the live scratch dir is never
-# touched, and dirs owned by other users are skipped. Set extra_tmp_globs: []
-# to disable the sweep.
+# touched, and dirs owned by other users are skipped. A tree is also spared if
+# anything inside it was touched within min_tmp_age_seconds (default 600s), so a
+# concurrent parallel session mid-`make test` on the koan repo isn't deleted out
+# from under itself. Set extra_tmp_globs: [] to disable the sweep, or lower
+# min_tmp_age_seconds (0 disables the age gate).
 # cleanup:
 #   extra_tmp_globs:
 #     - /tmp/pytest-of-*
 #     - /tmp/test-koan*
 #     - /tmp/koan-*
 #     - /tmp/jest_rs
+#   min_tmp_age_seconds: 600   # Skip trees touched within this window (default: 600)
 
 # CI check: master switch for the entire CI monitoring pipeline.
 # Controls queue draining, auto-dispatch of fix missions, CI enqueue

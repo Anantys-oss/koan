@@ -647,6 +647,28 @@ def get_cleanup_extra_tmp_globs() -> list:
     return [str(g) for g in globs if isinstance(g, str) and g]
 
 
+def get_cleanup_min_tmp_age_seconds() -> float:
+    """Age gate (seconds) for the post-mission stray-tmp sweep (#2354 follow-up).
+
+    A stray tree is removed only if nothing inside it has been touched within
+    this many seconds. This protects a concurrently-running parallel session
+    (``session_manager.spawn_session``) that is mid-``make test`` on the koan
+    repo — its ``/tmp/test-koan*`` (KOAN_ROOT) tree is same-uid and not the
+    live scratch dir, so only the age gate keeps the sweep from deleting it out
+    from under the running session. Reads ``cleanup.min_tmp_age_seconds``
+    (default 600s = 10 min). A value ``<= 0`` disables the gate.
+    """
+    config = _load_config()
+    section = config.get("cleanup", {})
+    if not isinstance(section, dict):
+        section = {}
+    raw = section.get("min_tmp_age_seconds", 600)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 600.0
+
+
 def get_start_on_pause() -> bool:
     """Check if start_on_pause is enabled in config.yaml.
 
