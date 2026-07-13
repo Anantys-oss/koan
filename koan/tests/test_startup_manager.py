@@ -56,6 +56,45 @@ class TestRecoverCrashedMissions:
 
 
 # ---------------------------------------------------------------------------
+# Test: running-indicator reconciliation
+# ---------------------------------------------------------------------------
+
+class TestReconcileRunningIndicators:
+    def test_reconciles_orphan_at_startup(self, instance):
+        import json
+
+        from app import mission_status, startup_manager
+        Path(instance, ".running-indicator.json").write_text(json.dumps(
+            {"dead mission": {"repo": "o/r", "issue": "7",
+                              "sha": "abc", "project": "p"}}))
+        with patch.object(startup_manager, "_current_active_titles",
+                          return_value=set()), \
+             patch.object(mission_status, "reconcile_stale_indicators") as recon:
+            startup_manager.reconcile_running_indicators(instance)
+        recon.assert_called_once_with(instance, set())
+
+    def test_skips_when_active_titles_unreadable(self, instance):
+        from app import mission_status, startup_manager
+        with patch.object(startup_manager, "_current_active_titles",
+                          return_value=None), \
+             patch.object(mission_status, "reconcile_stale_indicators") as recon:
+            startup_manager.reconcile_running_indicators(instance)
+        recon.assert_not_called()
+
+    def test_current_active_titles_collects_pending_and_in_progress(self, instance):
+        from app.startup_manager import _current_active_titles
+        Path(instance, "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n- pending one\n\n"
+            "## In Progress\n\n- running two\n\n## Done\n\n- done three\n"
+        )
+        titles = _current_active_titles(instance)
+        joined = "\n".join(titles)
+        assert "pending one" in joined
+        assert "running two" in joined
+        assert "done three" not in joined
+
+
+# ---------------------------------------------------------------------------
 # Test: run_migrations
 # ---------------------------------------------------------------------------
 
