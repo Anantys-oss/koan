@@ -3,6 +3,10 @@ instance
 .koan*
 .claude/*
 !.claude/settings.json
+!.claude/commands
+.claude/commands/*
+!.claude/commands/koan.incubate.md
+!.claude/commands/koan.release.md
 !.claude/skills
 .claude/skills/*
 !.claude/skills/brain
