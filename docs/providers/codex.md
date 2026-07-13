@@ -72,7 +72,7 @@ models:
   chat: "gpt-5.6-terra"        # Chat responses (faster, cheaper)
   lightweight: "gpt-5.6-luna"  # Low-cost calls
   review_mode: "gpt-5.6-sol"   # Autonomous review mode and /review analysis
-  fallback: "gpt-5.6-terra"    # Safe balanced default
+  fallback: ""                 # Ignored by Codex (no --fallback-model)
 ```
 
 Available models (GPT-5.6 tiers):

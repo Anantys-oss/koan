@@ -1793,7 +1793,7 @@ models:
     mission: "gpt-5.6-sol"
     chat: "gpt-5.6-terra"
     lightweight: "gpt-5.6-luna"
-    fallback: "gpt-5.6-terra"  # empty = use provider default
+    fallback: ""  # Codex has no fallback mechanism (ignored)
     review_mode: "gpt-5.6-sol"
     reflect: "gpt-5.6-luna"
 
