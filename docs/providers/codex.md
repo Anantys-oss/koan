@@ -68,25 +68,24 @@ their full names:
 
 ```yaml
 models:
-  mission: "gpt-5.4"           # Main mission execution
-  chat: "gpt-5.4-mini"         # Chat responses (faster, cheaper)
-  lightweight: "gpt-5.4-mini"  # Low-cost calls
-  review_mode: "gpt-5.3-codex" # Autonomous review mode and /review analysis
-  fallback: ""                  # Not supported by Codex (ignored)
+  mission: "gpt-5.6-sol"       # Main mission execution
+  chat: "gpt-5.6-terra"        # Chat responses (faster, cheaper)
+  lightweight: "gpt-5.6-luna"  # Low-cost calls
+  review_mode: "gpt-5.6-sol"   # Autonomous review mode and /review analysis
+  fallback: "gpt-5.6-terra"    # Safe balanced default
 ```
 
-Available models (as of March 2026):
-- `gpt-5.4` — Flagship frontier model (recommended)
-- `gpt-5.4-mini` — Fast, cost-effective for lighter tasks
-- `gpt-5.3-codex` — Industry-leading coding model
-- `gpt-5.3-codex-spark` — Near-instant iteration (Pro only)
+Available models (GPT-5.6 tiers):
+- `gpt-5.6-sol` — Highest quality; best for implementation, reviews, and difficult reasoning
+- `gpt-5.6-terra` — Balanced speed/cost; ideal default for most interactive work
+- `gpt-5.6-luna` — Fastest and cheapest; good for lightweight tasks and summarization
 
 ## How It Works
 
 Kōan invokes Codex in **non-interactive mode** via `codex exec`:
 
 ```
-codex exec --sandbox workspace-write --model gpt-5.4 "Your prompt here"
+codex exec --sandbox workspace-write --model gpt-5.6-sol "Your prompt here"
 ```
 
 This runs Codex as a scripted agent that reads the project, generates
@@ -172,8 +171,8 @@ projects:
     path: "/path/to/project"
     cli_provider: "codex"
     models:
-      mission: "gpt-5.4"
-      chat: "gpt-5.4-mini"
+      mission: "gpt-5.6-sol"
+      chat: "gpt-5.6-terra"
 ```
 
 ## MCP Configuration
