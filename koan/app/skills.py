@@ -682,8 +682,12 @@ class SkillContext:
     command_name: str = ""
     args: str = ""
     send_message: Optional[Callable[[str], Any]] = None
-    handle_chat: Optional[Callable[[str], Any]] = None
+    handle_chat: Optional[Callable[..., Any]] = None
     project_name: str = ""
+    # Channel/chat identifier of the human who triggered the command. Threaded
+    # through so the forced-chat path (``/chat``) can arm command-confirmation
+    # bound to the right channel — a "yes" replied later must match this id.
+    chat_id: str = ""
     _memory: Any = field(init=False, default=None, repr=False)
 
     @property

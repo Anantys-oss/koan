@@ -359,9 +359,12 @@ def _build_command_catalog() -> str:
             )
 
         return "\n\n".join(sections)
-    except Exception:
-        # Log full traceback at error level so persistent registry bugs surface
-        # in normal monitoring instead of silently degrading to 'disabled'.
+    except OSError:
+        # Only the registry (re)build touches the filesystem and can fail
+        # transiently (e.g. a skill dir being rewritten mid-scan). Degrade to an
+        # empty catalog for that recoverable case. A programming error (bad
+        # attribute, type, key) is NOT caught here so it propagates instead of
+        # silently degrading to a state indistinguishable from 'disabled'.
         log("error", f"[chat] catalog builder failed:\n{traceback.format_exc()}")
         return ""
 
@@ -587,9 +590,12 @@ def _apply_command_suggestion(response: str, chat_id: str) -> str:
             footer = f"\n\n→ Reply \"yes\" to run  {command}"
             return f"{cleaned}{footer}"
         return cleaned
-    except Exception:
-        # Strip any marker even on failure so the internal control marker can
-        # never surface to the human; never return the raw response unsanitized.
+    except OSError:
+        # Registry (re)build is the only filesystem-touching step that can fail
+        # transiently; for that recoverable case strip any marker so the internal
+        # control marker never surfaces to the human. A programming error is NOT
+        # caught here — it propagates (the reply, marker included, is then never
+        # sent) so a real bug surfaces instead of silently disabling confirmation.
         from app.command_confirm import _MARKER_RE
         log("error", f"[chat] command-suggestion processing failed:\n{traceback.format_exc()}")
         return _MARKER_RE.sub("", response or "").strip()
@@ -1060,12 +1066,12 @@ def handle_message(text: str, chat_id: str = ""):
             clear_pending()
 
     if is_command(text):
-        handle_command(text)
+        handle_command(text, chat_id=chat_id)
         return
 
     promoted = promote_bare_skill_command(text)
     if promoted is not None:
-        handle_command(promoted)
+        handle_command(promoted, chat_id=chat_id)
         return
 
     if is_mission(text):

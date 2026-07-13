@@ -143,8 +143,13 @@ def _strip_bot_mention(text: str) -> str:
     return f"{command} {rest}".strip() if rest else command
 
 
-def handle_command(text: str):
-    """Handle /commands — core commands hardcoded, rest via skills."""
+def handle_command(text: str, chat_id: str = ""):
+    """Handle /commands — core commands hardcoded, rest via skills.
+
+    ``chat_id`` is the channel that triggered the command; it is threaded into
+    skill dispatch so the forced-chat path (``/chat``) can arm command
+    confirmation bound to the right channel.
+    """
     text = _strip_bot_mention(text)
     cmd = text.strip().lower()
 
@@ -235,7 +240,7 @@ def handle_command(text: str):
     skill = registry.find_by_command(command_name)
 
     if skill is not None:
-        _dispatch_skill(skill, command_name, command_args)
+        _dispatch_skill(skill, command_name, command_args, chat_id=chat_id)
         return
 
     # Scoped command dispatch: /<scope>.<name> [args]
@@ -246,7 +251,7 @@ def handle_command(text: str):
         )
         if resolved:
             skill, subcommand, skill_args = resolved
-            _dispatch_skill(skill, subcommand, skill_args)
+            _dispatch_skill(skill, subcommand, skill_args, chat_id=chat_id)
             return
 
     # Project alias fallback: /tt <text> → handle_mission("Template2 <text>")
@@ -285,7 +290,7 @@ def _get_command_usage(skill: Skill, command_name: str) -> str:
     return ""
 
 
-def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
+def _dispatch_skill(skill: Skill, command_name: str, command_args: str, chat_id: str = ""):
     """Dispatch a skill execution — handles worker threads and standard calls."""
     try:
         from app.skill_usage import record_usage
@@ -314,6 +319,7 @@ def _dispatch_skill(skill: Skill, command_name: str, command_args: str):
         args=command_args,
         send_message=send_telegram,
         handle_chat=_handle_chat_cb,
+        chat_id=chat_id,
     )
 
     # Worker thread for blocking skills (calls Claude or external services)

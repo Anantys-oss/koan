@@ -156,6 +156,29 @@ def get_tools_description() -> str:
     return config.get("tools", {}).get("description", "")
 
 
+def _get_chat_flag(key: str, default: bool = True) -> bool:
+    """Read a boolean flag from the ``chat:`` config section.
+
+    Accepts real booleans and common string spellings (``false``/``no``/``0``/
+    ``off``). When ``chat:`` is present but not a mapping (e.g. a stray scalar in
+    config.yaml), warn on stderr and fall back to ``default`` instead of
+    silently swallowing the misconfiguration.
+    """
+    config = _load_config()
+    chat_config = config.get("chat", {})
+    if not isinstance(chat_config, dict):
+        print(
+            f"[config] 'chat' must be a mapping, got {type(chat_config).__name__}; "
+            f"ignoring it and using chat.{key}={default}",
+            file=sys.stderr,
+        )
+        return default
+    value = chat_config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() not in ("false", "no", "0", "off")
+
+
 def get_chat_confirm_commands_enabled() -> bool:
     """Check if chat may arm one-word ("yes") confirmation to run a command.
 
@@ -171,14 +194,7 @@ def get_chat_confirm_commands_enabled() -> bool:
     Returns:
         True if confirmation-to-run is enabled, False otherwise.
     """
-    config = _load_config()
-    chat_config = config.get("chat", {})
-    if isinstance(chat_config, dict):
-        confirm = chat_config.get("confirm_commands", True)
-        if isinstance(confirm, bool):
-            return confirm
-        return str(confirm).lower() not in ("false", "no", "0", "off")
-    return True
+    return _get_chat_flag("confirm_commands")
 
 
 _MODEL_CONFIG_NORMALIZED = False  # Module-level guard to emit deprecation warnings once per process
@@ -281,16 +297,7 @@ def get_chat_suggest_commands_enabled() -> bool:
     Returns:
         True if suggestions are enabled, False otherwise.
     """
-    config = _load_config()
-    chat_config = config.get("chat", {})
-    if isinstance(chat_config, dict):
-        # Explicitly check for false (allow true, unset, and other truthy values)
-        suggest = chat_config.get("suggest_commands", True)
-        if isinstance(suggest, bool):
-            return suggest
-        # Handle string representations
-        return str(suggest).lower() not in ("false", "no", "0", "off")
-    return True
+    return _get_chat_flag("suggest_commands")
 
 
 def get_model_config(

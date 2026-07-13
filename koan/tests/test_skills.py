@@ -2120,9 +2120,12 @@ class TestChatSkillHandler:
             koan_root=tmp_path, instance_dir=tmp_path,
             args="fix the login bug",
             handle_chat=mock_chat,
+            chat_id="chat-99",
         )
         result = mod.handle(ctx)
-        mock_chat.assert_called_once_with("fix the login bug")
+        # chat_id must be forwarded so a command offer made from the forced-chat
+        # path is armed against the triggering channel (a later "yes" matches).
+        mock_chat.assert_called_once_with("fix the login bug", "chat-99")
         assert result == ""
 
     def test_no_handle_chat_callback(self, tmp_path):

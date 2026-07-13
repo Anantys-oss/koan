@@ -11,7 +11,10 @@ def handle(ctx):
         return "Usage: /chat <message>\nForces chat mode for messages that look like missions."
 
     if ctx.handle_chat is not None:
-        ctx.handle_chat(ctx.args)
+        # Pass the triggering channel so command-confirmation offers made from a
+        # forced-chat reply are armed against the right chat_id (a later "yes"
+        # must match it).
+        ctx.handle_chat(ctx.args, ctx.chat_id)
         # Return empty string to signal "handled, don't send anything else"
         return ""
 
