@@ -2805,6 +2805,13 @@ def _start_mission_in_file(instance: str, mission_title: str, project_name: str 
                         f"recover.py missed them "
                         f"(see _flush_in_progress_to_failed): {titles}"
                     ))
+                # Raise the GitHub "Running" indicator now that the transition
+                # is confirmed. Best-effort — never block the mission start.
+                try:
+                    from app.mission_status import start_indicator
+                    start_indicator(instance, mission_title, project_name)
+                except Exception as e:
+                    log("error", f"running-indicator start error: {e}")
                 return True
         log("warning", f"Mission transition unconfirmed — '{clean_title[:60]}' "
             "not found in In Progress after start_mission(). "

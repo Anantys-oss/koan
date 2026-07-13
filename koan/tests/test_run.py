@@ -6756,6 +6756,46 @@ class TestStartMissionSanityFlushLog:
         assert "leftover stale" not in "\n".join(sections.get("failed", []))
 
 
+class TestStartMissionRunningIndicator:
+    """The confirmed Pending→In Progress transition raises the GitHub
+    'Running' indicator via mission_status.start_indicator."""
+
+    def test_start_fires_indicator_on_confirmed_transition(self, tmp_path):
+        import app.mission_status as ms
+        from app.run import _start_mission_in_file
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n- do the thing\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        called = {}
+        with patch.object(ms, "start_indicator",
+                          lambda i, t, p: called.update(i=i, t=t, p=p)):
+            assert _start_mission_in_file(
+                str(missions.parent), "do the thing", "proj") is True
+        assert called == {"i": str(missions.parent),
+                          "t": "do the thing", "p": "proj"}
+
+    def test_start_does_not_fire_on_unconfirmed_transition(self, tmp_path):
+        import app.mission_status as ms
+        from app.run import _start_mission_in_file
+
+        missions = tmp_path / "instance" / "missions.md"
+        missions.parent.mkdir(parents=True)
+        # Mission absent from Pending → transition not confirmed.
+        missions.write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+        called = []
+        with patch.object(ms, "start_indicator",
+                          lambda *a, **k: called.append(a)):
+            assert _start_mission_in_file(
+                str(missions.parent), "absent", "proj") is False
+        assert called == []
+
+
 class TestStartMissionComplexityTagTOCTOU:
     """Regression for #2087: a [complexity:X] tag injected into the Pending
     line *after* the mission title was captured must not break the transition
