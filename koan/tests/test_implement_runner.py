@@ -383,50 +383,66 @@ class TestPlanReviewGate:
             assert "Plan Improvement Notes" in call_kwargs["context"]
             assert "missing file paths" in call_kwargs["context"]
 
-    def test_gate_blocks_run_implement_on_tuple_failure(self):
-        """Integration: run_implement returns failure when gate returns (False, msg)."""
+    def test_assumptions_advisory_injected_into_implementation_context(self):
+        """Integration: an assumptions advisory reaches the implementation context."""
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"
+        advisory = "1. [UNVERIFIED/CRITICAL] popen_cli is called without env="
+
+        def gate_with_advisory(plan, *args, **kwargs):
+            return _GateImproved(plan, "", advisory)
+
         with patch(f"{_IMPL_MODULE}.fetch_issue",
                     return_value=_github_issue(title="Title", body=body)), \
              patch(f"{_IMPL_MODULE}._run_plan_review_gate",
-                    return_value=(False, "Plan review failed — fix these")), \
-             patch(f"{_IMPL_MODULE}._execute_implementation") as mock_exec:
+                    side_effect=gate_with_advisory), \
+             patch(f"{_IMPL_MODULE}._execute_implementation",
+                    return_value="done") as mock_exec, \
+             patch(f"{_IMPL_MODULE}.get_commit_subjects",
+                    return_value=["feat: implement plan"]), \
+             patch(f"{_IMPL_MODULE}.get_current_branch",
+                    return_value="koan/implement-42"), \
+             patch(f"{_IMPL_MODULE}._submit_implement_pr", return_value=None):
             ok, msg = run_implement(
                 "/project",
                 "https://github.com/o/r/issues/42",
                 notify_fn=notify,
             )
-            assert not ok
-            assert "Plan review failed" in msg
-            mock_exec.assert_not_called()
+            assert ok
+            call_kwargs = mock_exec.call_args[1]
+            assert "Assumption Verification Required" in call_kwargs["context"]
+            assert advisory in call_kwargs["context"]
+            # Plan unchanged, no critic issues — no misleading improvement notes
+            assert "Plan Improvement Notes" not in call_kwargs["context"]
 
 
 # ---------------------------------------------------------------------------
-# Plan assumptions check (grill-me gate)
+# Plan assumptions check (advisory pressure-test)
 # ---------------------------------------------------------------------------
 
 class TestPlanAssumptionsGate:
-    """Tests for the assumptions pressure-test phase in _run_plan_review_gate."""
+    """Tests for the advisory assumptions pressure-test in _run_plan_review_gate."""
 
     _PLAN = "## Phase 1\nDo stuff\n" * 10
 
-    def test_critical_assumption_blocks_gate(self):
-        """When assumptions check finds a critical unverified assumption, gate blocks."""
+    def test_critical_assumption_is_advisory_not_blocking(self):
+        """A critical unverified assumption is advisory: gate proceeds (fail open)."""
         reason = "3. [UNVERIFIED/CRITICAL] The timeout is caused by a socket leak"
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True, "assumptions_check": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
              patch("app.plan_runner.review_plan_assumptions",
                     return_value=(ASSUMPTIONS_CRITICAL, reason)), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")) as mock_review, \
              patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
-             patch("app.plan_runner.review_plan") as mock_review:
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
             result = _run_plan_review_gate(self._PLAN, "/project")
-            assert isinstance(result, tuple)
-            assert result[0] is False
-            assert "socket leak" in result[1]
-            assert "critical unverified assumption" in result[1].lower()
-            mock_review.assert_not_called()
+            assert not isinstance(result, tuple)
+            assert isinstance(result, _GateImproved)
+            assert result.plan == self._PLAN
+            assert "socket leak" in result.assumptions_advisory
+            # Advisory falls through to the structural critic, not around it
+            mock_review.assert_called_once()
 
     def test_assumptions_ok_proceeds_to_structural_critic(self):
         """When assumptions pass, gate continues to structural critic."""
@@ -468,7 +484,7 @@ class TestPlanAssumptionsGate:
             mock_assumptions.assert_called_once()
 
     def test_critical_assumption_notifies_user(self):
-        """When a critical assumption blocks, notify_fn is called."""
+        """When a critical assumption is flagged, notify_fn announces the advisory."""
         notify = MagicMock()
         reason = "Plan assumes API endpoint /v2/users exists but this is unverified"
         with patch("app.config.get_plan_review_config",
@@ -476,13 +492,18 @@ class TestPlanAssumptionsGate:
              patch("app.plan_runner.is_simple_plan", return_value=False), \
              patch("app.plan_runner.review_plan_assumptions",
                     return_value=(ASSUMPTIONS_CRITICAL, reason)), \
-             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
             result = _run_plan_review_gate(
                 self._PLAN, "/project", notify_fn=notify,
             )
-            assert result[0] is False
+            assert isinstance(result, _GateImproved)
+            assert result.assumptions_advisory == reason
             notify.assert_called_once()
-            assert "critical unverified assumption" in notify.call_args[0][0].lower()
+            message = notify.call_args[0][0].lower()
+            assert "assumptions flagged" in message
+            assert "proceeding" in message
 
     def test_reviewer_error_fails_open(self):
         """Reviewer infrastructure failure falls through to structural critic (fail-open)."""
@@ -518,19 +539,41 @@ class TestPlanAssumptionsGate:
             notify.assert_called_once()
             assert "reviewer error" in notify.call_args[0][0].lower()
 
-    def test_notify_failure_does_not_prevent_blocking(self):
-        """notify_fn exception doesn't prevent gate from blocking."""
+    def test_notify_failure_does_not_lose_advisory(self):
+        """notify_fn exception doesn't prevent the advisory from propagating."""
         notify = MagicMock(side_effect=RuntimeError("send failed"))
         with patch("app.config.get_plan_review_config",
                     return_value={"implement_gate": True}), \
              patch("app.plan_runner.is_simple_plan", return_value=False), \
              patch("app.plan_runner.review_plan_assumptions",
                     return_value=(ASSUMPTIONS_CRITICAL, "bad assumption")), \
-             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False):
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"):
             result = _run_plan_review_gate(
                 self._PLAN, "/project", notify_fn=notify,
             )
-            assert result[0] is False
+            assert isinstance(result, _GateImproved)
+            assert result.assumptions_advisory == "bad assumption"
+
+    def test_advisory_threaded_through_improved_plan(self):
+        """Advisory survives when the structural critic also improves the plan."""
+        improved = "## Phase 1: koan/app/foo.py\nConcrete plan"
+        with patch("app.config.get_plan_review_config",
+                    return_value={"implement_gate": True, "max_rounds": 3}), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_CRITICAL, "unproven root cause")), \
+             patch("app.plan_runner.review_plan",
+                    side_effect=[(False, "- vague"), (True, "")]), \
+             patch("app.plan_runner.improve_plan", return_value=improved), \
+             patch(f"{_IMPL_MODULE}._is_plan_cache_fresh", return_value=False), \
+             patch(f"{_IMPL_MODULE}._write_plan_cache"), \
+             patch(f"{_IMPL_MODULE}._post_improved_plan"):
+            result = _run_plan_review_gate(self._PLAN, "/project")
+            assert isinstance(result, _GateImproved)
+            assert result.plan == improved
+            assert result.assumptions_advisory == "unproven root cause"
 
 
 # ---------------------------------------------------------------------------

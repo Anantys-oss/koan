@@ -22,6 +22,8 @@ from app.plan_runner import (
     main,
     review_plan,
     review_plan_assumptions,
+    _apply_assumptions_audit,
+    _merge_assumptions_into_open_questions,
     ASSUMPTIONS_OK,
     ASSUMPTIONS_CRITICAL,
     ASSUMPTIONS_REVIEWER_ERROR,
@@ -1527,3 +1529,123 @@ class TestReviewPlanAssumptions:
             status, reason = review_plan_assumptions("plan text", "/project", self._PLAN_DIR)
             assert status == ASSUMPTIONS_REVIEWER_ERROR
             assert "prompt load failed" in reason
+
+
+class TestMergeAssumptionsIntoOpenQuestions:
+    """Tests for folding audit findings into the Open Questions section."""
+
+    _FINDINGS = "1. [UNVERIFIED/CRITICAL] The API endpoint /v2/users exists"
+
+    def test_appends_under_existing_open_questions_section(self):
+        plan = (
+            "### Summary\n\nDo the thing.\n\n"
+            "### Open Questions\n\n- Is the cache shared?\n\n"
+            "### Risks\n\n- None.\n"
+        )
+        merged = _merge_assumptions_into_open_questions(plan, self._FINDINGS)
+        assert "Assumptions audit (auto):" in merged
+        assert self._FINDINGS in merged
+        # Findings land inside Open Questions: after the existing bullet,
+        # before the next section heading.
+        oq = merged.index("### Open Questions")
+        risks = merged.index("### Risks")
+        assert oq < merged.index("Assumptions audit (auto):") < risks
+        assert merged.index("Is the cache shared?") < merged.index("Assumptions audit (auto):")
+
+    def test_creates_section_when_missing(self):
+        plan = "### Summary\n\nDo the thing.\n"
+        merged = _merge_assumptions_into_open_questions(plan, self._FINDINGS)
+        assert "### Open Questions" in merged
+        assert merged.index("### Open Questions") < merged.index(self._FINDINGS)
+
+    def test_open_questions_as_last_section(self):
+        plan = "### Summary\n\nDo it.\n\n### Open Questions\n\n- Any?\n"
+        merged = _merge_assumptions_into_open_questions(plan, self._FINDINGS)
+        assert merged.rstrip().endswith(self._FINDINGS)
+
+    def test_matches_heading_level_variants(self):
+        plan = "## Summary\n\nDo it.\n\n## Open questions\n\n- Any?\n\n## Risks\n\n- None.\n"
+        merged = _merge_assumptions_into_open_questions(plan, self._FINDINGS)
+        assert merged.index("## Open questions") < merged.index(self._FINDINGS) < merged.index("## Risks")
+
+
+class TestApplyAssumptionsAudit:
+    """Tests for the advisory pre-post assumptions audit in plan generation."""
+
+    _PLAN_DIR = Path(__file__).resolve().parent.parent / "skills" / "core" / "plan"
+    _PLAN = "### Summary\n\nBig plan.\n\n" + "#### Phase 1\nDo stuff\n" * 10
+
+    def test_critical_findings_merged_into_plan(self):
+        findings = "1. [UNVERIFIED/CRITICAL] Endpoint /v2/users exists"
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"assumptions_check": True}), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_CRITICAL, findings)):
+            result = _apply_assumptions_audit(self._PLAN, "/project", self._PLAN_DIR)
+            assert "Assumptions audit (auto):" in result
+            assert findings in result
+
+    def test_critical_findings_notify_user(self):
+        notify = MagicMock()
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"assumptions_check": True}), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_CRITICAL, "1. [UNVERIFIED/CRITICAL] X")):
+            _apply_assumptions_audit(
+                self._PLAN, "/project", self._PLAN_DIR, notify_fn=notify,
+            )
+            notify.assert_called_once()
+            assert "Open Questions" in notify.call_args[0][0]
+
+    def test_ok_leaves_plan_unchanged(self):
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"assumptions_check": True}), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_OK, "")):
+            assert _apply_assumptions_audit(self._PLAN, "/project", self._PLAN_DIR) == self._PLAN
+
+    def test_reviewer_error_fails_open_unchanged(self):
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"assumptions_check": True}), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_REVIEWER_ERROR, "model unavailable")):
+            assert _apply_assumptions_audit(self._PLAN, "/project", self._PLAN_DIR) == self._PLAN
+
+    def test_simple_plan_skips_auditor(self):
+        with patch("app.plan_runner.is_simple_plan", return_value=True), \
+             patch("app.plan_runner.review_plan_assumptions") as mock_audit:
+            assert _apply_assumptions_audit("Rename X to Y", "/project", self._PLAN_DIR) == "Rename X to Y"
+            mock_audit.assert_not_called()
+
+    def test_disabled_skips_auditor(self):
+        with patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"assumptions_check": False}), \
+             patch("app.plan_runner.review_plan_assumptions") as mock_audit:
+            assert _apply_assumptions_audit(self._PLAN, "/project", self._PLAN_DIR) == self._PLAN
+            mock_audit.assert_not_called()
+
+    def test_generate_plan_pipeline_includes_audit_block(self):
+        """Pipeline: _generate_plan output carries the audit block pre-post."""
+        raw_plan = self._PLAN + "\n### Open Questions\n\n- None yet.\n"
+        findings = "1. [UNVERIFIED/CRITICAL] Config key is read by module W"
+        with patch("app.plan_runner._run_claude_plan", return_value=raw_plan), \
+             patch("app.skill_memory.build_memory_block_for_skill", return_value=""), \
+             patch("app.plan_runner.load_prompt_or_skill", return_value="prompt"), \
+             patch("app.plan_runner.is_simple_plan", return_value=False), \
+             patch("app.config.get_plan_review_config",
+                    return_value={"enabled": True, "max_rounds": 3,
+                                  "implement_gate": True, "assumptions_check": True}), \
+             patch("app.plan_runner.review_plan", return_value=(True, "")), \
+             patch("app.plan_runner._record_plan_metric"), \
+             patch("app.plan_runner.review_plan_assumptions",
+                    return_value=(ASSUMPTIONS_CRITICAL, findings)):
+            plan = _generate_plan("/project", "an idea", skill_dir=self._PLAN_DIR)
+            assert "Assumptions audit (auto):" in plan
+            assert findings in plan
+            # Folded into the existing Open Questions section
+            assert plan.index("### Open Questions") < plan.index(findings)

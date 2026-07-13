@@ -7,5 +7,5 @@
 * [Mission Lifecycle](mission-lifecycle.md) - Explains the mission queue format and lifecycle (Pending/In Progress/Done/Failed), org-wide missions, branch prep, direct skill dispatch, scheduling, recovery/retries, and missions.md integrity/size-bound safeguards.
 * [Architecture Overview](overview.md) - High-level architecture summary of Koan's two main processes (bridge and agent loop), major subsystems, and the human-decides safety model.
 * [Provider Architecture](providers.md) - Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Local).
-* [Shared State](shared-state.md) - Explains Koan's file-based (no-database) shared state under instance/, locking/atomic-write conventions, per-uid temp/scratch directories, and configuration sources.
+* [Shared State](shared-state.md) - Explains Koan's shared state under instance/ — mostly local files (locking/atomic-write conventions, per-uid temp/scratch dirs, config sources), with mission state in an authoritative SQLite store (missions.db) exported to missions.md.
 * [Skills System](skills-system.md) - Describes the skill definition format, dispatch paths, the private implementation review gate (challenge loop, cost controls, dedup), and the documentation contract for skill changes.

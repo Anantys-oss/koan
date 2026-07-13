@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-09
+updated: 2026-07-12
 ---
 
 # Skills Reference
@@ -71,6 +71,13 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 
 For URL-based `/plan`, `/deepplan`, `/implement`, and `/fix`, append `branch:<name>` to
 override the base branch for that mission.
+
+**Assumptions audit (advisory, never blocks):** before a `/plan` result is posted, a
+lightweight auditor pressure-tests the plan's hidden assumptions; unverified-critical
+ones are folded into the plan's *Open Questions* section so you can resolve them on
+the issue. When `/implement` runs, the same audit's findings are injected into the
+implementation context as "verify before coding" guidance — the mission always
+proceeds. Toggle with `plan_review.assumptions_check` in `config.yaml` (default on).
 
 The private post-PR review gate for `/fix`, `/implement`, and `/rebase` is
 backend-only: it reuses `/review` analysis, fixes Blocking/Important findings
