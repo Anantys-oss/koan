@@ -18,6 +18,7 @@ from app.projects_config import (
     get_project_models,
     get_project_review_history,
     get_project_review_verdict,
+    get_project_running_indicator,
     get_project_submit_to_repository,
     get_project_tools,
     resolve_base_branch,
@@ -478,6 +479,64 @@ class TestGetProjectAutoMerge:
         }
         result = get_project_auto_merge(config, "unknown")
         assert result["enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# get_project_running_indicator
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectRunningIndicator:
+    """Tests for get_project_running_indicator()."""
+
+    def test_running_indicator_defaults_on(self):
+        # Global default is enabled with the canonical label name.
+        with patch("app.config._load_config", return_value={}):
+            config = {"projects": {"my-toolkit": {"path": "/p"}}}
+            ri = get_project_running_indicator(config, "my-toolkit")
+        assert ri["enabled"] is True
+        assert ri["commit_status"] is True
+        assert ri["issue_label"] is True
+        assert ri["label_name"] == "koan:working"
+
+    def test_project_can_opt_out(self):
+        with patch("app.config._load_config", return_value={}):
+            config = {
+                "projects": {
+                    "my-toolkit": {
+                        "path": "/p",
+                        "running_indicator": {"enabled": False},
+                    }
+                }
+            }
+            ri = get_project_running_indicator(config, "my-toolkit")
+        assert ri["enabled"] is False
+        # Unset keys still inherit the global defaults.
+        assert ri["label_name"] == "koan:working"
+
+    def test_project_override_partial(self):
+        with patch("app.config._load_config", return_value={}):
+            config = {
+                "defaults": {},
+                "projects": {
+                    "my-toolkit": {
+                        "running_indicator": {
+                            "commit_status": False,
+                            "label_name": "wip",
+                        }
+                    }
+                },
+            }
+            ri = get_project_running_indicator(config, "my-toolkit")
+        assert ri["enabled"] is True  # inherited
+        assert ri["commit_status"] is False  # overridden
+        assert ri["label_name"] == "wip"  # overridden
+
+    def test_bare_bool_override(self):
+        with patch("app.config._load_config", return_value={}):
+            config = {"projects": {"my-toolkit": {"running_indicator": False}}}
+            ri = get_project_running_indicator(config, "my-toolkit")
+        assert ri["enabled"] is False
 
 
 # ---------------------------------------------------------------------------

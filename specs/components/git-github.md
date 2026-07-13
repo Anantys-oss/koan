@@ -63,6 +63,31 @@ workflows.
   remote base anyway. A **conflict-free** dirty tree is never discarded — the
   stash data-loss guard still holds for genuine uncommitted work.
 
+### Mission status indicators (koan/mission)
+
+While a GitHub-linked mission runs, Kōan surfaces a live indicator with no
+GitHub App:
+
+- **Issue label** `koan:working` — toggled on the linked issue for the whole
+  run (primary live signal; the issue is known at mission start).
+- **Commit status** `context=koan/mission` — posted `pending` on the pushed
+  branch head at first push, resolved `success`/`failure`/`error` at finalize.
+
+**Invariants**
+
+- All writes go through `github.run_gh()`/`github.api()` (gh-only transport),
+  honoring the existing `gh`-only invariant above.
+- Indicators are best-effort: a write failure logs and degrades, never blocks
+  the mission.
+- Every terminal path (success, failure, abort, stagnation-cap, crash
+  recovery) resolves the commit status and removes the label. A hard crash is
+  reconciled at next startup (`mission_status.reconcile_stale_indicators`).
+- Cross-stage state lives in `instance/.running-indicator.json`, keyed by
+  mission title; local-only missions (no issue URL, no `github_url`) write
+  nothing.
+- Gated by a global `running_indicator` config block plus a per-project
+  override; on by default, opt-out via `running_indicator.enabled: false`.
+
 ## Integration points
 
 - Notifications wired into `loop_manager.process_github_notifications()`, which also
