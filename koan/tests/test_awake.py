@@ -4002,10 +4002,12 @@ class TestBuildCommandCatalog:
         mock_registry.list_by_audience.assert_called_once_with("bridge", "command", "hybrid")
 
     def test_catalog_graceful_failure(self):
-        """Catalog builder should return empty string on exception."""
+        """Catalog builder should degrade to empty string on a recoverable
+        (filesystem) failure — e.g. a skill dir rewritten mid-scan. A programming
+        error is intentionally NOT swallowed and propagates instead."""
         from app.awake import _build_command_catalog
 
-        with patch("app.awake._get_registry", side_effect=Exception("Registry failed")):
+        with patch("app.awake._get_registry", side_effect=OSError("Registry failed")):
             catalog = _build_command_catalog()
 
         assert catalog == "", "Should return empty string on error"
