@@ -1,4 +1,6 @@
-Merge `main` into the Kōan `incubating` branch, but only after a review phase where you summarize the incoming diff and get an explicit go/no-go. On merge, append a dated entry to the `changes/incubating.md` journal.
+Merge `main` into the Kōan `incubating` branch, but only after a review phase where you summarize the incoming diff and get an explicit go/no-go. On merge, append a dated entry under the `## ${NEXT}` section of the `changes/incubating.md` journal — the curated changelog the release workflow later finalizes.
+
+This is the **only** skill in the release pipeline: it preps `incubating` (merge + changelog); it never tags, never publishes. Releasing is done exclusively by dispatching `release.yml` on the `incubating` ref (Actions UI, or `gh workflow run release.yml --ref incubating -f version=vX.Y.Z`), which replaces `${NEXT}` with the version in `CHANGES.md`, tags, fast-forwards the `stable` branch, moves the `latest` tag, and publishes the GitHub release + Docker images.
 
 Run this from the Kōan repo root.
 
@@ -48,7 +50,7 @@ Arguments:
 
 ## Update the journal
 
-9. Append a new entry under the `## Unreleased` heading in `changes/incubating.md` (create the file/section if missing). Use this shape — reuse the grouped changelog from step 5:
+9. Append a new entry under the top `## ${NEXT}` heading in `changes/incubating.md` (create the file/section if missing — the token is literal, one `$`, exactly `## ${NEXT}`; the release workflow matches it verbatim and replaces it with the version). Use this shape — reuse the grouped changelog from step 5:
    ```markdown
    ### Merged <YYYY-MM-DD> — <source> @ <short-sha> (<N> commits)
 
@@ -72,5 +74,6 @@ Arguments:
 
 - **Always run the review phase** and wait for go/no-go unless `--yes`.
 - **main wins** on substantive conflicts; never silently drop incubating-only work — flag it instead.
-- **Never edit released entries** in `changes/incubating.md` (only append under `## Unreleased`).
+- **Never edit released entries** in `changes/incubating.md` (only append under `## ${NEXT}`).
+- **Never tag, never release** — this skill preps `incubating` only; the release itself belongs to the `release.yml` workflow dispatch.
 - English only in all commits and journal text.

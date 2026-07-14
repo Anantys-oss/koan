@@ -138,7 +138,9 @@ test-strict: setup
 
 release:
 	@echo "✗ 'make release' is deprecated: it tagged directly from main, bypassing the incubating pipeline."
-	@echo "  Use /koan.incubate then /koan.release instead (see docs/operations/maint.md)."
+	@echo "  Use /koan.incubate to prep, then dispatch the Release workflow on 'incubating':"
+	@echo "    gh workflow run release.yml --ref incubating -f version=vX.Y.Z"
+	@echo "  See docs/operations/maint.md."
 	@exit 1
 
 migrate: setup
