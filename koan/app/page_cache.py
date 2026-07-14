@@ -78,7 +78,7 @@ def default_reclaim_roots() -> list[Path]:
     roots.extend(Path(str(extra)) for extra in cfg.get("extra_roots", []))
     # De-dupe on resolved path; keep only existing dirs.
     seen: set[str] = set()
-    out: list[Path] = []
+    resolved: list[Path] = []
     for r in roots:
         try:
             rp = r.resolve()
@@ -88,6 +88,16 @@ def default_reclaim_roots() -> list[Path]:
         if key in seen or not rp.is_dir():
             continue
         seen.add(key)
+        resolved.append(rp)
+    # Drop roots nested under another kept root (e.g. the venv living inside a
+    # project workdir) so os.walk doesn't fadvise the same files twice and burn
+    # the time budget. Shortest paths first so ancestors are considered before
+    # their descendants.
+    resolved.sort(key=lambda p: len(p.parts))
+    out: list[Path] = []
+    for rp in resolved:
+        if any(anc in rp.parents for anc in out):
+            continue
         out.append(rp)
     return out
 

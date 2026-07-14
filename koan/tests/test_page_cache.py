@@ -51,6 +51,20 @@ def test_default_roots_include_projects_and_instance(tmp_path, monkeypatch):
     assert str((tmp_path / "instance").resolve()) in resolved
 
 
+def test_nested_roots_deduped(tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    venv = proj / ".venv"  # venv nested inside the project workdir
+    venv.mkdir(parents=True)
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        page_cache, "get_known_projects", lambda: [("proj", str(proj))]
+    )
+    monkeypatch.setattr(page_cache.sys, "prefix", str(venv))
+    roots = {str(r) for r in page_cache.default_reclaim_roots()}
+    assert str(proj.resolve()) in roots
+    assert str(venv.resolve()) not in roots  # nested → dropped
+
+
 def test_idle_throttle_respects_interval(monkeypatch):
     calls = []
     monkeypatch.setattr(
