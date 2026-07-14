@@ -129,6 +129,10 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   consumers that key off `tool_use: <name>` (substring) or off the quota
   markers (`rate_limit_rejected`, session-limit phrasing) are unaffected.
   The display-side `log_fmt.py` splits name from preview on the first `": "`.
+  Free-text preview values (tool-input and `text:` excerpts) never contain the
+  `", "` part delimiter — `_summarize_stream_event()` collapses it to a bare
+  comma (`_drop_part_sep`) so the display splitter (`log_fmt._PART_SEP`) can
+  never mis-split a preview into a spurious part.
 - **Shared stream parsers extend by event SHAPE, never by provider name.** The
   central summarizer/text/usage extractors in `provider/__init__.py` (and the
   mission-stdout path in `token_parser.py`) branch on field presence

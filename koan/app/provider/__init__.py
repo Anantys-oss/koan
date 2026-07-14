@@ -786,6 +786,19 @@ def _tool_input_preview(inp: Any, limit: int = 60) -> str:
     return ""
 
 
+def _drop_part_sep(text: str) -> str:
+    """Neutralize the ``", "`` part delimiter inside a free-text preview.
+
+    ``_summarize_stream_event`` joins assistant parts with ``", "`` and the
+    display formatter (``log_fmt._PART_SEP``) splits on that same token before
+    a part keyword. A preview that itself contains ``", "`` (a Bash command or
+    a text line with a comma) would be mis-split, so collapse the delimiter to
+    a bare comma inside preview values. Cosmetic and display-side only — it
+    keeps the emitted grammar unambiguous by construction.
+    """
+    return re.sub(r", +", ",", text)
+
+
 def _summarize_stream_event(event: Dict[str, Any]) -> str:
     """Render a provider JSONL event as a single human-readable line.
 
@@ -812,7 +825,7 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
             btype = block.get("type", "")
             if btype == "tool_use":
                 name = block.get("name", "?")
-                preview = _tool_input_preview(block.get("input"))
+                preview = _drop_part_sep(_tool_input_preview(block.get("input")))
                 parts.append(
                     f"tool_use: {name}: {preview}" if preview
                     else f"tool_use: {name}"
@@ -820,7 +833,9 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
             elif btype == "text":
                 text = (block.get("text") or "").strip()
                 if text:
-                    preview = _first_line(text) or text.splitlines()[0][:80]
+                    preview = _drop_part_sep(
+                        _first_line(text) or text.splitlines()[0][:80]
+                    )
                     parts.append(f"text: {preview}")
                 else:
                     parts.append("text")

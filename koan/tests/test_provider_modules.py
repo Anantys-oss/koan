@@ -1485,6 +1485,24 @@ class TestToolInputPreview:
         out = _tool_input_preview({"command": "cd /app\nmake test"}, limit=60)
         assert out == "cd /app…"
 
+    def test_comma_preview_does_not_embed_part_delimiter(self):
+        # A preview containing ", text: " must NOT survive into the summary
+        # verbatim: the ", " part delimiter is neutralized to a bare comma so
+        # the display formatter (log_fmt._PART_SEP) can't mis-split it into a
+        # spurious `text:` part.
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": 'git commit -m "fix, text: hi"'}}
+            ]},
+        })
+        assert ", text: " not in line
+        assert line == (
+            '[cli] assistant — tool_use: Bash: git commit -m "fix,text: hi"'
+        )
+
 
 class TestSummarizeStreamEvent:
     """Direct coverage for _summarize_stream_event so changes to the

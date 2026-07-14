@@ -49,3 +49,9 @@ The tool-input preview comes from `_summarize_stream_event()`'s
 (`_TOOL_PREVIEW_KEYS` in `koan/app/provider/__init__.py`) or the summary grammar
 requires updating `log_fmt.py`, `koan/tests/test_log_fmt.py`, and
 `koan/tests/test_provider_modules.py` together.
+
+Assistant parts are joined with `", "`, which `log_fmt._PART_SEP` also uses to
+split them back apart. So a preview never carries that delimiter: the summarizer
+collapses any `", "` inside a preview to a bare comma (`_drop_part_sep`),
+keeping the grammar unambiguous and preventing a comma-bearing command or text
+line from being mis-split into a spurious part.
