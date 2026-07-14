@@ -787,6 +787,18 @@ memory_monitor:
     threshold_mb: 600        # Restart when RSS stays at/above this (MB)
     sustained_samples: 3     # Consecutive over-threshold poll cycles required
 
+# Universal page-cache reclaim (#2374). Billing on Railway tracks the cgroup's
+# memory.current, which counts reclaimable kernel page cache (file), not just
+# process RSS (anon). Missions do heavy file I/O and the kernel keeps those
+# clean pages warm with no memory pressure, so the billed baseline ratchets up.
+# After each mission (and periodically while idle) Kōan drops clean pages via
+# posix_fadvise(DONTNEED) — unprivileged, read-only, no-op on macOS dev boxes.
+page_cache_reclaim:
+  enabled: true          # Master switch (default: true — unattended billing hygiene)
+  idle_interval_s: 900   # Min seconds between idle reclaims; 0 disables the idle tick
+  time_budget_s: 10      # Soft wall-clock budget per sweep so it never stalls the loop
+  extra_roots: []        # Operator additions, e.g. large data dirs outside projects
+
 # Conversation history retention (#2354). Mid-session compaction of
 # conversation-history.jsonl so the append-only file stays bounded over long
 # bridge uptime. Floored at 300s; 0 disables mid-session compaction (startup

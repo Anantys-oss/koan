@@ -114,6 +114,23 @@ see it.
   `memory.current` (which counts reclaimable page cache + slab); the cgroup breakdown
   is surfaced via `get_memory_status`/`health_check` when `/sys/fs/cgroup/memory.stat`
   is readable. See `docs/operations/memory-footprint.md`.
+- **Kernel page cache is reclaimed universally, not just RSS (#2374).** Bounding
+  `anon` (per-mission `TMPDIR` reap + stray-tmp sweep, above) does not return the
+  reclaimable page cache (`file`) that mission file I/O leaves warm, and Railway's
+  `/sys/fs/cgroup/memory.reclaim` is read-only. The agent loop therefore runs a
+  single reclaim primitive (`app/page_cache.reclaim_page_cache`, over
+  `default_reclaim_roots()` = project workdirs + `instance/` + venv + scratch dir)
+  at exactly two non-bypassable choke points: the `run_claude_task` outer `finally`
+  (post-mission, after the CLI subprocess has exited) and the between-runs idle
+  sleep (`_sleep_between_runs` + contemplative sleep, throttled to
+  `page_cache_reclaim.idle_interval_s`). The sweep is `posix_fadvise(DONTNEED)` on
+  regular files only — strictly read-only, symlink- and non-regular-file-skipped,
+  time-budgeted (`time_budget_s`) so it never stalls the loop, and a no-op where
+  `os.posix_fadvise` is absent (macOS). It reuses `read_cgroup_memory_stat()` for
+  the before/after `file` delta; no new cgroup parser. No per-feature opt-in exists
+  by construction — a new provider or mission type inherits both hooks. Default on
+  (`page_cache_reclaim.enabled: true`); `idle_interval_s: 0` keeps only the
+  post-mission hook. See `docs/operations/memory-footprint.md`.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary
   enforced by prompt + convention; the loop's job is to host the subprocess, not to
   alter git state itself.
