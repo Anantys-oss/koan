@@ -88,10 +88,10 @@ fast-forward of a released commit on `incubating`.
 
 ## Legacy: `make release`
 
-The old `make release` target (`scripts/release.sh`) tagged directly from `main`
-with a Claude-generated changelog. It predates the incubating pipeline and is
-**deprecated**: it bypasses the incubate validation pass and the curated
-changelog. Use `/koan.incubate`, then dispatch the Release workflow:
+The old `make release` target (backed by a now-deleted `scripts/release.sh`)
+tagged directly from `main` with a Claude-generated changelog. It predated the
+incubating pipeline and is **removed**: it bypassed the incubate validation pass
+and the curated changelog. Use `/koan.incubate`, then dispatch the Release workflow:
 `gh workflow run release.yml --ref incubating -f version=vX.Y.Z`.
 
 ## Recovery
