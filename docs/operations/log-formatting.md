@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "make logs formatting"
-description: "Documents the display-side [cli] log formatter (log_fmt.py) behind make logs, its glyph legend, tick-collapse behavior, and the raw=1 escape hatch."
+description: "Documents the display-side [cli] log formatter (log_fmt.py) behind make logs, its glyph legend, tool-input previews, accumulating thinking dots, and the raw=1 escape hatch."
 tags: [operations, observability, logs]
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-14
 ---
 
 # Pretty `make logs`
@@ -20,11 +20,11 @@ presentational — the log **files** and the `[cli]` grammar emitted by
 
 | Raw `[cli]` line                    | Shown as        |
 |-------------------------------------|-----------------|
-| `assistant — thinking`, `system: thinking_tokens` | dim `•` (consecutive collapse) |
+| `assistant — thinking`, `system: thinking_tokens` | dim `•`, one per event, **accumulated** into a growing run (`••••`) — rewritten in place on a TTY, emitted as one `•×N` line when piped |
 | `assistant — text: <preview>`       | `🧠 <preview>` (preview skips leading code fences / bare brackets, e.g. ```` ```json ```` → first real line) |
-| `assistant — tool_use: Edit`        | `✏️ Edit` (per-tool icons; `🔧` default) |
-| `tool_result …`                     | dim `↩`         |
-| `tool_result … (error)`             | `❌ tool error` (high-signal; never collapses) |
+| `assistant — tool_use: Bash: <cmd>` | `💻 Bash <cmd…>` (per-tool icon + dim, first-line input preview: command / file path / pattern / url, truncated with `…`; `🔧` default) |
+| `tool_result …`                     | *(suppressed — adds no signal)* |
+| `tool_result … (error)`             | `❌ tool error` (high-signal; never suppressed) |
 | `result: success (12s)`             | `✅ result: success (12s)` |
 | `retry …`, `context_overflow …`, `rate_limit_rejected …` | `⚠ …` |
 
@@ -43,3 +43,15 @@ make logs raw=1   # skip the formatter, show the exact bytes
 The formatter matches the `[cli] ` string grammar. If you change
 `_summarize_stream_event()`'s output, update `koan/app/log_fmt.py` and
 `koan/tests/test_log_fmt.py` in the same change.
+
+The tool-input preview comes from `_summarize_stream_event()`'s
+`tool_use: <name>: <preview>` form. Changing the input-key priority list
+(`_TOOL_PREVIEW_KEYS` in `koan/app/provider/__init__.py`) or the summary grammar
+requires updating `log_fmt.py`, `koan/tests/test_log_fmt.py`, and
+`koan/tests/test_provider_modules.py` together.
+
+Assistant parts are joined with `", "`, which `log_fmt._PART_SEP` also uses to
+split them back apart. So a preview never carries that delimiter: the summarizer
+collapses any `", "` inside a preview to a bare comma (`_drop_part_sep`),
+keeping the grammar unambiguous and preventing a comma-bearing command or text
+line from being mis-split into a spurious part.

@@ -19,10 +19,12 @@ import contextlib
 import os
 import re
 import sys
-from typing import TextIO, Tuple
+from typing import Optional, TextIO, Tuple
 
 _CLI_PREFIX = "[cli] "
 _TICK = "•"
+# Cap the visible width of an accumulating thinking dot-run.
+_MAX_DOTS = 50
 
 # Per-tool glyphs; anything unlisted falls back to the wrench.
 _TOOL_ICONS = {
@@ -76,11 +78,12 @@ class _Palette:
         return self._wrap("32", s)
 
 
-def render_cli(body: str, pal: "_Palette") -> Tuple[str, bool]:
+def render_cli(body: str, pal: "_Palette") -> Tuple[Optional[str], bool]:
     """Render one ``[cli] `` line body.
 
-    Returns ``(rendered_text, is_tick)``. ``is_tick`` lines are low-signal
-    and collapse when they repeat consecutively.
+    Returns ``(rendered_text, is_tick)``. ``rendered_text`` is ``None`` when
+    the line carries no signal and should be dropped entirely. ``is_tick``
+    lines are low-signal thinking events that accumulate into a dot-run.
     """
     tick = pal.dim(_TICK)
 
@@ -92,9 +95,13 @@ def render_cli(body: str, pal: "_Palette") -> Tuple[str, bool]:
         rendered = []
         for part in _PART_SEP.split(rest):
             if part.startswith("tool_use: "):
-                name = part[len("tool_use: "):]
+                spec = part[len("tool_use: "):]
+                name, sep, preview = spec.partition(": ")
                 icon = _TOOL_ICONS.get(name, _DEFAULT_TOOL_ICON)
-                rendered.append(f"{icon} {name}")
+                label = f"{icon} {name}"
+                if sep and preview:
+                    label += " " + pal.dim(preview)
+                rendered.append(label)
             elif part.startswith("text: "):
                 rendered.append(f"🧠 {part[len('text: '):]}")
             elif part in ("text", "thinking"):
@@ -110,7 +117,8 @@ def render_cli(body: str, pal: "_Palette") -> Tuple[str, bool]:
         if "(error)" in body:
             # Tool failures are high-signal: never collapse them.
             return pal.red("❌ tool error"), False
-        return pal.dim("↩"), True
+        # Success adds no signal on its own — drop the line entirely.
+        return None, True
 
     if body.startswith("tool_end: "):
         rest = body[len("tool_end: "):]
@@ -132,30 +140,61 @@ def render_cli(body: str, pal: "_Palette") -> Tuple[str, bool]:
     return body, False
 
 
+def _out_is_tty(out: TextIO) -> bool:
+    try:
+        return bool(out.isatty())
+    except (AttributeError, ValueError):
+        # No isatty() (non-file stream) or closed file — treat as non-TTY.
+        return False
+
+
 def run(inp: TextIO, out: TextIO) -> None:
     pal = _Palette(_supports_color())
-    last_tick = False
+    tty = _out_is_tty(out)
+    tick_run = 0
+
+    def _dots(n: int) -> str:
+        return pal.dim(_TICK * min(n, _MAX_DOTS))
+
+    def finalize_ticks() -> None:
+        # Close an in-progress dot run onto its own line.
+        nonlocal tick_run
+        if tick_run:
+            if tty:
+                out.write("\n")          # dots already drawn in place via \r
+            else:
+                out.write(_dots(tick_run) + "\n")
+            tick_run = 0
+
     for raw in inp:
         line = raw.rstrip("\n")
         try:
             if line.startswith(_CLI_PREFIX):
                 rendered, tick = render_cli(line[len(_CLI_PREFIX):], pal)
-                if tick and last_tick:
-                    continue  # collapse consecutive low-signal ticks
-                last_tick = tick
+                if rendered is None:
+                    continue              # suppressed: transparent to dot run
+                if tick:
+                    tick_run += 1
+                    if tty:
+                        out.write("\r" + _dots(tick_run))
+                        out.flush()
+                    continue
+                finalize_ticks()
                 out.write(rendered + "\n")
             else:
-                last_tick = False
+                finalize_ticks()
                 out.write(line + "\n")
             out.flush()
         except Exception as e:
             # A single malformed line must never kill the stream.
             print(f"[log_fmt] render error: {e}", file=sys.stderr)
             try:
+                finalize_ticks()
                 out.write(line + "\n")
                 out.flush()
             except Exception as e2:
                 print(f"[log_fmt] passthrough error: {e2}", file=sys.stderr)
+    finalize_ticks()  # flush a trailing dot run at EOF
 
 
 def main() -> int:

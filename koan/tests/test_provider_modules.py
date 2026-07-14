@@ -1440,6 +1440,70 @@ class TestRunCommandStreaming:
         assert out == "event fallback answer"
 
 
+class TestToolInputPreview:
+    """Coverage for the tool-input preview carried in tool_use summaries."""
+
+    def test_bash_command_preview(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": "make lint && make test"}}
+            ]},
+        })
+        assert line == "[cli] assistant — tool_use: Bash: make lint && make test"
+
+    def test_read_uses_file_path(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "Read",
+                 "input": {"file_path": "/app/koan/app/run.py"}}
+            ]},
+        })
+        assert line.endswith("tool_use: Read: /app/koan/app/run.py")
+
+    def test_long_command_is_truncated_with_ellipsis(self):
+        from app.provider import _tool_input_preview
+        long = "echo " + "x" * 200
+        out = _tool_input_preview({"command": long}, limit=60)
+        assert out.endswith("…")
+        assert len(out) <= 61  # 60 chars + ellipsis
+
+    def test_no_input_yields_bare_name(self):
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "Grep"}]},
+        })
+        assert line == "[cli] assistant — tool_use: Grep"
+
+    def test_multiline_command_shows_first_line_with_ellipsis(self):
+        from app.provider import _tool_input_preview
+        out = _tool_input_preview({"command": "cd /app\nmake test"}, limit=60)
+        assert out == "cd /app…"
+
+    def test_comma_preview_does_not_embed_part_delimiter(self):
+        # A preview containing ", text: " must NOT survive into the summary
+        # verbatim: the ", " part delimiter is neutralized to a bare comma so
+        # the display formatter (log_fmt._PART_SEP) can't mis-split it into a
+        # spurious `text:` part.
+        from app.provider import _summarize_stream_event
+        line = _summarize_stream_event({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": 'git commit -m "fix, text: hi"'}}
+            ]},
+        })
+        assert ", text: " not in line
+        assert line == (
+            '[cli] assistant — tool_use: Bash: git commit -m "fix,text: hi"'
+        )
+
+
 class TestSummarizeStreamEvent:
     """Direct coverage for _summarize_stream_event so changes to the
     rendering don't accidentally silence the watchdog signal."""
