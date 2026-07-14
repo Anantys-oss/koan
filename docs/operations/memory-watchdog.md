@@ -4,7 +4,7 @@ title: "Memory watchdog (#2232)"
 description: "Explains the memory watchdog that restarts the agent loop between missions when RSS stays over a threshold, its config knobs, and health-endpoint observability."
 tags: [operations]
 created: 2026-07-01
-updated: 2026-07-01
+updated: 2026-07-14
 ---
 
 # Memory watchdog (#2232)
@@ -85,3 +85,10 @@ A mid-session RSS read failure (`read_rss_mb` returns `0.0`, meaning "unknown")
 does **not** reset the overage counter — treating unknown as below-threshold
 would silently disable protection. The counter is held and the failure is
 logged to stderr once.
+
+## See also
+
+Restarting on RSS growth is a last resort. For the routine billing-hygiene
+mechanism that returns reclaimable kernel page cache (cgroup `file`) to the
+kernel after every mission and at idle — without a restart — see
+[memory-footprint § Page-cache reclaim](memory-footprint.md#page-cache-reclaim-2374).

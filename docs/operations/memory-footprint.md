@@ -4,7 +4,7 @@ title: "Memory footprint: process RSS vs cgroup memory.current"
 description: "Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, and the anon-first triage rule."
 tags: [operations, memory, cgroup]
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-14
 ---
 
 # Memory footprint: process RSS vs cgroup memory.current
@@ -81,6 +81,37 @@ not `memory.current`.** Where cheap, the cgroup breakdown is surfaced:
   `/health` endpoint.
 - `health_check.py` prints the same breakdown, tagging `anon` as the leak
   signal.
+
+## Page-cache reclaim (#2374)
+
+Railway bills the cgroup's `memory.current`, which includes the kernel page
+cache (`file`), not just process RSS (`anon`). Missions do heavy file I/O and
+the kernel keeps those clean pages warm absent memory pressure, so the billed
+baseline ratchets up (~550 MB → ~820 MB in a day) even though `anon` is flat.
+`/sys/fs/cgroup/memory.reclaim` is read-only on Railway, so Kōan uses
+unprivileged `posix_fadvise(POSIX_FADV_DONTNEED)` to drop clean pages
+(`app/page_cache.py`).
+
+- **When it runs:** after every mission (in `run_claude_task`'s `finally`, once
+  the CLI subprocess has exited) and periodically while idle
+  (`page_cache_reclaim.idle_interval_s`, default 900s; `0` disables the idle tick).
+- **What it touches:** the small, high-value roots first — `instance/`, the venv,
+  the scratch dir — then project workdirs, then `extra_roots`, so a budget-truncated
+  sweep still reclaims the cheap roots instead of burning the whole budget on one
+  large project tree. Read-only; regular files only; symlinks and special files
+  skipped (`os.walk(followlinks=False)` + `os.lstat` + `stat.S_ISREG`); a soft
+  `time_budget_s` (default 10s) bounds each sweep so it never stalls the loop.
+- **Reading the numbers:** `read_cgroup_memory_stat()` returns `anon_mb`/`file_mb`.
+  Watch `file_mb` drop toward the hot-set floor post-mission; `anon` is the leak
+  signal. A single `Page cache reclaim: file X→Y MB (…)` health log fires when the
+  reclaimed delta is meaningful (≥3 MB), the sweep was truncated (`budget hit` —
+  raise `time_budget_s` or trim `extra_roots`), or per-file errors dominated (`N
+  errors`, i.e. systemic `os.open` denial). A small-delta success is the only case
+  suppressed, so no-op reclaims never hide behind silence.
+- **Platform:** no-op where `os.posix_fadvise` is absent (macOS dev boxes) —
+  every hook returns `ReclaimStats(supported=False)` and touches zero files.
+- **Config:** `page_cache_reclaim: { enabled, idle_interval_s, time_budget_s,
+  extra_roots }` — see `instance.example/config.yaml`. Default on.
 
 See also: [bridge-memory](../architecture/bridge-memory.md),
 [memory-watchdog](memory-watchdog.md).

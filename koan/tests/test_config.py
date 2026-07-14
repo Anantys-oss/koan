@@ -2308,3 +2308,38 @@ class TestCleanupMinTmpAgeSeconds:
         from app.config import get_cleanup_min_tmp_age_seconds
         with _mock_config({"cleanup": {"min_tmp_age_seconds": -5}}):
             assert get_cleanup_min_tmp_age_seconds() == 0.0
+
+
+class TestGetPageCacheReclaimConfig:
+    def test_page_cache_reclaim_defaults(self):
+        from app.config import get_page_cache_reclaim_config
+        with _mock_config({}):
+            assert get_page_cache_reclaim_config() == {
+                "enabled": True,
+                "idle_interval_s": 900,
+                "time_budget_s": 10,
+                "extra_roots": [],
+            }
+
+    def test_page_cache_reclaim_overrides_and_bad_types(self):
+        from app.config import get_page_cache_reclaim_config
+        with _mock_config({
+            "page_cache_reclaim": {
+                "enabled": False,
+                "idle_interval_s": "0",
+                "time_budget_s": "not-an-int",
+                "extra_roots": ["/data", 42],
+            }
+        }):
+            cfg = get_page_cache_reclaim_config()
+        assert cfg["enabled"] is False
+        assert cfg["idle_interval_s"] == 0
+        assert cfg["time_budget_s"] == 10          # bad → default
+        assert cfg["extra_roots"] == ["/data", "42"]  # coerced to str
+
+    def test_page_cache_reclaim_malformed_section(self):
+        from app.config import get_page_cache_reclaim_config
+        with _mock_config({"page_cache_reclaim": "nope"}):
+            cfg = get_page_cache_reclaim_config()
+        assert cfg["enabled"] is True
+        assert cfg["extra_roots"] == []
