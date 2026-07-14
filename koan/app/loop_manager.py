@@ -1869,6 +1869,17 @@ def interruptible_sleep(
         from app.heartbeat import run_stale_mission_check, run_disk_space_check
         run_stale_mission_check(instance_dir)
         run_disk_space_check(koan_root)
+
+        # Idle page-cache reclaim (#2374). Wired HERE — inside the one sleep
+        # primitive every idle path shares — not at individual call-sites:
+        # per-site wiring is how focus_wait shipped with no reclaim at all.
+        # Throttled to page_cache_reclaim.idle_interval_s by the module, so
+        # calling it every check tick cannot double-fire. Best-effort.
+        try:
+            from app.page_cache import maybe_reclaim_page_cache_idle
+            maybe_reclaim_page_cache_idle()
+        except Exception as e:
+            _log_loop("error", f"idle page-cache reclaim failed: {e}")
         _maybe_sync_instance_repo(instance_dir)
 
         # Drain CI queue (throttled to once per 30s).
