@@ -519,6 +519,15 @@ def run_claude_task(
                     f"Swept {len(removed)} stray tmp tree(s), freed {total_mb:.0f} MB")
         except Exception as e:
             log("error", f"stray tmp sweep failed: {e}")
+        # Universal page-cache reclaim (#2374): the CLI subprocess has exited,
+        # so dropping clean pages here returns mission file I/O (git objects,
+        # node_modules, venv, SQLite, logs) to the kernel and stops the billed
+        # baseline ratcheting up. Best-effort — never masks the mission result.
+        try:
+            from app.page_cache import run_reclaim
+            run_reclaim("post-mission")
+        except Exception as e:
+            log("error", f"post-mission page-cache reclaim failed: {e}")
         # Clear the liveness signal on every exit path — including exceptions
         # raised before the subprocess wait loop — so no stale .koan-active
         # survives to be misread as a live (then zombie) mission (#2086).
@@ -1523,6 +1532,13 @@ def _sleep_between_runs(
     else:
         set_status(koan_root, f"Idle — sleeping {interval}s{status_suffix}")
     log("koan", f"Sleeping {interval}s (checking for new missions every 10s)...")
+    # Idle page-cache reclaim (#2374): throttled to page_cache_reclaim.idle_interval_s
+    # so wiring it at more than one idle-sleep site cannot double-fire. Best-effort.
+    try:
+        from app.page_cache import maybe_reclaim_page_cache_idle
+        maybe_reclaim_page_cache_idle()
+    except Exception as e:
+        log("error", f"idle page-cache reclaim failed: {e}")
     with protected_phase("Sleeping between runs"):
         wake = interruptible_sleep(interval, koan_root, instance)
     if wake == "mission":
@@ -1836,6 +1852,12 @@ def _handle_contemplative(
     else:
         set_status(koan_root, f"Idle — post-contemplation sleep ({time.strftime('%H:%M')})")
         log("pause", f"Contemplative session complete. Sleeping {interval}s...")
+        # Idle page-cache reclaim (#2374): throttled + idempotent across sites.
+        try:
+            from app.page_cache import maybe_reclaim_page_cache_idle
+            maybe_reclaim_page_cache_idle()
+        except Exception as e:
+            log("error", f"idle page-cache reclaim failed: {e}")
         with protected_phase("Sleeping between runs"):
             wake = interruptible_sleep(interval, koan_root, instance)
         if wake == "mission":
