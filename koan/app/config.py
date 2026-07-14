@@ -570,6 +570,28 @@ def get_memory_monitor_config() -> dict:
     }
 
 
+def get_page_cache_reclaim_config() -> dict:
+    """Page-cache reclaim config (#2374). Enabled by default.
+
+    Kernel page cache (cgroup ``file``) is billed but nothing returns it to the
+    kernel without pressure; this drives the post-mission + idle reclaim hooks.
+    ``idle_interval_s: 0`` disables the idle tick (post-mission hook remains).
+    Uses the module-local ``_safe_int`` coercion; never raises on bad input.
+    """
+    config = _load_config()
+    section = config.get("page_cache_reclaim", {})
+    if not isinstance(section, dict):
+        section = {}
+    raw_roots = section.get("extra_roots", [])
+    extra_roots = [str(r) for r in raw_roots] if isinstance(raw_roots, list) else []
+    return {
+        "enabled": bool(section.get("enabled", True)),
+        "idle_interval_s": _safe_int(section.get("idle_interval_s", 900), 900),
+        "time_budget_s": _safe_int(section.get("time_budget_s", 10), 10),
+        "extra_roots": extra_roots,
+    }
+
+
 def get_bridge_memory_monitor_config() -> dict:
     """Bridge (awake.py) memory watchdog config (#2354).
 
