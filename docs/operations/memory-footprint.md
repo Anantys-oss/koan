@@ -95,14 +95,19 @@ unprivileged `posix_fadvise(POSIX_FADV_DONTNEED)` to drop clean pages
 - **When it runs:** after every mission (in `run_claude_task`'s `finally`, once
   the CLI subprocess has exited) and periodically while idle
   (`page_cache_reclaim.idle_interval_s`, default 900s; `0` disables the idle tick).
-- **What it touches:** project workdirs, `instance/`, the venv, the scratch dir,
-  plus `extra_roots`. Read-only; regular files only; symlinks and special files
+- **What it touches:** the small, high-value roots first — `instance/`, the venv,
+  the scratch dir — then project workdirs, then `extra_roots`, so a budget-truncated
+  sweep still reclaims the cheap roots instead of burning the whole budget on one
+  large project tree. Read-only; regular files only; symlinks and special files
   skipped (`os.walk(followlinks=False)` + `os.lstat` + `stat.S_ISREG`); a soft
   `time_budget_s` (default 10s) bounds each sweep so it never stalls the loop.
 - **Reading the numbers:** `read_cgroup_memory_stat()` returns `anon_mb`/`file_mb`.
   Watch `file_mb` drop toward the hot-set floor post-mission; `anon` is the leak
   signal. A single `Page cache reclaim: file X→Y MB (…)` health log fires when the
-  reclaimed delta is meaningful (≥3 MB).
+  reclaimed delta is meaningful (≥3 MB), the sweep was truncated (`budget hit` —
+  raise `time_budget_s` or trim `extra_roots`), or per-file errors dominated (`N
+  errors`, i.e. systemic `os.open` denial). A small-delta success is the only case
+  suppressed, so no-op reclaims never hide behind silence.
 - **Platform:** no-op where `os.posix_fadvise` is absent (macOS dev boxes) —
   every hook returns `ReclaimStats(supported=False)` and touches zero files.
 - **Config:** `page_cache_reclaim: { enabled, idle_interval_s, time_budget_s,

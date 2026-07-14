@@ -120,3 +120,53 @@ def test_log_suppressed_below_delta_threshold(monkeypatch):
     )
     page_cache.run_reclaim("idle")  # delta 1.0 MB < 3.0 → no health log
     assert not any(cat == "health" for cat, _ in logs)
+
+
+def test_priority_roots_ordered_before_projects(tmp_path, monkeypatch):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    inst = tmp_path / "instance"
+    inst.mkdir()
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        page_cache, "get_known_projects", lambda: [("proj", str(proj))]
+    )
+    monkeypatch.setattr(page_cache.sys, "prefix", str(venv))
+    roots = [str(r) for r in page_cache.default_reclaim_roots()]
+    # instance/ and venv (small, high-value) come before the project workdir.
+    assert roots.index(str(inst.resolve())) < roots.index(str(proj.resolve()))
+    assert roots.index(str(venv.resolve())) < roots.index(str(proj.resolve()))
+
+
+def _run_stats(monkeypatch, stats):
+    logs = []
+    monkeypatch.setattr(page_cache, "_log", lambda cat, msg: logs.append((cat, msg)))
+    monkeypatch.setattr(
+        page_cache, "get_page_cache_reclaim_config",
+        lambda: {"enabled": True, "idle_interval_s": 900, "time_budget_s": 10,
+                 "extra_roots": []},
+    )
+    monkeypatch.setattr(page_cache, "default_reclaim_roots", lambda: [])
+    monkeypatch.setattr(page_cache, "reclaim_page_cache", lambda *a, **k: stats)
+    page_cache.run_reclaim("idle")
+    return logs
+
+
+def test_budget_hit_logged_even_below_delta(monkeypatch):
+    logs = _run_stats(monkeypatch, page_cache.ReclaimStats(
+        supported=True, file_mb_before=100.0, file_mb_after=99.0, budget_hit=True,
+    ))
+    health = [msg for cat, msg in logs if cat == "health"]
+    assert health and "budget hit" in health[0]
+
+
+def test_dominant_errors_logged_even_below_delta(monkeypatch):
+    # files≈0, errors high → systemic denial, must not be silent.
+    logs = _run_stats(monkeypatch, page_cache.ReclaimStats(
+        supported=True, file_mb_before=100.0, file_mb_after=100.0,
+        files=0, errors=500,
+    ))
+    health = [msg for cat, msg in logs if cat == "health"]
+    assert health and "500 errors" in health[0]

@@ -63,20 +63,28 @@ def default_reclaim_roots() -> list[Path]:
     the venv, and the per-uid scratch dir. Non-existent roots are dropped;
     operator ``extra_roots`` are appended. ``KOAN_ROOT`` is read from the
     environment (not the import-time constant) so it stays correct if it changed.
+
+    Ordering matters: the small, high-value roots (``instance/``, venv, scratch)
+    are emitted **before** the large project workdirs so a truncated sweep (time
+    budget hit) still reclaims them rather than spending the whole budget walking
+    one big ``node_modules``/``.git`` tree.
     """
-    roots: list[Path] = []
-    for _name, path in get_known_projects():
-        roots.append(Path(path))
+    # Priority roots first — small + high-value, so they always get their turn
+    # within the time budget before the large project trees.
+    priority: list[Path] = []
     koan_root = os.environ.get("KOAN_ROOT", "")
     if koan_root:
-        roots.append(Path(koan_root) / "instance")
+        priority.append(Path(koan_root) / "instance")
     # Venv: sys.prefix points at the active interpreter's env.
-    roots.append(Path(sys.prefix))
+    priority.append(Path(sys.prefix))
     with contextlib.suppress(OSError):
-        roots.append(Path(koan_tmp_dir()))
+        priority.append(Path(koan_tmp_dir()))
+    project_roots = [Path(path) for _name, path in get_known_projects()]
     cfg = get_page_cache_reclaim_config()
-    roots.extend(Path(str(extra)) for extra in cfg.get("extra_roots", []))
-    # De-dupe on resolved path; keep only existing dirs.
+    extra = [Path(str(e)) for e in cfg.get("extra_roots", [])]
+    roots = priority + project_roots + extra
+    # De-dupe on resolved path; keep only existing dirs. Preserve the priority
+    # ordering above (do NOT re-sort).
     seen: set[str] = set()
     resolved: list[Path] = []
     for r in roots:
@@ -91,12 +99,12 @@ def default_reclaim_roots() -> list[Path]:
         resolved.append(rp)
     # Drop roots nested under another kept root (e.g. the venv living inside a
     # project workdir) so os.walk doesn't fadvise the same files twice and burn
-    # the time budget. Shortest paths first so ancestors are considered before
-    # their descendants.
-    resolved.sort(key=lambda p: len(p.parts))
+    # the time budget. Order-independent: a root is dropped when any of its
+    # parents is itself a kept root, which preserves the priority ordering above.
+    kept = {str(p) for p in resolved}
     out: list[Path] = []
     for rp in resolved:
-        if any(anc in rp.parents for anc in out):
+        if any(str(anc) in kept for anc in rp.parents):
             continue
         out.append(rp)
     return out
@@ -163,21 +171,39 @@ def reclaim_page_cache(
     return stats
 
 
+def _errors_notable(stats: ReclaimStats) -> bool:
+    """True when errors dominate — systemic denial, not the odd vanished file.
+
+    A handful of ``OSError``s while files churn under the walk is normal; errors
+    that equal or outnumber the files we actually reclaimed (in the limit, every
+    ``os.open`` denied by permissions/SELinux → ``files == 0``) means the sweep
+    did no real work and the operator needs to see it.
+    """
+    return stats.errors > 0 and stats.errors >= max(1, stats.files)
+
+
 def _format_stats(stats: ReclaimStats) -> str:
     files_k = f"{stats.files / 1000:.0f}k" if stats.files >= 1000 else str(stats.files)
     if stats.file_mb_before is not None and stats.file_mb_after is not None:
         head = f"file {stats.file_mb_before:.0f}→{stats.file_mb_after:.0f} MB"
     else:
         head = "cgroup stats unavailable"
-    return f"Page cache reclaim: {head} ({stats.elapsed_s}s, {files_k} files)"
+    parts = [f"{stats.elapsed_s}s", f"{files_k} files"]
+    if stats.errors:
+        parts.append(f"{stats.errors} errors")
+    if stats.budget_hit:
+        parts.append("budget hit — raise time_budget_s or trim extra_roots")
+    return f"Page cache reclaim: {head} ({', '.join(parts)})"
 
 
 def run_reclaim(reason: str, *, budget_s: float | None = None) -> ReclaimStats:
-    """Reclaim over ``default_reclaim_roots()``, log the delta once at health level.
+    """Reclaim over ``default_reclaim_roots()``, log the outcome once at health level.
 
     ``reason`` is a short tag ('post-mission' / 'idle') used only in the debug
-    trail. Logs at ``health`` only when the reclaimed delta is meaningful, to
-    avoid per-mission noise.
+    trail. Logs at ``health`` when the reclaimed delta is meaningful (to avoid
+    per-mission noise) OR when the sweep was truncated (``budget_hit``) or did no
+    real work (errors dominating) — a small-delta success is the only case
+    suppressed, so systemic failures never hide behind silence.
     """
     cfg = get_page_cache_reclaim_config()
     if not cfg.get("enabled", True):
@@ -187,7 +213,8 @@ def run_reclaim(reason: str, *, budget_s: float | None = None) -> ReclaimStats:
     if not stats.supported:
         return stats
     delta = stats.delta_mb
-    if delta is None or delta >= _LOG_MIN_DELTA_MB:
+    meaningful = delta is None or delta >= _LOG_MIN_DELTA_MB
+    if meaningful or stats.budget_hit or _errors_notable(stats):
         _log("health", _format_stats(stats))
     return stats
 
