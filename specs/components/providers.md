@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-10
+updated: 2026-07-14
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -121,6 +121,18 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   reports usage only in its terminal result envelope with **camelCase** fields
   (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`reasoningTokens`).
   Detectors read the summary stream, not assistant text.
+- **`tool_use` summary grammar carries an optional input preview.**
+  `_summarize_stream_event()` renders a `tool_use` block as
+  `[cli] assistant — tool_use: <name>[: <input-preview>]`. The optional
+  `: <preview>` suffix is a bounded first-line excerpt of the tool input
+  (see `_tool_input_preview` / `_TOOL_PREVIEW_KEYS`) and is additive:
+  consumers that key off `tool_use: <name>` (substring) or off the quota
+  markers (`rate_limit_rejected`, session-limit phrasing) are unaffected.
+  The display-side `log_fmt.py` splits name from preview on the first `": "`.
+  Free-text preview values (tool-input and `text:` excerpts) never contain the
+  `", "` part delimiter — `_summarize_stream_event()` collapses it to a bare
+  comma (`_drop_part_sep`) so the display splitter (`log_fmt._PART_SEP`) can
+  never mis-split a preview into a spurious part.
 - **Shared stream parsers extend by event SHAPE, never by provider name.** The
   central summarizer/text/usage extractors in `provider/__init__.py` (and the
   mission-stdout path in `token_parser.py`) branch on field presence

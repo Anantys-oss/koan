@@ -44,9 +44,27 @@ def test_multi_part_assistant_keeps_real_parts_drops_ticks():
     assert out == "✏️ Edit  🧠 fix run.py, then test"
 
 
-def test_tool_result_is_dim_return_arrow():
-    assert r("tool_result toolu_015i88") == "↩"
-    assert is_tick("tool_result toolu_015i88") is True
+def test_successful_tool_result_is_suppressed():
+    text, tick = render_cli("tool_result toolu_015i88", PLAIN)
+    assert text is None          # dropped entirely, no ↩
+    assert tick is True
+
+
+def test_tool_use_renders_dim_command_preview():
+    # PLAIN palette → dim() is a no-op, so preview appears verbatim
+    assert r("assistant — tool_use: Bash: make lint && make test") == \
+        "💻 Bash make lint && make test"
+
+
+def test_tool_use_without_preview_unchanged():
+    assert r("assistant — tool_use: Edit") == "✏️ Edit"
+
+
+def test_tool_use_preview_with_colon_in_command():
+    # partition on the FIRST ": " splits name from preview; a ':' inside
+    # the command stays in the preview
+    assert r("assistant — tool_use: Bash: git log --oneline") == \
+        "💻 Bash git log --oneline"
 
 
 def test_errored_tool_result_gets_error_glyph_and_never_collapses():
@@ -83,15 +101,39 @@ def test_run_passes_non_cli_and_tail_headers_untouched():
     assert lines[2] == "✏️ Edit"
 
 
-def test_run_collapses_consecutive_ticks():
+def test_run_accumulates_consecutive_thinking_dots():
     src = io.StringIO(
         "[cli] assistant — thinking\n"
         "[cli] system: thinking_tokens\n"
         "[cli] assistant — thinking\n"
     )
+    out = io.StringIO()  # not a TTY → buffered dot-run path
+    run(src, out)
+    assert out.getvalue() == "•••\n"
+
+
+def test_run_finalizes_dot_run_before_real_line():
+    src = io.StringIO(
+        "[cli] assistant — thinking\n"
+        "[cli] assistant — thinking\n"
+        "[cli] assistant — tool_use: Bash: make test\n"
+    )
     out = io.StringIO()
     run(src, out)
-    assert out.getvalue() == "•\n"
+    assert out.getvalue() == "••\n💻 Bash make test\n"
+
+
+def test_run_suppressed_success_does_not_emit_or_break_dots():
+    src = io.StringIO(
+        "[cli] assistant — thinking\n"
+        "[cli] tool_result toolu_1\n"       # success → suppressed
+        "[cli] assistant — thinking\n"
+        "[cli] assistant — text: done\n"
+    )
+    out = io.StringIO()
+    run(src, out)
+    # two thinking ticks accumulate across the suppressed success line
+    assert out.getvalue() == "••\n🧠 done\n"
 
 
 def test_run_never_crashes_on_garbled_line():
