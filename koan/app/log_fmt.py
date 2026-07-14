@@ -143,7 +143,8 @@ def render_cli(body: str, pal: "_Palette") -> Tuple[Optional[str], bool]:
 def _out_is_tty(out: TextIO) -> bool:
     try:
         return bool(out.isatty())
-    except Exception:
+    except (AttributeError, ValueError):
+        # No isatty() (non-file stream) or closed file — treat as non-TTY.
         return False
 
 
