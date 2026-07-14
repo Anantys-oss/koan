@@ -1532,13 +1532,7 @@ def _sleep_between_runs(
     else:
         set_status(koan_root, f"Idle — sleeping {interval}s{status_suffix}")
     log("koan", f"Sleeping {interval}s (checking for new missions every 10s)...")
-    # Idle page-cache reclaim (#2374): throttled to page_cache_reclaim.idle_interval_s
-    # so wiring it at more than one idle-sleep site cannot double-fire. Best-effort.
-    try:
-        from app.page_cache import maybe_reclaim_page_cache_idle
-        maybe_reclaim_page_cache_idle()
-    except Exception as e:
-        log("error", f"idle page-cache reclaim failed: {e}")
+    # Idle page-cache reclaim (#2374) fires inside interruptible_sleep itself.
     with protected_phase("Sleeping between runs"):
         wake = interruptible_sleep(interval, koan_root, instance)
     if wake == "mission":
@@ -1852,12 +1846,7 @@ def _handle_contemplative(
     else:
         set_status(koan_root, f"Idle — post-contemplation sleep ({time.strftime('%H:%M')})")
         log("pause", f"Contemplative session complete. Sleeping {interval}s...")
-        # Idle page-cache reclaim (#2374): throttled + idempotent across sites.
-        try:
-            from app.page_cache import maybe_reclaim_page_cache_idle
-            maybe_reclaim_page_cache_idle()
-        except Exception as e:
-            log("error", f"idle page-cache reclaim failed: {e}")
+        # Idle page-cache reclaim (#2374) fires inside interruptible_sleep itself.
         with protected_phase("Sleeping between runs"):
             wake = interruptible_sleep(interval, koan_root, instance)
         if wake == "mission":

@@ -95,6 +95,14 @@ unprivileged `posix_fadvise(POSIX_FADV_DONTNEED)` to drop clean pages
 - **When it runs:** after every mission (in `run_claude_task`'s `finally`, once
   the CLI subprocess has exited) and periodically while idle
   (`page_cache_reclaim.idle_interval_s`, default 900s; `0` disables the idle tick).
+  The idle hook lives *inside* `loop_manager.interruptible_sleep()` — the one
+  sleep primitive every idle path shares (between-runs sleep, contemplative
+  sleep, and all `_IDLE_WAIT_CONFIG` states: `focus_wait`, `passive_wait`,
+  `schedule_wait`, `exploration_wait`, `pr_limit_wait`,
+  `branch_saturated_wait`) — so new idle states inherit it automatically.
+  Do not wire it at individual call-sites: that is how `focus_wait` initially
+  shipped with no reclaim at all (850 MB flat billed `memory.current` on an
+  idle focus-mode instance, observed 2026-07-14).
 - **What it touches:** the small, high-value roots first — `instance/`, the venv,
   the scratch dir — then project workdirs, then `extra_roots`, so a budget-truncated
   sweep still reclaims the cheap roots instead of burning the whole budget on one

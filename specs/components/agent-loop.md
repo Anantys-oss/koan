@@ -121,9 +121,17 @@ see it.
   single reclaim primitive (`app/page_cache.reclaim_page_cache`, over
   `default_reclaim_roots()` = project workdirs + `instance/` + venv + scratch dir)
   at exactly two non-bypassable choke points: the `run_claude_task` outer `finally`
-  (post-mission, after the CLI subprocess has exited) and the between-runs idle
-  sleep (`_sleep_between_runs` + contemplative sleep, throttled to
-  `page_cache_reclaim.idle_interval_s`). The sweep is `posix_fadvise(DONTNEED)` on
+  (post-mission, after the CLI subprocess has exited) and **inside
+  `loop_manager.interruptible_sleep()` itself** — the single sleep primitive every
+  idle path shares (between-runs sleep, contemplative sleep, and the whole
+  `_IDLE_WAIT_CONFIG` family: `focus_wait`, `passive_wait`, `schedule_wait`,
+  `exploration_wait`, `pr_limit_wait`, `branch_saturated_wait`) — throttled to
+  `page_cache_reclaim.idle_interval_s` by `maybe_reclaim_page_cache_idle()`'s
+  module-level timestamp, which makes the call idempotent per tick. Wiring the
+  idle hook at individual call-sites instead of inside the primitive is a
+  contract violation: it is exactly how `focus_wait` shipped with no reclaim at
+  all (observed live 2026-07-14: 850 MB flat billed `memory.current` on an idle
+  focus-mode instance). The sweep is `posix_fadvise(DONTNEED)` on
   regular files only — strictly read-only, symlink- and non-regular-file-skipped,
   time-budgeted (`time_budget_s`) so it never stalls the loop, and a no-op where
   `os.posix_fadvise` is absent (macOS). It reuses `read_cgroup_memory_stat()` for
