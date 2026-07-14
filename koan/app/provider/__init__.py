@@ -748,6 +748,44 @@ def _first_line(value: Any, limit: int = 80) -> str:
     return ""
 
 
+# Keys, in priority order, whose value best identifies a tool call.
+_TOOL_PREVIEW_KEYS = (
+    "command",      # Bash
+    "file_path",    # Read / Write / Edit / MultiEdit
+    "pattern",      # Grep / Glob
+    "path",         # generic path-taking tools
+    "url",          # WebFetch
+    "query",        # WebSearch
+    "prompt",       # Task
+    "description",  # Task / generic fallback
+)
+
+
+def _tool_input_preview(inp: Any, limit: int = 60) -> str:
+    """Short, single-line preview of a tool_use ``input`` ('' when none).
+
+    Picks the first present, non-empty string among the known identifying
+    keys, reduces it to its first meaningful line (skipping code fences /
+    bare brackets via ``_first_line``), and truncates to *limit* chars with
+    a trailing ellipsis when it had to cut.
+    """
+    if not isinstance(inp, dict):
+        return ""
+    for key in _TOOL_PREVIEW_KEYS:
+        val = inp.get(key)
+        if isinstance(val, str) and val.strip():
+            line = _first_line(val, limit=10_000)  # first real line, unbounded
+            if not line:
+                continue
+            # More content follows when the value spans multiple non-empty
+            # lines beyond the chosen one.
+            multiline = len([s for s in val.splitlines() if s.strip()]) > 1
+            if len(line) > limit:
+                return line[:limit].rstrip() + "…"
+            return line + "…" if multiline else line
+    return ""
+
+
 def _summarize_stream_event(event: Dict[str, Any]) -> str:
     """Render a provider JSONL event as a single human-readable line.
 
@@ -773,7 +811,12 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
                 continue
             btype = block.get("type", "")
             if btype == "tool_use":
-                parts.append(f"tool_use: {block.get('name', '?')}")
+                name = block.get("name", "?")
+                preview = _tool_input_preview(block.get("input"))
+                parts.append(
+                    f"tool_use: {name}: {preview}" if preview
+                    else f"tool_use: {name}"
+                )
             elif btype == "text":
                 text = (block.get("text") or "").strip()
                 if text:
