@@ -13,7 +13,7 @@ updated: 2026-07-09
 
 - **Primary:** `/review [--now] <pr-or-issue-url> [more urls] [context] [flags]`
   or `/review <repo-url> [--limit=N]`
-- **Aliases:** `rv`
+- **Aliases:** `rv`, `rereview`, `re_review`
 - **Group:** `code`
 
 ## Purpose

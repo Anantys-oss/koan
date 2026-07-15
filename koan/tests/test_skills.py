@@ -2075,6 +2075,14 @@ class TestCoreSkillsComplete:
         assert skill is not None
         assert skill.name == "reflect"
 
+    def test_rereview_aliases_resolve_to_review(self):
+        """'/rereview' and '/re_review' should resolve via alias to the review skill."""
+        registry = build_registry()
+        for alias in ("rereview", "re_review"):
+            skill = registry.find_by_command(alias)
+            assert skill is not None, f"alias '{alias}' did not resolve"
+            assert skill.name == "review"
+
     def test_core_skills_with_args_have_usage(self):
         """Core skills that take arguments should have usage set."""
         registry = build_registry()

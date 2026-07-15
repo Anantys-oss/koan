@@ -13,7 +13,7 @@ commands:
   - name: review
     description: "Queue a code review for one or more PRs/issues. Use --now to queue at the top. Flags: --architecture (SOLID/layering focus), --errors (silent-failure-hunter pass), --comments (comment quality), --plan-url <issue-url> (plan alignment check), --force (review even if closed/merged)"
     usage: "/review [--now] <github-pr-or-issue-url> [additional-pr-or-issue-url ...] [context] [--architecture] [--errors] [--comments] [--plan-url <issue-url>] [--force] OR /review <github-repo-url> [--limit=N]"
-    aliases: [rv]
+    aliases: [rv, rereview, re_review]
 handler: handler.py
 ---
 

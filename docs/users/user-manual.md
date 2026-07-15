@@ -584,7 +584,7 @@ The debug loop enforces four steps:
 **`/review`** — Queue a code review for a pull request or issue.
 
 - **Usage:** `/review <github-pr-or-issue-url> [additional-pr-or-issue-url ...] [--architecture] [--errors] [--comments] [--bot-comments] [--plan-url <issue-url>]`
-- **Aliases:** `/rv`
+- **Aliases:** `/rv`, `/rereview`, `/re_review`
 - **GitHub @mention:** `@koan-bot /review` on a PR
 - **Multiple URLs:** Queues one independent review mission per PR/issue URL. Shared flags such as `--errors` and `--plan-url <issue-url>` are applied to each queued review.
 - **Flags:**
@@ -2332,7 +2332,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
 | `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR); a PR URL redirects to `/rebase` |
 | `/debug <issue>` | `/dbg` | I | Structured 4-step debug loop (reproduce → hypothesize → fix → verify) |
-| `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review one or more pull requests |
+| `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | I | Review one or more pull requests |
 | `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | `/question` | I | Ask a question about a PR/issue — posts AI reply to GitHub |
