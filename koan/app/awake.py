@@ -67,6 +67,7 @@ from app.conversation_history import (
     format_conversation_history,
     compact_history,
 )
+from app.repo_tooling_guard import sanitize_repo_tooling
 from app.signals import HEARTBEAT_FILE, PAUSE_FILE, STOP_FILE
 from app.utils import (
     atomic_write_json,
@@ -1039,6 +1040,12 @@ def _bridge_loop():
 
     # Enforce single instance — abort if another awake process is running
     pidfile_lock = acquire_pidfile(KOAN_ROOT, "awake")
+
+    # Isolate koan's own repo-dev tooling out of KOAN_ROOT before any bridge
+    # chat/outbox-format session (which run with cwd=KOAN_ROOT) can start (#2379).
+    # After the pidfile lock so two bridge instances never race the move;
+    # before setup_github_auth / the poll loop so isolation precedes them.
+    sanitize_repo_tooling(KOAN_ROOT)
 
     setup_github_auth()
 

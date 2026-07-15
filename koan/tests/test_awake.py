@@ -3860,3 +3860,41 @@ def test_read_sections_cached_expires_after_ttl():
     assert first == {"pending": ["a"]}
     assert second == {"pending": ["b"]}  # TTL expired → re-read
     assert mock_read.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Test: repo-tooling isolation wiring (#2379)
+#
+# main() is a crash-recovery wrapper around _bridge_loop(); the guard call
+# lives in _bridge_loop after the pidfile lock and before setup_github_auth.
+# ---------------------------------------------------------------------------
+
+class _StopBridge(Exception):
+    pass
+
+
+def test_bridge_isolates_repo_tooling_before_github_auth(monkeypatch):
+    import app.awake as awake
+
+    # Everything that runs before the guard must succeed cheaply.
+    monkeypatch.setattr(awake, "check_config", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "app.migration_runner.run_pending_migrations", lambda *a, **k: []
+    )
+    monkeypatch.setattr(
+        "app.pid_manager.acquire_pidfile", lambda *a, **k: MagicMock()
+    )
+
+    # The guard aborts _bridge_loop right at its call site.
+    sanitize = MagicMock(side_effect=_StopBridge)
+    monkeypatch.setattr(awake, "sanitize_repo_tooling", sanitize)
+
+    # Anything that would run AFTER the guard must not be reached.
+    setup_auth = MagicMock()
+    monkeypatch.setattr("app.github_auth.setup_github_auth", setup_auth)
+
+    with pytest.raises(_StopBridge):
+        awake._bridge_loop()
+
+    sanitize.assert_called_once_with(awake.KOAN_ROOT)
+    setup_auth.assert_not_called()  # guard runs strictly before the rest of startup
