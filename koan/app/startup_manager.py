@@ -734,6 +734,12 @@ def run_startup(koan_root: str, instance: str, projects: list):
     from app.run import protected_phase
 
     with protected_phase("Startup checks"):
+        # Isolate koan's own repo-dev tooling (CLAUDE.md/AGENTS.md/.claude) out
+        # of KOAN_ROOT before any run-loop session starts (#2379). First so the
+        # leak is closed before config validation or any other step can run.
+        from app.repo_tooling_guard import sanitize_repo_tooling
+        _safe_run("Repo tooling isolation", sanitize_repo_tooling, koan_root)
+
         # Strict config validation runs outside _safe_run so errors
         # propagate (hard stop) and reach the operator via Telegram.
         try:

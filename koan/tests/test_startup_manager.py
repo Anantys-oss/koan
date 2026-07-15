@@ -1346,3 +1346,41 @@ class TestEnsureProjectsYaml:
         assert "Created projects.yaml" in msgs
         config = yaml.safe_load((tmp_path / "projects.yaml").read_text())
         assert "koan" not in config["projects"]
+
+
+# ---------------------------------------------------------------------------
+# Test: repo-tooling isolation wiring (#2379)
+# ---------------------------------------------------------------------------
+
+def test_run_startup_isolates_repo_tooling_first(monkeypatch, koan_root, instance, projects):
+    import contextlib
+    from unittest.mock import MagicMock
+
+    import app.startup_manager as sm
+    import app.repo_tooling_guard as guard
+
+    order = []
+
+    def fake_safe_run(step_name, fn, *args, **kwargs):
+        order.append((step_name, fn))
+        return None
+
+    # Replace _safe_run so no real startup step executes; we only assert wiring.
+    monkeypatch.setattr(sm, "_safe_run", fake_safe_run)
+    # Strict config validation runs outside _safe_run — stub it to pass.
+    monkeypatch.setattr(
+        "app.config_validator.validate_config_or_raise", lambda *_a, **_k: None
+    )
+    # protected_phase is a context manager pulled from run.py.
+    monkeypatch.setattr(
+        "app.run.protected_phase", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    sanitize = MagicMock(return_value=[])
+    monkeypatch.setattr(guard, "sanitize_repo_tooling", sanitize)
+
+    sm.run_startup(str(koan_root), instance, projects)
+
+    assert order, "run_startup ran no _safe_run steps"
+    first_name, first_fn = order[0]
+    assert first_name == "Repo tooling isolation"
+    assert first_fn is sanitize  # the wired fn is the guard's sanitizer
