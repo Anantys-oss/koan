@@ -460,7 +460,7 @@ def build_skill_command(
             base_cmd, project_name, project_path, instance_dir,
         ),
         "profile": lambda: _build_profile_cmd(base_cmd, args, project_path, instance_dir),
-        "claudemd": lambda: _build_claudemd_cmd(base_cmd, project_name, project_path),
+        "claudemd": lambda: _build_claudemd_cmd(base_cmd, args, project_name, project_path),
         "incident": lambda: _build_incident_cmd(base_cmd, args, project_path, instance_dir),
         "ci_check": lambda: _build_pr_url_cmd(base_cmd, args, project_path),
         "doc": lambda: _build_doc_cmd(
@@ -888,14 +888,22 @@ def _build_profile_cmd(
 
 def _build_claudemd_cmd(
     base_cmd: List[str],
+    args: str,
     project_name: str,
     project_path: str,
 ) -> List[str]:
-    """Build claudemd_refresh command."""
-    return base_cmd + [
+    """Build claudemd_refresh command.
+
+    The ``learnings`` sub-arg selects the learnings-sync mode; the default
+    (no sub-arg) is the git-history refresh.
+    """
+    cmd = base_cmd + [
         project_path,
         "--project-name", project_name,
     ]
+    if any(w.lower() == "learnings" for w in args.split()):
+        cmd += ["--mode", "learnings"]
+    return cmd
 
 
 def _build_incident_cmd(
