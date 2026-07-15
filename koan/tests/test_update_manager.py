@@ -660,3 +660,58 @@ class TestCheckoutLatestTag:
         result = checkout_latest_tag(Path("/repo"))
         assert result.success is False
         assert "remote tags" in result.error.lower()
+
+
+# ---------------------------------------------------------------------------
+# Test: re-isolate repo tooling after successful self-update (#2379)
+# ---------------------------------------------------------------------------
+
+import app.update_manager as um
+
+
+def _ok(stdout=""):
+    return um._GitResult(0, stdout, "")
+
+
+def _fail(stderr="boom"):
+    return um._GitResult(1, "", stderr)
+
+
+def test_pull_upstream_resanitizes_on_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(um, "find_upstream_remote", lambda root: "origin")
+    monkeypatch.setattr(um, "_is_dirty", lambda root: False)
+    # old != new so the pull counts as changed; all git calls succeed.
+    shas = iter(["aaaaaaa", "bbbbbbb"])
+    monkeypatch.setattr(um, "_get_short_sha", lambda root: next(shas))
+    monkeypatch.setattr(um, "_get_current_branch", lambda root: "main")
+    monkeypatch.setattr(um, "_run_git", lambda *a, **k: _ok())
+    monkeypatch.setattr(um, "_count_commits_between", lambda root, o, n: 1)
+
+    sanitize = MagicMock(return_value=["CLAUDE.md"])
+    monkeypatch.setattr("app.repo_tooling_guard.sanitize_repo_tooling", sanitize)
+
+    result = um.pull_upstream(tmp_path)
+    assert result.success
+    sanitize.assert_called_once_with(tmp_path)
+
+
+def test_pull_upstream_does_not_resanitize_on_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(um, "find_upstream_remote", lambda root: "origin")
+    monkeypatch.setattr(um, "_is_dirty", lambda root: False)
+    monkeypatch.setattr(um, "_get_short_sha", lambda root: "aaaaaaa")
+    monkeypatch.setattr(um, "_get_current_branch", lambda root: "main")
+
+    def run_git(args, cwd, timeout=60):
+        # fetch succeeds, the pull fails.
+        if args[:1] == ["pull"]:
+            return _fail("cannot fast-forward")
+        return _ok()
+
+    monkeypatch.setattr(um, "_run_git", run_git)
+
+    sanitize = MagicMock()
+    monkeypatch.setattr("app.repo_tooling_guard.sanitize_repo_tooling", sanitize)
+
+    result = um.pull_upstream(tmp_path)
+    assert not result.success
+    sanitize.assert_not_called()

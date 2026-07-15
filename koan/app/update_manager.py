@@ -320,6 +320,11 @@ def checkout_latest_tag(koan_root: Path, timeout: int = 120) -> UpdateResult:
 
     log("update", f"Checked out release tag {latest_tag} ({new_sha})")
 
+    # A checkout may have re-materialized koan's own repo-dev tooling into the
+    # worktree; re-isolate it immediately (#2379).
+    from app.repo_tooling_guard import sanitize_repo_tooling
+    sanitize_repo_tooling(koan_root)
+
     return UpdateResult(
         success=True,
         old_commit=old_sha,
@@ -477,6 +482,12 @@ def pull_upstream(koan_root: Path, timeout: int = 120) -> UpdateResult:
         _run_git(["checkout", current_branch], koan_root)
     if stashed:
         _run_git(["stash", "pop"], koan_root)
+
+    # A pull may have re-materialized koan's own repo-dev tooling into the
+    # worktree; re-isolate it immediately (belt-and-suspenders to the
+    # restart-triggered run_startup) (#2379).
+    from app.repo_tooling_guard import sanitize_repo_tooling
+    sanitize_repo_tooling(koan_root)
 
     return UpdateResult(
         success=True,
