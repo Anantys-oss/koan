@@ -23,6 +23,7 @@ prefixes stdout through a while-read loop, stripping TTY status).
 
 import os
 import sys
+import time
 
 # ANSI escape codes
 _RESET = "\033[0m"
@@ -62,13 +63,15 @@ def _use_color() -> bool:
 
 
 def log(category: str, message: str) -> None:
-    """Print a colored log line to stderr: [category] message.
+    """Print a timestamped, colored log line to stderr: [HH:MM:SS] [category] message.
 
-    Colors are only applied when stderr is a TTY (or KOAN_FORCE_COLOR is set).
-    Falls back to plain [category] prefix in pipes/CI.
+    The timestamp mirrors run_log.log() so awake.log and run.log can be
+    correlated when debugging. Colors are only applied when stderr is a TTY
+    (or KOAN_FORCE_COLOR is set); pipes/CI get a plain prefix.
     """
+    ts = time.strftime("%H:%M:%S")
     if _use_color():
         color = _COLORS.get(category, _DEFAULT_COLOR)
-        print(f"{color}[{category}]{_RESET} {message}", file=sys.stderr)
+        print(f"{_DIM}[{ts}]{_RESET} {color}[{category}]{_RESET} {message}", file=sys.stderr)
     else:
-        print(f"[{category}] {message}", file=sys.stderr)
+        print(f"[{ts}] [{category}] {message}", file=sys.stderr)
