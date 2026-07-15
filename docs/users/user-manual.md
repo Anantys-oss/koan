@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-13
+updated: 2026-07-15
 ---
 
 # Kōan User Manual

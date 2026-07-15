@@ -4,7 +4,7 @@ title: "Memory Architecture"
 description: "Details Koan's Markdown+JSONL memory store, the SQLite FTS5 secondary index (confidence-weighted BM25 ranking, dual-write, fallback), entry schema, read/write paths, and compaction."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-02
+updated: 2026-07-15
 ---
 
 # Memory Architecture
