@@ -38,6 +38,7 @@ from app.review_runner import (
     _parse_line_hint,
     _write_review_findings_sidecar,
     _load_calibration_hints,
+    _reconcile_review_after_reflection,
 )
 
 
@@ -876,6 +877,27 @@ class TestParseReviewJson:
         }
         result = _parse_review_json(json.dumps(data))
         assert result is None
+
+    @pytest.mark.parametrize(
+        ("severity", "lgtm"),
+        [("critical", True), ("warning", True), ("suggestion", False)],
+    )
+    def test_rejects_verdict_that_contradicts_finding_severity(
+        self, severity, lgtm,
+    ):
+        """The model verdict cannot disagree with its categorized findings."""
+        data = {
+            "file_comments": [{
+                "file": "a.py", "line_start": 1, "line_end": 1,
+                "severity": severity, "title": "t", "comment": "c",
+                "code_snippet": "",
+            }],
+            "review_summary": {
+                "lgtm": lgtm, "summary": "s", "checklist": [],
+            },
+        }
+
+        assert _parse_review_json(json.dumps(data)) is None
 
     def test_markdown_text_returns_none(self):
         raw = "## PR Review — Title\n\nGood code.\n\n### Summary\n\nLGTM."
@@ -1942,7 +1964,10 @@ class TestRunReview:
         assert not any("..." in m for m in sent)  # progress gated under normal
         assert any("https://github.com/owner/repo/pull/42" in m for m in sent)
 
-    @patch("app.review_runner._reflect_findings", side_effect=lambda findings, *a, **kw: findings)
+    @patch(
+        "app.review_runner._reflect_findings",
+        side_effect=lambda findings, *a, **kw: (findings, list(range(len(findings)))),
+    )
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
@@ -2092,7 +2117,10 @@ class TestRunPrivateReview:
 
     @patch("app.review_runner._post_comment_replies")
     @patch("app.review_runner._post_review_comment")
-    @patch("app.review_runner._reflect_findings", side_effect=lambda findings, *a, **kw: findings)
+    @patch(
+        "app.review_runner._reflect_findings",
+        side_effect=lambda findings, *a, **kw: (findings, list(range(len(findings)))),
+    )
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     @patch("app.review_runner._fetch_pr_state", return_value="OPEN")
@@ -4924,11 +4952,15 @@ class TestReflectFindings:
         findings = [dict(self.FINDING), dict(self.FINDING), dict(self.FINDING)]
         mock_claude.return_value = (self._make_scores(3, 7, 5), "")
 
-        result = _reflect_findings(findings, "diff text", "/tmp/p", "haiku", 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff text", "/tmp/p", "haiku", 5,
+            skill_dir=skill_dir,
+        )
 
         assert len(result) == 2
         assert result[0] is findings[1]
         assert result[1] is findings[2]
+        assert retained_indices == [1, 2]
 
     @patch("app.review_runner._run_claude_review")
     def test_parse_failure_returns_original(self, mock_claude, skill_dir):
@@ -4938,9 +4970,12 @@ class TestReflectFindings:
         findings = [dict(self.FINDING)]
         mock_claude.return_value = ("not json at all", "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir,
+        )
 
         assert result is findings
+        assert retained_indices == [0]
 
     @patch("app.review_runner._run_claude_review")
     def test_threshold_zero_short_circuits(self, mock_claude, skill_dir):
@@ -4949,9 +4984,12 @@ class TestReflectFindings:
 
         findings = [dict(self.FINDING), dict(self.FINDING)]
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 0, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 0, skill_dir=skill_dir,
+        )
 
         assert len(result) == 2
+        assert retained_indices == [0, 1]
         mock_claude.assert_not_called()
 
     @patch("app.review_runner._run_claude_review")
@@ -4962,18 +5000,24 @@ class TestReflectFindings:
         findings = [dict(self.FINDING), dict(self.FINDING)]
         mock_claude.return_value = (self._make_scores(8, 9), "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 10, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 10, skill_dir=skill_dir,
+        )
 
         assert result == []
+        assert retained_indices == []
 
     @patch("app.review_runner._run_claude_review")
     def test_empty_findings_skips_claude(self, mock_claude, skill_dir):
         """Empty findings list returns immediately without calling Claude."""
         from app.review_runner import _reflect_findings
 
-        result = _reflect_findings([], "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            [], "diff", "/tmp/p", None, 5, skill_dir=skill_dir,
+        )
 
         assert result == []
+        assert retained_indices == []
         mock_claude.assert_not_called()
 
     @patch("app.review_runner._run_claude_review")
@@ -4984,9 +5028,12 @@ class TestReflectFindings:
         findings = [dict(self.FINDING)]
         mock_claude.return_value = ("", "timeout")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir,
+        )
 
         assert result is findings
+        assert retained_indices == [0]
 
     @patch("app.review_runner._run_claude_review")
     def test_out_of_range_indices_ignored(self, mock_claude, skill_dir):
@@ -5000,9 +5047,103 @@ class TestReflectFindings:
         ])
         mock_claude.return_value = (scores, "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir,
+        )
 
         assert len(result) == 1
+        assert retained_indices == [0]
+
+
+class TestReconcileReviewAfterReflection:
+    """Final review data must stay coherent after findings are filtered."""
+
+    @staticmethod
+    def _finding(severity, title):
+        return {
+            "file": "a.py", "line_start": 1, "line_end": 1,
+            "severity": severity, "title": title, "comment": "detail",
+            "code_snippet": "",
+        }
+
+    def test_restores_filtered_findings_referenced_by_failed_checks(self):
+        """Regression for manage2#2803: no generic blocked verdict with no list."""
+        data = {
+            "file_comments": [
+                self._finding("warning", "Preserve provisioning metadata"),
+                self._finding("warning", "Add regression coverage"),
+            ],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Two issues must be fixed.",
+                "checklist": [
+                    {"item": "Metadata preserved", "passed": False,
+                     "finding_refs": [0]},
+                    {"item": "Covered by tests", "passed": False,
+                     "finding_refs": [1]},
+                ],
+            },
+        }
+
+        result = _reconcile_review_after_reflection(data, [], [])
+
+        assert [f["title"] for f in result["file_comments"]] == [
+            "Preserve provisioning metadata", "Add regression coverage",
+        ]
+        assert result["review_summary"]["lgtm"] is False
+        md = _format_review_as_markdown(result)
+        assert "### 🟡 Important" in md
+        assert "Preserve provisioning metadata" in md
+        assert "Add regression coverage" in md
+
+    def test_remaps_checklist_references_after_partial_filtering(self):
+        data = {
+            "file_comments": [
+                self._finding("suggestion", "Filtered nit"),
+                self._finding("warning", "Kept blocker"),
+                self._finding("suggestion", "Kept suggestion"),
+            ],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "One blocker.",
+                "checklist": [
+                    {"item": "Blocker fixed", "passed": False,
+                     "finding_refs": [1]},
+                    {"item": "Optional cleanup", "passed": True,
+                     "finding_refs": [0, 2]},
+                ],
+            },
+        }
+
+        result = _reconcile_review_after_reflection(
+            data, [data["file_comments"][1], data["file_comments"][2]], [1, 2],
+        )
+
+        assert [f["title"] for f in result["file_comments"]] == [
+            "Kept blocker", "Kept suggestion",
+        ]
+        assert result["review_summary"]["checklist"][0]["finding_refs"] == [0]
+        assert result["review_summary"]["checklist"][1]["finding_refs"] == [1]
+
+    def test_restores_original_blockers_when_reflection_removes_them_all(self):
+        data = {
+            "file_comments": [
+                self._finding("critical", "Original blocker"),
+                self._finding("suggestion", "Optional cleanup"),
+            ],
+            "review_summary": {
+                "lgtm": False, "summary": "Blocked.", "checklist": [],
+            },
+        }
+
+        result = _reconcile_review_after_reflection(
+            data, [data["file_comments"][1]], [1],
+        )
+
+        assert [f["title"] for f in result["file_comments"]] == [
+            "Original blocker", "Optional cleanup",
+        ]
+        assert result["review_summary"]["lgtm"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -5265,7 +5406,7 @@ class TestRunReviewReflectionIntegration:
         }
         mock_fetch.return_value = pr_ctx
         mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
-        mock_reflect.return_value = []
+        mock_reflect.return_value = ([], [])
 
         run_review(
             "owner", "repo", "1", "/tmp/project",
@@ -5395,7 +5536,7 @@ class TestCalibrationHintsThreadedToReflect:
         }
         mock_fetch.return_value = pr_ctx
         mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
-        mock_reflect.return_value = []
+        mock_reflect.return_value = ([], [])
 
         with patch("app.review_runner.KOAN_ROOT", tmp_path):
             run_review(
@@ -5435,7 +5576,7 @@ class TestCalibrationHintsThreadedToReflect:
         }
         mock_fetch.return_value = pr_ctx
         mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
-        mock_reflect.return_value = []
+        mock_reflect.return_value = ([], [])
 
         with patch("app.review_runner.KOAN_ROOT", tmp_path):
             run_review(
@@ -5456,7 +5597,7 @@ class TestCalibrationHintsThreadedToReflect:
 _CLOSE_REVIEW_JSON_TEMPLATE = {
     "file_comments": [],
     "review_summary": {
-        "lgtm": False,
+        "lgtm": True,
         "summary": "Maintainer requested closure.",
         "checklist": [],
     },
@@ -5997,14 +6138,21 @@ class TestBuildVerdictBody:
         assert body == ""
 
     def test_request_changes_no_review_data(self):
-        """No structured data → default to a yellow WARNING (blocked, severity unknown)."""
+        """A blocked verdict without categorized blockers is rejected."""
         from app.review_runner import _build_verdict_body
-        body = _build_verdict_body(
-            approve=False, review_data=None,
-            body_enabled=True, include_blockers=True,
-        )
-        assert "> [!WARNING]" in body
-        assert "Important issues found" in body
+        with pytest.raises(ValueError, match="categorized blocker"):
+            _build_verdict_body(
+                approve=False, review_data=None,
+                body_enabled=True, include_blockers=True,
+            )
+
+    def test_rejects_approve_flag_that_disagrees_with_findings(self):
+        from app.review_runner import _build_verdict_body
+        with pytest.raises(ValueError, match="does not match"):
+            _build_verdict_body(
+                approve=True, review_data=_WARNING_ONLY_REVIEW_OBJ,
+                body_enabled=True, include_blockers=True,
+            )
 
     def test_blockers_include_critical_and_warning(self):
         """Both critical and warning findings appear in the blocker list."""

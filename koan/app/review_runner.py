@@ -972,12 +972,13 @@ def _reflect_findings(
     skill_dir: Optional[Path] = None,
     calibration_hints: str = "",
     project_name: str = "",
-) -> list:
+) -> Tuple[list, list]:
     """Run a second-pass reflection on review findings and filter low-signal ones.
 
     Calls Claude with a lightweight reflection prompt to score each finding
-    0-10. Returns only findings whose score >= threshold. On any parse or
-    validation failure, returns the original findings unchanged (fail-open).
+    0-10. Returns ``(findings, retained_original_indices)`` for findings whose
+    score meets the threshold. On any parse or validation failure, returns the
+    original findings and all of their indices unchanged (fail-open).
 
     Args:
         findings: List of file_comment dicts from the first-pass review.
@@ -988,13 +989,13 @@ def _reflect_findings(
         calibration_hints: Optional calibration hints from outcome tracking.
 
     Returns:
-        Filtered list of findings.
+        Filtered findings and their indices in the original findings list.
     """
     # Clamp threshold to valid range
     threshold = max(0, min(10, threshold))
 
     if not findings or threshold <= 0:
-        return findings
+        return findings, list(range(len(findings)))
 
     if skill_dir is None:
         skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
@@ -1010,13 +1011,13 @@ def _reflect_findings(
         )
     except Exception as e:
         print(f"[reflect] prompt build failed: {e}", file=sys.stderr)
-        return findings
+        return findings, list(range(len(findings)))
 
     raw_output, error = _run_claude_review(
         prompt, project_path, model=model, project_name=project_name,
     )
     if not raw_output:
-        return findings
+        return findings, list(range(len(findings)))
 
     # Parse and validate response
     try:
@@ -1027,10 +1028,10 @@ def _reflect_findings(
             text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
         scores = json.loads(text)
     except json.JSONDecodeError:
-        return findings
+        return findings, list(range(len(findings)))
 
     if not isinstance(scores, list):
-        return findings
+        return findings, list(range(len(findings)))
 
     # Build index → score map; skip out-of-range indices
     score_map: dict = {}
@@ -1047,12 +1048,114 @@ def _reflect_findings(
             score_map[idx] = score
 
     # Keep findings whose score meets threshold (or whose index wasn't scored)
-    filtered = [
-        f for i, f in enumerate(findings)
+    retained_indices = [
+        i for i in range(len(findings))
         if score_map.get(i, threshold) >= threshold
     ]
+    filtered = [findings[i] for i in retained_indices]
 
-    return filtered
+    return filtered, retained_indices
+
+
+def _reconcile_review_after_reflection(
+    review_data: dict,
+    reflected_findings: list,
+    retained_indices: list,
+) -> dict:
+    """Finalize one coherent review after reflection filters findings.
+
+    Reflection historically replaced only ``file_comments``. The summary,
+    checklist references, and model-supplied ``lgtm`` stayed tied to the
+    original array, which could produce a blocking review with no categorized
+    findings. Reconcile all index-bearing state here before any consumer sees
+    the result.
+
+    Failed checklist items represent findings the primary review explicitly
+    treated as unresolved, so their referenced findings are restored if the
+    reflection pass filtered them. If reflection otherwise removes every
+    blocker from a primary blocking review, all original blockers are restored.
+    This is the fail-safe policy: the primary blocker wins over a contradictory
+    reflection result.
+    """
+    original_findings = review_data.get("file_comments") or []
+    if not isinstance(original_findings, list):
+        return review_data
+
+    valid_retained = [
+        index for index in retained_indices
+        if isinstance(index, int)
+        and not isinstance(index, bool)
+        and 0 <= index < len(original_findings)
+    ]
+    if len(valid_retained) != len(reflected_findings):
+        log(
+            "review",
+            "Reflection result/index mismatch; preserving original findings",
+        )
+        valid_retained = list(range(len(original_findings)))
+
+    final_indices = set(valid_retained)
+    summary = review_data.get("review_summary") or {}
+    checklist = summary.get("checklist") or [] if isinstance(summary, dict) else []
+
+    # A failed check with an explicit finding reference is a known unresolved
+    # issue. Preserve that issue rather than leaving a dangling checklist item.
+    for entry in checklist:
+        if not isinstance(entry, dict) or entry.get("passed") is not False:
+            continue
+        refs = entry.get("finding_refs")
+        if not isinstance(refs, list):
+            continue
+        final_indices.update(
+            ref for ref in refs
+            if isinstance(ref, int)
+            and not isinstance(ref, bool)
+            and 0 <= ref < len(original_findings)
+        )
+
+    def _is_blocker(index: int) -> bool:
+        finding = original_findings[index]
+        return (
+            isinstance(finding, dict)
+            and finding.get("severity") in ("critical", "warning")
+        )
+
+    original_lgtm = summary.get("lgtm") if isinstance(summary, dict) else None
+    if original_lgtm is False and not any(_is_blocker(i) for i in final_indices):
+        final_indices.update(
+            i for i in range(len(original_findings)) if _is_blocker(i)
+        )
+
+    ordered_indices = sorted(final_indices)
+    old_to_new = {old: new for new, old in enumerate(ordered_indices)}
+    review_data["file_comments"] = [original_findings[i] for i in ordered_indices]
+
+    # Checklist references are defined against the original finding array.
+    # Rewrite them to the final array, dropping filtered/invalid references and
+    # preserving order without duplicates.
+    for entry in checklist:
+        if not isinstance(entry, dict) or not isinstance(entry.get("finding_refs"), list):
+            continue
+        remapped: list = []
+        seen: set = set()
+        for old_index in entry["finding_refs"]:
+            if isinstance(old_index, bool) or not isinstance(old_index, int):
+                continue
+            new_index = old_to_new.get(old_index)
+            if new_index is not None and new_index not in seen:
+                seen.add(new_index)
+                remapped.append(new_index)
+        entry["finding_refs"] = remapped
+
+    # Severity is the sole source of truth for the formal verdict.
+    if isinstance(summary, dict):
+        summary["lgtm"] = not any(
+            isinstance(finding, dict)
+            and finding.get("severity") in ("critical", "warning")
+            for finding in review_data["file_comments"]
+        )
+
+    return review_data
 
 
 _ERROR_PATTERN_RE = re.compile(
@@ -2473,14 +2576,31 @@ def _build_verdict_body(
     appends a concise bullet list of critical + warning finding titles
     extracted from the structured review data.
     """
+    comments = (
+        review_data.get("file_comments") or []
+        if isinstance(review_data, dict)
+        else []
+    )
+    blockers = [
+        c for c in comments
+        if isinstance(c, dict) and c.get("severity") in ("critical", "warning")
+    ]
+    if not approve and not blockers:
+        raise ValueError(
+            "Request-changes verdict requires at least one categorized blocker"
+        )
+    if approve and blockers:
+        raise ValueError(
+            "Approve verdict does not match categorized finding severities"
+        )
+
     if not body_enabled:
         return ""
 
     if approve:
         return build_alert("TIP", "No blocking issues found — ready to merge.")
 
-    comments = review_data.get("file_comments") or [] if isinstance(review_data, dict) else []
-    has_critical = any(c.get("severity") == "critical" for c in comments)
+    has_critical = any(c.get("severity") == "critical" for c in blockers)
     if has_critical:
         kind, headline = "CAUTION", "Critical issues found."
     else:
@@ -2489,15 +2609,13 @@ def _build_verdict_body(
     if not include_blockers:
         return build_alert(kind, headline)
 
-    blockers = [
+    blocker_titles = [
         c["title"]
-        for c in comments
-        if c.get("severity") in ("critical", "warning") and c.get("title")
+        for c in blockers
+        if c.get("title")
     ]
-    if not blockers:
-        return build_alert(kind, headline)
 
-    text = "\n".join([headline, "", *(f"- {title}" for title in blockers)])
+    text = "\n".join([headline, "", *(f"- {title}" for title in blocker_titles)])
     return build_alert(kind, text)
 
 
@@ -2718,8 +2836,9 @@ def _run_review_analysis(
         reflect_model = models.get("reflect") or models.get("lightweight")
         reflect_threshold = reflect_cfg.get("threshold", 5)
         calibration_hints = _load_calibration_hints(project_name)
-        review_data["file_comments"] = _reflect_findings(
-            review_data["file_comments"],
+        original_findings = review_data["file_comments"]
+        reflected_findings, retained_indices = _reflect_findings(
+            original_findings,
             diff,
             project_path,
             reflect_model,
@@ -2727,6 +2846,9 @@ def _run_review_analysis(
             skill_dir=skill_dir,
             calibration_hints=calibration_hints,
             project_name=pname,
+        )
+        _reconcile_review_after_reflection(
+            review_data, reflected_findings, retained_indices,
         )
 
     return review_data, raw_output, error
