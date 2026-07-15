@@ -65,7 +65,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/check_need <url>` | `/need`, `/needs` | Analyze if a PR or issue is still needed vs. current main | — |
 | `/ci_check <PR>\|--enable\|--disable` | — | Check and fix CI failures on a PR (non-blocking, bounded, one attempt per mission); toggle CI system | — |
 | `/pr <PR>` | — | Review and update a GitHub pull request | — |
-| `/claudemd [project]` | `/claude`, `/claude.md` | Refresh or create a project's CLAUDE.md | — |
+| `/claudemd [project] [learnings]` | `/claude`, `/claude.md` | Refresh or create a project's CLAUDE.md, or sync Kōan's learnings into it | — |
 | `/doc <project> [cats]` | `/docs` | Extract structured documentation to docs/ | Yes |
 | `/profile <project>` | `/perf`, `/benchmark` | Performance profiling mission | Yes |
 
