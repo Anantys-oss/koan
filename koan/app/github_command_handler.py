@@ -873,6 +873,14 @@ def _try_intent_promotion(
 
     skill = validate_command(match.command, registry)
     if skill is None:
+        # resolve_github_intent already vetted this command as github-enabled;
+        # a validate_command disagreement means the two validators are out of
+        # sync — surface it rather than dropping the mention silently.
+        log.warning(
+            "GitHub intent: resolved command /%s failed validate_command "
+            "(resolver/validator out of sync) on %s/%s",
+            match.command, owner, repo,
+        )
         return None
 
     log.info(

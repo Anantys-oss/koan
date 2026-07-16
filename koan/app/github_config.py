@@ -116,10 +116,18 @@ def get_github_intent_config(config: dict) -> dict:
     try:
         window = int(intent.get("keyword_window", 5))
     except (TypeError, ValueError):
+        log.warning(
+            "invalid github.intent.keyword_window %r; using default 5",
+            intent.get("keyword_window"),
+        )
         window = 5
     try:
         conf = float(intent.get("min_confidence", 0.75))
     except (TypeError, ValueError):
+        log.warning(
+            "invalid github.intent.min_confidence %r; using default 0.75",
+            intent.get("min_confidence"),
+        )
         conf = 0.75
     return {
         "keyword_window": max(1, window),
