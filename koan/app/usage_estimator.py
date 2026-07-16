@@ -13,6 +13,7 @@ State is stored in instance/usage_state.json.
 Writes usage.md in the same format as manual /usage paste.
 """
 
+import contextlib
 import json
 import sys
 from datetime import datetime, timedelta
@@ -267,6 +268,10 @@ def cmd_reset_session(state_file: Path, usage_md: Path):
     Called when resuming from a quota pause — the human has verified
     that API quota is available, so the internal token counter should
     not block the next iteration with a stale high percentage.
+
+    Also clears ``.burn-rate.json`` next to the state file. Stale burn-rate
+    samples from the exhausted session would otherwise keep poisoning
+    time-to-exhaustion and burn-rate warnings against a 0% session.
     """
     config = load_config()
     current_provider = _current_provider(config)
@@ -280,6 +285,12 @@ def cmd_reset_session(state_file: Path, usage_md: Path):
 
     _save_state(state_file, state)
     _write_usage_md(state, usage_md, config)
+
+    # Match TUI /quota reset: drop rolling burn-rate history with the session.
+    from app.burn_rate import BURN_RATE_FILE
+    burn_rate_file = state_file.parent / BURN_RATE_FILE
+    with contextlib.suppress(OSError):
+        burn_rate_file.unlink(missing_ok=True)
 
 
 def cmd_set_used(used_pct: int, state_file: Path, usage_md: Path):

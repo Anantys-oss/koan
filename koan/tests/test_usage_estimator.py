@@ -775,6 +775,41 @@ class TestCmdResetSession:
         assert "Session (5hr) : ~0%" in content
 
     @patch("app.usage_estimator.load_config", return_value={})
+    def test_clears_burn_rate_file(self, mock_config, state_file, usage_md):
+        """Session reset must drop .burn-rate.json so /resume matches TUI reset.
+
+        Stale high cost_pct samples surviving a session reset keep the rolling
+        burn-rate estimator reporting exhaustion against a 0% session.
+        """
+        from app.burn_rate import BURN_RATE_FILE
+
+        burn_rate_file = state_file.parent / BURN_RATE_FILE
+        burn_rate_file.write_text(
+            json.dumps({"samples": [{"ts": "2026-07-16T04:50:00+00:00", "cost_pct": 12.0}]})
+        )
+        state = _fresh_state()
+        state["session_tokens"] = 450000
+        state_file.write_text(json.dumps(state))
+
+        cmd_reset_session(state_file, usage_md)
+
+        assert not burn_rate_file.exists()
+        assert json.loads(state_file.read_text())["session_tokens"] == 0
+
+    @patch("app.usage_estimator.load_config", return_value={})
+    def test_clears_burn_rate_missing_file_ok(self, mock_config, state_file, usage_md):
+        """Missing .burn-rate.json must not fail the session reset."""
+        from app.burn_rate import BURN_RATE_FILE
+
+        burn_rate_file = state_file.parent / BURN_RATE_FILE
+        assert not burn_rate_file.exists()
+
+        cmd_reset_session(state_file, usage_md)
+
+        assert state_file.exists()
+        assert not burn_rate_file.exists()
+
+    @patch("app.usage_estimator.load_config", return_value={})
     def test_cli_reset_session(self, mock_config, tmp_path):
         """CLI entry point for reset-session should work."""
         import sys

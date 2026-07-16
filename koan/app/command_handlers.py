@@ -806,6 +806,8 @@ def _reset_session_counters():
     that API quota is available. The internal token counter (usage_state.json)
     may still show a high percentage from the exhausted session. Resetting
     it prevents the run loop from immediately re-pausing with stale data.
+    ``cmd_reset_session`` also clears ``.burn-rate.json`` so rolling burn-rate
+    samples from the exhausted session cannot poison TTE/warnings.
 
     The real quota gate (quota_handler.py) will catch actual exhaustion
     reactively from Claude CLI output if it occurs.

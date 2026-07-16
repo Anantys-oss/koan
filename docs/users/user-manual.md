@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-15
+updated: 2026-07-16
 ---
 
 # Kōan User Manual
@@ -1858,6 +1858,9 @@ Use `/models` to inspect the resolved values for the active provider at any time
 </details>
 
 **`/resume`** — Resume mission processing after a pause (manual or automatic).
+After a quota pause it also resets session token counters and clears the
+rolling burn-rate history (same as TUI quota reset / `/quota reset`), so stale
+burn samples cannot keep warning against a fresh 0% session.
 
 - **Aliases:** `/work`, `/awake`, `/run`, `/start`
 
