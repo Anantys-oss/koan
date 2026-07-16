@@ -5067,7 +5067,7 @@ class TestReconcileReviewAfterReflection:
         }
 
     def test_restores_filtered_findings_referenced_by_failed_checks(self):
-        """Regression for manage2#2803: no generic blocked verdict with no list."""
+        """A blocking verdict must never render with an empty blocker list."""
         data = {
             "file_comments": [
                 self._finding("warning", "Preserve provisioning metadata"),
