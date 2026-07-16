@@ -1453,32 +1453,80 @@ class TestBuildReviewFooter:
 
 
 # ---------------------------------------------------------------------------
+# _extract_comment_ref / posted-comment ref capture
+# ---------------------------------------------------------------------------
+
+class TestExtractCommentRef:
+    def test_extract_comment_ref_parses_id_and_url(self):
+        from app.review_runner import _extract_comment_ref
+        raw = json.dumps({
+            "id": 12345,
+            "html_url": "https://github.com/o/r/pull/7#issuecomment-12345",
+        })
+        assert _extract_comment_ref(raw) == {
+            "id": 12345,
+            "html_url": "https://github.com/o/r/pull/7#issuecomment-12345",
+        }
+
+    def test_extract_comment_ref_tolerates_garbage(self):
+        from app.review_runner import _extract_comment_ref
+        assert _extract_comment_ref("not json") is None
+        assert _extract_comment_ref(json.dumps({"html_url": "x"})) is None  # no id
+
+    @patch("app.review_runner.run_gh")
+    def test_post_review_comment_new_returns_ref(self, mock_gh):
+        raw = json.dumps({"id": 999, "html_url": "https://github.com/o/r/pull/7#issuecomment-999"})
+        mock_gh.return_value = raw
+        ok, err, ref = _post_review_comment("o", "r", "7", "## Code Review\n\nLGTM")
+        assert ok is True and err == ""
+        assert ref == {"id": 999, "html_url": "https://github.com/o/r/pull/7#issuecomment-999"}
+        # posts via the issues-comments API, not `gh pr comment`
+        assert mock_gh.call_args.args[:2] == ("api", "repos/o/r/issues/7/comments")
+
+    @patch("app.review_runner.run_gh")
+    def test_post_review_comment_patch_returns_ref(self, mock_gh):
+        raw = json.dumps({"id": 42, "html_url": "https://github.com/o/r/pull/7#issuecomment-42"})
+        mock_gh.return_value = raw
+        ok, err, ref = _post_review_comment(
+            "o", "r", "7", "## Code Review\n\nupdated",
+            existing_comment={"id": 42, "body": ""},
+        )
+        assert ok is True
+        assert ref == {"id": 42, "html_url": "https://github.com/o/r/pull/7#issuecomment-42"}
+
+    @patch("app.review_runner.run_gh")
+    def test_post_review_comment_tolerates_non_json(self, mock_gh):
+        mock_gh.return_value = "not json"
+        ok, err, ref = _post_review_comment("o", "r", "7", "LGTM")
+        assert ok is True and err == ""
+        assert ref is None
+
+
+# ---------------------------------------------------------------------------
 # _post_review_comment
 # ---------------------------------------------------------------------------
 
 class TestPostReviewComment:
     @patch("app.review_runner.run_gh")
     def test_posts_comment(self, mock_gh):
-        """Posts review as PR comment via gh CLI."""
-        success, error = _post_review_comment("owner", "repo", "42", "LGTM")
+        """Posts review via the issues-comments API so a {id, html_url} JSON returns."""
+        success, error, _ref = _post_review_comment("owner", "repo", "42", "LGTM")
         assert success is True
         assert error == ""
         mock_gh.assert_called_once()
         call_args = mock_gh.call_args
-        assert "pr" in call_args[0]
-        assert "comment" in call_args[0]
-        assert "42" in call_args[0]
+        assert call_args[0][:2] == ("api", "repos/owner/repo/issues/42/comments")
+        assert "POST" in call_args[0]
         # Body should contain the review text
-        body_arg = call_args[1].get("body") or call_args[0][-1]
-        # The body is passed via --body flag
         assert any("LGTM" in str(a) for a in call_args[0])
 
     @patch("app.review_runner.run_gh", side_effect=RuntimeError("API error"))
     def test_returns_false_on_error(self, mock_gh):
-        """Returns (False, error_detail) when gh CLI fails."""
-        success, error = _post_review_comment("owner", "repo", "42", "review")
+        """Returns (False, error_detail, None) when gh CLI fails."""
+        success, error, ref = _post_review_comment("owner", "repo", "42", "review")
         assert success is False
         assert "API error" in error
+        assert ref is None
 
     @patch("app.review_runner.run_gh")
     def test_truncates_long_review(self, mock_gh):
@@ -4121,7 +4169,8 @@ class TestPostReviewCommentIdempotent:
         from app.review_markers import SUMMARY_TAG
         _post_review_comment("owner", "repo", "42", "LGTM")
         body_arg = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
-        assert body_arg.startswith(SUMMARY_TAG)
+        # The body is passed as a `-f body=<content>` gh api field.
+        assert body_arg.removeprefix("body=").startswith(SUMMARY_TAG)
 
     @patch("app.review_runner.run_gh")
     def test_patch_used_when_existing_comment_found(self, mock_gh):
@@ -4136,11 +4185,11 @@ class TestPostReviewCommentIdempotent:
 
     @patch("app.review_runner.run_gh")
     def test_post_used_when_no_existing_comment(self, mock_gh):
-        """Without existing_comment, the standard 'pr comment' POST is used."""
+        """Without existing_comment, the issues-comments API POST is used."""
         _post_review_comment("owner", "repo", "42", "Review", None)
         call_args = mock_gh.call_args[0]
-        assert "pr" in call_args
-        assert "comment" in call_args
+        assert call_args[:2] == ("api", "repos/owner/repo/issues/42/comments")
+        assert "POST" in call_args
 
     @patch("app.review_runner.run_gh")
     def test_preserves_commit_ids_from_existing_comment(self, mock_gh):
@@ -4180,12 +4229,12 @@ class TestPostReviewCommentIdempotent:
 
         mock_gh.side_effect = _side_effect
         existing = {"id": 555, "body": "old body", "user": "other-bot"}
-        success, error = _post_review_comment("owner", "repo", "42", "New review", existing)
+        success, error, _ref = _post_review_comment("owner", "repo", "42", "New review", existing)
         assert success is True
-        # Last call should be the POST fallback ('pr comment'), not PATCH
+        # Last call should be the POST fallback (issues-comments API), not PATCH
         last_call = mock_gh.call_args[0]
-        assert "pr" in last_call
-        assert "comment" in last_call
+        assert last_call[:2] == ("api", "repos/owner/repo/issues/42/comments")
+        assert "POST" in last_call
 
 
 
@@ -4312,7 +4361,7 @@ class TestIncrementalReview:
         assert success is True
         comment_calls = [
             c for c in mock_gh.call_args_list
-            if "comment" in c[0]
+            if any("comment" in str(a) for a in c[0])
         ]
         assert len(comment_calls) >= 1
         body_arg = " ".join(str(a) for a in comment_calls[0][0])
@@ -4363,12 +4412,13 @@ class TestReReviewFreshComment:
         )
 
         assert success is True
-        # Should have a "pr comment" call (POST), not a PATCH-only flow
+        # Should have an issues-comments API POST call, not a PATCH-only flow
         post_calls = [
             c for c in mock_gh.call_args_list
-            if len(c[0]) >= 2 and c[0][0] == "pr" and c[0][1] == "comment"
+            if len(c[0]) >= 2 and c[0][0] == "api"
+            and str(c[0][1]).endswith("/issues/42/comments")
         ]
-        assert len(post_calls) >= 1, "Expected a fresh 'pr comment' call for re-review"
+        assert len(post_calls) >= 1, "Expected a fresh comment POST for re-review"
 
         # The old comment should be collapsed via a PATCH call
         collapse_calls = [
@@ -5833,7 +5883,7 @@ class TestRunReviewClosePr:
     @patch("app.review_runner.find_bot_comment", return_value=None)
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
-    @patch("app.review_runner._post_review_comment", return_value=(False, "rate limited"))
+    @patch("app.review_runner._post_review_comment", return_value=(False, "rate limited", None))
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_close_pr_skipped_when_review_post_fails(
