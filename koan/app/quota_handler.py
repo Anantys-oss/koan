@@ -56,6 +56,14 @@ _STRICT_QUOTA_PATTERNS = [
     r"out of.*credits?",
     r"credits?.*(?:exhausted|depleted|expired|insufficient)",
     r"insufficient.*credits?",
+    # xAI/OpenAI-compatible team billing exhaustion (403 permission-denied):
+    # "Your team ... has either used all available credits or reached its
+    # monthly spending limit." Surfaced by the zai-claude binary as a stdout
+    # {"type":"error"} stream-json event, so it must be stdout-safe (strict).
+    # Anchor on an exhaustion verb so a benign "add a spending limit feature"
+    # discussion never trips a false quota pause.
+    r"used\s+all\s+(?:your\s+|available\s+)?credits?\b",
+    r"(?:reached|hit|exceeded)\s+(?:its\s+|your\s+|the\s+)?(?:monthly\s+)?spending\s+limit",
     r"billing.*(?:limit|period.*exceeded)",
     r"usage.*cap.*(?:reached|exceeded|hit)",
     # Claude Code CLI: "You've hit your session limit · resets 6pm (UTC)"
