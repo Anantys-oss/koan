@@ -8,15 +8,170 @@ Only used as a fallback when the rigid command parser fails to match.
 
 import json
 import logging
+import re
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 log = logging.getLogger(__name__)
+
+# Meta commands are never a natural-language user intent — they route, they
+# aren't a skill the user asks for by name.
+_META_COMMANDS = {"gh_request", "help"}
+# Excluded from the keyword layer ONLY, so pure questions ("ask what …") stay
+# free-form instead of being promoted to /ask on a bare keyword.
+_KEYWORD_EXCLUDED = _META_COMMANDS | {"ask"}
+
+# URL-type guard: which subject kind each command requires. Centralized here so
+# the bridge and /gh_request share one implementation (previously duplicated
+# inline in gh_request/handler.py::_classify_request).
+_NEEDS_PR = {"rebase", "recreate", "review"}
+_NEEDS_ISSUE = {"fix", "implement"}
+
+
+@dataclass
+class IntentMatch:
+    """A resolved @mention intent promoted to a real github-enabled skill."""
+
+    command: str
+    context: str
+    source: str        # "keyword" | "model"
+    confidence: float  # 1.0 for keyword; 0..1 for model
+
+
+def _github_keyword_lexicon(registry, exclude):
+    """Map every github-enabled command name + alias -> primary command name."""
+    lex = {}
+    for skill in registry.list_all():
+        if not getattr(skill, "github_enabled", False):
+            continue
+        for cmd in skill.commands:
+            if cmd.name in exclude:
+                continue
+            for token in [cmd.name, *getattr(cmd, "aliases", [])]:
+                if token:
+                    lex[token.lower()] = cmd.name
+    return lex
+
+
+def match_skill_keyword(text, registry, window=5):
+    """Promote when exactly one distinct skill keyword appears in the first
+    ``window`` word tokens after the @mention. Whole-word only.
+
+    Returns an ``IntentMatch`` (source="keyword", confidence=1.0) or None when
+    there are zero or multiple distinct skill hits (ambiguous ⇒ escalate).
+    """
+    if not text or not text.strip():
+        return None
+    lex = _github_keyword_lexicon(registry, _KEYWORD_EXCLUDED)
+    if not lex:
+        return None
+    tokens = re.findall(r"[A-Za-z_]+", text)[: max(1, window)]
+    hits = []
+    for tok in tokens:
+        cmd = lex.get(tok.lower())
+        if cmd and cmd not in hits:
+            hits.append(cmd)
+    if len(hits) != 1:
+        return None
+    command = hits[0]
+    # Strip the matched command's own tokens from the context so we don't feed
+    # "do a review" back to /review; skills accept free context either way.
+    synonyms = {t for t, c in lex.items() if c == command}
+    context = " ".join(
+        w for w in text.split() if w.strip(".,!?").lower() not in synonyms
+    ).strip()
+    return IntentMatch(command=command, context=context, source="keyword", confidence=1.0)
+
+
+def _url_type_ok(command, subject_kind):
+    """Whether ``command`` can run against a subject of ``subject_kind``.
+
+    ``subject_kind`` is "pr", "issue", or "" (unknown). Never block on missing
+    info: an unknown subject always passes.
+    """
+    if not subject_kind:
+        return True
+    if command in _NEEDS_PR and subject_kind != "pr":
+        return False
+    if command in _NEEDS_ISSUE and subject_kind != "issue":
+        return False
+    return True
+
+
+def _model_candidates(registry):
+    """github-enabled (command, description) tuples for the model classifier,
+    excluding meta commands. Sorted, deduplicated by primary name."""
+    seen = {}
+    for skill in registry.list_all():
+        if not getattr(skill, "github_enabled", False):
+            continue
+        for cmd in skill.commands:
+            if cmd.name in _META_COMMANDS or cmd.name in seen:
+                continue
+            seen[cmd.name] = cmd.description or skill.description
+    return sorted(seen.items())
+
+
+def resolve_github_intent(
+    text,
+    registry,
+    subject_kind="",
+    project_path=None,
+    min_confidence=0.75,
+    keyword_window=5,
+):
+    """Single entry point for the bridge + /gh_request intent ladder.
+
+    Layer 1 (keyword) → Layer 2 (model + confidence). Returns an ``IntentMatch``
+    to promote, or None when the caller should fall through to free-form.
+    """
+    if not text or not text.strip():
+        return None
+
+    # Layer 1 — keyword (free, deterministic)
+    match = match_skill_keyword(text, registry, window=keyword_window)
+    if match and _url_type_ok(match.command, subject_kind):
+        log.info(
+            "GitHub intent: source=keyword command=%s conf=1.0 text=%s",
+            match.command, text[:80],
+        )
+        return match
+
+    # Layer 2 — cheap model + confidence gate
+    if not project_path:
+        return None
+    candidates = _model_candidates(registry)
+    if not candidates:
+        return None
+    result = classify_intent(text, candidates, project_path, subject_kind=subject_kind)
+    if not result:
+        return None
+    command = result.get("command")
+    confidence = result.get("confidence", 0.0)
+    if not command or command in _META_COMMANDS or confidence < min_confidence:
+        return None
+    if not _url_type_ok(command, subject_kind):
+        return None
+    skill = registry.find_by_command(command)
+    if skill is None or not getattr(skill, "github_enabled", False):
+        return None
+    log.info(
+        "GitHub intent: source=model command=%s conf=%.2f text=%s",
+        command, confidence, text[:80],
+    )
+    return IntentMatch(
+        command=command,
+        context=result.get("context", ""),
+        source="model",
+        confidence=confidence,
+    )
 
 
 def classify_intent(
     message: str,
     commands: List[Tuple[str, str]],
     project_path: str,
+    subject_kind: str = "",
 ) -> Optional[dict]:
     """Classify a natural-language @mention into a bot command.
 
@@ -52,6 +207,11 @@ def classify_intent(
 
     prompt = prompt_template.replace("{COMMANDS}", commands_text)
     prompt = prompt.replace("{MESSAGE}", message.strip())
+    hint = {
+        "pr": "This comment is on a Pull Request.",
+        "issue": "This comment is on an Issue.",
+    }.get(subject_kind, "")
+    prompt = prompt.replace("{SUBJECT_KIND}", hint)
 
     try:
         output = run_command(
@@ -115,4 +275,13 @@ def _parse_classification(output: str) -> Optional[dict]:
         if not command:
             command = None
 
-    return {"command": command, "context": context}
+    # confidence: fail closed to 0.0 (→ below threshold → free-form) when
+    # missing or unparseable; clamp to [0.0, 1.0].
+    confidence_raw = result.get("confidence", 0.0)
+    try:
+        confidence = float(confidence_raw)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = min(1.0, max(0.0, confidence))
+
+    return {"command": command, "context": context, "confidence": confidence}

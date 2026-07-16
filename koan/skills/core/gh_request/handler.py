@@ -101,20 +101,17 @@ def _classify_request(
     project_name: str,
     url: Optional[str],
 ) -> tuple:
-    """Classify natural-language text into a bot command.
+    """Classify natural-language text into a (command, context) tuple.
 
-    Returns (command_name, context) or (None, "") on failure.
+    Delegates to the shared ``resolve_github_intent`` ladder (keyword → model),
+    which owns the single URL-type guard. Returns (None, "") on failure so the
+    caller queues a plain free-form mission.
     """
-    from app.github_command_handler import get_github_enabled_commands_with_descriptions
     from app.skills import build_registry
+    from app.github_intent import resolve_github_intent
+    from app.utils import get_known_projects
 
     registry = build_registry()
-    commands = get_github_enabled_commands_with_descriptions(registry)
-    if not commands:
-        return None, ""
-
-    # Resolve project path for Claude CLI
-    from app.utils import get_known_projects
 
     project_path = None
     for name, path in get_known_projects():
@@ -124,27 +121,22 @@ def _classify_request(
     if not project_path:
         return None, ""
 
-    from app.github_intent import classify_intent
+    subject_kind = ""
+    if url:
+        if "/pull/" in url:
+            subject_kind = "pr"
+        elif "/issues/" in url:
+            subject_kind = "issue"
 
-    result = classify_intent(text, commands, project_path)
-    if not result or not result.get("command"):
+    match = resolve_github_intent(
+        text,
+        registry,
+        subject_kind=subject_kind,
+        project_path=project_path,
+    )
+    if not match:
         return None, ""
-
-    command = result["command"]
-    context = result.get("context", "")
-
-    # Validate: if the classified command requires a URL type we don't have,
-    # don't blindly forward — let the agent handle it as a generic request
-    if command in ("fix", "implement") and url and "/issues/" not in url:
-        # NLP classified as fix/implement but URL is a PR, not an issue
-        # This is the exact bug we're fixing — don't forward to /fix
-        return None, ""
-
-    if command in ("rebase", "recreate", "review") and url and "/pull/" not in url:
-        # Command needs a PR URL but we have an issue URL
-        return None, ""
-
-    return command, context
+    return match.command, match.context
 
 
 def _parse_owner_repo(url: str) -> Optional[tuple]:

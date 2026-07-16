@@ -93,6 +93,33 @@ GitHub App:
 - Gated by a global `running_indicator` config block plus a per-project
   override; on by default, opt-out via `running_indicator.enabled: false`.
 
+### @mention intent resolution (natural language)
+
+When rigid parse (word-0 = github-enabled command) misses **and**
+`natural_language` is enabled, the bridge resolves intent via a strict ladder
+before any free-form fallback:
+
+1. **Keyword** — whole-word scan of the first N tokens (default 5) against
+   github-enabled skill names + aliases (excluding `gh_request`/`help`, and
+   `ask` for keyword only). Exactly one distinct skill hit ⇒ promote
+   (`confidence = 1.0`). Zero or ≥2 distinct hits ⇒ escalate.
+2. **Model** — the `lightweight` classifier returns `{command, context,
+   confidence}`. Promote only when `command` is github-enabled,
+   `confidence ≥ min_confidence` (default 0.75), and the command's required
+   URL type matches the subject (PR vs issue).
+3. **Free-form** — residue keeps the `/gh_request` compatibility route.
+
+**Invariants**
+
+- Rigid word-0 matches never invoke the ladder.
+- A promoted intent dispatches the real skill directly (same URL/context/
+  reaction/ack as a rigid command) and never hops through `/gh_request`.
+- Classification fails open to free-form — a mention is never dropped.
+- One classifier implementation (`github_intent.resolve_github_intent`) is
+  shared by the bridge and `/gh_request`; the URL-type guard lives only in
+  `github_intent._url_type_ok` (never duplicated in the skill handler).
+- Missing/invalid model `confidence` fails closed to `0.0` (→ free-form).
+
 ## Integration points
 
 - Notifications wired into `loop_manager.process_github_notifications()`, which also

@@ -8,27 +8,31 @@ Your job: determine which command (if any) the user intended.
 
 {COMMANDS}
 
+{SUBJECT_KIND}
+
 ## User's message
 
 {MESSAGE}
 
 ## Instructions
 
-Analyze the user's message and determine which command they most likely intended.
+Determine the single command the user most likely intended.
 
-- Match based on semantic intent, not keyword matching
-- If the intent clearly maps to exactly one command, return that command
-- If the intent is ambiguous or doesn't match any command, return null
-- Extract any additional context that should be passed to the command (URLs, descriptions, etc.)
+- Match on semantic intent, not keyword matching. Prefer ONE best command, not a score for each.
+- `confidence` is your certainty (0.0–1.0) for that single choice.
+- Return `null` command with `confidence` 0.0 when ambiguous or not a skill intent.
+- Do NOT choose `gh_request` (it is a meta-router, not a user intent).
+- When two skills fit, prefer the more specific one.
+- Extract any additional context that should be passed to the command (URLs, descriptions, etc.).
 
 Respond with ONLY a JSON object, no other text:
 
 ```json
-{"command": "<command_name>", "context": "<extracted context>"}
+{"command": "review", "context": "focus on auth", "confidence": 0.91}
 ```
 
 Or if no command matches:
 
 ```json
-{"command": null, "context": ""}
+{"command": null, "context": "", "confidence": 0.0}
 ```

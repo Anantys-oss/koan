@@ -102,6 +102,31 @@ def get_github_natural_language(config: dict, project_name: Optional[str] = None
     return bool(github.get("natural_language", False))
 
 
+def get_github_intent_config(config: dict) -> dict:
+    """Resolve natural-language intent-ladder knobs with clamped defaults.
+
+    Reads ``github.intent`` from config.yaml:
+        keyword_window: tokens after the @mention scanned for a skill keyword
+            (min 1, default 5).
+        min_confidence: model promotes only at/above this certainty
+            (clamped to 0.0–1.0, default 0.75).
+    """
+    github = config.get("github") or {}
+    intent = github.get("intent") or {}
+    try:
+        window = int(intent.get("keyword_window", 5))
+    except (TypeError, ValueError):
+        window = 5
+    try:
+        conf = float(intent.get("min_confidence", 0.75))
+    except (TypeError, ValueError):
+        conf = 0.75
+    return {
+        "keyword_window": max(1, window),
+        "min_confidence": min(1.0, max(0.0, conf)),
+    }
+
+
 def get_github_reply_authorized_users(config: dict, project_name: Optional[str] = None,
                                        projects_config: Optional[dict] = None) -> Optional[List[str]]:
     """Get the list of users authorized to receive AI replies.

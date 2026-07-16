@@ -21,21 +21,21 @@ SAMPLE_COMMANDS = [
 class TestParseClassification:
     def test_valid_json(self):
         result = _parse_classification('{"command": "fix", "context": "the login bug"}')
-        assert result == {"command": "fix", "context": "the login bug"}
+        assert result == {"command": "fix", "context": "the login bug", "confidence": 0.0}
 
     def test_null_command(self):
         result = _parse_classification('{"command": null, "context": ""}')
-        assert result == {"command": None, "context": ""}
+        assert result == {"command": None, "context": "", "confidence": 0.0}
 
     def test_json_in_code_block(self):
         text = '```json\n{"command": "rebase", "context": ""}\n```'
         result = _parse_classification(text)
-        assert result == {"command": "rebase", "context": ""}
+        assert result == {"command": "rebase", "context": "", "confidence": 0.0}
 
     def test_json_with_surrounding_text(self):
         text = 'Here is the result:\n{"command": "review", "context": "PR #42"}\nDone.'
         result = _parse_classification(text)
-        assert result == {"command": "review", "context": "PR #42"}
+        assert result == {"command": "review", "context": "PR #42", "confidence": 0.0}
 
     def test_empty_output(self):
         assert _parse_classification("") is None
@@ -46,18 +46,37 @@ class TestParseClassification:
 
     def test_strips_slash_from_command(self):
         result = _parse_classification('{"command": "/fix", "context": ""}')
-        assert result == {"command": "fix", "context": ""}
+        assert result == {"command": "fix", "context": "", "confidence": 0.0}
 
     def test_empty_command_becomes_none(self):
         result = _parse_classification('{"command": "", "context": ""}')
-        assert result == {"command": None, "context": ""}
+        assert result == {"command": None, "context": "", "confidence": 0.0}
 
     def test_non_dict_json(self):
         assert _parse_classification("[1, 2, 3]") is None
 
     def test_missing_context_defaults_empty(self):
         result = _parse_classification('{"command": "fix"}')
-        assert result == {"command": "fix", "context": ""}
+        assert result == {"command": "fix", "context": "", "confidence": 0.0}
+
+    def test_confidence_parsed_and_clamped(self):
+        assert _parse_classification(
+            '{"command": "review", "context": "x", "confidence": 0.91}'
+        )["confidence"] == 0.91
+        assert _parse_classification(
+            '{"command": "review", "context": "x", "confidence": 1.7}'
+        )["confidence"] == 1.0
+        assert _parse_classification(
+            '{"command": "review", "context": "x", "confidence": -3}'
+        )["confidence"] == 0.0
+
+    def test_confidence_invalid_fails_closed(self):
+        assert _parse_classification(
+            '{"command": "review", "context": "x", "confidence": "bad"}'
+        )["confidence"] == 0.0
+        assert _parse_classification(
+            '{"command": "review", "context": "x"}'
+        )["confidence"] == 0.0
 
 
 def _patch_cli_and_prompt(mock_output):
@@ -79,7 +98,7 @@ class TestClassifyIntent:
                 SAMPLE_COMMANDS,
                 "/tmp/project",
             )
-        assert result == {"command": "fix", "context": "the login bug"}
+        assert result == {"command": "fix", "context": "the login bug", "confidence": 0.0}
 
     def test_empty_message(self):
         assert classify_intent("", SAMPLE_COMMANDS, "/tmp/project") is None
@@ -135,7 +154,7 @@ class TestClassifyIntent:
         p1, p2 = _patch_cli_and_prompt(mock_output)
         with p1, p2:
             result = classify_intent("hello there", SAMPLE_COMMANDS, "/tmp/project")
-        assert result == {"command": None, "context": ""}
+        assert result == {"command": None, "context": "", "confidence": 0.0}
 
     def test_malformed_output_returns_none(self):
         p1, p2 = _patch_cli_and_prompt("I don't understand")
@@ -148,3 +167,168 @@ class TestClassifyIntent:
         with patch("app.prompts.load_prompt", return_value=None):
             result = classify_intent("fix this", SAMPLE_COMMANDS, "/tmp/project")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Intent ladder: keyword layer, URL guard, unified resolver
+# ---------------------------------------------------------------------------
+
+from app.skills import Skill, SkillCommand, SkillRegistry  # noqa: E402
+
+
+def _reg():
+    """A registry with github-enabled review/rebase/fix + excluded gh_request/ask."""
+    reg = SkillRegistry()
+    reg._register(Skill(
+        name="review", scope="core", github_enabled=True,
+        commands=[SkillCommand(name="review", aliases=["rv"])],
+    ))
+    reg._register(Skill(
+        name="rebase", scope="core", github_enabled=True,
+        commands=[SkillCommand(name="rebase")],
+    ))
+    reg._register(Skill(
+        name="fix", scope="core", github_enabled=True,
+        commands=[SkillCommand(name="fix")],
+    ))
+    reg._register(Skill(
+        name="gh_request", scope="core", github_enabled=True,
+        commands=[SkillCommand(name="gh_request")],
+    ))
+    reg._register(Skill(
+        name="ask", scope="core", github_enabled=True,
+        commands=[SkillCommand(name="ask")],
+    ))
+    return reg
+
+
+class TestMatchSkillKeyword:
+    def test_single_hit_with_filler(self):
+        from app.github_intent import match_skill_keyword
+        m = match_skill_keyword("eh do a review", _reg())
+        assert m is not None
+        assert m.command == "review"
+        assert m.source == "keyword"
+        assert m.confidence == 1.0
+
+    def test_alias(self):
+        from app.github_intent import match_skill_keyword
+        assert match_skill_keyword("can you rv quickly", _reg()).command == "review"
+
+    def test_multi_hit_returns_none(self):
+        from app.github_intent import match_skill_keyword
+        assert match_skill_keyword("fix the review nits", _reg()) is None
+
+    def test_no_hit_returns_none(self):
+        from app.github_intent import match_skill_keyword
+        assert match_skill_keyword("what do you think about this", _reg()) is None
+
+    def test_outside_window_returns_none(self):
+        from app.github_intent import match_skill_keyword
+        assert match_skill_keyword("a b c d e review", _reg(), window=5) is None
+
+    def test_excludes_meta_and_ask(self):
+        from app.github_intent import match_skill_keyword
+        assert match_skill_keyword("please gh_request this", _reg()) is None
+        assert match_skill_keyword("ask what the plan is", _reg()) is None
+
+    def test_empty_returns_none(self):
+        from app.github_intent import match_skill_keyword
+        assert match_skill_keyword("", _reg()) is None
+        assert match_skill_keyword("   ", _reg()) is None
+
+    def test_context_strips_command_token(self):
+        from app.github_intent import match_skill_keyword
+        m = match_skill_keyword("please review this", _reg())
+        assert m.command == "review"
+        assert "review" not in m.context.split()
+
+
+class TestUrlTypeGuard:
+    def test_matrix(self):
+        from app.github_intent import _url_type_ok
+        assert _url_type_ok("review", "pr") is True
+        assert _url_type_ok("review", "issue") is False
+        assert _url_type_ok("fix", "issue") is True
+        assert _url_type_ok("fix", "pr") is False
+        # Unknown subject: never block on missing info.
+        assert _url_type_ok("review", "") is True
+        assert _url_type_ok("fix", "") is True
+
+
+class TestResolveGithubIntent:
+    def test_keyword_first_no_model(self, monkeypatch):
+        import app.github_intent as gi
+        called = {"n": 0}
+        monkeypatch.setattr(
+            gi, "classify_intent",
+            lambda *a, **k: called.__setitem__("n", called["n"] + 1),
+        )
+        m = gi.resolve_github_intent(
+            "eh do a review", _reg(), subject_kind="pr", project_path="/tmp",
+        )
+        assert m.command == "review"
+        assert m.source == "keyword"
+        assert called["n"] == 0  # keyword hit ⇒ model never called
+
+    def test_model_high_confidence(self, monkeypatch):
+        import app.github_intent as gi
+        monkeypatch.setattr(
+            gi, "classify_intent",
+            lambda *a, **k: {"command": "rebase", "context": "onto main", "confidence": 0.91},
+        )
+        m = gi.resolve_github_intent(
+            "could you tidy the branch history", _reg(),
+            subject_kind="pr", project_path="/tmp",
+        )
+        assert m.command == "rebase"
+        assert m.source == "model"
+        assert m.confidence == 0.91
+
+    def test_model_low_confidence_returns_none(self, monkeypatch):
+        import app.github_intent as gi
+        monkeypatch.setattr(
+            gi, "classify_intent",
+            lambda *a, **k: {"command": "review", "context": "", "confidence": 0.4},
+        )
+        assert gi.resolve_github_intent(
+            "hmm not sure what", _reg(), subject_kind="pr", project_path="/tmp",
+        ) is None
+
+    def test_model_url_guard_blocks(self, monkeypatch):
+        import app.github_intent as gi
+        monkeypatch.setattr(
+            gi, "classify_intent",
+            lambda *a, **k: {"command": "review", "context": "", "confidence": 0.95},
+        )
+        # review needs a PR; subject is an issue ⇒ blocked.
+        assert gi.resolve_github_intent(
+            "take a good look", _reg(), subject_kind="issue", project_path="/tmp",
+        ) is None
+
+    def test_model_meta_command_rejected(self, monkeypatch):
+        import app.github_intent as gi
+        monkeypatch.setattr(
+            gi, "classify_intent",
+            lambda *a, **k: {"command": "gh_request", "context": "", "confidence": 0.99},
+        )
+        assert gi.resolve_github_intent(
+            "just handle it somehow", _reg(), subject_kind="pr", project_path="/tmp",
+        ) is None
+
+    def test_no_project_path_no_model(self, monkeypatch):
+        import app.github_intent as gi
+        called = {"n": 0}
+        monkeypatch.setattr(
+            gi, "classify_intent",
+            lambda *a, **k: called.__setitem__("n", called["n"] + 1),
+        )
+        # No keyword, no project_path ⇒ can't run model ⇒ None.
+        assert gi.resolve_github_intent(
+            "please handle this thing", _reg(), subject_kind="pr", project_path=None,
+        ) is None
+        assert called["n"] == 0
+
+    def test_empty_text_returns_none(self):
+        import app.github_intent as gi
+        assert gi.resolve_github_intent("", _reg(), project_path="/tmp") is None
