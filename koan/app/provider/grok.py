@@ -17,6 +17,12 @@ _GROK_QUOTA_PATTERNS = [
     r"(?:exceeded|reached|exhausted|insufficient).*\bquota\b",
     r"usage.*(?:limit|cap).*(?:reached|exceeded|hit)",
     r"billing.*(?:limit|quota|credit)",
+    # xAI billing exhaustion arrives as a 403 permission-denied with no
+    # quota/usage/billing keyword: "used all available credits or reached
+    # its monthly spending limit". Anchor on the exhaustion verb so mere
+    # discussion of a spending-limit feature does not trip a false pause.
+    r"used all (?:available )?credits?",
+    r"(?:reached|hit|exceeded)[^\n]{0,25}spending limit",
     r"HTTP\s*429",
     r"status[\s:]+429",
     r"too many requests",
