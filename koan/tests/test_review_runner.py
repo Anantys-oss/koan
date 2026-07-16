@@ -1910,6 +1910,7 @@ class TestReviewPostsBeforeEnrichment:
 
 
 class TestRunReview:
+    @patch("app.review_runner._is_review_requested", return_value=False)
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -1918,7 +1919,7 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_full_pipeline_with_json(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_req, pr_context, review_skill_dir,
     ):
         """Full review pipeline with JSON output: fetch -> claude -> parse -> post."""
         mock_fetch.return_value = pr_context
@@ -1979,6 +1980,7 @@ class TestRunReview:
         assert "branch moved during review" in posted_bodies[0]
         assert "HEAD=2222222" in posted_bodies[0]
 
+    @patch("app.review_runner._is_review_requested", return_value=False)
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -1987,7 +1989,7 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_fallback_to_markdown_on_invalid_json(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_req, pr_context, review_skill_dir,
     ):
         """Falls back to regex extraction when JSON parsing fails twice."""
         mock_fetch.return_value = pr_context
@@ -2012,6 +2014,7 @@ class TestRunReview:
         assert mock_claude.call_count == 2
         mock_gh.assert_called_once()
 
+    @patch("app.review_runner._is_review_requested", return_value=False)
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner._run_error_hunter", return_value="")
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -2020,7 +2023,7 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_unparseable_output_posts_placeholder_not_raw(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable,
-        _mock_hunter, _mock_shas, pr_context, review_skill_dir,
+        _mock_hunter, _mock_shas, _mock_req, pr_context, review_skill_dir,
     ):
         """Guardrail: when neither attempt yields parseable/structured output,
         post a short placeholder (never the raw narration) and alert a human."""
@@ -2057,11 +2060,15 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_normal_mode_single_outcome_with_pr_url(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        _mock_debug, pr_context, review_skill_dir,
+        _mock_debug, pr_context, review_skill_dir, monkeypatch,
     ):
         """Under normal mode (notify_fn defaulting to progress_notify), progress
         lines are suppressed but exactly one outcome line carrying the canonical
         PR URL is sent."""
+        # The agent loop sets KOAN_SUPPRESS_RUNNER_OUTCOME=1 to dedup the ✅
+        # line; clear any ambient value so this test exercises the runner's own
+        # outcome delivery regardless of the environment it runs in.
+        monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
         mock_fetch.return_value = pr_context
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
         sent = []
@@ -3126,6 +3133,7 @@ class TestPostCommentReplies:
 # ---------------------------------------------------------------------------
 
 class TestRunReviewWithReplies:
+    @patch("app.review_runner._is_review_requested", return_value=False)
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments")
@@ -3134,7 +3142,7 @@ class TestRunReviewWithReplies:
     @patch("app.review_runner.fetch_pr_context")
     def test_posts_replies_when_present(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_req, pr_context, review_skill_dir,
     ):
         """Posts replies to user comments when review includes comment_replies."""
         mock_fetch.return_value = pr_context
@@ -3161,6 +3169,7 @@ class TestRunReviewWithReplies:
         # run_gh called: 1 for post_review_comment + 1 for reply
         assert mock_gh.call_count == 2
 
+    @patch("app.review_runner._is_review_requested", return_value=False)
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3169,7 +3178,7 @@ class TestRunReviewWithReplies:
     @patch("app.review_runner.fetch_pr_context")
     def test_no_replies_when_no_repliable_comments(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_req, pr_context, review_skill_dir,
     ):
         """No reply posting when there are no repliable comments."""
         mock_fetch.return_value = pr_context
@@ -3461,6 +3470,7 @@ class TestFormatReviewWithPlanAlignment:
 # ---------------------------------------------------------------------------
 
 class TestRunReviewPlanAlignment:
+    @patch("app.review_runner._is_review_requested", return_value=False)
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3469,7 +3479,7 @@ class TestRunReviewPlanAlignment:
     @patch("app.review_runner.fetch_pr_context")
     def test_auto_detects_plan_from_pr_body(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        plan_review_skill_dir,
+        _mock_req, plan_review_skill_dir,
     ):
         """Auto-detects plan URL from PR body and includes plan in prompt."""
         context = {
@@ -3509,6 +3519,7 @@ class TestRunReviewPlanAlignment:
         # Verify that plan fetching was attempted (gh api called for issues/10)
         assert mock_gh.call_count >= 2
 
+    @patch("app.review_runner._is_review_requested", return_value=False)
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3517,7 +3528,7 @@ class TestRunReviewPlanAlignment:
     @patch("app.review_runner.fetch_pr_context")
     def test_no_plan_when_no_issue_in_body(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_req, pr_context, review_skill_dir,
     ):
         """No plan alignment when PR body has no linked issue URL."""
         pr_context["body"] = "Refactoring pass. No linked issue."
@@ -3533,6 +3544,7 @@ class TestRunReviewPlanAlignment:
         # run_gh only called once: to post the review comment
         assert mock_gh.call_count == 1
 
+    @patch("app.review_runner._is_review_requested", return_value=False)
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3541,7 +3553,7 @@ class TestRunReviewPlanAlignment:
     @patch("app.review_runner.fetch_pr_context")
     def test_explicit_plan_url_overrides_auto_detection(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, plan_review_skill_dir,
+        _mock_req, pr_context, plan_review_skill_dir,
     ):
         """Explicit --plan-url fetches the specified issue, skipping auto-detect."""
         pr_context["body"] = "No issue URLs here."
