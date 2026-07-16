@@ -1,8 +1,8 @@
 # Kōan changelog
 
 Released versions of Kōan, newest on top. Each section corresponds to a
-git tag cut by the release workflow (`release.yml`) from the `## ${NEXT}`
-section curated by `/koan.incubate` in `changes/incubating.md`.
+git tag cut by the release workflow from the `## ${NEXT}` section curated
+by `/koan.incubate` in `changes/incubating.md`.
 
 ---
 

@@ -58,6 +58,14 @@ sole executor of a release.
    - **Publishes**: the GitHub release (notes = the finalized `${NEXT}` section)
      and the Docker images (semver tags, `latest`, `stable`).
 
+> **First release under this pipeline (one-time migration).** Today's `stable`
+> branch was fast-forwarded from `main` tags by the old `scripts/release.sh`, so
+> its tip is almost certainly *not* an ancestor of `incubating` HEAD. The first
+> `release.yml` run will therefore reject the `stable` ff-push as non-fast-forward
+> even though nothing is wrong. Realign `stable` to `incubating` **once** before
+> the first dispatch: `git branch -f stable <incubating-commit> && git
+> push --force-with-lease origin refs/heads/stable`.
+
 The ad-hoc `publish-container.yml` workflow remains the out-of-band channel for
 publishing dev images without cutting a release: dispatch it on `main` or
 `incubating` (any other ref is refused) with a tag such as `devel` (the default)
