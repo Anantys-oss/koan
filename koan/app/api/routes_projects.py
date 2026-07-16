@@ -32,7 +32,7 @@ def _run_skill(command: str, args: str = "") -> tuple:
         from app.skills import SkillContext, execute_skill
 
         registry = _get_registry()
-        skill = registry.lookup(command)
+        skill = registry.find_by_command(command)
         if skill is None:
             return False, f"Skill '{command}' not found"
 
