@@ -64,7 +64,9 @@ def _real_provider_hint() -> str:
         names = [n for n in known_providers() if n != "fake"]
         if names:
             return "/".join(names)
-    except Exception:
+    except ImportError:
+        # Only the lazy import can fail here (partial import cycle);
+        # known_providers() itself does not raise. Degrade to the static hint.
         pass
     return "claude/codex/copilot/cline/haze/ollama-launch"
 
