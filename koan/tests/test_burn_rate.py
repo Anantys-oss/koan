@@ -134,20 +134,30 @@ class TestBurnRateEstimate:
             burn_rate.record_run(instance_dir, cost_pct=1.0, timestamp=base)
         assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
 
+    def test_short_span_returns_none(self, instance_dir):
+        """Five samples in under MIN_SPAN_MINUTES must not yield a rate.
+
+        Production false alarm: 5 large Grok runs in 11 minutes produced
+        286.9%/h and forced a burn-rate pause. Short windows are noise.
+        """
+        # 5 samples over 11 minutes — enough count, too little wall clock
+        _record_series(instance_dir, [(0, 4.0), (2, 9.0), (5, 18.0), (8, 11.0), (11, 12.0)])
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
+
     def test_constant_rate(self, instance_dir):
-        # 5 samples, 1% each, spaced 1 minute apart
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
-        # Total cost 5 over 4 minutes → 1.25/min
-        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(1.25)
+        # 5 samples, 1% each, spaced 5 minutes apart → 20 min span
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
+        # Total cost 5 over 20 minutes → 0.25/min
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(0.25)
 
     def test_variable_rate(self, instance_dir):
-        # Five samples: costs 2, 4, 2, 4, 8 over 10 minutes
+        # Five samples: costs 2, 4, 2, 4, 8 over 20 minutes
         _record_series(
             instance_dir,
-            [(0, 2.0), (3, 4.0), (5, 2.0), (8, 4.0), (10, 8.0)],
+            [(0, 2.0), (5, 4.0), (10, 2.0), (15, 4.0), (20, 8.0)],
         )
-        # Total cost = 2+4+2+4+8 = 20 over 10 min = 2.0/min
-        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(2.0)
+        # Total cost = 2+4+2+4+8 = 20 over 20 min = 1.0/min
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(1.0)
 
 
 class TestTimeToExhaustion:
@@ -155,17 +165,17 @@ class TestTimeToExhaustion:
         assert burn_rate.time_to_exhaustion(instance_dir, 50.0) is None
 
     def test_basic_estimate(self, instance_dir):
-        # 1.25%/min (5/4), 60% remaining → 48 min
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        # 0.25%/min (5/20), 60% remaining → 240 min
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         tte = burn_rate.time_to_exhaustion(instance_dir, session_pct=40.0)
-        assert tte == pytest.approx(48.0)
+        assert tte == pytest.approx(240.0)
 
     def test_zero_remaining(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         assert burn_rate.time_to_exhaustion(instance_dir, session_pct=100.0) == 0.0
 
     def test_mode_multiplier_makes_deep_faster(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         implement = burn_rate.time_to_exhaustion(instance_dir, 50.0, mode="implement")
         deep = burn_rate.time_to_exhaustion(instance_dir, 50.0, mode="deep")
         review = burn_rate.time_to_exhaustion(instance_dir, 50.0, mode="review")
@@ -199,25 +209,25 @@ class TestBurnRateSnapshot:
     """Tests for the read-once BurnRateSnapshot class."""
 
     def test_snapshot_loads_samples_once(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         assert len(snapshot.samples) == 5
         assert snapshot.samples[0].cost_pct == pytest.approx(1.0)
 
     def test_snapshot_burn_rate(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         # Same result as the free function
-        assert snapshot.burn_rate_pct_per_minute() == pytest.approx(1.25)
+        assert snapshot.burn_rate_pct_per_minute() == pytest.approx(0.25)
 
     def test_snapshot_time_to_exhaustion(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         tte = snapshot.time_to_exhaustion(session_pct=40.0)
-        assert tte == pytest.approx(48.0)
+        assert tte == pytest.approx(240.0)
 
     def test_snapshot_time_to_exhaustion_with_mode(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         deep = snapshot.time_to_exhaustion(50.0, mode="deep")
         impl = snapshot.time_to_exhaustion(50.0, mode="implement")
@@ -233,7 +243,7 @@ class TestBurnRateSnapshot:
 
     def test_snapshot_is_frozen(self, instance_dir):
         """Snapshot is not affected by writes after construction."""
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         assert len(snapshot.samples) == 5
 
@@ -248,6 +258,20 @@ class TestBurnRateSnapshot:
         assert snapshot.last_warned_at is None
         assert snapshot.burn_rate_pct_per_minute() is None
         assert snapshot.time_to_exhaustion(50.0) is None
+
+
+class TestClearSamples:
+    def test_clear_samples_empties_buffer(self, instance_dir):
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
+        burn_rate.mark_warned(instance_dir)
+        assert len(burn_rate.get_samples(instance_dir)) == 5
+        assert burn_rate.get_last_warned_at(instance_dir) is not None
+
+        burn_rate.clear_samples(instance_dir)
+
+        assert burn_rate.get_samples(instance_dir) == []
+        assert burn_rate.get_last_warned_at(instance_dir) is None
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
 
 
 class TestTOCTOURace:

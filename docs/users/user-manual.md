@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-15
+updated: 2026-07-16
 ---
 
 # Kōan User Manual
@@ -232,7 +232,7 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/quota` — See how much API budget is left before adding heavy missions, plus the rolling burn rate (%/h) and estimated time to exhaustion
 - `/quota 32` — Tell Kōan it has 32% remaining (fixes drift when internal estimate is wrong)
 - If Kōan is paused due to quota but the API is actually available, `/quota 50` will correct the estimate and clear the pause
-- When the burn rate predicts session exhaustion in less than 30 min, the autonomous mode is automatically downgraded one tier (deep→implement→review). A Telegram alert fires once when projected exhaustion is under 60 min and the next quota reset is still more than 2 h away.
+- When the burn rate predicts session exhaustion in less than 30 min, the autonomous mode is automatically soft-throttled one tier (deep→implement→review) — burn rate never forces a pause (`wait`); absolute budget thresholds still own that. Estimates need ≥5 samples over ≥15 minutes of wall clock so a short burst of heavy missions does not look like a multi-hundred-%/h sustained rate. A Telegram alert fires once when projected exhaustion is under 60 min and the next quota reset is still more than 2 h away. Session reset (`/resume` after a quota pause) also clears the burn-rate sample buffer so pre-pause costs cannot re-trigger false alarms.
 </details>
 
 **`/check_notifications`** — Force an immediate check of GitHub and Jira notifications, bypassing the exponential backoff timer.

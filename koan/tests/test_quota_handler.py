@@ -1681,13 +1681,14 @@ class TestFormatBurnRateSingleLoad:
     """_format_burn_rate must share one snapshot across both metrics."""
 
     def _seed(self, instance_dir):
-        # Five samples one minute apart, 1.0% each → enough for an estimate.
+        # Five samples over 20 minutes, 1.0% each → enough for an estimate
+        # (needs ≥ MIN_SAMPLES and ≥ MIN_SPAN_MINUTES).
         from datetime import datetime, timedelta, timezone
         from app import burn_rate
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
         for i in range(5):
             burn_rate.record_run(
-                instance_dir, 1.0, timestamp=base + timedelta(minutes=i),
+                instance_dir, 1.0, timestamp=base + timedelta(minutes=i * 5),
             )
 
     def test_loads_state_once(self, tmp_path):

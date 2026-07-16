@@ -165,6 +165,7 @@ permission prompts (which headless cannot honor).
 | `Couldn't set model 'haiku'` | Set `models.grok.lightweight` (etc.) to a real Grok id; avoid Claude defaults |
 | `stopReason: Cancelled` / no commits after `/implement` | Headless permission cancel — ensure provider emits `--always-approve` (fixed in current Grok provider); set `skip_permissions: true` |
 | Empty skill output | Confirm `--output-format streaming-json` events still match samples in `koan/tests/grok_samples.py` |
+| Burn-rate alerts look absurd (e.g. 200–300%/h) | Token accounting is correct; the % is vs `usage.session_token_limit` (Claude-style estimate, default 500k/5h). Grok API billing is pay-as-you-go — either tune `session_token_limit` to your real budget, or set `usage.unlimited_quota: true` / `budget_mode: disabled` to skip proactive % gating. Burn-rate soft-throttles only (never forces wait) and needs ≥15 min of samples. |
 
 ## Related
 
