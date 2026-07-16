@@ -15,7 +15,6 @@ import app.provider.grok as grok_module
 from app.provider import (
     _extract_assistant_text_chunks,
     _extract_result_text,
-    _is_cancelled_end_event,
     _summarize_stream_event,
     _usage_snapshot_from_event,
 )
@@ -137,13 +136,6 @@ class TestGrokCommandConstruction:
         assert self.provider.build_model_args("grok-4.5") == ["-m", "grok-4.5"]
         assert self.provider.build_model_args("") == []
 
-    def test_build_model_args_refuses_claude_aliases(self):
-        with patch("app.provider.grok.log_safe") as log:
-            assert self.provider.build_model_args("haiku") == []
-            assert self.provider.build_model_args("sonnet") == []
-            assert self.provider.build_model_args("claude-opus-4") == []
-        assert any("Claude alias" in c.args[1] for c in log.call_args_list)
-
     def test_build_model_args_fallback_notes_once_at_info(self):
         with patch("app.provider.grok.log_safe") as log:
             flags = self.provider.build_model_args("grok-4.5", fallback="grok-3")
@@ -165,27 +157,17 @@ class TestGrokCommandConstruction:
         ]
         assert self.provider.build_output_args("") == []
 
-    def test_build_permission_args_always_approves(self):
+    def test_build_permission_args(self):
         assert self.provider.build_permission_args(True) == ["--always-approve"]
-        # Headless cannot use acceptEdits via CLI flag — always always-approve.
-        assert self.provider.build_permission_args(False) == ["--always-approve"]
+        assert self.provider.build_permission_args(False) == [
+            "--permission-mode", "acceptEdits",
+        ]
 
-    def test_build_tool_args_maps_claude_names(self):
+    def test_build_tool_args(self):
         assert self.provider.build_tool_args(
             allowed_tools=["Read", "Grep"],
             disallowed_tools=["Bash"],
-        ) == [
-            "--tools", "read_file,grep",
-            "--disallowed-tools", "run_terminal_cmd",
-        ]
-
-    def test_build_tool_args_drops_skill(self):
-        with patch("app.provider.grok.log_safe") as log:
-            flags = self.provider.build_tool_args(
-                allowed_tools=["Read", "Skill", "Edit"],
-            )
-        assert flags == ["--tools", "read_file,search_replace"]
-        assert any("Skill" in c.args[1] for c in log.call_args_list)
+        ) == ["--tools", "Read,Grep", "--disallowed-tools", "Bash"]
 
     def test_build_max_turns_args(self):
         assert self.provider.build_max_turns_args(12) == ["--max-turns", "12"]
@@ -205,8 +187,8 @@ class TestGrokCommandConstruction:
     def test_build_command_minimal_stream(self):
         cmd = self.provider.build_command("hello world", output_format="stream-json")
         assert cmd[0] == "grok"
-        assert "--always-approve" in cmd
-        assert "acceptEdits" not in cmd
+        assert "--permission-mode" in cmd
+        assert "acceptEdits" in cmd
         assert cmd[-4:] == ["--output-format", "streaming-json", "-p", "hello world"]
 
     def test_build_command_with_model_and_tools(self):
@@ -221,26 +203,12 @@ class TestGrokCommandConstruction:
         assert cmd == [
             "grok",
             "--always-approve",
-            "--tools", "read_file,list_dir",
+            "--tools", "Read,Glob",
             "-m", "grok-4.5",
             "--output-format", "streaming-json",
             "--max-turns", "8",
             "-p", "hello",
         ]
-
-    def test_rewrite_prompt_for_file_large_only(self):
-        short = self.provider.build_command("short", output_format="stream-json")
-        rewritten, prompt = self.provider.rewrite_prompt_for_file(short, "/tmp/p.md")
-        assert prompt is None
-        assert rewritten == short
-
-        big = "x" * 9000
-        long_cmd = self.provider.build_command(big, output_format="stream-json")
-        rewritten, prompt = self.provider.rewrite_prompt_for_file(long_cmd, "/tmp/p.md")
-        assert prompt == big
-        assert "--prompt-file" in rewritten
-        assert "/tmp/p.md" in rewritten
-        assert "-p" not in rewritten
 
     def test_build_command_prompt_args_last(self):
         cmd = self.provider.build_command(
@@ -330,20 +298,6 @@ class TestGrokStreamSamples:
             "usage": {"input_tokens": 1, "output_tokens": 1},
         }
         assert _extract_result_text(end) is None
-
-    def test_cancelled_end_event_detection(self):
-        assert _is_cancelled_end_event({
-            "type": "end", "stopReason": "Cancelled", "num_turns": 3,
-        })
-        assert _is_cancelled_end_event({
-            "type": "end", "stopReason": "canceled",
-        })
-        assert not _is_cancelled_end_event({
-            "type": "end", "stopReason": "EndTurn",
-        })
-        assert not _is_cancelled_end_event({
-            "type": "text", "data": "Cancelled",
-        })
 
     def test_summarize_thought_text_end(self):
         assert "thinking" in _summarize_stream_event({"type": "thought", "data": "x"})

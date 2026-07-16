@@ -137,27 +137,6 @@ class CLIProvider:
         """
         return True
 
-    def supports_prompt_file_passing(self) -> bool:
-        """Return True if Kōan may rewrite large prompts to a ``--prompt-file``.
-
-        Distinct from stdin passing: the CLI reads the file path from argv
-        (e.g. Grok Build ``--prompt-file``). Default False.
-        """
-        return False
-
-    def rewrite_prompt_for_file(
-        self,
-        cmd: Sequence[str],
-        prompt_path: str,
-    ) -> Tuple[List[str], Optional[str]]:
-        """Rewrite *cmd* to load the prompt from *prompt_path*.
-
-        Returns ``(rewritten_cmd, prompt_text)``. ``prompt_text`` is ``None``
-        when no rewrite is needed (prompt stays on argv). Providers that opt
-        into :meth:`supports_prompt_file_passing` override this.
-        """
-        return list(cmd), None
-
     def rewrite_prompt_for_stdin(
         self,
         cmd: Sequence[str],

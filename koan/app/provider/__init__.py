@@ -1110,27 +1110,6 @@ def _is_stream_json_max_turns(event: Dict[str, Any]) -> bool:
     return subtype in _STREAM_JSON_MAX_TURNS_SUBTYPES
 
 
-# Terminal ``end`` stopReasons that mean the session was aborted rather than
-# completed productively. Shape-keyed (type=end + stopReason) — used by Grok
-# Build headless when a tool permission would have prompted.
-_CANCELLED_STOP_REASONS = frozenset({"cancelled", "canceled"})
-
-
-def _is_cancelled_end_event(event: Dict[str, Any]) -> bool:
-    """Return True when a stream terminal event reports a cancelled stop.
-
-    Grok Build emits ``{"type":"end","stopReason":"Cancelled",...}`` when a
-    headless permission prompt is auto-cancelled. Treating that as soft
-    success left /implement with partial text and zero commits.
-    """
-    if str(event.get("type") or "") != "end":
-        return False
-    stop = str(
-        event.get("stopReason") or event.get("stop_reason") or ""
-    ).strip().lower()
-    return stop in _CANCELLED_STOP_REASONS
-
-
 def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Extract token usage snapshot from a stream event when present."""
     if not isinstance(event, dict):
@@ -1345,7 +1324,6 @@ def run_command_streaming(
     final_result: Optional[str] = None
     usage_snapshot: Optional[Dict[str, Any]] = None
     saw_max_turns_event = False
-    saw_cancelled_end = False
     stderr_text = ""
 
     def _flush_text_deltas() -> None:
@@ -1404,8 +1382,6 @@ def run_command_streaming(
                         final_result = result_text
                     if _is_stream_json_max_turns(event):
                         saw_max_turns_event = True
-                    if _is_cancelled_end_event(event):
-                        saw_cancelled_end = True
                 else:
                     # Non-JSON: provider doesn't speak stream-json or a stray
                     # warning slipped in. Print and remember for the fallback.
@@ -1441,20 +1417,6 @@ def run_command_streaming(
             return_text = final_result
         else:
             return_text = "\n".join(text_lines)
-
-        if saw_cancelled_end:
-            # Hard failure: cancelled sessions look like exit 0 with partial
-            # text (Grok headless permission_cancelled). Callers must not
-            # treat this as productive work.
-            _persist_stream_usage_snapshot(usage_snapshot)
-            detail = (return_text or "").strip()
-            suffix = f" Partial output: {detail[:200]}" if detail else ""
-            raise RuntimeError(
-                "CLI session cancelled (stopReason=Cancelled) — often a "
-                "headless permission denial. For Grok, ensure "
-                "skip_permissions: true so tools use --always-approve."
-                f"{suffix}"
-            )
 
         if proc.returncode != 0:
             # Max-turns is a graceful limit — return partial output so callers

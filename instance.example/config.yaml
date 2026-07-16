@@ -434,10 +434,6 @@ cli_provider: "claude"
 # Claude: adds --dangerously-skip-permissions; does not work when Koan runs as root.
 # Codex: adds --dangerously-bypass-approvals-and-sandbox so Codex can use git
 # directly. Only enable this when Koan already runs in a trusted external sandbox.
-# Grok: always uses --always-approve in headless mode (Grok cannot prompt; the
-# CLI acceptEdits flag is a no-op). Set skip_permissions: true when using
-# cli_provider: grok so autonomous missions (/implement, etc.) are not cancelled
-# on shell tools. See docs/providers/grok.md.
 # For MCP tools, use provider-specific allowlists/settings instead.
 # See docs/provider-claude.md and docs/provider-codex.md for details.
 # skip_permissions: false
@@ -527,17 +523,6 @@ models:
   #   review_mode: "glm-5.2"   # code review
   #   chat: "glm-4.7"          # chat responses
   #   lightweight: "glm-4.7"   # low-cost calls (format_outbox, pick_mission)
-
-  # Grok Build overrides (uncomment when cli_provider: grok).
-  # Use real Grok model ids from `grok models` — never haiku/sonnet/opus.
-  # Also set skip_permissions: true (see above). docs/providers/grok.md
-  # grok:
-  #   mission: "grok-4.5"
-  #   chat: "grok-composer-2.5-fast"
-  #   lightweight: "grok-composer-2.5-fast"
-  #   review_mode: "grok-4.5"
-  #   reflect: "grok-4.5"
-  #   fallback: ""             # ignored — Grok has no fallback-model flag
 
   # Ollama Launch provider overrides (uncomment to customize):
   # ollama-launch:

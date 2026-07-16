@@ -58,7 +58,7 @@ class TestPreparePromptFile:
 
     def test_extracts_prompt_and_writes_temp_file(self):
         cmd = ["claude", "-p", "my secret prompt", "--model", "opus"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         try:
             assert path is not None
             assert os.path.isfile(path)
@@ -73,26 +73,26 @@ class TestPreparePromptFile:
 
     def test_no_p_flag_returns_unchanged(self):
         cmd = ["claude", "--model", "opus"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         assert new_cmd is cmd
         assert path is None
 
     def test_p_at_end_with_no_value_returns_unchanged(self):
         cmd = ["claude", "-p"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         assert new_cmd is cmd
         assert path is None
 
     def test_already_placeholder_returns_none(self):
         cmd = ["claude", "-p", STDIN_PLACEHOLDER, "--model", "opus"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         assert new_cmd is cmd
         assert path is None
 
     def test_preserves_original_cmd(self):
         cmd = ["claude", "-p", "secret"]
         original = cmd.copy()
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         try:
             assert cmd == original  # original not mutated
             assert new_cmd is not cmd
@@ -101,7 +101,7 @@ class TestPreparePromptFile:
 
     def test_handles_unicode_prompt(self):
         cmd = ["claude", "-p", "日本語のプロンプト 🎯"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         try:
             with open(path, encoding="utf-8") as f:
                 assert f.read() == "日本語のプロンプト 🎯"
@@ -110,7 +110,7 @@ class TestPreparePromptFile:
 
     def test_handles_empty_prompt(self):
         cmd = ["claude", "-p", ""]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         try:
             assert path is not None
             with open(path) as f:
@@ -121,7 +121,7 @@ class TestPreparePromptFile:
 
     def test_copilot_gh_mode(self):
         cmd = ["gh", "copilot", "-p", "my prompt", "--model", "opus"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         try:
             assert new_cmd == ["gh", "copilot", "-p", STDIN_PLACEHOLDER, "--model", "opus"]
             with open(path) as f:
@@ -133,7 +133,7 @@ class TestPreparePromptFile:
     def test_copilot_provider_skips_stdin_passing(self, _mock):
         """Copilot provider should skip @stdin mechanism entirely."""
         cmd = ["copilot", "-p", "my prompt", "--allow-all-tools"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         assert new_cmd is cmd
         assert path is None
 
@@ -141,7 +141,7 @@ class TestPreparePromptFile:
     def test_codex_exec_prompt_uses_stdin_dash(self, _mock):
         """Codex exec reads '-' from stdin, so the prompt stays out of argv."""
         cmd = ["codex", "exec", "--sandbox", "workspace-write", "my prompt"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         try:
             assert path is not None
             assert new_cmd == ["codex", "exec", "--sandbox", "workspace-write", "-"]
@@ -157,7 +157,7 @@ class TestPreparePromptFile:
         """Regression for OSError: Argument list too long when using Codex."""
         prompt = "x" * 200_000
         cmd = ["codex", "exec", "--json", prompt]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         try:
             assert new_cmd == ["codex", "exec", "--json", "-"]
             assert prompt not in new_cmd
@@ -169,14 +169,14 @@ class TestPreparePromptFile:
     @patch("app.provider.get_provider", return_value=CodexProvider())
     def test_codex_existing_stdin_dash_returns_unchanged(self, _mock):
         cmd = ["codex", "exec", "--json", "-"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         assert new_cmd is cmd
         assert path is None
 
     @patch("app.provider.get_provider", return_value=CodexProvider())
     def test_codex_without_prompt_returns_unchanged(self, _mock):
         cmd = ["codex", "exec", "--json"]
-        new_cmd, path, _use_stdin = prepare_prompt_file(cmd)
+        new_cmd, path = prepare_prompt_file(cmd)
         assert new_cmd is cmd
         assert path is None
 

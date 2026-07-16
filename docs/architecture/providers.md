@@ -4,7 +4,7 @@ title: "Provider Architecture"
 description: "Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Haze, Grok, Ollama-launch)."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-16
+updated: 2026-07-15
 ---
 
 # Provider Architecture
@@ -46,8 +46,7 @@ prefer importing from `koan.app.provider`.
 - Copilot provider: GitHub Copilot CLI integration with tool-name mapping.
 - Haze provider: multi-backend agentic CLI with stream-json.
 - Grok provider: xAI Grok Build CLI (`cli_provider: grok`) with headless
-  `streaming-json`, Claude→Grok tool-name mapping, and always-on
-  `--always-approve` for headless tool execution.
+  `streaming-json`.
 - Ollama Launch provider: Claude CLI driven via `ollama launch claude`.
 
 Setup details live in [Provider Setup](../providers/).

@@ -134,47 +134,22 @@ class _ProviderInvocationLock:
 def prepare_prompt_file(
     cmd: List[str],
     provider: Optional[CLIProvider] = None,
-) -> Tuple[List[str], Optional[str], bool]:
+) -> Tuple[List[str], Optional[str]]:
     """Extract the prompt from *cmd* and write it to a secure temp file.
 
-    Returns ``(modified_cmd, temp_file_path, use_as_stdin)``.
-
-    - **stdin mode** (default for Claude-like providers): the prompt is
-      rewritten to a marker and the temp file is opened as the process
-      stdin. ``use_as_stdin`` is True.
-    - **prompt-file mode** (e.g. Grok Build): large prompts become
-      ``--prompt-file <path>`` on argv; stdin is left alone. ``use_as_stdin``
-      is False but the path is still returned so callers can clean it up.
-
-    If no rewrite applies, returns ``(cmd, None, False)``.
+    Returns ``(modified_cmd, temp_file_path)``. If no supported prompt argument
+    is found, it already uses a stdin marker, or the current provider does not
+    support stdin-based prompt passing, returns ``(cmd, None)`` unchanged.
     """
     provider = provider or _get_cli_provider()
-    from app.utils import koan_tmp_dir
-
-    # Prompt-file path (Grok etc.): write file, put path on argv, no stdin.
-    if provider.supports_prompt_file_passing():
-        # Probe with a placeholder path; rewrite returns the prompt body only
-        # when the provider wants file delivery (e.g. over a size threshold).
-        probe_cmd, prompt = provider.rewrite_prompt_for_file(cmd, "__koan_probe__")
-        if prompt is not None:
-            fd, path = tempfile.mkstemp(
-                suffix=".md", prefix="koan-prompt-", dir=koan_tmp_dir(),
-            )
-            try:
-                os.write(fd, prompt.encode("utf-8"))
-            finally:
-                os.close(fd)
-            os.chmod(path, 0o600)
-            new_cmd, _ = provider.rewrite_prompt_for_file(cmd, path)
-            return new_cmd, path, False
-        # Fall through: short prompts stay on argv; try stdin if supported.
-
     if not _uses_stdin_passing(provider):
-        return cmd, None, False
+        return cmd, None
 
     new_cmd, prompt = provider.rewrite_prompt_for_stdin(cmd, STDIN_PLACEHOLDER)
     if prompt is None:
-        return cmd, None, False
+        return cmd, None
+
+    from app.utils import koan_tmp_dir
 
     fd, path = tempfile.mkstemp(suffix=".md", prefix="koan-prompt-", dir=koan_tmp_dir())
     try:
@@ -183,7 +158,7 @@ def prepare_prompt_file(
         os.close(fd)
     os.chmod(path, 0o600)
 
-    return new_cmd, path, True
+    return new_cmd, path
 
 
 def _cleanup_prompt_file(path: Optional[str]) -> None:
@@ -206,9 +181,9 @@ def run_cli(
     """
     kwargs.setdefault("timeout", DEFAULT_TIMEOUT)
     provider = provider or _get_cli_provider()
-    cmd, prompt_path, use_as_stdin = prepare_prompt_file(cmd, provider=provider)
+    cmd, prompt_path = prepare_prompt_file(cmd, provider=provider)
     with _ProviderInvocationLock(provider.invocation_lock_name()):
-        if prompt_path and use_as_stdin:
+        if prompt_path:
             try:
                 with open(prompt_path) as f:
                     kwargs.pop("stdin", None)
@@ -216,13 +191,9 @@ def run_cli(
                     return subprocess.run(cmd, **kwargs)
             finally:
                 _cleanup_prompt_file(prompt_path)
-        try:
+        else:
             kwargs.setdefault("stdin", subprocess.DEVNULL)
             return subprocess.run(cmd, **kwargs)
-        finally:
-            # prompt-file mode: path is on argv; still delete after the run.
-            if prompt_path and not use_as_stdin:
-                _cleanup_prompt_file(prompt_path)
 
 
 def popen_cli(
@@ -236,7 +207,7 @@ def popen_cli(
     the process exits to close the file handle and delete the temp file.
     """
     provider = provider or _get_cli_provider()
-    cmd, prompt_path, use_as_stdin = prepare_prompt_file(cmd, provider=provider)
+    cmd, prompt_path = prepare_prompt_file(cmd, provider=provider)
     cli_lock = _ProviderInvocationLock(provider.invocation_lock_name())
     cli_lock.__enter__()
     # One outer guard so the lock is released on ANY failure after acquisition —
@@ -244,7 +215,7 @@ def popen_cli(
     # On the success path we return normally (no exception), so the lock stays
     # held until the returned cleanup()/release runs.
     try:
-        if prompt_path and use_as_stdin:
+        if prompt_path:
             stdin_file = open(prompt_path)  # noqa: SIM115
             kwargs.pop("stdin", None)
             kwargs["stdin"] = stdin_file
@@ -263,13 +234,7 @@ def popen_cli(
 
         kwargs.setdefault("stdin", subprocess.DEVNULL)
         proc = subprocess.Popen(cmd, **kwargs)
-
-        def cleanup_prompt_file_only():
-            if prompt_path and not use_as_stdin:
-                _cleanup_prompt_file(prompt_path)
-            cli_lock.release()
-
-        return proc, cleanup_prompt_file_only
+        return proc, cli_lock.release
     except Exception:
         # Any failure after the lock was taken (open(), Popen, ...) must release
         # the lock and remove the temp prompt file. _cleanup_prompt_file tolerates

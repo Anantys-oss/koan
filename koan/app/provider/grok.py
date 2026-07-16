@@ -3,7 +3,7 @@
 import re
 import shutil
 import subprocess
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 from app.provider.base import CLIProvider
 from app.run_log import log_safe
@@ -47,47 +47,20 @@ _WARNED_UNSUPPORTED: set = set()
 # Unknown values are dropped with a notice rather than passed through.
 _EFFORT_LEVELS = frozenset({"low", "medium", "high", "max", "xhigh"})
 
-# Claude tier aliases (and common Claude Code model ids) that Grok rejects.
-# When these leak in via models.default / built-in haiku defaults, omit ``-m``
-# so Grok uses its own default rather than failing with "unknown model id".
-_CLAUDE_MODEL_ALIASES = frozenset({
-    "haiku", "sonnet", "opus",
-    "claude-haiku", "claude-sonnet", "claude-opus",
-})
-_CLAUDE_MODEL_PREFIXES = ("claude-", "claude ")
-
-# Koan/Claude tool names → Grok Build internal tool IDs for ``--tools`` /
-# ``--disallowed-tools`` (see Grok headless docs). Skill has no Grok peer.
-_GROK_TOOL_NAME_MAP = {
-    "Bash": "run_terminal_cmd",
-    "Read": "read_file",
-    "Write": "write",
-    "Edit": "search_replace",
-    "Glob": "list_dir",
-    "Grep": "grep",
-    "WebFetch": "web_fetch",
-    "WebSearch": "web_search",
-}
-# Tools with no Grok allowlist equivalent — drop rather than pass a dead name.
-_GROK_TOOLS_DROP = frozenset({"Skill"})
-
-# Prompt longer than this rides ``--prompt-file`` instead of ``-p`` (ARG_MAX /
-# ps hygiene). Implement plans routinely exceed tens of KB.
-_PROMPT_FILE_THRESHOLD = 8_000
-
 
 class GrokProvider(CLIProvider):
     """xAI Grok Build CLI provider (https://x.ai/cli, https://docs.x.ai/build).
 
     Targets headless Grok Build (verified against 0.2.101):
 
-    - Prompt: ``grok -p <prompt>`` or ``--prompt-file`` for large prompts
-    - Model: ``-m <model>`` (Claude aliases refused — omit for Grok default)
+    - Prompt: ``grok -p <prompt>`` (``--single``)
+    - Model: ``-m <model>``
     - Output: ``--output-format streaming-json`` (NDJSON: thought/text/end)
       or ``json`` (single object with ``text`` + ``usage``)
-    - Permissions: always ``--always-approve`` in headless Koan (Grok's CLI
-      ``acceptEdits`` flag is a no-op; headless prompts cancel tools)
-    - Tools: ``--tools`` / ``--disallowed-tools`` with Claude→Grok name map
+    - Permissions: ``--always-approve`` when skip_permissions is set;
+      otherwise ``--permission-mode acceptEdits`` so headless runs do not
+      block on interactive prompts
+    - Tools: ``--tools`` / ``--disallowed-tools`` (comma-separated)
     - Max turns: ``--max-turns``
     - System prompt: ``--rules`` (append) / ``--system-prompt-override``
     - Effort: ``--reasoning-effort``
@@ -136,37 +109,6 @@ class GrokProvider(CLIProvider):
         # prompt channel for Grok Build headless mode.
         return False
 
-    def supports_prompt_file_passing(self) -> bool:
-        # Large prompts use ``--prompt-file`` via prepare_prompt_file.
-        return True
-
-    def rewrite_prompt_for_file(
-        self,
-        cmd: Sequence[str],
-        prompt_path: str,
-    ) -> Tuple[List[str], Optional[str]]:
-        """Replace ``-p <prompt>`` with ``--prompt-file <path>`` when large."""
-        cmd_list = list(cmd)
-        try:
-            prompt_idx = cmd_list.index("-p") + 1
-        except ValueError:
-            # Also accept long form.
-            try:
-                prompt_idx = cmd_list.index("--single") + 1
-            except ValueError:
-                return cmd_list, None
-        if prompt_idx >= len(cmd_list):
-            return cmd_list, None
-        prompt = cmd_list[prompt_idx]
-        if not isinstance(prompt, str) or not prompt:
-            return cmd_list, None
-        if len(prompt) < _PROMPT_FILE_THRESHOLD:
-            return cmd_list, None
-        rewritten = cmd_list[: prompt_idx - 1] + [
-            "--prompt-file", prompt_path,
-        ] + cmd_list[prompt_idx + 1 :]
-        return rewritten, prompt
-
     def supports_system_prompt_file(self) -> bool:
         # No dedicated file flag; callers may still pass inline system_prompt
         # via --rules. File content is inlined in build_command when needed.
@@ -190,27 +132,7 @@ class GrokProvider(CLIProvider):
                 "fallback model is not supported by Grok Build; ignored",
                 level="info",
             )
-        if not model:
-            return []
-        if self._is_claude_model_alias(model):
-            self._warn_unsupported_once(
-                f"claude_model:{model.strip().lower()}",
-                f"model {model!r} is a Claude alias unknown to Grok Build; "
-                "omitting -m (using Grok default). Set models.grok.* in "
-                "config.yaml to a real Grok model id (see `grok models`).",
-                level="warning",
-            )
-            return []
-        return ["-m", model]
-
-    @staticmethod
-    def _is_claude_model_alias(model: str) -> bool:
-        normalized = model.strip().lower()
-        if not normalized:
-            return False
-        if normalized in _CLAUDE_MODEL_ALIASES:
-            return True
-        return any(normalized.startswith(p) for p in _CLAUDE_MODEL_PREFIXES)
+        return ["-m", model] if model else []
 
     def build_output_args(self, fmt: str = "") -> List[str]:
         # Koan internal name is stream-json; Grok CLI spelling is streaming-json.
@@ -223,20 +145,11 @@ class GrokProvider(CLIProvider):
         return []
 
     def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
-        # Grok headless cannot answer interactive permission prompts. The CLI
-        # ``--permission-mode acceptEdits`` flag is a documented no-op (only
-        # ``bypassPermissions`` / ``default`` apply via the flag); headless
-        # then cancels tool calls that would prompt (``permission_cancelled``),
-        # which kills /implement after shell tools. Always auto-approve.
-        if not skip_permissions:
-            self._warn_unsupported_once(
-                "headless_always_approve",
-                "Grok headless cannot prompt for tool permissions; using "
-                "--always-approve. Set skip_permissions: true in config.yaml "
-                "to silence this notice (recommended for autonomous Grok).",
-                level="info",
-            )
-        return ["--always-approve"]
+        if skip_permissions:
+            return ["--always-approve"]
+        # Headless Koan cannot answer interactive permission prompts. Prefer
+        # acceptEdits (workspace edits without full bypass) over hanging.
+        return ["--permission-mode", "acceptEdits"]
 
     def build_tool_args(
         self,
@@ -245,47 +158,10 @@ class GrokProvider(CLIProvider):
     ) -> List[str]:
         flags: List[str] = []
         if allowed_tools:
-            mapped = self._map_tool_names(allowed_tools, side="allowed")
-            if mapped:
-                flags.extend(["--tools", ",".join(mapped)])
+            flags.extend(["--tools", ",".join(allowed_tools)])
         if disallowed_tools:
-            mapped = self._map_tool_names(disallowed_tools, side="disallowed")
-            if mapped:
-                flags.extend(["--disallowed-tools", ",".join(mapped)])
+            flags.extend(["--disallowed-tools", ",".join(disallowed_tools)])
         return flags
-
-    def _map_tool_names(self, tools: List[str], side: str) -> List[str]:
-        """Map Claude/Koan tool names to Grok internal IDs (stable order)."""
-        mapped: List[str] = []
-        seen: set = set()
-        for tool in tools:
-            name = (tool or "").strip()
-            if not name:
-                continue
-            if name in _GROK_TOOLS_DROP:
-                self._warn_unsupported_once(
-                    f"tool_drop:{name}",
-                    f"tool {name!r} has no Grok Build allowlist id; "
-                    f"omitted from {side} tools",
-                    level="info",
-                )
-                continue
-            grok_id = _GROK_TOOL_NAME_MAP.get(name)
-            if grok_id is None:
-                # Already a Grok id, or unknown — pass through with a notice
-                # when it is not a known Grok target value.
-                if name not in _GROK_TOOL_NAME_MAP.values():
-                    self._warn_unsupported_once(
-                        f"tool_passthrough:{name}",
-                        f"tool {name!r} is not a known Claude→Grok mapping; "
-                        "passing through as-is",
-                        level="info",
-                    )
-                grok_id = name
-            if grok_id not in seen:
-                seen.add(grok_id)
-                mapped.append(grok_id)
-        return mapped
 
     def build_max_turns_args(self, max_turns: int = 0) -> List[str]:
         if max_turns > 0:
@@ -360,7 +236,7 @@ class GrokProvider(CLIProvider):
     ) -> List[str]:
         """Build ``grok [flags] -p <prompt>``.
 
-        Prompt args stay last for readability and for prompt-file rewrite.
+        Prompt args stay last for readability and for any future stdin rewrite.
         When *system_prompt_file* is set, its contents are inlined via
         ``--rules`` (no dedicated file flag on Grok Build 0.2.x).
         """
