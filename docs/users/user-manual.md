@@ -1600,7 +1600,7 @@ projects:
 ```
 
 Key per-project settings:
-- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `haze`, `local`, or `ollama-launch`
+- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `haze`, `grok`, `local`, or `ollama-launch`
 - **`models`** — Override model selection per role
 - **`tools`** — Restrict available tools
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
@@ -1786,6 +1786,7 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **OpenAI Codex** | ChatGPT users who want Codex models | [codex.md](../providers/codex.md) |
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
 | **Haze** | Minimal multi-backend agentic CLI (OpenAI, OpenRouter, local endpoints) — [official docs](https://denizokcu.github.io/haze/) | [haze.md](../providers/haze.md) |
+| **Grok Build** | xAI Grok Build CLI (`grok`) with headless streaming-json | [grok.md](../providers/grok.md) |
 | **Ollama Launch** | Local/offline models behind the Claude CLI harness | [ollama-launch.md](../providers/ollama-launch.md) |
 | **OpenRouter** (via Claude CLI) | Claude CLI behavior with OpenRouter's model catalog/billing | [openrouter.md](../providers/openrouter.md) |
 

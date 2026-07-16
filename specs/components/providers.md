@@ -1,16 +1,16 @@
 ---
 type: component-spec
 title: "Component Spec — CLI Provider Abstraction"
-description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze) behind one `CLIProvider` contract."
+description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-14
+updated: 2026-07-15
 ---
 
 # Component Spec — CLI Provider Abstraction
 
 **Package:** `koan/app/provider/` (`base.py`, `claude.py`, `cline.py`, `codex.py`,
-`copilot.py`, `haze.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
+`copilot.py`, `haze.py`, `grok.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
 
 ## Purpose
 
@@ -28,7 +28,8 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
        ├─ cline.py     → ClineProvider
        ├─ codex.py     → CodexProvider (quota via stream-json summary only)
        ├─ copilot.py   → CopilotProvider (with tool-name mapping)
-       └─ haze.py      → HazeProvider (haze ≥0.7.0 headless stream-json)
+       ├─ haze.py      → HazeProvider (haze ≥0.7.0 headless stream-json)
+       └─ grok.py      → GrokProvider (xAI Grok Build headless streaming-json)
 ```
 
 ## Key types & functions
@@ -119,8 +120,11 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   `modelUsage` (no top-level `model` field); codex surfaces quota only via the
   stream-json summary (`rate_limit_rejected`, stdout JSONL — never stderr); haze
   reports usage only in its terminal result envelope with **camelCase** fields
-  (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`reasoningTokens`).
-  Detectors read the summary stream, not assistant text.
+  (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`reasoningTokens`);
+  Grok Build reports **snake_case** `usage` on the terminal ``end`` event
+  (`input_tokens`/`output_tokens`/`cache_read_input_tokens`/…) plus optional
+  `modelUsage` map (camelCase per model id). Shared extractors are shape-keyed
+  on field names. Detectors read the summary stream, not assistant text.
 - **`tool_use` summary grammar carries an optional input preview.**
   `_summarize_stream_event()` renders a `tool_use` block as
   `[cli] assistant — tool_use: <name>[: <input-preview>]`. The optional
@@ -173,6 +177,26 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   project dir, whose CLAUDE.md/AGENTS.md context haze would ingest (~12K
   tokens per probe); probe errors never block work. Invocation lock:
   `haze-cli` (shared `~/.haze/settings.json` state).
+- **Grok Build headless contract (verified 0.2.101).** `GrokProvider` targets
+  xAI Grok Build headless mode: `grok -p <prompt> --output-format streaming-json`
+  (Koan internal name `stream-json` maps to CLI spelling `streaming-json`).
+  NDJSON event vocabulary is shape-keyed: `thought`/`text` carry incremental
+  `data` deltas; terminal `end` carries `stopReason`, `usage` (snake_case),
+  `num_turns`, and optional `modelUsage` — **not** the final assistant body.
+  Final text is the concatenation of `text.data` deltas (joined with `""`, not
+  newlines). `--output-format json` returns a single object with top-level
+  `text` + `usage` (probe mode). Permissions: `skip_permissions` →
+  `--always-approve`; otherwise `--permission-mode acceptEdits` so headless
+  runs never block on interactive prompts. Tools map to `--tools` /
+  `--disallowed-tools`; max turns to `--max-turns`; system prompt append to
+  `--rules` (file prompts are inlined); effort to `--reasoning-effort`; resume
+  to `--resume`. Unsupported inputs (MCP flags, plugin dirs, fallback model)
+  warn once and are skipped — never silently accepted. Stdin prompt passing is
+  off. Quota/auth: stderr trusted; stdout only on non-zero exit with an
+  error-marker gate. Pre-flight probe uses `--output-format json -p ok` from an
+  empty scratch dir. Invocation lock: `grok-cli` (shared `~/.grok/` state).
+  Recorded samples: `koan/tests/grok_samples.py`. Operator docs:
+  `docs/providers/grok.md`.
 
 ## Integration points
 

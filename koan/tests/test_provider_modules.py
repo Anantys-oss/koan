@@ -625,12 +625,18 @@ class TestProviderRegistry:
         assert "claude" in _PROVIDERS
         assert "copilot" in _PROVIDERS
         assert "haze" in _PROVIDERS
+        assert "grok" in _PROVIDERS
         assert "ollama-launch" in _PROVIDERS
 
     def test_haze_is_known_provider(self):
         from app.provider import is_known_provider, known_providers
         assert is_known_provider("haze")
         assert "haze" in known_providers()
+
+    def test_grok_is_known_provider(self):
+        from app.provider import is_known_provider, known_providers
+        assert is_known_provider("grok")
+        assert "grok" in known_providers()
 
     @patch("app.provider.get_provider_name", return_value="claude")
     def test_get_provider_claude(self, mock_name):
