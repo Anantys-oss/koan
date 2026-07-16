@@ -425,7 +425,8 @@ tools:
 
 # CLI provider — which AI CLI to use as the backend
 # Options: "claude" (default), "codex" (OpenAI Codex CLI), "copilot" (GitHub Copilot CLI),
-#          "local" (local LLM via OpenAI-compatible API), "ollama-launch" (Ollama-managed Claude CLI)
+#          "haze", "grok" (xAI Grok Build CLI), "ollama-launch" (Ollama-managed Claude CLI)
+#          ("local" was removed — use ollama-launch)
 # Can also be set via KOAN_CLI_PROVIDER env var (overrides this)
 cli_provider: "claude"
 

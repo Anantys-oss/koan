@@ -18,7 +18,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`architecture/memory.md`](docs/architecture/memory.md) — Details Koan's Markdown+JSONL memory store, the SQLite FTS5 secondary index (confidence-weighted BM25 ranking, dual-write, fallback), entry schema, read/write paths, and compaction.
 - [`architecture/mission-lifecycle.md`](docs/architecture/mission-lifecycle.md) — Explains the mission queue format and lifecycle (Pending/In Progress/Done/Failed), org-wide missions, branch prep, direct skill dispatch, scheduling, recovery/retries, and missions.md integrity/size-bound safeguards.
 - [`architecture/overview.md`](docs/architecture/overview.md) — High-level architecture summary of Koan's two main processes (bridge and agent loop), major subsystems, and the human-decides safety model.
-- [`architecture/providers.md`](docs/architecture/providers.md) — Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Local).
+- [`architecture/providers.md`](docs/architecture/providers.md) — Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Haze, Grok, Ollama-launch).
 - [`architecture/shared-state.md`](docs/architecture/shared-state.md) — Explains Koan's file-based (no-database) shared state under instance/, locking/atomic-write conventions, per-uid temp/scratch directories, and configuration sources.
 - [`architecture/skills-system.md`](docs/architecture/skills-system.md) — Describes the skill definition format, dispatch paths, the private implementation review gate (challenge loop, cost controls, dedup), and the documentation contract for skill changes.
 
@@ -64,6 +64,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`providers/codex.md`](docs/providers/codex.md) — Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting.
 - [`providers/copilot.md`](docs/providers/copilot.md) — Setup guide and feature/tool-mapping differences for using GitHub Copilot CLI as Kōan's provider.
 - [`providers/haze.md`](docs/providers/haze.md) — Setup and behavior guide for using haze (multi-backend agentic CLI) as Kōan's provider, including stream-json integration, usage accounting, capabilities and limitations.
+- [`providers/grok.md`](docs/providers/grok.md) — Setup and behavior guide for using xAI's Grok Build CLI as Kōan's provider, including headless streaming-json, auth, models, and limitations.
 - [`providers/local.md`](docs/providers/local.md) — Explains that the `local` Ollama provider was removed and points to `ollama-launch` or a custom Claude CLI endpoint as the supported replacements.
 - [`providers/ollama-launch.md`](docs/providers/ollama-launch.md) — Documents the `ollama-launch` provider, which runs the Claude Code CLI through `ollama launch claude` for full tool-use/streaming parity with native Claude.
 - [`providers/ollama-wrapper.md`](docs/providers/ollama-wrapper.md) — Describes the `bin/ollama-claude` wrapper that routes Koan's default `claude` provider through a local Ollama model via `ollama launch claude`, without changing `cli_provider`.
@@ -105,7 +106,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`components/core.md`](specs-components/core.md) — Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on.
 - [`components/git-github.md`](specs-components/git-github.md) — Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows.
 - [`components/issue-tracking.md`](specs-components/issue-tracking.md) — Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer.
-- [`components/providers.md`](specs-components/providers.md) — Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot) behind one `CLIProvider` contract.
+- [`components/providers.md`](specs-components/providers.md) — Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract.
 - [`components/skills.md`](specs-components/skills.md) — Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness).
 - [`components/web.md`](specs-components/web.md) — Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, and the invariants keeping the two surfaces from drifting.
 
