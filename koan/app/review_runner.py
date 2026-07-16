@@ -1595,21 +1595,30 @@ def _normalize_review_data(data: object) -> object:
     return data
 
 
-def _parse_review_json(raw_output: str) -> Optional[dict]:
-    """Attempt to parse and validate JSON review output.
+def _parse_and_validate_review(
+    raw_output: str,
+) -> Tuple[Optional[dict], Optional[list]]:
+    """Parse and validate JSON review output, surfacing validation errors.
 
     Handles JSON wrapped in markdown code fences or surrounded by
-    preamble/postamble text. Returns the validated review dict, or
-    None if parsing/validation fails.
+    preamble/postamble text.
+
+    Returns ``(data, errors)``:
+      - ``(data, None)`` on success;
+      - ``(None, errors)`` when the output parsed as JSON but failed schema
+        validation — ``errors`` is the human-readable list, so a retry can
+        tell the model exactly which rule it broke (e.g. a verdict that
+        contradicts the finding severities), not just "invalid JSON";
+      - ``(None, None)`` when the output could not be parsed as JSON at all.
     """
     json_text = _extract_json_text(raw_output)
     if json_text is None:
-        return None
+        return None, None
 
     try:
         data = json.loads(json_text)
     except (json.JSONDecodeError, ValueError):
-        return None
+        return None, None
 
     data = _normalize_review_data(data)
 
@@ -1619,8 +1628,52 @@ def _parse_review_json(raw_output: str) -> Optional[dict]:
             f"[review_runner] JSON validation errors: {errors}",
             file=sys.stderr,
         )
-        return None
+        return None, errors
+    return data, None
+
+
+def _parse_review_json(raw_output: str) -> Optional[dict]:
+    """Attempt to parse and validate JSON review output.
+
+    Thin wrapper over :func:`_parse_and_validate_review` for callers that only
+    need the parsed dict (returns ``None`` on any failure). Kept because many
+    call sites and the eval harness expect a single ``Optional[dict]`` return.
+    """
+    data, _ = _parse_and_validate_review(raw_output)
     return data
+
+
+def _build_review_retry_prompt(
+    prompt: str, validation_errors: Optional[list],
+) -> str:
+    """Build the retry prompt after a failed first review response.
+
+    Distinguishes the two failure modes so the fix guidance actually reaches
+    the model:
+      - When the output parsed as JSON but broke a review rule
+        (``validation_errors`` non-empty — e.g. a verdict contradicting the
+        finding severities), list the exact rule violations. Otherwise the
+        model would be re-prompted about JSON validity and never learn the
+        verdict rule, so a semantically-good review gets discarded.
+      - When the output was not valid JSON at all, ask for valid JSON only.
+    """
+    if validation_errors:
+        rules = "\n".join(f"- {error}" for error in validation_errors)
+        return (
+            prompt
+            + "\n\nIMPORTANT: Your previous response was valid JSON but broke "
+            "these review rules:\n"
+            + rules
+            + "\n\nFix every rule above and respond again with ONLY a valid "
+            "JSON object matching the schema described above. No markdown, "
+            "no commentary."
+        )
+    return (
+        prompt
+        + "\n\nIMPORTANT: Your previous response was not valid JSON. "
+        "You MUST respond with ONLY a valid JSON object matching the "
+        "schema described above. No markdown, no text, just JSON."
+    )
 
 
 def _safe_code_fence(content: str) -> str:
@@ -2800,13 +2853,15 @@ def _run_review_analysis(
 ) -> Tuple[Optional[dict], str, Optional[str]]:
     """Run the provider review and parse it into structured review data.
 
-    Invokes the provider once, retries once with an explicit JSON-only
-    instruction when the first response is not valid JSON, then runs the
-    reflection pass over any findings.
+    Invokes the provider once, then retries once if the first response fails
+    to parse or breaks a review rule — the retry guidance is tailored to the
+    failure mode (rule violations are listed when the output was valid JSON,
+    otherwise a JSON-only instruction), so the model actually learns what to
+    fix. Then runs the reflection pass over any findings.
 
     Returns ``(review_data, raw_output, error)``:
       - ``review_data``: parsed + reflected review dict, or ``None`` when the
-        provider produced output that could not be parsed as JSON.
+        provider produced output that could not be parsed/validated.
       - ``raw_output``: the first provider response ("" when the provider
         produced nothing); callers may use it for a regex fallback.
       - ``error``: short provider error string, set only when the provider
@@ -2817,17 +2872,12 @@ def _run_review_analysis(
     if not raw_output:
         return None, "", error
 
-    review_data = _parse_review_json(raw_output)
+    review_data, validation_errors = _parse_and_validate_review(raw_output)
     if review_data is None:
-        retry_prompt = (
-            prompt
-            + "\n\nIMPORTANT: Your previous response was not valid JSON. "
-            "You MUST respond with ONLY a valid JSON object matching the "
-            "schema described above. No markdown, no text, just JSON."
-        )
+        retry_prompt = _build_review_retry_prompt(prompt, validation_errors)
         retry_output, _ = _run_claude_review(retry_prompt, project_path, project_name=pname)
         if retry_output:
-            review_data = _parse_review_json(retry_output)
+            review_data, _ = _parse_and_validate_review(retry_output)
 
     if review_data is not None and review_data.get("file_comments"):
         from app.cli_provider import resolve_role_provider

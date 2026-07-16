@@ -23,6 +23,8 @@ from app.review_runner import (
     _format_repliable_comments,
     _normalize_review_data,
     _parse_review_json,
+    _parse_and_validate_review,
+    _build_review_retry_prompt,
     _format_review_as_markdown,
     _extract_json_text,
     _build_review_footer,
@@ -1011,6 +1013,67 @@ class TestParseReviewJson:
         })
         result = _parse_review_json(raw)
         assert result is None
+
+    def test_validate_surfaces_verdict_rule_errors(self):
+        """A verdict that contradicts severities yields its rule errors, not None.
+
+        The retry path needs the specific rule the model broke (otherwise it
+        gets re-prompted about JSON validity and the guidance never lands).
+        """
+        data = {
+            "file_comments": [{
+                "file": "a.py", "line_start": 1, "line_end": 1,
+                "severity": "critical", "title": "t", "comment": "c",
+                "code_snippet": "",
+            }],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+        }
+        parsed, errors = _parse_and_validate_review(json.dumps(data))
+        assert parsed is None
+        assert errors and any("lgtm" in e and "severities" in e for e in errors)
+
+    def test_validate_returns_none_errors_on_unparseable(self):
+        parsed, errors = _parse_and_validate_review("not json at all")
+        assert parsed is None
+        assert errors is None
+
+    def test_validate_returns_data_no_errors_on_success(self):
+        parsed, errors = _parse_and_validate_review(json.dumps(VALID_REVIEW_JSON))
+        assert parsed is not None
+        assert errors is None
+
+
+# ---------------------------------------------------------------------------
+# _build_review_retry_prompt
+# ---------------------------------------------------------------------------
+
+class TestBuildReviewRetryPrompt:
+    """The retry prompt must match the failure mode so guidance reaches the model."""
+
+    BASE = "Review this PR."
+
+    def test_validation_errors_list_the_broken_rules(self):
+        """Valid JSON that broke a rule → list the rules, not 'not valid JSON'."""
+        prompt = _build_review_retry_prompt(
+            self.BASE, ["review_summary.lgtm must match finding severities "
+                        "(critical/warning findings are blocking)"],
+        )
+        assert self.BASE in prompt
+        assert "broke these review rules" in prompt
+        assert "must match finding severities" in prompt
+        assert "not valid JSON" not in prompt
+
+    def test_parse_failure_asks_for_valid_json(self):
+        """Unparseable output (no errors) → the JSON-only instruction."""
+        prompt = _build_review_retry_prompt(self.BASE, None)
+        assert self.BASE in prompt
+        assert "not valid JSON" in prompt
+        assert "broke these review rules" not in prompt
+
+    def test_empty_error_list_treated_as_parse_failure(self):
+        """An empty error list is falsy → JSON-only instruction (defensive)."""
+        prompt = _build_review_retry_prompt(self.BASE, [])
+        assert "not valid JSON" in prompt
 
 
 # ---------------------------------------------------------------------------
