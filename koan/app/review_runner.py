@@ -2575,6 +2575,14 @@ def _build_verdict_body(
     When *include_blockers* is True and the verdict is REQUEST_CHANGES,
     appends a concise bullet list of critical + warning finding titles
     extracted from the structured review data.
+
+    Defensive backstop only: the ``approve`` flag is normally kept consistent
+    with the categorized finding severities upstream (schema validation rejects
+    a contradictory verdict before posting, and post-reflection reconciliation
+    derives it from the final findings). This builder runs *after* the review
+    comment is posted, so if the invariant is ever broken it degrades — logs
+    the mismatch and returns ``""`` — rather than raising and aborting the run
+    past an irreversible side effect.
     """
     comments = (
         review_data.get("file_comments") or []
@@ -2586,13 +2594,15 @@ def _build_verdict_body(
         if isinstance(c, dict) and c.get("severity") in ("critical", "warning")
     ]
     if not approve and not blockers:
-        raise ValueError(
-            "Request-changes verdict requires at least one categorized blocker"
-        )
+        log("review", "Verdict invariant broken: REQUEST_CHANGES verdict has no "
+            "critical/warning finding; submitting verdict with an empty body "
+            "instead of raising after the review comment was posted.")
+        return ""
     if approve and blockers:
-        raise ValueError(
-            "Approve verdict does not match categorized finding severities"
-        )
+        log("review", "Verdict invariant broken: APPROVE verdict contradicts "
+            "critical/warning findings; submitting verdict with an empty body "
+            "instead of raising after the review comment was posted.")
+        return ""
 
     if not body_enabled:
         return ""

@@ -6138,21 +6138,27 @@ class TestBuildVerdictBody:
         assert body == ""
 
     def test_request_changes_no_review_data(self):
-        """A blocked verdict without categorized blockers is rejected."""
-        from app.review_runner import _build_verdict_body
-        with pytest.raises(ValueError, match="categorized blocker"):
-            _build_verdict_body(
-                approve=False, review_data=None,
-                body_enabled=True, include_blockers=True,
-            )
+        """A blocked verdict with no categorized blockers degrades, not raises.
 
-    def test_rejects_approve_flag_that_disagrees_with_findings(self):
+        The builder runs after the review comment is posted, so a broken
+        invariant must never abort the run: it logs and returns an empty body
+        (the REQUEST_CHANGES state still shows in the Reviewers panel).
+        """
         from app.review_runner import _build_verdict_body
-        with pytest.raises(ValueError, match="does not match"):
-            _build_verdict_body(
-                approve=True, review_data=_WARNING_ONLY_REVIEW_OBJ,
-                body_enabled=True, include_blockers=True,
-            )
+        body = _build_verdict_body(
+            approve=False, review_data=None,
+            body_enabled=True, include_blockers=True,
+        )
+        assert body == ""
+
+    def test_degrades_when_approve_flag_disagrees_with_findings(self):
+        """An APPROVE flag that contradicts blockers degrades, not raises."""
+        from app.review_runner import _build_verdict_body
+        body = _build_verdict_body(
+            approve=True, review_data=_WARNING_ONLY_REVIEW_OBJ,
+            body_enabled=True, include_blockers=True,
+        )
+        assert body == ""
 
     def test_blockers_include_critical_and_warning(self):
         """Both critical and warning findings appear in the blocker list."""

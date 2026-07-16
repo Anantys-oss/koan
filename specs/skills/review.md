@@ -80,9 +80,14 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   referenced by failed checklist items are restored; if reflection would remove
   every blocker from a primary blocking review, the original blockers are
   restored. Checklist references are then remapped to the final finding array,
-  and `lgtm` is derived again from those final severities. A REQUEST_CHANGES
-  verdict without at least one rendered 🔴 Blocking or 🟡 Important finding is
-  rejected rather than posted as a generic "issues found" alert.
+  and `lgtm` is derived again from those final severities. Schema validation
+  rejects a contradictory verdict (REQUEST_CHANGES with no 🔴 Blocking / 🟡
+  Important finding, or APPROVE despite one) before anything is posted. As a
+  defensive backstop, the verdict body builder (`_build_verdict_body`) — which
+  runs *after* the review comment is already posted — never raises on such an
+  inconsistency: it logs and submits the verdict with an empty body, so a
+  broken invariant can never abort the run post-side-effect (and never renders
+  a blocker-less "issues found" alert).
 - **Verdict presentation is severity-graded, not the summary paragraph.** The
   formal APPROVE / request-changes verdict body (`_build_verdict_body`) is wrapped
   in a native GitHub alert whose color grades the outcome: `> [!TIP]` (green) when
