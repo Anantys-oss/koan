@@ -376,6 +376,49 @@ class TestDetectQuotaExhaustionCreditMessages:
         )
         assert detect_quota_exhaustion(error_json) is True
 
+    def test_detects_used_all_available_credits(self):
+        """xAI/OpenAI-compatible team billing: 'used all available credits'."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("your team has used all available credits") is True
+        assert detect_quota_exhaustion("used all your credits for this month") is True
+
+    def test_detects_reached_monthly_spending_limit(self):
+        """xAI/OpenAI-compatible team billing: 'reached its monthly spending limit'."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("reached its monthly spending limit") is True
+        assert detect_quota_exhaustion("you have hit your spending limit") is True
+
+    def test_permission_denied_credit_error_is_stdout_safe(self):
+        """The real 403 permission-denied billing error must be caught even on
+        stdout (the strict, stdout-safe matcher), because ClaudeProvider's
+        zai-claude binary surfaces it as a ``{"type":"error"}`` stream-json
+        event on stdout, not stderr."""
+        from app.quota_handler import _strict_quota_match, detect_quota_exhaustion
+
+        # Wording from a real xAI 403 (team id is a placeholder). The nested
+        # ``\\n`` is the escaped JSON form — one physical line, no real newline.
+        msg = (
+            '{"type":"error","message":"Internal error: {\\n \\"message\\": '
+            '\\"API error (status 403 Forbidden): permission-denied: Your team '
+            '00000000-0000-0000-0000-000000000000 has either used all available '
+            'credits or reached its monthly spending limit. To continue making '
+            'API requests\\"}"}'
+        )
+        assert _strict_quota_match(msg) is True
+        assert detect_quota_exhaustion(msg) is True
+
+    def test_no_false_positive_on_spending_limit_feature_discussion(self):
+        """An agent designing a spending-limit *feature* must not trip quota
+        detection — only an exhaustion verb ('reached/hit') before the phrase
+        counts, not a bare mention."""
+        from app.quota_handler import detect_quota_exhaustion, _strict_quota_match
+
+        prose = "Let's add a monthly spending limit field to the billing settings page."
+        assert detect_quota_exhaustion(prose) is False
+        assert _strict_quota_match(prose) is False
+
 
 class TestExtractResetInfo:
     """Test extract_reset_info function."""
