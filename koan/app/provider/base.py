@@ -49,6 +49,11 @@ class CLIProvider:
 
     name: str = ""
 
+    # Test/dev-only providers (e.g. the fail-closed ``fake`` stub) set this so
+    # UI-facing surfaces can exclude them via ``selectable_providers()`` while
+    # they stay in the registry for name-based lookup and config validation.
+    test_only: bool = False
+
     def __init__(self, binary_path: str = ""):
         """Optional per-instance binary path override.
 

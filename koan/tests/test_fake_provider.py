@@ -20,6 +20,7 @@ from app.provider import (
     is_known_provider,
     known_providers,
     reset_provider,
+    selectable_providers,
 )
 from app.provider.fake import (
     ALLOW_ENV,
@@ -62,8 +63,17 @@ class TestRegistration:
     def test_in_known_providers_list(self):
         assert "fake" in known_providers()
 
+    def test_excluded_from_selectable_providers(self):
+        # test_only flavors are hidden from UI-facing pickers (dashboard form)...
+        assert "fake" not in selectable_providers()
+        # ...but real providers still appear.
+        assert "claude" in selectable_providers()
+
     def test_name_attribute(self):
         assert FakeProvider.name == "fake"
+
+    def test_test_only_flag_set(self):
+        assert FakeProvider.test_only is True
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +168,10 @@ class TestDenyPath:
         msg = str(exc.value)
         assert ALLOW_ENV in msg  # tells the operator exactly what to set
         assert "fall back" in msg.lower()  # explains it will not silently swap
+        # The real-provider hint is derived from the registry, not hardcoded:
+        # it lists real flavors and never suggests `fake` itself.
+        assert "claude" in msg
+        assert "fake) via" not in msg  # `fake` never appears in the hint list
 
     def test_get_provider_by_name_raises(self, _deny_fake):
         with pytest.raises(FakeProviderNotAllowed):

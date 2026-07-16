@@ -71,6 +71,12 @@ cli:
 deterministic answer) is intentionally **out of scope** for this foundation and
 lands in a follow-up. Until then the provider returns empty/minimal output.
 
+The provider is **hidden from the dashboard provider dropdown** — it is flagged
+`test_only`, so UI-facing pickers (`selectable_providers()`) exclude it while it
+remains in the registry for name-based lookup and config validation. It is still
+selectable via `KOAN_CLI_PROVIDER=fake` or `cli_provider: fake` (with the allow
+flag set).
+
 ## Production impact
 
 None for normal instances — the provider cannot run without the explicit

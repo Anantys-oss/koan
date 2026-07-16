@@ -137,7 +137,13 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   during finalization. This is still not a silent swap: no work is routed to `fake`,
   and the primary selection paths (`get_provider`/`get_provider_for_role`) still
   error loudly. Response routing (canned/scripted output) is out of scope for this
-  foundation — `build_command` is a no-op stub.
+  foundation — `build_command` is a no-op stub. `FakeProvider` sets the base-class
+  `test_only = True` flag: it stays in `_PROVIDERS` (so `known_providers`,
+  name-based lookup, and config validation resolve it), but UI-facing pickers use
+  `selectable_providers()` — which filters `test_only` flavors — so `fake` never
+  appears as a selectable option in the dashboard provider dropdown. The refusal
+  message derives its real-provider hint from the registry (`known_providers()`
+  minus `fake`) so it does not drift as providers are added.
 - **Quota/usage extraction is provider-specific.** Claude exposes usage in
   `modelUsage` (no top-level `model` field); codex surfaces quota only via the
   stream-json summary (`rate_limit_rejected`, stdout JSONL — never stderr); haze

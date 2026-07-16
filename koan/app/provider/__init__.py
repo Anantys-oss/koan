@@ -188,8 +188,22 @@ def known_providers() -> list:
 
     Single source of truth so dashboard forms stay in sync with the registry
     instead of hardcoding a provider list that drifts as providers are added.
+    Includes test/dev-only flavors (e.g. ``fake``) so name-based lookup and
+    config validation resolve them; use :func:`selectable_providers` for
+    UI-facing pickers that should hide them.
     """
     return sorted(_PROVIDERS)
+
+
+def selectable_providers() -> list:
+    """Sorted registered providers minus test/dev-only ones (``test_only``).
+
+    UI-facing surfaces (the dashboard provider dropdown) use this so a
+    fail-closed test stub like ``fake`` never appears as a selectable option on
+    a production instance, while it stays in :func:`known_providers` for
+    name-based lookup and config validation.
+    """
+    return sorted(name for name, cls in _PROVIDERS.items() if not cls.test_only)
 
 
 def get_provider_by_name(name: str) -> CLIProvider:

@@ -49,6 +49,26 @@ def fake_provider_allowed() -> bool:
     return os.environ.get(ALLOW_ENV, "").strip().lower() in _TRUTHY
 
 
+def _real_provider_hint() -> str:
+    """Slash-joined names of the real (non-``fake``) registered providers.
+
+    Derived from the registry so the refusal message stays accurate as
+    providers are added, instead of a hardcoded list that silently drifts.
+    Imported lazily to avoid an import cycle (``known_providers`` lives in
+    ``app.provider.__init__``, which imports this module); falls back to a
+    static list if the registry is somehow unavailable.
+    """
+    try:
+        from app.provider import known_providers
+
+        names = [n for n in known_providers() if n != "fake"]
+        if names:
+            return "/".join(names)
+    except Exception:
+        pass
+    return "claude/codex/copilot/cline/haze/ollama-launch"
+
+
 class FakeProvider(CLIProvider):
     """Fail-closed, no-op CLI provider for deterministic tests and local dev.
 
@@ -65,6 +85,8 @@ class FakeProvider(CLIProvider):
     """
 
     name = "fake"
+    # Hidden from UI-facing pickers (dashboard form) — see selectable_providers().
+    test_only = True
 
     def __init__(self, binary_path: str = ""):
         """Construct the fake provider, refusing unless explicitly allowed.
@@ -82,7 +104,7 @@ class FakeProvider(CLIProvider):
                 "and never invokes a real LLM. Refusing to run so Kōan does not "
                 "silently fall back to a real provider. To enable it (test/dev "
                 f"only), set {ALLOW_ENV}=1; otherwise select a real provider "
-                "(claude/codex/copilot/cline/haze/ollama-launch) via "
+                f"({_real_provider_hint()}) via "
                 "KOAN_CLI_PROVIDER or the cli_provider config key."
             )
 
