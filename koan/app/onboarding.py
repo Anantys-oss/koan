@@ -572,6 +572,7 @@ PROVIDER_TOOLS = {
     "codex": "codex",
     "copilot": "gh",
     "haze": "haze",
+    "grok": "grok",
     "ollama-launch": "ollama",
 }
 
@@ -581,6 +582,7 @@ PROVIDERS = [
     ("codex", "OpenAI Codex CLI"),
     ("copilot", "GitHub Copilot CLI"),
     ("haze", "haze (multi-backend agentic CLI)"),
+    ("grok", "Grok Build CLI (xAI)"),
     ("ollama-launch", "Ollama Launch (local models via ollama)"),
 ]
 

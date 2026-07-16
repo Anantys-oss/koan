@@ -2125,7 +2125,7 @@ def get_cli_binary_for_shell() -> str:
 def get_cli_provider_name() -> str:
     """Get the configured CLI provider name for display.
 
-    Returns "claude", "codex", "copilot", or "ollama-launch".
+    Returns a registered provider flavor (e.g. "claude", "codex", "grok").
     """
     from app.cli_provider import get_provider_name
     return get_provider_name()

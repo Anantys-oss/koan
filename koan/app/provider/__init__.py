@@ -45,6 +45,7 @@ from app.provider.cline import ClineProvider  # noqa: F401
 from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
 from app.provider.haze import HazeProvider  # noqa: F401
+from app.provider.grok import GrokProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
 
 
@@ -118,6 +119,7 @@ _PROVIDERS = {
     "codex": CodexProvider,
     "copilot": CopilotProvider,
     "haze": HazeProvider,
+    "grok": GrokProvider,
     "ollama-launch": OllamaLaunchProvider,
 }
 
@@ -924,6 +926,26 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
         # marker above. See quota_handler._rate_limit_exhausted.
         return f"[cli] rate_limit_ok: {status or 'unknown'}{label}"
 
+    # Grok Build-style NDJSON (streaming-json): thought/text deltas + terminal
+    # ``end`` envelope. Shape-keyed on type + ``data`` / stopReason — no
+    # provider-name checks. See tests/grok_samples.py.
+    if etype == "thought" and isinstance(event.get("data"), str):
+        return "[cli] assistant — thinking"
+    if etype == "text" and isinstance(event.get("data"), str):
+        preview = _first_line(event.get("data"))
+        if preview:
+            return f"[cli] assistant — text: {_drop_part_sep(preview)}"
+        return "[cli] assistant — streaming"
+    if etype == "end":
+        stop = str(event.get("stopReason") or event.get("stop_reason") or "").strip()
+        turns = event.get("num_turns")
+        parts = ["end"]
+        if stop:
+            parts.append(stop)
+        if isinstance(turns, int):
+            parts.append(f"{turns} turns")
+        return f"[cli] result: {', '.join(parts)}"
+
     item = event.get("item")
     if isinstance(item, dict):
         item_type = item.get("type", "")
@@ -976,6 +998,15 @@ def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
                 text = block.get("text")
                 if isinstance(text, str) and text:
                     chunks.append(text)
+
+    # Grok Build-style assistant text deltas: {"type":"text","data":"…"}.
+    # These are token/word deltas that must be concatenated with "" (see
+    # run_command_streaming delta flush). Not the same as Claude content
+    # blocks or haze message_end segments.
+    if event.get("type") == "text":
+        data = event.get("data")
+        if isinstance(data, str) and data:
+            chunks.append(data)
 
     # Haze-style segment completion: ``message_end`` carries the finalized
     # text for one assistant segment (one event per segment id). Cumulative
@@ -1041,15 +1072,21 @@ def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
                 "task.completed",
                 "turn_complete",
                 "task_complete",
+                # Grok Build terminal envelope carries usage/stopReason but not
+                # the assistant text — return None so callers fall back to
+                # accumulated text deltas.
+                "end",
             }
         ):
             return None
-        for key in ("output_text", "last_agent_message"):
+        if etype == "end":
+            return None
+        for key in ("output_text", "last_agent_message", "text"):
             result = event.get(key)
             if isinstance(result, str) and result:
                 return result
         return None
-    for key in ("result", "output_text", "last_agent_message"):
+    for key in ("result", "output_text", "last_agent_message", "text"):
         result = event.get(key)
         if isinstance(result, str) and result:
             return result
@@ -1107,16 +1144,31 @@ def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
 
         input_tokens = int(usage.get("input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
-        cached_input = int(usage.get("cached_input_tokens", 0) or 0)
-        if cached_input > 0:
-            input_tokens = max(0, input_tokens - cached_input)
+        # Claude/Codex: ``cached_input_tokens`` is a subset of input — subtract.
+        # Grok Build: ``cache_read_input_tokens`` may exceed ``input_tokens`` on
+        # multi-turn runs (cache spans prior turns). Only subtract when cache
+        # is a subset of input so we never zero out a real input count.
+        if "cached_input_tokens" in usage:
+            cached_input = int(usage.get("cached_input_tokens", 0) or 0)
+            if cached_input > 0:
+                input_tokens = max(0, input_tokens - cached_input)
+        else:
+            cached_input = int(usage.get("cache_read_input_tokens", 0) or 0)
+            if 0 < cached_input <= input_tokens:
+                input_tokens = max(0, input_tokens - cached_input)
         if input_tokens or output_tokens or cached_input:
+            model = str(event.get("model") or "")
+            if not model:
+                # Grok Build puts the model id in modelUsage keys, not event.model.
+                model_usage = event.get("modelUsage")
+                if isinstance(model_usage, dict) and model_usage:
+                    model = str(next(iter(model_usage)))
             return {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cache_read_input_tokens": cached_input,
                 "cache_creation_input_tokens": 0,
-                "model": str(event.get("model") or "unknown"),
+                "model": model or "unknown",
             }
 
     payload = event.get("payload")
@@ -1263,11 +1315,22 @@ def run_command_streaming(
     raw_lines = deque(maxlen=2000)  # for error reporting (terminal lines)
     # text_lines IS the fallback return value when no result event arrives —
     # it must stay unbounded or long sessions would silently lose output.
+    # Block-style providers (Claude, Haze segments) append full segments and
+    # are joined with newlines. Delta-style providers (Grok Build text/data)
+    # buffer into text_delta_parts and flush as one segment so "hel"+"lo"
+    # becomes "hello", not "hel\\nlo".
     text_lines: List[str] = []  # fallback return value when no result event
+    text_delta_parts: List[str] = []
     final_result: Optional[str] = None
     usage_snapshot: Optional[Dict[str, Any]] = None
     saw_max_turns_event = False
     stderr_text = ""
+
+    def _flush_text_deltas() -> None:
+        if text_delta_parts:
+            text_lines.append("".join(text_delta_parts))
+            text_delta_parts.clear()
+
     try:
         proc, cleanup = popen_cli(
             cmd,
@@ -1305,7 +1368,15 @@ def run_command_streaming(
                     # before the final ``result`` event (timeout, watchdog
                     # kill, SIGPIPE) still returns whatever the provider managed
                     # to print, instead of silently returning "".
-                    text_lines.extend(_extract_assistant_text_chunks(event))
+                    chunks = _extract_assistant_text_chunks(event)
+                    if (
+                        event.get("type") == "text"
+                        and isinstance(event.get("data"), str)
+                    ):
+                        text_delta_parts.extend(chunks)
+                    else:
+                        _flush_text_deltas()
+                        text_lines.extend(chunks)
                     result_text = _extract_result_text(event)
                     if result_text is not None:
                         final_result = result_text
@@ -1314,8 +1385,10 @@ def run_command_streaming(
                 else:
                     # Non-JSON: provider doesn't speak stream-json or a stray
                     # warning slipped in. Print and remember for the fallback.
+                    _flush_text_deltas()
                     print(stripped, flush=True)
                     text_lines.append(stripped)
+            _flush_text_deltas()
             stderr_text = proc.stderr.read() if proc.stderr else ""
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as e:
