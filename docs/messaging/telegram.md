@@ -4,7 +4,7 @@ title: "Telegram Setup Guide"
 description: "Step-by-step guide to configuring Kōan with Telegram (bot creation, chat ID, env vars), including group-chat privacy-mode setup and troubleshooting."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-07-08
+updated: 2026-07-16
 ---
 
 # Telegram Setup Guide
@@ -153,6 +153,20 @@ Once fixed you'll instead see:
 > **Quick check**: even with Privacy Mode on, a `/help` typed in the group
 > should get a reply — commands are always delivered. If it does, your chat ID
 > is correct and Privacy Mode is the only remaining blocker.
+
+### Messages Kōan ignores
+
+Even with full group visibility, Kōan stays silent for messages that aren't
+meant for it:
+
+- **Addressed to someone else** — a message opening with `@other-user` is
+  handled by that participant, not the bot. Only `@BotName …` (or no leading
+  mention) is processed.
+- **Internal comments** — a message opening with **two or more minus
+  characters** (e.g. `-- server was down`) is treated as an internal channel
+  note / advertisement. Kōan does not react or reply. A single leading minus
+  (`-5`, `-v`) is not affected. This applies to Slack too, since both providers
+  share the same bridge loop.
 
 ## Architecture Notes
 
