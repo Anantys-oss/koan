@@ -3884,6 +3884,21 @@ class TestDowngradeIfBurningFast:
         assert mode == _MODE_DOWNGRADE["implement"]
         assert prev == "implement"
 
+    @patch("app.burn_rate.BurnRateSnapshot")
+    def test_review_never_downgrades_to_wait(self, mock_snap_cls):
+        """Burn-rate soft-throttles only; absolute budget owns pause.
+
+        Production false pause: review→wait from a short-window burn spike
+        paused the agent at 66% session usage. Floor must stay at review.
+        """
+        mock_snap = MagicMock()
+        mock_snap.time_to_exhaustion.return_value = 5.0
+        mock_snap_cls.return_value = mock_snap
+        mode, prev = _downgrade_if_burning_fast(Path("/tmp"), 66.0, "review")
+        assert mode == "review"
+        assert prev is None
+        mock_snap_cls.assert_not_called()
+
 
 # === Tests: _maybe_warn_burn_rate ===
 

@@ -513,17 +513,17 @@ class TestBurnRateDowngrade:
         """Seed rolling buffer for a desired observed burn rate.
 
         Records 5 samples evenly spaced so total_cost / span = pct_per_min.
+        Span is 20 minutes (≥ MIN_SPAN_MINUTES) so the estimator accepts it.
         """
         base = datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc)
-        # 5 samples × pct_per_min each over 4 minutes spread.
-        # Total = 5 * pct_per_min, span = 4 → rate = 5/4 * pct_per_min.
-        # Use cost = (4/5) * pct_per_min so total/span = pct_per_min.
-        per_sample = pct_per_min * 4.0 / 5.0
+        # 5 samples over 20 minutes. Total cost / 20 = pct_per_min
+        # → per_sample = (20/5) * pct_per_min = 4 * pct_per_min.
+        per_sample = pct_per_min * 4.0
         for i in range(5):
             burn_rate.record_run(
                 tmp_path,
                 cost_pct=per_sample,
-                timestamp=base + timedelta(minutes=i),
+                timestamp=base + timedelta(minutes=i * 5),
             )
 
     def test_downgrades_deep_to_implement_when_exhaustion_imminent(self, tmp_path):

@@ -4,7 +4,7 @@ title: "Grok Build CLI Provider"
 description: "Setup and behavior guide for using xAI's Grok Build CLI as Kōan's provider, including headless streaming-json, auth, models, and limitations."
 tags: [providers]
 created: 2026-07-15
-updated: 2026-07-15
+updated: 2026-07-16
 ---
 
 # Grok Build CLI Provider
@@ -138,6 +138,7 @@ agent does not block forever on permission prompts.
 | Auth failures | `export XAI_API_KEY=…` or run interactive `grok` login once |
 | Rate limits pause Koan | Expected; wait or switch provider / raise quota |
 | Empty skill output | Confirm `--output-format streaming-json` events still match samples in `koan/tests/grok_samples.py` |
+| Burn-rate alerts look absurd (e.g. 200–300%/h) | Token accounting is correct; the % is vs `usage.session_token_limit` (Claude-style estimate, default 500k/5h). Grok API billing is pay-as-you-go — either tune `session_token_limit` to your real budget, or set `usage.unlimited_quota: true` / `budget_mode: disabled` to skip proactive % gating. Burn-rate soft-throttles only (never forces wait) and needs ≥15 min of samples. |
 
 ## Related
 
