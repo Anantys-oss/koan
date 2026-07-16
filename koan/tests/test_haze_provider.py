@@ -256,7 +256,9 @@ class TestHazeStdinRewrite:
         from app.cli_exec import prepare_prompt_file
 
         cmd = self.provider.build_command("large prompt", output_format="stream-json")
-        new_cmd, prompt_path = prepare_prompt_file(cmd, provider=self.provider)
+        new_cmd, prompt_path, _use_stdin = prepare_prompt_file(
+            cmd, provider=self.provider,
+        )
         assert prompt_path is None
         assert new_cmd == cmd
         assert new_cmd[-2:] == ["-p", "large prompt"]
@@ -270,7 +272,9 @@ class TestHazeStdinRewrite:
 
         cmd = self.provider.build_command("large prompt", output_format="stream-json")
         with patch.object(HazeProvider, "supports_stdin_prompt_passing", return_value=True):
-            new_cmd, prompt_path = prepare_prompt_file(cmd, provider=self.provider)
+            new_cmd, prompt_path, _use_stdin = prepare_prompt_file(
+            cmd, provider=self.provider,
+        )
         try:
             assert prompt_path is not None
             assert "-p" not in new_cmd

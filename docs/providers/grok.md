@@ -4,7 +4,7 @@ title: "Grok Build CLI Provider"
 description: "Setup and behavior guide for using xAI's Grok Build CLI as Kōan's provider, including headless streaming-json, auth, models, and limitations."
 tags: [providers]
 created: 2026-07-15
-updated: 2026-07-15
+updated: 2026-07-16
 ---
 
 # Grok Build CLI Provider
@@ -45,6 +45,15 @@ export XAI_API_KEY="xai-..."
 
 ```yaml
 cli_provider: "grok"
+skip_permissions: true   # recommended — see Permissions below
+models:
+  grok:
+    mission: "grok-4.5"
+    chat: "grok-composer-2.5-fast"
+    lightweight: "grok-composer-2.5-fast"
+    review_mode: "grok-4.5"
+    reflect: "grok-4.5"
+    fallback: ""   # ignored — Grok Build has no fallback-model flag
 ```
 
 **Option B: environment**
@@ -55,22 +64,10 @@ export KOAN_CLI_PROVIDER=grok
 
 The env var overrides `config.yaml` when both are set.
 
-### 4. Model selection (optional)
-
-```yaml
-cli_provider: "grok"
-models:
-  grok:
-    mission: "grok-4.5"
-    chat: "grok-4.5"
-    lightweight: "grok-4.5"
-    review_mode: "grok-4.5"
-    fallback: ""   # ignored — Grok Build has no fallback-model flag
-```
-
-When unset, Grok Build uses its own default model (`~/.grok/config.toml` /
-interactive `/model`). Confirm available models with `grok inspect` after
-install.
+Confirm available models with `grok models` after install. Do **not** leave
+Claude tier names (`haiku` / `sonnet` / `opus`) in `models.default` when
+running Grok without a `models.grok` override — Kōan will omit invalid `-m`
+values, but lightweight paths work better with real Grok ids.
 
 Per-role binary pin (same pattern as other flavors):
 
@@ -85,26 +82,55 @@ cli:
 Kōan invokes headless Grok Build with streaming output:
 
 ```text
-grok --always-approve|--permission-mode acceptEdits \
+grok --always-approve \
      [--tools …] [-m <model>] --output-format streaming-json \
-     [--max-turns N] [-p "<prompt>"]
+     [--max-turns N] (-p "<prompt>" | --prompt-file <path>)
 ```
 
 | Concern | Behavior |
 |---|---|
-| Prompt | `-p` / `--single` (argv). Stdin prompt passing is not used. |
+| Prompt | Short prompts: `-p` / `--single`. Large prompts: `--prompt-file` (temp file). Stdin not used. |
 | Stream | `--output-format streaming-json` → NDJSON `thought` / `text` / `end` |
 | Final text | Concatenated `text` deltas (`data` fields); `end` has usage, not body |
 | Usage | Snake_case `usage` on `end` + optional `modelUsage` map |
-| Permissions | `skip_permissions: true` → `--always-approve`; otherwise `--permission-mode acceptEdits` (avoids interactive hangs) |
-| Tools | `--tools` / `--disallowed-tools` (comma-separated) |
+| Permissions | **Always** `--always-approve` for headless (see below) |
+| Tools | Claude names mapped to Grok ids on `--tools` / `--disallowed-tools` |
 | System prompt | `--rules` (append). File paths are inlined into `--rules` |
 | Effort | `--reasoning-effort` when configured |
 | Sessions | `--resume <id>` when resume is requested |
 | Concurrency | Invocation lock `grok-cli` (shared `~/.grok/` state) |
+| Cancelled | `end` with `stopReason: Cancelled` is a **hard failure** |
 
 Live progress lines appear as `[cli] …` in `make logs` (thinking, text
 previews, terminal `end`).
+
+### Permissions (required reading)
+
+Grok Build headless **cannot** answer interactive permission prompts. Grok’s
+own docs state that the CLI `--permission-mode` flag only effectively applies
+`bypassPermissions` and `default` — passing `acceptEdits` does **not** enable
+that policy. Any tool call that would prompt is **cancelled immediately**
+(`stopReason: Cancelled`, `permission_cancelled`), which is how `/implement`
+failed with “No committed changes after two passes” while `/plan` (mostly
+read-only tools) still worked.
+
+Kōan therefore always passes `--always-approve` for Grok headless invokes.
+Set `skip_permissions: true` in `config.yaml` to match other providers and
+silence the once-per-process notice. Restrict tools for read-only roles
+(e.g. `/review` / `/plan` already pass narrow allowlists).
+
+### Tool name mapping
+
+| Kōan / Claude | Grok `--tools` id |
+|---|---|
+| `Read` | `read_file` |
+| `Write` | `write` |
+| `Edit` | `search_replace` |
+| `Bash` | `run_terminal_cmd` |
+| `Grep` | `grep` |
+| `Glob` | `list_dir` |
+| `WebFetch` | `web_fetch` |
+| `Skill` | omitted (no Grok peer) |
 
 ## Capabilities and limitations
 
@@ -112,9 +138,10 @@ previews, terminal `end`).
 
 - Headless missions and skill runners via `run_command` / `run_command_streaming`
 - Stream progress + token usage accounting
-- Model override (`-m`)
-- Tool allow/deny lists (as supported by Grok Build)
+- Model override (`-m`), with Claude-alias rejection
+- Tool allow/deny lists with Claude→Grok mapping
 - Max turns, reasoning effort, session resume
+- Large-prompt `--prompt-file` delivery
 - Quota / auth detection (stderr + failed stdout); soft pre-flight probe
 
 **Not supported / ignored with a notice:**
@@ -122,12 +149,10 @@ previews, terminal `end`).
 - Fallback model (`models.*.fallback`)
 - MCP config via CLI flags
 - Plugin directory flags
-- Claude-identical tool vocabulary (pass Claude names; Grok maps or ignores unknown tool ids)
 
 **Safety note:** `--always-approve` auto-approves tool execution. Prefer
-restricting tools for read-only roles (e.g. `/review` already passes
-`Read,Glob,Grep` only). Headless without skip still uses `acceptEdits` so the
-agent does not block forever on permission prompts.
+restricting tools for read-only roles rather than relying on interactive
+permission prompts (which headless cannot honor).
 
 ## Troubleshooting
 
@@ -137,6 +162,8 @@ agent does not block forever on permission prompts.
 | Provider not ready / not installed | `which grok` and reinstall from https://x.ai/cli |
 | Auth failures | `export XAI_API_KEY=…` or run interactive `grok` login once |
 | Rate limits pause Koan | Expected; wait or switch provider / raise quota |
+| `Couldn't set model 'haiku'` | Set `models.grok.lightweight` (etc.) to a real Grok id; avoid Claude defaults |
+| `stopReason: Cancelled` / no commits after `/implement` | Headless permission cancel — ensure provider emits `--always-approve` (fixed in current Grok provider); set `skip_permissions: true` |
 | Empty skill output | Confirm `--output-format streaming-json` events still match samples in `koan/tests/grok_samples.py` |
 
 ## Related
