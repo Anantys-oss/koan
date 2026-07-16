@@ -166,7 +166,8 @@ meant for it:
   characters** (e.g. `-- server was down`) is treated as an internal channel
   note / advertisement. Kōan does not react or reply. A single leading minus
   (`-5`, `-v`) is not affected. This applies to Slack too, since both providers
-  share the same bridge loop.
+  share the same bridge loop, and to your primary 1:1 chat — a `-- aside` typed
+  in a direct message is dropped the same way.
 
 ## Architecture Notes
 
