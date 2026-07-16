@@ -10,7 +10,7 @@ updated: 2026-07-16
 # Component Spec — CLI Provider Abstraction
 
 **Package:** `koan/app/provider/` (`base.py`, `claude.py`, `cline.py`, `codex.py`,
-`copilot.py`, `haze.py`, `grok.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
+`copilot.py`, `fake.py`, `haze.py`, `grok.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
 
 ## Purpose
 
@@ -28,6 +28,7 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
        ├─ cline.py     → ClineProvider
        ├─ codex.py     → CodexProvider (quota via stream-json summary only)
        ├─ copilot.py   → CopilotProvider (with tool-name mapping)
+       ├─ fake.py      → FakeProvider (fail-closed test/dev stub; never a real LLM)
        ├─ haze.py      → HazeProvider (haze ≥0.7.0 headless stream-json)
        └─ grok.py      → GrokProvider (xAI Grok Build headless streaming-json)
 ```
@@ -114,8 +115,29 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   `config.get_skip_permissions()` stays a pure config read — moving the root
   check there would silently strip Codex full access and Cline auto-approve
   for root deployments, whose CLIs accept the setting.
-- **Tool-name vocabularies differ per provider.** Copilot maps its own names; the
-  abstraction must translate, not leak provider-specific tool names upward.
+- **The `fake` provider is fail-closed by construction.** `FakeProvider` is a
+  test/dev stub that never invokes a real LLM. Its `__init__` raises
+  `FakeProviderNotAllowed` (a `RuntimeError`) unless `KOAN_ALLOW_FAKE_PROVIDER`
+  is truthy (`1`/`true`/`yes`/`on`). The guard lives in the constructor — not at
+  selection time — so **every** resolution path that instantiates a provider
+  (`get_provider`, `get_provider_by_name`, `get_provider_for_role`,
+  `get_fallback_provider`, all via `_PROVIDERS[name]()`) fails closed identically.
+  Selecting `fake` without the flag must **error**, never silently fall back to a
+  real provider. `binary()` returns the POSIX no-op `true` (never `claude`) so the
+  built command runs harmlessly with empty output; `is_available()` is
+  unconditionally `True` (no external binary) and `has_api_quota()` is `False`
+  (no budget gating). The `RuntimeError` base means the broad `except Exception`
+  guards in `quota_handler._detect_quota_for_provider` /
+  `cli_errors._detect_auth_for_provider` degrade conservatively when a name-based
+  lookup of `fake` is attempted without the flag. **`get_fallback_provider` is the
+  one exception to "fail loud":** it is contractually `Optional` and is called on
+  *any* non-zero mission exit (`mission_executor._maybe_fallback_provider_rerun`),
+  so a `cli.fallback: fake` without the flag must return `None` (decline the
+  fallback), not raise — otherwise an unrelated real-provider failure would crash
+  during finalization. This is still not a silent swap: no work is routed to `fake`,
+  and the primary selection paths (`get_provider`/`get_provider_for_role`) still
+  error loudly. Response routing (canned/scripted output) is out of scope for this
+  foundation — `build_command` is a no-op stub.
 - **Quota/usage extraction is provider-specific.** Claude exposes usage in
   `modelUsage` (no top-level `model` field); codex surfaces quota only via the
   stream-json summary (`rate_limit_rejected`, stdout JSONL — never stderr); haze

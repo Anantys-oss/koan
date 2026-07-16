@@ -44,6 +44,7 @@ from app.provider.claude import ClaudeProvider  # noqa: F401
 from app.provider.cline import ClineProvider  # noqa: F401
 from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
+from app.provider.fake import FakeProvider, FakeProviderNotAllowed  # noqa: F401
 from app.provider.haze import HazeProvider  # noqa: F401
 from app.provider.grok import GrokProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
@@ -118,6 +119,7 @@ _PROVIDERS = {
     "cline": ClineProvider,
     "codex": CodexProvider,
     "copilot": CopilotProvider,
+    "fake": FakeProvider,
     "haze": HazeProvider,
     "grok": GrokProvider,
     "ollama-launch": OllamaLaunchProvider,
@@ -248,7 +250,23 @@ def get_fallback_provider(project_name: str = "") -> Optional[CLIProvider]:
         return None
     if not flavor or flavor not in _PROVIDERS:
         return None
-    return _PROVIDERS[flavor](binary_path=path)
+    try:
+        return _PROVIDERS[flavor](binary_path=path)
+    except FakeProviderNotAllowed:
+        # A fail-closed provider (``fake``) configured as the section-wide
+        # fallback must not crash the recovery path — ``get_fallback_provider``
+        # is contractually Optional and is called on *any* non-zero mission
+        # exit (see mission_executor._maybe_fallback_provider_rerun), including
+        # real-provider failures unrelated to ``fake``. Decline it so the
+        # original result stands. The PRIMARY selection paths
+        # (get_provider/get_provider_for_role) still error loudly, so this is
+        # not a silent swap: no work is ever routed to ``fake`` here.
+        print(
+            f"[provider] cli.fallback {flavor!r} is fail-closed and not "
+            "enabled (KOAN_ALLOW_FAKE_PROVIDER unset); ignoring fallback",
+            file=sys.stderr,
+        )
+        return None
 
 
 def resolve_role_provider(model_key: str, project_name: str = "") -> CLIProvider:
