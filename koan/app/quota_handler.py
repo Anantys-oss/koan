@@ -63,6 +63,11 @@ _STRICT_QUOTA_PATTERNS = [
     # mentions a "monthly spending limit" feature must not trip a pause.
     r"used all (?:available )?credits?",
     r"(?:reached|hit|exceeded)[^\n]{0,25}spending limit",
+    # xAI's fixed remediation clause on the same 403: "please purchase more
+    # credits or raise your spending limit". Imperative remediation wording,
+    # not prose an agent emits while discussing billing, so it stays safe in
+    # stdout while surviving a reword of the leading exhaustion sentence.
+    r"purchase more credits?",
     r"billing.*(?:limit|period.*exceeded)",
     r"usage.*cap.*(?:reached|exceeded|hit)",
     # Claude Code CLI: "You've hit your session limit · resets 6pm (UTC)"

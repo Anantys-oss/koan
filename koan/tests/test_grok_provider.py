@@ -434,6 +434,46 @@ class TestGrokFailureDetection:
         # And it must NOT be mistaken for an auth failure (403 != 401).
         assert not self.provider.detect_auth_failure(stdout_text=stdout, exit_code=1)
 
+    def test_quota_on_issue_2412_verbatim_streaming_json(self):
+        """The exact wire form reported in issue #2412 is quota, not auth.
+
+        grok emits the 403 twice: an ``{"type":"error"}`` streaming-json event
+        on stdout and an ``Error: Internal error:`` block on stderr. Both carry
+        the ``http_status`` field and the full remediation clause.
+        """
+        stdout = (
+            '{"type":"error","message":"Internal error: {\\n  \\"message\\": '
+            '\\"API error (status 403 Forbidden): permission-denied: Your team '
+            "deadb-a58d-46ca-80a1-beefbeef has either used all available "
+            "credits or reached its monthly spending limit. To continue making "
+            "API requests, please purchase more credits or raise your spending "
+            'limit.\\\\n\\\\nRequest URL: https://cli-chat-proxy.grok.com/v1/'
+            'responses\\",\\n  \\"http_status\\": 403\\n}"}'
+        )
+        stderr = (
+            "Error: Internal error: {\n"
+            '  "message": "API error (status 403 Forbidden): permission-denied: '
+            "Your team deadb-a58d-46ca-80a1-beefbeef has either used all "
+            "available credits or reached its monthly spending limit. To "
+            "continue making API requests, please purchase more credits or "
+            'raise your spending limit.",\n'
+            '  "http_status": 403\n'
+            "}"
+        )
+        assert self.provider.detect_quota_exhaustion(stdout_text=stdout, exit_code=1)
+        assert self.provider.detect_quota_exhaustion(stderr_text=stderr, exit_code=1)
+        assert not self.provider.detect_auth_failure(stderr_text=stderr, exit_code=1)
+
+    def test_quota_on_purchase_more_credits_remediation(self):
+        """Remediation clause alone flags exhaustion if the lead sentence changes."""
+        assert self.provider.detect_quota_exhaustion(
+            stderr_text=(
+                "To continue making API requests, please purchase more credits "
+                "or raise your spending limit."
+            ),
+            exit_code=1,
+        )
+
     def test_quota_ignores_billing_prose_without_exhaustion_verb(self):
         """Discussing a spending limit feature is not quota exhaustion."""
         assert not self.provider.detect_quota_exhaustion(

@@ -55,6 +55,19 @@ class TestDetectQuotaExhaustion:
 
         assert detect_quota_exhaustion("You have reached your monthly spending limit.") is True
 
+    def test_detects_purchase_more_credits_remediation(self):
+        """xAI's remediation clause alone is enough to flag exhaustion.
+
+        Guards against a future reword of the leading "used all available
+        credits" sentence — the "purchase more credits" remediation is fixed.
+        """
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion(
+            "To continue making API requests, please purchase more credits "
+            "or raise your spending limit."
+        ) is True
+
     def test_spending_limit_prose_without_verb_does_not_trigger(self):
         """Discussing a spending-limit feature is not exhaustion."""
         from app.quota_handler import detect_quota_exhaustion
