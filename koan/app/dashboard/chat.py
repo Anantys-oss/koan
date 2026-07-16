@@ -131,9 +131,15 @@ def chat_send():
         save_conversation_message(state.CONVERSATION_HISTORY_FILE, "user", text)
 
         prompt = _build_dashboard_prompt(text)
-        project_path = os.environ.get("KOAN_CURRENT_PROJECT_PATH", str(state.KOAN_ROOT))
+        koan_root = str(state.KOAN_ROOT)
+        project_path = os.environ.get("KOAN_CURRENT_PROJECT_PATH", koan_root)
         allowed_tools_list = get_allowed_tools().split(",")
         models = get_model_config()
+        # Operator chat at KOAN_ROOT must not load contributor CLAUDE.md /
+        # .claude skills (#2379). When a project path is selected, keep
+        # project_context so that project's docs still load (mission default).
+        at_koan_root = os.path.realpath(project_path) == os.path.realpath(koan_root)
+        project_context = not at_koan_root
 
         cmd = build_full_command(
             prompt=prompt,
@@ -141,6 +147,7 @@ def chat_send():
             model=models["chat"],
             fallback=models["fallback"],
             max_turns=1,
+            project_context=project_context,
         )
 
         try:
@@ -169,6 +176,7 @@ def chat_send():
                 model=models["chat"],
                 fallback=models["fallback"],
                 max_turns=1,
+                project_context=project_context,
             )
             try:
                 result = run_cli(

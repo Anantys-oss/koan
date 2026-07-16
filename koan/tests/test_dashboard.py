@@ -787,6 +787,55 @@ class TestChatSend:
         captured = capsys.readouterr()
         assert "model overloaded" in captured.out
 
+    @patch("app.dashboard.chat.get_allowed_tools", return_value="")
+    @patch("app.dashboard.chat.get_tools_description", return_value="")
+    @patch("app.dashboard.chat.save_conversation_message")
+    @patch("app.dashboard.chat.load_recent_history", return_value=[])
+    @patch("app.dashboard.chat.format_conversation_history", return_value="")
+    @patch("app.dashboard.chat.subprocess.run")
+    def test_chat_suppresses_project_context_at_koan_root(
+        self, mock_run, mock_fmt, mock_hist, mock_save,
+        mock_tools_desc, mock_tools, app_client, instance_dir, monkeypatch,
+    ):
+        """Default cwd is KOAN_ROOT — must not load contributor tooling (#2379)."""
+        mock_run.return_value = MagicMock(stdout="ok", returncode=0, stderr="")
+        monkeypatch.delenv("KOAN_CURRENT_PROJECT_PATH", raising=False)
+        with patch.object(dashboard.state, "CONVERSATION_HISTORY_FILE", instance_dir / "history.jsonl"), \
+             patch.object(dashboard.state, "SOUL_FILE", instance_dir / "soul.md"), \
+             patch.object(dashboard.state, "SUMMARY_FILE", instance_dir / "memory" / "summary.md"), \
+             patch.object(dashboard.state, "JOURNAL_DIR", instance_dir / "journal"):
+            resp = app_client.post("/chat/send", data={"message": "hello", "mode": "chat"})
+        assert resp.get_json()["ok"] is True
+        cmd = mock_run.call_args[0][0]
+        assert "--setting-sources" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
+
+    @patch("app.dashboard.chat.get_allowed_tools", return_value="")
+    @patch("app.dashboard.chat.get_tools_description", return_value="")
+    @patch("app.dashboard.chat.save_conversation_message")
+    @patch("app.dashboard.chat.load_recent_history", return_value=[])
+    @patch("app.dashboard.chat.format_conversation_history", return_value="")
+    @patch("app.dashboard.chat.subprocess.run")
+    def test_chat_keeps_project_context_for_selected_project(
+        self, mock_run, mock_fmt, mock_hist, mock_save,
+        mock_tools_desc, mock_tools, app_client, instance_dir, tmp_path, monkeypatch,
+    ):
+        """When dashboard chat is scoped to a project path, keep project docs."""
+        mock_run.return_value = MagicMock(stdout="ok", returncode=0, stderr="")
+        project = tmp_path / "workspace" / "my-toolkit"
+        project.mkdir(parents=True)
+        monkeypatch.setenv("KOAN_CURRENT_PROJECT_PATH", str(project))
+        with patch.object(dashboard.state, "CONVERSATION_HISTORY_FILE", instance_dir / "history.jsonl"), \
+             patch.object(dashboard.state, "SOUL_FILE", instance_dir / "soul.md"), \
+             patch.object(dashboard.state, "SUMMARY_FILE", instance_dir / "memory" / "summary.md"), \
+             patch.object(dashboard.state, "JOURNAL_DIR", instance_dir / "journal"):
+            resp = app_client.post("/chat/send", data={"message": "hello", "mode": "chat"})
+        assert resp.get_json()["ok"] is True
+        cmd = mock_run.call_args[0][0]
+        # project_context=True → Claude should not force --setting-sources user
+        if "--setting-sources" in cmd:
+            assert cmd[cmd.index("--setting-sources") + 1] != "user"
+
     def test_chat_send_with_project_tag(self, app_client, instance_dir):
         with patch.object(dashboard.state, "MISSIONS_FILE", instance_dir / "missions.md"):
             resp = app_client.post("/chat/send", data={

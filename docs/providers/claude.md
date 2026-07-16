@@ -341,9 +341,9 @@ This is a Claude-specific feature — other providers don't support it.
 ## Project context isolation (KOAN_ROOT sessions)
 
 A deployed instance is a git clone of the Koan repo. Several **runtime**
-CLI sessions intentionally use `cwd=KOAN_ROOT` (chat bridge, contemplative,
-rituals, outbox formatting). Without isolation, Claude Code would
-auto-load **project** scope from that directory:
+CLI sessions intentionally use `cwd=KOAN_ROOT` (Telegram chat bridge,
+dashboard web chat, contemplative, rituals, outbox formatting). Without
+isolation, Claude Code would auto-load **project** scope from that directory:
 
 - root `CLAUDE.md` / `AGENTS.md` (contributor instructions)
 - `.claude/skills/` (e.g. `brain`, `speckit-*`)
