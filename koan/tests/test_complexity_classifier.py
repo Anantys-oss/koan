@@ -1,6 +1,6 @@
 """Tests for app.complexity_classifier — mission tier pre-classification."""
 
-import pytest
+import json
 from unittest.mock import MagicMock, patch
 
 from app.complexity_classifier import MissionTier, _parse_tier_response, _DEFAULT_TIER
@@ -60,6 +60,62 @@ class TestParseTierResponse:
     def test_json_embedded_in_text(self):
         response = 'Here is my answer:\n{"tier": "simple", "rationale": "one file"}\nDone.'
         assert _parse_tier_response(response) == MissionTier.SIMPLE
+
+    def test_grok_streaming_json_envelope(self):
+        """Grok streaming-json NDJSON must not force MEDIUM fallback."""
+        payload = '{"tier": "trivial", "rationale": "typo fix"}'
+        # Split across deltas the way Grok Build emits token chunks.
+        response = "\n".join(
+            [
+                '{"type":"thought","data":"classifying"}',
+                f'{{"type":"text","data":{json.dumps(payload[:12])}}}',
+                f'{{"type":"text","data":{json.dumps(payload[12:])}}}',
+                (
+                    '{"type":"end","stopReason":"EndTurn",'
+                    '"usage":{"input_tokens":1,"output_tokens":1}}'
+                ),
+            ]
+        )
+        assert _parse_tier_response(response) == MissionTier.TRIVIAL
+
+    def test_claude_result_envelope(self):
+        """Claude --output-format json wraps the model payload in result=."""
+        response = json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": '{"tier": "simple", "rationale": "one file"}',
+            }
+        )
+        assert _parse_tier_response(response) == MissionTier.SIMPLE
+
+    def test_grok_json_object_envelope(self):
+        """Grok --output-format json uses a top-level text field."""
+        response = json.dumps(
+            {
+                "text": '{"tier": "complex", "rationale": "architecture"}',
+                "stopReason": "EndTurn",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            }
+        )
+        assert _parse_tier_response(response) == MissionTier.COMPLEX
+
+    def test_haze_stream_result_envelope(self):
+        """Haze stream-json terminal result carries the assistant text."""
+        response = "\n".join(
+            [
+                '{"type":"message_start","id":"m1"}',
+                (
+                    '{"type":"message_end","id":"m1","text":'
+                    '"{\\"tier\\": \\"medium\\", \\"rationale\\": \\"multi\\"}"}'
+                ),
+                (
+                    '{"type":"result","status":"complete","result":'
+                    '"{\\"tier\\": \\"medium\\", \\"rationale\\": \\"multi\\"}"}'
+                ),
+            ]
+        )
+        assert _parse_tier_response(response) == MissionTier.MEDIUM
 
 
 # ---------------------------------------------------------------------------
