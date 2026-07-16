@@ -17,6 +17,13 @@ _GROK_QUOTA_PATTERNS = [
     r"(?:exceeded|reached|exhausted|insufficient).*\bquota\b",
     r"usage.*(?:limit|cap).*(?:reached|exceeded|hit)",
     r"billing.*(?:limit|quota|credit)",
+    # xAI/OpenAI-compatible billing exhaustion: a 403 permission-denied whose
+    # body says the team used all credits or hit its spending cap. Semantically
+    # quota, not auth — keep it out of the _GROK_AUTH_PATTERNS.
+    r"(?:used\s+all\s+)?(?:available\s+)?credits?\b.*(?:used|exhausted|depleted|remaining)",
+    r"(?:used|exhausted|depleted|out)\s+(?:all\s+)?(?:available\s+|of\s+)?credits?",
+    r"(?:monthly\s+)?spending\s+limit",
+    r"insufficient\s+credits?",
     r"HTTP\s*429",
     r"status[\s:]+429",
     r"too many requests",

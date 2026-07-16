@@ -415,6 +415,33 @@ class TestGrokFailureDetection:
             exit_code=0,
         )
 
+    def test_quota_on_spending_limit_403(self):
+        """A 403 'used all available credits / monthly spending limit' error
+        is a billing/quota exhaustion, not an auth failure. It arrives on the
+        stdout error channel as a JSON error object (exit != 0)."""
+        stdout = (
+            '{"type":"error","message":"Internal error: {\\n \\"message\\": '
+            '\\"API error (status 403 Forbidden): permission-denied: Your team '
+            'ca275ff2-a58d-46ca-80a1-71973ece4ef2 has either used all available '
+            'credits or reached its monthly spending limit. To continue making '
+            'API requests\\"}"}'
+        )
+        assert self.provider.detect_quota_exhaustion(
+            stdout_text=stdout,
+            exit_code=1,
+        )
+        # Must not be misread as an auth failure.
+        assert not self.provider.detect_auth_failure(
+            stdout_text=stdout,
+            exit_code=1,
+        )
+
+    def test_quota_on_spending_limit_stderr(self):
+        assert self.provider.detect_quota_exhaustion(
+            stderr_text="permission-denied: reached its monthly spending limit",
+            exit_code=1,
+        )
+
     def test_auth_on_stderr(self):
         assert self.provider.detect_auth_failure(
             stderr_text="not authenticated — run `grok login` or set XAI_API_KEY",
