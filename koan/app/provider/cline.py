@@ -164,6 +164,7 @@ class ClineProvider(CLIProvider):
         system_prompt_file: str = "",
         effort: str = "",
         resume_session_id: str = "",
+        project_context: bool = True,
     ) -> List[str]:
         """Build a complete Cline CLI command.
 
@@ -187,6 +188,7 @@ class ClineProvider(CLIProvider):
 
         # Global flags come before the positional prompt
         cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(self.build_model_args(model, fallback))
         cmd.extend(self.build_output_args(output_format))
         cmd.extend(self.build_max_turns_args(max_turns))

@@ -363,12 +363,14 @@ class GrokProvider(CLIProvider):
         system_prompt_file: str = "",
         effort: str = "",
         resume_session_id: str = "",
+        project_context: bool = True,
     ) -> List[str]:
         """Build ``grok [flags] -p <prompt>``.
 
         Prompt args stay last for readability and for prompt-file rewrite.
         When *system_prompt_file* is set, its contents are inlined via
         ``--rules`` (no dedicated file flag on Grok Build 0.2.x).
+        *project_context* is accepted for API parity (base no-op for grok).
         """
         sys_args: List[str] = []
         if system_prompt_file:
@@ -392,6 +394,7 @@ class GrokProvider(CLIProvider):
         cmd = [self.binary()]
         if resume_session_id and self.supports_session_resume():
             cmd.extend(self.build_resume_args(resume_session_id))
+        cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(self.build_permission_args(skip_permissions))
         cmd.extend(sys_args)
         cmd.extend(self.build_tool_args(allowed_tools, disallowed_tools))
