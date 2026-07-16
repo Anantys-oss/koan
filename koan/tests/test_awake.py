@@ -2386,6 +2386,30 @@ class TestChatToolsSecurity:
         assert tools_arg == "Read,Glob,Grep"
         assert "Bash" not in tools_arg
 
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="Read")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.cli_exec.run_cli")
+    def test_handle_chat_suppresses_project_context(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc, mock_fmt,
+        mock_hist, mock_save, tmp_path,
+    ):
+        """Chat runs at KOAN_ROOT — must not load contributor tooling (#2379)."""
+        mock_run.return_value = MagicMock(stdout="ok", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""):
+            handle_chat("hello")
+        cmd = mock_run.call_args[0][0]
+        assert "--setting-sources" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
+
 
 # ---------------------------------------------------------------------------
 # /mission command

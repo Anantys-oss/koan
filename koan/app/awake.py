@@ -504,12 +504,15 @@ def handle_chat(text: str):
     # The prompt tells Claude where to look.
     chat_cwd = str(KOAN_ROOT)
 
+    # project_context=False: cwd is KOAN_ROOT; do not load contributor
+    # CLAUDE.md / .claude skills (issue #2379).
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=chat_tools_list,
         model=models["chat"],
         fallback=models["fallback"],
         max_turns=5,
+        project_context=False,
     )
 
     # Serialize chat CLI calls: Claude takes a per-cwd session lock, so two
@@ -553,6 +556,7 @@ def handle_chat(text: str):
                 model=models["chat"],
                 fallback=models["fallback"],
                 max_turns=5,
+                project_context=False,
             )
             try:
                 result = run_cli(
