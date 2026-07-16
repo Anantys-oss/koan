@@ -109,7 +109,8 @@ def _classify_request(
     """
     from app.skills import build_registry
     from app.github_intent import resolve_github_intent
-    from app.utils import get_known_projects
+    from app.github_config import get_github_intent_config
+    from app.utils import get_known_projects, load_config
 
     registry = build_registry()
 
@@ -128,11 +129,14 @@ def _classify_request(
         elif "/issues/" in url:
             subject_kind = "issue"
 
+    cfg = get_github_intent_config(load_config())
     match = resolve_github_intent(
         text,
         registry,
         subject_kind=subject_kind,
         project_path=project_path,
+        min_confidence=cfg["min_confidence"],
+        keyword_window=cfg["keyword_window"],
     )
     if not match:
         return None, ""

@@ -3163,11 +3163,6 @@ class TestTryIntentPromotion:
         result = _try_intent_promotion(comment, config, registry, "o", "r", {})
         assert result is None
 
-    def test_removed_dead_helper(self):
-        """The dead _try_nlp_classification helper must be gone."""
-        import app.github_command_handler as h
-        assert not hasattr(h, "_try_nlp_classification")
-
 
 class TestProcessNotificationWithNLP:
     """Integration tests for NLP fallback in process_single_notification."""

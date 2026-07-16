@@ -130,15 +130,26 @@ def resolve_github_intent(
 
     # Layer 1 — keyword (free, deterministic)
     match = match_skill_keyword(text, registry, window=keyword_window)
-    if match and _url_type_ok(match.command, subject_kind):
-        log.info(
-            "GitHub intent: source=keyword command=%s conf=1.0 text=%s",
-            match.command, text[:80],
+    if match:
+        if _url_type_ok(match.command, subject_kind):
+            log.info(
+                "GitHub intent: source=keyword command=%s conf=1.0 text=%s",
+                match.command, text[:80],
+            )
+            return match
+        # Confident keyword hit rejected by the URL-type guard (e.g. a `review`
+        # keyword on an Issue). Record the near-miss before escalating.
+        log.debug(
+            "GitHub intent: keyword command=%s discarded by URL guard "
+            "(subject_kind=%s); escalating to model",
+            match.command, subject_kind or "unknown",
         )
-        return match
 
     # Layer 2 — cheap model + confidence gate
     if not project_path:
+        log.debug(
+            "GitHub intent: skipping model classification — no project_path",
+        )
         return None
     candidates = _model_candidates(registry)
     if not candidates:
@@ -276,11 +287,23 @@ def _parse_classification(output: str) -> Optional[dict]:
             command = None
 
     # confidence: fail closed to 0.0 (→ below threshold → free-form) when
-    # missing or unparseable; clamp to [0.0, 1.0].
+    # missing or unparseable; clamp to [0.0, 1.0]. Log the degradation so a
+    # wholesale Layer-2 outage (prompt drift / model swap dropping the field)
+    # is observable instead of silently disabling the model layer.
+    if "confidence" not in result:
+        log.warning(
+            "GitHub intent: model omitted 'confidence' (command=%r); "
+            "failing closed to 0.0 → free-form",
+            command,
+        )
     confidence_raw = result.get("confidence", 0.0)
     try:
         confidence = float(confidence_raw)
     except (TypeError, ValueError):
+        log.warning(
+            "GitHub intent: unparseable 'confidence' %r; failing closed to 0.0",
+            confidence_raw,
+        )
         confidence = 0.0
     confidence = min(1.0, max(0.0, confidence))
 
