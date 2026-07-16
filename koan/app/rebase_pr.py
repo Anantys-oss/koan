@@ -1166,6 +1166,7 @@ def _check_if_already_solved(
 
     prompt = load_prompt_or_skill(
         skill_dir, "already_solved",
+        project_path=project_path or None,
         TITLE=pr_context.get("title", ""),
         BODY=pr_context.get("body", ""),
         BRANCH=pr_context.get("branch", ""),
@@ -1426,6 +1427,7 @@ def _resolve_rebase_conflicts(
         print(f"[rebase] Resolving conflicts via Claude (round {round_num})", flush=True)
         prompt = _build_conflict_resolution_prompt(
             context, conflicted, base, skill_dir=skill_dir,
+            project_path=project_path,
         )
 
         # Invoke Claude to resolve conflicts
@@ -1495,6 +1497,7 @@ def _build_conflict_resolution_prompt(
     conflicted_files: List[str],
     base: str,
     skill_dir: Optional[Path] = None,
+    project_path: str = "",
 ) -> str:
     """Build a prompt for Claude to resolve merge conflicts."""
     kwargs = dict(
@@ -1504,7 +1507,11 @@ def _build_conflict_resolution_prompt(
         BASE=base,
         CONFLICTED_FILES="\n".join(f"- `{f}`" for f in conflicted_files),
     )
-    return load_prompt_or_skill(skill_dir, "conflict_resolution", **kwargs)
+    return load_prompt_or_skill(
+        skill_dir, "conflict_resolution",
+        project_path=project_path or None,
+        **kwargs,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1593,6 +1600,7 @@ def _fix_existing_ci_failures(
     ci_fix_prompt = _build_ci_fix_prompt(
         context, ci_logs, diff, skill_dir=skill_dir,
         commit_conventions=commit_conventions,
+        project_path=project_path,
     )
 
     fixed, timed_out, attempts_used = _run_ci_fix_step_with_timeout_retry(
@@ -1723,6 +1731,7 @@ def _run_ci_check_and_fix(
         return _build_ci_fix_prompt(
             context, logs, diff, skill_dir=skill_dir,
             commit_conventions=commit_conventions,
+            project_path=project_path,
         )
 
     # Delegate the shared diff -> fix -> push -> recheck loop to the canonical
@@ -1799,6 +1808,7 @@ def _build_ci_fix_prompt(
     diff: str,
     skill_dir: Optional[Path] = None,
     commit_conventions: str = "",
+    project_path: str = "",
 ) -> str:
     """Build a prompt for Claude to fix CI failures."""
     from app.claude_step import _load_commit_subject_instruction
@@ -1816,7 +1826,11 @@ def _build_ci_fix_prompt(
         COMMIT_CONVENTIONS=commit_conventions,
         COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
-    return load_prompt_or_skill(skill_dir, "ci_fix", **kwargs)
+    return load_prompt_or_skill(
+        skill_dir, "ci_fix",
+        project_path=project_path or None,
+        **kwargs,
+    )
 
 
 def _emit_phase_heartbeat(
@@ -1948,11 +1962,13 @@ def _build_rebase_prompt(
     skill_dir: Optional[Path] = None,
     commit_conventions: str = "",
     min_severity: Optional[str] = None,
+    project_path: str = "",
 ) -> str:
     """Build a prompt for Claude to analyze and apply review feedback."""
     prompt = _build_pr_prompt(
         "rebase", context, skill_dir=skill_dir,
         commit_conventions=commit_conventions,
+        project_path=project_path,
     )
 
     if min_severity and min_severity != "suggestion":
@@ -2004,6 +2020,7 @@ def _apply_review_feedback(
         context, skill_dir=skill_dir,
         commit_conventions=commit_conventions,
         min_severity=min_severity,
+        project_path=project_path,
     )
 
     try:

@@ -1999,6 +1999,13 @@ class TestBuildPrPrompt:
         assert "+small change" in kwargs["DIFF"]
         assert "BEGIN EXTERNAL DATA" in kwargs["DIFF"]
 
+    @patch("app.claude_step.load_prompt_or_skill", return_value="ok")
+    def test_passes_project_path_for_koan_skill_injection(self, mock_lp, context):
+        from app.claude_step import _build_pr_prompt
+        _build_pr_prompt("rebase", context, project_path="/repo/koan")
+        _, kwargs = mock_lp.call_args
+        assert kwargs["project_path"] == "/repo/koan"
+
 
 # ---------- _force_push / _owner_token_push ----------
 

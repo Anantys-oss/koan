@@ -806,6 +806,7 @@ class TestBuildPrompt:
             )
             mock_load.assert_called_once_with(
                 skill_dir, "implement",
+                project_path=None,
                 ISSUE_URL="http://url",
                 ISSUE_TITLE="Title",
                 PLAN="Plan",
@@ -824,6 +825,7 @@ class TestBuildPrompt:
             )
             mock_load.assert_called_once_with(
                 None, "implement",
+                project_path=None,
                 ISSUE_URL="http://url",
                 ISSUE_TITLE="Title",
                 PLAN="Plan",
@@ -834,6 +836,17 @@ class TestBuildPrompt:
                 BASE_BRANCH="main",
             )
             assert result == "prompt"
+
+    def test_passes_project_path_for_koan_skill_injection(self):
+        """project_path must reach the loader so .koan/skills/implement/*.md applies."""
+        skill_dir = Path("/fake/skill/dir")
+        with patch(f"{_IMPL_MODULE}.load_prompt_or_skill", return_value="prompt") as mock_load:
+            _build_prompt(
+                "http://url", "Title", "Plan", "Context",
+                skill_dir=skill_dir,
+                project_path="/repo/koan",
+            )
+            assert mock_load.call_args.kwargs["project_path"] == "/repo/koan"
 
     def test_base_branch_propagates_into_prompt_template_vars(self):
         """BASE_BRANCH must reach load_prompt_or_skill so the rendered prompt
