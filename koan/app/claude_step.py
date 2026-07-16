@@ -1963,6 +1963,7 @@ def _build_pr_prompt(
     skill_dir: Optional[Path] = None,
     max_diff_chars: int = 80_000,
     commit_conventions: str = "",
+    project_path: str = "",
 ) -> str:
     """Build a prompt for Claude to process PR feedback.
 
@@ -1978,6 +1979,8 @@ def _build_pr_prompt(
         commit_conventions: Project commit convention guidance to include
             in the prompt. When non-empty, also loads the commit subject
             instruction fragment.
+        project_path: Target checkout; enables ``.koan/skills/<skill>/``
+            append when the skill package is real.
     """
     diff = context.get("diff", "")
     if len(diff) > max_diff_chars:
@@ -2012,7 +2015,11 @@ def _build_pr_prompt(
         COMMIT_CONVENTIONS=commit_conventions,
         COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
-    return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+    return load_prompt_or_skill(
+        skill_dir, prompt_name,
+        project_path=project_path or None,
+        **kwargs,
+    )
 
 
 def _sanitize_commit_subject(subject: str) -> str:
