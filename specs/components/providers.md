@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-15
+updated: 2026-07-16
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -178,21 +178,38 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   tokens per probe); probe errors never block work. Invocation lock:
   `haze-cli` (shared `~/.haze/settings.json` state).
 - **Grok Build headless contract (verified 0.2.101).** `GrokProvider` targets
-  xAI Grok Build headless mode: `grok -p <prompt> --output-format streaming-json`
+  xAI Grok Build headless mode: `grok` with `--output-format streaming-json`
   (Koan internal name `stream-json` maps to CLI spelling `streaming-json`).
   NDJSON event vocabulary is shape-keyed: `thought`/`text` carry incremental
   `data` deltas; terminal `end` carries `stopReason`, `usage` (snake_case),
   `num_turns`, and optional `modelUsage` — **not** the final assistant body.
   Final text is the concatenation of `text.data` deltas (joined with `""`, not
   newlines). `--output-format json` returns a single object with top-level
-  `text` + `usage` (probe mode). Permissions: `skip_permissions` →
-  `--always-approve`; otherwise `--permission-mode acceptEdits` so headless
-  runs never block on interactive prompts. Tools map to `--tools` /
-  `--disallowed-tools`; max turns to `--max-turns`; system prompt append to
-  `--rules` (file prompts are inlined); effort to `--reasoning-effort`; resume
-  to `--resume`. Unsupported inputs (MCP flags, plugin dirs, fallback model)
-  warn once and are skipped — never silently accepted. Stdin prompt passing is
-  off. Quota/auth: stderr trusted; stdout only on non-zero exit with an
+  `text` + `usage` (probe mode).
+  **Permissions (headless invariant):** Koan **always** passes
+  `--always-approve` for Grok headless invokes. Grok’s CLI `--permission-mode`
+  flag only effectively applies `bypassPermissions` and `default`; passing
+  `acceptEdits` is a no-op on the flag. In headless mode, any tool call that
+  would prompt is **cancelled immediately** (`stopReason: Cancelled`,
+  `cancellation_category: permission_cancelled`) — shell tools such as
+  `run_terminal_command` then fail, so `/implement` lands no commits. Do not
+  reintroduce `acceptEdits` as a “safer” headless default. Operators who want
+  to signal intent still set `skip_permissions: true`; when it is false, Grok
+  still emits `--always-approve` and logs a once-per-process notice.
+  **Tools:** Claude/Koan tool names are mapped to Grok internal IDs before
+  `--tools` / `--disallowed-tools` (e.g. `Read`→`read_file`, `Edit`→
+  `search_replace`, `Bash`→`run_terminal_cmd`, `Grep`→`grep`, `Glob`→
+  `list_dir`, `Write`→`write`, `WebFetch`→`web_fetch`). Unknown names warn
+  once; unmapped `Skill` is dropped. Max turns → `--max-turns`; system prompt
+  append → `--rules` (file prompts are inlined); effort → `--reasoning-effort`;
+  resume → `--resume`. **Models:** Claude tier aliases (`haiku`/`sonnet`/
+  `opus`/…) are never passed as `-m` — warn once and omit so Grok’s default
+  model is used. **Cancelled is hard failure:** a terminal `end` with
+  `stopReason` Cancelled/canceled raises (never soft-success with partial
+  text). **Prompt delivery:** large prompts use `--prompt-file` (temp file +
+  cleanup); stdin prompt passing stays off. Unsupported inputs (MCP flags,
+  plugin dirs, fallback model) warn once and are skipped — never silently
+  accepted. Quota/auth: stderr trusted; stdout only on non-zero exit with an
   error-marker gate. Pre-flight probe uses `--output-format json -p ok` from an
   empty scratch dir. Invocation lock: `grok-cli` (shared `~/.grok/` state).
   Recorded samples: `koan/tests/grok_samples.py`. Operator docs:
