@@ -24,12 +24,12 @@ _GROK_QUOTA_PATTERNS = [
     r"used all (?:available )?credits?",
     r"(?:reached|hit|exceeded)[^\n]{0,25}spending limit",
     # xAI closes the same 403 with a fixed remediation clause: "please
-    # purchase more credits or raise your spending limit". Anchoring on it too
-    # keeps detection working if xAI rewords the leading exhaustion sentence.
-    # "purchase more credits" is imperative remediation, not prose an agent
-    # would emit while merely discussing billing, so it stays false-positive
-    # safe in stdout.
-    r"purchase more credits?",
+    # purchase more credits or raise your spending limit". Anchor on the full
+    # imperative clause ("...or raise") rather than the bare phrase so it stays
+    # false-positive safe in stdout — incidental "purchase more credits" prose
+    # must not trip a pause — while still surviving a reword of the leading
+    # exhaustion sentence.
+    r"purchase more credits?\s+or\s+raise",
     r"HTTP\s*429",
     r"status[\s:]+429",
     r"too many requests",
