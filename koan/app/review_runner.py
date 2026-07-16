@@ -898,12 +898,15 @@ def _write_review_findings_sidecar(
     head_sha: str,
     project_name: str = "",
     review_summary: Optional[dict] = None,
+    review_comment: Optional[dict] = None,
 ) -> None:
     """Write structured review findings + summary to a sidecar JSON.
 
     Consumed by pr_review_learning (post-merge outcome tracking, reads
-    file_comments) and by the REST API result resolver (reads both
-    file_comments and review_summary). review_summary is additive.
+    file_comments) and by the REST API result resolver (reads
+    file_comments, review_summary, and review_comment). review_summary and
+    review_comment are additive; review_comment carries the posted comment's
+    {id, html_url} (or None when no ref was captured).
     """
     try:
         import time as _time
@@ -918,6 +921,7 @@ def _write_review_findings_sidecar(
             "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
             "file_comments": file_comments,
             "review_summary": review_summary or {},
+            "review_comment": review_comment or None,
         }
         from app.utils import atomic_write_json
         atomic_write_json(sidecar_path, data, indent=2)
@@ -2049,6 +2053,22 @@ def _build_stale_head_alert(reviewed_sha: str, live_sha: str) -> str:
     )
 
 
+def _extract_comment_ref(raw: str) -> Optional[dict]:
+    """Parse {id, html_url} from a GitHub comment API JSON response.
+
+    Returns None when the payload is missing, unparseable, or lacks an id, so
+    a genuine posting success is never downgraded to a failure by a parse
+    hiccup or a stdout format we didn't expect.
+    """
+    try:
+        obj = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(obj, dict) or obj.get("id") is None:
+        return None
+    return {"id": obj["id"], "html_url": obj.get("html_url", "")}
+
+
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
     existing_comment: Optional[dict] = None,
@@ -2058,7 +2078,7 @@ def _post_review_comment(
     duration_seconds: float = 0,
     live_head_sha: str = "",
     coverage_note: str = "",
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, Optional[dict]]:
     """Post (or update) the review as a comment on the PR.
 
     Prepends ``SUMMARY_TAG`` so future runs can locate the comment via
@@ -2079,7 +2099,9 @@ def _post_review_comment(
     *before* the GitHub-length truncation so the partial-review warning is
     never the part that gets cut.
 
-    Returns (True, "") on success, (False, error_detail) on failure.
+    Returns (True, "", ref) on success, (False, error_detail, None) on
+    failure, where ``ref`` is the posted comment's ``{id, html_url}`` (or
+    ``None`` when the GitHub response could not be parsed).
     """
     # Surface partial-coverage warning at the very top, before truncation.
     if coverage_note:
@@ -2117,13 +2139,13 @@ def _post_review_comment(
     if existing_comment:
         comment_id = existing_comment["id"]
         try:
-            run_gh(
+            raw = run_gh(
                 "api",
                 f"repos/{owner}/{repo}/issues/comments/{comment_id}",
                 "-X", "PATCH",
                 "-f", f"body={sanitized}",
             )
-            return True, ""
+            return True, "", _extract_comment_ref(raw)
         except Exception as e:
             # PATCH can fail with 403 when the existing comment belongs to a
             # different bot account (review bot was switched). Fall back to
@@ -2135,15 +2157,18 @@ def _post_review_comment(
             )
 
     try:
-        run_gh(
-            "pr", "comment", pr_number,
-            "--repo", f"{owner}/{repo}",
-            "--body", sanitized,
+        # POST via the issues-comments API (not `gh pr comment`) so a
+        # structured {id, html_url} JSON comes back for the review result.
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/{pr_number}/comments",
+            "-X", "POST",
+            "-f", f"body={sanitized}",
         )
-        return True, ""
+        return True, "", _extract_comment_ref(raw)
     except Exception as e:
         print(f"[review_runner] failed to post comment: {e}", file=sys.stderr)
-        return False, str(e)
+        return False, str(e), None
 
 
 def _append_error_section_to_review(
@@ -2193,7 +2218,7 @@ def _append_error_section_to_review(
         )
         return False
     combined = review_body + "\n\n---\n\n" + error_section
-    updated, err = _post_review_comment(
+    updated, err, _ = _post_review_comment(
         owner, repo, pr_number, combined, located,
         commit_shas=commit_shas,
         provider_name=provider_name,
@@ -3304,7 +3329,7 @@ def run_review(
 
     notify_fn(f"Posting review on PR #{pr_number}...")
     _review_duration = time.monotonic() - _review_start
-    posted, post_error = _post_review_comment(
+    posted, post_error, comment_ref = _post_review_comment(
         owner, repo, pr_number, review_body, post_target,
         commit_shas=current_shas or None,
         provider_name=review_provider_name,
@@ -3431,6 +3456,7 @@ def run_review(
                 head_sha=_sidecar_head,
                 project_name=project_name or "",
                 review_summary=review_data.get("review_summary") or {},
+                review_comment=comment_ref,
             )
         else:
             print(

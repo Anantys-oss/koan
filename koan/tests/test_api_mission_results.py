@@ -82,7 +82,33 @@ def test_review_resolver_reads_findings_sidecar(tmp_path):
     assert result["kind"] == "review"
     assert result["review_summary"]["lgtm"] is False
     assert result["file_comments"][0]["severity"] == "critical"
-    assert mr.always_inline_keys(text) == ["kind", "review_summary"]
+    assert mr.always_inline_keys(text) == ["kind", "review_summary", "review_comment"]
+
+
+def test_review_resolver_surfaces_review_comment(tmp_path):
+    inst = tmp_path / "instance"; inst.mkdir()
+    fdir = inst / ".review-findings"; fdir.mkdir()
+    (fdir / "o_r_42.json").write_text(json.dumps({
+        "file_comments": [],
+        "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+        "review_comment": {"id": 555, "html_url": "https://github.com/o/r/pull/42#issuecomment-555"},
+    }))
+    text = "- [project:proj] /review https://github.com/o/r/pull/42"
+    result = mr.resolve_mission_result(inst, text)
+    assert result["review_comment"] == {
+        "id": 555, "html_url": "https://github.com/o/r/pull/42#issuecomment-555",
+    }
+    assert mr.always_inline_keys(text) == ["kind", "review_summary", "review_comment"]
+
+
+def test_review_resolver_review_comment_absent_is_null(tmp_path):
+    inst = tmp_path / "instance"; inst.mkdir()
+    fdir = inst / ".review-findings"; fdir.mkdir()
+    (fdir / "o_r_42.json").write_text(json.dumps({
+        "file_comments": [], "review_summary": {},
+    }))
+    result = mr.resolve_mission_result(inst, "- /review https://github.com/o/r/pull/42")
+    assert result["review_comment"] is None
 
 
 def test_resolver_returns_none_for_non_structured(tmp_path):

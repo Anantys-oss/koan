@@ -254,7 +254,8 @@ Response (202):
       {"file": "a.py", "line_start": 1, "line_end": 1, "severity": "warning",
        "title": "…", "comment": "…", "code_snippet": ""}
     ],
-    "review_summary": {"lgtm": false, "summary": "…", "checklist": []}
+    "review_summary": {"lgtm": false, "summary": "…", "checklist": []},
+    "review_comment": {"id": 555, "html_url": "https://github.com/o/r/pull/5#issuecomment-555"}
   },
   "result_ref": null,
   "outcome": {
@@ -317,6 +318,13 @@ On a successful `done` outcome, `reason_category` is `null`.
 `result` is a typed structured payload emitted by skills that produce one
 (e.g. `/review`); other missions leave it `null`. `result_line` remains the
 short free-text summary for backward compatibility.
+
+For `/review` (and `/ultrareview`) missions, `result.review_comment` carries the
+`id` and `html_url` of the PR comment koan posted, letting a consumer deep-link
+to (and dedup) the exact review rather than only the PR. It is `null` when no
+comment ref was captured (e.g. no head SHA at post time, or the GitHub response
+could not be parsed). It is retained in the trimmed inline `result` even when the
+payload spills to `instance/.api-results/<id>.json`.
 
 When a result exceeds the inline size cap (`DEFAULT_RESULT_CAP_BYTES`, 256 KB)
 the full payload is written to `instance/.api-results/<id>.json` and

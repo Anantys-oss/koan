@@ -88,6 +88,13 @@ verdict/summary never drop from list/GET payloads. `GET /v1/missions/{id}/result
 streams the complete result (inline or spilled) so remote clients that cannot
 read the instance filesystem can always retrieve the full findings.
 
+**Posted-comment reference (additive).** The `/review` resolver's `result`
+object also carries `review_comment` — `{id, html_url}` of the PR review comment
+koan posted, or `null` when none was captured. It is a backward-compatible
+addition: the sidecar `_write_review_findings_sidecar()` persists it alongside
+`file_comments`/`review_summary`, and it is an `always_inline` key so it survives
+the size-cap trim in list/GET payloads.
+
 **Correlation is best-effort by PR key.** The `/review` resolver keys off the
 PR URL in the mission text → latest PR-keyed sidecar (a re-review overwrites
 it). Each mission attaches whatever the sidecar held at its own terminal

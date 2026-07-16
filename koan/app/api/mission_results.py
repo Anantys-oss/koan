@@ -72,8 +72,9 @@ def _resolve_review_result(instance_dir: Path, mission_text: str) -> Optional[di
         "kind": "review",
         "file_comments": data.get("file_comments", []),
         "review_summary": data.get("review_summary", {}),
+        "review_comment": data.get("review_comment"),
     }
 
 
 register_resolver(["review", "ultrareview"], _resolve_review_result,
-                  always_inline=["kind", "review_summary"])
+                  always_inline=["kind", "review_summary", "review_comment"])

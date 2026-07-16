@@ -18,3 +18,27 @@ def test_sidecar_includes_review_summary(tmp_path):
     data = json.loads((inst / ".review-findings" / "o_r_7.json").read_text())
     assert data["review_summary"] == summary
     assert data["file_comments"][0]["severity"] == "warning"
+
+
+def test_sidecar_includes_review_comment(tmp_path):
+    inst = tmp_path / "instance"; inst.mkdir()
+    _write_review_findings_sidecar(
+        str(inst), "o", "r", "7", [],
+        base_ref="main", head_sha="deadbeef", project_name="proj",
+        review_summary={"lgtm": True, "summary": "ok", "checklist": []},
+        review_comment={"id": 555, "html_url": "https://github.com/o/r/pull/7#issuecomment-555"},
+    )
+    data = json.loads((inst / ".review-findings" / "o_r_7.json").read_text())
+    assert data["review_comment"] == {
+        "id": 555, "html_url": "https://github.com/o/r/pull/7#issuecomment-555",
+    }
+
+
+def test_sidecar_review_comment_defaults_to_none(tmp_path):
+    inst = tmp_path / "instance"; inst.mkdir()
+    _write_review_findings_sidecar(
+        str(inst), "o", "r", "8", [],
+        base_ref="main", head_sha="deadbeef",
+    )
+    data = json.loads((inst / ".review-findings" / "o_r_8.json").read_text())
+    assert data["review_comment"] is None
