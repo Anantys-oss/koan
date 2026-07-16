@@ -69,7 +69,9 @@ class TestValidateReviewValid:
                     "severity": sev, "title": "t", "comment": "c",
                     "code_snippet": "",
                 }],
-                "review_summary": {"lgtm": False, "summary": "s", "checklist": []},
+                "review_summary": {
+                    "lgtm": sev == "suggestion", "summary": "s", "checklist": [],
+                },
             }
             valid, errors = validate_review(data)
             assert valid is True, f"severity '{sev}' should be valid"

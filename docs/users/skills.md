@@ -99,6 +99,12 @@ detail, so reviewers can react or resolve in place. Cap the volume with
 idempotent (already-anchored findings are skipped); multi-line findings anchor
 to their full range; if all posts fail, you are notified. Disabled by default.
 
+**Verdict consistency:** The formal APPROVE / REQUEST_CHANGES state and its
+green/red/yellow alert are derived from the final bucketed findings. Reflection
+cannot leave a failed checklist item pointing at a hidden finding, and Kōan will
+not submit REQUEST_CHANGES unless the summary lists at least one 🔴 Blocking or
+🟡 Important finding.
+
 **Stale-HEAD alert:** the review comment's footer shows the commit it was run
 against (`HEAD=<short-sha>`). A review can take minutes, and you may push (or
 force-push) new commits meanwhile. If the branch tip moved between when the
