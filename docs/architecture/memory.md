@@ -4,7 +4,7 @@ title: "Memory Architecture"
 description: "Details Koan's Markdown+JSONL memory store, the SQLite FTS5 secondary index (confidence-weighted BM25 ranking, dual-write, fallback), entry schema, read/write paths, and compaction."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-02
+updated: 2026-07-15
 ---
 
 # Memory Architecture
@@ -133,3 +133,23 @@ bounded, reversible enough for review, and documented when their output format
 changes because future prompts and agents use that structure as context.
 
 See [Memory Injection](../design/memory-injection.md) for design notes.
+
+## Exporting learnings to CLAUDE.md
+
+Per-project learnings live in the private `instance/memory/projects/{name}/learnings.md`
+truth file — **interactive Claude Code sessions on the target repo never see
+it.** The `/claudemd <project> learnings` mode distills the durable,
+generalizable conventions out of those learnings and writes them into a
+clearly-delimited, auto-managed block in the project's own `CLAUDE.md`
+(`<!-- BEGIN KOAN LEARNINGS … -->` … `<!-- END KOAN LEARNINGS -->`), delivered
+as a draft PR.
+
+Because the block is delimited and regenerated wholesale on each run — and the
+distiller is shown the current `CLAUDE.md` and told to skip anything already
+documented — re-syncs replace only the block: no duplication, no accumulation,
+human-authored content untouched. A `NO_DURABLE_LEARNINGS` sentinel (or empty
+distillation, or an unchanged block) short-circuits to a clean no-op with no
+branch or PR. The distiller runs stdout-only (no file/network tools,
+`max_turns=1`), so an injection payload in `learnings.md` can at worst produce
+text in a draft PR the human reviews. Implemented in `app/claudemd_refresh.py`
+(`run_learnings_sync`, `upsert_koan_learnings_block`).

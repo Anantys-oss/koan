@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-07-12
+updated: 2026-07-15
 ---
 
 # Component Spec — Skills System
@@ -194,6 +194,42 @@ scan on hosted deploys (the #2338 regression, where `/add_project` cloned into
 `add_project` handler, `discover_workspace_projects`, and the merged-registry
 cache-invalidation mtime (`projects_merged._get_workspace_mtime`) all share
 this one resolver so write-path, read-path, and cache-watch stay aligned.
+
+### `/claudemd` learnings mode (contract)
+
+`/claudemd <project>` has two behaviors, routed by an optional sub-argument:
+
+- **default (git-history refresh):** `/claudemd <project>` updates or creates
+  `CLAUDE.md` from architecturally significant commits (`run_refresh`).
+- **`learnings` mode:** `/claudemd <project> learnings` distills Kōan's
+  per-project learnings (`instance/memory/projects/<name>/learnings.md`) into
+  a **delimited managed block** in the project's own `CLAUDE.md`
+  (`run_learnings_sync`).
+
+The `learnings` sub-argument is detected case-insensitively in both the handler
+(which appends it to the queued mission) and `skill_dispatch._build_claudemd_cmd`
+(which appends `--mode learnings`); the default path MUST remain flag-free.
+
+The managed block is delimited by the marker constants
+`KOAN_LEARNINGS_BEGIN` / `KOAN_LEARNINGS_END`. Invariants the mode MUST uphold:
+
+- **Managed-block boundary.** Only the delimited region mutates;
+  `upsert_koan_learnings_block` preserves every non-block byte verbatim and is
+  idempotent (identical distilled input → byte-identical output, exactly one
+  block, no accumulation). The replacement is regex-metacharacter-safe (lambda
+  replacement, never a string that would interpret `\1`/`\g<0>`).
+- **Dedup against current CLAUDE.md.** The distiller is handed the current
+  `CLAUDE.md` and instructed to skip conventions already documented, so the
+  block never duplicates human-authored content.
+- **Durable-only filter.** Only conventions that hold regardless of any
+  specific bug are kept; transient/bug-specific quirks are dropped.
+- **Draft-PR delivery.** A real diff is delivered as a draft PR on a
+  `<prefix>sync-learnings-*` branch — no branch is created for the no-op paths
+  (missing/empty learnings, `NO_DURABLE_LEARNINGS` sentinel or empty
+  distillation, or an unchanged block), which return 0 and write nothing.
+- **Injection containment.** Distillation runs stdout-only (`allowed_tools=[]`,
+  `max_turns=1`); no file/network side effects, so a poisoned `learnings.md`
+  can at worst yield reviewable text in a draft PR.
 
 ## Known debt / watch-outs
 

@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-13
+updated: 2026-07-15
 ---
 
 # Kōan User Manual
@@ -921,16 +921,25 @@ Reads the Failed section of `missions.md`, finds the most recent failure (option
 
 ### Project Maintenance
 
-**`/claudemd`** — Refresh or create a project's `CLAUDE.md` based on recent architectural changes.
+**`/claudemd`** — Refresh or create a project's `CLAUDE.md` based on recent architectural changes, or sync Kōan's per-project learnings into it.
 
-- **Usage:** `/claudemd [project-name]`
+- **Usage:** `/claudemd [project-name] [learnings]`
 - **Aliases:** `/claude`, `/claude.md`, `/claude_md`
+
+Add the `learnings` sub-argument to distill the durable, generalizable
+conventions Kōan has accumulated in its private per-project learnings into a
+clearly-delimited, auto-managed `## Learnings from Kōan` block inside the
+project's own `CLAUDE.md`. Interactive Claude Code sessions never see Kōan's
+private `instance/memory`, so this surfaces those conventions for any AI
+assistant on the repo. The block is regenerated in place on each run (no
+duplication, human-authored content untouched) and delivered as a draft PR.
 
 <details>
 <summary>Use cases</summary>
 
 - `/claudemd webapp` — Update the CLAUDE.md after a big refactor
 - `/claudemd` — Refresh for the default/focused project
+- `/claudemd webapp learnings` — Distill Kōan's learnings into CLAUDE.md
 </details>
 
 #### Project-specific instructions (`KOAN.md`)
@@ -2350,7 +2359,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/ci_check <PR>` | — | I | Check and fix CI failures on a PR |
 | `/diagnose [project]` | `/dx` | B | Analyze last failure and queue a fix attempt |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
-| `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
+| `/claudemd [project] [learnings]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md, or sync Kōan's learnings into it |
 | `/models` | `/model` | P | Show resolved model config for the active CLI provider |
 | `/config_check` | `/cfgcheck`, `/configcheck` | P | Detect config.yaml drift against instance.example template |
 | `/rescan` | `/rescan_heads` | P | Re-check all projects for remote HEAD branch changes |
