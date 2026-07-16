@@ -65,7 +65,7 @@ free-text `result_line`:
 | Field         | Type            | Contract |
 |---------------|-----------------|----------|
 | `result_line` | `str \| null`   | Short human summary; unchanged, backward-compatible. |
-| `result`      | `object \| null`| Structured result emitted by skills that produce one (e.g. `/review` → `{kind, file_comments[], review_summary{lgtm, summary, checklist}, review_comment{id, html_url}}`). `review_comment` is the id/`html_url` of the PR comment koan posted (or `null` when none was captured). `null` for skills with no resolver. Carries a `kind` discriminator. |
+| `result`      | `object \| null`| Structured result emitted by skills that produce one (e.g. `/review` → `{kind, file_comments[], review_summary{lgtm, summary, checklist}}`). `null` for skills with no resolver. Carries a `kind` discriminator. |
 | `result_ref`  | `str \| null`   | Relative path (`.api-results/<id>.json`) to the full blob when it exceeds the inline cap; else `null`. |
 
 **Resolver mechanism (pull-based, generic).** `api/mission_results.py` holds a
@@ -77,16 +77,23 @@ whatever it returns — once, only while `result`/`result_ref` are unset
 *pulls* from the artifact the skill already persisted rather than the skill
 pushing. The built-in `/review` (and `/ultrareview`) resolver reads the
 PR-keyed findings sidecar `instance/.review-findings/{owner}_{repo}_{pr}.json`
-(which `review_runner._write_review_findings_sidecar()` writes with
-`file_comments`, `review_summary`, and `review_comment`).
+(which `review_runner._write_review_findings_sidecar()` writes with both
+`file_comments` and `review_summary`).
 
 **Size cap + HTTP reachability.** Results over `DEFAULT_RESULT_CAP_BYTES`
 (256 KB) spill to `instance/.api-results/<id>.json`; the record keeps
 `result_ref` plus a trimmed inline copy of the resolver's `always_inline` keys
-(`/review`: `kind`, `review_summary`, `review_comment`, plus `result_truncated: true`) so the
+(`/review`: `kind`, `review_summary`, plus `result_truncated: true`) so the
 verdict/summary never drop from list/GET payloads. `GET /v1/missions/{id}/result`
 streams the complete result (inline or spilled) so remote clients that cannot
 read the instance filesystem can always retrieve the full findings.
+
+**Posted-comment reference (additive).** The `/review` resolver's `result`
+object also carries `review_comment` — `{id, html_url}` of the PR review comment
+koan posted, or `null` when none was captured. It is a backward-compatible
+addition: the sidecar `_write_review_findings_sidecar()` persists it alongside
+`file_comments`/`review_summary`, and it is an `always_inline` key so it survives
+the size-cap trim in list/GET payloads.
 
 **Correlation is best-effort by PR key.** The `/review` resolver keys off the
 PR URL in the mission text → latest PR-keyed sidecar (a re-review overwrites
