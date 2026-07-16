@@ -48,9 +48,17 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 | `effort:` config / `config.get_effort(mode, mission_type)` / `CLIProvider.build_effort_args()` | Reasoning-effort control for the Claude `--effort` flag (low/medium/high/max). `effort:` mapping keys are **mission types** (the `session_tracker.classify_mission_type` taxonomy: plan/review/implement/audit/…), not budget modes. Resolution in `get_effort()`: `effort.<mission_type>` → `effort.<autonomous_mode>` (legacy) → `_DEFAULT_EFFORT_MAP[mode]` (the dynamic default). The dynamic default — review→low, deep→high, else none — is preserved verbatim when `effort:` is absent; a per-type pin only layers on top. `build_mission_command()` classifies the mission type and passes it through, so a pin only reaches `get_effort()` for missions that run through the main agent loop — **not** for skill-dispatched commands (`/review`, `/plan`, …), which bypass `build_mission_command()` (see reach caveat below); `get_effort_for_mode()` is the type-unaware wrapper for callers outside the mission build path. `extended thinking` short-circuits effort to `max`. |
 | Provider resolution | Order: `KOAN_CLI_PROVIDER` env (fallback `CLI_PROVIDER`) → `projects.yaml`/`config.yaml` → default. Centralized in `utils.get_cli_provider_env()`. This resolves the GLOBAL provider; `cli.<role>` layers per-role selection on top via `get_provider_for_role`. |
 | `CLIProvider(binary_path="")` / `ClaudeProvider.binary()` | The base class takes an optional per-instance `binary_path` override (the replacement for the removed review ContextVar); `_resolve_binary_path()` is the shared resolver (absolute → as-is / relative → `normpath(join(KOAN_ROOT, …))` / bare name → PATH lookup). `ClaudeProvider.binary()`: `_binary_override` if set → else `KOAN_CLAUDE_CLI_PATH` → else `"claude"`. Every provider's `binary()` honors the override so `flavor:path` works uniformly. Relative paths root at `KOAN_ROOT` (not CWD — the agent runs from `KOAN_ROOT/koan`); bare names are never re-rooted. |
+| `build_command(..., project_context=True)` / `build_project_context_args` / `build_full_command(..., project_context=…)` | When `project_context=False`, the provider must suppress **project-scope** tooling loaded from cwd (Claude: `--setting-sources user`). Default `True` preserves mission/project CLAUDE.md / skills. Other providers may no-op. Callers that run with `cwd=KOAN_ROOT` (chat, contemplative, rituals, outbox formatting) **must** pass `False`. Do not implement isolation by mutating the worktree (`skip-worktree` / quarantine) on this path. |
 
 ## Invariants
 
+- **KOAN_ROOT runtime sessions must not load contributor project tooling.**
+  Chat, contemplative, rituals, and outbox formatting run with `cwd=KOAN_ROOT`
+  on a deployed clone. They must pass `project_context=False` so Claude does
+  not auto-load root `CLAUDE.md` / `AGENTS.md` / `.claude/skills` (e.g. `brain`,
+  `speckit-*`) into operator-facing output. Mission sessions keep the default
+  (`True`) so `workspace/` project guidance still loads. Isolation is at the
+  **CLI flag boundary**, not by relocating tracked files on disk.
 - **One invocation lock per uid.** Provider auth state is per-user, so the subprocess
   lock lives under `koan_tmp_dir()` (per-uid), not a fixed `/tmp` path.
 - **Provider resolution has a fixed precedence** (env → config → default) for the

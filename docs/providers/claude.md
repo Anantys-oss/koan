@@ -4,7 +4,7 @@ title: "Claude Code CLI Provider"
 description: "Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-07-01
+updated: 2026-07-16
 ---
 
 # Claude Code CLI Provider
@@ -337,6 +337,42 @@ models:
 ```
 
 This is a Claude-specific feature — other providers don't support it.
+
+## Project context isolation (KOAN_ROOT sessions)
+
+A deployed instance is a git clone of the Koan repo. Several **runtime**
+CLI sessions intentionally use `cwd=KOAN_ROOT` (chat bridge, contemplative,
+rituals, outbox formatting). Without isolation, Claude Code would
+auto-load **project** scope from that directory:
+
+- root `CLAUDE.md` / `AGENTS.md` (contributor instructions)
+- `.claude/skills/` (e.g. `brain`, `speckit-*`)
+
+That leaks contributor-only advice into operator-facing replies (e.g.
+“run `/brain sync`”). See issue
+[#2379](https://github.com/Anantys-oss/koan/issues/2379).
+
+**Fix (CLI boundary, not filesystem quarantine):** those sessions pass
+`project_context=False` into `build_full_command`, which for Claude
+becomes:
+
+```bash
+claude … --setting-sources user
+```
+
+Omitting `project` (and `local`) skips project settings, project
+`CLAUDE.md`, and project `.claude` skills. User-level prefs under
+`~/.claude/` still apply.
+
+**Mission / project work is unchanged.** When `cwd` is a project under
+`workspace/` (normally its own git root), Claude loads **that** project's
+`CLAUDE.md` as usual (`project_context` defaults to true). Projects
+should be real git roots (or external checkouts); a non-git folder that
+is only a subdirectory of the Koan clone can still walk up to KOAN_ROOT
+and pick up contributor docs — keep projects as separate repos.
+
+This approach does **not** move files on disk or use `git skip-worktree`
+(contrast the alternative explored in PR #2384).
 
 ## Troubleshooting
 
