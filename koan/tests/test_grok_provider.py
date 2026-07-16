@@ -415,6 +415,32 @@ class TestGrokFailureDetection:
             exit_code=0,
         )
 
+    def test_quota_on_403_billing_credits_exhausted(self):
+        """403 'used all available credits / monthly spending limit' is quota.
+
+        xAI surfaces billing exhaustion as a 403 permission-denied wrapped in
+        an ``{"type":"error"}`` stdout event, not a 429. The wording carries
+        no ``quota``/``billing``/``usage`` keyword, so the pre-existing Grok
+        patterns missed it and the run was never paused for quota.
+        """
+        stdout = (
+            '{"type":"error","message":"Internal error: {\\n \\"message\\": '
+            '\\"API error (status 403 Forbidden): permission-denied: Your team '
+            "ca275ff2-a58d-46ca-80a1-71973ece4ef2 has either used all available "
+            "credits or reached its monthly spending limit. To continue making "
+            'API requests\\"}"}'
+        )
+        assert self.provider.detect_quota_exhaustion(stdout_text=stdout, exit_code=1)
+        # And it must NOT be mistaken for an auth failure (403 != 401).
+        assert not self.provider.detect_auth_failure(stdout_text=stdout, exit_code=1)
+
+    def test_quota_ignores_billing_prose_without_exhaustion_verb(self):
+        """Discussing a spending limit feature is not quota exhaustion."""
+        assert not self.provider.detect_quota_exhaustion(
+            stdout_text="Add a monthly spending limit toggle to the billing UI.",
+            exit_code=0,
+        )
+
     def test_auth_on_stderr(self):
         assert self.provider.detect_auth_failure(
             stderr_text="not authenticated — run `grok login` or set XAI_API_KEY",

@@ -39,6 +39,28 @@ class TestDetectQuotaExhaustion:
 
         assert detect_quota_exhaustion("Mission completed successfully") is False
 
+    def test_detects_used_all_available_credits(self):
+        """xAI/OpenAI 403 billing exhaustion carries no quota/usage keyword."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        text = (
+            "API error (status 403 Forbidden): permission-denied: Your team "
+            "has either used all available credits or reached its monthly "
+            "spending limit."
+        )
+        assert detect_quota_exhaustion(text) is True
+
+    def test_detects_reached_monthly_spending_limit(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("You have reached your monthly spending limit.") is True
+
+    def test_spending_limit_prose_without_verb_does_not_trigger(self):
+        """Discussing a spending-limit feature is not exhaustion."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("Add a monthly spending limit field to settings.") is False
+
     def test_no_match_on_empty_string(self):
         from app.quota_handler import detect_quota_exhaustion
 
