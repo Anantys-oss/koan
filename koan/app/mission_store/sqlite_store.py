@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional
 
+from app.mission_store._connection import connect as _shared_connect
 from app.mission_store.base import (
     TERMINAL_STATES,
     VALID_STATES,
@@ -66,6 +66,22 @@ def _clean_text(item: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _select_next_pending(conn, projects: Optional[List[str]]) -> Optional[sqlite3.Row]:
+    """Earliest-sequence pending mission, optionally filtered to ``projects``.
+
+    Shared by ``claim_next`` (which then claims the row) and ``peek_next``
+    (a read-only preview) so the two never drift on selection order.
+    """
+    if projects:
+        placeholders = ",".join("?" for _ in projects)
+        return conn.execute(
+            f"SELECT * FROM missions WHERE state='pending' AND project IN ({placeholders}) "
+            "ORDER BY sequence ASC LIMIT 1", tuple(projects)).fetchone()
+    return conn.execute(
+        "SELECT * FROM missions WHERE state='pending' "
+        "ORDER BY sequence ASC LIMIT 1").fetchone()
+
+
 class SqliteMissionStore(MissionStore):
     def __init__(self, instance: str):
         self._instance = str(instance)
@@ -78,20 +94,8 @@ class SqliteMissionStore(MissionStore):
 
     # ---- connection --------------------------------------------------------
 
-    @contextmanager
     def _connect(self):
-        conn = sqlite3.connect(self._db_path, timeout=5)
-        try:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            yield conn
-            conn.commit()
-        except BaseException:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        return _shared_connect(self._db_path)
 
     @staticmethod
     def _row_to_mission(row: sqlite3.Row) -> Mission:
@@ -148,23 +152,9 @@ class SqliteMissionStore(MissionStore):
     def claim_next(self, *, projects: Optional[List[str]] = None) -> Optional[Mission]:
         # BEGIN IMMEDIATE takes a write lock up front so two concurrent claimants
         # serialize; the guarded UPDATE is the final safety net.
-        conn = sqlite3.connect(self._db_path, timeout=5)
-        try:
-            conn.isolation_level = None  # manual transaction control for BEGIN IMMEDIATE
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("BEGIN IMMEDIATE")
-            if projects:
-                placeholders = ",".join("?" for _ in projects)
-                row = conn.execute(
-                    f"SELECT * FROM missions WHERE state='pending' AND project IN ({placeholders}) "
-                    "ORDER BY sequence ASC LIMIT 1", tuple(projects)).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM missions WHERE state='pending' "
-                    "ORDER BY sequence ASC LIMIT 1").fetchone()
+        with _shared_connect(self._db_path, immediate=True) as conn:
+            row = _select_next_pending(conn, projects)
             if row is None:
-                conn.commit()
                 return None
             from time import strftime
             now = strftime("%Y-%m-%dT%H:%M")
@@ -172,16 +162,10 @@ class SqliteMissionStore(MissionStore):
                 "UPDATE missions SET state='in_progress', started_at=? "
                 "WHERE id=? AND state='pending'", (now, row["id"]))
             if cur.rowcount == 0:
-                conn.commit()
+                conn.commit()  # release the write lock before retrying
                 return self.claim_next(projects=projects)  # lost race; retry
             claimed = conn.execute("SELECT * FROM missions WHERE id=?", (row["id"],)).fetchone()
-            conn.commit()
             return self._row_to_mission(claimed)
-        except BaseException:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     def _finalize(self, conn, mission_id, new_state: str, ts_col: str) -> bool:
         from time import strftime
@@ -251,15 +235,7 @@ class SqliteMissionStore(MissionStore):
 
     def peek_next(self, *, projects: Optional[List[str]] = None) -> Optional[Mission]:
         with self._connect() as conn:
-            if projects:
-                placeholders = ",".join("?" for _ in projects)
-                row = conn.execute(
-                    f"SELECT * FROM missions WHERE state='pending' AND project IN ({placeholders}) "
-                    "ORDER BY sequence ASC LIMIT 1", tuple(projects)).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM missions WHERE state='pending' "
-                    "ORDER BY sequence ASC LIMIT 1").fetchone()
+            row = _select_next_pending(conn, projects)
             return self._row_to_mission(row) if row else None
 
     # ---- maintenance -------------------------------------------------------

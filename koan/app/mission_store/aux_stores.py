@@ -18,10 +18,11 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from contextlib import contextmanager
 from pathlib import Path
 from time import strftime
 from typing import List, Optional
+
+from app.mission_store._connection import connect as _connect
 
 logger = logging.getLogger(__name__)
 
@@ -73,22 +74,6 @@ CREATE TABLE IF NOT EXISTS mission_outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_outcomes_key ON mission_outcomes(key);
 """
-
-
-@contextmanager
-def _connect(db_path: str):
-    conn = sqlite3.connect(db_path, timeout=5)
-    try:
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        yield conn
-        conn.commit()
-    except BaseException:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 class CiQueueStore:
