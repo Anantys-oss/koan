@@ -50,6 +50,14 @@ DEBUG_LOG_FILE = ".koan-debug.log"
 
 CHECK_NOTIFICATIONS_FILE = ".koan-check-notifications"
 
+# -- Inter-process queues ------------------------------------------------------
+
+# The dedicated chat process (``chat_process.py``) drains this append-only JSONL
+# queue of pending human chat messages handed off by the bridge. It lives under
+# ``instance/`` (not a ``.koan-`` signal file) but is centralized here so the
+# queue identifier is defined in exactly one place. See specs/007-chat-process/.
+CHAT_INBOX_FILE = "chat-inbox.jsonl"
+
 # -- Misc ----------------------------------------------------------------------
 
 ONBOARDING_FILE = ".koan-onboarding.json"
