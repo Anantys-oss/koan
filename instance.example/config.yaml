@@ -498,55 +498,55 @@ models:
     review_mode: ""          # Override model for REVIEW mode (cheaper audits)
     reflect: ""              # Model for review reflection pass (empty = lightweight)
 
-  # Claude provider overrides (uncomment to customize):
-  # claude:
-  #   mission: "opus"          # Main mission execution
-  #   chat: "haiku"            # Chat responses
-  #   lightweight: "haiku"     # Low-cost calls
-  #   fallback: "sonnet"       # Fallback when primary is overloaded
-  #   review_mode: "sonnet"    # Override model for REVIEW mode
-  #   reflect: "sonnet"        # Model for review reflection pass
-  #
+  # Claude provider overrides:
+  claude:
+    mission: "opus"          # Main mission execution
+    chat: "haiku"            # Chat responses
+    lightweight: "haiku"     # Low-cost calls
+    fallback: "sonnet"       # Fallback when primary is overloaded
+    review_mode: "sonnet"    # Override model for REVIEW mode
+    reflect: "sonnet"        # Model for review reflection pass
+
   # Z.ai (GLM): no change needed here — bin/zai-claude maps these tier names
   # (haiku/sonnet/opus) to GLM models. See docs/providers/zai.md.
 
-  # Codex (OpenAI) provider overrides (uncomment to customize):
-  # codex:
-  #   mission: "gpt-5.6-sol"        # complex implementation
-  #   chat: "gpt-5.6-terra"         # general discussion / planning
-  #   lightweight: "gpt-5.6-luna"   # simple tasks if cost is acceptable
-  #   fallback: ""                  # ignored by Codex (no --fallback-model)
-  #   review_mode: "gpt-5.6-sol"    # serious code review
-  #   reflect: "gpt-5.6-luna"       # summarize / reason about result
+  # Codex (OpenAI) provider overrides:
+  codex:
+    mission: "gpt-5.6-sol"        # complex implementation
+    chat: "gpt-5.6-terra"         # general discussion / planning
+    lightweight: "gpt-5.6-luna"   # simple tasks if cost is acceptable
+    fallback: ""                  # ignored by Codex (no --fallback-model)
+    review_mode: "gpt-5.6-sol"    # serious code review
+    reflect: "gpt-5.6-luna"       # summarize / reason about result
 
-  # Haze provider overrides (uncomment to customize). Values are haze model
-  # selectors: an unambiguous model name, or provider:model, as configured
-  # inside haze via /provider + /model. See docs/providers/haze.md.
-  # haze:
-  #   mission: "glm-5.2"       # main mission execution
-  #   review_mode: "glm-5.2"   # code review
-  #   chat: "glm-4.7"          # chat responses
-  #   lightweight: "glm-4.7"   # low-cost calls (format_outbox, pick_mission)
+  # Haze provider overrides. Values are haze model selectors: an unambiguous
+  # model name, or provider:model, as configured inside haze via /provider +
+  # /model. See docs/providers/haze.md.
+  haze:
+    mission: "glm-5.2"       # main mission execution
+    review_mode: "glm-5.2"   # code review
+    chat: "glm-4.7"          # chat responses
+    lightweight: "glm-4.7"   # low-cost calls (format_outbox, pick_mission)
 
-  # Grok Build overrides (uncomment when cli_provider: grok).
+  # Grok Build overrides (when cli_provider: grok).
   # Use real Grok model ids from `grok models` — never haiku/sonnet/opus.
   # Also set skip_permissions: true (see above). docs/providers/grok.md
-  # grok:
-  #   mission: "grok-4.5"
-  #   chat: "grok-composer-2.5-fast"
-  #   lightweight: "grok-composer-2.5-fast"
-  #   review_mode: "grok-4.5"
-  #   reflect: "grok-4.5"
-  #   fallback: ""             # ignored — Grok has no fallback-model flag
+  grok:
+    mission: "grok-4.5"                    # Main mission execution (empty = default)
+    chat: "grok-composer-2.5-fast"         # Telegram/dashboard chat responses
+    lightweight: "grok-composer-2.5-fast"  # Low-cost calls: format_outbox, pick_mission, contemplative
+    fallback: "grok-composer-2.5-fast"     # Fallback when primary model is overloaded
+    review_mode: "grok-4.5"                # Override model for REVIEW mode (cheaper audits)
+    reflect: "grok-4.5"                    # Model for review reflection pass (empty = lightweight)
 
-  # Ollama Launch provider overrides (uncomment to customize):
-  # ollama-launch:
-  #   mission: "kimi-k2.7:cloud"         # main mission execution
-  #   chat: "glm-5:cloud"                # chat responses
-  #   lightweight: "minimax-m2.5:cloud"  # low-cost calls
-  #   fallback: "minimax-m2.5:cloud"     # empty = use provider default
-  #   review_mode: "glm-5:cloud"
-  #   reflect: "glm-5:cloud"
+  # Ollama Launch provider overrides:
+  ollama-launch:
+    mission: "kimi-k2.7:cloud"         # main mission execution
+    chat: "glm-5:cloud"                # chat responses
+    lightweight: "minimax-m2.5:cloud"  # low-cost calls
+    fallback: "minimax-m2.5:cloud"     # empty = use provider default
+    review_mode: "glm-5:cloud"
+    reflect: "glm-5:cloud"
 
 # Reasoning effort (optional) — sets the Claude Code `--effort` flag
 # (low/medium/high/max). Omit the section to keep the DYNAMIC default: effort
