@@ -949,13 +949,14 @@ def _run_rebase_impl(
             guidance = _build_rebase_recovery_guidance(project_path)
             return False, (
                 "[feedback_quota] Rebase paused while applying review feedback: "
-                "provider quota exhausted. Retry /rebase after quota reset.\n"
+                "provider quota exhausted. Retry /rebase --fix after quota reset.\n"
                 f"{guidance}"
             )
         if feedback_status == "feedback_failed":
             # The git rebase itself already succeeded; a transient feedback
             # error should not discard it. Push the rebase as-is and flag that
-            # review feedback was not applied so the human can re-run /rebase.
+            # review feedback was not applied so the human can re-run
+            # /rebase --fix (a bare /rebase would not re-apply feedback).
             error_detail = feedback_meta.get("error", "").strip()
             suffix = f" ({error_detail})" if error_detail else ""
             actions_log.append(
@@ -2074,7 +2075,8 @@ def _apply_review_feedback(
         # any partially-staged feedback edits so the clean rebase is what gets
         # pushed, then signal ``feedback_failed`` so run_rebase pushes the
         # rebase as-is and flags that feedback was not applied. CI remains the
-        # real gate; the human can re-run /rebase to retry the feedback.
+        # real gate; the human can re-run /rebase --fix to retry the feedback
+        # (a bare /rebase only rebases and would not re-apply it).
         try:
             _run_git(
                 ["git", "reset", "--hard", "HEAD"],
@@ -2428,8 +2430,8 @@ def _build_rebase_comment(
             build_alert(
                 "WARNING",
                 f"**Review feedback was NOT applied** — {reason}. The reviewer "
-                "comments above still need to be addressed: re-run `/rebase` or "
-                "apply them manually.",
+                "comments above still need to be addressed: re-run `/rebase --fix` "
+                "or apply them manually.",
             )
             + "\n"
         )

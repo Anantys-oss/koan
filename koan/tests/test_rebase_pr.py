@@ -672,6 +672,22 @@ class TestBuildRebaseComment:
         assert "[!WARNING]" in result
         assert "Review feedback was NOT applied" in result
 
+    def test_feedback_failed_recovery_cta_points_at_fix(self):
+        """The feedback-failure recovery CTA must tell the human to re-run
+        `/rebase --fix`, not a bare `/rebase`. After the /rebase split a bare
+        rebase only rebases onto the base branch and would NOT re-apply the
+        reviewer feedback the human still needs here.
+        """
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main"],
+            {"title": "Fix bug"},
+            feedback_failed=True,
+        )
+        assert "/rebase --fix" in result
+        # The bare-rebase CTA (a no-op for feedback) must be gone.
+        assert "re-run `/rebase` or" not in result
+
     def test_feedback_failure_label_drives_summary_not_log_prose(self):
         # Detection comes from the structured status the caller passes, not
         # from substring-matching log lines.  A failure marker left in the
