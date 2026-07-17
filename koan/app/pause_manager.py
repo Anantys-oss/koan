@@ -194,6 +194,13 @@ def consume_pause(koan_root: str) -> Tuple[bool, Optional[PauseState]]:
     winner; *state* is the parsed :class:`PauseState` at claim time (may be
     None for an empty/legacy marker). Do slow I/O (notifications, restart)
     *after* this returns -- the lock is already released.
+
+    Other resume paths (``/v1/resume`` in ``routes_admin.py``, the dashboard
+    ``/api/agent/resume``, the reset skill, the TUI) currently call
+    :func:`remove_pause` directly with no notification, so they produce no
+    observable double-action. If any of them starts emitting user-facing
+    "resumed" feedback, route it through this function so it can't race a
+    concurrent resume into a double-notification.
     """
     from app.locked_file import signal_lock
 

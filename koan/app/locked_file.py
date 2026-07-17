@@ -32,21 +32,28 @@ T = TypeVar("T")
 def signal_lock(signal_path: Path) -> Iterator[None]:
     """Serialize a read-check-act sequence on a signal/marker file.
 
-    Signal files (``.koan-pause``, ``.koan-stop`` ...) are created, checked,
-    and removed by several concurrent processes (agent loop, bridge, REST
-    API, dashboard). A bare ``exists()``-then-``remove()`` is a TOCTOU race:
-    two processes can both observe the file present and both act on it. This
-    context manager holds an exclusive advisory lock on a companion ``.lock``
-    sidecar so the enclosed sequence runs atomically against other holders.
+    Signal/marker files are created, checked, and removed by several
+    concurrent processes (agent loop, bridge, REST API, dashboard). A bare
+    ``exists()``-then-``remove()`` is a TOCTOU race: two processes can both
+    observe the file present and both act on it. This context manager holds
+    an exclusive advisory lock on a companion ``.lock`` sidecar so the
+    enclosed sequence runs atomically against other holders.
+
+    Currently only the pause file routes through this helper (via
+    :func:`app.pause_manager.consume_pause` / ``check_and_resume``). Other
+    signal files remove idempotently without a user-facing notification, so
+    they have no observable double-action to serialize -- add ``signal_lock``
+    at those sites only if they start emitting feedback.
 
     The sidecar is ``<name>.lock`` next to the signal file -- never the signal
     file itself -- so it composes safely with :func:`app.utils.atomic_write`,
     which locks its own temp file. Keep the critical section small: do slow
     I/O (network, subprocess) *after* the ``with`` block, not inside it.
 
-    If the lock cannot be acquired (permission/filesystem error), a warning
-    is logged and the body runs unlocked rather than blocking the caller on a
-    peripheral failure.
+    If the lock cannot be acquired (permission/filesystem error), an error is
+    logged and the body runs unlocked rather than blocking the caller on a
+    peripheral failure. This voids the atomicity guarantee for that one call,
+    so the failure is logged at error level (not buried in warnings).
     """
     signal_path = Path(signal_path)
     lock_path = signal_path.parent / (signal_path.name + ".lock")
@@ -60,7 +67,7 @@ def signal_lock(signal_path: Path) -> Iterator[None]:
         except OSError as exc:
             from app.run_log import log_safe
 
-            log_safe("warning", f"signal_lock: could not lock {lock_path}: {exc}. Proceeding unlocked.")
+            log_safe("error", f"signal_lock: could not lock {lock_path}: {exc}. Proceeding unlocked (atomicity voided).")
         yield
     finally:
         if lock_f is not None:
