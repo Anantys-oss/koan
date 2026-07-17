@@ -136,8 +136,12 @@ test-strict: setup
 	fi
 	@echo "✓ all tests passed"
 
-release: setup
-	@bash scripts/release.sh
+release:
+	@echo "✗ 'make release' is deprecated: it tagged directly from main, bypassing the incubating pipeline."
+	@echo "  Use /koan.incubate to prep, then dispatch the Release workflow on 'incubating':"
+	@echo "    gh workflow run release.yml --ref incubating -f version=vX.Y.Z"
+	@echo "  See docs/operations/maint.md."
+	@exit 1
 
 migrate: setup
 	$(KOAN_RUN) app/migrate_memory.py

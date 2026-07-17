@@ -1,10 +1,16 @@
 name: 🐳 Publish Container
 
+# Manual image publishing for non-release tags (devel builds, test images).
+# Pick the source branch with the workflow_dispatch ref selector (main or
+# incubating only) and the image tag via the input. Release-owned tags
+# (stable, latest, vX.Y semver) are banned here — they are minted exclusively
+# by release.yml.
+
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Docker tag to publish (default: devel)"
+        description: "Docker tag to publish (default: devel; stable/latest/semver are reserved for release.yml)"
         required: false
         type: string
         default: devel
@@ -21,6 +27,17 @@ jobs:
     outputs:
       tag: ${{ steps.check.outputs.tag }}
     steps:
+      - name: 🔍 Validate source branch
+        run: |
+          # Manual images may only be built from the two long-lived branches.
+          case "${{ github.ref_name }}" in
+            main|incubating) ;;
+            *)
+              echo "::error::Manual image publishing must be dispatched on 'main' or 'incubating', not '${{ github.ref_name }}'."
+              exit 1
+              ;;
+          esac
+
       - name: 🔍 Validate tag
         id: check
         env:
@@ -28,6 +45,12 @@ jobs:
         run: |
           if ! printf '%s' "$TAG" | grep -qE '^[a-z0-9][a-z0-9._-]{0,127}$'; then
             echo "::error::Invalid Docker tag '$TAG'. Use lowercase alphanumerics, '.', '-', '_' (max 128 chars; must start alnum). Examples: devel, test, pr-123."
+            exit 1
+          fi
+          # stable / latest / semver tags are minted only by release.yml —
+          # never manually.
+          if printf '%s' "$TAG" | grep -qE '^(stable|latest|v?[0-9]+(\.[0-9]+){1,2})$'; then
+            echo "::error::Tag '$TAG' is reserved for the release workflow. Use 'devel' or another non-release tag."
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
