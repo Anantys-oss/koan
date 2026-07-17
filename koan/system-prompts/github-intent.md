@@ -25,7 +25,7 @@ Determine the single command the user most likely intended.
 - When two skills fit, prefer the more specific one.
 - Extract any additional context that should be passed to the command (URLs, descriptions, etc.).
 
-Respond with ONLY a JSON object, no other text:
+Respond with ONLY a JSON object, no other text. The values below are an illustrative example — use the command, context, and confidence that fit the actual message:
 
 ```json
 {"command": "review", "context": "focus on auth", "confidence": 0.91}
