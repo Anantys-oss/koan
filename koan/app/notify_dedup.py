@@ -21,14 +21,16 @@ reason a message is dropped.
 
 from __future__ import annotations
 
-import contextlib
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import time
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 # Default suppression window for opt-in lifecycle notices. Matches the
 # in-process Telegram flood window (FLOOD_WINDOW_SECONDS) so cross-restart
@@ -134,7 +136,7 @@ def release_notice(text: str, koan_root: Optional[str] = None) -> None:
         return
     path = _dedup_path(root)
     key = _key(text)
-    with contextlib.suppress(OSError):
+    try:
         if not path.exists():
             return
         with open(path, "r+", encoding="utf-8") as fh:
@@ -151,6 +153,12 @@ def release_notice(text: str, koan_root: Optional[str] = None) -> None:
                     _rewrite(fh, entries)
             finally:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError as e:
+        # Best-effort, but log it: a failed release leaks the reservation, so
+        # this lifecycle notice stays suppressed for the full window even
+        # though its send failed — the opposite of claim_notice's fail-open
+        # posture. Surfacing it makes that dropped notice diagnosable.
+        log.info("notify dedup release failed (reservation leaked): %s", e)
 
 
 def _rewrite(fh, entries: dict) -> None:

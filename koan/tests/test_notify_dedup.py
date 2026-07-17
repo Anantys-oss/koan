@@ -105,7 +105,8 @@ def test_send_telegram_dedup_suppresses_repeat(koan_root, monkeypatch):
 
     msg = "🌅 Running morning ritual (Claude CLI, up to ~90s)..."
     assert notify.send_telegram(msg, dedup_window=300) is True
-    assert notify.send_telegram(msg, dedup_window=300) is True  # suppressed
+    # A dedup drop reports NOTIFICATION_SUPPRESSED (truthy), not a delivery.
+    assert notify.send_telegram(msg, dedup_window=300) == notify.NOTIFICATION_SUPPRESSED
     # Only delivered once despite two calls.
     assert len(provider.sent) == 1
 

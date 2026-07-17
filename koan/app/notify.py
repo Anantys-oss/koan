@@ -405,7 +405,11 @@ def send_telegram(text: str,
         from app.notify_dedup import claim_notice
         if not claim_notice(text, dedup_window):
             log.info("Duplicate lifecycle notice suppressed (dedup): %s", text[:80])
-            return True
+            # Parity with the min_priority path: a dedup drop is a suppression,
+            # not a delivery. Still truthy, so fire-and-forget callers behave
+            # identically, but a caller that inspects the result can tell the
+            # notice was not actually sent.
+            return NOTIFICATION_SUPPRESSED
 
     # Prepend priority emoji for urgent and warning messages (idempotent)
     display_text = _apply_priority_emoji(text, priority)
