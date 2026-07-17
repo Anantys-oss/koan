@@ -132,6 +132,13 @@ fast_reply: false
 # it's visible in your task queue. Default: 5.
 # ci_fix_max_attempts: 5
 
+# Pre-flight probe cache — minutes a successful quota probe stays valid.
+# The loop probes provider quota before every mission attempt; for providers
+# with no free usage introspection (haze, cline) each probe is a real LLM
+# call, so recent successes are reused. Failures are never cached.
+# Set to 0 to probe before every mission (historical behavior). Default: 10.
+# preflight_cache_minutes: 10
+
 # Skill timeout — maximum seconds for heavy skill execution (fix, implement, recreate)
 # These skills invoke Claude with full tool access and can run for a long time.
 # Complex /implement missions with multi-phase plans routinely exceed 60 min.

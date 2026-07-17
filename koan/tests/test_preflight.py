@@ -4,6 +4,15 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
+@pytest.fixture(autouse=True)
+def _fresh_probe_cache():
+    """Isolate the in-process probe success cache between tests."""
+    from app.preflight import _reset_probe_cache
+    _reset_probe_cache()
+    yield
+    _reset_probe_cache()
+
+
 class TestPreflightQuotaCheck:
     """Tests for preflight_quota_check()."""
 
@@ -155,3 +164,88 @@ class TestPreflightModuleStructure:
         sig = inspect.signature(preflight_quota_check)
         # Return annotation should be Tuple[bool, Optional[str]]
         assert sig.return_annotation is not inspect.Parameter.empty
+
+
+class TestPreflightProbeCache:
+    """Successful probes are cached for preflight_cache_minutes."""
+
+    def _provider(self, available=True, detail=""):
+        provider = MagicMock()
+        provider.name = "haze"
+        provider.check_quota_available.return_value = (available, detail)
+        return provider
+
+    @patch("app.config.get_preflight_cache_minutes", return_value=10)
+    @patch("app.provider.get_provider")
+    @patch("app.usage_tracker._get_budget_mode", return_value="full")
+    def test_success_cached_within_ttl(self, mock_budget, mock_prov, mock_ttl):
+        from app.preflight import preflight_quota_check
+
+        provider = self._provider()
+        mock_prov.return_value = provider
+
+        assert preflight_quota_check("/tmp/proj", "/tmp/instance") == (True, None)
+        assert preflight_quota_check("/tmp/proj", "/tmp/instance") == (True, None)
+        # Second call served from cache — probe ran exactly once.
+        provider.check_quota_available.assert_called_once()
+
+    @patch("app.config.get_preflight_cache_minutes", return_value=10)
+    @patch("app.provider.get_provider")
+    @patch("app.usage_tracker._get_budget_mode", return_value="full")
+    def test_failure_never_cached(self, mock_budget, mock_prov, mock_ttl):
+        from app.preflight import preflight_quota_check
+
+        provider = self._provider(available=False, detail="429 rate limit")
+        mock_prov.return_value = provider
+
+        ok1, _ = preflight_quota_check("/tmp/proj", "/tmp/instance")
+        ok2, _ = preflight_quota_check("/tmp/proj", "/tmp/instance")
+        assert (ok1, ok2) == (False, False)
+        assert provider.check_quota_available.call_count == 2
+
+    @patch("app.config.get_preflight_cache_minutes", return_value=10)
+    @patch("app.provider.get_provider")
+    @patch("app.usage_tracker._get_budget_mode", return_value="full")
+    def test_cache_expires_after_ttl(self, mock_budget, mock_prov, mock_ttl):
+        from app.preflight import preflight_quota_check
+
+        provider = self._provider()
+        mock_prov.return_value = provider
+
+        # First probe at t=0, second call at t=11 minutes: cache expired.
+        with patch("app.preflight.time.monotonic", side_effect=[0.0, 11 * 60.0, 11 * 60.0]):
+            preflight_quota_check("/tmp/proj", "/tmp/instance")
+            preflight_quota_check("/tmp/proj", "/tmp/instance")
+        assert provider.check_quota_available.call_count == 2
+
+    @patch("app.config.get_preflight_cache_minutes", return_value=0)
+    @patch("app.provider.get_provider")
+    @patch("app.usage_tracker._get_budget_mode", return_value="full")
+    def test_ttl_zero_disables_caching(self, mock_budget, mock_prov, mock_ttl):
+        from app.preflight import preflight_quota_check
+
+        provider = self._provider()
+        mock_prov.return_value = provider
+
+        preflight_quota_check("/tmp/proj", "/tmp/instance")
+        preflight_quota_check("/tmp/proj", "/tmp/instance")
+        assert provider.check_quota_available.call_count == 2
+
+    @patch("app.config.get_preflight_cache_minutes", return_value=10)
+    @patch("app.provider.get_provider")
+    @patch("app.usage_tracker._get_budget_mode", return_value="full")
+    def test_cache_is_per_provider_flavor(self, mock_budget, mock_prov, mock_ttl):
+        from app.preflight import preflight_quota_check
+
+        haze = self._provider()
+        mock_prov.return_value = haze
+        preflight_quota_check("/tmp/proj", "/tmp/instance")
+
+        claude = MagicMock()
+        claude.name = "claude"
+        claude.check_quota_available.return_value = (True, "")
+        mock_prov.return_value = claude
+        preflight_quota_check("/tmp/proj", "/tmp/instance")
+
+        # A cached success for haze must not skip claude's probe.
+        claude.check_quota_available.assert_called_once()

@@ -232,7 +232,7 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/quota` — See how much API budget is left before adding heavy missions, plus the rolling burn rate (%/h) and estimated time to exhaustion
 - `/quota 32` — Tell Kōan it has 32% remaining (fixes drift when internal estimate is wrong)
 - If Kōan is paused due to quota but the API is actually available, `/quota 50` will correct the estimate and clear the pause
-- When the burn rate predicts session exhaustion in less than 30 min, the autonomous mode is automatically soft-throttled one tier (deep→implement→review) — burn rate never forces a pause (`wait`); absolute budget thresholds still own that. Estimates need ≥5 samples over ≥15 minutes of wall clock so a short burst of heavy missions does not look like a multi-hundred-%/h sustained rate. A Telegram alert fires once when projected exhaustion is under 60 min and the next quota reset is still more than 2 h away. Session reset (`/resume` after a quota pause) also clears the burn-rate sample buffer so pre-pause costs cannot re-trigger false alarms.
+- When the burn rate predicts session exhaustion in less than 30 min, the autonomous mode is automatically soft-throttled one tier (deep→implement→review) — burn rate never forces a pause (`wait`); absolute budget thresholds still own that. Estimates need ≥5 samples over ≥15 minutes of wall clock so a short burst of heavy missions does not look like a multi-hundred-%/h sustained rate. Only samples from the last 5 hours (the session-quota window) count toward the estimate, so a state file left over from an earlier session cannot shape the current one — older samples stay on disk and age out of the buffer naturally, and a buffer holding nothing fresh yields no estimate rather than a false alarm. A Telegram alert fires once when projected exhaustion is under 60 min and the next quota reset is still more than 2 h away. Session reset (`/resume` after a quota pause) also clears the burn-rate sample buffer so pre-pause costs cannot re-trigger false alarms.
 </details>
 
 **`/check_notifications`** — Force an immediate check of GitHub and Jira notifications, bypassing the exponential backoff timer.
@@ -1458,6 +1458,16 @@ quota gating — budget-mode downgrades, burn-rate warnings, and preflight quota
 probes. Use this when your CLI provider has no metered quota (e.g. a self-hosted
 API proxy or a plan with no hard token limits). If the CLI actually fails with a
 quota error, Koan still detects it and pauses.
+
+`preflight_cache_minutes` (default 10, `0` disables) controls how long a
+*successful* pre-flight quota probe is reused. The loop probes provider quota
+before every mission attempt; Claude reads local usage for free, but providers
+with no usage introspection (haze, cline) probe with a real LLM call — observed
+at ~16s per attempt. Within the TTL a recent success is reused instead of
+re-probing. Failures are never cached, so exhaustion verdicts always re-check
+and the pause/recovery behavior is unchanged. The trade-off is bounded: at worst
+one mission starts on a stale "available" verdict inside the TTL, which the
+in-run quota detection then catches.
 
 **`/models`** (alias `/model`) — Show the resolved model configuration for the active CLI provider. Useful when debugging model-routing issues — displays which model wins for each of the 6 slots (`mission`, `chat`, `lightweight`, `fallback`, `review_mode`, `reflect`) after applying the full resolution chain: per-project `models:` → `models.{provider}:` → `models.default:` → built-in defaults.
 

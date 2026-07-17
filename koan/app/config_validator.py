@@ -63,6 +63,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "post_mission_timeout": "int",
     "contemplative_chance": "int",
     "ci_fix_max_attempts": "int",
+    "preflight_cache_minutes": "int",
     "spec_complexity_threshold": "int",
     "start_on_pause": "bool",
     "start_passive": "bool",
