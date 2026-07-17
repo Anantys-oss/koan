@@ -214,6 +214,58 @@ class TestHandleChatCommand:
 
 
 # ---------------------------------------------------------------------------
+# Dedicated chat process routing (#1084)
+# ---------------------------------------------------------------------------
+
+class TestChatProcessRouting:
+    """handle_message routes free-form chat to the dedicated process, with a
+    graceful inline fallback and no double-answer / no busy-rejection."""
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.chat_process.write_to_inbox", return_value=True)
+    @patch("app.pid_manager.check_pidfile", return_value=1234)
+    def test_routes_to_process_when_running(self, mock_pid, mock_write, mock_worker):
+        handle_message("how are you?")
+        mock_write.assert_called_once_with("how are you?")
+        # Exactly one path answers — the inline worker must NOT also run.
+        mock_worker.assert_not_called()
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.pid_manager.check_pidfile", return_value=None)
+    def test_falls_back_when_process_not_running(self, mock_pid, mock_worker):
+        handle_message("how are you?")
+        mock_worker.assert_called_once()
+        assert mock_worker.call_args[0][0] is handle_chat
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.chat_process.write_to_inbox", return_value=False)
+    @patch("app.pid_manager.check_pidfile", return_value=1234)
+    def test_falls_back_when_inbox_write_fails(self, mock_pid, mock_write, mock_worker):
+        handle_message("how are you?")
+        mock_worker.assert_called_once()
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.chat_process.write_to_inbox", return_value=True)
+    @patch("app.pid_manager.check_pidfile", side_effect=[1234, None])
+    def test_falls_back_when_process_dies_after_write(self, mock_pid, mock_write, mock_worker):
+        # Alive at first check, dead at the re-check (TOCTOU) → inline fallback,
+        # so a queued-but-unconsumed message is still answered.
+        handle_message("how are you?")
+        mock_write.assert_called_once()
+        mock_worker.assert_called_once()
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.chat_process.write_to_inbox", return_value=True)
+    @patch("app.pid_manager.check_pidfile", return_value=1234)
+    def test_no_busy_rejection_queues_fifo(self, mock_pid, mock_write, mock_worker):
+        # Two rapid messages: both queued, neither rejected as "busy" (FR-005).
+        handle_message("first")
+        handle_message("second")
+        assert mock_write.call_count == 2
+        mock_worker.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # is_command
 # ---------------------------------------------------------------------------
 

@@ -687,6 +687,42 @@ def _handle_reaction_update(update: dict):
         log("reaction", f"Reaction {emoji} removed from message {message_id}")
 
 
+def _is_chat_process_running() -> bool:
+    """True if the dedicated chat process holds its PID file."""
+    from app.pid_manager import check_pidfile
+    return check_pidfile(KOAN_ROOT, "chat") is not None
+
+
+def _route_to_chat_process(text: str) -> bool:
+    """Try to hand a chat message to the dedicated chat process (FIFO queue).
+
+    Returns True only when the message was queued AND the process is still
+    alive afterwards; returns False (so the caller falls back to the inline
+    worker thread) when the process is not running, the write fails, or the
+    process died in the write window. Never rejects a message as "busy" — the
+    inbox is a FIFO queue, so a new message is always accepted even while a
+    previous one is still being answered (#1084, FR-005).
+    """
+    if not _is_chat_process_running():
+        return False
+
+    from app.chat_process import write_to_inbox
+
+    if not write_to_inbox(text):
+        log("error", "Chat inbox write failed — falling back to worker thread")
+        return False
+
+    # Re-check liveness after the write (TOCTOU): if the process died between
+    # the initial check and the write, the queued entry would sit unconsumed
+    # and the user would never get a reply. Fall back so it is answered inline.
+    if not _is_chat_process_running():
+        log("error", "Chat process died after inbox write — falling back to worker thread")
+        return False
+
+    log("chat", "Chat routed to dedicated chat process")
+    return True
+
+
 def handle_message(text: str):
     text = text.strip()
     if not text:
@@ -707,7 +743,8 @@ def handle_message(text: str):
 
     if is_mission(text):
         handle_mission(text)
-    else:
+    elif not _route_to_chat_process(text):
+        # Dedicated chat process unavailable — answer inline (graceful fallback).
         _run_in_worker(handle_chat, text, lane="chat")
 
 
