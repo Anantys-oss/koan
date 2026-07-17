@@ -18,6 +18,7 @@ from app.conversation_history import (
 )
 from app.dashboard import state
 from app.dashboard_service import missions as missions_svc
+from app.dashboard_service import progress as progress_svc
 from app.dashboard_service import read_file
 from app.dashboard_service import stats as stats_svc
 from app.dashboard_service.stats import _EMPTY_FORECAST
@@ -214,12 +215,12 @@ def progress_page():
 
 @chat_bp.route("/api/progress")
 def api_progress():
-    """JSON snapshot of pending.md content."""
+    """JSON snapshot of pending.md content + structured timeline entries."""
     content = read_file(state.PENDING_FILE)
-    return jsonify({
-        "active": state.PENDING_FILE.exists(),
-        "content": content,
-    })
+    active = state.PENDING_FILE.exists()
+    return jsonify(progress_svc.build_progress_payload(
+        active=active, content=content,
+    ))
 
 
 @chat_bp.route("/api/progress/stream")
@@ -228,6 +229,7 @@ def api_progress_stream():
 
     Polls the file every second, sends an event when content changes.
     Sends a heartbeat comment every 15s to keep the connection alive.
+    Payload shape matches ``/api/progress`` (active, content, header, entries).
     """
     def generate():
         last_content = None
@@ -243,19 +245,17 @@ def api_progress_stream():
                         content = state.PENDING_FILE.read_text()
                         if content != last_content:
                             last_content = content
-                            payload = json.dumps({
-                                "active": True,
-                                "content": content,
-                            })
+                            payload = json.dumps(progress_svc.build_progress_payload(
+                                active=True, content=content,
+                            ))
                             yield f"data: {payload}\n\n"
                             heartbeat_counter = 0
                 else:
                     if last_content is not None:
                         # File was deleted — mission completed
-                        payload = json.dumps({
-                            "active": False,
-                            "content": "",
-                        })
+                        payload = json.dumps(progress_svc.build_progress_payload(
+                            active=False, content="",
+                        ))
                         yield f"data: {payload}\n\n"
                         last_content = None
                         last_mtime = 0.0
