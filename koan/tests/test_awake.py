@@ -2386,8 +2386,9 @@ class TestChatEmptyResponseRetry:
              patch("app.awake.time.sleep"):
             handle_chat("hello")
         # Only the user turn was persisted; the failed assistant reply was not.
+        # save_conversation_message(file, role, message): role is positional arg 1.
         assert mock_save.call_count == 1
-        assert mock_save.call_args_list[0][0][2] == "user"
+        assert mock_save.call_args_list[0][0][1] == "user"
 
 
 class TestCleanChatResponse:
