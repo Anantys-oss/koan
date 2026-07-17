@@ -126,15 +126,19 @@ def create_passive(
         "reason": state.reason,
     }
 
+    from app.locked_file import signal_lock
     from app.utils import atomic_write
 
-    atomic_write(_passive_path(koan_root), json.dumps(data))
+    # Hold the signal lock so a concurrent check_passive() expiry-remove cannot
+    # delete this freshly written file between its own read and remove.
+    with signal_lock(_passive_path(koan_root)):
+        atomic_write(_passive_path(koan_root), json.dumps(data))
 
     return state
 
 
 def remove_passive(koan_root: str) -> None:
-    """Deactivate passive mode."""
+    """Deactivate passive mode (low-level, unlocked delete)."""
     _passive_path(koan_root).unlink(missing_ok=True)
 
 
@@ -142,11 +146,17 @@ def check_passive(koan_root: str) -> Optional[PassiveState]:
     """Check passive state, auto-removing if expired.
 
     Returns the active PassiveState, or None if not passive or expired.
+
+    The read-check-remove runs under :func:`signal_lock` so an expiry-remove
+    cannot clobber a state that a concurrent :func:`create_passive` just wrote.
     """
-    state = get_passive_state(koan_root)
-    if state is None:
-        return None
-    if state.is_expired():
-        remove_passive(koan_root)
-        return None
+    from app.locked_file import signal_lock
+
+    with signal_lock(_passive_path(koan_root)):
+        state = get_passive_state(koan_root)
+        if state is None:
+            return None
+        if state.is_expired():
+            remove_passive(koan_root)
+            return None
     return state
