@@ -44,9 +44,9 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 ### Operations
 - [`operations/auto-update.md`](docs/operations/auto-update.md) — Describes Kōan's opt-in auto-update feature that checks for and pulls upstream commits, plus the always-on release-tag notification.
-- [`operations/dashboard.md`](docs/operations/dashboard.md) — Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, and design-system integration.
+- [`operations/dashboard.md`](docs/operations/dashboard.md) — Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, design-system integration, and structured `/progress` mission timeline.
 - [`operations/interactive-launcher.md`](docs/operations/interactive-launcher.md) — Describes `make koan`, the TTY-gated interactive launcher and its textual terminal dashboard (tabs, toggles, keybindings).
-- [`operations/log-formatting.md`](docs/operations/log-formatting.md) — Documents the display-side `[cli]` log formatter (log_fmt.py) behind `make logs`, its glyph legend, tool-input previews, accumulating thinking dots, and the `raw=1` escape hatch.
+- [`operations/log-formatting.md`](docs/operations/log-formatting.md) — Documents the display-side `[cli]` log formatter (log_fmt.py) behind `make logs` and the shared `classify_cli` grammar used by the dashboard `/progress` timeline.
 - [`operations/maint.md`](docs/operations/maint.md) — Covers Kōan's release process and branch philosophy (`main` vs `stable`), the `make release` procedure, versioning scheme, and recovery steps.
 - [`operations/memory-footprint.md`](docs/operations/memory-footprint.md) — Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, and the anon-first triage rule.
 - [`operations/memory-watchdog.md`](docs/operations/memory-watchdog.md) — Explains the memory watchdog that restarts the agent loop between missions when RSS stays over a threshold, its config knobs, and health-endpoint observability.
@@ -109,7 +109,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`components/issue-tracking.md`](specs-components/issue-tracking.md) — Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer.
 - [`components/providers.md`](specs-components/providers.md) — Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract.
 - [`components/skills.md`](specs-components/skills.md) — Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness).
-- [`components/web.md`](specs-components/web.md) — Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, and the invariants keeping the two surfaces from drifting.
+- [`components/web.md`](specs-components/web.md) — Documents the Flask dashboard and token-gated REST API, shared `dashboard_service` logic (including the live progress stream contract), OpenAPI drift guard, and surface-parity invariants.
 
 ## Specs — Skills
 
