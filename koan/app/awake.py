@@ -1152,7 +1152,20 @@ def _bridge_loop():
                 # poison message would be re-delivered, and we'd crash-loop
                 # forever (see logs/awake.log KeyError: 'update_id').
                 if "update_id" in update:
-                    offset = update["update_id"] + 1
+                    uid = update["update_id"]
+                    # Idempotency guard against re-delivery. After a bridge
+                    # reexec (memory watchdog reclaim / /restart), the offset was
+                    # persisted locally but never confirmed to Telegram before
+                    # os.execv, so Telegram can re-hand the last message on the
+                    # next poll. Without this skip the command runs twice and
+                    # sends its output twice in a row (e.g. /status, /ls). A
+                    # genuine new update always carries update_id >= offset, so
+                    # only true re-deliveries are dropped. Non-Telegram providers
+                    # omit update_id (their raw envelope has no such key) and
+                    # never reach here, so their own cursor/dedup is untouched.
+                    if offset is not None and uid < offset:
+                        continue
+                    offset = uid + 1
                     _save_offset(offset)
 
                 # Handle reaction updates
