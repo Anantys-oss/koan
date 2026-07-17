@@ -23,10 +23,10 @@ Conventions: `KOAN_ROOT=/tmp/test-koan .venv/bin/pytest ...`; never call Claude 
 
 - [ ] T002 [P] Add `is_mission_active(koan_root) -> bool` to `koan/app/active_mission.py` (returns `get_execution_state(koan_root)["state"] in {"working", "stalled"}`; single source of truth, FR-007) and cover it in `koan/tests/test_active_mission.py` (true for working/stalled, false for idle/zombie/absent).
 - [ ] T003 Create `koan/app/chat_context.py` with `build_chat_prompt(text, *, lite=False)` by moving `awake._build_chat_prompt` verbatim (reading soul/summary via `bridge_state.get_soul()/get_summary()` so they stay fresh, FR-004); make `awake._build_chat_prompt` a thin delegate; add `koan/tests/test_chat_context.py` asserting prompt contents + the 12k-char → lite recursion + fresh soul/summary via mtime change. Keep all existing `test_awake` chat-prompt expectations green.
-- [ ] T004 Create `koan/app/chat_engine.py` with `respond(text)` — the full chat reply cycle (guard scan → save user → `build_chat_prompt` → CLI invoke with `max_turns=5`, chat tools, `cwd=KOAN_ROOT`, `project_context=False` → lite retry with identical semantics → clean → send → save assistant), moved out of `awake.handle_chat`; make `awake.handle_chat` delegate to `chat_engine.respond`. Own `_CHAT_LOCK`, `_get_last_message_id` (use `except Exception`, not `SystemExit`), `_clean_chat_response` here. Add `koan/tests/test_chat_engine.py` locking the parity invariants (guard runs, BOTH history writes happen, retry keeps `max_turns=5`/`project_context=False`/`cwd=KOAN_ROOT`).
+- [ ] T004 Keep the single `awake.handle_chat` as the one chat reply cycle (guard scan → save user → `build_chat_prompt` → CLI invoke `max_turns=5`/chat tools/`cwd=KOAN_ROOT`/`project_context=False` → lite retry → clean → send → save assistant); the dedicated process will import and call it (no second implementation → no divergence). handle_chat delegates prompt building to `chat_context.build_chat_prompt`. Existing `TestHandleChat` in `test_awake.py` locks the parity invariants.
 
 **Checkpoint**: shared engine + fresh-context + liveness helper exist and are tested; the
-inline chat path already routes through `chat_engine.respond` with unchanged behavior.
+inline chat path is the single `awake.handle_chat`, unchanged in behavior.
 
 ---
 
@@ -40,9 +40,9 @@ process and one competing caller (outbox formatting) is removed during missions.
 
 - [ ] T005 [US1] In `koan/app/outbox_manager.py`, add an explicit `koan_root` to `OutboxManager.__init__` (default `instance_dir.parent`) and make `_format_message` return `fallback_format(raw_content)` immediately when `is_mission_active(self._koan_root)` (FR-006); update `awake._make_outbox_mgr` to pass `KOAN_ROOT`; extend `koan/tests/test_outbox_manager.py` to assert Claude formatting is skipped when a mission is active and used when idle.
 - [ ] T006 [US1] Create `koan/app/chat_process.py` inbox helpers: `write_to_inbox(text)` (append one JSONL record `{"text","ts"}` under `fcntl.flock`, returns bool), `read_and_clear_inbox()` (flock, read all lines, **unconditionally truncate**, return parsed records skipping malformed — FR-009), `has_pending_requests()`. Add `koan/tests/test_chat_process.py` covering round-trip, FIFO order, and unconditional truncation on malformed-only input.
-- [ ] T007 [US1] Add the `chat_process.main()` loop to `koan/app/chat_process.py`: acquire the `"chat"` PID file, install a SIGTERM handler that finishes the in-flight reply then exits (FR-011), poll the inbox every interval, drain FIFO calling `chat_engine.respond(entry["text"])`; guard the module with `if __name__ == "__main__": main()`. Extend `test_chat_process.py` to assert drain order and clean SIGTERM shutdown (in-flight reply completes before exit).
+- [ ] T007 [US1] Add the `chat_process.main()` loop to `koan/app/chat_process.py`: acquire the `"chat"` PID file, install a SIGTERM handler that finishes the in-flight reply then exits (FR-011), poll the inbox every interval, drain FIFO calling `awake.handle_chat(entry["text"])`; guard the module with `if __name__ == "__main__": main()`. Extend `test_chat_process.py` to assert drain order and clean SIGTERM shutdown (in-flight reply completes before exit).
 - [ ] T008 [US1] Register the chat process in `koan/app/pid_manager.py`: add `"chat"` to `PROCESS_NAMES`, add `start_chat(koan_root, ...)` mirroring `start_awake`, and include it in `start_all()` / `stop_processes()` / status wiring. Extend the pid_manager tests to assert `start_chat` launches `app/chat_process.py` and `chat` is covered by start/stop/status.
-- [ ] T009 [US1] Wire routing in `koan/app/awake.py`: add `_is_chat_process_running()` and `_route_to_chat_process(text)` (write to inbox, **re-check** liveness for TOCTOU, never reject as "busy"); in `handle_message` free-form branch, route to the process and fall back to `_run_in_worker(chat_engine.respond, text, lane="chat")` when it returns False. Extend `koan/tests/test_awake.py`: routes when up, falls back when down.
+- [ ] T009 [US1] Wire routing in `koan/app/awake.py`: add `_is_chat_process_running()` and `_route_to_chat_process(text)` (write to inbox, **re-check** liveness for TOCTOU, never reject as "busy"); in `handle_message` free-form branch, route to the process and fall back to `_run_in_worker(handle_chat, text, lane="chat")` when it returns False. Extend `koan/tests/test_awake.py`: routes when up, falls back when down.
 - [ ] T010 [US1] Update `Makefile`: add a `chat` target running `app/chat_process.py`; add `chat` to `.PHONY`; include `logs/chat.log` in `make logs`; launch chat in the `make start` path.
 
 **Checkpoint**: US1 fully functional and independently testable — the MVP.
@@ -55,7 +55,7 @@ process and one competing caller (outbox formatting) is removed during missions.
 
 **Independent test**: chat, edit `soul.md`, chat again → second reply reflects the edit.
 
-- [ ] T011 [P] [US2] Add a regression test in `koan/tests/test_chat_context.py` (or `test_chat_engine.py`) proving `build_chat_prompt` reflects a `soul.md`/`summary.md` change on the next call without any restart (mutate the file, bust the mtime cache, assert new content appears) — locks FR-004 against the PR #1088 stale-context defect.
+- [ ] T011 [P] [US2] Add a regression test in `koan/tests/test_chat_context.py` proving `build_chat_prompt` reflects a `soul.md`/`summary.md` change on the next call without any restart (mutate the file, bust the mtime cache, assert new content appears) — locks FR-004 against the PR #1088 stale-context defect.
 
 **Checkpoint**: fresh-personality guarantee is proven by test (behavior delivered in T003).
 

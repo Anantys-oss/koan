@@ -9,7 +9,7 @@
 Give Telegram chat its own execution path so a running mission can no longer starve it
 of a Claude reply, and remove the lowest-value competing caller (outbox formatting) while
 a mission runs. The realtime chat cycle is refactored into **one** shared unit of work
-(`chat_engine.respond`) called identically by the new dedicated **chat process** and by
+(the single `awake.handle_chat`) called identically by the new dedicated **chat process** and by
 the bridge's inline **fallback** — eliminating, by construction, the behavior-divergence,
 history-bypass, and prompt-guard-bypass defects found in the earlier attempt (PR #1088).
 Personality context is read through the bridge's existing mtime-cached getters, so edits
@@ -50,7 +50,7 @@ Consulted via `/brain ask` (index-first) plus direct source reading:
 `outbox.md`. `fcntl.flock` + read-then-truncate, matching `OutboxManager.flush`.
 
 **Testing**: pytest, `KOAN_ROOT` set. Never call Claude — mock `run_cli` /
-`format_and_send`. New: `test_chat_context.py`, `test_chat_engine.py`,
+`format_and_send`. New: `test_chat_context.py`,
 `test_chat_process.py`; extend `test_outbox_manager.py`, `test_awake.py`,
 `test_active_mission.py`, `test_pid_manager*`.
 
@@ -61,8 +61,10 @@ Consulted via `/brain ask` (index-first) plus direct source reading:
 **Performance Goals**: added chat latency from file handoff < ~1s (poll interval),
 negligible vs the multi-second model call. Zero added load while idle.
 
-**Constraints**: no import cycles; `chat_engine`/`chat_context` must not import `awake`
-(so the dedicated process imports neither the bridge loop nor its heavy deps).
+**Constraints**: `chat_context` must not import `awake` (so it stays unit-testable in
+isolation); `chat_process` imports `awake` lazily inside `main()` — accepted so the reply
+cycle has exactly one implementation (see research.md D2). No import cycle: `awake` never
+imports `chat_process`.
 
 **Scale/Scope**: single operator, one chat channel; FIFO queue of pending chat messages
 (bursts of a handful).
@@ -85,7 +87,7 @@ negligible vs the multi-second model call. Zero added load while idle.
   unchanged. ✅
 - **VI. Single Writer, Single Read Path** — `is_mission_active()` lives in exactly one
   module (`active_mission.py`); the inbox filename is one constant (`signals.py`); the
-  chat cycle has one implementation (`chat_engine.respond`). ✅ (this is the core of the
+  chat cycle has one implementation (the single `awake.handle_chat`). ✅ (this is the core of the
   "cleaner than #1088" mandate)
 - **VII. Simplicity and Honest Reporting** — prefer extending existing mechanisms
   (PID manager, flock IPC, mtime getters, `.koan-active`) over inventing new ones; the
@@ -113,18 +115,18 @@ specs/007-chat-process/
 ```text
 koan/app/
 ├── chat_context.py      # NEW — pure build_chat_prompt(text, *, lite); fresh soul/summary
-├── chat_engine.py       # NEW — respond(text): the single shared chat reply cycle
-├── chat_process.py      # NEW — dedicated process: inbox poll/drain + lifecycle
+├── chat_process.py      # NEW — dedicated process: inbox poll/drain + lifecycle;
+│                        #       reuses awake.handle_chat (single implementation)
 ├── active_mission.py    # EDIT — add is_mission_active(koan_root) (single source)
 ├── signals.py           # EDIT — add CHAT_INBOX_FILE constant (single source)
-├── awake.py             # EDIT — handle_chat delegates to chat_engine; route to process w/ fallback
+├── awake.py             # EDIT — route chat to process w/ inline fallback; keep the single
+│                        #       handle_chat (delegates prompt build to chat_context)
 ├── outbox_manager.py    # EDIT — _format_message skips Claude when mission active (Phase 1)
 └── pid_manager.py       # EDIT — register "chat"; start_chat(); start_all/stop/status/logs
 
 Makefile                 # EDIT — make chat; start/logs include chat
 koan/tests/
 ├── test_chat_context.py # NEW
-├── test_chat_engine.py  # NEW
 ├── test_chat_process.py # NEW
 ├── test_outbox_manager.py  # EDIT — mission-active skip
 ├── test_awake.py        # EDIT — routing + fallback
@@ -137,16 +139,20 @@ docs/architecture/chat-process.md   # NEW — the dedicated chat path
 CLAUDE.md / koan/app/CLAUDE.md      # EDIT — architecture prose (three processes)
 ```
 
-**Structure Decision**: extend the existing single-package layout. Two new pure/logic
-modules (`chat_context`, `chat_engine`) are shared by the process and the fallback; one
-new runnable module (`chat_process`). All IPC/lifecycle reuses existing primitives.
+**Structure Decision**: extend the existing single-package layout. One new pure/logic
+module (`chat_context`, shared by the process and the inline fallback) and one new
+runnable module (`chat_process`). The reply cycle stays as the single `awake.handle_chat`.
+All IPC/lifecycle reuses existing primitives.
 
 ## Design (the "cleaner than #1088" decisions)
 
 1. **One chat cycle, not two.** PR #1088 re-extracted a *separate* `_retry_chat_lite`
    inside `chat_process.py`, which drifted (`max_turns` 5→1, wrong `cwd`) and skipped
-   history/guard. Here the entire cycle moves to `chat_engine.respond(text)`; both
-   `awake.handle_chat` (fallback) and `chat_process` call it. Divergence is impossible.
+   history/guard. Here there is exactly **one** `handle_chat` (in `awake.py`); the
+   dedicated process imports and calls it, and the inline fallback calls it too.
+   There is nothing to keep in sync, so divergence is impossible by construction —
+   a stronger guarantee than two functions that "match". (Prompt building is factored
+   into `chat_context.build_chat_prompt`, also single-sourced and unit-tested.)
 
 2. **Fresh personality by construction.** `chat_context.build_chat_prompt` reads soul and
    summary via `bridge_state.get_soul()/get_summary()` (mtime-cached), so no startup

@@ -27,18 +27,20 @@ def build_chat_prompt(text: str, *, lite: bool = False) -> str:
     so always fresh — FR-004).  Same 12k-char cap → lite recursion behavior."""
 ```
 
-## `chat_engine.py`
+## `awake.py` — the single reply cycle
 
 ```python
-def respond(text: str) -> None:
-    """The single shared chat reply cycle (see data-model.md §Chat reply cycle).
-    Called by BOTH chat_process (dedicated path) and awake.handle_chat (fallback),
-    guaranteeing identical behavior (FR-003).  Side effects only: sends Telegram
-    reply(s) and appends to conversation history."""
+def handle_chat(text: str) -> None:
+    """The single shared chat reply cycle: prompt-guard scan → save user →
+    build_chat_prompt → CLI invoke (max_turns=5, chat tools, cwd=KOAN_ROOT,
+    project_context=False) → lite retry → clean → send → save assistant.
+    Called by BOTH chat_process (dedicated path) and the inline worker-thread
+    fallback, guaranteeing identical behavior (FR-003). Prompt building is
+    delegated to chat_context.build_chat_prompt (fresh soul/summary, FR-004)."""
 ```
 
-`awake.handle_chat(text)` remains as a thin wrapper delegating to `chat_engine.respond`
-(preserves existing import/test surface).
+There is exactly one `handle_chat`; `chat_process` imports it (`from app.awake import
+handle_chat`, lazily inside `main()`), so no second implementation can drift from it.
 
 ## `chat_process.py`
 
@@ -57,8 +59,8 @@ def has_pending_requests() -> bool:
 
 def main() -> None:
     """Acquire the 'chat' PID file; install SIGTERM handler; poll the inbox every
-    POLL_INTERVAL; drain FIFO calling chat_engine.respond(entry['text']); on
-    SIGTERM finish the in-flight reply then release PID and exit (FR-011)."""
+    POLL_INTERVAL; drain FIFO calling awake.handle_chat(entry['text']); on SIGTERM finish
+    the current batch then release PID and exit (FR-011)."""
 ```
 
 ## `awake.py` (routing)
@@ -74,7 +76,7 @@ def _route_to_chat_process(text: str) -> bool:
 
 # handle_message free-form branch:
 #   if not _route_to_chat_process(text):
-#       _run_in_worker(chat_engine.respond, text, lane="chat")
+#       _run_in_worker(handle_chat, text, lane="chat")
 ```
 
 ## `outbox_manager.py` (Phase 1)
@@ -104,7 +106,7 @@ def start_chat(koan_root, verify_timeout=...) -> ...:
 ## Test contracts
 
 - `run_cli` / `format_and_send` are mocked — no real Claude calls.
-- `test_chat_engine`: guard scan runs, both user+assistant history writes happen, retry
+- chat parity (existing `TestHandleChat` in test_awake): guard scan runs, both user+assistant history writes happen, retry
   uses `max_turns=5` + `project_context=False` + `cwd=KOAN_ROOT` (regression lock vs #1088).
 - `test_chat_process`: FIFO drain order; unconditional truncate on malformed-only input;
   SIGTERM finishes in-flight then exits.

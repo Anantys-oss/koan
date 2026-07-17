@@ -22,21 +22,31 @@ shape the maintainers already reviewed favorably in #1088 ("architecture is soun
 
 ## D2 — Where the shared chat logic lives
 
-**Decision**: Two new modules — `chat_context.py` (pure prompt building) and
-`chat_engine.py` (the full reply cycle: guard → save user → build → invoke+retry →
-send → save assistant). `awake.handle_chat` becomes a thin delegate to
-`chat_engine.respond`; `chat_process` calls the same `respond`.
+**Decision**: Keep the single `handle_chat` in `awake.py` and have the dedicated
+`chat_process` import and call it; the inline fallback calls the same function. Prompt
+building is factored into `chat_context.build_chat_prompt` (pure, unit-tested, fresh
+soul/summary), which `handle_chat` uses.
 
-**Rationale**: The single worst class of bug in #1088 came from re-implementing the
-retry/invoke path separately in the chat process, where it drifted from the inline one
+**Rationale**: The worst class of bug in #1088 came from re-implementing the
+retry/invoke path *separately* in the chat process, where it drifted from the inline one
 (`max_turns` 5→1, `cwd` change) and skipped `save_conversation_message` and the prompt
-guard. Collapsing to one implementation makes those regressions structurally impossible
-and is the concrete meaning of "cleaner reimplementation."
+guard. The strongest possible fix is not "two functions that match" but **one function**:
+there is a single `handle_chat`, so there is nothing to keep in sync. This is also the
+simplest option (constitution VII) — no new engine module, no test churn on the large
+existing `handle_chat` suite.
+
+**Cost accepted**: `chat_process` imports `awake` (lazily, inside `main()`), pulling in
+the bridge module. `awake`'s module-level code is import-safe (no network/poll at
+import); the chat process needs the same messaging/config anyway. The prompt-building
+extraction still gives the isolation that matters for testing.
 
 **Alternatives considered**:
-- *Keep `handle_chat` in awake.py and import it from chat_process* — creates an import
-  cycle risk and forces the lightweight process to import the entire bridge loop and its
-  heavy dependencies. Rejected.
+- *Extract a separate `chat_engine.respond` and delegate from `awake.handle_chat`* —
+  marginally "cleaner" module boundaries, but forces migrating ~13 handler tests across
+  a split namespace for no behavioral gain, and reintroduces a two-function surface that
+  *could* drift. Rejected in favour of a single `handle_chat`.
+- *Duplicate the reply cycle in the chat process* (what #1088 effectively did) — the
+  divergence source. Rejected.
 
 ## D3 — "Is a mission active?" source of truth
 
@@ -86,7 +96,7 @@ simpler and matches user expectation (replies arrive in order).
 
 **Decision**: `handle_message` free-form path: if the chat PID is live, `write_to_inbox`,
 then **re-check** the PID; on either "not running" or "died after write," fall back to
-`_run_in_worker(chat_engine.respond, text, lane="chat")`. Exactly one path answers.
+`_run_in_worker(handle_chat, text, lane="chat")`. Exactly one path answers.
 
 **Rationale**: The re-check closes the TOCTOU window (process dies between PID check and
 write) so a message is never left unconsumed; because the fallback only fires when the

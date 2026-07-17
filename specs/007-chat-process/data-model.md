@@ -33,7 +33,7 @@ Source: `instance/.koan-active` via `active_mission.get_execution_state(koan_roo
 
 ## Chat reply cycle (behavioral contract, not persisted)
 
-`chat_engine.respond(text)` performs, in order:
+`awake.handle_chat(text)` performs, in order:
 
 1. Prompt-guard scan of `text` (warn-only for chat; quarantine on hit).
 2. `save_conversation_message(..., "user", text)`.
@@ -45,8 +45,8 @@ Source: `instance/.koan-active` via `active_mission.get_execution_state(koan_roo
 6. Clean response, `send_telegram`, `save_conversation_message(..., "assistant", ...)`.
 7. On unrecoverable failure → soft user-facing message, also saved to history.
 
-Both the dedicated process and the inline fallback invoke this exact function → no
-behavioral drift (the invariant this feature exists to guarantee).
+Both the dedicated process and the inline fallback invoke this exact single
+function → no behavioral drift (the invariant this feature exists to guarantee).
 
 ## Process registry entry
 

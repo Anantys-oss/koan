@@ -36,7 +36,7 @@ make chat           # (foreground) run only the chat process, for debugging
 ```bash
 make lint
 KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_chat_context.py \
-  koan/tests/test_chat_engine.py koan/tests/test_chat_process.py \
+  koan/tests/test_chat_process.py \
   koan/tests/test_outbox_manager.py koan/tests/test_awake.py \
   koan/tests/test_active_mission.py -v
 make test           # full suite
