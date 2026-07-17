@@ -2593,18 +2593,32 @@ def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
         return ""
 
 
-def _fetch_pr_state(owner: str, repo: str, pr_number: str) -> str:
-    """Return the PR state (OPEN, MERGED, CLOSED) or empty string on error."""
+def _fetch_pr_state_and_labels(
+    owner: str, repo: str, pr_number: str,
+) -> tuple[str, list[str]]:
+    """Return (state, label_names). Empty state / [] on error."""
     try:
-        return run_gh(
+        raw = run_gh(
             "pr", "view", pr_number,
             "--repo", f"{owner}/{repo}",
-            "--json", "state",
-            "--jq", ".state",
-        ).strip().upper()
-    except RuntimeError as e:
-        log("review", f"Could not check PR state for #{pr_number}: {e}")
-        return ""
+            "--json", "state,labels",
+            "--jq", "{state: .state, labels: [.labels[].name]}",
+        ).strip()
+        data = json.loads(raw) if raw else {}
+        state = str(data.get("state") or "").strip().upper()
+        labels = data.get("labels") or []
+        if not isinstance(labels, list):
+            labels = []
+        return state, [str(x) for x in labels if x is not None]
+    except (RuntimeError, json.JSONDecodeError, TypeError) as e:
+        log("review", f"Could not check PR state/labels for #{pr_number}: {e}")
+        return "", []
+
+
+def _fetch_pr_state(owner: str, repo: str, pr_number: str) -> str:
+    """Back-compat wrapper — state only."""
+    state, _ = _fetch_pr_state_and_labels(owner, repo, pr_number)
+    return state
 
 
 def _is_review_requested(owner: str, repo: str, pr_number: str, bot_username: str) -> bool:
@@ -3094,15 +3108,30 @@ def run_review(
     except RuntimeError as e:
         return False, str(e), None
 
-    # ── Step 0a: Check PR state — skip closed/merged unless --force ────
+    # ── Step 0a: Check PR state + pause label (single gh call) ──────────
+    # Skip closed/merged and pause-label PRs unless --force. Labels and state
+    # share one gh call so the pause gate adds zero extra round-trips.
     if not force:
-        pr_state = _fetch_pr_state(owner, repo, pr_number)
+        from app.config import get_review_pause_label
+        pr_state, pr_labels = _fetch_pr_state_and_labels(owner, repo, pr_number)
+
         if pr_state in ("MERGED", "CLOSED"):
             msg = (
                 f"PR #{pr_number} is {pr_state.lower()} — skipping review. "
                 "Use --force to review anyway."
             )
             log("review", msg)
+            return True, msg, None
+
+        pause_label = get_review_pause_label()
+        if pause_label and pause_label in pr_labels:
+            msg = (
+                f"⏸ Review skipped\n"
+                f'Reason: Pull request contains label "{pause_label}"\n'
+                "Remove the label to resume auto-review, or use --force to review anyway."
+            )
+            log("review", msg)
+            notify_fn(msg)
             return True, msg, None
 
     from app.config import get_review_concurrency_config

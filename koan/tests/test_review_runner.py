@@ -1910,7 +1910,7 @@ class TestReviewPostsBeforeEnrichment:
 
 
 class TestRunReview:
-    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -1919,7 +1919,7 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_full_pipeline_with_json(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        _mock_req, pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """Full review pipeline with JSON output: fetch -> claude -> parse -> post."""
         mock_fetch.return_value = pr_context
@@ -1980,7 +1980,7 @@ class TestRunReview:
         assert "branch moved during review" in posted_bodies[0]
         assert "HEAD=2222222" in posted_bodies[0]
 
-    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -1989,7 +1989,7 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_fallback_to_markdown_on_invalid_json(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        _mock_req, pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """Falls back to regex extraction when JSON parsing fails twice."""
         mock_fetch.return_value = pr_context
@@ -2014,7 +2014,7 @@ class TestRunReview:
         assert mock_claude.call_count == 2
         mock_gh.assert_called_once()
 
-    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner._run_error_hunter", return_value="")
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -2023,7 +2023,7 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_unparseable_output_posts_placeholder_not_raw(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable,
-        _mock_hunter, _mock_shas, _mock_req, pr_context, review_skill_dir,
+        _mock_hunter, _mock_shas, _mock_state, pr_context, review_skill_dir,
     ):
         """Guardrail: when neither attempt yields parseable/structured output,
         post a short placeholder (never the raw narration) and alert a human."""
@@ -2296,7 +2296,7 @@ class TestRunPrivateReview:
 class TestRunReviewClosedPrGuard:
     """run_review skips closed/merged PRs unless force=True."""
 
-    @patch("app.review_runner._fetch_pr_state", return_value="MERGED")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("MERGED", []))
     def test_skips_merged_pr(self, _mock_state):
         mock_notify = MagicMock()
         success, summary, data = run_review(
@@ -2308,7 +2308,7 @@ class TestRunReviewClosedPrGuard:
         assert "skipping review" in summary.lower()
         assert data is None
 
-    @patch("app.review_runner._fetch_pr_state", return_value="CLOSED")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("CLOSED", []))
     def test_skips_closed_pr(self, _mock_state):
         mock_notify = MagicMock()
         success, summary, data = run_review(
@@ -2325,7 +2325,7 @@ class TestRunReviewClosedPrGuard:
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
-    @patch("app.review_runner._fetch_pr_state", return_value="MERGED")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("MERGED", []))
     def test_force_reviews_merged_pr(
         self, _mock_state, mock_fetch, mock_claude, mock_gh,
         mock_repliable, _mock_shas, pr_context, review_skill_dir,
@@ -2343,7 +2343,7 @@ class TestRunReviewClosedPrGuard:
         assert data is not None
         mock_fetch.assert_called_once()
 
-    @patch("app.review_runner._fetch_pr_state", return_value="OPEN")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
@@ -2364,7 +2364,7 @@ class TestRunReviewClosedPrGuard:
         assert success is True
         assert data is not None
 
-    @patch("app.review_runner._fetch_pr_state", return_value="")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
@@ -2378,6 +2378,99 @@ class TestRunReviewClosedPrGuard:
         mock_fetch.return_value = pr_context
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
 
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+        assert success is True
+        assert data is not None
+
+
+class TestRunReviewPauseLabelGate:
+    """run_review skips when the configured pause label is on the PR."""
+
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner._fetch_pr_state_and_labels",
+           return_value=("OPEN", ["PauseReview", "enhancement"]))
+    @patch("app.config.get_review_pause_label", return_value="PauseReview")
+    def test_skips_when_pause_label_present(
+        self, _mock_cfg, _mock_state, mock_claude, mock_fetch,
+    ):
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+        )
+        assert success is True
+        assert data is None
+        assert "PauseReview" in summary
+        assert "skipped" in summary.lower()
+        mock_fetch.assert_not_called()
+        mock_claude.assert_not_called()
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._fetch_pr_state_and_labels",
+           return_value=("OPEN", ["PauseReview"]))
+    @patch("app.config.get_review_pause_label", return_value="PauseReview")
+    def test_force_bypasses_pause_label(
+        self, _mock_cfg, _mock_state, mock_fetch, mock_claude, mock_gh,
+        mock_repliable, _mock_shas, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            force=True,
+        )
+        assert success is True
+        assert data is not None
+        mock_fetch.assert_called_once()
+        mock_claude.assert_called_once()
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._fetch_pr_state_and_labels",
+           return_value=("OPEN", ["PauseReview"]))
+    @patch("app.config.get_review_pause_label", return_value="")
+    def test_disabled_feature_does_not_check_labels(
+        self, _mock_cfg, _mock_state, mock_fetch, mock_claude, mock_gh,
+        mock_repliable, _mock_shas, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+        assert success is True
+        assert data is not None
+        mock_claude.assert_called_once()
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._fetch_pr_state_and_labels",
+           return_value=("OPEN", ["bug"]))
+    @patch("app.config.get_review_pause_label", return_value="PauseReview")
+    def test_other_labels_do_not_skip(
+        self, _mock_cfg, _mock_state, mock_fetch, mock_claude, mock_gh,
+        mock_repliable, _mock_shas, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
         success, summary, data = run_review(
             "owner", "repo", "42", "/tmp/project",
             notify_fn=MagicMock(),
@@ -3133,7 +3226,7 @@ class TestPostCommentReplies:
 # ---------------------------------------------------------------------------
 
 class TestRunReviewWithReplies:
-    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments")
@@ -3142,7 +3235,7 @@ class TestRunReviewWithReplies:
     @patch("app.review_runner.fetch_pr_context")
     def test_posts_replies_when_present(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        _mock_req, pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """Posts replies to user comments when review includes comment_replies."""
         mock_fetch.return_value = pr_context
@@ -3169,7 +3262,7 @@ class TestRunReviewWithReplies:
         # run_gh called: 1 for post_review_comment + 1 for reply
         assert mock_gh.call_count == 2
 
-    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3178,7 +3271,7 @@ class TestRunReviewWithReplies:
     @patch("app.review_runner.fetch_pr_context")
     def test_no_replies_when_no_repliable_comments(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        _mock_req, pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """No reply posting when there are no repliable comments."""
         mock_fetch.return_value = pr_context
@@ -3470,7 +3563,7 @@ class TestFormatReviewWithPlanAlignment:
 # ---------------------------------------------------------------------------
 
 class TestRunReviewPlanAlignment:
-    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3479,7 +3572,7 @@ class TestRunReviewPlanAlignment:
     @patch("app.review_runner.fetch_pr_context")
     def test_auto_detects_plan_from_pr_body(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        _mock_req, plan_review_skill_dir,
+        _mock_state, plan_review_skill_dir,
     ):
         """Auto-detects plan URL from PR body and includes plan in prompt."""
         context = {
@@ -3519,7 +3612,7 @@ class TestRunReviewPlanAlignment:
         # Verify that plan fetching was attempted (gh api called for issues/10)
         assert mock_gh.call_count >= 2
 
-    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3528,7 +3621,7 @@ class TestRunReviewPlanAlignment:
     @patch("app.review_runner.fetch_pr_context")
     def test_no_plan_when_no_issue_in_body(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        _mock_req, pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """No plan alignment when PR body has no linked issue URL."""
         pr_context["body"] = "Refactoring pass. No linked issue."
@@ -3544,7 +3637,7 @@ class TestRunReviewPlanAlignment:
         # run_gh only called once: to post the review comment
         assert mock_gh.call_count == 1
 
-    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3553,7 +3646,7 @@ class TestRunReviewPlanAlignment:
     @patch("app.review_runner.fetch_pr_context")
     def test_explicit_plan_url_overrides_auto_detection(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        _mock_req, pr_context, plan_review_skill_dir,
+        _mock_state, pr_context, plan_review_skill_dir,
     ):
         """Explicit --plan-url fetches the specified issue, skipping auto-detect."""
         pr_context["body"] = "No issue URLs here."

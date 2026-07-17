@@ -2111,6 +2111,38 @@ class TestReviewDraftSkipConfig:
         assert cfg["enabled"] is False
 
 
+class TestReviewPauseLabelConfig:
+    def test_default_is_pause_review(self):
+        from app.config import get_review_pause_label
+        with _mock_config({}):
+            assert get_review_pause_label() == "PauseReview"
+
+    def test_custom_label(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": "AI:Paused"}):
+            assert get_review_pause_label() == "AI:Paused"
+
+    def test_empty_string_disables(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": ""}):
+            assert get_review_pause_label() == ""
+
+    def test_whitespace_only_disables(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": "   "}):
+            assert get_review_pause_label() == ""
+
+    def test_non_string_disables(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": 123}):
+            assert get_review_pause_label() == ""
+
+    def test_strips_surrounding_whitespace(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": "  Skip AI  "}):
+            assert get_review_pause_label() == "Skip AI"
+
+
 class TestMemoryMonitorConfig:
     def test_defaults(self):
         from app.config import get_memory_monitor_config

@@ -1091,6 +1091,13 @@ page_cache_reclaim:
 # review_draft_skip:
 #   enabled: false          # Defer auto-review of draft PRs (default: false)
 
+# Pause LLM review when a PR carries this label (exact name match).
+# Default "PauseReview". Set to "" to disable the feature entirely
+# (Koan then never checks labels for this purpose).
+# Remove the label to resume auto-review, or `/review --force <url>` to
+# review while the label remains.
+# review_pause_label: "PauseReview"
+
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention
 # notifications (reason: mention or review_requested). Requires github_url

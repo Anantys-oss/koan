@@ -2731,6 +2731,26 @@ def get_review_draft_skip_config() -> dict:
     return {"enabled": enabled}
 
 
+def get_review_pause_label() -> str:
+    """Return the PR label that pauses LLM review, or "" if disabled.
+
+    Config key: review_pause_label (string). Default ``"PauseReview"``.
+    Empty / whitespace / non-string disables the feature entirely — no
+    label check is performed by callers when this returns "".
+
+    Example::
+
+        review_pause_label: "PauseReview"   # default
+        review_pause_label: ""              # disable
+        review_pause_label: "AI:Paused"     # org-specific label
+    """
+    config = _load_config()
+    raw = config.get("review_pause_label", "PauseReview")
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip()
+
+
 def is_caveman_mode() -> bool:
     """Check if caveman output optimization is enabled.
 
