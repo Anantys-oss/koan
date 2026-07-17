@@ -59,7 +59,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 ### Providers
 - [`providers/claude-cli-commands-official.md`](docs/providers/claude-cli-commands-official.md) — Official upstream Claude Code CLI reference listing all commands and flags.
-- [`providers/claude.md`](docs/providers/claude.md) — Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, KOAN_ROOT project-context isolation (`--setting-sources user`), and devcontainer mode.
+- [`providers/claude.md`](docs/providers/claude.md) — Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP (`mcp_roles` per-role opt-in), KOAN_ROOT project-context isolation (`--setting-sources user`), and devcontainer mode.
 - [`providers/cline.md`](docs/providers/cline.md) — Setup and feature-mapping guide for using Cline CLI as Kōan's underlying multi-backend AI provider.
 - [`providers/codex.md`](docs/providers/codex.md) — Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting.
 - [`providers/copilot.md`](docs/providers/copilot.md) — Setup guide and feature/tool-mapping differences for using GitHub Copilot CLI as Kōan's provider.
@@ -76,7 +76,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 ### Security
 - [`security/prompt-guard.md`](docs/security/prompt-guard.md) — Documents `prompt_guard.py`'s input-side defenses against prompt injection in missions and its configuration/complementary defenses (outbox scanner, data fencing, memory scanning).
 - [`security/security-review.md`](docs/security/security-review.md) — Documents the automated post-mission security review that scans diffs for dangerous patterns, scores risk, optionally blocks auto-merge, and logs an audit trail.
-- [`security/threat-model-agent-disalignment.md`](docs/security/threat-model-agent-disalignment.md) — A threat-model analysis of the blast radius if Koan's autonomous agent becomes disaligned, covering attack surface, exfiltration vectors, protections, and recommended mitigations.
+- [`security/threat-model-agent-disalignment.md`](docs/security/threat-model-agent-disalignment.md) — A threat-model analysis of the blast radius if Koan's autonomous agent becomes disaligned, covering attack surface, exfiltration vectors, MCP per-role exclusions, protections, and recommended mitigations.
 
 ### Setup
 - [`setup/docker.md`](docs/setup/docker.md) — Covers Docker Compose setup for Koan (pull vs. build from source), workspace project mounts, authentication (Claude/GitHub), volume layout, and troubleshooting common container issues.
@@ -107,8 +107,8 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`components/core.md`](specs-components/core.md) — Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on.
 - [`components/git-github.md`](specs-components/git-github.md) — Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows.
 - [`components/issue-tracking.md`](specs-components/issue-tracking.md) — Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer.
-- [`components/providers.md`](specs-components/providers.md) — Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract.
-- [`components/skills.md`](specs-components/skills.md) — Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness).
+- [`components/providers.md`](specs-components/providers.md) — Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract, including the MCP per-role safety boundary.
+- [`components/skills.md`](specs-components/skills.md) — Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, MCP access for skill runners, the new-skill checklist, and the eval harness).
 - [`components/web.md`](specs-components/web.md) — Documents the Flask dashboard and token-gated REST API, shared `dashboard_service` logic (including the live progress stream contract), OpenAPI drift guard, and surface-parity invariants.
 
 ## Specs — Skills

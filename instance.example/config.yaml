@@ -445,10 +445,23 @@ cli_provider: "claude"
 # MCP server configuration — paths to MCP config JSON files.
 # Passed as --mcp-config to the Claude CLI.
 # For autonomous mode, pre-approve MCP tools in the project's
-# .claude/settings.local.json (see docs/provider-claude.md).
+# .claude/settings.local.json (see docs/providers/claude.md).
 # Per-project overrides available in projects.yaml (replaces global list).
 # mcp:
 #   - "/path/to/mcp-servers.json"
+
+# Which execution roles may load MCP servers (--mcp-config). Loading a server
+# is NOT the same as granting its tools — MCP tools must still be allowlisted
+# by qualified name (mcp__<server> / mcp__<server>__<tool>) in the role's
+# tools: list unless skip_permissions is set.
+# Default: ["mission", "contemplative", "plan"]. Conversational roles that read
+# untrusted input (chat, github_reply) are excluded by default; opt them in
+# knowingly. Set to [] to disable MCP for every role (kill switch).
+# Per-project override in projects.yaml replaces this list.
+# mcp_roles:
+#   - "mission"
+#   - "contemplative"
+#   - "plan"
 
 # NOTE: The 'local' CLI provider has been removed. To run local models use
 # 'ollama-launch' (see below) — the Claude CLI driven by ``ollama launch claude``.

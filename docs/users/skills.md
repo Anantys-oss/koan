@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-15
+updated: 2026-07-17
 ---
 
 # Skills Reference
@@ -49,7 +49,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 
 | Command | Aliases | Description | GitHub @mention |
 |---------|---------|-------------|:-:|
-| `/plan [--iterations N] <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review). `--iterations N` (1-5) runs N critique+refine rounds. | — |
+| `/plan [--iterations N] <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review). `--iterations N` (1-5) runs N critique+refine rounds. Loads project MCP servers when `plan` is in `mcp_roles` (default). | — |
 | `/deepplan <desc>` | `/deeplan` | Spec-first design: explore approaches, post spec, queue /plan | — |
 | `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; creates a draft PR, then privately reviews/fixes Important+ findings by default | Yes |
 | `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic. A PR URL is redirected to `/rebase` (preserving `--now` and trailing context) | Yes |
@@ -71,6 +71,12 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 
 For URL-based `/plan`, `/deepplan`, `/implement`, and `/fix`, append `branch:<name>` to
 override the base branch for that mission.
+
+`plan` runs with the project's MCP servers loaded when `plan` is in `mcp_roles`
+(the default), so it can consult MCP-backed trackers and knowledge bases. See
+[docs/providers/claude.md](../providers/claude.md) → "Per-role MCP access".
+Conversational roles (`chat`, `github_reply`) stay excluded by default; add them
+to `mcp_roles` to opt in. `mcp_roles: []` is a kill switch for every role.
 
 **Assumptions audit (advisory, never blocks):** before a `/plan` result is posted, a
 lightweight auditor pressure-tests the plan's hidden assumptions; unverified-critical

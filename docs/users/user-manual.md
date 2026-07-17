@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-16
+updated: 2026-07-17
 ---
 
 # Kōan User Manual
@@ -477,6 +477,7 @@ Plans include a **File Map** (table of every file to create/modify/test), **chec
 - **Usage:** `/plan [--iterations N] <idea>`, `/plan <project> <idea>`, `/plan <issue-url>` (iterate on existing)
 - **GitHub @mention:** `@koan-bot /plan <idea>` on an issue
 - **Option:** `--iterations N` (1-5, default 1) — Run N rounds of critique+refine. A critic identifies gaps and contradictions after each generation, then the plan is regenerated with that feedback. Only the final iteration is posted. Cost scales linearly (~5× tokens at `--iterations 3`).
+- **MCP:** By default `plan` is in `mcp_roles`, so project MCP servers (Jira, docs, etc.) are loaded during plan generation. See [Claude provider docs](../providers/claude.md#per-role-mcp-access-mcp_roles). Other roles (`chat`, `github_reply`) stay opt-in only.
 
 <details>
 <summary>Use cases</summary>

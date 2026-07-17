@@ -4,7 +4,7 @@ title: "Threat Model: Agent Disalignment Risk"
 description: "A threat-model analysis of the blast radius if Koan's autonomous agent becomes disaligned, covering attack surface, exfiltration vectors, protections, and recommended mitigations."
 tags: [security]
 created: 2026-05-28
-updated: 2026-06-06
+updated: 2026-07-17
 ---
 
 # Threat Model: Agent Disalignment Risk
@@ -188,9 +188,23 @@ can use them to send emails, create calendar events, etc.
 as the owner. Calendar MCP = can create/delete events.
 
 **Mitigation status**: MCP servers are opt-in (config.yaml). Not configured by default.
+Additionally, MCP is loaded per **execution role** via `mcp_roles` (default
+`["mission", "contemplative", "plan"]`). Conversational roles that consume
+untrusted text (`chat`, `github_reply`) are excluded by default.
 
 **Recommendation**: Only configure MCP servers that are truly needed. Consider
-read-only MCP configurations where possible.
+read-only MCP configurations where possible. Keep `chat`/`github_reply` out of
+`mcp_roles` unless you knowingly accept the injection surface. Use
+`mcp_roles: []` as a kill switch.
+
+### MCP per-role exclusions
+
+Skill runners that consume untrusted text (`chat`, `github_reply`) run with
+read-only tools to contain prompt injection. MCP servers can have side effects
+(write to trackers, call external APIs), so they are excluded from these roles by
+default via `mcp_roles`. Enabling them is an explicit operator decision and still
+requires per-tool allowlisting. `mission`/`contemplative`/`plan` are trusted
+paths (operator-authored or human-approved) and are included by default.
 
 ### 3.7 Missions Queue Manipulation (LOW)
 
