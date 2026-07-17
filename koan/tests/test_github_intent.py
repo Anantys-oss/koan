@@ -230,6 +230,13 @@ class TestMatchSkillKeyword:
         assert match_skill_keyword("the review looks good", _reg()) is None
         assert match_skill_keyword("this rebase broke prod", _reg()) is None
 
+    def test_discourse_filler_not_actionable(self):
+        # Conversational fillers ("just", "now", "ok", "hey") are not asks — a
+        # keyword incidentally preceded by one must not promote/auto-dispatch.
+        from app.github_intent import match_skill_keyword
+        assert match_skill_keyword("just wondering about the review", _reg()) is None
+        assert match_skill_keyword("hey the review looks fine now", _reg()) is None
+
     def test_leading_keyword_promoted(self):
         from app.github_intent import match_skill_keyword
         assert match_skill_keyword("review this please", _reg()).command == "review"

@@ -35,7 +35,7 @@ _NEEDS_ISSUE = {"fix", "implement"}
 _IMPERATIVE_LEAD_INS = {
     "do", "does", "please", "pls", "kindly", "run", "go", "perform",
     "could", "can", "would", "will", "let", "lets", "make", "give",
-    "want", "need", "hey", "ok", "okay", "just", "now",
+    "want", "need",
 }
 
 
