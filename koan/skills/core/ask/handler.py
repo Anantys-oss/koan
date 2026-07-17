@@ -212,6 +212,7 @@ def _generate_reply(
     """Generate an AI reply using the ask-specific prompt, falling back to github-reply."""
     from app import github_reply
     from app.cli_provider import run_command
+    from app.config import get_reply_max_turns
 
     kind = "pull request" if thread_context.get("is_pr") else "issue"
     title = thread_context.get("title", "")
@@ -244,9 +245,9 @@ def _generate_reply(
             project_path=project_path,
             allowed_tools=["Read", "Glob", "Grep"],
             model_key="chat",
-            max_turns=5,
+            max_turns=get_reply_max_turns(),
             timeout=300,
-            max_turns_source=None,
+            max_turns_source="reply_max_turns",
         )
     except (RuntimeError, subprocess.TimeoutExpired) as e:
         log.warning("ask: reply generation failed: %s", e)

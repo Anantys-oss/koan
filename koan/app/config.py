@@ -1545,6 +1545,23 @@ def get_contemplative_max_turns() -> int:
     return _safe_int(config.get("contemplative_max_turns", 15), 15)
 
 
+def get_reply_max_turns() -> int:
+    """Get max turns for GitHub reply generation (/ask + @mention replies).
+
+    Reply generation reads repo files (Read, Glob, Grep) to ground its answer
+    and then writes the reply.  The previous hardcoded value of 5 was too tight:
+    the model would exhaust its turns exploring the repo before emitting a final
+    answer, leaving an empty reply and the user's question unanswered.
+
+    Config key: reply_max_turns (default: 20).
+
+    Returns:
+        Maximum number of turns.
+    """
+    config = _load_config()
+    return _safe_int(config.get("reply_max_turns", 20), 20)
+
+
 def get_post_mission_timeout() -> int:
     """Get timeout in seconds for the post-mission pipeline.
 

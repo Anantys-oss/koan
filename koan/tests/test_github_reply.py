@@ -225,7 +225,13 @@ class TestGenerateReply:
         # Verify read-only tools
         call_args = mock_run.call_args
         assert call_args[1]["allowed_tools"] == ["Read", "Glob", "Grep"]
-        assert call_args[1]["max_turns"] == 5
+        # Reply budget is configurable (reply_max_turns); the old hardcoded 5
+        # was too tight — the model exhausted its turns exploring the repo and
+        # returned an empty reply. Guard against regressing to that.
+        from app.config import get_reply_max_turns
+
+        assert call_args[1]["max_turns"] == get_reply_max_turns()
+        assert call_args[1]["max_turns"] > 5
 
     @patch("app.github_reply.load_prompt", return_value="prompt")
     @patch("app.github_reply.run_command", side_effect=RuntimeError("timeout"))

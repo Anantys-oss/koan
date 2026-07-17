@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.cli_provider import run_command
+from app.config import get_reply_max_turns
 from app.github import api, sanitize_github_comment
 from app.prompts import load_prompt
 from app.utils import truncate_text
@@ -299,9 +300,9 @@ def generate_reply(
             project_path=project_path,
             allowed_tools=["Read", "Glob", "Grep"],
             model_key="chat",
-            max_turns=5,
+            max_turns=get_reply_max_turns(),
             timeout=300,
-            max_turns_source=None,
+            max_turns_source="reply_max_turns",
             project_name=project_name,
             # github_reply is excluded from mcp_roles by default (untrusted
             # input); operators opt in knowingly via config.
