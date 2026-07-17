@@ -187,6 +187,31 @@ def strip_all_lifecycle_markers(text: str) -> str:
     return text.rstrip()
 
 
+# Queue-appended system metadata that is never a skill argument: the
+# ``[complexity:X]`` classifier tag, the ``[r:N]`` crash-recovery counter, and
+# the 📬/🎫 origin markers (GitHub / ticket). Unlike lifecycle timestamps these
+# survive requeue, so any code that treats a mission's post-command text as
+# user input must strip them first — otherwise trailing metadata is mistaken
+# for arguments (e.g. silently enabling ``/rebase --fix`` on a requeued bare
+# rebase).
+_SYSTEM_METADATA_STRIP_RE = re.compile(
+    r"\s*\[r:\d+\]"                # [r:N] crash-recovery counter
+    r"|\s*\[complexity:[^\]]*\]"   # [complexity:X] classifier tag
+    r"|\s*[📬🎫]"                  # origin markers (GitHub / ticket)
+)
+
+
+def strip_system_metadata(text: str) -> str:
+    """Remove queue-appended system metadata that is never a skill argument.
+
+    Strips the ``[complexity:X]`` classifier tag, the ``[r:N]`` crash-recovery
+    counter, and the 📬/🎫 origin markers. Lifecycle timestamps are handled
+    separately by :func:`strip_all_lifecycle_markers`. Used by skill dispatch
+    so metadata that survives requeue is not mistaken for user-supplied args.
+    """
+    return _SYSTEM_METADATA_STRIP_RE.sub("", text).strip()
+
+
 # Markers that vary across a mission's lifecycle but do not change its identity:
 # lifecycle timestamps (⏳ ▶ ✅/❌), the [r:N] crash-recovery counter, and the
 # [complexity:X] classifier tag. Stripping them yields a key that is stable

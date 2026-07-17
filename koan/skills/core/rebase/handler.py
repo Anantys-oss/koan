@@ -15,9 +15,10 @@ def handle(ctx):
         /rebase --now https://github.com/owner/repo/pull/123
         /rebase https://github.com/owner/repo/pull/123 <focus area>
 
-    Queues a mission that rebases the PR branch onto its target,
-    reads all comments for context, and pushes the result. Any text
-    after the URL is threaded into the mission as extra focus context.
+    Queues a mission that rebases the PR branch onto its target and pushes
+    the result. By default this is a pure rebase — no review feedback is
+    applied. Pass --fix (or any trailing focus/severity text after the URL,
+    which implies --fix) to also read the review comments and address them.
     Use --now to queue at the top of the mission queue.
     """
     args = ctx.args.strip()

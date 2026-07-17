@@ -2051,6 +2051,25 @@ class TestBuildRebaseCmdFix:
         idx = cmd.index("--min-severity")
         assert cmd[idx + 1] == "critical"
 
+    @pytest.mark.parametrize("metadata", ["[complexity:medium]", "[r:2]", "🎫"])
+    def test_requeued_system_metadata_does_not_imply_fix(self, metadata):
+        """System metadata (classifier tag, recovery counter, origin marker)
+        that survives requeue must NOT be read as user focus and silently turn
+        on the feedback leg. Dispatch strips it before the builder sees args, so
+        a requeued bare `/rebase <url> [complexity:medium]` stays rebase-only.
+        """
+        cmd = dispatch_skill_mission(
+            mission_text=f"/rebase {self.URL} {metadata}",
+            project_name="koan",
+            project_path="/workspace/koan",
+            koan_root="/koan",
+            instance_dir="/koan/instance",
+        )
+        assert cmd is not None
+        assert "--fix" not in cmd
+        # The metadata token must not leak into the command either.
+        assert not any(metadata in part for part in cmd)
+
 
 # ---------------------------------------------------------------------------
 # _build_plan_cmd — iterations flag extraction
