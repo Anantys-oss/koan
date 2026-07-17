@@ -473,17 +473,71 @@ def check_json_success(stdout_file: str) -> bool:
         return False
 
 
-def parse_claude_output(raw_text: str) -> str:
-    """Extract human-readable text from Claude JSON output.
+def _extract_stream_json_text(raw: str) -> Optional[str]:
+    """Extract assistant text from NDJSON stream-json / streaming-json stdout.
 
-    Handles multiple JSON response shapes:
-    - {"result": "..."}
-    - {"content": "..."}
-    - {"text": "..."}
-    Falls back to raw text if JSON parsing fails.
+    Returns the final result when present, otherwise concatenated assistant
+    text deltas (Grok ``type=text`` joined with ``""``; block-style providers
+    joined with newlines). Returns ``None`` when *raw* is not a pure NDJSON
+    event stream so callers can fall through to single-object / plain parsing.
+    """
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return None
+
+    events: List[Dict[str, Any]] = []
+    for line in lines:
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if not isinstance(obj, dict) or "type" not in obj:
+            return None
+        events.append(obj)
+
+    # Lazy import keeps mission_runner import-time light and matches other
+    # provider helper call sites that already use these private extractors.
+    from app.provider import _extract_assistant_text_chunks, _extract_result_text
+
+    final_result: Optional[str] = None
+    text_lines: List[str] = []
+    text_delta_parts: List[str] = []
+
+    def _flush_deltas() -> None:
+        if text_delta_parts:
+            text_lines.append("".join(text_delta_parts))
+            text_delta_parts.clear()
+
+    for event in events:
+        chunks = _extract_assistant_text_chunks(event)
+        if event.get("type") == "text" and isinstance(event.get("data"), str):
+            text_delta_parts.extend(chunks)
+        else:
+            _flush_deltas()
+            text_lines.extend(chunks)
+        result_text = _extract_result_text(event)
+        if result_text is not None:
+            final_result = result_text
+    _flush_deltas()
+
+    if final_result is not None:
+        return final_result
+    if text_lines:
+        return "\n".join(text_lines)
+    return ""
+
+
+def parse_claude_output(raw_text: str) -> str:
+    """Extract human-readable text from provider CLI stdout.
+
+    Handles multiple response shapes across providers:
+    - NDJSON stream-json / streaming-json (Claude, Grok, Haze, …)
+    - Single JSON envelopes: ``{"result": "..."}``, ``{"content": "..."}``,
+      ``{"text": "..."}`` (Claude json mode, Grok ``--output-format json``)
+    - Plain text fallback when JSON parsing fails
 
     Args:
-        raw_text: Raw stdout from Claude CLI (JSON or plain text).
+        raw_text: Raw stdout from the configured CLI provider.
 
     Returns:
         Extracted text content.
@@ -491,16 +545,23 @@ def parse_claude_output(raw_text: str) -> str:
     if not raw_text.strip():
         return ""
 
+    stripped = raw_text.strip()
+
+    stream_text = _extract_stream_json_text(stripped)
+    if stream_text is not None:
+        return stream_text
+
     try:
-        data = json.loads(raw_text)
-        # Try common response keys in order
-        for key in ("result", "content", "text"):
-            if key in data and isinstance(data[key], str):
-                return data[key]
+        data = json.loads(stripped)
+        if isinstance(data, dict):
+            # Try common response keys in order
+            for key in ("result", "content", "text"):
+                if key in data and isinstance(data[key], str):
+                    return data[key]
         # If none match, return the raw text
-        return raw_text.strip()
+        return stripped
     except (json.JSONDecodeError, TypeError):
-        return raw_text.strip()
+        return stripped
 
 
 def _read_pending_content(instance_dir: str) -> str:

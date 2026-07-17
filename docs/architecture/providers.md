@@ -28,6 +28,13 @@ Providers are responsible for:
 - exposing provider capabilities without leaking provider details into unrelated
   modules.
 
+Post-CLI text extraction is shared: `mission_runner.parse_claude_output()`
+unwraps provider stream/json envelopes (NDJSON `stream-json` /
+`streaming-json`, single-object `result`/`text`/`content` keys) into plain
+assistant text. Call sites that parse structured model payloads — including
+`complexity_classifier._parse_tier_response` — must unwrap first so Grok/Haze
+framing does not hide the payload and force fallbacks.
+
 ## Resolution Flow
 
 Provider selection is resolved from environment and configuration helpers. Global
