@@ -1250,6 +1250,29 @@ def _try_assignment_notification(
             notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
             return True
 
+    # Pause-label gate. When review_pause_label is non-empty and the PR carries
+    # that exact label, soft-skip the automatic /review. Mirrors the draft gate:
+    # mark read, do NOT track_thread / set_review_cooldown. Explicit /review
+    # still queues (mention path); the runner enforces the label at execution
+    # time unless --force.
+    pause_label = ""
+    if reason == "review_requested":
+        from app.config import get_review_pause_label
+        pause_label = get_review_pause_label()
+    if pause_label and pause_label in (subject_info.get("labels") or []):
+        subject_title = notification.get("subject", {}).get("title", "?")
+        pr_number = extract_issue_number_from_notification(notification)
+        log.info(
+            "GitHub assign: skipping review of %s/%s#%s — PR has pause label %r (%s)",
+            owner, repo, pr_number or "?", pause_label, subject_title,
+        )
+        _notify_pause_label_skipped(
+            owner, repo, subject_title, pause_label, notification,
+        )
+        mark_notification_read(notif_id)
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+        return True
+
     # Build web URL from subject
     subject_url = notification.get("subject", {}).get("url", "")
     web_url = api_url_to_web_url(subject_url) if subject_url else ""
@@ -2478,19 +2501,19 @@ def _try_subscription_notification(
 
 
 def _fetch_subject_info(notification: dict) -> dict:
-    """Fetch state, merged status, head SHA, and draft flag for a subject.
+    """Fetch state, merged, head SHA, draft, and labels for a subject.
 
     One API call returns everything the assignment path needs: the
     ``state``/``merged`` fields for the closed/merged check, ``head_sha``
-    for the review-request dedup key, and ``draft`` for the opt-in draft-PR
-    review gate. Issues have no ``head`` and no ``draft`` — both come back
-    null in that case.
+    for the review-request dedup key, ``draft`` for the opt-in draft-PR
+    review gate, and ``labels`` for the pause-label review gate. Issues have
+    no ``head`` and no ``draft`` — both come back null in that case.
 
     Returns:
-        A dict with keys ``state``, ``merged``, ``head_sha``, ``draft``
-        (values may be empty/None/False). Returns an empty dict when the
-        subject cannot be fetched, so callers must treat a missing
-        ``head_sha``/``draft`` as "unknown".
+        A dict with keys ``state``, ``merged``, ``head_sha``, ``draft``,
+        ``labels`` (list of name strings; empty when absent/unfetchable).
+        Returns an empty dict when the subject cannot be fetched, so callers
+        must treat a missing ``head_sha``/``draft``/``labels`` as "unknown".
     """
     from app.github import SSOAuthRequired, api as gh_api
 
@@ -2509,7 +2532,10 @@ def _fetch_subject_info(notification: dict) -> dict:
     try:
         raw = gh_api(
             endpoint,
-            jq="{state: .state, merged: .merged, head_sha: .head.sha, draft: .draft}",
+            jq=(
+                "{state: .state, merged: .merged, head_sha: .head.sha, "
+                "draft: .draft, labels: [.labels[].name]}"
+            ),
             timeout=15,
         )
         data = json.loads(raw) if raw else {}
@@ -2522,7 +2548,14 @@ def _fetch_subject_info(notification: dict) -> dict:
         # Can't determine state — don't block the notification
         return {}
 
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    # Normalize labels to a list of strings (defensive).
+    labels = data.get("labels") or []
+    if not isinstance(labels, list):
+        labels = []
+    data["labels"] = [str(x) for x in labels if x is not None]
+    return data
 
 
 def _closed_reason_from_subject_info(subject_info: dict) -> Optional[str]:
@@ -2605,6 +2638,32 @@ def _notify_draft_pr_skipped(
         )
     except Exception as e:
         log.warning("Failed to send draft-PR skip notification: %s", e)
+
+
+def _notify_pause_label_skipped(
+    owner: str,
+    repo: str,
+    subject_title: str,
+    pause_label: str,
+    notification: dict,
+) -> None:
+    """Best-effort INFO when auto-review is paused by a PR label."""
+    try:
+        from app.github_notifications import api_url_to_web_url
+        from app.notify import NotificationPriority, send_telegram
+
+        subject_url = notification.get("subject", {}).get("url", "")
+        web_url = api_url_to_web_url(subject_url) if subject_url else ""
+        url_part = f"\n{web_url}" if web_url else ""
+        send_telegram(
+            f"⏸ Review skipped: {owner}/{repo} — {subject_title}{url_part}\n"
+            f'Reason: Pull request contains label "{pause_label}"\n'
+            "Remove the label to resume auto-review, or send "
+            "`/review --force <url>` to review anyway.",
+            priority=NotificationPriority.INFO,
+        )
+    except Exception as e:
+        log.warning("Failed to send pause-label skip notification: %s", e)
 
 
 def _notify_github_question(

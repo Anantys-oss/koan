@@ -97,24 +97,45 @@ def subject_draft():
     return False
 
 
+@pytest.fixture
+def subject_labels():
+    """Per-test override for stubbed subject labels. Default: none."""
+    return []
+
+
 @pytest.fixture(autouse=True)
-def _stub_subject_info(subject_closed_state, subject_head_sha, subject_draft):
+def _stub_subject_info(
+    subject_closed_state, subject_head_sha, subject_draft, subject_labels,
+):
     """Stub the network-hitting subject fetch shared by both notification paths.
 
     ``_fetch_subject_info`` is the single seam that calls the GitHub API for a
-    subject's state/merged/head SHA/draft. The @mention path reaches it through
-    ``_is_subject_closed`` and the assignment path calls it directly, so
+    subject's state/merged/head SHA/draft/labels. The @mention path reaches it
+    through ``_is_subject_closed`` and the assignment path calls it directly, so
     stubbing it here keeps the whole module offline and parallel-safe. The
     returned dict is consistent with ``subject_closed_state`` and carries
     ``subject_head_sha`` so review-request dedup keys are deterministic, plus
-    ``draft`` for the opt-in draft-PR review gate.
+    ``draft`` for the opt-in draft-PR review gate and ``labels`` for the
+    pause-label review gate.
     """
     if subject_closed_state == "merged":
-        info = {"state": "closed", "merged": True, "head_sha": subject_head_sha, "draft": subject_draft}
+        info = {
+            "state": "closed", "merged": True,
+            "head_sha": subject_head_sha, "draft": subject_draft,
+            "labels": list(subject_labels),
+        }
     elif subject_closed_state == "closed":
-        info = {"state": "closed", "merged": False, "head_sha": subject_head_sha, "draft": subject_draft}
+        info = {
+            "state": "closed", "merged": False,
+            "head_sha": subject_head_sha, "draft": subject_draft,
+            "labels": list(subject_labels),
+        }
     else:
-        info = {"state": "open", "merged": False, "head_sha": subject_head_sha, "draft": subject_draft}
+        info = {
+            "state": "open", "merged": False,
+            "head_sha": subject_head_sha, "draft": subject_draft,
+            "labels": list(subject_labels),
+        }
     with patch(
         "app.github_command_handler._fetch_subject_info",
         return_value=info,
@@ -4699,7 +4720,13 @@ class TestFetchSubjectInfo:
         with patch("app.github.api",
                     return_value='{"state": "open", "merged": false, "head_sha": "abc123"}'):
             info = _fetch_subject_info(notification)
-        assert info == {"state": "open", "merged": False, "head_sha": "abc123"}
+        # labels is always normalized to a list (empty when the API omits it)
+        assert info == {
+            "state": "open",
+            "merged": False,
+            "head_sha": "abc123",
+            "labels": [],
+        }
 
     def test_issue_has_null_head_sha(self):
         notification = {
@@ -5090,6 +5117,132 @@ class TestTryAssignmentNotificationDraftGate:
         mock_assign.assert_not_called()
         # The mention-routed /review was still queued despite the draft + gate.
         mock_insert.assert_called_once()
+
+
+class TestTryAssignmentNotificationPauseLabel:
+    """Pause-label review gate (review_pause_label) in _try_assignment_notification."""
+
+    @pytest.fixture
+    def review_notification(self):
+        return {
+            "id": "n-pause-1",
+            "reason": "review_requested",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "title": "WIP feature",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/88",
+            },
+        }
+
+    @pytest.fixture
+    def review_registry(self):
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="review", aliases=["rv"])],
+        ))
+        reg._register(Skill(
+            name="implement",
+            scope="core",
+            description="Implement issue",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="implement", aliases=["impl"])],
+        ))
+        return reg
+
+    def _setup_missions(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+        return missions_path
+
+    def test_pause_label_soft_skips_auto_review(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        missions_path = self._setup_missions(tmp_path, monkeypatch)
+        with patch("app.config.get_review_pause_label",
+                   return_value="PauseReview"), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale",
+                   return_value=False), \
+             patch("app.github_command_handler.mark_notification_read") as mock_read, \
+             patch("app.github_command_handler._notify_pause_label_skipped") as mock_notify, \
+             patch("app.github_notification_tracker.set_review_cooldown") as mock_cd, \
+             patch("app.github_notification_tracker.track_thread") as mock_track, \
+             patch(
+                 "app.github_command_handler._fetch_subject_info",
+                 return_value={
+                     "state": "open", "merged": False,
+                     "head_sha": "deadbeefcafe0001", "draft": False,
+                     "labels": ["PauseReview"],
+                 },
+             ):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
+        assert "/review" not in missions_path.read_text()
+        mock_read.assert_called_once()
+        mock_notify.assert_called_once()
+        mock_cd.assert_not_called()
+        mock_track.assert_not_called()
+
+    def test_pause_label_absent_queues_review(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """No pause label on PR → review still queued (default path)."""
+        # subject_labels fixture defaults to []
+        missions_path = self._setup_missions(tmp_path, monkeypatch)
+        with patch("app.config.get_review_pause_label",
+                   return_value="PauseReview"), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale",
+                   return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_QUEUED
+        assert "/review https://github.com/sukria/koan/pull/88" in missions_path.read_text()
+
+    def test_feature_disabled_ignores_label(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """Empty pause label config → never checks; queues even if PR has PauseReview."""
+        missions_path = self._setup_missions(tmp_path, monkeypatch)
+        with patch("app.config.get_review_pause_label", return_value=""), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale",
+                   return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch(
+                 "app.github_command_handler._fetch_subject_info",
+                 return_value={
+                     "state": "open", "merged": False,
+                     "head_sha": "deadbeefcafe0001", "draft": False,
+                     "labels": ["PauseReview"],
+                 },
+             ):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        assert "/review" in missions_path.read_text()
 
 
 class TestTryAssignmentNotificationClosedSubject:

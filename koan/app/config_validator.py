@@ -101,6 +101,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "review_concurrency": _NESTED,
     "review_ignore": _NESTED,
     "review_draft_skip": _NESTED,
+    "review_pause_label": "str",
     "automation_rules": _NESTED,
     "effort": _NESTED,
     "thinking": _NESTED,

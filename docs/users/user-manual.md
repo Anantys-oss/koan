@@ -1687,6 +1687,20 @@ review_draft_skip:
   enabled: false          # Defer auto-review of draft PRs (default: false)
 ```
 
+**Pause-label review gate (default on):** While a PR carries the configured
+label (default `PauseReview`), Kōan skips LLM review — no prompt, no provider
+call, no review comment. Auto-queue from `review_requested` is soft-skipped
+(notification marked read; no dedup/cooldown). Already-queued or explicit
+`/review` missions also exit early at execution time. **Remedies:** remove the
+label (auto-review resumes on the next request), or send
+`/review --force <url>` to review once while the label stays. Set
+`review_pause_label: ""` to disable label checking entirely. Label match is
+exact and case-sensitive (GitHub label names are exact).
+
+```yaml
+review_pause_label: "PauseReview"   # default; "" disables
+```
+
 ### Custom Skills
 
 Kōan's skill system is fully extensible. Install skills from Git repos or create your own.

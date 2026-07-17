@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-15
+updated: 2026-07-16
 ---
 
 # Skill Spec — `review`
@@ -36,7 +36,7 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 | `--errors` | flag | no | silent-failure-hunter pass |
 | `--comments` | flag | no | comment-quality pass |
 | `--plan-url <issue-url>` | flag | no | check PR against its plan |
-| `--force` | flag | no | review even if closed/merged |
+| `--force` | flag | no | review even if closed/merged or pause-label is present |
 | trailing context | command arg | no | extra reviewer guidance |
 
 ## Outputs / side effects
@@ -55,6 +55,7 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 |---|---|
 | invalid/missing URL | reply with usage |
 | closed/merged target | skipped unless `--force` |
+| pause-label present | success-with-skip unless `--force` (see invariant) |
 | unresolved project | alias resolution then skip if unknown |
 
 ## Integration hooks
@@ -67,6 +68,12 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
+- **Pause label:** When `get_review_pause_label()` is non-empty and the PR
+  carries that exact label, `run_review` returns success-with-skip **before**
+  `fetch_pr_context`, prompt build, or any provider invocation. `force=True`
+  / `--force` bypasses. Does not apply to `run_private_review`. Empty config
+  (`review_pause_label: ""`) disables the check entirely. Default label name
+  is `PauseReview`.
 - **Verdict follows severity, not vibes.** `lgtm` (the merge verdict that drives
   the GitHub APPROVE / request-changes) is `true` whenever no `critical` or
   `warning` finding exists. `suggestion`-only findings are non-blocking — a PR
