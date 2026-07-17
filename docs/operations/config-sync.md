@@ -1,3 +1,12 @@
+---
+type: doc
+title: "Real-time Config Sync"
+description: "Documents real-time config sync: the dashboard reflects config.yaml/projects.yaml edits within ~2s over the existing SSE, classifying safe hot-reload keys vs restart-required changes and gating restarts on agent idleness."
+tags: [operations]
+created: 2026-07-17
+updated: 2026-07-17
+---
+
 # Real-time config sync
 
 Kōan watches `instance/config.yaml` and `instance/projects.yaml` for changes
