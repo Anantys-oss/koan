@@ -470,6 +470,50 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
     return [entry for entry in result if isinstance(entry, str) and entry]
 
 
+# Roles permitted to load MCP servers (--mcp-config) by default. Conversational
+# roles consuming untrusted input (chat, github_reply) are deliberately excluded.
+_MCP_ROLE_DEFAULTS = ["mission", "contemplative", "plan"]
+
+
+def get_mcp_roles(project_name: str = "") -> List[str]:
+    """Roles allowed to load MCP servers (--mcp-config).
+
+    Resolution order:
+    1. projects.yaml ``mcp_roles`` for the project (replaces global if set)
+    2. config.yaml ``mcp_roles``
+    3. Default ``["mission", "contemplative", "plan"]``
+
+    An explicit empty list (``mcp_roles: []``) is honored as a kill switch.
+    A malformed (non-list) value falls back to the default.
+    """
+    project_overrides = _load_project_overrides(project_name)
+    project_roles = project_overrides.get("mcp_roles")
+    if project_roles is not None:
+        if isinstance(project_roles, list):
+            return [r for r in project_roles if isinstance(r, str) and r]
+        return list(_MCP_ROLE_DEFAULTS)
+
+    config = _load_config()
+    roles = config.get("mcp_roles")
+    if roles is None or not isinstance(roles, list):
+        return list(_MCP_ROLE_DEFAULTS)
+    return [r for r in roles if isinstance(r, str) and r]
+
+
+def mcp_configs_for_role(role: str, project_name: str = "") -> Optional[List[str]]:
+    """MCP config paths for *role*, or ``None`` when the role is not opted in.
+
+    Centralizes the per-role MCP safety boundary: returns ``None`` (→ no
+    ``--mcp-config`` emitted) unless *role* is present in
+    :func:`get_mcp_roles`. Always prefer this over calling
+    :func:`get_mcp_configs` directly in a runner.
+    """
+    if role not in get_mcp_roles(project_name):
+        return None
+    configs = get_mcp_configs(project_name)
+    return configs or None
+
+
 # Default tier-to-resource mapping used when complexity_routing is enabled
 # but specific tier values are absent from config.yaml.
 _COMPLEXITY_ROUTING_DEFAULTS: dict = {
