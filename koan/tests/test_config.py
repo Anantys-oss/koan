@@ -2375,3 +2375,118 @@ class TestGetPageCacheReclaimConfig:
             cfg = get_page_cache_reclaim_config()
         assert cfg["enabled"] is True
         assert cfg["extra_roots"] == []
+
+
+# --- _get_config_with_overrides (shared helper, issue #2340) ---
+
+
+class TestGetConfigWithOverrides:
+    """The shared load->type-check->merge helper behind the get_*_config
+    functions. Individual functions keep their own field-level coercion;
+    this only covers the merge/resolution contract itself."""
+
+    def test_defaults_when_section_absent(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({}):
+            result = _get_config_with_overrides("widget", {"a": 1, "b": 2})
+        assert result == {"a": 1, "b": 2}
+
+    def test_global_section_overrides_defaults(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": {"a": 99}}):
+            result = _get_config_with_overrides("widget", {"a": 1, "b": 2})
+        assert result == {"a": 99, "b": 2}
+
+    def test_non_dict_section_falls_back_to_defaults(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": "nope"}):
+            result = _get_config_with_overrides("widget", {"a": 1})
+        assert result == {"a": 1}
+
+    def test_bare_false_ignored_by_default(self):
+        """Without bool_shortcut=True, a bare ``False`` section is just
+        malformed (-> ``{}``) — matching the pre-refactor behavior of the
+        many sections that never supported a ``key: false`` shorthand."""
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": False}):
+            result = _get_config_with_overrides("widget", {"enabled": True, "a": 1})
+        assert result == {"enabled": True, "a": 1}
+
+    def test_bare_false_shortcut_becomes_enabled_false_when_opted_in(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": False}):
+            result = _get_config_with_overrides(
+                "widget", {"enabled": True, "a": 1}, bool_shortcut=True,
+            )
+        assert result == {"enabled": False, "a": 1}
+
+    def test_project_override_wins_over_global(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": {"a": 2}}), \
+             patch("app.config._load_project_overrides", return_value={"widget": {"a": 3}}):
+            result = _get_config_with_overrides("widget", {"a": 1}, "myproj")
+        assert result == {"a": 3}
+
+    def test_project_bare_false_shortcut_disables_when_opted_in(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": {"enabled": True}}), \
+             patch("app.config._load_project_overrides", return_value={"widget": False}):
+            result = _get_config_with_overrides(
+                "widget", {"enabled": True}, "myproj", bool_shortcut=True,
+            )
+        assert result == {"enabled": False}
+
+    def test_no_project_name_skips_override_lookup(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": {"a": 1}}), \
+             patch("app.config._load_project_overrides") as mock_overrides:
+            result = _get_config_with_overrides("widget", {"a": 1})
+        mock_overrides.assert_not_called()
+        assert result == {"a": 1}
+
+
+class TestMigratedConfigFunctionsIgnoreBareFalse:
+    """Regression coverage (issue #2340): migrating these functions onto the
+    shared _get_config_with_overrides() helper must not grant a new
+    ``<key>: false`` disable-shorthand to sections that never documented one
+    — only stagnation/autonomous_health opt into that shortcut. Everything
+    else must keep treating a stray ``False`` as malformed config (falls
+    back to defaults, same as pre-refactor isinstance-dict checks)."""
+
+    def test_branch_cleanup_false_does_not_disable(self):
+        from app.config import get_branch_cleanup_config
+        with _mock_config({"branch_cleanup": False}):
+            assert get_branch_cleanup_config()["enabled"] is True
+
+    def test_plan_review_false_does_not_disable(self):
+        from app.config import get_plan_review_config
+        with _mock_config({"plan_review": False}):
+            assert get_plan_review_config()["enabled"] is True
+
+    def test_prompt_guard_false_does_not_disable(self):
+        from app.config import get_prompt_guard_config
+        with _mock_config({"prompt_guard": False}):
+            assert get_prompt_guard_config()["enabled"] is True
+
+    def test_review_concurrency_false_does_not_disable(self):
+        from app.config import get_review_concurrency_config
+        with _mock_config({"review_concurrency": False}):
+            assert get_review_concurrency_config()["enabled"] is True
+
+    def test_review_issue_context_false_does_not_disable(self):
+        from app.config import get_review_issue_context_config
+        with _mock_config({"review_issue_context": False}):
+            assert get_review_issue_context_config()["enabled"] is True
+
+    def test_page_cache_reclaim_false_does_not_disable(self):
+        from app.config import get_page_cache_reclaim_config
+        with _mock_config({"page_cache_reclaim": False}):
+            assert get_page_cache_reclaim_config()["enabled"] is True
+
+    def test_private_review_gate_false_stays_at_default(self):
+        # This section's default is already enabled=False, so a bare
+        # `False` value must resolve the same way as an absent section.
+        from app.config import get_private_review_gate_config
+        with _mock_config({"private_review_gate": False}), \
+             patch("app.config._load_project_overrides", return_value={}):
+            assert get_private_review_gate_config()["enabled"] is False
