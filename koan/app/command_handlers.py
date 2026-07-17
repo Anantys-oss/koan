@@ -868,19 +868,18 @@ def handle_resume():
     handle_start_on_pause() has run — and the pause file gets
     (re-)created after /resume removed it.
     """
-    from app.pause_manager import get_pause_state, remove_pause
+    from app.pause_manager import consume_pause
 
-    pause_file = KOAN_ROOT / PAUSE_FILE
     quota_file = KOAN_ROOT / QUOTA_RESET_FILE  # Legacy, kept for compat
 
-    if pause_file.exists():
-        # Read pause reason and reset info for better messaging
-        state = get_pause_state(str(KOAN_ROOT))
+    # Atomically claim the pause file under a lock so a concurrent auto-resume
+    # in the runner can't also fire. All slow I/O below runs *after* the lock
+    # is released (consume_pause already returned).
+    claimed, state = consume_pause(str(KOAN_ROOT))
+    if claimed:
         reason = state.reason if state else "manual"
         reset_timestamp = state.timestamp if state and state.timestamp else None
-        reset_display = state.display if state else ""
 
-        remove_pause(str(KOAN_ROOT))
         _write_skip_start_pause()
 
         if reason == "quota":

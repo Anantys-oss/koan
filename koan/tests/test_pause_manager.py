@@ -355,6 +355,81 @@ class TestCheckAndResume:
         assert (tmp_path / ".koan-pause").exists()
 
 
+class TestConsumePause:
+    """consume_pause atomically claims the pause file exactly once."""
+
+    def test_claims_and_removes(self, tmp_path):
+        from app.pause_manager import consume_pause
+
+        (tmp_path / ".koan-pause").write_text("manual\n1000\nvia telegram\n")
+        claimed, state = consume_pause(str(tmp_path))
+
+        assert claimed is True
+        assert state is not None and state.reason == "manual"
+        assert not (tmp_path / ".koan-pause").exists()
+
+    def test_returns_false_when_not_paused(self, tmp_path):
+        from app.pause_manager import consume_pause
+
+        claimed, state = consume_pause(str(tmp_path))
+        assert claimed is False
+        assert state is None
+
+    def test_claims_empty_marker_with_none_state(self, tmp_path):
+        from app.pause_manager import consume_pause
+
+        (tmp_path / ".koan-pause").touch()  # legacy empty marker
+        claimed, state = consume_pause(str(tmp_path))
+
+        assert claimed is True
+        assert state is None
+        assert not (tmp_path / ".koan-pause").exists()
+
+    def test_second_caller_gets_false(self, tmp_path):
+        from app.pause_manager import consume_pause
+
+        (tmp_path / ".koan-pause").write_text("manual\n1000\n\n")
+        first_claimed, _ = consume_pause(str(tmp_path))
+        second_claimed, second_state = consume_pause(str(tmp_path))
+
+        assert first_claimed is True
+        assert second_claimed is False
+        assert second_state is None
+
+    def test_concurrent_consume_has_single_winner(self, tmp_path):
+        """TOCTOU guard: N threads race one pause file -- exactly one wins.
+
+        Proves the advisory lock serializes the read-check-remove. Without
+        the lock, several threads can observe the file present before any
+        removes it and all claim it, producing duplicate resume actions.
+        """
+        import threading
+
+        from app.pause_manager import consume_pause
+
+        (tmp_path / ".koan-pause").write_text("quota\n1000\nresets 10am\n")
+
+        winners = []
+        winners_lock = threading.Lock()
+        start = threading.Barrier(8)
+
+        def worker():
+            start.wait()
+            claimed, _ = consume_pause(str(tmp_path))
+            if claimed:
+                with winners_lock:
+                    winners.append(True)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(winners) == 1, f"expected exactly one winner, got {len(winners)}"
+        assert not (tmp_path / ".koan-pause").exists()
+
+
 class TestPauseStateDataclass:
     """Test PauseState properties."""
 
