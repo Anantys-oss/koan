@@ -876,13 +876,15 @@ class TestHandleChat:
                                            mock_tools_desc, mock_fmt, mock_hist,
                                            mock_save, tmp_path):
         """Empty Claude response (exit 0, blank stdout) must still reply to the user."""
+        # Empty on every attempt → retried, then a single degraded reply.
         mock_run.return_value = MagicMock(stdout="", returncode=0, stderr="")
         with patch("app.awake.INSTANCE_DIR", tmp_path), \
              patch("app.awake.KOAN_ROOT", tmp_path), \
              patch("app.awake.PROJECT_PATH", ""), \
              patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
              patch("app.awake.SOUL", ""), \
-             patch("app.awake.SUMMARY", ""):
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
             handle_chat("hello")
         # User must receive a reply — not silence
         mock_send.assert_called_once()
@@ -2143,8 +2145,9 @@ class TestChatLiteRetryErrors:
     @patch("app.awake.subprocess.run")
     def test_lite_retry_timeout_says_timeout(self, mock_run, mock_send, mock_tools,
                                               mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path):
-        """Timeout on lite retry should still say 'timeout'."""
+        """Timeout on every attempt should surface a single 'timeout' message."""
         mock_run.side_effect = [
+            subprocess.TimeoutExpired("claude", 180),
             subprocess.TimeoutExpired("claude", 180),
             subprocess.TimeoutExpired("claude", 180),
         ]
@@ -2168,7 +2171,9 @@ class TestChatLiteRetryErrors:
     @patch("app.awake.subprocess.run")
     def test_lite_retry_backoff_delay(self, mock_run, mock_send, mock_tools,
                                       mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path):
-        """Lite retry should sleep before retrying to let API pressure ease."""
+        """A retry should back off (first backoff step) before the next attempt."""
+        from app.cli_exec import CLI_RETRY_BACKOFF
+
         mock_run.side_effect = [
             subprocess.TimeoutExpired("claude", 180),
             MagicMock(stdout="OK reply", returncode=0),
@@ -2182,7 +2187,8 @@ class TestChatLiteRetryErrors:
              patch("app.awake.CHAT_TIMEOUT", 180), \
              patch("app.awake.time.sleep") as mock_sleep:
             handle_chat("complex question")
-        mock_sleep.assert_called_once_with(4)
+        # One retry happened (success on the 2nd attempt) → one backoff sleep.
+        mock_sleep.assert_called_once_with(CLI_RETRY_BACKOFF[0])
 
     @patch("app.awake.save_conversation_message")
     @patch("app.awake.load_recent_history", return_value=[])
@@ -2210,6 +2216,94 @@ class TestChatLiteRetryErrors:
         # Second call (lite retry) should use timeout=90 (180//2)
         retry_call = mock_run.call_args_list[1]
         assert retry_call.kwargs["timeout"] == 90
+
+
+class TestChatEmptyResponseRetry:
+    """Empty AI responses (the API-contention symptom, #1084) are retried."""
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_empty_then_success_delivers_real_reply(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # First attempt empty (contention), retry returns a real answer.
+        mock_run.side_effect = [
+            MagicMock(stdout="", returncode=0, stderr=""),
+            MagicMock(stdout="Real answer", returncode=0, stderr=""),
+        ]
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        # The real reply is delivered; the "didn't get a response" apology is not.
+        mock_send.assert_called_once_with("Real answer")
+        # user turn + assistant reply
+        assert mock_save.call_count == 2
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_timeout_then_success_delivers_real_reply(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired("claude", 180),
+            MagicMock(stdout="Recovered", returncode=0, stderr=""),
+        ]
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        mock_send.assert_called_once_with("Recovered")
+        assert mock_save.call_count == 2
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_all_empty_sends_single_degraded_message(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # Genuine outage: every attempt empty → exactly one degraded reply.
+        mock_run.return_value = MagicMock(stdout="", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        # Retried the bounded number of times, then one degraded message.
+        from app.cli_exec import CLI_RETRY_MAX_ATTEMPTS
+        assert mock_run.call_count == CLI_RETRY_MAX_ATTEMPTS
+        mock_send.assert_called_once()
+        assert "didn't get a response" in mock_send.call_args[0][0]
+        # exactly one user turn + one degraded assistant turn
+        assert mock_save.call_count == 2
 
 
 class TestCleanChatResponse:
