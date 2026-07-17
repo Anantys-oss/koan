@@ -20,7 +20,7 @@ presentational — the log **files** and the `[cli]` grammar emitted by
 
 | Raw `[cli]` line                    | Shown as        |
 |-------------------------------------|-----------------|
-| `assistant — thinking`, `system: thinking_tokens` | dim `•`, one per event, **accumulated** into a growing run (`••••`) — rewritten in place on a TTY, emitted as one `•×N` line when piped |
+| `assistant — thinking`, `system: thinking_tokens`, `system: task_progress` | dim `•`, one per event, **accumulated** into a growing run (`••••`) — rewritten in place on a TTY, emitted as one `•×N` line when piped |
 | `assistant — text: <preview>`       | `🧠 <preview>` (preview skips leading code fences / bare brackets, e.g. ```` ```json ```` → first real line) |
 | `assistant — tool_use: Bash: <cmd>` | `💻 Bash <cmd…>` (per-tool icon + dim, first-line input preview: command / file path / pattern / url, truncated with `…`; `🔧` default) |
 | `tool_result …`                     | *(suppressed — adds no signal)* |

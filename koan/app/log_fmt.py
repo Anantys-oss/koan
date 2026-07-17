@@ -41,6 +41,12 @@ _TICK_BODIES = frozenset({
     "assistant — (empty)", "assistant — (hidden)", "user turn",
 })
 
+# system-event subtypes that are pure liveness heartbeats carrying no display
+# signal — collapse to a thinking tick instead of surfacing verbatim. The
+# provider keeps emitting the raw ``[cli] system: …`` line (run.py's liveness
+# watchdog needs the heartbeat); only the display formatter suppresses it.
+_TICK_SYSTEM_PREFIXES = ("system: thinking", "system: task_progress")
+
 # Split ", "-joined assistant parts ONLY before a known part keyword, so a
 # text preview that itself contains ", " is not broken mid-sentence.
 _PART_SEP = re.compile(r", (?=tool_use: |text(?:: |$)|thinking$)")
@@ -110,7 +116,7 @@ def classify_cli(body: str) -> list[dict]:
             "is_tick": is_tick,
         }
 
-    if body in _TICK_BODIES or body.startswith("system: thinking"):
+    if body in _TICK_BODIES or body.startswith(_TICK_SYSTEM_PREFIXES):
         return [_row("thinking", label="thinking", is_tick=True)]
 
     if body.startswith("assistant — "):
@@ -182,7 +188,7 @@ def render_cli(body: str, pal: "_Palette") -> Tuple[Optional[str], bool]:
     """
     tick = pal.dim(_TICK)
 
-    if body in _TICK_BODIES or body.startswith("system: thinking"):
+    if body in _TICK_BODIES or body.startswith(_TICK_SYSTEM_PREFIXES):
         return tick, True
 
     if body.startswith("assistant — "):
