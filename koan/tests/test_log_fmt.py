@@ -26,6 +26,25 @@ def test_system_thinking_tokens_is_tick():
     assert is_tick("system: thinking_tokens") is True
 
 
+def test_system_task_progress_is_tick():
+    assert r("system: task_progress") == "•"
+    assert is_tick("system: task_progress") is True
+
+
+def test_run_collapses_task_progress_into_dot_run():
+    # Interleaved as it appears live: a real tool line, then heartbeats.
+    src = io.StringIO(
+        "[cli] assistant — tool_use: Grep: achievement|journey\n"
+        "[cli] system: task_progress\n"
+        "[cli] system: task_progress\n"
+    )
+    out = io.StringIO()  # not a TTY → buffered dot-run path
+    run(src, out)
+    result = out.getvalue()
+    assert "system: task_progress" not in result   # never verbatim
+    assert result == "🔎 Grep achievement|journey\n••\n"
+
+
 def test_text_preview_gets_brain_glyph():
     assert r("assistant — text: Now run.py — inject PYTEST_ADDOPTS") == \
         "🧠 Now run.py — inject PYTEST_ADDOPTS"
@@ -151,6 +170,13 @@ from app.log_fmt import classify_cli
 
 def test_classify_thinking_is_tick():
     rows = classify_cli("assistant — thinking")
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "thinking"
+    assert rows[0]["is_tick"] is True
+
+
+def test_classify_task_progress_is_tick():
+    rows = classify_cli("system: task_progress")
     assert len(rows) == 1
     assert rows[0]["kind"] == "thinking"
     assert rows[0]["is_tick"] is True
