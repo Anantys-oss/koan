@@ -2541,6 +2541,23 @@ class TestRunClaudeReview:
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
     @patch("app.config.get_skill_max_turns", return_value=200)
+    def test_missing_executable_returns_error_detail(
+        self, mock_max_turns, mock_models, mock_run,
+    ):
+        """A provider launch error is returned as a failed review, not raised."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.side_effect = RuntimeError(
+            "CLI executable not found: 'codex' (provider 'codex')."
+        )
+        output, error = _run_claude_review("prompt", "/tmp/project")
+
+        assert output == ""
+        assert "CLI executable not found" in error
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
     def test_failure_logs_to_stderr(
         self, mock_max_turns, mock_models, mock_run, capsys,
     ):

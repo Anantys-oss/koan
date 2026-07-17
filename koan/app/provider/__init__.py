@@ -1394,15 +1394,25 @@ def run_command_streaming(
             text_delta_parts.clear()
 
     try:
-        proc, cleanup = popen_cli(
-            cmd,
-            provider=provider,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
-            cwd=project_path,
-        )
+        try:
+            proc, cleanup = popen_cli(
+                cmd,
+                provider=provider,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                encoding="utf-8",
+                errors="replace",
+                cwd=project_path,
+            )
+        except FileNotFoundError as e:
+            executable = e.filename or str(cmd[0])
+            if executable != str(cmd[0]):
+                raise
+            raise RuntimeError(
+                f"CLI executable not found: {executable!r} "
+                f"(provider {provider.name!r}). Ensure it is on PATH or "
+                f"configure cli.{model_key}: {provider.name}:/absolute/path."
+            ) from e
         # Every print() in this loop is the load-bearing watchdog signal —
         # run.py's skill-runner liveness watchdog (600s) resets on each line
         # emitted to stdout. Do not silence these prints; doing so reintroduces
