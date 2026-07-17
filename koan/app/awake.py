@@ -244,6 +244,17 @@ def _is_addressed_to_other_user(text: str, msg: dict, bot_username: str) -> bool
     return False
 
 
+def _is_internal_comment(text: str) -> bool:
+    """Return True if the message is an internal channel note, not a request.
+
+    Messages that open with two or more minus characters (e.g. ``-- server was
+    down``) are treated as internal comments / advertisements posted in the
+    channel — the bot does not react or reply to them. A single leading minus
+    (e.g. ``-5`` or ``-v``) is not matched.
+    """
+    return text.lstrip().startswith("--")
+
+
 def _strip_bot_mention_from_text(text: str, msg: dict) -> str:
     """Strip @bot_username mentions from non-command messages.
 
@@ -1171,6 +1182,9 @@ def _bridge_loop():
                 # `"" in (channel_id, "")` and slip past the channel filter.
                 valid_chat_ids = {str(channel_id), str(CHAT_ID)} - {""}
                 if text and chat_id and chat_id in valid_chat_ids:
+                    if _is_internal_comment(text):
+                        log("chat", f"Ignoring internal channel comment: {text[:60]}")
+                        continue
                     if _is_addressed_to_other_user(text, msg, bot_username):
                         log("chat", f"Ignoring message addressed to another user: {text[:60]}")
                         continue

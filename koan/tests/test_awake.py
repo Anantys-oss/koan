@@ -28,6 +28,7 @@ from app.awake import (
     _flush_outbox_async,
     _strip_bot_mention_from_text,
     _is_addressed_to_other_user,
+    _is_internal_comment,
     _check_group_chat_mode,
     get_updates,
     check_config,
@@ -3544,6 +3545,39 @@ class TestIsAddressedToOtherUser:
     def test_non_mention_entity_at_start(self):
         msg = {"entities": [{"type": "bold", "offset": 0, "length": 5}]}
         assert _is_addressed_to_other_user("hello world", msg, "MyBot") is False
+
+
+# ---------------------------------------------------------------------------
+# _is_internal_comment — skip messages opening with two or more minus chars
+# ---------------------------------------------------------------------------
+
+
+class TestIsInternalComment:
+    """Messages starting with ``--`` are internal notes the bot ignores."""
+
+    def test_double_dash_prefix(self):
+        assert _is_internal_comment("-- the server was down") is True
+
+    def test_more_than_two_dashes(self):
+        assert _is_internal_comment("--- section break ---") is True
+
+    def test_leading_whitespace_before_dashes(self):
+        assert _is_internal_comment("   -- indented note") is True
+
+    def test_single_dash_not_matched(self):
+        assert _is_internal_comment("-5 degrees outside") is False
+
+    def test_plain_text_not_matched(self):
+        assert _is_internal_comment("fix the login bug") is False
+
+    def test_slash_command_not_matched(self):
+        assert _is_internal_comment("/review https://example.com") is False
+
+    def test_dash_not_at_start(self):
+        assert _is_internal_comment("please note -- this is inline") is False
+
+    def test_bare_double_dash(self):
+        assert _is_internal_comment("--") is True
 
 
 # ---------------------------------------------------------------------------
