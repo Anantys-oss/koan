@@ -322,7 +322,12 @@ def build_mission_command(
         subprocess exits.  ``cleanup_paths`` is empty when no temp files
         were created.
     """
-    from app.config import get_mission_tools, get_model_config, mcp_configs_for_role
+    from app.config import (
+        MCP_ROLE_MISSION,
+        get_mission_tools,
+        get_model_config,
+        mcp_configs_for_role,
+    )
     try:
         from app.config import get_effort
     except ImportError:
@@ -379,7 +384,7 @@ def build_mission_command(
                   file=sys.stderr)
 
     # Get MCP server configs (role-gated: honors mcp_roles + kill switch)
-    mcp_configs = mcp_configs_for_role("mission", project_name)
+    mcp_configs = mcp_configs_for_role(MCP_ROLE_MISSION, project_name)
 
     # Extended thinking — activated when config enables it, the mission
     # is classified as "critical" tier, AND the autonomous mode qualifies.

@@ -988,14 +988,19 @@ def _run_claude_plan(prompt, project_path, project_name: str = ""):
     intentionally stay local-read-only — they do not go through this helper.
     """
     from app.cli_provider import run_command_streaming
-    from app.config import get_skill_max_turns, get_skill_timeout, mcp_configs_for_role
+    from app.config import (
+        MCP_ROLE_PLAN,
+        get_skill_max_turns,
+        get_skill_timeout,
+        mcp_configs_for_role,
+    )
     output = run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
         model_key="mission",
         max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
         project_name=project_name,
-        mcp_configs=mcp_configs_for_role("plan", project_name),
+        mcp_configs=mcp_configs_for_role(MCP_ROLE_PLAN, project_name),
     )
     if _is_error_output(output):
         raise RuntimeError(output)

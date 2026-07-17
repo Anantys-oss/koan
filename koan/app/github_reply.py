@@ -287,7 +287,7 @@ def generate_reply(
     Returns:
         The reply text, or None on failure.
     """
-    from app.config import mcp_configs_for_role
+    from app.config import MCP_ROLE_GITHUB_REPLY, mcp_configs_for_role
 
     prompt = build_reply_prompt(
         question, thread_context, owner, repo, issue_number, comment_author,
@@ -305,7 +305,7 @@ def generate_reply(
             project_name=project_name,
             # github_reply is excluded from mcp_roles by default (untrusted
             # input); operators opt in knowingly via config.
-            mcp_configs=mcp_configs_for_role("github_reply", project_name),
+            mcp_configs=mcp_configs_for_role(MCP_ROLE_GITHUB_REPLY, project_name),
         )
         return clean_reply(reply) if reply else None
     except Exception as e:

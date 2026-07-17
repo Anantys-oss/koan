@@ -470,9 +470,18 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
     return [entry for entry in result if isinstance(entry, str) and entry]
 
 
+# Named role identifiers for MCP opt-in. Call sites must use these constants
+# (not bare strings) so typos fail at import/grep time rather than silently
+# fail-closed with MCP disabled.
+MCP_ROLE_MISSION = "mission"
+MCP_ROLE_CONTEMPLATIVE = "contemplative"
+MCP_ROLE_PLAN = "plan"
+MCP_ROLE_GITHUB_REPLY = "github_reply"
+MCP_ROLE_CHAT = "chat"
+
 # Roles permitted to load MCP servers (--mcp-config) by default. Conversational
 # roles consuming untrusted input (chat, github_reply) are deliberately excluded.
-_MCP_ROLE_DEFAULTS = ["mission", "contemplative", "plan"]
+_MCP_ROLE_DEFAULTS = [MCP_ROLE_MISSION, MCP_ROLE_CONTEMPLATIVE, MCP_ROLE_PLAN]
 
 
 def get_mcp_roles(project_name: str = "") -> List[str]:
