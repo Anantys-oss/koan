@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from app.locked_file import locked_json_modify, locked_json_read
+from app.run_log import log
 
 
 # Default configuration — overridable via config.yaml stagnation: section.
@@ -551,11 +552,13 @@ def get_verify_count(instance_dir: str, mission_title: str) -> int:
     data = locked_json_read(path, default={})
     if not isinstance(data, dict):
         # A corrupt tracker silently reads as 0 (never-requeued), which would
-        # reset the verify budget — surface it instead of masking it.
-        print(
-            f"[stagnation_monitor] verify tracker not a dict "
-            f"({type(data).__name__}); treating verify_count as 0",
-            file=sys.stderr,
+        # reset the verify budget. Unlike increment_verify_count's -1 sentinel,
+        # callers here can't distinguish "genuinely 0" from "corrupt, treated
+        # as 0" — route through the structured log so operators see it.
+        log(
+            "error",
+            f"verify tracker not a dict ({type(data).__name__}); "
+            f"treating verify_count as 0",
         )
         return 0
     raw = data.get(_mission_key(mission_title), {})
@@ -563,10 +566,10 @@ def get_verify_count(instance_dir: str, mission_title: str) -> int:
         try:
             return max(0, int(raw.get("verify_count", 0)))
         except (TypeError, ValueError):
-            print(
-                f"[stagnation_monitor] unparseable verify_count "
-                f"{raw.get('verify_count')!r}; treating as 0",
-                file=sys.stderr,
+            log(
+                "error",
+                f"unparseable verify_count {raw.get('verify_count')!r}; "
+                f"treating as 0",
             )
             return 0
     return 0
