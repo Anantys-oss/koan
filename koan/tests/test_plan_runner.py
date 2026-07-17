@@ -604,8 +604,9 @@ class TestGenerateIterationPlan:
 class TestRunClaudePlan:
     @patch("app.config.get_skill_max_turns", return_value=50)
     @patch("app.config.get_skill_timeout", return_value=3600)
+    @patch("app.config.mcp_configs_for_role", return_value=None)
     @patch("app.cli_provider.run_command_streaming", return_value="result with spaces")
-    def test_returns_stripped_output(self, mock_cmd, mock_timeout, mock_turns):
+    def test_returns_stripped_output(self, mock_cmd, mock_mcp, mock_timeout, mock_turns):
         result = _run_claude_plan("test prompt", "/project")
         assert result == "result with spaces"
         mock_cmd.assert_called_once_with(
@@ -613,7 +614,10 @@ class TestRunClaudePlan:
             allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
             model_key="mission",
             max_turns=50, timeout=3600,
+            project_name="",
+            mcp_configs=None,
         )
+        mock_mcp.assert_called_once_with("plan", "")
 
     @patch("app.config.get_skill_max_turns", return_value=10)
     @patch("app.config.get_skill_timeout", return_value=300)
@@ -1649,3 +1653,16 @@ class TestApplyAssumptionsAudit:
             assert findings in plan
             # Folded into the existing Open Questions section
             assert plan.index("### Open Questions") < plan.index(findings)
+
+
+def test_run_claude_plan_passes_gated_mcp_configs():
+    """Primary plan generation forwards role-gated MCP configs."""
+    import app.plan_runner as pr
+
+    with patch("app.cli_provider.run_command_streaming", return_value="PLAN") as rcs, \
+         patch("app.config.mcp_configs_for_role", return_value=["/mcp.json"]) as gate, \
+         patch("app.config.get_skill_max_turns", return_value=50), \
+         patch("app.config.get_skill_timeout", return_value=600):
+        pr._run_claude_plan("prompt", "/proj", project_name="proj")
+    gate.assert_called_once_with("plan", "proj")
+    assert rcs.call_args.kwargs["mcp_configs"] == ["/mcp.json"]

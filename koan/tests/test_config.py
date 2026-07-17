@@ -2342,6 +2342,86 @@ class TestCleanupMinTmpAgeSeconds:
             assert get_cleanup_min_tmp_age_seconds() == 0.0
 
 
+# --- get_mcp_roles / mcp_configs_for_role ---
+
+
+class TestGetMcpRoles:
+    def test_default_when_absent(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_roles() == ["mission", "contemplative", "plan"]
+
+    def test_global_override(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={"mcp_roles": ["mission"]}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_roles() == ["mission"]
+
+    def test_empty_list_is_kill_switch(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={"mcp_roles": []}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_roles() == []
+
+    def test_malformed_falls_back_to_default(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={"mcp_roles": "mission"}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_roles() == ["mission", "contemplative", "plan"]
+
+    def test_project_override_replaces_global(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={"mcp_roles": ["mission"]}):
+            with patch(
+                "app.config._load_project_overrides",
+                return_value={"mcp_roles": ["plan"]},
+            ):
+                assert get_mcp_roles("proj") == ["plan"]
+
+
+class TestMcpConfigsForRole:
+    def test_role_in_allowlist_returns_configs(self):
+        from app.config import MCP_ROLE_PLAN, mcp_configs_for_role
+
+        with patch("app.config.get_mcp_roles", return_value=[MCP_ROLE_PLAN]):
+            with patch("app.config.get_mcp_configs", return_value=["/a.json"]):
+                assert mcp_configs_for_role(MCP_ROLE_PLAN, "proj") == ["/a.json"]
+
+    def test_role_not_in_allowlist_returns_none(self):
+        from app.config import (
+            MCP_ROLE_GITHUB_REPLY,
+            MCP_ROLE_MISSION,
+            mcp_configs_for_role,
+        )
+
+        with patch("app.config.get_mcp_roles", return_value=[MCP_ROLE_MISSION]):
+            with patch("app.config.get_mcp_configs", return_value=["/a.json"]):
+                assert mcp_configs_for_role(MCP_ROLE_GITHUB_REPLY, "proj") is None
+
+    def test_allowlisted_but_no_configs_returns_none(self):
+        from app.config import MCP_ROLE_PLAN, mcp_configs_for_role
+
+        with patch("app.config.get_mcp_roles", return_value=[MCP_ROLE_PLAN]):
+            with patch("app.config.get_mcp_configs", return_value=[]):
+                assert mcp_configs_for_role(MCP_ROLE_PLAN, "proj") is None
+
+    def test_mission_role_disabled_by_empty_mcp_roles(self):
+        from app.config import MCP_ROLE_MISSION, mcp_configs_for_role
+
+        with patch(
+            "app.config._load_config",
+            return_value={"mcp_roles": [], "mcp": ["/a.json"]},
+        ):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert mcp_configs_for_role(MCP_ROLE_MISSION, "proj") is None
+
+
 class TestGetPageCacheReclaimConfig:
     def test_page_cache_reclaim_defaults(self):
         from app.config import get_page_cache_reclaim_config

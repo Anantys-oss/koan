@@ -4,7 +4,7 @@ title: "Claude Code CLI Provider"
 description: "Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-07-16
+updated: 2026-07-17
 ---
 
 # Claude Code CLI Provider
@@ -313,6 +313,25 @@ output under `permission_denials`.
 2. Create `<project-path>/.claude/settings.local.json` with the
    tool allowlist
 3. Restart Koan (`systemctl restart koan.service`)
+
+### Per-role MCP access (`mcp_roles`)
+
+MCP servers listed under `mcp:` are loaded per **execution role**, controlled by
+`mcp_roles` (default `["mission", "contemplative", "plan"]`). This lets, e.g.,
+`@bot plan` consult Jira/internal-docs MCP servers while conversational replies
+stay isolated.
+
+- **Kill switch**: `mcp_roles: []` → no runner passes `--mcp-config`.
+- **Per-project**: a `mcp_roles` list in projects.yaml replaces the global list.
+- **Tools still gated**: loading a server does not grant its tools. With
+  `skip_permissions` unset, allow MCP tools by qualified name in the role's
+  `tools:` list — e.g. `tools: { plan: [Read, Glob, Grep, "mcp__jira"] }` or a
+  single tool `mcp__jira__search_issues`.
+- **Excluded by default**: `chat` and `github_reply` handle untrusted input and
+  are opt-in only — add them to `mcp_roles` to enable.
+
+Secondary planning sub-agents (critic/improve/review/assumptions) stay
+local-read-only by design; only primary plan generation loads MCP.
 
 ### Max Turns
 

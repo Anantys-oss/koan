@@ -1030,6 +1030,83 @@ class TestRunCommand:
         cmd = mock_run.call_args[0][0]
         assert "--model" not in cmd
 
+    def test_run_command_forwards_mcp_configs(self):
+        """mcp_configs is forwarded to build_full_command."""
+        import app.provider as provider
+
+        with patch.object(
+            provider,
+            "_resolve_role_provider_and_models",
+            return_value=(MagicMock(name="prov"), {"plan": "", "fallback": ""}),
+        ), patch.object(
+            provider, "build_full_command", return_value=["cli"]
+        ) as bfc, patch(
+            "app.cli_exec.run_cli_with_retry",
+            return_value=MagicMock(returncode=0, stdout="ok", stderr=""),
+        ):
+            provider.run_command(
+                "p",
+                "/proj",
+                allowed_tools=["Read"],
+                model_key="mission",
+                mcp_configs=["/a.json"],
+            )
+        assert bfc.call_args.kwargs["mcp_configs"] == ["/a.json"]
+
+    def test_run_command_defaults_mcp_configs_none(self):
+        """mcp_configs defaults to None when omitted."""
+        import app.provider as provider
+
+        with patch.object(
+            provider,
+            "_resolve_role_provider_and_models",
+            return_value=(MagicMock(), {"chat": "", "fallback": ""}),
+        ), patch.object(
+            provider, "build_full_command", return_value=["cli"]
+        ) as bfc, patch(
+            "app.cli_exec.run_cli_with_retry",
+            return_value=MagicMock(returncode=0, stdout="ok", stderr=""),
+        ):
+            provider.run_command("p", "/proj", allowed_tools=["Read"])
+        assert bfc.call_args.kwargs["mcp_configs"] is None
+
+    def test_run_command_streaming_forwards_mcp_configs(self):
+        """run_command_streaming forwards mcp_configs to build_full_command."""
+        import contextlib
+
+        import app.provider as provider
+
+        mock_provider = MagicMock()
+        mock_provider.supports_stream_json.return_value = False
+        mock_provider.supports_last_message_file.return_value = False
+        mock_provider.name = "fake"
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+
+        with patch.object(
+            provider,
+            "_resolve_role_provider_and_models",
+            return_value=(mock_provider, {"mission": "", "fallback": ""}),
+        ), patch.object(
+            provider, "build_full_command", return_value=["cli"]
+        ) as bfc, patch(
+            "app.cli_exec.popen_cli", return_value=mock_proc
+        ):
+            # Streaming path may raise on empty stdout; we only care that
+            # build_full_command received mcp_configs.
+            with contextlib.suppress(Exception):
+                provider.run_command_streaming(
+                    "p",
+                    "/proj",
+                    allowed_tools=["Read"],
+                    model_key="mission",
+                    mcp_configs=["/a.json"],
+                )
+        assert bfc.call_args.kwargs["mcp_configs"] == ["/a.json"]
+
 
 # ---------------------------------------------------------------------------
 # Plugin directory support (--plugin-dir)

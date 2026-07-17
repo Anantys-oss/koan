@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-07-15
+updated: 2026-07-17
 ---
 
 # Component Spec — Skills System
@@ -143,6 +143,15 @@ behavioural unit tests instead):
 - Custom skills under `instance/skills/<scope>/` can be cloned Git repos for team sharing
   (`skill_manager.py`).
 - GitHub/Jira @mentions route through `external_skill_dispatch.py`.
+
+### MCP access for skill runners
+
+Skill runners invoked via `run_command()`/`run_command_streaming()` receive MCP
+servers only when their role is listed in `config.mcp_roles` (see
+`specs/components/providers.md` → "MCP per-role boundary"). Runners consuming
+untrusted input (GitHub/Telegram text) stay excluded by default. To opt a new
+runner in, pass `config.mcp_configs_for_role("<role>", project_name)` — never
+`get_mcp_configs()` directly — so the gate and kill switch always apply.
 
 ### `review` diff-size & partial-coverage contract
 

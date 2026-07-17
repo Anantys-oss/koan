@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-16
+updated: 2026-07-17
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -39,7 +39,7 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 |---|---|
 | `base.CLIProvider` | The contract: build command, run, stream, tool-name vocabulary. |
 | `base.supports_usage_tracking()` / `record_usage()` | Per-provider usage hooks. Not all CLIs surface usage the same way. |
-| `__init__.run_command()` / `run_command_streaming()` | The single invocation entry points. Callers should not spawn provider subprocesses directly. |
+| `__init__.run_command()` / `run_command_streaming()` | The single invocation entry points. Both accept an optional `mcp_configs` list; callers pass it only for roles opted into MCP via `config.mcp_roles` (resolved through `config.mcp_configs_for_role(role, project_name)`). Omitted/`None` → no `--mcp-config` is emitted. Callers should not spawn provider subprocesses directly. |
 | `__init__.build_full_command()` | Assembles the provider-specific argv. |
 | `__init__.get_provider_display()` / `get_cli_binary_name()` | Display helpers. `get_provider_display()` returns `"<name>"` or `"<name> (<binary>)"` when `KOAN_CLAUDE_CLI_PATH` points at a different binary. Single source of truth for the global provider line shown by the startup banner and `/status`. Per-role provider overrides are summarized separately by `describe_cli_roles()`. |
 | `base.custom_binary_name()` / `__init__.provider_cli_display(provider)` | Per-instance attribution helpers. `custom_binary_name()` returns the basename of a pinned custom binary (per-role `_binary_override` from `cli.<role>: flavor:path`; Claude also surfaces the global `KOAN_CLAUDE_CLI_PATH`), or `''` when no override is configured. `provider_cli_display(provider)` returns that basename or, failing that, the provider flavor name — used by `review_runner._review_attribution()` so the review footer shows the CLI that actually ran (e.g. `claude-deep`), not just the flavor. Only real overrides count: a provider's natural fallback (Copilot's `gh`) is never surfaced as "custom". |
@@ -49,6 +49,20 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 | Provider resolution | Order: `KOAN_CLI_PROVIDER` env (fallback `CLI_PROVIDER`) → `projects.yaml`/`config.yaml` → default. Centralized in `utils.get_cli_provider_env()`. This resolves the GLOBAL provider; `cli.<role>` layers per-role selection on top via `get_provider_for_role`. |
 | `CLIProvider(binary_path="")` / `ClaudeProvider.binary()` | The base class takes an optional per-instance `binary_path` override (the replacement for the removed review ContextVar); `_resolve_binary_path()` is the shared resolver (absolute → as-is / relative → `normpath(join(KOAN_ROOT, …))` / bare name → PATH lookup). `ClaudeProvider.binary()`: `_binary_override` if set → else `KOAN_CLAUDE_CLI_PATH` → else `"claude"`. Every provider's `binary()` honors the override so `flavor:path` works uniformly. Relative paths root at `KOAN_ROOT` (not CWD — the agent runs from `KOAN_ROOT/koan`); bare names are never re-rooted. |
 | `build_command(..., project_context=True)` / `build_project_context_args` / `build_full_command(..., project_context=…)` | When `project_context=False`, the provider must suppress **project-scope** tooling loaded from cwd (Claude: `--setting-sources user`). Default `True` preserves mission/project CLAUDE.md / skills. Other providers may no-op. Callers that run with `cwd=KOAN_ROOT` (Telegram chat, **dashboard web chat**, contemplative, rituals, outbox formatting) **must** pass `False`. Do not implement isolation by mutating the worktree (`skip-worktree` / quarantine) on this path. |
+
+### MCP per-role boundary (safety contract)
+
+MCP servers are loaded per **execution role**, not globally. `config.mcp_roles`
+(default `["mission", "contemplative", "plan"]`; per-project override in
+projects.yaml replaces the list) is the allowlist of roles that receive
+`--mcp-config`. Conversational roles consuming untrusted input (`chat`,
+`github_reply`) are excluded by default and opt-in only. `mcp_roles: []` is a
+kill switch: no runner passes `--mcp-config`. Loading a server never grants its
+tools — MCP tools must still be allowlisted via qualified names
+(`mcp__<server>` / `mcp__<server>__<tool>`) in the role's `tools:` list unless
+`skip_permissions` is set. Callers resolve configs through
+`config.mcp_configs_for_role(role, project_name)` rather than
+`get_mcp_configs()` directly so the gate and kill switch always apply.
 
 ## Invariants
 
