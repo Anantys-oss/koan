@@ -1614,6 +1614,55 @@ class TestMainLoop:
             _bridge_loop()
         mock_handle.assert_not_called()
 
+    @patch("app.awake.write_heartbeat")
+    @patch("app.awake._flush_outbox_async")
+    @patch("app.awake.handle_message")
+    @patch("app.awake.get_updates")
+    @patch("app.awake.check_config")
+    @patch("app.awake._load_offset", return_value=43)
+    @patch("app.awake.CHAT_ID", TEST_CHAT_ID)
+    @patch("app.awake.time.sleep", side_effect=StopIteration)
+    def test_main_skips_redelivered_update(self, mock_sleep, mock_config,
+                                           mock_load_offset, mock_updates,
+                                           mock_handle, mock_flush, mock_heartbeat):
+        """A Telegram update whose update_id is below the confirmed offset is a
+        redelivery (e.g. after a bridge reexec by the memory watchdog, where the
+        offset was persisted locally but never confirmed to Telegram) and must
+        NOT be processed again — otherwise /status, /ls etc. send their output
+        twice in a row."""
+        from app.awake import _bridge_loop
+        # Persisted offset is 43 → update_id 42 was already handled. Telegram
+        # re-hands it to us; the loop must skip it.
+        mock_updates.return_value = [
+            {"update_id": 42, "message": {"text": "/status",
+                                          "chat": {"id": int(self.TEST_CHAT_ID)}}}
+        ]
+        with pytest.raises(StopIteration):
+            _bridge_loop()
+        mock_handle.assert_not_called()
+
+    @patch("app.awake.write_heartbeat")
+    @patch("app.awake._flush_outbox_async")
+    @patch("app.awake.handle_message")
+    @patch("app.awake.get_updates")
+    @patch("app.awake.check_config")
+    @patch("app.awake._load_offset", return_value=43)
+    @patch("app.awake.CHAT_ID", TEST_CHAT_ID)
+    @patch("app.awake.time.sleep", side_effect=StopIteration)
+    def test_main_processes_fresh_update_at_or_above_offset(
+        self, mock_sleep, mock_config, mock_load_offset, mock_updates,
+        mock_handle, mock_flush, mock_heartbeat):
+        """A genuine new update (update_id >= confirmed offset) is still
+        processed — the redelivery guard must not suppress fresh messages."""
+        from app.awake import _bridge_loop
+        mock_updates.return_value = [
+            {"update_id": 43, "message": {"text": "/status",
+                                          "chat": {"id": int(self.TEST_CHAT_ID)}}}
+        ]
+        with pytest.raises(StopIteration):
+            _bridge_loop()
+        mock_handle.assert_called_once_with("/status")
+
     # -- Non-Telegram provider regressions (matrix/slack/discord) ------------
     #
     # These providers leave CHAT_ID unset and match on the resolved
