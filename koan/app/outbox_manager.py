@@ -269,7 +269,21 @@ class OutboxManager:
             log("error", f"Background flush_outbox failed: {e}")
 
     def _format_message(self, raw_content: str) -> str:
-        """Format outbox content via Claude with full personality context."""
+        """Format outbox content via Claude with full personality context.
+
+        While a mission is *actively executing*, skip the (cosmetic) Claude
+        formatting call and use the instant local fallback instead — this frees
+        one concurrent AI caller so interactive chat isn't starved of account
+        headroom under mission load (#1084). Re-evaluated per flush, so normal
+        AI formatting resumes as soon as no mission is executing.
+        """
+        # ``instance_dir.parent`` is KOAN_ROOT by convention (instance/ lives at
+        # KOAN_ROOT/instance/); the check fail-opens on an absent/corrupt signal.
+        from app.active_mission import is_mission_active
+
+        if is_mission_active(self._instance_dir.parent):
+            return fallback_format(raw_content)
+
         try:
             soul = load_soul(self._instance_dir)
             prefs = load_human_prefs(self._instance_dir)
