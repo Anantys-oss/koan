@@ -1072,6 +1072,8 @@ class TestRunCommand:
 
     def test_run_command_streaming_forwards_mcp_configs(self):
         """run_command_streaming forwards mcp_configs to build_full_command."""
+        import contextlib
+
         import app.provider as provider
 
         mock_provider = MagicMock()
@@ -1093,7 +1095,9 @@ class TestRunCommand:
         ) as bfc, patch(
             "app.cli_exec.popen_cli", return_value=mock_proc
         ):
-            try:
+            # Streaming path may raise on empty stdout; we only care that
+            # build_full_command received mcp_configs.
+            with contextlib.suppress(Exception):
                 provider.run_command_streaming(
                     "p",
                     "/proj",
@@ -1101,10 +1105,6 @@ class TestRunCommand:
                     model_key="mission",
                     mcp_configs=["/a.json"],
                 )
-            except Exception:
-                # Streaming path may raise on empty stdout; we only care that
-                # build_full_command received mcp_configs.
-                pass
         assert bfc.call_args.kwargs["mcp_configs"] == ["/a.json"]
 
 

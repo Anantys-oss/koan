@@ -1000,6 +1000,7 @@ def _try_reply(
         issue_number=issue_number,
         comment_author=comment_author,
         project_path=project_path,
+        project_name=project_name,
     )
 
     if not reply_text:

@@ -655,6 +655,7 @@ def _critic_loop(
                         PROJECT_MEMORY=project_memory,
                     ),
                     project_path,
+                    project_name=project_name,
                 )
             else:
                 feedback_context = (context or "") + feedback_section
@@ -666,6 +667,7 @@ def _critic_loop(
                         PROJECT_MEMORY=project_memory,
                     ),
                     project_path,
+                    project_name=project_name,
                 )
         except Exception as e:
             print(f"[plan_runner] Regeneration failed: {e} — keeping current plan", file=sys.stderr)
@@ -765,6 +767,7 @@ def _review_loop(
                         PROJECT_MEMORY=project_memory,
                     ),
                     project_path,
+                    project_name=project_name,
                 )
             else:
                 project_memory = build_memory_block_for_skill(
@@ -781,6 +784,7 @@ def _review_loop(
                         PROJECT_MEMORY=project_memory,
                     ),
                     project_path,
+                    project_name=project_name,
                 )
         except Exception as e:
             print(f"[plan_runner] Re-generation failed: {e} — keeping previous plan", file=sys.stderr)
@@ -849,7 +853,7 @@ def _generate_plan(
         skill_dir, "plan", project_path=project_path,
         IDEA=idea, CONTEXT=context, PROJECT_MEMORY=project_memory,
     )
-    plan = _run_claude_plan(prompt, project_path)
+    plan = _run_claude_plan(prompt, project_path, project_name=project_name)
 
     if iterations > 1:
         plan = _critic_loop(
@@ -897,7 +901,7 @@ def _generate_iteration_plan(
         ISSUE_CONTEXT=issue_context,
         PROJECT_MEMORY=project_memory,
     )
-    plan = _run_claude_plan(prompt, project_path)
+    plan = _run_claude_plan(prompt, project_path, project_name=project_name)
 
     if iterations > 1:
         plan = _critic_loop(
@@ -975,15 +979,23 @@ def _is_error_output(output: str) -> bool:
     return False
 
 
-def _run_claude_plan(prompt, project_path):
-    """Execute Claude CLI with the given prompt and return the output."""
+def _run_claude_plan(prompt, project_path, project_name: str = ""):
+    """Execute the CLI plan generation and return the output.
+
+    Loads project MCP servers when the ``plan`` role is opted in via
+    ``mcp_roles`` (default includes plan). Secondary planning sub-agents
+    (critic/improve/review/assumptions) use ``run_command`` directly and
+    intentionally stay local-read-only — they do not go through this helper.
+    """
     from app.cli_provider import run_command_streaming
-    from app.config import get_skill_max_turns, get_skill_timeout
+    from app.config import get_skill_max_turns, get_skill_timeout, mcp_configs_for_role
     output = run_command_streaming(
         prompt, project_path,
         allowed_tools=["Read", "Glob", "Grep", "WebFetch"],
         model_key="mission",
         max_turns=get_skill_max_turns(), timeout=get_skill_timeout(),
+        project_name=project_name,
+        mcp_configs=mcp_configs_for_role("plan", project_name),
     )
     if _is_error_output(output):
         raise RuntimeError(output)
