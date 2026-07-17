@@ -100,10 +100,14 @@ hand-editing YAML or going through Telegram:
   validation (secrets are redacted in the view).
 - **Projects (form)** — pick a project, toggle an allow-listed set of per-project
   overrides (`cli_provider`, `autoreview`, `focus`, `exploration`, `rtk`,
-  `devcontainer`, `max_open_prs`, `max_pending_branches`). Saved to
-  `instance/projects.yaml` (persistent on a hosted deployment's volume) via
-  `apply_project_patch()`. `path`, secrets, and nested-dict sections are never editable
-  from the form. Backed by `GET/POST /api/projects/<name>`.
+  `devcontainer`, `max_open_prs`, `max_pending_branches`, `github_url`,
+  `git_auto_merge.enabled`, `git_auto_merge.base_branch`,
+  `git_auto_merge.strategy`). Saved to `instance/projects.yaml` (persistent on
+  a hosted deployment's volume) via `apply_project_patch()`. `path`, secrets,
+  and nested-dict sections not explicitly listed are never editable from the
+  form. Backed by `GET/POST /api/projects/<name>` (dashboard) and
+  `PATCH /v1/projects/<name>` (REST API) — both call the same
+  `apply_project_patch()`.
 - **Settings** — single-field `config.yaml` edits (dashboard nickname, auto-merge,
   CI fix dispatch, review-comment dispatch, auto-update). Each control writes one
   allow-listed dotted key through `PUT /api/config/setting`, comment-preserving.
