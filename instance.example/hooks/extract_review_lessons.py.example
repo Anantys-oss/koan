@@ -21,7 +21,8 @@ def on_post_review(ctx):
     reviews_dir.mkdir(parents=True, exist_ok=True)
 
     pr_number = str(ctx.get("pr_number") or "unknown")
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # Microseconds avoid same-second collisions on re-review of the same PR.
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     out_path = reviews_dir / f"{pr_number}_{ts}.json"
 
     review_data = ctx.get("review_data") or {}

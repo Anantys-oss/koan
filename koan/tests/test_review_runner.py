@@ -7712,3 +7712,41 @@ def test_fire_post_review_swallows_handler_errors():
             closed=False,
             ultra=False,
         )
+
+
+def test_fire_post_review_inits_registry_when_uninitialized(tmp_path):
+    """Review subprocess never inherits daemon hooks; must init before fire."""
+    import sys
+
+    from app import hooks, review_runner
+
+    hooks.reset_registry()
+    assert hooks.get_registry() is None
+
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "capture.py").write_text(
+        "seen = []\n"
+        "def on_post_review(ctx):\n"
+        "    seen.append(ctx.get('pr_number'))\n"
+        "HOOKS = {'post_review': on_post_review}\n"
+    )
+
+    review_runner._fire_post_review(
+        instance_dir=str(tmp_path),
+        project_name="my-toolkit",
+        project_path="/tmp/proj",
+        owner="octo",
+        repo="repo",
+        pr_number="42",
+        pr_url="https://github.com/octo/repo/pull/42",
+        review_summary={"lgtm": True},
+        review_data={},
+        verdict_submitted=True,
+        closed=False,
+        ultra=False,
+    )
+
+    assert hooks.get_registry() is not None
+    mod = sys.modules["koan_hook_capture"]
+    assert mod.seen == ["42"]

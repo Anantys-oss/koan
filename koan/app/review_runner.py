@@ -3072,9 +3072,15 @@ def _fire_post_review(
     Called once from run_review() after the review comment is posted.
     Any failure is logged and swallowed so hook errors never affect the
     review's own return value.
+
+    Review skills run as a subprocess (``python -m app.review_runner``), so
+    the daemon's hook registry is not inherited. Initialize here (idempotent)
+    before firing so instance-wide and skill-bound handlers actually run.
     """
     try:
-        from app.hooks import fire_hook
+        from app.hooks import fire_hook, init_hooks
+        # Subprocess entry: registry starts None; init is per-process.
+        init_hooks(instance_dir)
         fire_hook(
             "post_review",
             instance_dir=instance_dir,

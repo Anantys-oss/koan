@@ -51,3 +51,27 @@ def test_hook_noop_without_instance_dir(tmp_path):
     mod = _load_hook()
     mod.on_post_review({"pr_number": "1"})  # must not raise
     assert not (tmp_path / "reviews").exists()
+
+
+def test_hook_filename_uses_microsecond_timestamp(tmp_path, monkeypatch):
+    """Same-second re-reviews must not overwrite each other."""
+    from datetime import datetime, timezone
+
+    mod = _load_hook()
+    fixed = datetime(2026, 7, 17, 12, 0, 0, 123456, tzinfo=timezone.utc)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    monkeypatch.setattr(mod, "datetime", _FixedDateTime)
+    ctx = {
+        "instance_dir": str(tmp_path),
+        "pr_number": "7",
+        "review_data": {},
+    }
+    mod.on_post_review(ctx)
+    files = list((tmp_path / "reviews").glob("7_*.json"))
+    assert len(files) == 1
+    assert files[0].name == "7_20260717T120000123456Z.json"
