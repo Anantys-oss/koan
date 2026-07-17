@@ -27,6 +27,17 @@ _KEYWORD_EXCLUDED = _META_COMMANDS | {"ask"}
 _NEEDS_PR = {"rebase", "recreate", "review"}
 _NEEDS_ISSUE = {"fix", "implement"}
 
+# Imperative / request lead-ins that make a following keyword an *actionable*
+# ask ("do a review", "can you rebase") rather than an incidental noun ("the
+# review looks good"). Used by the keyword layer's precision gate: a keyword not
+# at token 0 only promotes if one of these precedes it, otherwise the mention
+# escalates to the confidence-scored model layer instead of auto-dispatching.
+_IMPERATIVE_LEAD_INS = {
+    "do", "does", "please", "pls", "kindly", "run", "go", "perform",
+    "could", "can", "would", "will", "let", "lets", "make", "give",
+    "want", "need", "hey", "ok", "okay", "just", "now",
+}
+
 
 @dataclass
 class IntentMatch:
@@ -67,13 +78,25 @@ def match_skill_keyword(text, registry, window=5):
         return None
     tokens = re.findall(r"[A-Za-z_]+", text)[: max(1, window)]
     hits = []
-    for tok in tokens:
+    first_idx = {}
+    for i, tok in enumerate(tokens):
         cmd = lex.get(tok.lower())
         if cmd and cmd not in hits:
             hits.append(cmd)
+            first_idx[cmd] = i
     if len(hits) != 1:
         return None
     command = hits[0]
+    # Precision gate: a lone skill keyword promotes (confidence 1.0, no model
+    # call) only from an *actionable* position — token 0, or after an imperative
+    # lead-in ("do a review", "can you rebase"). An incidental noun use ("the
+    # review looks good") is NOT proof of intent; it returns None so the mention
+    # escalates to the confidence-scored model layer instead of auto-dispatching.
+    idx = first_idx[command]
+    if idx != 0 and not any(
+        t.lower() in _IMPERATIVE_LEAD_INS for t in tokens[:idx]
+    ):
+        return None
     # Strip the matched command's own tokens from the context so we don't feed
     # "do a review" back to /review; skills accept free context either way.
     synonyms = {t for t, c in lex.items() if c == command}
@@ -159,12 +182,40 @@ def resolve_github_intent(
         return None
     command = result.get("command")
     confidence = result.get("confidence", 0.0)
-    if not command or command in _META_COMMANDS or confidence < min_confidence:
+    # Each rejection below downgrades the mention to free-form. Log it (mirroring
+    # the keyword-layer near-miss log) so a systemic Layer-2 outage — e.g.
+    # min_confidence misconfigured too high, or prompt drift depressing every
+    # score — is observable rather than an invisible wholesale downgrade.
+    if not command:
+        log.debug("GitHub intent: model returned no command; falling through to free-form")
+        return None
+    if command in _META_COMMANDS:
+        log.debug(
+            "GitHub intent: model chose meta command %s; falling through to free-form",
+            command,
+        )
+        return None
+    if confidence < min_confidence:
+        log.debug(
+            "GitHub intent: model command=%s below min_confidence (%.2f < %.2f); "
+            "falling through to free-form",
+            command, confidence, min_confidence,
+        )
         return None
     if not _url_type_ok(command, subject_kind):
+        log.debug(
+            "GitHub intent: model command=%s blocked by URL guard (subject_kind=%s); "
+            "falling through to free-form",
+            command, subject_kind or "unknown",
+        )
         return None
     skill = registry.find_by_command(command)
     if skill is None or not getattr(skill, "github_enabled", False):
+        log.debug(
+            "GitHub intent: model command=%s is not a github-enabled skill; "
+            "falling through to free-form",
+            command,
+        )
         return None
     log.info(
         "GitHub intent: source=model command=%s conf=%.2f text=%s",

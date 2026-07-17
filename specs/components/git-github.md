@@ -101,8 +101,12 @@ before any free-form fallback:
 
 1. **Keyword** — whole-word scan of the first N tokens (default 5) against
    github-enabled skill names + aliases (excluding `gh_request`/`help`, and
-   `ask` for keyword only). Exactly one distinct skill hit ⇒ promote
-   (`confidence = 1.0`). Zero or ≥2 distinct hits ⇒ escalate.
+   `ask` for keyword only). Exactly one distinct skill hit **in an actionable
+   position** (token 0, or preceded within the window by an imperative lead-in
+   such as `do`/`can`/`please`) ⇒ promote (`confidence = 1.0`). Zero or ≥2
+   distinct hits, or a lone hit in a non-actionable position (an incidental noun
+   like `the review looks good`), ⇒ escalate. This precision gate keeps a bare
+   keyword from auto-dispatching a skill on incidental common-English words.
 2. **Model** — the `lightweight` classifier returns `{command, context,
    confidence}`. Promote only when `command` is github-enabled,
    `confidence ≥ min_confidence` (default 0.75), and the command's required

@@ -223,6 +223,17 @@ class TestMatchSkillKeyword:
         from app.github_intent import match_skill_keyword
         assert match_skill_keyword("what do you think about this", _reg()) is None
 
+    def test_incidental_noun_not_promoted(self):
+        # Keyword not at token 0 and not preceded by an imperative lead-in is an
+        # incidental noun, not an actionable ask — must not auto-dispatch.
+        from app.github_intent import match_skill_keyword
+        assert match_skill_keyword("the review looks good", _reg()) is None
+        assert match_skill_keyword("this rebase broke prod", _reg()) is None
+
+    def test_leading_keyword_promoted(self):
+        from app.github_intent import match_skill_keyword
+        assert match_skill_keyword("review this please", _reg()).command == "review"
+
     def test_outside_window_returns_none(self):
         from app.github_intent import match_skill_keyword
         assert match_skill_keyword("a b c d e review", _reg(), window=5) is None

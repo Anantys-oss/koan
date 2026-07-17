@@ -118,10 +118,14 @@ command (e.g. `@koan-bot eh do a review`) is resolved via a three-layer ladder
 before any free-form fallback:
 
 1. **Keyword** — a whole-word scan of the first few tokens after the @mention
-   against github-enabled skill names + aliases. Exactly one distinct match is
-   promoted straight to that skill (`/review <url> …`), with the same handlers,
-   acks, and URL guards as a rigid command.
-2. **Model** — if the keyword layer is ambiguous (zero or several matches), the
+   against github-enabled skill names + aliases. Exactly one distinct match in
+   an *actionable position* — token 0, or preceded by an imperative lead-in
+   (`do a review`, `can you rebase`) — is promoted straight to that skill
+   (`/review <url> …`), with the same handlers, acks, and URL guards as a rigid
+   command. An incidental noun use (`the review looks good`) is not treated as
+   intent; it escalates to the model layer instead of auto-dispatching.
+2. **Model** — if the keyword layer is ambiguous (zero or several matches, or a
+   non-actionable position), the
    lightweight classifier picks the single best command and a confidence score.
    It is promoted only at/above `min_confidence` and when the command's required
    URL type matches the subject (a PR command on an Issue is rejected).
