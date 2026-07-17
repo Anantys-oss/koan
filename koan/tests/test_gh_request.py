@@ -136,66 +136,79 @@ class TestGhRequestHandler:
 
 
 class TestClassifyRequest:
-    """Tests for _classify_request URL-type validation."""
+    """Tests for _classify_request delegating to the shared resolver + URL guard."""
+
+    def _reg(self):
+        reg = SkillRegistry()
+        for name in ("fix", "review", "rebase", "implement"):
+            reg._register(Skill(
+                name=name, scope="core", description=f"{name} skill",
+                github_enabled=True, commands=[SkillCommand(name=name)],
+            ))
+        return reg
 
     def _run_classify(self, text, project, url, classify_result):
-        """Helper to run _classify_request with all dependencies mocked."""
+        """Run _classify_request against a real registry; only the model call
+        is mocked (the keyword layer runs for real)."""
         from skills.core.gh_request.handler import _classify_request
 
-        with patch("app.skills.build_registry") as mock_br, \
-             patch("app.github_command_handler.get_github_enabled_commands_with_descriptions") as mock_cmds, \
-             patch("app.utils.get_known_projects") as mock_kp, \
-             patch("app.github_intent.classify_intent") as mock_ci:
-            mock_br.return_value = MagicMock()
-            mock_cmds.return_value = [("fix", "Fix issue"), ("review", "Review PR"), ("rebase", "Rebase PR")]
-            mock_kp.return_value = [("koan", "/path/to/koan")]
-            mock_ci.return_value = classify_result
-
+        with patch("app.skills.build_registry", return_value=self._reg()), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/path/to/koan")]), \
+             patch("app.github_intent.classify_intent", return_value=classify_result):
             return _classify_request(text, project, url)
 
     def test_fix_with_pr_url_returns_none(self):
-        """NLP says 'fix' but URL is a PR → should NOT forward to /fix."""
+        """'fix' intent but URL is a PR → URL guard blocks → (None, "")."""
         command, context = self._run_classify(
             "fix the login bug", "koan",
             "https://github.com/o/r/pull/42",
-            {"command": "fix", "context": "the login bug"},
+            {"command": "fix", "context": "the login bug", "confidence": 0.9},
         )
         assert command is None
 
     def test_review_with_pr_url_succeeds(self):
-        """NLP says 'review' + PR URL → should forward."""
+        """'review' + PR URL → keyword layer promotes review."""
         command, context = self._run_classify(
             "please review this", "koan",
             "https://github.com/o/r/pull/42",
-            {"command": "review", "context": "check auth"},
+            {"command": "review", "context": "check auth", "confidence": 0.9},
+        )
+        assert command == "review"
+
+    def test_review_model_path_carries_context(self):
+        """No keyword hit → model promotes review and carries its context."""
+        command, context = self._run_classify(
+            "please take a look at this", "koan",
+            "https://github.com/o/r/pull/42",
+            {"command": "review", "context": "check auth", "confidence": 0.9},
         )
         assert command == "review"
         assert context == "check auth"
 
     def test_rebase_with_issue_url_returns_none(self):
-        """NLP says 'rebase' but URL is an issue → should NOT forward."""
+        """'rebase' but URL is an issue → URL guard blocks → (None, "")."""
         command, context = self._run_classify(
             "rebase this", "koan",
             "https://github.com/o/r/issues/10",
-            {"command": "rebase", "context": ""},
+            {"command": "rebase", "context": "", "confidence": 0.9},
         )
         assert command is None
 
     def test_fix_with_issue_url_succeeds(self):
-        """NLP says 'fix' + issue URL → should forward."""
+        """'fix' + issue URL → keyword layer promotes fix."""
         command, context = self._run_classify(
             "fix this bug", "koan",
             "https://github.com/o/r/issues/10",
-            {"command": "fix", "context": "the login bug"},
+            {"command": "fix", "context": "the login bug", "confidence": 0.9},
         )
         assert command == "fix"
 
     def test_classification_returns_none_on_no_match(self):
-        """Classifier returns no command → (None, "")."""
+        """No keyword hit and model returns no command → (None, "")."""
         command, context = self._run_classify(
             "do something weird", "koan",
             "https://github.com/o/r/pull/42",
-            {"command": None, "context": ""},
+            {"command": None, "context": "", "confidence": 0.0},
         )
         assert command is None
 
@@ -269,13 +282,14 @@ class TestGhRequestRouting:
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
-    @patch("app.github_command_handler._try_nlp_classification", return_value=None)
-    def test_nlp_disabled_uses_legacy_path(
-        self, mock_nlp, mock_resolve, mock_mentions,
+    @patch("app.github_command_handler._try_intent_promotion")
+    def test_nlp_disabled_falls_through_to_error(
+        self, mock_promote, mock_resolve, mock_mentions,
         mock_processed, mock_read, mock_error_reply, mock_closed,
         registry_with_gh_request,
     ):
-        """Without natural_language=true, uses legacy NLP classification."""
+        """Without natural_language=true, no intent resolution runs; an
+        unrecognized command falls through to the help-message error."""
         from app.github_command_handler import process_single_notification
 
         notification = {
@@ -304,7 +318,8 @@ class TestGhRequestRouting:
         # Single-comment errors are delegated to the caller, not posted inline.
         assert error is not None
         assert "`blahblah`" in error
-        mock_nlp.assert_called_once()
+        # NL disabled ⇒ the intent resolver is never invoked.
+        mock_promote.assert_not_called()
         mock_error_reply.assert_not_called()
 
     @patch("app.github_command_handler._is_subject_closed", return_value=None)

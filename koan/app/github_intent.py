@@ -8,15 +8,232 @@ Only used as a fallback when the rigid command parser fails to match.
 
 import json
 import logging
+import re
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 log = logging.getLogger(__name__)
+
+# Meta commands are never a natural-language user intent — they route, they
+# aren't a skill the user asks for by name.
+_META_COMMANDS = {"gh_request", "help"}
+# Excluded from the keyword layer ONLY, so pure questions ("ask what …") stay
+# free-form instead of being promoted to /ask on a bare keyword.
+_KEYWORD_EXCLUDED = _META_COMMANDS | {"ask"}
+
+# URL-type guard: which subject kind each command requires. Centralized here so
+# the bridge and /gh_request share one implementation (previously duplicated
+# inline in gh_request/handler.py::_classify_request).
+_NEEDS_PR = {"rebase", "recreate", "review"}
+_NEEDS_ISSUE = {"fix", "implement"}
+
+# Imperative / request lead-ins that make a following keyword an *actionable*
+# ask ("do a review", "can you rebase") rather than an incidental noun ("the
+# review looks good"). Used by the keyword layer's precision gate: a keyword not
+# at token 0 only promotes if one of these precedes it, otherwise the mention
+# escalates to the confidence-scored model layer instead of auto-dispatching.
+_IMPERATIVE_LEAD_INS = {
+    "do", "does", "please", "pls", "kindly", "run", "go", "perform",
+    "could", "can", "would", "will", "let", "lets", "make", "give",
+    "want", "need",
+}
+
+
+@dataclass
+class IntentMatch:
+    """A resolved @mention intent promoted to a real github-enabled skill."""
+
+    command: str
+    context: str
+    source: str        # "keyword" | "model"
+    confidence: float  # 1.0 for keyword; 0..1 for model
+
+
+def _github_keyword_lexicon(registry, exclude):
+    """Map every github-enabled command name + alias -> primary command name."""
+    lex = {}
+    for skill in registry.list_all():
+        if not getattr(skill, "github_enabled", False):
+            continue
+        for cmd in skill.commands:
+            if cmd.name in exclude:
+                continue
+            for token in [cmd.name, *getattr(cmd, "aliases", [])]:
+                if token:
+                    lex[token.lower()] = cmd.name
+    return lex
+
+
+def match_skill_keyword(text, registry, window=5):
+    """Promote when exactly one distinct skill keyword appears in the first
+    ``window`` word tokens after the @mention. Whole-word only.
+
+    Returns an ``IntentMatch`` (source="keyword", confidence=1.0) or None when
+    there are zero or multiple distinct skill hits (ambiguous ⇒ escalate).
+    """
+    if not text or not text.strip():
+        return None
+    lex = _github_keyword_lexicon(registry, _KEYWORD_EXCLUDED)
+    if not lex:
+        return None
+    tokens = re.findall(r"[A-Za-z_]+", text)[: max(1, window)]
+    hits = []
+    first_idx = {}
+    for i, tok in enumerate(tokens):
+        cmd = lex.get(tok.lower())
+        if cmd and cmd not in hits:
+            hits.append(cmd)
+            first_idx[cmd] = i
+    if len(hits) != 1:
+        return None
+    command = hits[0]
+    # Precision gate: a lone skill keyword promotes (confidence 1.0, no model
+    # call) only from an *actionable* position — token 0, or after an imperative
+    # lead-in ("do a review", "can you rebase"). An incidental noun use ("the
+    # review looks good") is NOT proof of intent; it returns None so the mention
+    # escalates to the confidence-scored model layer instead of auto-dispatching.
+    idx = first_idx[command]
+    if idx != 0 and not any(
+        t.lower() in _IMPERATIVE_LEAD_INS for t in tokens[:idx]
+    ):
+        return None
+    # Strip the matched command's own tokens from the context so we don't feed
+    # "do a review" back to /review; skills accept free context either way.
+    synonyms = {t for t, c in lex.items() if c == command}
+    context = " ".join(
+        w for w in text.split() if w.strip(".,!?").lower() not in synonyms
+    ).strip()
+    return IntentMatch(command=command, context=context, source="keyword", confidence=1.0)
+
+
+def _url_type_ok(command, subject_kind):
+    """Whether ``command`` can run against a subject of ``subject_kind``.
+
+    ``subject_kind`` is "pr", "issue", or "" (unknown). Never block on missing
+    info: an unknown subject always passes.
+    """
+    if not subject_kind:
+        return True
+    if command in _NEEDS_PR and subject_kind != "pr":
+        return False
+    if command in _NEEDS_ISSUE and subject_kind != "issue":
+        return False
+    return True
+
+
+def _model_candidates(registry):
+    """github-enabled (command, description) tuples for the model classifier,
+    excluding meta commands. Sorted, deduplicated by primary name."""
+    seen = {}
+    for skill in registry.list_all():
+        if not getattr(skill, "github_enabled", False):
+            continue
+        for cmd in skill.commands:
+            if cmd.name in _META_COMMANDS or cmd.name in seen:
+                continue
+            seen[cmd.name] = cmd.description or skill.description
+    return sorted(seen.items())
+
+
+def resolve_github_intent(
+    text,
+    registry,
+    subject_kind="",
+    project_path=None,
+    min_confidence=0.75,
+    keyword_window=5,
+):
+    """Single entry point for the bridge + /gh_request intent ladder.
+
+    Layer 1 (keyword) → Layer 2 (model + confidence). Returns an ``IntentMatch``
+    to promote, or None when the caller should fall through to free-form.
+    """
+    if not text or not text.strip():
+        return None
+
+    # Layer 1 — keyword (free, deterministic)
+    match = match_skill_keyword(text, registry, window=keyword_window)
+    if match:
+        if _url_type_ok(match.command, subject_kind):
+            log.info(
+                "GitHub intent: source=keyword command=%s conf=1.0 text=%s",
+                match.command, text[:80],
+            )
+            return match
+        # Confident keyword hit rejected by the URL-type guard (e.g. a `review`
+        # keyword on an Issue). Record the near-miss before escalating.
+        log.debug(
+            "GitHub intent: keyword command=%s discarded by URL guard "
+            "(subject_kind=%s); escalating to model",
+            match.command, subject_kind or "unknown",
+        )
+
+    # Layer 2 — cheap model + confidence gate
+    if not project_path:
+        log.debug(
+            "GitHub intent: skipping model classification — no project_path",
+        )
+        return None
+    candidates = _model_candidates(registry)
+    if not candidates:
+        return None
+    result = classify_intent(text, candidates, project_path, subject_kind=subject_kind)
+    if not result:
+        return None
+    command = result.get("command")
+    confidence = result.get("confidence", 0.0)
+    # Each rejection below downgrades the mention to free-form. Log it (mirroring
+    # the keyword-layer near-miss log) so a systemic Layer-2 outage — e.g.
+    # min_confidence misconfigured too high, or prompt drift depressing every
+    # score — is observable rather than an invisible wholesale downgrade.
+    if not command:
+        log.debug("GitHub intent: model returned no command; falling through to free-form")
+        return None
+    if command in _META_COMMANDS:
+        log.debug(
+            "GitHub intent: model chose meta command %s; falling through to free-form",
+            command,
+        )
+        return None
+    if confidence < min_confidence:
+        log.debug(
+            "GitHub intent: model command=%s below min_confidence (%.2f < %.2f); "
+            "falling through to free-form",
+            command, confidence, min_confidence,
+        )
+        return None
+    if not _url_type_ok(command, subject_kind):
+        log.debug(
+            "GitHub intent: model command=%s blocked by URL guard (subject_kind=%s); "
+            "falling through to free-form",
+            command, subject_kind or "unknown",
+        )
+        return None
+    skill = registry.find_by_command(command)
+    if skill is None or not getattr(skill, "github_enabled", False):
+        log.debug(
+            "GitHub intent: model command=%s is not a github-enabled skill; "
+            "falling through to free-form",
+            command,
+        )
+        return None
+    log.info(
+        "GitHub intent: source=model command=%s conf=%.2f text=%s",
+        command, confidence, text[:80],
+    )
+    return IntentMatch(
+        command=command,
+        context=result.get("context", ""),
+        source="model",
+        confidence=confidence,
+    )
 
 
 def classify_intent(
     message: str,
     commands: List[Tuple[str, str]],
     project_path: str,
+    subject_kind: str = "",
 ) -> Optional[dict]:
     """Classify a natural-language @mention into a bot command.
 
@@ -52,6 +269,11 @@ def classify_intent(
 
     prompt = prompt_template.replace("{COMMANDS}", commands_text)
     prompt = prompt.replace("{MESSAGE}", message.strip())
+    hint = {
+        "pr": "This comment is on a Pull Request.",
+        "issue": "This comment is on an Issue.",
+    }.get(subject_kind, "")
+    prompt = prompt.replace("{SUBJECT_KIND}", hint)
 
     try:
         output = run_command(
@@ -115,4 +337,25 @@ def _parse_classification(output: str) -> Optional[dict]:
         if not command:
             command = None
 
-    return {"command": command, "context": context}
+    # confidence: fail closed to 0.0 (→ below threshold → free-form) when
+    # missing or unparseable; clamp to [0.0, 1.0]. Log the degradation so a
+    # wholesale Layer-2 outage (prompt drift / model swap dropping the field)
+    # is observable instead of silently disabling the model layer.
+    if "confidence" not in result:
+        log.warning(
+            "GitHub intent: model omitted 'confidence' (command=%r); "
+            "failing closed to 0.0 → free-form",
+            command,
+        )
+    confidence_raw = result.get("confidence", 0.0)
+    try:
+        confidence = float(confidence_raw)
+    except (TypeError, ValueError):
+        log.warning(
+            "GitHub intent: unparseable 'confidence' %r; failing closed to 0.0",
+            confidence_raw,
+        )
+        confidence = 0.0
+    confidence = min(1.0, max(0.0, confidence))
+
+    return {"command": command, "context": context, "confidence": confidence}

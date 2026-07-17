@@ -920,6 +920,10 @@ page_cache_reclaim:
 #                                    # When enabled, unrecognized commands are sent to Claude
 #                                    # for intent classification before falling back to error.
 #                                    # Per-project override available in projects.yaml.
+#   intent:                           # Natural-language intent-ladder knobs (only used when
+#                                     # natural_language is enabled). See docs/messaging/github-commands.md.
+#     keyword_window: 5               # Tokens after @mention scanned for a skill keyword (default: 5)
+#     min_confidence: 0.75            # Model promotes only at/above this certainty (0.0–1.0, default: 0.75)
 #   webhook:                          # Push-based triggering (opt-in, default: off)
 #     enabled: false                  # Start a local HTTP receiver in the bridge process.
 #                                     # On a relevant GitHub event it triggers an IMMEDIATE
