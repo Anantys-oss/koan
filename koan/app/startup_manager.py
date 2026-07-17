@@ -699,6 +699,33 @@ def _safe_run(step_name: str, fn, *args, **kwargs):
         return None
 
 
+def check_cli_binary() -> None:
+    """Enter degraded (no-mission) mode if the primary CLI binary is missing.
+
+    Runs at startup. On a missing binary this logs, sends ONE operator warning
+    (⚠️, routed to whichever messaging backend is configured), and sets the
+    in-memory degraded flag so the agent loop blocks mission execution while
+    chat/inbox keep working. It deliberately does NOT hard-stop: the loop and
+    bridge must stay alive. The PATH must be fixed and the daemon restarted to
+    clear the state (see ``app.cli_health``).
+    """
+    from app import cli_health
+
+    check = cli_health.check_primary_cli()
+    if check.available:
+        return
+
+    msg = cli_health.warning_message(check.binary, check.provider_name)
+    log("error", f"CLI binary check failed: {msg}")
+    try:
+        from app.notify import send_telegram
+        send_telegram(msg)
+    except Exception as exc:
+        log("warn", f"Failed to send CLI-binary warning: {exc}")
+    cli_health.set_unavailable(check.binary, check.provider_name)
+    cli_health.mark_warned()
+
+
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
@@ -749,6 +776,10 @@ def run_startup(koan_root: str, instance: str, projects: list):
             raise
 
         _safe_run("Config validation", validate_config, koan_root)
+        # Verify the CLI provider binary is on PATH before any mission runs.
+        # Missing → degraded (no-mission) mode + one operator warning; never
+        # a hard stop, so chat/inbox keep working.
+        _safe_run("CLI binary check", check_cli_binary)
         _safe_run("Crash recovery", recover_crashed_missions, instance)
         _safe_run("Running-indicator reconcile", reconcile_running_indicators, instance)
         _safe_run("Projects migration", run_migrations, koan_root)

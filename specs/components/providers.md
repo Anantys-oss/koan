@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-16
+updated: 2026-07-17
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -255,6 +255,14 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 
 ## Integration points
 
+- **Startup availability gate.** `app.cli_health.check_primary_cli()` wraps
+  `get_provider().is_available()` (`shutil.which(binary())`) as the single probe used by
+  `startup_manager.check_cli_binary()` (enters an in-memory degraded/no-mission mode on a
+  miss — see `specs/components/agent-loop.md`), the `/status` skill, and the `/doctor`
+  diagnostics (`environment_check` / `connectivity_check`, which resolve the real
+  `provider.binary()` rather than a hardcoded provider→binary map). `provider.missing_binary_message()`
+  is the shared constructor for the actionable "CLI executable not found" error raised by
+  `run_command_streaming` and (as an exit-127 failure) by `run.run_claude_task`.
 - Invoked by `run.run_claude_task()` and skill runners.
 - Usage flows to `usage_tracker.py` / `burn_rate.py` via the `record_usage()` hook.
   Structured per-call events are written to `instance/usage/*.jsonl` by

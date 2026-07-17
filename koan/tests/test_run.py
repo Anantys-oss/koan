@@ -1338,6 +1338,48 @@ class TestRunClaudeTask:
 
         assert exit_code != 0
 
+    def test_missing_binary_returns_127_with_actionable_stderr(self, tmp_path):
+        """A missing provider binary fails the mission cleanly (exit 127) with an
+        actionable message on stderr — not a raw FileNotFoundError."""
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+
+        err = FileNotFoundError(2, "No such file or directory", "koan-missing-cli")
+        with patch("app.cli_exec.popen_cli", side_effect=err):
+            exit_code = run_claude_task(
+                cmd=["koan-missing-cli"],
+                stdout_file=stdout_f,
+                stderr_file=stderr_f,
+                cwd=str(tmp_path),
+            )
+
+        assert exit_code == 127
+        stderr_text = Path(stderr_f).read_text()
+        assert "CLI executable not found" in stderr_text
+        assert "koan-missing-cli" in stderr_text
+        assert _sig.task_running is False
+
+    def test_missing_other_file_propagates(self, tmp_path):
+        """A FileNotFoundError for a file other than the provider binary is not masked."""
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+
+        err = FileNotFoundError(2, "No such file or directory", "/some/other/file")
+        with patch("app.cli_exec.popen_cli", side_effect=err):
+            with pytest.raises(FileNotFoundError):
+                run_claude_task(
+                    cmd=["claude"],
+                    stdout_file=stdout_f,
+                    stderr_file=stderr_f,
+                    cwd=str(tmp_path),
+                )
+
     def test_sets_and_reaps_per_mission_tmpdir(self, tmp_path, monkeypatch):
         """The child runs with a private TMPDIR that is removed afterwards."""
         from app import utils
@@ -2421,6 +2463,49 @@ class TestIdleWaitConfig:
         mock_sleep.assert_called_once()
         status_calls = [c for c in mock_status.call_args_list if "PR limit" in str(c)]
         assert len(status_calls) >= 1
+
+    @patch("app.run._notify_raw")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.set_status")
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    def test_cli_unavailable_wait_action(
+        self, mock_plan, mock_log, mock_status, mock_sleep, mock_notify, tmp_path,
+    ):
+        """cli_unavailable_wait blocks missions, never wakes on missions, warns (throttled)."""
+        import app.mission_executor as _me
+        _me._last_idle_msg = ""
+        from app import cli_health
+        cli_health.clear()
+        cli_health.set_unavailable("claude", "claude")
+        from app.run import _run_iteration
+        mock_plan.return_value = self._make_plan(
+            "cli_unavailable_wait",
+            decision_reason="CLI binary not on PATH — missions blocked (fix PATH & restart)",
+        )
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+        (tmp_path / ".koan-project").write_text("koan")
+
+        try:
+            _run_iteration(
+                koan_root=str(tmp_path),
+                instance=instance,
+                projects=[("koan", "/tmp/koan")],
+                count=0, max_runs=10, interval=60, git_sync_interval=5,
+            )
+        finally:
+            cli_health.clear()
+
+        # Missions must not wake this idle wait (would tight-loop until restart).
+        mock_sleep.assert_called_once_with(
+            60, str(tmp_path), instance, wake_on_mission=False,
+        )
+        status_calls = [c for c in mock_status.call_args_list if "CLI unavailable" in str(c)]
+        assert len(status_calls) >= 1
+        # A throttled reminder is sent exactly once (should_warn() True after clear()).
+        path_warnings = [c for c in mock_notify.call_args_list if "PATH" in str(c)]
+        assert len(path_warnings) == 1
 
     @patch("app.run.interruptible_sleep", return_value=None)
     @patch("app.run.set_status")

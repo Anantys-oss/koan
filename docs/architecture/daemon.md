@@ -4,7 +4,7 @@ title: "Daemon Runtime"
 description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-26
+updated: 2026-07-17
 ---
 
 # Daemon Runtime
@@ -137,6 +137,14 @@ Consequences and safeguards:
 - Pause mode uses `.koan-pause` state and can be time-bounded.
 - Focus mode narrows work to a project or focus area.
 - Passive mode keeps Koan alive but blocks execution.
+- CLI-unavailable degraded mode: if the primary provider binary is missing from
+  `PATH` at startup, the loop stays alive (chat and the GitHub/Jira inbox still
+  work) but starts **no** missions — running one would crash the provider
+  subprocess. Detected once at startup (`startup_manager.check_cli_binary` →
+  `cli_health.check_primary_cli`), advertised to the operator with one ⚠️ warning,
+  and held **in memory** (`app.cli_health`) with no signal file, so it clears only
+  on restart. Fix `PATH` / install the CLI, then `make stop && make start`. See
+  [troubleshooting](../operations/troubleshooting.md).
 - Restart signaling uses a file so the bridge can ask the runner to restart.
 - The stagnation monitor watches provider output, kills stuck subprocess groups,
   and requeues missions up to the configured retry limit.

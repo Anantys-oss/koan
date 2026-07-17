@@ -235,6 +235,21 @@ def _handle_status(ctx) -> str:
         except Exception:
             parts.append(f"  🟢 Active{queue_suffix}")
 
+    # CLI provider binary availability — surfaced regardless of pause/active,
+    # since a missing binary blocks ALL missions until PATH is fixed + restart.
+    # Re-probed here (bridge process) rather than read from the loop's in-memory
+    # flag; the bridge shares PATH with the loop, so the result matches.
+    try:
+        from app.cli_health import check_primary_cli
+        cli = check_primary_cli()
+        if not cli.available:
+            parts.append(
+                f"  ⚠️ CLI unavailable — '{cli.binary}' not on PATH; "
+                "missions blocked (fix PATH & restart)"
+            )
+    except Exception:
+        pass
+
     # System info: IP │ hostname │ service manager on one compact line
     info_items = []
     server_ip = _get_server_ip()
