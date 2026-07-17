@@ -12,7 +12,7 @@ Schema (YAML):
       enabled: true
       created: "2026-01-01T12:00:00"
 
-Supported events: session_start, session_end, pre_mission, post_mission
+Supported events: session_start, session_end, pre_mission, post_mission, post_review
 Supported actions: notify, create_mission, pause, resume, auto_merge
 """
 
@@ -33,7 +33,9 @@ from app.utils import atomic_write
 
 RULES_FILE = "automation_rules.yaml"
 
-KNOWN_EVENTS = frozenset({"session_start", "session_end", "pre_mission", "post_mission"})
+KNOWN_EVENTS = frozenset(
+    {"session_start", "session_end", "pre_mission", "post_mission", "post_review"}
+)
 KNOWN_ACTIONS = frozenset({"notify", "create_mission", "pause", "resume", "auto_merge"})
 
 

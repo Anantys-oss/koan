@@ -168,6 +168,7 @@ class TestValidation:
         assert "session_end" in KNOWN_EVENTS
         assert "pre_mission" in KNOWN_EVENTS
         assert "post_mission" in KNOWN_EVENTS
+        assert "post_review" in KNOWN_EVENTS
 
     def test_known_actions_set(self):
         assert "notify" in KNOWN_ACTIONS
@@ -175,3 +176,16 @@ class TestValidation:
         assert "pause" in KNOWN_ACTIONS
         assert "resume" in KNOWN_ACTIONS
         assert "auto_merge" in KNOWN_ACTIONS
+
+
+def test_post_review_rule_is_accepted():
+    """An automation rule with event: post_review parses successfully."""
+    rule = AutomationRule.from_dict({
+        "id": "r1",
+        "event": "post_review",
+        "action": "notify",
+        "params": {"message": "reviewed"},
+        "enabled": True,
+    })
+    assert rule is not None
+    assert rule.event == "post_review"
