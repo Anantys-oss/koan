@@ -102,9 +102,8 @@ def api_config_sync():
 def api_config_restart_if_idle():
     """Restart the agent only when idle (no in-flight mission); 409 if busy."""
     import sys
+    # Only an in-flight mission ("working") blocks a restart; idle/sleeping/paused/stopped are safe.
     agent_state = stats_svc.get_agent_state()
-    # Only an in-flight mission ("working") blocks a restart. The normal
-    # between-runs states (idle, sleeping, paused, stopped) are all safe.
     if agent_state.get("state") == "working":
         return jsonify({"ok": False, "error": "agent_busy",
                         "state": agent_state.get("state")}), 409
