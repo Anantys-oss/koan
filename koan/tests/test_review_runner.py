@@ -3220,6 +3220,92 @@ class TestPostCommentReplies:
 
         assert results == []
 
+    @patch("app.review_runner.run_gh")
+    def test_needs_clarification_wraps_review_comment_with_alert(self, mock_gh):
+        """needs_clarification review-comment replies lead with an IMPORTANT alert."""
+        from app.github_alerts import build_alert
+
+        reply = "Which API version should we target?"
+        replies = [
+            {
+                "comment_id": 100,
+                "reply": reply,
+                "action": "needs_clarification",
+            },
+        ]
+        repliable = [
+            {"id": 100, "type": "review_comment", "user": "alice", "body": "Why?"},
+        ]
+
+        results = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert results == [{"comment_id": 100, "action": "needs_clarification"}]
+        body_arg = next(
+            a for a in mock_gh.call_args[0]
+            if isinstance(a, str) and a.startswith("body=")
+        )
+        posted_body = body_arg.removeprefix("body=")
+        assert posted_body == build_alert("IMPORTANT", reply)
+
+    @patch("app.review_runner.run_gh")
+    def test_needs_clarification_wraps_issue_comment_with_alert(self, mock_gh):
+        """needs_clarification issue-comment replies wrap the reply (not the quote)."""
+        from app.github_alerts import build_alert
+
+        reply = "Can you share the expected status code?"
+        replies = [
+            {
+                "comment_id": 200,
+                "reply": reply,
+                "action": "needs_clarification",
+            },
+        ]
+        repliable = [
+            {"id": 200, "type": "issue_comment", "user": "bob", "body": "Please fix"},
+        ]
+
+        _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        body = next(
+            a for a in mock_gh.call_args[0]
+            if isinstance(a, str) and "@bob" in a
+        )
+        assert body.startswith("> @bob:")
+        assert "> [!IMPORTANT]" in body
+        assert reply in body
+        # Quote precedes the alert; alert wraps only the reply text
+        quote_end = body.index("\n\n")
+        after_quote = body[quote_end + 2 :]
+        assert after_quote.startswith(build_alert("IMPORTANT", reply).split("\n")[0])
+
+    @patch("app.review_runner.run_gh")
+    def test_non_clarification_actions_unchanged(self, mock_gh):
+        """fixed / wont_fix / acknowledged replies are posted without an alert."""
+        cases = [
+            ("fixed", "Applied the suggested rename."),
+            ("wont_fix", "Leaving as-is — intentional."),
+            ("acknowledged", "Noted, thanks."),
+            (None, "Thanks for the note."),  # missing action → acknowledged
+        ]
+        for action, reply in cases:
+            mock_gh.reset_mock()
+            item = {"comment_id": 100, "reply": reply}
+            if action is not None:
+                item["action"] = action
+            repliable = [
+                {"id": 100, "type": "review_comment", "user": "a", "body": "b"},
+            ]
+
+            _post_comment_replies("owner", "repo", "42", [item], repliable)
+
+            body_arg = next(
+                a for a in mock_gh.call_args[0]
+                if isinstance(a, str) and a.startswith("body=")
+            )
+            posted_body = body_arg.removeprefix("body=")
+            assert "> [!IMPORTANT]" not in posted_body
+            assert posted_body == reply
+
 
 # ---------------------------------------------------------------------------
 # run_review with comment replies

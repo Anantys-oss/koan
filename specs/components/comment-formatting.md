@@ -4,7 +4,7 @@ title: "Component Spec — Comment Formatting (GitHub alert callouts)"
 description: "Design contract for build_alert(), the single constructor for GitHub alert callouts, plus the type→situation mapping and the parsimony rule every skill must follow."
 tags: [git-github, skills]
 created: 2026-07-10
-updated: 2026-07-10
+updated: 2026-07-17
 ---
 
 # Component Spec — Comment Formatting (GitHub alert callouts)
@@ -61,12 +61,18 @@ the single most important thing the reader must not miss.
 
 - `koan/app/rebase_pr.py` — WARNING when review feedback was dropped.
 - `koan/app/review_runner.py` — IMPORTANT when the branch moved mid-review.
+- `koan/app/review_runner.py` — IMPORTANT on `comment_replies` whose `action` is
+  `needs_clarification` (rendering only; the JSON schema is unchanged). Other
+  reply actions (`fixed` / `wont_fix` / `acknowledged`) stay plain prose.
 - `koan/app/review_runner.py` — severity-graded **verdict body** (`_build_verdict_body`):
   TIP (approved / merge-ready), WARNING (warning-level blockers only), CAUTION
   (any critical blocker). The color carries the merge signal at a glance. The
   main review comment's summary paragraph is **not** wrapped — a full-paragraph
   IMPORTANT callout there is noise; the one graded alert lives on the short
   verdict message instead.
+- `koan/system-prompts/github-reply.md` — instructs @mention replies that need
+  clarification to open with a one-line `> [!IMPORTANT]` callout (prompt-only;
+  model compliance is soft).
 - `koan/skills/core/audit/audit_runner.py` — CAUTION for critical-severity audit findings.
 
 ## Invariants

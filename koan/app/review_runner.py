@@ -2298,6 +2298,12 @@ def _post_comment_replies(
             )
             continue
 
+        # Surface clarification asks as IMPORTANT callouts so maintainers
+        # scanning many bot replies can spot ones that need human input.
+        # GitHub has no native QUESTION type; IMPORTANT is the closest fit.
+        if reply_item.get("action") == "needs_clarification":
+            reply_text = build_alert("IMPORTANT", reply_text)
+
         try:
             if original["type"] == "review_comment":
                 safe_reply = sanitize_github_comment(reply_text)
