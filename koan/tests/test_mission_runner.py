@@ -3767,6 +3767,8 @@ class TestMaybeQueueAutoreview:
         calls = [str(c) for c in mock_insert.call_args_list]
         assert any("/review" in c for c in calls)
         assert any("/rebase" in c for c in calls)
+        # the autoreview rebase leg addresses the review it just generated
+        assert any("/rebase" in c and "--fix" in c for c in calls)
         # review must come before rebase
         first_call_str = str(mock_insert.call_args_list[0])
         assert "/review" in first_call_str

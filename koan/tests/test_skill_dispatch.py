@@ -1609,7 +1609,8 @@ class TestExpandComboSkill:
         assert result is True
         content = missions_md.read_text()
         assert "/review https://github.com/owner/repo/pull/42" in content
-        assert "/rebase https://github.com/owner/repo/pull/42" in content
+        # The rebase leg carries --fix so it addresses the fresh review.
+        assert "/rebase --fix https://github.com/owner/repo/pull/42" in content
         # Both should have project tag
         assert "[project:koan] /review" in content
         assert "[project:koan] /rebase" in content
@@ -2017,6 +2018,38 @@ class TestBuildRebaseCmdSeverity:
     def test_unrelated_text_after_url_ignored(self):
         cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} thanks", "/project")
         assert "--min-severity" not in cmd
+
+
+class TestBuildRebaseCmdFix:
+    """The feedback leg is opt-in via --fix or any trailing text after the URL."""
+
+    BASE_CMD = ["python3", "-m", "app.rebase_pr"]
+    URL = "https://github.com/sukria/koan/pull/42"
+
+    def test_bare_url_no_fix(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, self.URL, "/project")
+        assert "--fix" not in cmd
+
+    def test_explicit_fix_after_url(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} --fix", "/project")
+        assert "--fix" in cmd
+
+    def test_explicit_fix_before_url(self):
+        # Combo expansion emits "/rebase --fix <url>" — --fix precedes the URL.
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"--fix {self.URL}", "/project")
+        assert "--fix" in cmd
+
+    def test_trailing_free_text_implies_fix(self):
+        cmd = _build_rebase_cmd(
+            self.BASE_CMD, f"{self.URL} address the security concern", "/project",
+        )
+        assert "--fix" in cmd
+
+    def test_severity_keyword_implies_fix(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} critical", "/project")
+        assert "--fix" in cmd
+        idx = cmd.index("--min-severity")
+        assert cmd[idx + 1] == "critical"
 
 
 # ---------------------------------------------------------------------------

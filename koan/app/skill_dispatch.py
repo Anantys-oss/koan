@@ -716,18 +716,29 @@ def _build_rebase_cmd(
 ) -> Optional[List[str]]:
     """Build rebase command, extracting an optional severity filter.
 
-    Accepts severity keywords after the PR URL:
-        /rebase <url> critical      → --min-severity critical
-        /rebase <url> --important   → --min-severity warning
-        /rebase <url>               → no filter (address everything)
+    The review-feedback leg is opt-in via ``--fix``. It is also implied by any
+    trailing text after the URL (a severity keyword or free-text focus), since
+    that text only makes sense when feedback is being addressed. A bare
+    ``/rebase <url>`` performs a pure rebase.
+
+        /rebase <url>                    → rebase only
+        /rebase <url> --fix              → rebase + address feedback
+        /rebase <url> critical           → --fix + --min-severity critical
+        /rebase <url> --important        → --fix + --min-severity warning
+        /rebase <url> fix the auth bug   → --fix (free-text focus threaded on)
     """
     url_match = _PR_URL_RE.search(args)
     if not url_match:
         return None
     cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
 
-    # Look for severity keyword in the text after the URL
+    # Enable the feedback leg on an explicit --fix (which may sit before the
+    # URL, e.g. combo expansion "/rebase --fix <url>") or any trailing text.
     remainder = args[url_match.end():]
+    if "--fix" in args.split() or remainder.strip():
+        cmd.append("--fix")
+
+    # Look for severity keyword in the text after the URL
     sev_match = _SEVERITY_TOKEN_RE.search(remainder)
     if sev_match:
         from app.rebase_pr import parse_severity  # lazy import to avoid circular dep

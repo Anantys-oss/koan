@@ -602,6 +602,24 @@ class TestBuildRebaseComment:
         )
         assert "### Stats" not in result
 
+    def test_transition_notice_included_when_flagged(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main"],
+            {"title": "Fix bug"},
+            show_transition_notice=True,
+        )
+        assert "> [!NOTE]" in result
+        assert "--fix" in result
+
+    def test_no_transition_notice_by_default(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main"],
+            {"title": "Fix bug"},
+        )
+        assert "> [!NOTE]" not in result
+
     def test_review_feedback_noted(self):
         result = _build_rebase_comment(
             "42", "koan/fix", "main",
@@ -1790,7 +1808,9 @@ class TestRunRebase:
              patch("app.rebase_pr._push_with_fallback", return_value={
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
-            success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify)
+            # fix=True: this test asserts the feedback leg runs, so opt in
+            # explicitly rather than relying on the transitional default.
+            success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify, fix=True)
             assert success is True
             assert "comments" in summary.lower()
             # Claude step should be called when feedback exists
@@ -2203,7 +2223,7 @@ class TestRunRebaseClaude:
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
             success, _ = run_rebase("o", "r", "1", "/p", notify_fn=notify,
-                                     skill_dir=REBASE_SKILL_DIR)
+                                     skill_dir=REBASE_SKILL_DIR, fix=True)
             assert success is True
             mock_apply.assert_called_once()
 
@@ -2252,7 +2272,7 @@ class TestRunRebaseClaude:
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
             run_rebase("o", "r", "1", "/p", notify_fn=notify,
-                       skill_dir=REBASE_SKILL_DIR)
+                       skill_dir=REBASE_SKILL_DIR, fix=True)
             call_kwargs = mock_apply.call_args
             assert call_kwargs[1].get("skill_dir") == REBASE_SKILL_DIR
 
@@ -2285,7 +2305,7 @@ class TestRunRebaseClaude:
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
             success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify,
-                                          skill_dir=REBASE_SKILL_DIR)
+                                          skill_dir=REBASE_SKILL_DIR, fix=True)
             assert success is True
             # _safe_checkout should be called to restore the PR branch
             # (once for restoration + once at end for original branch)
@@ -2319,7 +2339,7 @@ class TestRunRebaseClaude:
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
             success, summary = run_rebase("o", "r", "1", "/p", notify_fn=notify,
-                                          skill_dir=REBASE_SKILL_DIR)
+                                          skill_dir=REBASE_SKILL_DIR, fix=True)
             assert success is True
             # _safe_checkout should only be called at the end (original branch)
             # NOT for branch restoration since Claude stayed on correct branch
@@ -2362,6 +2382,7 @@ class TestRunRebaseClaude:
              patch("app.rebase_pr.run_gh"):
             success, summary = run_rebase(
                 "o", "r", "1", "/p", notify_fn=notify, skill_dir=REBASE_SKILL_DIR,
+                fix=True,
             )
 
         assert success is True
@@ -2408,6 +2429,7 @@ class TestRunRebaseClaude:
              patch("app.rebase_pr._run_git", side_effect=_run_git_side_effect):
             success, summary = run_rebase(
                 "o", "r", "1", "/p", notify_fn=notify, skill_dir=REBASE_SKILL_DIR,
+                fix=True,
             )
 
         assert success is False
@@ -2444,6 +2466,7 @@ class TestRunRebaseClaude:
              patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"):
             success, summary = run_rebase(
                 "o", "r", "1", "/p", notify_fn=notify, skill_dir=REBASE_SKILL_DIR,
+                fix=True,
             )
 
         assert success is False
@@ -2485,6 +2508,7 @@ class TestRunRebaseClaude:
              patch("app.rebase_pr._push_with_fallback", push_mock):
             success, summary = run_rebase(
                 "o", "r", "1", "/p", notify_fn=notify, skill_dir=REBASE_SKILL_DIR,
+                fix=True,
             )
 
         assert success is True
@@ -3542,7 +3566,7 @@ class TestRunRebasePassesChangeSummary:
                  "success": True, "actions": ["Force-pushed"], "error": ""
              }):
             run_rebase("o", "r", "1", "/p", notify_fn=notify,
-                       skill_dir=REBASE_SKILL_DIR)
+                       skill_dir=REBASE_SKILL_DIR, fix=True)
             # Verify _build_rebase_comment was called with change_summary
             call_kwargs = mock_comment.call_args
             assert call_kwargs[1].get("change_summary") == "Fixed the auth bug."
@@ -4049,6 +4073,84 @@ class TestMainMinSeverity:
                 "--project-path", "/project",
             ])
             assert mock.call_args[1]["min_severity"] is None
+
+
+class TestMainFix:
+    def test_passes_fix_to_run_rebase(self):
+        with patch("app.rebase_pr.run_rebase", return_value=(True, "OK")) as mock:
+            rebase_main([
+                "https://github.com/sukria/koan/pull/42",
+                "--project-path", "/project",
+                "--fix",
+            ])
+            assert mock.call_args[1]["fix"] is True
+
+    def test_no_fix_by_default(self):
+        with patch("app.rebase_pr.run_rebase", return_value=(True, "OK")) as mock:
+            rebase_main([
+                "https://github.com/sukria/koan/pull/42",
+                "--project-path", "/project",
+            ])
+            assert mock.call_args[1]["fix"] is False
+
+
+class TestFeedbackGate:
+    """Step 4 (apply review feedback) runs only when fix=True or the default is on."""
+
+    @pytest.fixture(autouse=True)
+    def mock_already_solved(self):
+        with patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)):
+            yield
+
+    _CTX = {
+        "title": "T", "body": "", "branch": "feat",
+        "base": "main", "state": "", "author": "", "url": "",
+        "diff": "+code", "review_comments": "@reviewer: fix this",
+        "reviews": "@reviewer (CHANGES_REQUESTED): please fix",
+        "issue_comments": "",
+    }
+
+    @patch("app.rebase_pr._FEEDBACK_ON_BY_DEFAULT", False)
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr._apply_review_feedback")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_bare_rebase_skips_feedback(
+        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci,
+    ):
+        mock_ctx.return_value = dict(self._CTX)
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._push_with_fallback", return_value={
+                 "success": True, "actions": ["Force-pushed"], "error": ""
+             }):
+            success, _ = run_rebase("o", "r", "1", "/p", notify_fn=MagicMock(), fix=False)
+            assert success is True
+            mock_apply.assert_not_called()
+
+    @patch("app.rebase_pr._FEEDBACK_ON_BY_DEFAULT", False)
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr._apply_review_feedback")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_fix_applies_feedback(
+        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci,
+    ):
+        mock_ctx.return_value = dict(self._CTX)
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._push_with_fallback", return_value={
+                 "success": True, "actions": ["Force-pushed"], "error": ""
+             }):
+            success, _ = run_rebase("o", "r", "1", "/p", notify_fn=MagicMock(), fix=True)
+            assert success is True
+            mock_apply.assert_called_once()
 
 
 class TestFilterBotIssueComments:

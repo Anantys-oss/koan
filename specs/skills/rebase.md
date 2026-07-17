@@ -1,24 +1,33 @@
 ---
 type: skill-spec
 title: "Skill Spec — rebase"
-description: "Documents the `/rebase` skill that rebases a PR onto its current base and addresses review feedback, including its already-solved detection JSON scored by the eval harness."
+description: "Documents the `/rebase` skill that rebases a PR onto its current base by default and, with `--fix` (or any trailing context), also addresses review feedback, including its already-solved detection JSON scored by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-02
+updated: 2026-07-17
 ---
 
 # Skill Spec — `rebase`
 
 ## Command(s)
 
-- **Primary:** `/rebase [--now] <pr-url> [context]`
+- **Primary:** `/rebase [--now] [--fix] <pr-url> [context]`
 - **Aliases:** `rb`
 - **Group:** `pr`
 
 ## Purpose
 
-Rebase a PR onto current base and address review concerns — the standing workflow for
-keeping a Kōan PR current and merge-ready. `/fix` on a PR URL redirects here.
+Rebase a PR onto its current base — the standing workflow for keeping a Kōan PR
+current and merge-ready. **By default `/rebase` performs only the rebase**
+(rebase onto the base branch, resolving conflicts). The review-feedback leg
+(read PR comments and apply requested changes) is **opt-in via `--fix`** — a
+plain `/rebase` no longer applies feedback.
+
+`--fix` is **implied by any trailing text after the URL** (a focus area or a
+severity keyword), so `/rebase <url> address the auth bug` and
+`/rebase <url> critical` both address feedback; only a bare `/rebase <url>`
+rebases without touching feedback. `/fix` on a PR URL redirects here **with
+`--fix`**.
 
 See `docs/users/skills.md` for the end-user `/rebase` reference and
 `docs/users/user-manual.md` for the fuller walkthrough.
@@ -29,7 +38,8 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 |---|---|---|---|
 | PR URL | command arg | yes | parsed by `github_url_parser` |
 | `--now` | flag | no | queue at top |
-| trailing context | command arg | no | threaded into the queued mission |
+| `--fix` | flag | no | also address review feedback; implied by any trailing context |
+| trailing context | command arg | no | threaded into the queued mission; implies `--fix` |
 
 ## Outputs / side effects
 
@@ -46,14 +56,31 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 
 ## Integration hooks
 
-- **Handler:** `handler.py` (also the redirect target of `fix`).
+- **Handler:** `handler.py` (also the redirect target of `fix`, which injects `--fix`).
 - **GitHub:** `github_enabled` + `github_context_aware`.
-- **Combo:** second leg of `review_rebase` (`/rr`).
+- **Combo:** second leg of `review_rebase` (`/rr`), which passes `--fix` so the
+  rebase leg addresses the review it just generated (`sub_commands: [review,
+  "rebase --fix"]`).
 
 ## Invariants
 
 - Post-URL context must thread into the queued mission.
 - Multi-account pushes resolve the remote owner's token; tokens redacted in logs.
+- **Feedback leg is opt-in.** A bare `/rebase` rebases only; the feedback leg
+  runs only when `--fix` is present or trailing text follows the URL. Callers
+  that rely on feedback (`/fix` on a PR, `/rr`, autoreview) must pass `--fix`.
+  The single decision point is `skill_dispatch._build_rebase_cmd`; the runner
+  gates step 4 on `apply_feedback = fix or _FEEDBACK_ON_BY_DEFAULT`.
+
+## Transition (temporary)
+
+The default flipped from "rebase + feedback" to "rebase only" on 2026-07-17. To
+avoid a silent surprise, a bare `/rebase` surfaces a temporary notice (chat reply
++ PR comment via `build_alert("NOTE", …)`) pointing users to `/rebase --fix`.
+The notice is date-gated by `rebase_transition.FIX_NOTICE_DEADLINE`
+(2026-08-17) and disappears automatically; the behavior change is permanent.
+After the deadline the notice code + `_FEEDBACK_ON_BY_DEFAULT` are removed
+(`apply_feedback = fix`).
 
 ## Evaluation
 

@@ -628,6 +628,16 @@ def build_comment_summary(context: dict) -> str:
     return "\n\n".join(parts)
 
 
+# Whether a plain `/rebase` (no --fix) addresses PR review feedback by default.
+# History: `/rebase` used to always rebase AND apply review feedback. The feedback
+# leg now lives behind an explicit `--fix` (or any trailing text after the URL,
+# resolved by `skill_dispatch._build_rebase_cmd`). A bare `/rebase` is a pure
+# rebase. Callers that need feedback pass `fix=True`. During the transition
+# window a notice explains the change on the bare-rebase path
+# (see `rebase_transition`).
+_FEEDBACK_ON_BY_DEFAULT = False
+
+
 def run_rebase(
     owner: str,
     repo: str,
@@ -636,11 +646,14 @@ def run_rebase(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     min_severity: Optional[str] = None,
+    fix: bool = False,
 ) -> Tuple[bool, str]:
     """Run the rebase pipeline and emit a single outcome line.
 
     Intermediate progress is gated behind messaging.level=debug (via the
     progress_notify default); the success/failure outcome always reaches chat.
+
+    ``fix`` opts into the review-feedback leg (step 4). See ``_run_rebase_impl``.
     """
     if notify_fn is None:
         from app.messaging_level import progress_notify
@@ -650,7 +663,7 @@ def run_rebase(
     success, summary = _run_rebase_impl(
         owner, repo, pr_number, project_path,
         notify_fn=notify_fn, skill_dir=skill_dir, min_severity=min_severity,
-        outcome_meta=outcome_meta,
+        fix=fix, outcome_meta=outcome_meta,
     )
 
     from app.messaging_level import notify_outcome
@@ -684,6 +697,7 @@ def _run_rebase_impl(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     min_severity: Optional[str] = None,
+    fix: bool = False,
     outcome_meta: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str]:
     """Execute the rebase pipeline for a pull request.
@@ -692,7 +706,8 @@ def _run_rebase_impl(
         1. Fetch PR context from GitHub (metadata + all comments)
         2. Checkout the PR branch locally
         3. Rebase onto the upstream target branch
-        4. Analyze review comments and apply changes (if feedback exists)
+        4. Analyze review comments and apply changes (only when the feedback
+           leg is enabled — ``fix`` or the default — and feedback exists)
         5. Check existing CI — fix failures before pushing
         6. Force-push to the existing branch (always recycles the PR)
         7. Run the backend-only private review gate and push any fixes
@@ -705,11 +720,21 @@ def _run_rebase_impl(
         project_path: Local path to the project
         notify_fn: Optional callback for progress notifications.
         skill_dir: Path to the rebase skill directory for prompt resolution.
+        fix: Address PR review feedback after rebasing. When False, the
+            feedback leg runs only if ``_FEEDBACK_ON_BY_DEFAULT`` is set.
 
     Returns:
         (success, summary) tuple.
     """
     actions_log: List[str] = []
+
+    # The review-feedback leg (step 4) is opt-in: an explicit --fix, or the
+    # transitional default. A bare rebase (fix=False, default off) only rebases.
+    apply_feedback = fix or _FEEDBACK_ON_BY_DEFAULT
+    # Show the transition notice on the bare-rebase path while the window is open,
+    # so the changed default (feedback skipped) is not a silent surprise.
+    from app import rebase_transition
+    show_transition_notice = (not apply_feedback) and rebase_transition.notice_active()
 
     # ── Step 0: Resolve actual PR location (cross-owner support) ──────
     print(f"[rebase] Resolving PR #{pr_number} location", flush=True)
@@ -860,7 +885,7 @@ def _run_rebase_impl(
     change_summary = ""
     feedback_status = ""
     feedback_reason = ""
-    if _has_review_feedback(context):
+    if apply_feedback and _has_review_feedback(context):
         severity_hint = ""
         if min_severity and min_severity != "suggestion":
             included = severity_at_or_above(min_severity)
@@ -1028,6 +1053,7 @@ def _run_rebase_impl(
         change_summary=change_summary,
         feedback_failed=feedback_status in ("feedback_timeout", "feedback_failed"),
         feedback_reason=feedback_reason,
+        show_transition_notice=show_transition_notice,
     )
 
     try:
@@ -2314,6 +2340,7 @@ def _build_rebase_comment(
     change_summary: str = "",
     feedback_failed: bool = False,
     feedback_reason: str = "",
+    show_transition_notice: bool = False,
 ) -> str:
     """Build a structured markdown comment summarizing the rebase.
 
@@ -2385,6 +2412,13 @@ def _build_rebase_comment(
 
     parts = [f"## {rebase_type}\n"]
     parts.append(f"{summary_line}\n")
+
+    # Transient notice announcing the /rebase default change (bare rebase no
+    # longer applies review feedback). Only on the bare-rebase path, and only
+    # while the transition window is open.
+    if show_transition_notice:
+        from app import rebase_transition
+        parts.append(rebase_transition.pr_comment_notice() + "\n")
 
     # Prominent, non-collapsed warning so dropped reviewer feedback is
     # impossible to miss (the cause otherwise hides in the <details> block).
@@ -2519,6 +2553,15 @@ def main(argv=None):
             "E.g. --min-severity warning skips suggestions."
         ),
     )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        default=False,
+        help=(
+            "Also address PR review feedback after rebasing. Without --fix, "
+            "a bare rebase only rebases onto the target branch."
+        ),
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -2533,6 +2576,7 @@ def main(argv=None):
         owner, repo, pr_number, cli_args.project_path,
         skill_dir=skills_base / "rebase",
         min_severity=cli_args.min_severity,
+        fix=cli_args.fix,
     )
 
     if not success and _is_conflict_failure(summary):

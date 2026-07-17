@@ -63,11 +63,13 @@ def handle(ctx):
     # atomic batch keeps the order intact (the run loop never sees rebase
     # queued before review). urgent=True (via --now) puts the block at the
     # top; otherwise it appends at the end of the pending queue.
+    # The rebase leg carries --fix so it addresses the review that was just
+    # generated (a bare /rebase only rebases onto the target branch).
     review_ok, rebase_ok = queue_github_missions(
         ctx,
         [
             ("review", pr_url, project_name, context),
-            ("rebase", pr_url, project_name, None),
+            ("rebase", pr_url, project_name, "--fix"),
         ],
         urgent=urgent,
     )

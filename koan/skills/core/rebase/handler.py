@@ -3,6 +3,7 @@
 from app.config import is_rebase_foreign_prs_allowed
 from app.github_url_parser import parse_pr_url
 from app.missions import extract_now_flag
+from app import rebase_transition
 import app.github_skill_helpers as _gh_helpers
 
 
@@ -24,14 +25,23 @@ def handle(ctx):
     # Extract --now flag for priority queuing
     urgent, args = extract_now_flag(args)
 
+    # Extract --fix (opt into addressing review feedback after the rebase).
+    # Strip it here — position-independent, like --now — and re-attach it to the
+    # queued mission text below so it survives to the dispatcher.
+    fix_tokens = [t for t in args.split() if t != "--fix"]
+    has_fix = len(fix_tokens) != len(args.split())
+    args = " ".join(fix_tokens)
+
     if not args:
         return (
-            "Usage: /rebase [--now] <github-pr-url> [focus area]\n"
+            "Usage: /rebase [--now] [--fix] <github-pr-url> [focus area]\n"
             "Ex: /rebase https://github.com/sukria/koan/pull/42\n"
             "Ex: /rebase --now https://github.com/sukria/koan/pull/42\n"
+            "Ex: /rebase --fix https://github.com/sukria/koan/pull/42\n"
             "Ex: /rebase https://github.com/sukria/koan/pull/42 address the security concern\n\n"
-            "Queues a mission that rebases the PR branch onto its target, "
-            "reads comments for context, and force-pushes the result.\n"
+            "Rebases the PR branch onto its target and force-pushes the result. "
+            "Add --fix to also address review feedback (implied when you add a "
+            "focus area or severity after the URL).\n"
             "Use --now to queue at the top of the mission queue."
         )
 
@@ -44,6 +54,16 @@ def handle(ctx):
         )
 
     pr_url, context = result
+
+    # Whether the user opted into the feedback leg. Any trailing text after the
+    # URL (a focus area or severity) implies it, matching the dispatcher. Compute
+    # before re-attaching --fix below.
+    feedback_requested = has_fix or bool((context or "").strip())
+
+    # Re-attach --fix so it survives into the queued mission text; the
+    # dispatcher (_build_rebase_cmd) turns it into the runner's --fix flag.
+    if has_fix:
+        context = f"{(context or '').strip()} --fix".strip()
 
     try:
         owner, repo, pr_number = parse_pr_url(pr_url)
@@ -76,4 +96,9 @@ def handle(ctx):
         return duplicate
 
     priority = " (priority)" if urgent else ""
-    return f"Rebase queued{priority} for {_gh_helpers.format_success_message('PR', pr_number, owner, repo)}"
+    reply = f"Rebase queued{priority} for {_gh_helpers.format_success_message('PR', pr_number, owner, repo)}"
+    # On the bare-rebase path, announce the /rebase default change while the
+    # transition window is open (the notice disappears after the deadline).
+    if not feedback_requested and rebase_transition.notice_active():
+        reply += "\n\n" + rebase_transition.chat_notice()
+    return reply
