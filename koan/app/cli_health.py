@@ -19,6 +19,7 @@ accurate than a stale flag).
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import NamedTuple, Optional
 
@@ -52,7 +53,8 @@ def check_primary_cli() -> CliCheck:
             binary=provider.binary() or "",
             provider_name=provider.name or "",
         )
-    except Exception:
+    except Exception as e:
+        print(f"[cli_health] primary CLI probe failed: {e}", file=sys.stderr)
         return CliCheck(available=True, binary="", provider_name="")
 
 
