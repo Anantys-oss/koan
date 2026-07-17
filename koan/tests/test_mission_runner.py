@@ -4084,7 +4084,11 @@ class TestSkillOutcomeCapture:
 
 
 class TestApplyVerifyRequeueSignal:
-    """_apply_verify_requeue_signal flags re-queue whenever verification fails."""
+    """_apply_verify_requeue_signal flags re-queue when a code mission fails."""
+
+    # A code-mission title (contains "fix", no analysis keyword) so the signal
+    # is not short-circuited by the _is_code_mission gate.
+    CODE_TITLE = "Fix the parser"
 
     @staticmethod
     def _fail(n):
@@ -4107,7 +4111,7 @@ class TestApplyVerifyRequeueSignal:
             summary="1 failure(s)",
         )
         result = {}
-        _apply_verify_requeue_signal(result, vr)
+        _apply_verify_requeue_signal(result, vr, self.CODE_TITLE)
         assert result["verify_requeue"] is True
         assert "no changes" in result["verify_failure_summary"]
 
@@ -4121,7 +4125,7 @@ class TestApplyVerifyRequeueSignal:
             summary="2 checks failed",
         )
         result = {}
-        _apply_verify_requeue_signal(result, vr)
+        _apply_verify_requeue_signal(result, vr, self.CODE_TITLE)
         assert result["verify_requeue"] is True
         assert "failure 1" in result["verify_failure_summary"]
 
@@ -4131,5 +4135,43 @@ class TestApplyVerifyRequeueSignal:
 
         vr = VerifyResult(passed=True, checks=[], summary="ok")
         result = {}
-        _apply_verify_requeue_signal(result, vr)
+        _apply_verify_requeue_signal(result, vr, self.CODE_TITLE)
+        assert result.get("verify_requeue") is not True
+
+    def test_analysis_mission_does_not_requeue(self):
+        """An empty branch is the expected outcome for an analysis / no-code
+        mission, so a failed verification must NOT re-queue it."""
+        from app.mission_verifier import Check, CheckStatus, VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(
+            passed=False,
+            checks=[Check(
+                name="diff_coherence",
+                status=CheckStatus.FAIL,
+                message="Branch has no changes compared to base",
+            )],
+            summary="1 failure(s)",
+        )
+        result = {}
+        _apply_verify_requeue_signal(result, vr, "Investigate the flaky test")
+        assert result.get("verify_requeue") is not True
+
+    def test_empty_title_does_not_requeue(self):
+        """An unclassifiable (empty) title is treated as non-code — do not
+        re-queue on an empty branch."""
+        from app.mission_verifier import Check, CheckStatus, VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(
+            passed=False,
+            checks=[Check(
+                name="diff_coherence",
+                status=CheckStatus.FAIL,
+                message="Branch has no changes compared to base",
+            )],
+            summary="1 failure(s)",
+        )
+        result = {}
+        _apply_verify_requeue_signal(result, vr, "")
         assert result.get("verify_requeue") is not True

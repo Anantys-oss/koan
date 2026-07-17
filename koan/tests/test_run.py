@@ -173,7 +173,7 @@ class TestFinalizeRunningIndicator:
                             lambda i, t: 0)
         monkeypatch.setattr("app.stagnation_monitor.increment_retry_count",
                             lambda *a, **k: 1)
-        monkeypatch.setattr(run, "_requeue_mission_in_file", lambda *a, **k: None)
+        monkeypatch.setattr(run, "_requeue_mission_in_file", lambda *a, **k: True)
         monkeypatch.setattr(run, "_notify_stagnation_retry", lambda *a, **k: None)
         monkeypatch.setattr("app.mission_history.record_execution",
                             lambda *a, **k: None)

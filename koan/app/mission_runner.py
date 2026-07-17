@@ -1086,7 +1086,7 @@ def _is_lint_blocking(
         return False
 
 
-def _apply_verify_requeue_signal(result: dict, verify_result) -> None:
+def _apply_verify_requeue_signal(result: dict, verify_result, mission_title: str = "") -> None:
     """Flag a verify-failure re-queue when verification failed on a successful exit.
 
     Sets ``result["verify_requeue"]`` and ``result["verify_failure_summary"]``
@@ -1096,7 +1096,16 @@ def _apply_verify_requeue_signal(result: dict, verify_result) -> None:
     already a strong, unambiguous signal — requiring two would make the
     re-queue unreachable. This only *signals*; the lifecycle transition happens
     in ``_finalize_mission``.
+
+    Restricted to code missions: an empty branch is the *expected* outcome for
+    an analysis / no-code mission, not a failure, so re-queueing one would
+    re-run it needlessly and emit false failure notices. Non-code missions are
+    left to complete normally regardless of ``check_diff_coherence``.
     """
+    from app.mission_verifier import _is_code_mission
+
+    if not _is_code_mission(mission_title):
+        return
     failures = verify_result.failures
     if not verify_result.passed and failures:
         summary = "; ".join(c.message for c in failures)[:300] or verify_result.summary
@@ -1993,7 +2002,7 @@ def run_post_mission(
                     "warnings": len(verify_result.warnings),
                     "failures": len(verify_result.failures),
                 }
-                _apply_verify_requeue_signal(result, verify_result)
+                _apply_verify_requeue_signal(result, verify_result, mission_title)
 
             # Quality pipeline (scan, tests, branch hygiene, PR enrichment)
             _report("running quality pipeline")

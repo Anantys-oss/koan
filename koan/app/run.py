@@ -2370,7 +2370,11 @@ def _handle_auth_error(
 ) -> None:
     """Requeue mission, enter auth pause, and notify on auth failure."""
     log("error", f"{provider_label} is logged out — requeueing mission to Pending")
-    _requeue_mission_in_file(instance, mission_title)
+    if not _requeue_mission_in_file(instance, mission_title):
+        # Surface a dropped write: the pause still fires (provider is genuinely
+        # logged out) but the mission stays In Progress, contradicting the
+        # "moved back to Pending" notice below.
+        log("error", "Auth re-queue write failed — mission may still be In Progress")
     from app.pause_manager import create_pause
     create_pause(koan_root, "auth")
     _notify(instance, (
@@ -2398,7 +2402,10 @@ def _handle_quota_error(
     ``stdout_file``/``stderr_file`` (regular mission path).
     """
     log("quota", "API quota exhausted — requeueing mission to Pending")
-    _requeue_mission_in_file(instance, mission_title)
+    if not _requeue_mission_in_file(instance, mission_title):
+        # Surface a dropped write: the quota pause still fires but the mission
+        # stays In Progress, contradicting the "moved back to Pending" notice.
+        log("error", "Quota re-queue write failed — mission may still be In Progress")
     from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
     quota_result = handle_quota_exhaustion(
         koan_root=koan_root,
@@ -3108,17 +3115,23 @@ def _finalize_mission(
                 f"Stagnation retry {new_count}/{max_retry} ({pattern}) — "
                 f"requeueing mission: {mission_title[:60]}"
             ))
-            _requeue_mission_in_file(instance, mission_title)
-            _notify_stagnation_retry(
-                mission_title, project_name, new_count, max_retry,
-                pattern_type=pattern, pattern_excerpt=excerpt,
-            )
-            try:
-                from app.mission_history import record_execution
-                record_execution(instance, mission_title, project_name, exit_code)
-            except (OSError, ValueError) as e:
-                log("error", f"Mission history recording error: {e}")
-            return True
+            # Only announce / record the retry once the missions.md write is
+            # confirmed, so the user is never told a re-queue landed while the
+            # mission is actually still stuck In Progress. On write failure,
+            # fall through to the Failed path below rather than silently losing
+            # the mission.
+            if _requeue_mission_in_file(instance, mission_title):
+                _notify_stagnation_retry(
+                    mission_title, project_name, new_count, max_retry,
+                    pattern_type=pattern, pattern_excerpt=excerpt,
+                )
+                try:
+                    from app.mission_history import record_execution
+                    record_execution(instance, mission_title, project_name, exit_code)
+                except (OSError, ValueError) as e:
+                    log("error", f"Mission history recording error: {e}")
+                return True
+            log("error", "Stagnation re-queue write failed; marking mission Failed")
 
         # Retry cap reached (or retries disabled): mark Failed with cause tag.
         # Counter is preserved — cleared when the human retries the mission.

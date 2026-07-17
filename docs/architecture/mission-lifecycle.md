@@ -134,6 +134,10 @@ can FAIL is `check_diff_coherence` (an empty branch) — the other checks only
 PASS/WARN/SKIP — so a single failure is already a strong, unambiguous signal,
 and requiring two would make the re-queue unreachable.
 
+- The re-queue is restricted to **code missions** (`_is_code_mission()`): an
+  empty branch is the *expected* outcome for an analysis / no-code mission, so
+  those complete normally regardless of `check_diff_coherence`. This avoids
+  re-running a no-code mission twice and emitting false failure notices.
 - The cap is `verification.max_requeue` in `config.yaml` (default **2**); `0`
   disables the verify re-queue entirely.
 - Re-queues use a dedicated `verify_count` sub-counter in
