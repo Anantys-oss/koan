@@ -389,15 +389,31 @@ def run_claude_task(
                     child_env.get("PYTEST_ADDOPTS", ""), mission_tmp
                 )
                 popen_kwargs["env"] = child_env
-            proc, cleanup = popen_cli(
-                cmd,
-                provider=provider,
-                stdout=out_f,
-                stderr=err_f,
-                cwd=cwd,
-                start_new_session=True,
-                **popen_kwargs,
-            )
+            try:
+                proc, cleanup = popen_cli(
+                    cmd,
+                    provider=provider,
+                    stdout=out_f,
+                    stderr=err_f,
+                    cwd=cwd,
+                    start_new_session=True,
+                    **popen_kwargs,
+                )
+            except FileNotFoundError as e:
+                # The provider binary vanished mid-session (the startup check +
+                # planner gate handle the common case). Fail this mission
+                # cleanly with an actionable message rather than a raw
+                # FileNotFoundError: write it to stderr and return exit 127 so
+                # the normal failure/fallback path handles it. A different
+                # missing file is re-raised unchanged by missing_binary_message.
+                from app.provider import missing_binary_message
+                msg = missing_binary_message(e, cmd, _provider_name, "mission")
+                log("error", msg)
+                with contextlib.suppress(Exception):
+                    err_f.write(msg + "\n")
+                    err_f.flush()
+                exit_code = 127
+                return exit_code
             _sig.claude_proc = proc
 
             # Record the live provider PID so status consumers can report

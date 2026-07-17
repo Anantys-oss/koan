@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-13
+updated: 2026-07-17
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -142,6 +142,24 @@ see it.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary
   enforced by prompt + convention; the loop's job is to host the subprocess, not to
   alter git state itself.
+- **A missing CLI binary at startup enters an in-memory degraded (no-mission) mode.**
+  `startup_manager.check_cli_binary()` probes the primary provider once via
+  `cli_health.check_primary_cli()` (which wraps `CLIProvider.is_available()` /
+  `shutil.which(binary())`, honoring absolute / bare-PATH / `KOAN_ROOT`-relative paths and
+  the `KOAN_CLAUDE_CLI_PATH` / `cli.<role>` overrides). On a miss it logs, sends ONE ⚠️
+  operator warning (all messaging backends, via `send_telegram`), and sets the in-memory
+  `cli_health` flag — **never a hard stop** (chat/inbox must keep working) and **no on-disk
+  signal**: the flag lives for the process lifetime and clears only on restart (PATH must
+  be fixed properly). `iteration_manager.plan_iteration` gates on `cli_health.is_unavailable()`
+  **before** mission/autonomous/contemplative selection (next to the passive gate),
+  returning the `cli_unavailable_wait` idle action so **no** execution starts, missions stay
+  Pending, and GitHub/Jira notification polling (which runs before planning) still queues
+  work. The loop reminder is throttled (`cli_health.should_warn`/`mark_warned`, ~6h) so the
+  operator is never flooded. Defense-in-depth for a mid-session vanish: `run.run_claude_task`
+  converts a provider-binary `FileNotFoundError` into an actionable exit-127 failure (shared
+  `provider.missing_binary_message`, also used by `run_command_streaming`), routing through
+  the normal failure/fallback path rather than crashing the loop. `cli_unavailable_wait` sets
+  `wake_on_mission=False` (like `passive_wait`) so a queued mission cannot tight-loop the gate.
 - **Skill-dispatch stdout is DATA, not CLI error output.** `_classify_and_handle_cli_error`
   is called with `trust_stdout=False` for skill dispatches so a transcript is not
   mistaken for a quota/auth message. Keep that default for new dispatch pathways.

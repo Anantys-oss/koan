@@ -4,7 +4,7 @@ title: "Troubleshooting"
 description: "Catalogs common operational issues (agent loop, git/worktrees, memory, bridge, GitHub, CLI provider, parallel sessions, config) and their fixes."
 tags: [operations]
 created: 2026-06-04
-updated: 2026-07-13
+updated: 2026-07-17
 ---
 
 # Troubleshooting
@@ -145,6 +145,29 @@ Messages queue in `instance/outbox.md`. The bridge flushes this to Telegram on e
 1. Verify the CLI is installed: `which claude` or `claude --version`.
 2. Check `KOAN_CLI_PROVIDER` in `.env` (default: `claude`).
 3. See [Provider Setup](../providers/) for provider-specific configuration.
+
+### CLI binary missing from PATH — "missions blocked" degraded mode
+
+If the daemon started without the provider binary on its `PATH` (a common cause is
+launching from a service manager or cron with a minimal environment), Kōan enters a
+**degraded, no-mission mode**: it stays alive so chat and the GitHub/Jira inbox keep
+working, but it starts **no** missions (running one would crash the provider). You'll
+see a one-time ⚠️ warning on Telegram/Slack at startup, and `/status` shows
+`⚠️ CLI unavailable — '<binary>' not on PATH; missions blocked`.
+
+This state is held **in memory** and clears **only on restart** — fixing `PATH` while
+the daemon runs is not picked up automatically (the `PATH` a long-lived process
+inherited cannot be changed from outside). To recover:
+
+1. Run `/doctor --full` (or `which claude`) to confirm which binary is missing.
+2. Fix the environment so the binary resolves — ensure the CLI is installed and its
+   directory is on the `PATH` the daemon runs with. For service-manager launches, see
+   [systemd PATH preservation](../setup/systemd-user.md) and
+   [launchd](../setup/launchd.md).
+3. Restart the stack: `make stop && make start`.
+
+`/doctor` resolves the *actual* configured provider binary (Claude, Codex, Grok, Haze,
+Cline, per-role `cli:` overrides, and `KOAN_CLAUDE_CLI_PATH`), not just `claude`.
 
 ### Provider quota / rate limit errors
 

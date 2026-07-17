@@ -176,6 +176,17 @@ class TestEnvironmentCheck:
         pkg_results = [r for r in results if r.name.startswith("package_")]
         assert len(pkg_results) >= 1
 
+    def test_uses_provider_binary_not_hardcoded_map(self, tmp_path):
+        """The CLI binary check resolves the real provider binary (covers codex/grok/…)."""
+        from app import cli_health
+        from diagnostics.environment_check import run
+
+        with patch("app.cli_health.check_primary_cli",
+                   return_value=cli_health.CliCheck(False, "codex", "codex")):
+            results = run(str(tmp_path), str(tmp_path))
+        names = [r.name for r in results]
+        assert "binary_codex" in names
+
 
 # ---------------------------------------------------------------------------
 # instance_check
@@ -408,6 +419,20 @@ class TestConnectivityCheck:
             results = run(str(tmp_path), str(tmp_path), full=True)
             gh_results = [r for r in results if r.name == "github_cli"]
             assert any(r.severity == "warn" for r in gh_results)
+
+    def test_cli_provider_binary_missing(self, tmp_path, monkeypatch):
+        """cli_provider check reports the real provider binary as an error when missing."""
+        from app import cli_health
+        from diagnostics.connectivity_check import run
+
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        with patch("app.cli_health.check_primary_cli",
+                   return_value=cli_health.CliCheck(False, "codex", "codex")):
+            results = run(str(tmp_path), str(tmp_path), full=True)
+        cli_results = [r for r in results if r.name == "cli_provider"]
+        assert len(cli_results) == 1
+        assert cli_results[0].severity == "error"
+        assert "codex" in cli_results[0].message
 
 
 # ---------------------------------------------------------------------------

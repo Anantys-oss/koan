@@ -1313,6 +1313,25 @@ def _persist_stream_usage_snapshot(snapshot: Optional[Dict[str, Any]]) -> None:
         print(f"[provider] WARNING: stream usage sidecar write failed: {exc}", file=sys.stderr)
 
 
+def missing_binary_message(err: "FileNotFoundError", cmd, provider_name: str, model_key: str) -> str:
+    """Actionable message for a provider launch that failed with FileNotFoundError.
+
+    Only fires when the missing executable IS the provider binary (``cmd[0]``);
+    a FileNotFoundError for some other file the CLI tried to open is re-raised
+    unchanged so it is never masked. Shared by ``run_command_streaming`` (skill
+    path, raises RuntimeError) and ``run.run_claude_task`` (mission path,
+    returns exit 127 + writes this to stderr).
+    """
+    executable = err.filename or str(cmd[0])
+    if executable != str(cmd[0]):
+        raise err
+    return (
+        f"CLI executable not found: {executable!r} "
+        f"(provider {provider_name!r}). Ensure it is on PATH or "
+        f"configure cli.{model_key}: {provider_name}:/absolute/path."
+    )
+
+
 def run_command_streaming(
     prompt: str,
     project_path: str,
@@ -1408,15 +1427,20 @@ def run_command_streaming(
             text_delta_parts.clear()
 
     try:
-        proc, cleanup = popen_cli(
-            cmd,
-            provider=provider,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
-            cwd=project_path,
-        )
+        try:
+            proc, cleanup = popen_cli(
+                cmd,
+                provider=provider,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                encoding="utf-8",
+                errors="replace",
+                cwd=project_path,
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                missing_binary_message(e, cmd, provider.name, model_key)
+            ) from e
         # Every print() in this loop is the load-bearing watchdog signal —
         # run.py's skill-runner liveness watchdog (600s) resets on each line
         # emitted to stdout. Do not silence these prints; doing so reintroduces

@@ -60,6 +60,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`restart_manager.py`** — File-based restart signaling between bridge and run loop (`.koan-restart`)
 - **`focus_manager.py`** — Focus mode management (`.koan-focus` JSON); skips contemplative sessions when active
 - **`passive_manager.py`** — Passive mode management (`.koan-passive` JSON); read-only mode that blocks all execution while keeping loop alive
+- **`cli_health.py`** — Startup CLI-binary-on-PATH probe (`check_primary_cli()` wrapping `CLIProvider.is_available()`) + in-memory degraded (no-mission) state and warn throttle. Set by `startup_manager.check_cli_binary()`, gated in `iteration_manager.plan_iteration` (`cli_unavailable_wait`), surfaced by `/status` and `/doctor`. Restart clears it (no signal file).
 
 **CLI provider abstraction** (`koan/app/provider/`):
 

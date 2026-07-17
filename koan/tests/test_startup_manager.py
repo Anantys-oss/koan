@@ -1346,3 +1346,49 @@ class TestEnsureProjectsYaml:
         assert "Created projects.yaml" in msgs
         config = yaml.safe_load((tmp_path / "projects.yaml").read_text())
         assert "koan" not in config["projects"]
+
+
+class TestCheckCliBinary:
+    """Startup CLI-binary-on-PATH check (app.startup_manager.check_cli_binary)."""
+
+    def test_available_no_warning_no_flag(self):
+        from app import cli_health, startup_manager
+        cli_health.clear()
+        try:
+            with patch("app.cli_health.check_primary_cli",
+                       return_value=cli_health.CliCheck(True, "claude", "claude")), \
+                 patch("app.notify.send_telegram") as mock_send:
+                startup_manager.check_cli_binary()
+            assert mock_send.call_count == 0
+            assert cli_health.is_unavailable() is False
+        finally:
+            cli_health.clear()
+
+    def test_missing_warns_and_sets_flag(self):
+        from app import cli_health, startup_manager
+        cli_health.clear()
+        try:
+            with patch("app.cli_health.check_primary_cli",
+                       return_value=cli_health.CliCheck(False, "codex", "codex")), \
+                 patch("app.notify.send_telegram") as mock_send:
+                startup_manager.check_cli_binary()
+            assert mock_send.call_count == 1
+            assert "PATH" in mock_send.call_args[0][0]
+            assert cli_health.is_unavailable() is True
+            assert cli_health.get_unavailable_info()["binary"] == "codex"
+            # Throttle stamped so the loop doesn't immediately re-warn.
+            assert cli_health.should_warn() is False
+        finally:
+            cli_health.clear()
+
+    def test_missing_does_not_raise_when_send_fails(self):
+        from app import cli_health, startup_manager
+        cli_health.clear()
+        try:
+            with patch("app.cli_health.check_primary_cli",
+                       return_value=cli_health.CliCheck(False, "claude", "claude")), \
+                 patch("app.notify.send_telegram", side_effect=RuntimeError("net down")):
+                startup_manager.check_cli_binary()  # must not raise
+            assert cli_health.is_unavailable() is True
+        finally:
+            cli_health.clear()
