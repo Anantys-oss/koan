@@ -1030,6 +1030,35 @@ class TestGetAnalysisMaxTurns:
             assert get_analysis_max_turns() == 75
 
 
+# --- get_reply_max_turns ---
+
+
+class TestGetReplyMaxTurns:
+    def test_default(self):
+        from app.config import get_reply_max_turns
+
+        with _mock_config({}):
+            assert get_reply_max_turns() == 20
+
+    def test_custom(self):
+        from app.config import get_reply_max_turns
+
+        with _mock_config({"reply_max_turns": 30}):
+            assert get_reply_max_turns() == 30
+
+    def test_string_value_coerced(self):
+        from app.config import get_reply_max_turns
+
+        with _mock_config({"reply_max_turns": "12"}):
+            assert get_reply_max_turns() == 12
+
+    def test_invalid_string_returns_default(self):
+        from app.config import get_reply_max_turns
+
+        with _mock_config({"reply_max_turns": "many"}):
+            assert get_reply_max_turns() == 20
+
+
 # --- get_mission_timeout ---
 
 

@@ -50,6 +50,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "skill_timeout": "int",
     "skill_max_turns": "int",
     "analysis_max_turns": "int",
+    "reply_max_turns": "int",
     "mission_timeout": "int",
     "bash_foreground_timeout": "int",
     "first_output_timeout": "int",
