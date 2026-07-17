@@ -5,6 +5,7 @@ commit_if_changes, and run_claude_step.
 """
 
 import json
+import re
 import subprocess
 from unittest.mock import MagicMock, call, patch
 
@@ -838,6 +839,67 @@ class TestRunClaudeStreamJson:
             ["claude", "-p", "x"], "/project", use_stream_json=True,
         )
         assert result["output"] == "partial answer"
+
+    @patch("app.claude_step.popen_cli")
+    def test_grok_text_deltas_concatenated_without_newlines(self, mock_popen):
+        """Grok Build emits token-sized ``type=text`` deltas; join with '' not \\n.
+
+        Regression for shredded /rebase PR comments where each stream token
+        became its own markdown bullet (see PR comment on #2422).
+        """
+        from tests import grok_samples
+
+        lines = [
+            ln + "\n"
+            for ln in grok_samples.STREAM_MULTI_DELTA.splitlines()
+            if ln.strip()
+        ]
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["grok", "-p", "x"], "/project", use_stream_json=True,
+        )
+        assert result["success"] is True
+        assert result["output"] == grok_samples.STREAM_MULTI_DELTA_RESULT_TEXT
+        # Must not shred "hello-from-tool" into one-token-per-line.
+        assert "\n" not in result["output"]
+
+    @patch("app.claude_step.popen_cli")
+    def test_grok_text_deltas_not_shredded_into_summary_bullets(self, mock_popen):
+        """End-to-end: Grok stream → run_claude → rebase summary split stays coherent."""
+        from app.rebase_pr import _split_change_summary
+
+        # Realistic multi-token APPLIED summary as Grok would stream it.
+        deltas = [
+            "APPLIED:\n",
+            "- Added MCP_ROLE_* constants in config.py\n",
+            "- Call sites use the constants\n",
+            "SKIPPED:\n",
+            "- Test-suite green check (advisory only)\n",
+        ]
+        events = [{"type": "thought", "data": "summarize"}]
+        for d in deltas:
+            # Grok emits small chunks; split each line into ~word pieces.
+            for word in re.findall(r"\S+|\s+", d):
+                events.append({"type": "text", "data": word})
+        events.append({
+            "type": "end", "stopReason": "EndTurn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        })
+        lines = self._jsonl(*events)
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["grok", "-p", "x"], "/project", use_stream_json=True,
+        )
+        applied, skipped = _split_change_summary(result["output"])
+        assert applied == [
+            "Added MCP_ROLE_* constants in config.py",
+            "Call sites use the constants",
+        ]
+        assert skipped == [
+            "Test-suite green check (advisory only)",
+        ]
 
     @patch("app.claude_step.popen_cli")
     def test_last_message_file_takes_precedence(self, mock_popen, tmp_path):
