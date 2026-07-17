@@ -30,6 +30,7 @@ from app.pid_manager import (
     stop_processes,
     start_runner,
     start_awake,
+    start_chat,
     start_ollama,
     start_all,
     start_stack,
@@ -1190,6 +1191,56 @@ class TestStartAwake:
 
         assert ok is False
         assert "Failed to launch" in msg
+
+
+class TestStartChat:
+    def test_returns_already_running_if_pid_exists(self, tmp_path):
+        pidfile = tmp_path / ".koan-pid-chat"
+        pidfile.write_text(str(os.getpid()))
+
+        ok, msg = start_chat(tmp_path)
+        assert ok is False
+        assert "already running" in msg.lower()
+
+    def test_launches_chat_process_module(self, tmp_path):
+        with patch("app.pid_manager.subprocess.Popen") as mock_popen:
+            with patch("app.pid_manager.check_pidfile", side_effect=[None, None, None, None, None]):
+                start_chat(tmp_path, verify_timeout=0.5)
+
+        mock_popen.assert_called_once()
+        call_args = mock_popen.call_args
+        assert call_args[0][0][1] == "app/chat_process.py"
+        assert call_args[1]["env"]["KOAN_ROOT"] == str(tmp_path)
+
+    def test_returns_success_with_chat_label(self, tmp_path):
+        with patch("app.pid_manager.subprocess.Popen"):
+            with patch("app.pid_manager.check_pidfile", side_effect=[None, None, 99]):
+                ok, msg = start_chat(tmp_path, verify_timeout=2.0)
+
+        assert ok is True
+        assert "Chat process" in msg
+        assert "PID 99" in msg
+
+
+class TestChatProcessRegistration:
+    def test_chat_in_process_names(self):
+        assert "chat" in PROCESS_NAMES
+
+    def test_chat_shown_in_status(self, tmp_path):
+        # chat is a core process (like run/awake) — always listed.
+        assert "chat" in get_status_processes(tmp_path)
+
+    def test_start_all_starts_chat(self, tmp_path):
+        with patch("app.pid_manager._show_startup_banner"), \
+             patch("app.pid_manager._detect_provider", return_value="claude"), \
+             patch("app.pid_manager.start_awake", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_runner", return_value=(True, "ok")), \
+             patch("app.pid_manager.start_chat", return_value=(True, "chat ok")) as mock_chat, \
+             patch("app.pid_manager._is_dashboard_enabled", return_value=False), \
+             patch("app.pid_manager._is_api_enabled", return_value=False):
+            results = start_all(tmp_path, show_banner=False)
+        mock_chat.assert_called_once_with(tmp_path)
+        assert results["chat"] == (True, "chat ok")
 
 
 # ---------------------------------------------------------------------------

@@ -258,7 +258,7 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
-PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api")
+PROCESS_NAMES = ("run", "awake", "chat", "ollama", "dashboard", "api")
 
 # Process startup verification timeouts
 DEFAULT_VERIFY_TIMEOUT = 3.0
@@ -317,7 +317,8 @@ def _launch_python_process(
     while time.monotonic() < deadline:
         new_pid = check_pidfile(koan_root, process_name)
         if new_pid:
-            label = "Agent loop" if process_name == "run" else "Bridge"
+            _labels = {"run": "Agent loop", "chat": "Chat process"}
+            label = _labels.get(process_name, "Bridge")
             return True, f"{label} started (PID {new_pid})"
         time.sleep(0.3)
 
@@ -460,6 +461,17 @@ def start_awake(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT)
     Returns (success: bool, message: str).
     """
     return _launch_python_process(koan_root, "app/awake.py", "awake", verify_timeout)
+
+
+def start_chat(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
+    """Start the dedicated chat process (chat_process.py) as a detached subprocess.
+
+    Answers Telegram chat independently of the mission runner so a running
+    mission can't starve chat of a Claude reply (issue #1084). Optional — the
+    bridge falls back to answering chat inline when this process is absent.
+    Returns (success: bool, message: str).
+    """
+    return _launch_python_process(koan_root, "app/chat_process.py", "chat", verify_timeout)
 
 
 def start_dashboard(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -> tuple:
@@ -777,6 +789,10 @@ def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -
     # 2. Start awake (Telegram bridge)
     ok, msg = start_awake(koan_root)
     results["awake"] = (ok, msg)
+
+    # 2b. Start the dedicated chat process (answers chat during missions, #1084)
+    ok, msg = start_chat(koan_root)
+    results["chat"] = (ok, msg)
 
     # 3. Start agent loop (run.py)
     ok, msg = start_runner(koan_root)
