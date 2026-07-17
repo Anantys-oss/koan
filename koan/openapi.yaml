@@ -448,6 +448,38 @@ paths:
       summary: Delete project
       tags:
       - projects
+    patch:
+      operationId: projects_patch_project_patch
+      parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Successful response
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Missing or malformed bearer token
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Invalid bearer token
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Error response
+      summary: Patch project
+      tags:
+      - projects
   /v1/restart:
     post:
       operationId: admin_restart_post

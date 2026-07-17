@@ -380,12 +380,25 @@ Response (200):
 |---|---|---|---|
 | `GET` | `/v1/projects` | yes | List known projects |
 | `POST` | `/v1/projects` | yes | Add a project (runs `add_project` skill) |
+| `PATCH` | `/v1/projects/{name}` | yes | Update allow-listed per-project settings |
 | `DELETE` | `/v1/projects/{name}` | yes | Remove a project (runs `delete_project` skill) |
 
 **POST /v1/projects** body:
 ```json
 {"github_url": "https://github.com/org/repo", "name": "optional-name"}
 ```
+
+**PATCH /v1/projects/{name}** body:
+```json
+{"patch": {"cli_provider": "cline", "github_url": "https://github.com/org/repo", "git_auto_merge.enabled": true}}
+```
+
+Response (200):
+```json
+{"name": "my-project", "config": {"...": "merged project config"}}
+```
+
+Only allow-listed fields may be patched — see `EDITABLE_PROJECT_FIELDS` in `koan/app/projects_config.py` (mirrors the dashboard's Projects (form) tab; both surfaces reuse the same `apply_project_patch()`). Returns `404` for an unknown project, `422` for a non-editable field or an invalid value (unknown `cli_provider`, malformed `github_url`, unrecognized `git_auto_merge.strategy`).
 
 ### Pause / resume
 

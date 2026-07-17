@@ -2549,6 +2549,22 @@ class TestProjectConfigEndpoints:
         resp = app_client.post("/api/projects/koan", json={"patch": {"path": "/etc"}})
         assert resp.status_code == 422
 
+    def test_get_then_save_nested_auto_merge_field(self, app_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text(
+            "projects:\n  koan:\n    path: /tmp/koan\n"
+        )
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        get_resp = app_client.get("/api/projects/koan").get_json()
+        assert get_resp["config"]["git_auto_merge.enabled"] is None
+        save = app_client.post(
+            "/api/projects/koan",
+            json={"patch": {"git_auto_merge.enabled": True, "github_url": "https://github.com/org/repo"}},
+        )
+        data = save.get_json()
+        assert data["config"]["git_auto_merge"]["enabled"] is True
+        assert data["config"]["github_url"] == "https://github.com/org/repo"
+
 
 class TestConfigPageProjectsForm:
     def test_config_page_renders_projects_form_tab(self, app_client):

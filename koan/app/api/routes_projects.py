@@ -101,3 +101,23 @@ def delete_project(name: str):
     if not ok:
         return jsonify({"error": {"code": "skill_error", "message": result}}), 500
     return jsonify({"result": result})
+
+
+@bp.route("/v1/projects/<name>", methods=["PATCH"])
+@require_token
+def patch_project(name: str):
+    from app.projects_config import apply_project_patch
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("patch"), dict):
+        return jsonify({"error": {"code": "invalid_request", "message": "Missing 'patch' object"}}), 422
+
+    try:
+        merged = apply_project_patch(str(_koan_root()), name, data["patch"])
+    except ValueError as exc:
+        msg = str(exc)
+        if msg.startswith("Unknown project"):
+            return jsonify({"error": {"code": "not_found", "message": msg}}), 404
+        return jsonify({"error": {"code": "invalid_request", "message": msg}}), 422
+
+    return jsonify({"name": name, "config": merged}), 200

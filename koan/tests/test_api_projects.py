@@ -153,3 +153,56 @@ class TestDeleteProject:
             resp = api_client.delete("/v1/projects/alpha", headers=_AUTH)
         assert resp.status_code == 500
         assert "error" in resp.get_json()
+
+
+class TestPatchProject:
+    def test_patch_updates_editable_field(self, api_client, instance_dir, tmp_path):
+        (instance_dir / "projects.yaml").write_text(
+            "projects:\n  koan:\n    path: /tmp/koan\n"
+        )
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        resp = api_client.patch(
+            "/v1/projects/koan",
+            json={"patch": {"cli_provider": "claude"}},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["config"]["cli_provider"] == "claude"
+
+    def test_patch_unknown_project_returns_404(self, api_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text("projects:\n  koan:\n    path: /tmp/koan\n")
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        resp = api_client.patch(
+            "/v1/projects/ghost",
+            json={"patch": {"cli_provider": "claude"}},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 404
+
+    def test_patch_non_editable_field_returns_422(self, api_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text("projects:\n  koan:\n    path: /tmp/koan\n")
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        resp = api_client.patch(
+            "/v1/projects/koan",
+            json={"patch": {"path": "/etc"}},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422
+
+    def test_patch_invalid_github_url_returns_422(self, api_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text("projects:\n  koan:\n    path: /tmp/koan\n")
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        resp = api_client.patch(
+            "/v1/projects/koan",
+            json={"patch": {"github_url": "not-a-url"}},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422
+
+    def test_patch_unauthenticated_returns_401(self, api_client):
+        resp = api_client.patch("/v1/projects/koan", json={"patch": {}})
+        assert resp.status_code == 401

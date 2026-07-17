@@ -28,9 +28,8 @@ EDITABLE_SETTINGS = {
 def api_project_get(name):
     """Return the editable subset of a project's merged config for the form."""
     from app.projects_config import (
-        EDITABLE_PROJECT_FIELDS,
         _project_exists,
-        get_project_config,
+        get_editable_project_fields,
         load_projects_config,
     )
     config = load_projects_config(str(state.KOAN_ROOT))
@@ -38,8 +37,7 @@ def api_project_get(name):
         return jsonify({"ok": False, "error": "No projects.yaml"}), 404
     if not _project_exists(config.get("projects", {}), name):
         return jsonify({"ok": False, "error": f"Unknown project: {name}"}), 404
-    merged = get_project_config(config, name)
-    editable = {k: merged.get(k) for k in EDITABLE_PROJECT_FIELDS}
+    editable = get_editable_project_fields(config, name)
     return jsonify({"ok": True, "name": name, "config": editable})
 
 
