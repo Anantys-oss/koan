@@ -7,6 +7,7 @@ one code path.
 """
 
 import contextlib
+import logging
 import re
 import time
 from pathlib import Path
@@ -20,6 +21,33 @@ from app.signals import (
     STATUS_FILE,
     STOP_FILE,
 )
+
+log = logging.getLogger("koan.agent_state")
+
+# Substrings in ``.koan-status`` that mark a provider actively burning API
+# quota. Single source of truth for the mission-active check shared by the
+# outbox formatter and the dedicated chat process (both skip/deprioritise
+# Claude work while a mission runs to avoid API contention — see #1084).
+MISSION_ACTIVE_MARKERS = ("executing mission", "skill dispatch")
+
+
+def is_mission_active(koan_root) -> bool:
+    """True when ``.koan-status`` shows a mission or skill actively executing.
+
+    Reads the run-loop status line and matches the canonical execution
+    markers. A read failure is logged (rather than silently reported as
+    idle) so a persistent status-file problem is observable instead of
+    quietly disabling contention avoidance.
+    """
+    status_file = Path(koan_root) / STATUS_FILE
+    try:
+        if not status_file.exists():
+            return False
+        status = status_file.read_text().strip().lower()
+    except OSError as e:
+        log.warning("could not read status file %s: %s", status_file, e)
+        return False
+    return any(marker in status for marker in MISSION_ACTIVE_MARKERS)
 
 # ── Staleness ────────────────────────────────────────────────────────────
 

@@ -18,7 +18,6 @@ Architecture:
 See issue #1084 for motivation.
 """
 
-import contextlib
 import fcntl
 import json
 import os
@@ -97,9 +96,14 @@ def read_and_clear_inbox() -> list:
             try:
                 for line in f:
                     line = line.strip()
-                    if line:
-                        with contextlib.suppress(json.JSONDecodeError):
-                            entries.append(json.loads(line))
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        # Log before truncating so a dropped/corrupt chat
+                        # request is observable rather than vanishing silently.
+                        _log(f"WARNING dropping unparseable inbox line: {line[:100]}")
                 # Always truncate after reading — even if no valid entries
                 # were parsed — to prevent malformed lines from accumulating.
                 f.seek(0)
@@ -154,16 +158,9 @@ CHAT_MAX_ATTEMPTS = 3
 
 def _is_mission_active() -> bool:
     """Check if a mission is currently running by reading .koan-status."""
-    from app.signals import STATUS_FILE
+    from app.agent_state import is_mission_active
 
-    status_file = KOAN_ROOT / STATUS_FILE
-    try:
-        if not status_file.exists():
-            return False
-        status = status_file.read_text().strip().lower()
-        return "executing mission" in status or "skill dispatch" in status
-    except OSError:
-        return False
+    return is_mission_active(KOAN_ROOT)
 
 
 def process_chat_request(text: str, soul: str, summary: str, project_path: str) -> None:
@@ -292,7 +289,8 @@ def _get_last_message_id() -> int:
         provider = get_messaging_provider()
         ids = provider.get_last_message_ids()
         return ids[-1] if ids else 0
-    except (SystemExit, Exception):
+    except Exception as e:
+        _log(f"could not resolve last message id: {e}")
         return 0
 
 
@@ -332,8 +330,15 @@ def main():
                 summary = _load_summary()
                 project_path = _resolve_project_path()
 
-            for entry in entries:
+            for i, entry in enumerate(entries):
                 if _shutdown_requested:
+                    # The batch was already truncated out of the inbox; re-queue
+                    # the unprocessed remainder so a shutdown mid-batch does not
+                    # silently discard queued chat messages.
+                    for survivor in entries[i:]:
+                        survivor_text = survivor.get("text", "").strip()
+                        if survivor_text:
+                            write_to_inbox(survivor_text)
                     break
                 text = entry.get("text", "").strip()
                 if text:

@@ -271,20 +271,13 @@ class OutboxManager:
     def _is_mission_active(self) -> bool:
         """Check if a mission is currently running by reading .koan-status.
 
-        Uses a lightweight file read (no missions.py import) to avoid
-        import cycles. The status file is written by run.py and contains
-        text like "Run 1/5 — executing mission on project".
+        Delegates to the shared ``agent_state.is_mission_active`` helper so
+        the status-string coupling lives in exactly one place (and read
+        failures are logged rather than silently reported as idle).
         """
-        from app.signals import STATUS_FILE
+        from app.agent_state import is_mission_active
 
-        status_file = self._instance_dir.parent / STATUS_FILE
-        try:
-            if not status_file.exists():
-                return False
-            status = status_file.read_text().strip().lower()
-            return "executing mission" in status or "skill dispatch" in status
-        except OSError:
-            return False
+        return is_mission_active(self._instance_dir.parent)
 
     def _format_message(self, raw_content: str) -> str:
         """Format outbox content via Claude with full personality context.
