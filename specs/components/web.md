@@ -4,7 +4,7 @@ title: "Component Spec — Web Dashboard & REST API"
 description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-07-10
+updated: 2026-07-17
 ---
 
 # Component Spec — Web Dashboard & REST API
@@ -33,7 +33,7 @@ dashboard/  (Flask blueprints via create_app())
   └─ _helpers.py  ← passphrase gate, cache-buster, context processor, template filters
 
 dashboard_service/  (pure logic, no Flask client needed to test)
-  missions · journal · plans · stats + read_file/mask_sensitive/validate_yaml
+  missions · journal · plans · progress · stats + read_file/mask_sensitive/validate_yaml
 
 api/  (Flask blueprints via create_app())
   auth (require_token) · mission_index (sidecar) · routes_missions/projects/status/
@@ -132,6 +132,32 @@ or lost to a mid-write crash. The contract is now:
 | Field     | Type            | Contract |
 |-----------|-----------------|----------|
 | `outcome` | `object \| null`| Authoritative terminal record `{status, reason_category, detail}` from the durable log; `null` pre-terminal. |
+
+## Live progress stream (`/progress`)
+
+**Source of truth remains** `instance/journal/pending.md` (writers in
+`loop_manager` / `run.py` / skill pump). Display surfaces must not change
+that file's format or writers.
+
+| Endpoint | Contract |
+|---|---|
+| `GET /api/progress` | Snapshot: `{active, content, header, entries}` |
+| `GET /api/progress/stream` | SSE events with the same JSON shape; heartbeat comments every ~15s |
+
+- `content` — full raw `pending.md` text (unchanged; raw-view fallback).
+- `header` — best-effort parse of the pending header block:
+  `{title, project, started, run, mode}` (empty strings when absent).
+- `entries` — display-only structured rows derived from `content` by the
+  shared `[cli]` classifier (`log_fmt.classify_cli`). Kinds include
+  `thinking`, `tool_use`, `text`, `tool_error`, `tool_end`, `result`,
+  `session`, `warning`, `meta`, `raw`. Successful `tool_result` lines are
+  omitted (same as `make logs`). Unknown shapes become `raw`.
+- Mission **elapsed / agent state** are *not* invented by the progress
+  stream; the progress page may also consume `/api/state/stream`
+  (`elapsed`, `project`, `label`, `execution`).
+
+Invariant: progress parsing is presentational only — never used for
+control flow, lifecycle, or quota decisions.
 
 ## Invariants
 

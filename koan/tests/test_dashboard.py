@@ -888,11 +888,19 @@ class TestProgressPage:
         resp = app_client.get("/progress")
         assert resp.status_code == 200
         assert b"Live Progress" in resp.data
-        assert b"EventSource" in resp.data
+        assert b"progress.js" in resp.data
 
     def test_progress_page_has_autoscroll(self, app_client):
         resp = app_client.get("/progress")
         assert b"autoscroll" in resp.data
+
+    def test_progress_page_has_timeline_and_raw_toggle(self, app_client):
+        resp = app_client.get("/progress")
+        assert resp.status_code == 200
+        assert b'id="progress-timeline"' in resp.data
+        assert b'id="raw-toggle"' in resp.data
+        assert b'id="mission-header"' in resp.data
+        assert b"progress.js" in resp.data
 
 
 class TestApiProgress:
@@ -902,6 +910,8 @@ class TestApiProgress:
         data = resp.get_json()
         assert data["active"] is False
         assert data["content"] == ""
+        assert data["entries"] == []
+        assert data["header"]["title"] == ""
 
     def test_with_pending_file(self, app_client, instance_dir):
         pending = instance_dir / "journal" / "pending.md"
@@ -911,6 +921,24 @@ class TestApiProgress:
         assert data["active"] is True
         assert "Mission: test" in data["content"]
         assert "04:26" in data["content"]
+
+    def test_with_pending_file_includes_entries(self, app_client, instance_dir):
+        pending = instance_dir / "journal" / "pending.md"
+        pending.write_text(
+            "# Mission: test\nProject: koan\nStarted: 2026-07-17 10:00:00\n"
+            "Run: 1/5\nMode: mission\n\n---\n"
+            "[cli] assistant — tool_use: Bash: make test\n"
+            "[cli] assistant — text: running tests\n"
+        )
+        resp = app_client.get("/api/progress")
+        data = resp.get_json()
+        assert data["active"] is True
+        assert "content" in data
+        assert data["header"]["title"] == "test"
+        assert data["header"]["project"] == "koan"
+        kinds = [e["kind"] for e in data["entries"]]
+        assert "tool_use" in kinds
+        assert "text" in kinds
 
 
 class TestApiProgressStream:
@@ -944,6 +972,27 @@ class TestApiProgressStream:
         payload = json.loads(data_line[6:].strip())
         assert payload["active"] is True
         assert "live test" in payload["content"]
+
+    def test_stream_payload_includes_entries(self, app_client, instance_dir):
+        pending = instance_dir / "journal" / "pending.md"
+        pending.write_text(
+            "# Mission: live\n\n---\n[cli] assistant — thinking\n"
+        )
+        with patch("app.dashboard.chat.time.sleep", side_effect=RuntimeError("break")):
+            resp = app_client.get("/api/progress/stream")
+        import json
+        data_line = None
+        for chunk in resp.response:
+            if isinstance(chunk, bytes):
+                chunk = chunk.decode()
+            if chunk.startswith("data: "):
+                data_line = chunk
+                break
+        payload = json.loads(data_line[6:].strip())
+        assert payload["active"] is True
+        assert "entries" in payload
+        assert "header" in payload
+        assert payload["header"]["title"] == "live"
 
     def test_stream_sends_inactive_when_no_file(self, app_client, instance_dir):
         # Ensure no pending.md exists

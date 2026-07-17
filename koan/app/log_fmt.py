@@ -78,6 +78,101 @@ class _Palette:
         return self._wrap("32", s)
 
 
+def classify_cli(body: str) -> list[dict]:
+    """Return structured display rows for one ``[cli]`` line body.
+
+    Each row is a JSON-friendly dict with keys:
+    ``kind``, ``label``, ``icon``, ``preview``, ``tool_name``, ``raw``,
+    ``is_tick``.
+
+    An empty list means "suppress" (same cases ``render_cli`` returns
+    ``None`` for the rendered text). Shared grammar with ``render_cli`` /
+    ``make logs`` so the dashboard timeline cannot drift.
+    """
+    raw = body
+
+    def _row(
+        kind: str,
+        *,
+        label: str = "",
+        icon: str = "",
+        preview: str = "",
+        tool_name: str = "",
+        is_tick: bool = False,
+    ) -> dict:
+        return {
+            "kind": kind,
+            "label": label,
+            "icon": icon,
+            "preview": preview,
+            "tool_name": tool_name,
+            "raw": raw,
+            "is_tick": is_tick,
+        }
+
+    if body in _TICK_BODIES or body.startswith("system: thinking"):
+        return [_row("thinking", label="thinking", is_tick=True)]
+
+    if body.startswith("assistant — "):
+        rest = body[len("assistant — "):]
+        rows: list[dict] = []
+        for part in _PART_SEP.split(rest):
+            if part.startswith("tool_use: "):
+                spec = part[len("tool_use: "):]
+                name, sep, preview = spec.partition(": ")
+                rows.append(_row(
+                    "tool_use",
+                    label=name,
+                    icon=_TOOL_ICONS.get(name, _DEFAULT_TOOL_ICON),
+                    preview=preview if sep else "",
+                    tool_name=name,
+                ))
+            elif part.startswith("text: "):
+                text = part[len("text: "):]
+                rows.append(_row(
+                    "text", label="assistant", preview=text, icon="🧠",
+                ))
+            elif part in ("text", "thinking"):
+                rows.append(_row("thinking", label=part, is_tick=True))
+            else:
+                rows.append(_row("raw", preview=part))
+        # If every part was a tick, collapse to a single thinking row.
+        if rows and all(r["is_tick"] for r in rows):
+            return [_row("thinking", label="thinking", is_tick=True)]
+        return [r for r in rows if not r["is_tick"]] or [
+            _row("thinking", label="thinking", is_tick=True)
+        ]
+
+    if body.startswith("tool_result"):
+        if "(error)" in body:
+            return [_row(
+                "tool_error", label="tool error", icon="❌", preview=body,
+            )]
+        return []
+
+    if body.startswith("tool_end: "):
+        rest = body[len("tool_end: "):]
+        # Match render_cli: tool_end is always shown (never a thinking tick).
+        return [_row(
+            "tool_end",
+            label=rest,
+            icon="↩",
+            preview=rest,
+            is_tick=False,
+        )]
+
+    if body.startswith("result: "):
+        return [_row("result", label=body, icon="✅", preview=body)]
+
+    if body.startswith("session init"):
+        return [_row("session", label=body, icon="▶", preview=body)]
+
+    if body.startswith(("retry", "context_overflow", "rate_limit_rejected")):
+        return [_row("warning", label=body, icon="⚠", preview=body)]
+
+    return [_row("raw", preview=body)]
+
+
 def render_cli(body: str, pal: "_Palette") -> Tuple[Optional[str], bool]:
     """Render one ``[cli] `` line body.
 

@@ -4,7 +4,7 @@ title: "make logs formatting"
 description: "Documents the display-side [cli] log formatter (log_fmt.py) behind make logs, its glyph legend, tool-input previews, accumulating thinking dots, and the raw=1 escape hatch."
 tags: [operations, observability, logs]
 created: 2026-07-13
-updated: 2026-07-14
+updated: 2026-07-17
 ---
 
 # Pretty `make logs`
@@ -37,6 +37,11 @@ TTY (`KOAN_FORCE_COLOR` forces it; `NO_COLOR` disables it).
 ```bash
 make logs raw=1   # skip the formatter, show the exact bytes
 ```
+
+The same classifier (`classify_cli`) also powers the dashboard
+`/progress` timeline — keep both surfaces in sync when the grammar
+changes (see Maintenance note below). See
+[`docs/operations/dashboard.md`](dashboard.md) for the timeline UX.
 
 ## Maintenance note
 

@@ -7,6 +7,7 @@ Submodules:
     missions — mission parsing, filtering, project/skill name discovery
     journal  — journal date/day readers
     plans    — plan-issue fetching and progress parsing
+    progress — pending.md header + [cli] timeline for /progress
     stats    — forecast, skill metrics, agent-state readers
 """
 from pathlib import Path
