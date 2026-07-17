@@ -102,6 +102,42 @@ def test_unreadable_stdout_classifies_as_stalled(koan_root, tmp_path):
     assert state["last_output_age"] is None
 
 
+def test_is_mission_active_false_when_idle(koan_root):
+    assert am.is_mission_active(koan_root) is False
+
+
+def test_is_mission_active_true_when_working(koan_root, tmp_path):
+    stdout = tmp_path / "out.log"
+    stdout.write_text("fresh")
+    am.write_active(koan_root, pid=os.getpid(), stdout_file=str(stdout))
+    assert am.is_mission_active(koan_root) is True
+
+
+def test_is_mission_active_true_when_stalled(koan_root, tmp_path):
+    stdout = tmp_path / "out.log"
+    stdout.write_text("old")
+    old = time.time() - (am.STALL_THRESHOLD_SECONDS + 60)
+    os.utime(stdout, (old, old))
+    am.write_active(koan_root, pid=os.getpid(), stdout_file=str(stdout))
+    assert am.is_mission_active(koan_root) is True
+
+
+def test_is_mission_active_true_without_stdout_file(koan_root):
+    # Live PID, no stdout recorded → output age unknown → still active.
+    am.write_active(koan_root, pid=os.getpid())
+    assert am.is_mission_active(koan_root) is True
+
+
+def test_is_mission_active_false_when_zombie(koan_root):
+    am.write_active(koan_root, pid=2_147_483_646)
+    assert am.is_mission_active(koan_root) is False
+
+
+def test_is_mission_active_false_on_corrupt_signal(koan_root):
+    (koan_root / ACTIVE_FILE).write_text("{ not json")
+    assert am.is_mission_active(koan_root) is False
+
+
 def test_is_zombie_false_when_not_in_progress(koan_root):
     assert am.is_zombie(koan_root, in_progress=False) is False
 

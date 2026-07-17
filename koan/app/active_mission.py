@@ -188,6 +188,20 @@ def get_execution_state(koan_root) -> dict:
     }
 
 
+def is_mission_active(koan_root) -> bool:
+    """True when a mission provider subprocess is actively burning the quota.
+
+    Single source of truth for "is a mission running right now" (issue #1084):
+    a live provider PID, whether producing output (``working``) or momentarily
+    silent (``stalled``). ``idle`` (no provider) and ``zombie`` (recorded PID
+    dead) mean no real contention, so they return False. Callers that need to
+    decide whether to deprioritize a competing Claude call (outbox formatting,
+    chat) consult this instead of parsing the human-facing ``.koan-status`` text.
+    Never raises — a corrupt/absent signal degrades to "not active".
+    """
+    return get_execution_state(koan_root).get("state") in ("working", "stalled")
+
+
 def is_zombie(koan_root, *, in_progress: bool, execution: Optional[dict] = None) -> bool:
     """Reconcile a declarative *In Progress* mission against observed liveness.
 
