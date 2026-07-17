@@ -14,13 +14,61 @@ Two locking strategies are used, matching existing conventions:
   ``LOCK_EX``; readers snapshot under ``LOCK_SH``.
 """
 
+import contextlib
 import fcntl
 import json
 import os
 from pathlib import Path
-from typing import Any, Callable, List, Optional, TypeVar
+from typing import Any, Callable, Iterator, List, Optional, TypeVar
 
 T = TypeVar("T")
+
+
+# ---------------------------------------------------------------------------
+# Signal / marker files: exclusive lock for atomic read-check-act
+# ---------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def signal_lock(signal_path: Path) -> Iterator[None]:
+    """Serialize a read-check-act sequence on a signal/marker file.
+
+    Signal files (``.koan-pause``, ``.koan-stop`` ...) are created, checked,
+    and removed by several concurrent processes (agent loop, bridge, REST
+    API, dashboard). A bare ``exists()``-then-``remove()`` is a TOCTOU race:
+    two processes can both observe the file present and both act on it. This
+    context manager holds an exclusive advisory lock on a companion ``.lock``
+    sidecar so the enclosed sequence runs atomically against other holders.
+
+    The sidecar is ``<name>.lock`` next to the signal file -- never the signal
+    file itself -- so it composes safely with :func:`app.utils.atomic_write`,
+    which locks its own temp file. Keep the critical section small: do slow
+    I/O (network, subprocess) *after* the ``with`` block, not inside it.
+
+    If the lock cannot be acquired (permission/filesystem error), a warning
+    is logged and the body runs unlocked rather than blocking the caller on a
+    peripheral failure.
+    """
+    signal_path = Path(signal_path)
+    lock_path = signal_path.parent / (signal_path.name + ".lock")
+    lock_f = None
+    locked = False
+    try:
+        try:
+            lock_f = open(lock_path, "w")
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            locked = True
+        except OSError as exc:
+            from app.run_log import log_safe
+
+            log_safe("warning", f"signal_lock: could not lock {lock_path}: {exc}. Proceeding unlocked.")
+        yield
+    finally:
+        if lock_f is not None:
+            if locked:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                lock_f.close()
 
 
 # ---------------------------------------------------------------------------
