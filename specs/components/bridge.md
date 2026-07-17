@@ -42,7 +42,7 @@ awake.py (loop, ~3s poll)
 | `bridge_state.py` | Module-level shared state (config, paths, registries). The seam that breaks the awake↔handlers circular import. |
 | `notify.py::format_and_send` | Invokes Claude CLI to format outbound messages. **Tests must mock this** — it is the only Claude subprocess call in the bridge path. |
 | `OutboxManager._format_message` | Mission-aware: while a mission is **actively executing** (`active_mission.is_mission_active()`), it skips the AI formatter and uses the instant local `fallback_format()`. Re-evaluated per flush (never sticky). |
-| `handle_chat` retry policy | An **empty AI response** (exit 0, empty stdout) is retryable — the same class as a timeout — not an immediate failure. Bounded retry-with-backoff (`cli_exec.CLI_RETRY_BACKOFF` / `CLI_RETRY_MAX_ATTEMPTS`) with lighter context before any degraded message reaches the human. |
+| `handle_chat` retry policy | An **empty AI response** (exit 0, empty stdout) is retryable — the same class as a timeout — not an immediate failure. Bounded retry-with-backoff (`cli_exec.CLI_RETRY_BACKOFF` / `CLI_RETRY_MAX_ATTEMPTS`) with lighter context before any degraded message reaches the human. The whole exchange (retries included) is bounded by a wall-clock budget (`CHAT_RETRY_BUDGET`) so the single-flight chat lane (`_CHAT_LOCK`) is never held for the full retry worst case; the typing indicator wraps only each live CLI call, not the backoff sleeps. |
 | `notify.py` | Flood protection on outbound Telegram. |
 | `notify.py::send_telegram(dedup_window=…)` + `notify_dedup.py` | Cross-incarnation dedup for idempotent lifecycle notices. Provider flood protection is per-process (resets on restart); this persists to `instance/.notify-dedup.json` so a restart loop / repeated stop+start doesn't re-announce the same notice N times. Opt-in per call site; fail-open. |
 
@@ -56,9 +56,14 @@ awake.py (loop, ~3s poll)
   time out. `handle_chat` MUST treat an empty response as a **retryable** outcome (not an
   immediate "I didn't get a response" apology), retrying with backoff and lighter context
   up to a bounded number of attempts, and only show a single degraded message once all
-  attempts are exhausted. The chat lane stays a **thread inside the bridge process** — no
-  dedicated OS process is introduced (see `docs/architecture/daemon.md`, "No extra OS
-  process is forked").
+  attempts are exhausted. Because the chat lane is **single-flight** (`_CHAT_LOCK`
+  serializes chats — Claude takes a per-cwd session lock), the retry loop MUST be bounded
+  by a wall-clock budget (`CHAT_RETRY_BUDGET`) so one stuck chat can't hold the lane for
+  the full retry worst case and starve every subsequent chat. The typing indicator wraps
+  only each live CLI call — never the backoff sleeps — so a retrying chat does not flood
+  Telegram with typing pulses. The chat lane stays a **thread inside the bridge
+  process** — no dedicated OS process is introduced (see `docs/architecture/daemon.md`,
+  "No extra OS process is forked").
 - **Outbox formatting yields to active missions (#1084).** AI outbox formatting is
   cosmetic and the lowest-value concurrent AI caller. While a mission is *actively
   executing* — determined by the authoritative provider-liveness signal via

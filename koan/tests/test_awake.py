@@ -2305,6 +2305,90 @@ class TestChatEmptyResponseRetry:
         # exactly one user turn + one degraded assistant turn
         assert mock_save.call_count == 2
 
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_timeout_then_empty_reports_no_response_not_timeout(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # Mixed failure: the LAST attempt decides the message. Timeout first,
+        # then empty → the degraded reply is "no response", not "timeout".
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired("claude", 180),
+            MagicMock(stdout="", returncode=0, stderr=""),
+            MagicMock(stdout="", returncode=0, stderr=""),
+        ]
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "didn't get a response" in msg
+        assert "timeout" not in msg.lower()
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_wall_clock_budget_bounds_the_retry_loop(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # With no wall-clock budget left, the loop must not keep invoking the
+        # CLI (which would hold the single-flight lane, #1084) — it surfaces a
+        # degraded message immediately instead.
+        mock_run.return_value = MagicMock(stdout="", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.CHAT_RETRY_BUDGET", 0), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        mock_run.assert_not_called()
+        mock_send.assert_called_once()
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=False)
+    @patch("app.awake.subprocess.run")
+    def test_send_failure_does_not_persist_history(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # send_telegram fails → the assistant turn must NOT be written to
+        # history (no phantom turn the human never saw). Only the user turn is.
+        mock_run.return_value = MagicMock(stdout="Real answer", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        # Only the user turn was persisted; the failed assistant reply was not.
+        assert mock_save.call_count == 1
+        assert mock_save.call_args_list[0][0][2] == "user"
+
 
 class TestCleanChatResponse:
     """Test _clean_chat_response strips errors, markdown, and truncates."""

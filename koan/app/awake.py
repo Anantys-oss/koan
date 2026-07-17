@@ -30,6 +30,7 @@ from app.bridge_log import log
 from app.bridge_state import (
     BOT_TOKEN,
     CHAT_ID,
+    CHAT_RETRY_BUDGET,
     CHAT_TIMEOUT,
     INSTANCE_DIR,
     KOAN_ROOT,
@@ -477,8 +478,14 @@ def _send_chat_reply(message: str, *, as_chat: bool = False) -> None:
     ``as_chat=True`` records the assistant turn with the last message id and
     ``chat`` type (a real answer); otherwise it saves a plain degraded/error
     notice.
+
+    If the Telegram send fails outright (``send_telegram`` returns ``False``),
+    the assistant turn is NOT persisted: recording a message the human never
+    saw would leave a phantom turn that skews later conversation context.
     """
-    send_telegram(message)
+    if send_telegram(message) is False:
+        log("error", "Chat reply failed to send; not persisting to history.")
+        return
     if as_chat:
         msg_id = _get_last_message_id()
         save_conversation_message(
@@ -529,22 +536,34 @@ def handle_chat(text: str):
     chat_cwd = str(KOAN_ROOT)
 
     # Serialize chat CLI calls: Claude takes a per-cwd session lock, so two
-    # overlapping chats in INSTANCE_DIR collide and one exits 1.
-    with _CHAT_LOCK, TypingIndicator():
+    # overlapping chats in INSTANCE_DIR collide and one exits 1. The lock spans
+    # every retry, but a wall-clock budget (CHAT_RETRY_BUDGET) bounds how long
+    # it is held so one stuck chat can't block the single-flight lane for the
+    # full retry worst case (#1084).
+    with _CHAT_LOCK:
+        deadline = time.monotonic() + CHAT_RETRY_BUDGET
         last_timeout = False
+        last_timeout_secs = CHAT_TIMEOUT
         for attempt in range(CLI_RETRY_MAX_ATTEMPTS):
             lite = attempt > 0
-            if attempt == 0:
-                timeout = CHAT_TIMEOUT
-            else:
-                # Back off to let API pressure ease, then retry with a lighter
-                # prompt and a shorter timeout.
+            if attempt > 0:
+                # Back off (typing indicator stopped, so no Telegram typing flood
+                # across the retry window) to let API pressure ease, then retry
+                # with a lighter prompt and a shorter timeout.
                 delay = CLI_RETRY_BACKOFF[min(attempt - 1, len(CLI_RETRY_BACKOFF) - 1)]
+                remaining = deadline - time.monotonic()
+                if remaining <= 1:
+                    break  # out of wall-clock budget — stop retrying
                 log("chat",
                     f"Retrying chat (attempt {attempt + 1}/{CLI_RETRY_MAX_ATTEMPTS}, "
                     f"lite) in {delay}s")
-                time.sleep(delay)
-                timeout = max(CHAT_TIMEOUT // 2, 1)
+                time.sleep(min(delay, remaining))
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 1:
+                break  # out of wall-clock budget — surface a degraded message
+            base = CHAT_TIMEOUT if attempt == 0 else max(CHAT_TIMEOUT // 2, 1)
+            timeout = max(int(min(base, remaining)), 1)
 
             prompt = _build_chat_prompt(text, lite=lite)
             # project_context=False: cwd is KOAN_ROOT; do not load contributor
@@ -559,15 +578,19 @@ def handle_chat(text: str):
             )
 
             try:
-                result = run_cli(
-                    cmd,
-                    capture_output=True, text=True, timeout=timeout,
-                    cwd=chat_cwd,
-                )
+                # TypingIndicator wraps only the live CLI call, so it stops
+                # during the backoff sleeps above (no typing flood, #1084).
+                with TypingIndicator():
+                    result = run_cli(
+                        cmd,
+                        capture_output=True, text=True, timeout=timeout,
+                        cwd=chat_cwd,
+                    )
             except subprocess.TimeoutExpired:
                 # Timeout is a retryable contention symptom.
                 log("error", f"Claude timed out ({timeout}s).")
                 last_timeout = True
+                last_timeout_secs = timeout
                 continue
             except Exception as e:
                 # Unexpected error (not contention) — surface immediately.
@@ -598,10 +621,11 @@ def handle_chat(text: str):
                 log("error", f"Empty chat response stderr: {result.stderr[:500]}")
             log("chat", "Empty response from Claude — retrying with lite context...")
 
-        # All bounded attempts exhausted — surface a single degraded message.
+        # Attempts exhausted (or wall-clock budget spent) — surface a single
+        # degraded message reflecting the last failure mode.
         if last_timeout:
             degraded = (
-                f"⏱ Timeout after {CHAT_TIMEOUT}s — try a shorter question, "
+                f"⏱ Timeout after {last_timeout_secs}s — try a shorter question, "
                 "or send 'mission: ...' for complex tasks."
             )
         else:

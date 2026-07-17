@@ -78,7 +78,12 @@ in-process measures keep chat responsive without adding a third process:
   timeout — and retries with backoff and a lighter context
   (`cli_exec.CLI_RETRY_BACKOFF` / `CLI_RETRY_MAX_ATTEMPTS`) before showing any
   degraded message. The "I didn't get a response" apology now appears only on a
-  genuine outage, not on the first contention hit.
+  genuine outage, not on the first contention hit. The chat lane is
+  single-flight (`_CHAT_LOCK`), so the retry loop is bounded by a wall-clock
+  budget (`CHAT_RETRY_BUDGET`, default 1.5× `CHAT_TIMEOUT`) — one stuck chat
+  can't hold the lane for the full retry worst case and starve later chats —
+  and the typing indicator wraps only each live CLI call, not the backoff
+  sleeps, so a retrying chat doesn't flood Telegram with typing pulses.
 - **Outbox formatting yields to active missions.** AI outbox formatting is
   cosmetic and the lowest-value concurrent AI caller. `OutboxManager` skips it
   and uses the instant local `fallback_format()` while a mission is *actively
