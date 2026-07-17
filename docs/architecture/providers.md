@@ -26,7 +26,10 @@ Providers are responsible for:
   state such as rotating auth tokens;
 - normalizing output handling enough for mission execution code;
 - exposing provider capabilities without leaking provider details into unrelated
-  modules.
+  modules;
+- optionally suppressing project-scope tooling via `project_context=False`
+  (Claude: `--setting-sources user`) for KOAN_ROOT runtime sessions — see
+  [claude.md](../providers/claude.md) and `specs/components/providers.md`.
 
 Post-CLI text extraction is shared: `mission_runner.parse_claude_output()`
 unwraps provider stream/json envelopes (NDJSON `stream-json` /

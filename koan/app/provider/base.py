@@ -280,6 +280,20 @@ class CLIProvider:
         """
         return []
 
+    def build_project_context_args(self, project_context: bool = True) -> List[str]:
+        """Build args that control whether project-scope tooling is loaded.
+
+        When *project_context* is False, the provider should suppress
+        project-directory instructions (e.g. root ``CLAUDE.md`` /
+        ``AGENTS.md`` / ``.claude/skills``) so KOAN_ROOT runtime sessions
+        do not load contributor tooling. Mission sessions leave the default
+        True so the project's own guidance still applies.
+
+        Base implementation is a no-op — only providers with a first-class
+        switch (Claude Code ``--setting-sources``) override this.
+        """
+        return []
+
     def supports_session_resume(self) -> bool:
         """Return True if the provider supports resuming a previous session.
 
@@ -355,6 +369,7 @@ class CLIProvider:
         system_prompt_file: str = "",
         effort: str = "",
         resume_session_id: str = "",
+        project_context: bool = True,
     ) -> List[str]:
         """Build a complete CLI command from generic parameters.
 
@@ -375,6 +390,10 @@ class CLIProvider:
             resume_session_id: When set and the provider supports session
                 resumption, continues the given session instead of starting
                 fresh. Saves tokens by reusing the prior conversation context.
+            project_context: When False, suppress project-scope tooling
+                (see :meth:`build_project_context_args`). KOAN_ROOT runtime
+                sessions pass False so contributor ``CLAUDE.md`` / skills do
+                not leak into operator chat. Mission sessions leave True.
 
         Returns a list of strings suitable for subprocess.run().
         """
@@ -392,6 +411,7 @@ class CLIProvider:
         if resume_session_id and self.supports_session_resume():
             cmd.extend(self.build_resume_args(resume_session_id))
         cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(sys_args)
         cmd.extend(self.build_prompt_args(prompt))
         cmd.extend(self.build_tool_args(allowed_tools, disallowed_tools))

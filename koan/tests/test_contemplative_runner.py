@@ -86,6 +86,9 @@ class TestBuildContemplativeCommand:
         assert "--allowedTools" in cmd
         assert "Read,Write,Glob,Grep" in cmd
         assert "--max-turns" in cmd
+        # KOAN_ROOT session: suppress contributor project tooling (#2379).
+        assert "--setting-sources" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
 
     @patch("app.config.get_contemplative_tools")
     @patch("app.prompt_builder.build_contemplative_prompt")

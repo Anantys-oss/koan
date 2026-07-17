@@ -481,6 +481,7 @@ def build_full_command(
     system_prompt_file: str = "",
     effort: str = "",
     resume_session_id: str = "",
+    project_context: bool = True,
     provider: Optional[CLIProvider] = None,
 ) -> List[str]:
     """Build a complete CLI command for the configured provider.
@@ -498,6 +499,10 @@ def build_full_command(
         resume_session_id: When set and the provider supports session
             resumption, continues the given session instead of starting
             fresh.
+        project_context: When False, ask the provider to suppress
+            project-scope tooling (Claude: ``--setting-sources user``).
+            Use for KOAN_ROOT runtime sessions (chat, contemplative,
+            rituals, outbox). Mission sessions leave the default True.
         provider: Explicit provider instance to build for. ``None`` (default)
             uses the global :func:`get_provider`. Pass a per-role instance
             (from :func:`get_provider_for_role`) to build a command for a
@@ -523,6 +528,7 @@ def build_full_command(
         system_prompt_file=system_prompt_file,
         effort=effort,
         resume_session_id=resume_session_id,
+        project_context=project_context,
     )
 
 
@@ -585,6 +591,7 @@ def build_full_command_managed(
     system_prompt: str = "",
     effort: str = "",
     resume_session_id: str = "",
+    project_context: bool = True,
     system_prompt_dir: Optional[str] = None,
     system_prompt_container_dir: Optional[str] = None,
     provider: Optional[CLIProvider] = None,
@@ -617,6 +624,7 @@ def build_full_command_managed(
         plugin_dirs=plugin_dirs,
         effort=effort,
         resume_session_id=resume_session_id,
+        project_context=project_context,
         provider=provider,
     )
     if system_prompt and (provider or get_provider()).supports_system_prompt_file():

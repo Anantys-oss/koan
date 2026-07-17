@@ -4,7 +4,7 @@ title: "OpenAI Codex CLI Provider"
 description: "Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-07-01
+updated: 2026-07-16
 ---
 
 # OpenAI Codex CLI Provider
@@ -196,6 +196,16 @@ consider symlinking or adapting it:
 ```bash
 ln -s CLAUDE.md AGENTS.md
 ```
+
+### Project-context isolation (deferred)
+
+Koan's `project_context=False` path (used for KOAN_ROOT runtime sessions
+such as chat and contemplative — see [claude.md](claude.md) § Project
+context isolation) is a **no-op for Codex today**. Claude uses
+`--setting-sources user`; Codex AGENTS.md suppression is not wired yet.
+If contributor `AGENTS.md` at the instance root leaks into Codex-backed
+chat, prefer mission/`workspace/` project roots with their own docs, or
+track a follow-up to map isolation to a Codex config override.
 
 ## Troubleshooting
 
