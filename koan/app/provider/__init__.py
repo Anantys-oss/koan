@@ -690,6 +690,7 @@ def run_command(
     timeout: int = 300,
     max_turns_source: Optional[str] = "skill_max_turns",
     project_name: str = "",
+    mcp_configs: Optional[List[str]] = None,
 ) -> str:
     """Build and run a CLI command, returning stripped stdout.
 
@@ -701,6 +702,11 @@ def run_command(
     the CLI provider (the ``cli:`` section). Pass ``project_name`` to honor
     per-project ``cli:`` overrides; omitting it uses the section/global
     resolution (which matches the historical behavior for these helpers).
+
+    ``mcp_configs`` is an optional list of MCP server config paths (or
+    ``None`` to omit ``--mcp-config``). Callers should resolve it through
+    ``config.mcp_configs_for_role(role, project_name)`` so the per-role
+    allowlist and kill switch apply.
 
     When the CLI hits its max-turns limit, the partial output is returned
     instead of raising — the caller can still extract useful results from
@@ -717,6 +723,7 @@ def run_command(
         model=models.get(model_key, ""),
         fallback=models.get("fallback", ""),
         max_turns=max_turns,
+        mcp_configs=mcp_configs,
         provider=provider,
     )
 
@@ -1316,6 +1323,7 @@ def run_command_streaming(
     timeout: int = 300,
     max_turns_source: Optional[str] = "skill_max_turns",
     project_name: str = "",
+    mcp_configs: Optional[List[str]] = None,
 ) -> str:
     """Build and run a CLI command, streaming progress to stdout in real time.
 
@@ -1335,6 +1343,11 @@ def run_command_streaming(
     original raw text path; lines that fail to parse as JSON are still
     printed and contribute to the return value.
 
+    ``mcp_configs`` is an optional list of MCP server config paths (or
+    ``None`` to omit ``--mcp-config``). Callers should resolve it through
+    ``config.mcp_configs_for_role(role, project_name)`` so the per-role
+    allowlist and kill switch apply.
+
     Raises:
         RuntimeError: If the command exits with non-zero code (except
             max-turns, which returns partial output).
@@ -1351,6 +1364,7 @@ def run_command_streaming(
         fallback=models.get("fallback", ""),
         max_turns=max_turns,
         output_format="stream-json" if use_stream_json else "",
+        mcp_configs=mcp_configs,
         provider=provider,
     )
     last_message_path: Optional[str] = None
