@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-15
+updated: 2026-07-16
 ---
 
 # Kōan User Manual
@@ -232,7 +232,7 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/quota` — See how much API budget is left before adding heavy missions, plus the rolling burn rate (%/h) and estimated time to exhaustion
 - `/quota 32` — Tell Kōan it has 32% remaining (fixes drift when internal estimate is wrong)
 - If Kōan is paused due to quota but the API is actually available, `/quota 50` will correct the estimate and clear the pause
-- When the burn rate predicts session exhaustion in less than 30 min, the autonomous mode is automatically downgraded one tier (deep→implement→review). A Telegram alert fires once when projected exhaustion is under 60 min and the next quota reset is still more than 2 h away.
+- When the burn rate predicts session exhaustion in less than 30 min, the autonomous mode is automatically soft-throttled one tier (deep→implement→review) — burn rate never forces a pause (`wait`); absolute budget thresholds still own that. Estimates need ≥5 samples over ≥15 minutes of wall clock so a short burst of heavy missions does not look like a multi-hundred-%/h sustained rate. A Telegram alert fires once when projected exhaustion is under 60 min and the next quota reset is still more than 2 h away. Session reset (`/resume` after a quota pause) also clears the burn-rate sample buffer so pre-pause costs cannot re-trigger false alarms.
 </details>
 
 **`/check_notifications`** — Force an immediate check of GitHub and Jira notifications, bypassing the exponential backoff timer.
@@ -1600,7 +1600,7 @@ projects:
 ```
 
 Key per-project settings:
-- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `haze`, `local`, or `ollama-launch`
+- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `haze`, `grok`, `local`, or `ollama-launch`
 - **`models`** — Override model selection per role
 - **`tools`** — Restrict available tools
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
@@ -1685,6 +1685,20 @@ review_history:
 ```yaml
 review_draft_skip:
   enabled: false          # Defer auto-review of draft PRs (default: false)
+```
+
+**Pause-label review gate (default on):** While a PR carries the configured
+label (default `PauseReview`), Kōan skips LLM review — no prompt, no provider
+call, no review comment. Auto-queue from `review_requested` is soft-skipped
+(notification marked read; no dedup/cooldown). Already-queued or explicit
+`/review` missions also exit early at execution time. **Remedies:** remove the
+label (auto-review resumes on the next request), or send
+`/review --force <url>` to review once while the label stays. Set
+`review_pause_label: ""` to disable label checking entirely. Label match is
+exact and case-sensitive (GitHub label names are exact).
+
+```yaml
+review_pause_label: "PauseReview"   # default; "" disables
 ```
 
 ### Custom Skills
@@ -1786,6 +1800,7 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **OpenAI Codex** | ChatGPT users who want Codex models | [codex.md](../providers/codex.md) |
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
 | **Haze** | Minimal multi-backend agentic CLI (OpenAI, OpenRouter, local endpoints) — [official docs](https://denizokcu.github.io/haze/) | [haze.md](../providers/haze.md) |
+| **Grok Build** | xAI Grok Build CLI (`grok`) with headless streaming-json | [grok.md](../providers/grok.md) |
 | **Ollama Launch** | Local/offline models behind the Claude CLI harness | [ollama-launch.md](../providers/ollama-launch.md) |
 | **OpenRouter** (via Claude CLI) | Claude CLI behavior with OpenRouter's model catalog/billing | [openrouter.md](../providers/openrouter.md) |
 

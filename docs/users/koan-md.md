@@ -1,9 +1,10 @@
 ---
 type: doc
 title: "KOAN.md — koan-only project instructions"
+description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md plus per-skill .koan/skills/<skill>/*.md hooks): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
 tags: [users]
 created: 2026-07-09
-updated: 2026-07-11
+updated: 2026-07-16
 ---
 
 # KOAN.md — koan-only project instructions
@@ -67,6 +68,37 @@ no separate `.koan/skills/refactor/`).
 Everything is opt-in by file existence and a no-op when absent. Prompt-only
 skills do not read `.koan/skills/`; steer those with general `KOAN.md`.
 
+Runner skills must pass `project_path` into `load_skill_prompt` /
+`load_prompt_or_skill` for the append to fire. Core runners that honor it
+include `review`, `plan`, `pr`, `fix`, `implement`, and `rebase` (and their
+sub-passes). Skills that never pass `project_path` ignore
+`.koan/skills/<name>/` until wired.
+
+## Example: this repository (dogfood)
+
+The Kōan source tree ships its own steering so autonomous missions on koan
+itself apply repo-specific quality gates:
+
+```
+KOAN.md                              # thin always-on priorities
+.koan/skills/
+  review/quality-gates.md
+  fix/quality-gates.md
+  implement/quality-gates.md
+  rebase/quality-gates.md
+  plan/quality-gates.md
+  pr/quality-gates.md
+```
+
+Content is intentionally short: unique failure modes (specs discipline,
+privacy, `KOAN_ROOT` / mock boundaries, OpenAPI, skill docs) — not a copy of
+`CLAUDE.md`. Keep fragments under the 16k per-skill cap; prefer one
+`quality-gates.md` per skill.
+
+**Gitignore note:** runtime signal files (`.koan-status`, `.koan-stop`, …)
+stay ignored via `.koan-*`. The project directory `.koan/` is **not** ignored
+so skill hooks can be committed like any other project file.
+
 ## Discoverability
 
 Kōan advertises this feature once, unprompted: the first idle period after the
@@ -82,3 +114,6 @@ never repeats.
 - Always run `make lint` and `make test` before opening a PR.
 - Never touch files under `vendor/`.
 ```
+
+See also the committed `KOAN.md` and `.koan/skills/*/quality-gates.md` at the
+root of this repository for a full dogfood example.

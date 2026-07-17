@@ -49,6 +49,11 @@ class CLIProvider:
 
     name: str = ""
 
+    # Test/dev-only providers (e.g. the fail-closed ``fake`` stub) set this so
+    # UI-facing surfaces can exclude them via ``selectable_providers()`` while
+    # they stay in the registry for name-based lookup and config validation.
+    test_only: bool = False
+
     def __init__(self, binary_path: str = ""):
         """Optional per-instance binary path override.
 
@@ -136,6 +141,27 @@ class CLIProvider:
         Providers that need stdin for their own tool calls should return False.
         """
         return True
+
+    def supports_prompt_file_passing(self) -> bool:
+        """Return True if Kōan may rewrite large prompts to a ``--prompt-file``.
+
+        Distinct from stdin passing: the CLI reads the file path from argv
+        (e.g. Grok Build ``--prompt-file``). Default False.
+        """
+        return False
+
+    def rewrite_prompt_for_file(
+        self,
+        cmd: Sequence[str],
+        prompt_path: str,
+    ) -> Tuple[List[str], Optional[str]]:
+        """Rewrite *cmd* to load the prompt from *prompt_path*.
+
+        Returns ``(rewritten_cmd, prompt_text)``. ``prompt_text`` is ``None``
+        when no rewrite is needed (prompt stays on argv). Providers that opt
+        into :meth:`supports_prompt_file_passing` override this.
+        """
+        return list(cmd), None
 
     def rewrite_prompt_for_stdin(
         self,
@@ -254,6 +280,20 @@ class CLIProvider:
         """
         return []
 
+    def build_project_context_args(self, project_context: bool = True) -> List[str]:
+        """Build args that control whether project-scope tooling is loaded.
+
+        When *project_context* is False, the provider should suppress
+        project-directory instructions (e.g. root ``CLAUDE.md`` /
+        ``AGENTS.md`` / ``.claude/skills``) so KOAN_ROOT runtime sessions
+        do not load contributor tooling. Mission sessions leave the default
+        True so the project's own guidance still applies.
+
+        Base implementation is a no-op — only providers with a first-class
+        switch (Claude Code ``--setting-sources``) override this.
+        """
+        return []
+
     def supports_session_resume(self) -> bool:
         """Return True if the provider supports resuming a previous session.
 
@@ -329,6 +369,7 @@ class CLIProvider:
         system_prompt_file: str = "",
         effort: str = "",
         resume_session_id: str = "",
+        project_context: bool = True,
     ) -> List[str]:
         """Build a complete CLI command from generic parameters.
 
@@ -349,6 +390,10 @@ class CLIProvider:
             resume_session_id: When set and the provider supports session
                 resumption, continues the given session instead of starting
                 fresh. Saves tokens by reusing the prior conversation context.
+            project_context: When False, suppress project-scope tooling
+                (see :meth:`build_project_context_args`). KOAN_ROOT runtime
+                sessions pass False so contributor ``CLAUDE.md`` / skills do
+                not leak into operator chat. Mission sessions leave True.
 
         Returns a list of strings suitable for subprocess.run().
         """
@@ -366,6 +411,7 @@ class CLIProvider:
         if resume_session_id and self.supports_session_resume():
             cmd.extend(self.build_resume_args(resume_session_id))
         cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(sys_args)
         cmd.extend(self.build_prompt_args(prompt))
         cmd.extend(self.build_tool_args(allowed_tools, disallowed_tools))

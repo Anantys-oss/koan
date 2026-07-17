@@ -898,12 +898,15 @@ def _write_review_findings_sidecar(
     head_sha: str,
     project_name: str = "",
     review_summary: Optional[dict] = None,
+    review_comment: Optional[dict] = None,
 ) -> None:
     """Write structured review findings + summary to a sidecar JSON.
 
     Consumed by pr_review_learning (post-merge outcome tracking, reads
-    file_comments) and by the REST API result resolver (reads both
-    file_comments and review_summary). review_summary is additive.
+    file_comments) and by the REST API result resolver (reads
+    file_comments, review_summary, and review_comment). review_summary and
+    review_comment are additive; review_comment carries the posted comment's
+    {id, html_url} (or None when no ref was captured).
     """
     try:
         import time as _time
@@ -918,6 +921,7 @@ def _write_review_findings_sidecar(
             "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
             "file_comments": file_comments,
             "review_summary": review_summary or {},
+            "review_comment": review_comment or None,
         }
         from app.utils import atomic_write_json
         atomic_write_json(sidecar_path, data, indent=2)
@@ -2049,6 +2053,22 @@ def _build_stale_head_alert(reviewed_sha: str, live_sha: str) -> str:
     )
 
 
+def _extract_comment_ref(raw: str) -> Optional[dict]:
+    """Parse {id, html_url} from a GitHub comment API JSON response.
+
+    Returns None when the payload is missing, unparseable, or lacks an id, so
+    a genuine posting success is never downgraded to a failure by a parse
+    hiccup or a stdout format we didn't expect.
+    """
+    try:
+        obj = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(obj, dict) or obj.get("id") is None:
+        return None
+    return {"id": obj["id"], "html_url": obj.get("html_url", "")}
+
+
 def _post_review_comment(
     owner: str, repo: str, pr_number: str, review_text: str,
     existing_comment: Optional[dict] = None,
@@ -2058,7 +2078,7 @@ def _post_review_comment(
     duration_seconds: float = 0,
     live_head_sha: str = "",
     coverage_note: str = "",
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, Optional[dict]]:
     """Post (or update) the review as a comment on the PR.
 
     Prepends ``SUMMARY_TAG`` so future runs can locate the comment via
@@ -2079,7 +2099,9 @@ def _post_review_comment(
     *before* the GitHub-length truncation so the partial-review warning is
     never the part that gets cut.
 
-    Returns (True, "") on success, (False, error_detail) on failure.
+    Returns (True, "", ref) on success, (False, error_detail, None) on
+    failure, where ``ref`` is the posted comment's ``{id, html_url}`` (or
+    ``None`` when the GitHub response could not be parsed).
     """
     # Surface partial-coverage warning at the very top, before truncation.
     if coverage_note:
@@ -2117,13 +2139,13 @@ def _post_review_comment(
     if existing_comment:
         comment_id = existing_comment["id"]
         try:
-            run_gh(
+            raw = run_gh(
                 "api",
                 f"repos/{owner}/{repo}/issues/comments/{comment_id}",
                 "-X", "PATCH",
                 "-f", f"body={sanitized}",
             )
-            return True, ""
+            return True, "", _extract_comment_ref(raw)
         except Exception as e:
             # PATCH can fail with 403 when the existing comment belongs to a
             # different bot account (review bot was switched). Fall back to
@@ -2135,15 +2157,18 @@ def _post_review_comment(
             )
 
     try:
-        run_gh(
-            "pr", "comment", pr_number,
-            "--repo", f"{owner}/{repo}",
-            "--body", sanitized,
+        # POST via the issues-comments API (not `gh pr comment`) so a
+        # structured {id, html_url} JSON comes back for the review result.
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/{pr_number}/comments",
+            "-X", "POST",
+            "-f", f"body={sanitized}",
         )
-        return True, ""
+        return True, "", _extract_comment_ref(raw)
     except Exception as e:
         print(f"[review_runner] failed to post comment: {e}", file=sys.stderr)
-        return False, str(e)
+        return False, str(e), None
 
 
 def _append_error_section_to_review(
@@ -2193,7 +2218,7 @@ def _append_error_section_to_review(
         )
         return False
     combined = review_body + "\n\n---\n\n" + error_section
-    updated, err = _post_review_comment(
+    updated, err, _ = _post_review_comment(
         owner, repo, pr_number, combined, located,
         commit_shas=commit_shas,
         provider_name=provider_name,
@@ -2272,6 +2297,12 @@ def _post_comment_replies(
                 file=sys.stderr,
             )
             continue
+
+        # Surface clarification asks as IMPORTANT callouts so maintainers
+        # scanning many bot replies can spot ones that need human input.
+        # GitHub has no native QUESTION type; IMPORTANT is the closest fit.
+        if reply_item.get("action") == "needs_clarification":
+            reply_text = build_alert("IMPORTANT", reply_text)
 
         try:
             if original["type"] == "review_comment":
@@ -2568,18 +2599,32 @@ def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
         return ""
 
 
-def _fetch_pr_state(owner: str, repo: str, pr_number: str) -> str:
-    """Return the PR state (OPEN, MERGED, CLOSED) or empty string on error."""
+def _fetch_pr_state_and_labels(
+    owner: str, repo: str, pr_number: str,
+) -> tuple[str, list[str]]:
+    """Return (state, label_names). Empty state / [] on error."""
     try:
-        return run_gh(
+        raw = run_gh(
             "pr", "view", pr_number,
             "--repo", f"{owner}/{repo}",
-            "--json", "state",
-            "--jq", ".state",
-        ).strip().upper()
-    except RuntimeError as e:
-        log("review", f"Could not check PR state for #{pr_number}: {e}")
-        return ""
+            "--json", "state,labels",
+            "--jq", "{state: .state, labels: [.labels[].name]}",
+        ).strip()
+        data = json.loads(raw) if raw else {}
+        state = str(data.get("state") or "").strip().upper()
+        labels = data.get("labels") or []
+        if not isinstance(labels, list):
+            labels = []
+        return state, [str(x) for x in labels if x is not None]
+    except (RuntimeError, json.JSONDecodeError, TypeError) as e:
+        log("review", f"Could not check PR state/labels for #{pr_number}: {e}")
+        return "", []
+
+
+def _fetch_pr_state(owner: str, repo: str, pr_number: str) -> str:
+    """Back-compat wrapper — state only."""
+    state, _ = _fetch_pr_state_and_labels(owner, repo, pr_number)
+    return state
 
 
 def _is_review_requested(owner: str, repo: str, pr_number: str, bot_username: str) -> bool:
@@ -3069,15 +3114,30 @@ def run_review(
     except RuntimeError as e:
         return False, str(e), None
 
-    # ── Step 0a: Check PR state — skip closed/merged unless --force ────
+    # ── Step 0a: Check PR state + pause label (single gh call) ──────────
+    # Skip closed/merged and pause-label PRs unless --force. Labels and state
+    # share one gh call so the pause gate adds zero extra round-trips.
     if not force:
-        pr_state = _fetch_pr_state(owner, repo, pr_number)
+        from app.config import get_review_pause_label
+        pr_state, pr_labels = _fetch_pr_state_and_labels(owner, repo, pr_number)
+
         if pr_state in ("MERGED", "CLOSED"):
             msg = (
                 f"PR #{pr_number} is {pr_state.lower()} — skipping review. "
                 "Use --force to review anyway."
             )
             log("review", msg)
+            return True, msg, None
+
+        pause_label = get_review_pause_label()
+        if pause_label and pause_label in pr_labels:
+            msg = (
+                f"⏸ Review skipped\n"
+                f'Reason: Pull request contains label "{pause_label}"\n'
+                "Remove the label to resume auto-review, or use --force to review anyway."
+            )
+            log("review", msg)
+            notify_fn(msg)
             return True, msg, None
 
     from app.config import get_review_concurrency_config
@@ -3304,7 +3364,7 @@ def run_review(
 
     notify_fn(f"Posting review on PR #{pr_number}...")
     _review_duration = time.monotonic() - _review_start
-    posted, post_error = _post_review_comment(
+    posted, post_error, comment_ref = _post_review_comment(
         owner, repo, pr_number, review_body, post_target,
         commit_shas=current_shas or None,
         provider_name=review_provider_name,
@@ -3431,6 +3491,7 @@ def run_review(
                 head_sha=_sidecar_head,
                 project_name=project_name or "",
                 review_summary=review_data.get("review_summary") or {},
+                review_comment=comment_ref,
             )
         else:
             print(

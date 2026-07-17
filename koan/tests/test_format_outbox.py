@@ -130,12 +130,17 @@ class TestFormatForTelegram:
         result = format_message("Raw", "soul", "")
         assert result == "Raw"
 
+    @staticmethod
+    def _prompt_from_cmd(cmd):
+        """Extract -p prompt regardless of leading isolation flags."""
+        return cmd[cmd.index("-p") + 1]
+
     @patch("app.cli_exec.run_cli")
     def test_prompt_includes_soul_and_prefs(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         format_message("content", "my-soul", "my-prefs")
-        call_args = mock_run.call_args[0][0]
-        prompt = call_args[2]  # ["claude", "-p", prompt]
+        cmd = mock_run.call_args[0][0]
+        prompt = self._prompt_from_cmd(cmd)
         assert "my-soul" in prompt
         assert "my-prefs" in prompt
 
@@ -143,16 +148,14 @@ class TestFormatForTelegram:
     def test_prompt_omits_prefs_when_empty(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         format_message("content", "soul", "")
-        call_args = mock_run.call_args[0][0]
-        prompt = call_args[2]
+        prompt = self._prompt_from_cmd(mock_run.call_args[0][0])
         assert "Human preferences:" not in prompt
 
     @patch("app.cli_exec.run_cli")
     def test_prompt_includes_memory_context(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         format_message("content", "soul", "prefs", memory_context="Session 61: tests")
-        call_args = mock_run.call_args[0][0]
-        prompt = call_args[2]
+        prompt = self._prompt_from_cmd(mock_run.call_args[0][0])
         assert "Session 61: tests" in prompt
         assert "Recent memory context" in prompt
 
@@ -160,9 +163,17 @@ class TestFormatForTelegram:
     def test_prompt_omits_memory_when_empty(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         format_message("content", "soul", "prefs", memory_context="")
-        call_args = mock_run.call_args[0][0]
-        prompt = call_args[2]
+        prompt = self._prompt_from_cmd(mock_run.call_args[0][0])
         assert "Recent memory context" not in prompt
+
+    @patch("app.cli_exec.run_cli")
+    def test_suppresses_project_context_for_koan_root(self, mock_run):
+        """Outbox formatting is a KOAN_ROOT session — no contributor tooling."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        format_message("content", "soul", "")
+        cmd = mock_run.call_args[0][0]
+        assert "--setting-sources" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
 
 
 class TestLoadMemoryContext:

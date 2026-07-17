@@ -774,6 +774,36 @@ class TestCmdResetSession:
         content = usage_md.read_text()
         assert "Session (5hr) : ~0%" in content
 
+    @patch("app.usage_estimator.load_config", return_value={
+        "usage": {"session_token_limit": 500000, "weekly_token_limit": 5000000}
+    })
+    def test_clears_burn_rate_samples(self, mock_config, state_file, usage_md):
+        """Session reset must drop burn samples so TTE is not poisoned.
+
+        Production: /resume zeroed session_pct but kept 66% of pre-pause burn
+        samples → false 215%/h alert and deep→implement downgrade at 0% used.
+        """
+        from datetime import timezone
+        from app import burn_rate
+
+        instance_dir = state_file.parent
+        base = datetime(2026, 7, 16, 4, 50, tzinfo=timezone.utc)
+        for i, cost in enumerate([4.0, 9.0, 18.0, 11.0, 12.0, 13.0]):
+            burn_rate.record_run(
+                instance_dir, cost_pct=cost,
+                timestamp=base + timedelta(minutes=i * 4),
+            )
+        assert len(burn_rate.get_samples(instance_dir)) == 6
+
+        state = _fresh_state()
+        state["session_tokens"] = 334000
+        state_file.write_text(json.dumps(state))
+
+        cmd_reset_session(state_file, usage_md)
+
+        assert burn_rate.get_samples(instance_dir) == []
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
+
     @patch("app.usage_estimator.load_config", return_value={})
     def test_cli_reset_session(self, mock_config, tmp_path):
         """CLI entry point for reset-session should work."""

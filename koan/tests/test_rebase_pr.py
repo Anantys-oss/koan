@@ -1933,6 +1933,51 @@ class TestBuildRebasePrompt:
         with pytest.raises(FileNotFoundError):
             _build_rebase_prompt(context, skill_dir=None)
 
+    def test_injects_project_skill_instructions(self, tmp_path):
+        """project_path enables .koan/skills/rebase/*.md append on rebase prompts."""
+        d = tmp_path / ".koan" / "skills" / "rebase"
+        d.mkdir(parents=True)
+        (d / "quality-gates.md").write_text("KOAN_REBASE_EXTRA_RULE")
+        context = {
+            "title": "T", "body": "", "branch": "br", "base": "main",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        prompt = _build_rebase_prompt(
+            context, skill_dir=REBASE_SKILL_DIR, project_path=str(tmp_path),
+        )
+        assert "KOAN_REBASE_EXTRA_RULE" in prompt
+        assert "rebase skill" in prompt
+
+
+class TestBuildConflictAndCiFixPrompts:
+    def test_conflict_prompt_injects_project_skill(self, tmp_path):
+        from app.rebase_pr import _build_conflict_resolution_prompt
+
+        d = tmp_path / ".koan" / "skills" / "rebase"
+        d.mkdir(parents=True)
+        (d / "quality-gates.md").write_text("KOAN_CONFLICT_EXTRA")
+        context = {
+            "title": "T", "body": "B", "branch": "br", "base": "main",
+        }
+        prompt = _build_conflict_resolution_prompt(
+            context, ["a.py"], "main",
+            skill_dir=REBASE_SKILL_DIR,
+            project_path=str(tmp_path),
+        )
+        assert "KOAN_CONFLICT_EXTRA" in prompt
+
+    def test_ci_fix_prompt_injects_project_skill(self, tmp_path):
+        d = tmp_path / ".koan" / "skills" / "rebase"
+        d.mkdir(parents=True)
+        (d / "quality-gates.md").write_text("KOAN_CI_FIX_EXTRA")
+        context = {"title": "T", "branch": "br", "base": "main"}
+        prompt = _build_ci_fix_prompt(
+            context, "log fail", "+diff",
+            skill_dir=REBASE_SKILL_DIR,
+            project_path=str(tmp_path),
+        )
+        assert "KOAN_CI_FIX_EXTRA" in prompt
+
 
 # ---------------------------------------------------------------------------
 # _apply_review_feedback

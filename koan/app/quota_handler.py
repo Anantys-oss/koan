@@ -56,6 +56,13 @@ _STRICT_QUOTA_PATTERNS = [
     r"out of.*credits?",
     r"credits?.*(?:exhausted|depleted|expired|insufficient)",
     r"insufficient.*credits?",
+    # xAI/OpenAI-style 403 billing exhaustion, e.g. "used all available
+    # credits or reached its monthly spending limit". No quota/usage keyword,
+    # so the patterns above miss it. Anchor on the exhaustion verb (used all/
+    # reached/hit/exceeded) so it stays safe in stdout — a plan that merely
+    # mentions a "monthly spending limit" feature must not trip a pause.
+    r"used all (?:available )?credits?",
+    r"(?:reached|hit|exceeded)[^\n]{0,25}spending limit",
     r"billing.*(?:limit|period.*exceeded)",
     r"usage.*cap.*(?:reached|exceeded|hit)",
     # Claude Code CLI: "You've hit your session limit · resets 6pm (UTC)"

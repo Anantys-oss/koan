@@ -163,6 +163,66 @@ class TestParseClaudeOutput:
         raw = json.dumps({"status": "ok", "data": "test"})
         assert parse_claude_output(raw) == raw.strip()
 
+    def test_grok_streaming_json_concatenates_text_deltas(self):
+        from app.mission_runner import parse_claude_output
+        from tests import grok_samples
+
+        assert (
+            parse_claude_output(grok_samples.STREAM_MULTI_DELTA)
+            == grok_samples.STREAM_MULTI_DELTA_RESULT_TEXT
+        )
+
+    def test_grok_streaming_json_success_sample(self):
+        from app.mission_runner import parse_claude_output
+        from tests import grok_samples
+
+        assert (
+            parse_claude_output(grok_samples.STREAM_SUCCESS)
+            == grok_samples.STREAM_SUCCESS_RESULT_TEXT
+        )
+
+    def test_grok_json_object_extracts_text(self):
+        from app.mission_runner import parse_claude_output
+        from tests import grok_samples
+
+        assert (
+            parse_claude_output(grok_samples.JSON_OBJECT_SUCCESS)
+            == grok_samples.JSON_OBJECT_SUCCESS_TEXT
+        )
+
+    def test_haze_stream_prefers_result_event(self):
+        from app.mission_runner import parse_claude_output
+        from tests import haze_samples
+
+        assert (
+            parse_claude_output(haze_samples.STREAM_SUCCESS)
+            == haze_samples.STREAM_SUCCESS_RESULT_TEXT
+        )
+
+    def test_claude_stream_json_result_event(self):
+        from app.mission_runner import parse_claude_output
+
+        raw = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [{"type": "text", "text": "partial"}],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "result": "final answer",
+                    }
+                ),
+            ]
+        )
+        assert parse_claude_output(raw) == "final answer"
+
 
 class TestCheckJsonSuccess:
     """Test check_json_success — detects successful sessions from JSON output."""

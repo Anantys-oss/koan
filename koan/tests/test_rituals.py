@@ -94,6 +94,9 @@ class TestRunRitual:
         call_args = mock_run.call_args[0][0]
         assert call_args[0] == "claude"
         assert "-p" in call_args
+        # KOAN_ROOT session: suppress contributor project tooling (#2379).
+        assert "--setting-sources" in call_args
+        assert call_args[call_args.index("--setting-sources") + 1] == "user"
 
     @patch("app.rituals.subprocess.run")
     def test_evening_calls_claude(self, mock_run, prompt_dir, instance_dir):

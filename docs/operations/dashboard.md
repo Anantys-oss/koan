@@ -4,7 +4,7 @@ title: "Web Dashboard"
 description: "Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, and design-system integration."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-06-27
+updated: 2026-07-17
 ---
 
 # Web Dashboard
@@ -54,7 +54,8 @@ Supporting modules:
 - **`dashboard/_helpers.py`** — passphrase gate, static cache-buster, context processor, and
   template filters, attached via `register_helpers(app)`.
 - **`dashboard_service/`** — pure business logic (mission parsing, journal/rule-history readers,
-  plan-progress parsing, forecast & metric computation), unit-testable without a Flask client.
+  plan-progress parsing, progress timeline entries, forecast & metric computation),
+  unit-testable without a Flask client.
 
 Templates live under `koan/templates/dashboard/`; static assets under `koan/static/`. The
 runnable entry point is `koan/app/dashboard/__main__.py` (invoked by `make dashboard` and
@@ -82,7 +83,7 @@ dashboard starts automatically on `0.0.0.0:5000` and **requires** the passphrase
 | `/usage` | Token usage analytics (Chart.js): spend, by project, outcomes, types, and daily mission activity from `instance/usage/*.jsonl` |
 | `/prs` | Open pull requests across projects with CI and review status, sorted by last activity (`updatedAt`, fallback `createdAt`) |
 | `/plans` | Plan issues with phase progress |
-| `/progress` | Live stream of the current run's output (SSE) |
+| `/progress` | Structured live mission timeline from `pending.md` (SSE) |
 | `/journal` | Journal entries grouped by date and project |
 | `/logs` | Recent log lines with source filter and search |
 | `/agent` | Read-only introspection: soul, memory, skills, config |
@@ -199,6 +200,28 @@ topbar, mobile drawer), and restyles dashboard-specific components (chat, attent
 activity dots). It does **not** redefine design tokens — `koan.css` owns those.
 
 All third-party assets are **vendored** so the local-only dashboard works fully offline: Lucide icons ship as `koan/static/js/lucide.min.js` (pinned) and the Space Grotesk, Inter and JetBrains Mono webfonts (latin `.woff2` subset) are self-hosted in `koan/static/fonts/`, declared via `@font-face` in `koan/static/css/koan-fonts.css` with `font-display: swap` and system-font fallbacks.
+
+### Live progress (`/progress`)
+
+Streams `instance/journal/pending.md` via SSE (`/api/progress/stream`).
+Recognizable `[cli] …` lines are classified with the same grammar as
+`make logs` (`log_fmt.classify_cli`) into a **timeline**:
+
+| Kind | UI |
+|------|----|
+| `tool_use` | Icon + tool name + input preview |
+| `text` | Prominent “what I’m doing” narrative |
+| `thinking` | Collapsed activity dots (`count`) |
+| `result` / `tool_error` / `warning` | Status-colored rows |
+| `raw` | Unrecognized lines, monospace |
+
+**Raw view** toggle shows the full `content` blob. Mission header fields
+come from the pending.md header; elapsed/state also track
+`/api/state/stream`. Writers of `pending.md` are unchanged.
+
+Snapshot and stream payloads are additive: `{active, content, header, entries}`.
+`content` remains the raw file text for fallback and older clients.
+Pure parsing lives in `dashboard_service/progress.py` (display-only).
 
 ## Architecture
 

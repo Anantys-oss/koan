@@ -270,6 +270,41 @@ class TestClaudeProvider:
         cmd = self.provider.build_command(prompt="hello", skip_permissions=False)
         assert "--dangerously-skip-permissions" not in cmd
 
+    def test_project_context_false_adds_setting_sources_user(self):
+        """KOAN_ROOT sessions suppress project CLAUDE.md / .claude skills."""
+        cmd = self.provider.build_command(prompt="hello", project_context=False)
+        assert "--setting-sources" in cmd
+        idx = cmd.index("--setting-sources")
+        assert cmd[idx + 1] == "user"
+        # Default mission path must not inject the flag.
+        default_cmd = self.provider.build_command(prompt="hello")
+        assert "--setting-sources" not in default_cmd
+        assert self.provider.build_command(
+            prompt="hello", project_context=True,
+        ) == default_cmd
+
+    def test_build_full_command_forwards_project_context(self):
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="hello",
+                project_context=False,
+                provider=ClaudeProvider(),
+            )
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
+
+    def test_codex_accepts_project_context_false_noop(self):
+        """Codex isolation is deferred; flag must not break build_command."""
+        from app.provider.codex import CodexProvider
+
+        p = CodexProvider()
+        cmd = p.build_command(prompt="hello", project_context=False)
+        assert cmd[0] == "codex"
+        assert "--setting-sources" not in cmd
+        assert "hello" in cmd
+
     def test_permission_args_under_root_drop_flag_and_warn_once(self, capsys, monkeypatch):
         import app.provider.claude as claude_module
 

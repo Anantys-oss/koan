@@ -244,6 +244,17 @@ def _is_addressed_to_other_user(text: str, msg: dict, bot_username: str) -> bool
     return False
 
 
+def _is_internal_comment(text: str) -> bool:
+    """Return True if the message is an internal channel note, not a request.
+
+    Messages that open with two or more minus characters (e.g. ``-- server was
+    down``) are treated as internal comments / advertisements posted in the
+    channel — the bot does not react or reply to them. A single leading minus
+    (e.g. ``-5`` or ``-v``) is not matched.
+    """
+    return text.lstrip().startswith("--")
+
+
 def _strip_bot_mention_from_text(text: str, msg: dict) -> str:
     """Strip @bot_username mentions from non-command messages.
 
@@ -493,12 +504,15 @@ def handle_chat(text: str):
     # The prompt tells Claude where to look.
     chat_cwd = str(KOAN_ROOT)
 
+    # project_context=False: cwd is KOAN_ROOT; do not load contributor
+    # CLAUDE.md / .claude skills (issue #2379).
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=chat_tools_list,
         model=models["chat"],
         fallback=models["fallback"],
         max_turns=5,
+        project_context=False,
     )
 
     # Serialize chat CLI calls: Claude takes a per-cwd session lock, so two
@@ -542,6 +556,7 @@ def handle_chat(text: str):
                 model=models["chat"],
                 fallback=models["fallback"],
                 max_turns=5,
+                project_context=False,
             )
             try:
                 result = run_cli(
@@ -1171,6 +1186,9 @@ def _bridge_loop():
                 # `"" in (channel_id, "")` and slip past the channel filter.
                 valid_chat_ids = {str(channel_id), str(CHAT_ID)} - {""}
                 if text and chat_id and chat_id in valid_chat_ids:
+                    if _is_internal_comment(text):
+                        log("chat", f"Ignoring internal channel comment: {text[:60]}")
+                        continue
                     if _is_addressed_to_other_user(text, msg, bot_username):
                         log("chat", f"Ignoring message addressed to another user: {text[:60]}")
                         continue

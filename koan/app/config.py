@@ -2125,7 +2125,7 @@ def get_cli_binary_for_shell() -> str:
 def get_cli_provider_name() -> str:
     """Get the configured CLI provider name for display.
 
-    Returns "claude", "codex", "copilot", or "ollama-launch".
+    Returns a registered provider flavor (e.g. "claude", "codex", "grok").
     """
     from app.cli_provider import get_provider_name
     return get_provider_name()
@@ -2729,6 +2729,26 @@ def get_review_draft_skip_config() -> dict:
         enabled = False
 
     return {"enabled": enabled}
+
+
+def get_review_pause_label() -> str:
+    """Return the PR label that pauses LLM review, or "" if disabled.
+
+    Config key: review_pause_label (string). Default ``"PauseReview"``.
+    Empty / whitespace / non-string disables the feature entirely — no
+    label check is performed by callers when this returns "".
+
+    Example::
+
+        review_pause_label: "PauseReview"   # default
+        review_pause_label: ""              # disable
+        review_pause_label: "AI:Paused"     # org-specific label
+    """
+    config = _load_config()
+    raw = config.get("review_pause_label", "PauseReview")
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip()
 
 
 def is_caveman_mode() -> bool:

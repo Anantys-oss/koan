@@ -339,6 +339,7 @@ class CodexProvider(CLIProvider):
         system_prompt_file: str = "",
         effort: str = "",
         resume_session_id: str = "",
+        project_context: bool = True,
     ) -> List[str]:
         """Build a complete Codex CLI command.
 
@@ -351,6 +352,9 @@ class CodexProvider(CLIProvider):
         are ``exec`` subcommand flags in current Codex CLI (>= 0.1),
         so they must come *after* the ``exec`` keyword.  The prompt is
         the final positional argument.
+
+        *project_context* is accepted for API parity; AGENTS.md isolation
+        for Codex is deferred (no first-class flag wired in v1).
         """
         # Handle system prompt: Codex has no --append-system-prompt or
         # file-mode equivalent, so prepend to user prompt (base class
@@ -363,6 +367,7 @@ class CodexProvider(CLIProvider):
 
         # Exec-level flags (permission, model) come after 'exec'
         cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(self.build_model_args(model, fallback))
         cmd.extend(self.build_output_args(output_format))
 

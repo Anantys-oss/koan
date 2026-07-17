@@ -108,10 +108,16 @@ def _downgrade_if_burning_fast(instance_dir: Path, session_pct: float,
                                mode: str):
     """Drop one tier when projected exhaustion is imminent.
 
+    Soft-throttles only within active modes (deep → implement → review).
+    Never forces ``wait`` — absolute budget gates own the pause decision.
+    Cascading review→wait from a short-window burn spike was pausing the
+    agent while real session usage was still well below the stop threshold.
+
     Returns (mode, downgraded_from) where downgraded_from is the previous
     mode if a downgrade fired, else None.
     """
-    if mode == "wait" or mode not in _MODE_DOWNGRADE:
+    # Floor at review: burn-rate is advisory throttle, not a pause signal.
+    if mode in ("wait", "review") or mode not in _MODE_DOWNGRADE:
         return mode, None
     from app.config import is_unlimited_quota
     if is_unlimited_quota():
@@ -125,7 +131,7 @@ def _downgrade_if_burning_fast(instance_dir: Path, session_pct: float,
     if tte is None or tte >= BURN_RATE_DOWNGRADE_THRESHOLD_MIN:
         return mode, None
     downgraded = _MODE_DOWNGRADE.get(mode, mode)
-    if downgraded == mode:
+    if downgraded == mode or downgraded == "wait":
         return mode, None
     _log_iteration("koan",
         f"Burn-rate downgrade: {mode} → {downgraded} "

@@ -18,7 +18,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`architecture/memory.md`](docs/architecture/memory.md) — Details Koan's Markdown+JSONL memory store, the SQLite FTS5 secondary index (confidence-weighted BM25 ranking, dual-write, fallback), entry schema, read/write paths, and compaction.
 - [`architecture/mission-lifecycle.md`](docs/architecture/mission-lifecycle.md) — Explains the mission queue format and lifecycle (Pending/In Progress/Done/Failed), org-wide missions, branch prep, direct skill dispatch, scheduling, recovery/retries, and missions.md integrity/size-bound safeguards.
 - [`architecture/overview.md`](docs/architecture/overview.md) — High-level architecture summary of Koan's two main processes (bridge and agent loop), major subsystems, and the human-decides safety model.
-- [`architecture/providers.md`](docs/architecture/providers.md) — Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Local).
+- [`architecture/providers.md`](docs/architecture/providers.md) — Documents the CLI provider abstraction layer, provider responsibilities (including KOAN_ROOT `project_context` isolation), resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Haze, Grok, Ollama-launch).
 - [`architecture/shared-state.md`](docs/architecture/shared-state.md) — Explains Koan's file-based (no-database) shared state under instance/, locking/atomic-write conventions, per-uid temp/scratch directories, and configuration sources.
 - [`architecture/skills-system.md`](docs/architecture/skills-system.md) — Describes the skill definition format, dispatch paths, the private implementation review gate (challenge loop, cost controls, dedup), and the documentation contract for skill changes.
 
@@ -44,10 +44,10 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 ### Operations
 - [`operations/auto-update.md`](docs/operations/auto-update.md) — Describes Kōan's opt-in auto-update feature that checks for and pulls upstream commits, plus the always-on release-tag notification.
-- [`operations/dashboard.md`](docs/operations/dashboard.md) — Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, and design-system integration.
+- [`operations/dashboard.md`](docs/operations/dashboard.md) — Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, design-system integration, and structured `/progress` mission timeline.
 - [`operations/interactive-launcher.md`](docs/operations/interactive-launcher.md) — Describes `make koan`, the TTY-gated interactive launcher and its textual terminal dashboard (tabs, toggles, keybindings).
-- [`operations/log-formatting.md`](docs/operations/log-formatting.md) — Documents the display-side `[cli]` log formatter (log_fmt.py) behind `make logs`, its glyph legend, tool-input previews, accumulating thinking dots, and the `raw=1` escape hatch.
-- [`operations/maint.md`](docs/operations/maint.md) — Covers Kōan's release pipeline (/koan.incubate preps, release.yml executes), branch philosophy (`main` / `incubating` / `stable` branch + `latest` tag), the ${NEXT} changelog flow into CHANGES.md, versioning scheme, and recovery steps.
+- [`operations/log-formatting.md`](docs/operations/log-formatting.md) — Documents the display-side `[cli]` log formatter (log_fmt.py) behind `make logs` and the shared `classify_cli` grammar used by the dashboard `/progress` timeline.
+- [`operations/maint.md`](docs/operations/maint.md) — Covers Kōan's release process and branch philosophy (`main` vs `stable`), the `make release` procedure, versioning scheme, and recovery steps.
 - [`operations/memory-footprint.md`](docs/operations/memory-footprint.md) — Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, and the anon-first triage rule.
 - [`operations/memory-watchdog.md`](docs/operations/memory-watchdog.md) — Explains the memory watchdog that restarts the agent loop between missions when RSS stays over a threshold, its config knobs, and health-endpoint observability.
 - [`operations/mission-cli.md`](docs/operations/mission-cli.md) — Terminal commands (`make missions` / `make mission-rm`, or `python -m app.mission_ctl`) to inspect and edit the SQLite mission store directly when the Telegram bridge is unresponsive.
@@ -59,11 +59,13 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 ### Providers
 - [`providers/claude-cli-commands-official.md`](docs/providers/claude-cli-commands-official.md) — Official upstream Claude Code CLI reference listing all commands and flags.
-- [`providers/claude.md`](docs/providers/claude.md) — Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode.
+- [`providers/claude.md`](docs/providers/claude.md) — Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, KOAN_ROOT project-context isolation (`--setting-sources user`), and devcontainer mode.
 - [`providers/cline.md`](docs/providers/cline.md) — Setup and feature-mapping guide for using Cline CLI as Kōan's underlying multi-backend AI provider.
 - [`providers/codex.md`](docs/providers/codex.md) — Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting.
 - [`providers/copilot.md`](docs/providers/copilot.md) — Setup guide and feature/tool-mapping differences for using GitHub Copilot CLI as Kōan's provider.
+- [`providers/fake.md`](docs/providers/fake.md) — Fail-closed no-op provider for deterministic, offline tests of the skill pipeline; refuses to run unless `KOAN_ALLOW_FAKE_PROVIDER=1` is set.
 - [`providers/haze.md`](docs/providers/haze.md) — Setup and behavior guide for using haze (multi-backend agentic CLI) as Kōan's provider, including stream-json integration, usage accounting, capabilities and limitations.
+- [`providers/grok.md`](docs/providers/grok.md) — Setup and behavior guide for using xAI's Grok Build CLI as Kōan's provider, including headless streaming-json, auth, models, and limitations.
 - [`providers/local.md`](docs/providers/local.md) — Explains that the `local` Ollama provider was removed and points to `ollama-launch` or a custom Claude CLI endpoint as the supported replacements.
 - [`providers/ollama-launch.md`](docs/providers/ollama-launch.md) — Documents the `ollama-launch` provider, which runs the Claude Code CLI through `ollama launch claude` for full tool-use/streaming parity with native Claude.
 - [`providers/ollama-wrapper.md`](docs/providers/ollama-wrapper.md) — Describes the `bin/ollama-claude` wrapper that routes Koan's default `claude` provider through a local Ollama model via `ollama launch claude`, without changing `cli_provider`.
@@ -85,7 +87,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`setup/systemd-user.md`](docs/setup/systemd-user.md) — Describes running Koan as a per-user (rootless) systemd service on Linux, covering unit installation, linger for boot persistence, and PATH preservation for CLI providers.
 
 ### Users
-- [`users/koan-md.md`](docs/users/koan-md.md) — Documents the optional project-root `KOAN.md` file and the `.koan/` directory (a second `.koan/KOAN.md` plus per-skill `.koan/skills/<skill>/*.md` hooks): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules and the 16k-char cap.
+- [`users/koan-md.md`](docs/users/koan-md.md) — Documents the optional project-root `KOAN.md` file and the `.koan/` directory (a second `.koan/KOAN.md` plus per-skill `.koan/skills/<skill>/*.md` hooks): koan-only steering for the autonomous agent, 16k caps, runner `project_path` wiring, and this repo's dogfood quality-gate layout.
 - [`users/model-configuration.md`](docs/users/model-configuration.md) — Explains how to configure which model handles each Koan role (mission, chat, lightweight, fallback, etc.) per provider via `config.yaml`, including resolution order and CLI-provider-per-role routing.
 - [`users/onboarding.md`](docs/users/onboarding.md) — Documents the interactive 12-step onboarding wizard that sets up a new Koan instance, its resumability, personality presets, and non-interactive/CI mode.
 - [`users/quickstart.md`](docs/users/quickstart.md) — A 5-minute guide to the commands for driving Koan from GitHub PRs/issues, Jira, and messaging apps (Telegram/Slack), with minimal and context-augmented examples for each.
@@ -105,9 +107,9 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`components/core.md`](specs-components/core.md) — Design contract for the foundation layer (mission queue contract, config resolution, atomic-write/lock primitives) that every other Kōan component depends on.
 - [`components/git-github.md`](specs-components/git-github.md) — Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows.
 - [`components/issue-tracking.md`](specs-components/issue-tracking.md) — Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer.
-- [`components/providers.md`](specs-components/providers.md) — Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot) behind one `CLIProvider` contract.
+- [`components/providers.md`](specs-components/providers.md) — Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract.
 - [`components/skills.md`](specs-components/skills.md) — Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness).
-- [`components/web.md`](specs-components/web.md) — Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, and the invariants keeping the two surfaces from drifting.
+- [`components/web.md`](specs-components/web.md) — Documents the Flask dashboard and token-gated REST API, shared `dashboard_service` logic (including the live progress stream contract), OpenAPI drift guard, and surface-parity invariants.
 
 ## Specs — Skills
 

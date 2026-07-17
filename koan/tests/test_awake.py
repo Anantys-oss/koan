@@ -28,6 +28,7 @@ from app.awake import (
     _flush_outbox_async,
     _strip_bot_mention_from_text,
     _is_addressed_to_other_user,
+    _is_internal_comment,
     _check_group_chat_mode,
     get_updates,
     check_config,
@@ -2385,6 +2386,30 @@ class TestChatToolsSecurity:
         assert tools_arg == "Read,Glob,Grep"
         assert "Bash" not in tools_arg
 
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="Read")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.cli_exec.run_cli")
+    def test_handle_chat_suppresses_project_context(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc, mock_fmt,
+        mock_hist, mock_save, tmp_path,
+    ):
+        """Chat runs at KOAN_ROOT — must not load contributor tooling (#2379)."""
+        mock_run.return_value = MagicMock(stdout="ok", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""):
+            handle_chat("hello")
+        cmd = mock_run.call_args[0][0]
+        assert "--setting-sources" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
+
 
 # ---------------------------------------------------------------------------
 # /mission command
@@ -3544,6 +3569,39 @@ class TestIsAddressedToOtherUser:
     def test_non_mention_entity_at_start(self):
         msg = {"entities": [{"type": "bold", "offset": 0, "length": 5}]}
         assert _is_addressed_to_other_user("hello world", msg, "MyBot") is False
+
+
+# ---------------------------------------------------------------------------
+# _is_internal_comment — skip messages opening with two or more minus chars
+# ---------------------------------------------------------------------------
+
+
+class TestIsInternalComment:
+    """Messages starting with ``--`` are internal notes the bot ignores."""
+
+    def test_double_dash_prefix(self):
+        assert _is_internal_comment("-- the server was down") is True
+
+    def test_more_than_two_dashes(self):
+        assert _is_internal_comment("--- section break ---") is True
+
+    def test_leading_whitespace_before_dashes(self):
+        assert _is_internal_comment("   -- indented note") is True
+
+    def test_single_dash_not_matched(self):
+        assert _is_internal_comment("-5 degrees outside") is False
+
+    def test_plain_text_not_matched(self):
+        assert _is_internal_comment("fix the login bug") is False
+
+    def test_slash_command_not_matched(self):
+        assert _is_internal_comment("/review https://example.com") is False
+
+    def test_dash_not_at_start(self):
+        assert _is_internal_comment("please note -- this is inline") is False
+
+    def test_bare_double_dash(self):
+        assert _is_internal_comment("--") is True
 
 
 # ---------------------------------------------------------------------------

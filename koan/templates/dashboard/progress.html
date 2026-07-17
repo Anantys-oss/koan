@@ -5,54 +5,39 @@
 <span class="k-status" id="progress-status"><span class="k-status__dot"></span> Connecting…</span>
 {% endblock %}
 {% block content %}
-<div class="k-card">
-    <div class="k-card__header">
-        <h2 class="k-card__title" style="margin:0;">Current run output</h2>
-        <label class="k-check">
-            <input type="checkbox" id="autoscroll" checked> Auto-scroll
-        </label>
+<div class="k-card" id="mission-header" hidden>
+    <div class="progress-header">
+        <div>
+            <div class="detail-key">Mission</div>
+            <div class="detail-val" id="mission-title">—</div>
+        </div>
+        <div>
+            <div class="detail-key">Project</div>
+            <div class="detail-val" id="mission-project">—</div>
+        </div>
+        <div>
+            <div class="detail-key">Elapsed</div>
+            <div class="detail-val" id="mission-elapsed">—</div>
+        </div>
+        <div>
+            <div class="detail-key">State</div>
+            <div class="detail-val" id="mission-state">—</div>
+        </div>
     </div>
-    <pre id="progress-output" class="k-terminal" style="min-height:400px;max-height:600px;">Waiting for output…</pre>
 </div>
 
-<script>
-(function() {
-    const output = document.getElementById('progress-output');
-    const status = document.getElementById('progress-status');
-    const autoscroll = document.getElementById('autoscroll');
-
-    function setStatus(text, kind) {
-        status.textContent = '';
-        const dot = document.createElement('span');
-        dot.className = 'k-status__dot';
-        status.className = 'k-status k-status--' + kind;
-        status.appendChild(dot);
-        status.appendChild(document.createTextNode(' ' + text));
-    }
-
-    function connectSSE() {
-        const source = new EventSource('/api/progress/stream');
-
-        source.onopen = function() { setStatus('Connected', 'success'); };
-
-        source.onmessage = function(event) {
-            const data = JSON.parse(event.data);
-            if (data.content !== undefined) {
-                output.textContent = data.content || 'Waiting for output…';
-                if (autoscroll.checked) {
-                    output.scrollTop = output.scrollHeight;
-                }
-            }
-        };
-
-        source.onerror = function() {
-            setStatus('Disconnected — reconnecting…', 'queued');
-            source.close();
-            setTimeout(connectSSE, 3000);
-        };
-    }
-
-    connectSSE();
-})();
-</script>
+<div class="k-card">
+    <div class="k-card__header">
+        <h2 class="k-card__title" style="margin:0;">Live mission timeline</h2>
+        <div class="progress-controls">
+            <label class="k-check"><input type="checkbox" id="raw-toggle"> Raw view</label>
+            <label class="k-check"><input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
+        </div>
+    </div>
+    <div id="progress-timeline" class="progress-timeline" aria-live="polite">
+        Waiting for output…
+    </div>
+    <pre id="progress-output" class="k-terminal" hidden style="min-height:400px;max-height:600px;"></pre>
+</div>
+<script src="{{ url_for('static', filename='js/progress.js') }}"></script>
 {% endblock %}

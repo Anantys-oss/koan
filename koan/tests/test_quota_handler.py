@@ -39,6 +39,28 @@ class TestDetectQuotaExhaustion:
 
         assert detect_quota_exhaustion("Mission completed successfully") is False
 
+    def test_detects_used_all_available_credits(self):
+        """xAI/OpenAI 403 billing exhaustion carries no quota/usage keyword."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        text = (
+            "API error (status 403 Forbidden): permission-denied: Your team "
+            "has either used all available credits or reached its monthly "
+            "spending limit."
+        )
+        assert detect_quota_exhaustion(text) is True
+
+    def test_detects_reached_monthly_spending_limit(self):
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("You have reached your monthly spending limit.") is True
+
+    def test_spending_limit_prose_without_verb_does_not_trigger(self):
+        """Discussing a spending-limit feature is not exhaustion."""
+        from app.quota_handler import detect_quota_exhaustion
+
+        assert detect_quota_exhaustion("Add a monthly spending limit field to settings.") is False
+
     def test_no_match_on_empty_string(self):
         from app.quota_handler import detect_quota_exhaustion
 
@@ -1681,13 +1703,14 @@ class TestFormatBurnRateSingleLoad:
     """_format_burn_rate must share one snapshot across both metrics."""
 
     def _seed(self, instance_dir):
-        # Five samples one minute apart, 1.0% each → enough for an estimate.
+        # Five samples over 20 minutes, 1.0% each → enough for an estimate
+        # (needs ≥ MIN_SAMPLES and ≥ MIN_SPAN_MINUTES).
         from datetime import datetime, timedelta, timezone
         from app import burn_rate
         base = datetime(2026, 1, 1, tzinfo=timezone.utc)
         for i in range(5):
             burn_rate.record_run(
-                instance_dir, 1.0, timestamp=base + timedelta(minutes=i),
+                instance_dir, 1.0, timestamp=base + timedelta(minutes=i * 5),
             )
 
     def test_loads_state_once(self, tmp_path):

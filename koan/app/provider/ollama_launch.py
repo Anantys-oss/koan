@@ -105,6 +105,7 @@ class OllamaLaunchProvider(ClaudeProvider):
         system_prompt_file: str = "",
         effort: str = "",
         resume_session_id: str = "",
+        project_context: bool = True,
     ) -> List[str]:
         """Build: ollama launch claude --model X -- <claude-flags>.
 
@@ -112,7 +113,7 @@ class OllamaLaunchProvider(ClaudeProvider):
         Everything after ``--`` uses the same flag builders as
         :class:`ClaudeProvider` so feature parity is maintained
         (permissions, system prompts, resume, output format, max turns,
-        MCP, plugins, effort).
+        MCP, plugins, effort, project_context).
         """
         # Ollama part: binary + launch subcommand + model
         cmd = ["ollama", "launch", "claude"]
@@ -127,6 +128,7 @@ class OllamaLaunchProvider(ClaudeProvider):
         if resume_session_id and self.supports_session_resume():
             cmd.extend(self.build_resume_args(resume_session_id))
         cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_project_context_args(project_context))
 
         # System prompt: file mode takes precedence over inline content.
         if system_prompt_file and self.supports_system_prompt_file():

@@ -117,6 +117,11 @@ def _parse_tier_response(response: str) -> MissionTier:
     Expected format (from the prompt):
         {"tier": "trivial", "rationale": "..."}
 
+    Provider CLIs often wrap that payload in stream-json / json envelopes
+    (Grok ``thought``/``text``/``end`` NDJSON, Claude ``{"result": "..."}``,
+    Grok ``{"text": "..."}``). Unwrap those first via
+    :func:`mission_runner.parse_claude_output` so the tier object is visible.
+
     Falls back to MEDIUM on any parse failure.
 
     Args:
@@ -128,8 +133,23 @@ def _parse_tier_response(response: str) -> MissionTier:
     if not response:
         return _DEFAULT_TIER
 
-    # Extract JSON from the response — it may be wrapped in markdown fences
-    text = response.strip()
+    # Unwrap provider stream/json envelopes before looking for the tier JSON.
+    # Lazy import avoids a hard module cycle at import time.
+    try:
+        from app.mission_runner import parse_claude_output
+
+        text = parse_claude_output(response)
+    except Exception as e:
+        print(
+            f"[complexity_classifier] envelope unwrap failed: {e}",
+            file=sys.stderr,
+        )
+        text = response.strip()
+
+    if not text:
+        return _DEFAULT_TIER
+
+    text = text.strip()
 
     # Strip markdown code fences if present
     if text.startswith("```"):
@@ -162,6 +182,20 @@ def _parse_tier_response(response: str) -> MissionTier:
             file=sys.stderr,
         )
         return _DEFAULT_TIER
+
+    # Nested payload: envelope unwrapped to a string that is itself the
+    # tier object, or an intermediate {"result"|"text": "<tier-json>"}.
+    if "tier" not in data:
+        for key in ("result", "content", "text"):
+            inner = data.get(key)
+            if isinstance(inner, str) and "{" in inner:
+                try:
+                    nested = json.loads(inner[inner.find("{") : inner.rfind("}") + 1])
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    continue
+                if isinstance(nested, dict) and "tier" in nested:
+                    data = nested
+                    break
 
     tier_str = str(data.get("tier", "")).lower().strip()
     tier = _TIER_MAP.get(tier_str)

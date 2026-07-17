@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "Provider Architecture"
-description: "Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Local)."
+description: "Documents the CLI provider abstraction layer, provider responsibilities, resolution flow, and the current supported providers (Claude, Cline, Codex, Copilot, Haze, Grok, Ollama-launch)."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-09
+updated: 2026-07-16
 ---
 
 # Provider Architecture
@@ -26,7 +26,17 @@ Providers are responsible for:
   state such as rotating auth tokens;
 - normalizing output handling enough for mission execution code;
 - exposing provider capabilities without leaking provider details into unrelated
-  modules.
+  modules;
+- optionally suppressing project-scope tooling via `project_context=False`
+  (Claude: `--setting-sources user`) for KOAN_ROOT runtime sessions — see
+  [claude.md](../providers/claude.md) and `specs/components/providers.md`.
+
+Post-CLI text extraction is shared: `mission_runner.parse_claude_output()`
+unwraps provider stream/json envelopes (NDJSON `stream-json` /
+`streaming-json`, single-object `result`/`text`/`content` keys) into plain
+assistant text. Call sites that parse structured model payloads — including
+`complexity_classifier._parse_tier_response` — must unwrap first so Grok/Haze
+framing does not hide the payload and force fallbacks.
 
 ## Resolution Flow
 
@@ -44,6 +54,10 @@ prefer importing from `koan.app.provider`.
 - Cline provider: Cline CLI multi-backend integration.
 - Codex provider: OpenAI Codex CLI integration.
 - Copilot provider: GitHub Copilot CLI integration with tool-name mapping.
-- Local provider: local model server integration.
+- Haze provider: multi-backend agentic CLI with stream-json.
+- Grok provider: xAI Grok Build CLI (`cli_provider: grok`) with headless
+  `streaming-json`, Claude→Grok tool-name mapping, and always-on
+  `--always-approve` for headless tool execution.
+- Ollama Launch provider: Claude CLI driven via `ollama launch claude`.
 
 Setup details live in [Provider Setup](../providers/).
