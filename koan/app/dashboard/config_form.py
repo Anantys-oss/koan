@@ -45,9 +45,13 @@ def api_project_get(name):
 
 @config_form_bp.route("/api/providers", methods=["GET"])
 def api_providers():
-    """Return registered CLI provider names so the form stays in sync."""
-    from app.provider import known_providers
-    return jsonify({"ok": True, "providers": known_providers()})
+    """Return selectable CLI provider names so the form stays in sync.
+
+    Uses ``selectable_providers()`` so test/dev-only flavors (e.g. the
+    fail-closed ``fake`` stub) never surface in the production picker.
+    """
+    from app.provider import selectable_providers
+    return jsonify({"ok": True, "providers": selectable_providers()})
 
 
 @config_form_bp.route("/api/config/settings", methods=["GET"])

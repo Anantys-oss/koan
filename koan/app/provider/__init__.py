@@ -44,6 +44,7 @@ from app.provider.claude import ClaudeProvider  # noqa: F401
 from app.provider.cline import ClineProvider  # noqa: F401
 from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
+from app.provider.fake import FakeProvider, FakeProviderNotAllowed  # noqa: F401
 from app.provider.haze import HazeProvider  # noqa: F401
 from app.provider.grok import GrokProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
@@ -118,6 +119,7 @@ _PROVIDERS = {
     "cline": ClineProvider,
     "codex": CodexProvider,
     "copilot": CopilotProvider,
+    "fake": FakeProvider,
     "haze": HazeProvider,
     "grok": GrokProvider,
     "ollama-launch": OllamaLaunchProvider,
@@ -186,8 +188,22 @@ def known_providers() -> list:
 
     Single source of truth so dashboard forms stay in sync with the registry
     instead of hardcoding a provider list that drifts as providers are added.
+    Includes test/dev-only flavors (e.g. ``fake``) so name-based lookup and
+    config validation resolve them; use :func:`selectable_providers` for
+    UI-facing pickers that should hide them.
     """
     return sorted(_PROVIDERS)
+
+
+def selectable_providers() -> list:
+    """Sorted registered providers minus test/dev-only ones (``test_only``).
+
+    UI-facing surfaces (the dashboard provider dropdown) use this so a
+    fail-closed test stub like ``fake`` never appears as a selectable option on
+    a production instance, while it stays in :func:`known_providers` for
+    name-based lookup and config validation.
+    """
+    return sorted(name for name, cls in _PROVIDERS.items() if not cls.test_only)
 
 
 def get_provider_by_name(name: str) -> CLIProvider:
@@ -248,7 +264,23 @@ def get_fallback_provider(project_name: str = "") -> Optional[CLIProvider]:
         return None
     if not flavor or flavor not in _PROVIDERS:
         return None
-    return _PROVIDERS[flavor](binary_path=path)
+    try:
+        return _PROVIDERS[flavor](binary_path=path)
+    except FakeProviderNotAllowed:
+        # A fail-closed provider (``fake``) configured as the section-wide
+        # fallback must not crash the recovery path — ``get_fallback_provider``
+        # is contractually Optional and is called on *any* non-zero mission
+        # exit (see mission_executor._maybe_fallback_provider_rerun), including
+        # real-provider failures unrelated to ``fake``. Decline it so the
+        # original result stands. The PRIMARY selection paths
+        # (get_provider/get_provider_for_role) still error loudly, so this is
+        # not a silent swap: no work is ever routed to ``fake`` here.
+        print(
+            f"[provider] cli.fallback {flavor!r} is fail-closed and not "
+            "enabled (KOAN_ALLOW_FAKE_PROVIDER unset); ignoring fallback",
+            file=sys.stderr,
+        )
+        return None
 
 
 def resolve_role_provider(model_key: str, project_name: str = "") -> CLIProvider:
