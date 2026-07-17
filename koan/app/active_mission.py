@@ -188,6 +188,24 @@ def get_execution_state(koan_root) -> dict:
     }
 
 
+def is_mission_active(koan_root) -> bool:
+    """Return True when a mission is *actively executing* right now.
+
+    The single authoritative answer to "is a mission running?" for bridge-side
+    callers (e.g. mission-aware outbox formatting, #1084). Backed by the
+    provider-liveness signal (:func:`get_execution_state`, ``.koan-active``,
+    issue #2086) — NOT by parsing the human-readable ``.koan-status`` string,
+    which is free-form and drifts.
+
+    Only ``working`` (live provider or parallel session) and ``stalled`` (live
+    PID, output gone quiet) count as active. ``idle`` (nothing running) and
+    ``zombie`` (recorded PID is dead) are NOT active — a dead PID must not
+    degrade dependent behavior forever. Never raises: ``get_execution_state``
+    already degrades an absent/corrupt signal to ``idle``.
+    """
+    return get_execution_state(koan_root).get("state") in ("working", "stalled")
+
+
 def is_zombie(koan_root, *, in_progress: bool, execution: Optional[dict] = None) -> bool:
     """Reconcile a declarative *In Progress* mission against observed liveness.
 
