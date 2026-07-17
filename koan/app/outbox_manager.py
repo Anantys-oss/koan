@@ -88,10 +88,16 @@ class OutboxManager:
         outbox_file: Path,
         instance_dir: Path,
         conversation_history_file: Path,
+        koan_root: Optional[Path] = None,
     ):
         self._outbox_file = outbox_file
         self._instance_dir = instance_dir
         self._conversation_history_file = conversation_history_file
+        # KOAN_ROOT hosts the .koan-active mission-liveness signal. Passed
+        # explicitly rather than derived so a non-standard instance_dir can't
+        # silently point the mission check at the wrong path; defaults to the
+        # conventional ``instance/``-parent for back-compat.
+        self._koan_root = koan_root if koan_root is not None else instance_dir.parent
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
@@ -269,7 +275,20 @@ class OutboxManager:
             log("error", f"Background flush_outbox failed: {e}")
 
     def _format_message(self, raw_content: str) -> str:
-        """Format outbox content via Claude with full personality context."""
+        """Format outbox content via Claude with full personality context.
+
+        While a mission is actively executing, the Claude formatting call is
+        skipped in favour of the instant local ``fallback_format`` — outbox
+        formatting is purely cosmetic and the lowest-value concurrent Claude
+        caller, so dropping it here frees API headroom for chat during missions
+        (issue #1084). Polished formatting resumes once the mission ends.
+        Re-evaluated per flush; fail-opens (formats normally) on an absent or
+        corrupt signal.
+        """
+        from app.active_mission import is_mission_active
+        if is_mission_active(self._koan_root):
+            log("outbox", "Mission active — skipping AI outbox formatting (fallback).")
+            return fallback_format(raw_content)
         try:
             soul = load_soul(self._instance_dir)
             prefs = load_human_prefs(self._instance_dir)

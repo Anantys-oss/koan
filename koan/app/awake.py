@@ -111,7 +111,7 @@ from app.chat_context import (  # noqa: E402
 # Outbox manager — singleton instance, created at module load
 # ---------------------------------------------------------------------------
 
-_outbox_mgr = OutboxManager(OUTBOX_FILE, INSTANCE_DIR, CONVERSATION_HISTORY_FILE)
+_outbox_mgr = OutboxManager(OUTBOX_FILE, INSTANCE_DIR, CONVERSATION_HISTORY_FILE, koan_root=KOAN_ROOT)
 
 
 def _get_last_message_id() -> int:
@@ -414,7 +414,7 @@ def handle_chat(text: str):
 
 def _make_outbox_mgr() -> OutboxManager:
     """Create an OutboxManager from the current (possibly patched) module values."""
-    return OutboxManager(OUTBOX_FILE, INSTANCE_DIR, CONVERSATION_HISTORY_FILE)
+    return OutboxManager(OUTBOX_FILE, INSTANCE_DIR, CONVERSATION_HISTORY_FILE, koan_root=KOAN_ROOT)
 
 
 def _staging_path():

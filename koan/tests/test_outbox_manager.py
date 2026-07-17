@@ -436,6 +436,48 @@ class TestFormatMessage:
         result = mgr._format_message("raw")
         assert result == "fallback result"
 
+    @patch("app.outbox_manager.format_message", return_value="AI formatted")
+    @patch("app.outbox_manager.fallback_format", return_value="quick fallback")
+    @patch("app.active_mission.is_mission_active", return_value=True)
+    @patch("app.outbox_manager.log")
+    def test_skips_ai_formatting_while_mission_active(
+        self, mock_log, mock_active, mock_fallback, mock_format, outbox_env
+    ):
+        """During an active mission, formatting uses the instant fallback and
+        makes no Claude call — freeing API headroom for chat (#1084)."""
+        mgr, _, _ = outbox_env
+        result = mgr._format_message("raw content")
+        assert result == "quick fallback"
+        mock_fallback.assert_called_once_with("raw content")
+        mock_format.assert_not_called()
+
+    @patch("app.outbox_manager.format_message", return_value="AI formatted")
+    @patch("app.outbox_manager.load_memory_context", return_value="memory")
+    @patch("app.outbox_manager.load_human_prefs", return_value="prefs")
+    @patch("app.outbox_manager.load_soul", return_value="soul")
+    @patch("app.active_mission.is_mission_active", return_value=False)
+    @patch("app.outbox_manager.log")
+    def test_uses_ai_formatting_when_no_mission(
+        self, mock_log, mock_active, mock_soul, mock_prefs, mock_memory, mock_format, outbox_env
+    ):
+        mgr, _, _ = outbox_env
+        result = mgr._format_message("raw content")
+        assert result == "AI formatted"
+        mock_format.assert_called_once()
+
+    def test_defaults_koan_root_to_instance_parent(self, outbox_env):
+        mgr, _, instance_dir = outbox_env
+        assert mgr._koan_root == instance_dir.parent
+
+    def test_explicit_koan_root_is_honoured(self, tmp_path):
+        koan_root = tmp_path / "explicit-root"
+        koan_root.mkdir()
+        mgr = OutboxManager(
+            tmp_path / "outbox.md", tmp_path / "inst", tmp_path / "c.jsonl",
+            koan_root=koan_root,
+        )
+        assert mgr._koan_root == koan_root
+
 
 class TestExpandGitHubRefs:
     """GitHub reference expansion in formatted messages."""
