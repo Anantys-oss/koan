@@ -101,6 +101,7 @@ Your `.env` file is missing or the variable name is wrong. Double-check the form
 
 - Telegram has a 4000-character limit per message. Long messages are auto-chunked. Messages containing ` ``` ` code blocks are converted to HTML `<pre>` and chunked at code-block boundaries so a split never leaves an unbalanced `<pre>` tag (which Telegram rejects with a parse error, dropping the whole message — e.g. a long `/report`).
 - Duplicate messages within 5 minutes are flood-protected (first duplicate triggers a warning, subsequent ones are silently dropped).
+- **Duplicate startup/shutdown notices across restarts are also suppressed.** The flood protection above lives in memory and resets on every process restart, so a crash/restart loop (or repeated `stop`+`start`) used to re-announce idempotent lifecycle notices — "🌅 Running morning ritual…", "🛑 Shutting down…" — once per incarnation. These now dedupe across restarts (and across providers) via a persistent `instance/.notify-dedup.json` window (default 5 min), so you see each notice once even if the process restarts several times in quick succession. The dedup is fail-open: if its state file is unreadable, the notice is sent rather than dropped. (Event-bearing lines like "📬 GitHub: N new mission(s) queued." are intentionally not deduped — that count can differ per real batch.)
 
 ## Group chats
 

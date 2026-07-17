@@ -849,8 +849,15 @@ def run_startup(koan_root: str, instance: str, projects: list):
     _safe_run("Daily report", run_daily_report)
 
     # Startup-status pings use _notify_raw so the 🌅/⚠️ markers and exact
-    # wording reach Telegram intact (no Claude CLI rewrite).
-    _notify_raw(instance, "🌅 Running morning ritual (Claude CLI, up to ~90s)...")
+    # wording reach Telegram intact (no Claude CLI rewrite). These are
+    # idempotent lifecycle notices — dedup across incarnations (#2426) so a
+    # restart loop doesn't re-announce the ritual on every startup.
+    from app.notify_dedup import NOTICE_DEDUP_WINDOW_SECONDS
+    _notify_raw(
+        instance,
+        "🌅 Running morning ritual (Claude CLI, up to ~90s)...",
+        dedup_window=NOTICE_DEDUP_WINDOW_SECONDS,
+    )
     ritual_error = ""
     with protected_phase("Morning ritual"):
         try:
@@ -860,12 +867,20 @@ def run_startup(koan_root: str, instance: str, projects: list):
             ritual_ok = None
             ritual_error = str(e)
     if ritual_ok:
-        _notify_raw(instance, "🌅 Morning ritual complete — preparing first iteration.")
+        _notify_raw(
+            instance,
+            "🌅 Morning ritual complete — preparing first iteration.",
+            dedup_window=NOTICE_DEDUP_WINDOW_SECONDS,
+        )
     elif ritual_ok is None:
         reason = f" ({ritual_error})" if ritual_error else ""
         _notify_raw(instance, f"⚠️ Morning ritual failed{reason} — preparing first iteration anyway.")
     else:
-        _notify_raw(instance, "⏭️ Morning ritual skipped — preparing first iteration.")
+        _notify_raw(
+            instance,
+            "⏭️ Morning ritual skipped — preparing first iteration.",
+            dedup_window=NOTICE_DEDUP_WINDOW_SECONDS,
+        )
 
     # Initialize hook system and fire session_start
     from app.hooks import fire_hook, init_hooks

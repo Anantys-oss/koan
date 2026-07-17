@@ -878,7 +878,13 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     if any_running:
         try:
             from app.notify import send_telegram
-            send_telegram("🛑 Shutting down — operator requested stop.")
+            from app.notify_dedup import NOTICE_DEDUP_WINDOW_SECONDS
+            # Dedup across incarnations (#2426): a repeated stop+start / restart
+            # loop must not re-announce the same shutdown line each time.
+            send_telegram(
+                "🛑 Shutting down — operator requested stop.",
+                dedup_window=NOTICE_DEDUP_WINDOW_SECONDS,
+            )
         except Exception as e:
             print(f"[pid_manager] stop notification failed: {e}", file=sys.stderr)
 

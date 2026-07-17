@@ -619,17 +619,20 @@ def _notify(instance: str, message: str):
         log("error", f"Notification failed: {e}")
 
 
-def _notify_raw(instance: str, message: str):
+def _notify_raw(instance: str, message: str, dedup_window: float = 0.0):
     """Send a notification straight to Telegram, skipping the Claude-CLI
     personality reformatter (notify.format_and_send → format_outbox.
     format_message). Use this for terse status updates (startup progress,
     auto-update restarts) where the verbatim text and emoji matter and the
     extra Claude CLI call would defeat the point. send_telegram still
     handles priority filtering, flood protection, and retries.
+
+    Pass dedup_window > 0 for idempotent lifecycle notices (#2426) so a restart
+    loop doesn't re-announce them on every incarnation.
     """
     try:
         from app.notify import send_telegram
-        send_telegram(message)
+        send_telegram(message, dedup_window=dedup_window)
     except Exception as e:
         log("error", f"Raw notification failed: {e}")
 

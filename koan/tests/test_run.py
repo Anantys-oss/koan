@@ -3786,7 +3786,7 @@ class TestNotifyRaw:
     def test_calls_send_telegram_directly(self, mock_send):
         from app.run import _notify_raw
         _notify_raw("/tmp/instance", "🔍 verbatim test")
-        mock_send.assert_called_once_with("🔍 verbatim test")
+        mock_send.assert_called_once_with("🔍 verbatim test", dedup_window=0.0)
 
     @patch("app.run.log")
     @patch("app.notify.send_telegram", side_effect=RuntimeError("boom"))
