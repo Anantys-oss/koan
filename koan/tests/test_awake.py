@@ -2282,9 +2282,9 @@ class TestPauseAwareness:
         assert "Active" in status
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.chat_context.load_recent_history", return_value=[])
+    @patch("app.chat_context.format_conversation_history", return_value="")
+    @patch("app.chat_context.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -2299,9 +2299,9 @@ class TestPauseAwareness:
         missions_file = tmp_path / "missions.md"
         missions_file.write_text("# Missions\n\n## Pending\n\n- fix bug\n\n## In Progress\n\n")
 
-        with patch("app.awake.INSTANCE_DIR", tmp_path), \
-             patch("app.awake.KOAN_ROOT", tmp_path), \
-             patch("app.awake.MISSIONS_FILE", missions_file), \
+        with patch("app.chat_context.INSTANCE_DIR", tmp_path), \
+             patch("app.chat_context.KOAN_ROOT", tmp_path), \
+             patch("app.chat_context.MISSIONS_FILE", missions_file), \
              patch("app.awake.SOUL", "test soul"), \
              patch("app.awake.SUMMARY", ""):
             prompt = _build_chat_prompt("what are you doing?")
@@ -2310,9 +2310,9 @@ class TestPauseAwareness:
         assert "PAUSED" in prompt or "⏸️" in prompt
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.chat_context.load_recent_history", return_value=[])
+    @patch("app.chat_context.format_conversation_history", return_value="")
+    @patch("app.chat_context.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -2327,9 +2327,9 @@ class TestPauseAwareness:
         missions_file = tmp_path / "missions.md"
         missions_file.write_text("# Missions\n\n## Pending\n\n- fix bug\n\n## In Progress\n\n")
 
-        with patch("app.awake.INSTANCE_DIR", tmp_path), \
-             patch("app.awake.KOAN_ROOT", tmp_path), \
-             patch("app.awake.MISSIONS_FILE", missions_file), \
+        with patch("app.chat_context.INSTANCE_DIR", tmp_path), \
+             patch("app.chat_context.KOAN_ROOT", tmp_path), \
+             patch("app.chat_context.MISSIONS_FILE", missions_file), \
              patch("app.awake.SOUL", "test soul"), \
              patch("app.awake.SUMMARY", ""):
             prompt = _build_chat_prompt("what are you doing?")
@@ -3149,9 +3149,9 @@ class TestBuildChatPromptMissionsReadProtection:
     """Tests that _build_chat_prompt handles OSError on missions.md read."""
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.chat_context.load_recent_history", return_value=[])
+    @patch("app.chat_context.format_conversation_history", return_value="")
+    @patch("app.chat_context.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -3167,9 +3167,9 @@ class TestBuildChatPromptMissionsReadProtection:
         mock_missions.exists.return_value = True
         mock_missions.read_text.side_effect = OSError("locked")
 
-        with patch("app.awake.INSTANCE_DIR", tmp_path), \
-             patch("app.awake.KOAN_ROOT", tmp_path), \
-             patch("app.awake.MISSIONS_FILE", mock_missions), \
+        with patch("app.chat_context.INSTANCE_DIR", tmp_path), \
+             patch("app.chat_context.KOAN_ROOT", tmp_path), \
+             patch("app.chat_context.MISSIONS_FILE", mock_missions), \
              patch("app.awake.SOUL", "test soul"), \
              patch("app.awake.SUMMARY", ""):
             # Should not raise
@@ -3426,9 +3426,9 @@ class TestBuildChatPromptHardTruncation:
     """Tests that _build_chat_prompt truncates user text as last resort."""
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.chat_context.load_recent_history", return_value=[])
+    @patch("app.chat_context.format_conversation_history", return_value="")
+    @patch("app.chat_context.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -3442,9 +3442,9 @@ class TestBuildChatPromptHardTruncation:
         # Create a very long user message that will exceed 12k even in lite mode
         long_text = "x" * 15000
 
-        with patch("app.awake.INSTANCE_DIR", tmp_path), \
-             patch("app.awake.KOAN_ROOT", tmp_path), \
-             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
+        with patch("app.chat_context.INSTANCE_DIR", tmp_path), \
+             patch("app.chat_context.KOAN_ROOT", tmp_path), \
+             patch("app.chat_context.MISSIONS_FILE", tmp_path / "missions.md"), \
              patch("app.awake.SOUL", "test soul"), \
              patch("app.awake.SUMMARY", ""):
             prompt = _build_chat_prompt(long_text, lite=True)
@@ -3455,9 +3455,9 @@ class TestBuildChatPromptHardTruncation:
         assert "[truncated]" in prompt
 
     @patch("app.awake.save_conversation_message")
-    @patch("app.awake.load_recent_history", return_value=[])
-    @patch("app.awake.format_conversation_history", return_value="")
-    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.chat_context.load_recent_history", return_value=[])
+    @patch("app.chat_context.format_conversation_history", return_value="")
+    @patch("app.chat_context.get_tools_description", return_value="")
     @patch("app.awake.get_chat_tools", return_value="")
     @patch("app.awake.send_telegram", return_value=True)
     @patch("app.awake.subprocess.run")
@@ -3470,9 +3470,9 @@ class TestBuildChatPromptHardTruncation:
 
         short_text = "hello, how are you?"
 
-        with patch("app.awake.INSTANCE_DIR", tmp_path), \
-             patch("app.awake.KOAN_ROOT", tmp_path), \
-             patch("app.awake.MISSIONS_FILE", tmp_path / "missions.md"), \
+        with patch("app.chat_context.INSTANCE_DIR", tmp_path), \
+             patch("app.chat_context.KOAN_ROOT", tmp_path), \
+             patch("app.chat_context.MISSIONS_FILE", tmp_path / "missions.md"), \
              patch("app.awake.SOUL", "test soul"), \
              patch("app.awake.SUMMARY", ""):
             prompt = _build_chat_prompt(short_text, lite=True)
@@ -3895,26 +3895,5 @@ def test_periodic_compaction_disabled_when_interval_zero():
         assert new_ts == 0.0
 
 
-def test_read_sections_cached_serves_within_ttl():
-    awake._sections_cache["ts"] = 0.0
-    awake._sections_cache["value"] = None
-    with patch("app.mission_store.transition.read_sections",
-               return_value={"pending": ["m"]}) as mock_read, \
-         patch("app.awake.time.time", side_effect=[100.0, 101.0]):
-        first = awake._read_sections_cached("/x")
-        second = awake._read_sections_cached("/x")
-    assert first == second == {"pending": ["m"]}
-    mock_read.assert_called_once()  # second call served from cache
-
-
-def test_read_sections_cached_expires_after_ttl():
-    awake._sections_cache["ts"] = 0.0
-    awake._sections_cache["value"] = None
-    with patch("app.mission_store.transition.read_sections",
-               side_effect=[{"pending": ["a"]}, {"pending": ["b"]}]) as mock_read, \
-         patch("app.awake.time.time", side_effect=[100.0, 200.0]):
-        first = awake._read_sections_cached("/x")
-        second = awake._read_sections_cached("/x")
-    assert first == {"pending": ["a"]}
-    assert second == {"pending": ["b"]}  # TTL expired → re-read
-    assert mock_read.call_count == 2
+# read_sections_cached TTL tests moved to test_chat_context.py (the cache now
+# lives in chat_context.py — specs/007-chat-process/).
