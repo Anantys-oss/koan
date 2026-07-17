@@ -42,6 +42,7 @@ awake.py (loop, ~3s poll)
 | `bridge_state.py` | Module-level shared state (config, paths, registries). The seam that breaks the awake↔handlers circular import. |
 | `notify.py::format_and_send` | Invokes Claude CLI to format outbound messages. **Tests must mock this** — it is the only Claude subprocess call in the bridge path. |
 | `notify.py` | Flood protection on outbound Telegram. |
+| `notify.py::send_telegram(dedup_window=…)` + `notify_dedup.py` | Cross-incarnation dedup for idempotent lifecycle notices. Provider flood protection is per-process (resets on restart); this persists to `instance/.notify-dedup.json` so a restart loop / repeated stop+start doesn't re-announce the same notice N times. Opt-in per call site; fail-open. |
 
 ## Invariants
 
@@ -81,6 +82,25 @@ awake.py (loop, ~3s poll)
   `reexec_bridge()` (`os.execv`, same PID) as a backstop. The watchdog must
   never restart mid-worker, and a baseline-safety guard refuses to arm when
   the threshold isn't safely above the current RSS.
+- **Idempotent lifecycle notices dedupe across incarnations (#2426).** The
+  provider's flood suppression (`notify.py`) only spans a single long-lived
+  process, so when the agent loop / bridge (re)starts several times in a short
+  window — a crash/restart loop, or a supervisor doing repeated `stop`+`start`
+  — each fresh process re-announces the same idempotent notice ("🌅 Running
+  morning ritual…", "🛑 Shutting down…") and the operator sees it duplicated.
+  `send_telegram(..., dedup_window=N)`
+  consults a persistent `instance/.notify-dedup.json` map so an identical notice
+  within `N` seconds (default `NOTICE_DEDUP_WINDOW_SECONDS` = 300, matching the
+  flood window) is suppressed regardless of which incarnation emits it. It is
+  **opt-in** — only pure-status lifecycle notices pass a window, so ordinary
+  messages are untouched. Notices that carry an event (e.g. "📬 GitHub: N new
+  mission(s) queued.") are deliberately **not** deduped: their text keys only on
+  a count, so distinct batches of the same size would collapse and hide a real
+  notification — that duplication is a symptom of restart re-polling and belongs
+  to mission-queue dedup, not the notice layer. Dedup is **fail-open**: any
+  store error resolves to "send it," never a dropped message. A send that fails
+  (falsy return or exception) releases its reservation so the notice can be
+  retried within the window.
 
 ## Integration points
 

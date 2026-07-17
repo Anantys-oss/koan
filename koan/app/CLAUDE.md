@@ -148,6 +148,7 @@ Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `
 - `missions.md` — Generated **read-only export** of the mission store (human-readable; edits ignored after the one-time sync)
 - `outbox.md` — Bot → Telegram message queue (written atomically by `append_to_outbox()`)
 - `outbox-sending.md` — Crash-safety staging file for outbox flush; `OutboxManager.recover_staged()` re-sends on restart
+- `.notify-dedup.json` — Persistent `{hash: last_sent_ts}` map for cross-restart dedup of idempotent lifecycle notices (`notify_dedup.py`, #2426); prunes entries older than the dedup window
 - `config.yaml` — Per-instance configuration (tools, auto-merge rules)
 - `soul.md` — Agent personality definition
 - `memory/` — Global summary + per-project learnings/context + `memory.db` (SQLite FTS5 index)

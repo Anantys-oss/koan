@@ -366,7 +366,8 @@ def _apply_priority_emoji(text: str, priority: NotificationPriority) -> str:
 
 
 def send_telegram(text: str,
-                  priority: NotificationPriority = NotificationPriority.ACTION) -> bool:
+                  priority: NotificationPriority = NotificationPriority.ACTION,
+                  dedup_window: float = 0.0) -> bool:
     """Send a message via the active messaging provider (with flood protection).
 
     Retry logic is handled at the HTTP request level inside the provider's
@@ -379,6 +380,12 @@ def send_telegram(text: str,
     Args:
         text: Message text to send
         priority: Notification priority level (default: ACTION)
+        dedup_window: When > 0, dedupe this exact text across process
+            incarnations for ``dedup_window`` seconds (#2426). Opt-in — used for
+            idempotent lifecycle notices (startup/shutdown/queued-aggregate) so a
+            restart loop or repeated stop+start doesn't re-announce them N times.
+            The provider's own flood protection only covers a single long-lived
+            process; this persists across restarts and both providers.
 
     Returns:
         True if the message was delivered successfully.
@@ -391,21 +398,41 @@ def send_telegram(text: str,
         _write_suppressed_to_journal(text, priority)
         return NOTIFICATION_SUPPRESSED
 
+    # Cross-restart dedup for opt-in idempotent notices. Keyed on the raw text
+    # before priority-emoji / URL transforms so callers dedupe on the logical
+    # message. Fail-open: claim_notice() returns True on any infra error.
+    if dedup_window > 0:
+        from app.notify_dedup import claim_notice
+        if not claim_notice(text, dedup_window):
+            log.info("Duplicate lifecycle notice suppressed (dedup): %s", text[:80])
+            return True
+
     # Prepend priority emoji for urgent and warning messages (idempotent)
-    text = _apply_priority_emoji(text, priority)
+    display_text = _apply_priority_emoji(text, priority)
 
     # Keep links clickable: separate trailing punctuation from URLs
     from app.text_utils import separate_url_trailing_punctuation
-    text = separate_url_trailing_punctuation(text)
+    display_text = separate_url_trailing_punctuation(display_text)
 
     reply_to = get_reply_context()
 
+    result = False
     try:
-        from app.messaging import get_messaging_provider
-        provider = get_messaging_provider()
-        return provider.send_message(text, reply_to_message_id=reply_to)
-    except SystemExit:
-        return _direct_send(text, reply_to=reply_to)
+        try:
+            from app.messaging import get_messaging_provider
+            provider = get_messaging_provider()
+            result = provider.send_message(display_text, reply_to_message_id=reply_to)
+        except SystemExit:
+            result = _direct_send(display_text, reply_to=reply_to)
+        return result
+    finally:
+        # Release a claimed reservation whenever the send did not succeed —
+        # whether it returned falsy OR raised — so the notice can be retried
+        # within the window instead of being silently suppressed. The finally
+        # runs before any exception propagates, so a claim never leaks.
+        if dedup_window > 0 and not result:
+            from app.notify_dedup import release_notice
+            release_notice(text)
 
 
 def _get_file_mtime(path: Path) -> float:
