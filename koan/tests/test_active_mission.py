@@ -129,6 +129,37 @@ def test_is_zombie_true_when_run_loop_stale(koan_root):
     assert am.is_zombie(koan_root, in_progress=True) is True
 
 
+def test_is_mission_active_true_for_live_provider(koan_root):
+    am.write_active(koan_root, pid=os.getpid())
+    assert am.is_mission_active(koan_root) is True
+
+
+def test_is_mission_active_true_when_stalled(koan_root, tmp_path):
+    # Live PID but output gone quiet → "stalled" still counts as an active mission.
+    missing = tmp_path / "gone.log"
+    am.write_active(koan_root, pid=os.getpid(), stdout_file=str(missing))
+    assert am.get_execution_state(koan_root)["state"] == "stalled"
+    assert am.is_mission_active(koan_root) is True
+
+
+def test_is_mission_active_false_when_idle(koan_root):
+    assert am.is_mission_active(koan_root) is False
+
+
+def test_is_mission_active_false_for_zombie(koan_root):
+    # A recorded-but-dead PID must not read as an active mission (would degrade
+    # dependent behavior forever).
+    am.write_active(koan_root, pid=2_147_483_646)
+    assert am.get_execution_state(koan_root)["state"] == "zombie"
+    assert am.is_mission_active(koan_root) is False
+
+
+def test_is_mission_active_false_on_corrupt_signal(koan_root):
+    (koan_root / ACTIVE_FILE).write_text("{ not json")
+    # Degrades to "not active" without raising.
+    assert am.is_mission_active(koan_root) is False
+
+
 def _register_running_session(koan_root, pid):
     """Register a running parallel session under koan_root/instance."""
     from app.session_manager import Session, SessionRegistry
