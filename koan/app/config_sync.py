@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,14 @@ from app import config as _config
 from app.utils import atomic_write
 
 BASELINE_FILE = ".koan-config-baseline.json"
+
+
+class _ConfigReadError(Exception):
+    """A config/baseline file exists on disk but could not be parsed.
+
+    Distinct from 'file absent' — a broken file must surface a restart-pending
+    state rather than being silently treated as empty/synced.
+    """
 
 
 def _config_path(koan_root: Path) -> Path:
@@ -35,8 +44,10 @@ def _read_yaml(path: Path) -> dict:
     try:
         with open(path, "r") as f:
             return yaml.safe_load(f) or {}
-    except (yaml.YAMLError, OSError):
-        return {}
+    except (yaml.YAMLError, OSError) as e:
+        # A malformed file parsed to {} would masquerade as "empty config",
+        # misclassifying the diff. Surface it so callers can report an error.
+        raise _ConfigReadError(f"{path.name}: {e}") from e
 
 
 def _flatten(data: Any, prefix: str = "") -> Dict[str, Any]:
@@ -60,7 +71,9 @@ def _snapshot(koan_root: Path) -> Dict[str, Dict[str, Any]]:
 def write_baseline(koan_root: Path) -> None:
     """Persist the current config as the post-restart baseline."""
     path = koan_root / "instance" / BASELINE_FILE
-    with contextlib.suppress(OSError):
+    # If config is broken at startup there is no meaningful baseline to
+    # snapshot; skip rather than crash the startup hook.
+    with contextlib.suppress(OSError, _ConfigReadError):
         atomic_write(path, json.dumps(_snapshot(koan_root)))
 
 
@@ -70,8 +83,10 @@ def _read_baseline(koan_root: Path) -> Optional[Dict[str, Dict[str, Any]]]:
         return None
     try:
         return json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
+    except (json.JSONDecodeError, OSError) as e:
+        # Corrupt baseline != absent baseline. Raise so compute_status reports
+        # restart-pending instead of a false "synced".
+        raise _ConfigReadError(f"{BASELINE_FILE}: {e}") from e
 
 
 def _is_safe(dotted: str) -> bool:
@@ -87,30 +102,42 @@ def _diff_keys(base: Dict[str, Any], cur: Dict[str, Any]) -> List[str]:
     return sorted(changed)
 
 
+def _synced_block() -> Dict[str, Any]:
+    return {
+        "synced": True,
+        "restart_pending": False,
+        "changed_safe_keys": [],
+        "changed_unsafe_keys": [],
+    }
+
+
 def compute_status(koan_root: Path) -> Dict[str, Any]:
     """Return the config-sync status block for the SSE payload / API."""
     koan_root = Path(koan_root)
 
     # Feature disabled -> suppress all UI feedback (badge/toast/modal).
     if not _config.is_config_sync_enabled():
-        return {
-            "synced": True,
-            "restart_pending": False,
-            "changed_safe_keys": [],
-            "changed_unsafe_keys": [],
-        }
+        return _synced_block()
 
-    baseline = _read_baseline(koan_root)
-    current = _snapshot(koan_root)
+    try:
+        baseline = _read_baseline(koan_root)
+        current = _snapshot(koan_root)
+    except _ConfigReadError as e:
+        # A corrupt baseline or unparseable config MUST NOT report "synced" —
+        # that would silently hide changes needing a restart, the exact failure
+        # the closed allowlist guards against. Surface a distinct error state.
+        print(f"[config_sync] {e}", file=sys.stderr)
+        return {
+            "synced": False,
+            "restart_pending": True,
+            "changed_safe_keys": [],
+            "changed_unsafe_keys": [f"<config read error: {e}>"],
+            "error": str(e),
+        }
 
     # No baseline (agent never recorded one) -> never block the UI.
     if baseline is None:
-        return {
-            "synced": True,
-            "restart_pending": False,
-            "changed_safe_keys": [],
-            "changed_unsafe_keys": [],
-        }
+        return _synced_block()
 
     safe_keys: List[str] = []
     unsafe_keys: List[str] = []

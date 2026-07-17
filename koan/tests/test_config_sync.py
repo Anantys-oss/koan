@@ -70,6 +70,28 @@ def test_missing_baseline_reports_synced(koan_root):
     assert status["synced"] is True
 
 
+def test_corrupt_baseline_reports_restart_pending(koan_root):
+    # A corrupt (existing but unparseable) baseline must NOT report synced --
+    # that would silently hide changes needing a restart.
+    _write_config(koan_root, {"dashboard": {"nickname": "Koan"}})
+    (koan_root / "instance" / config_sync.BASELINE_FILE).write_text("{not json")
+    status = config_sync.compute_status(koan_root)
+    assert status["synced"] is False
+    assert status["restart_pending"] is True
+    assert "error" in status
+
+
+def test_malformed_config_reports_restart_pending(koan_root):
+    # A malformed config.yaml must surface an error state, not parse to {}.
+    _write_config(koan_root, {"dashboard": {"nickname": "Koan"}})
+    config_sync.write_baseline(koan_root)
+    (koan_root / "instance" / "config.yaml").write_text("key: [unclosed\n")
+    status = config_sync.compute_status(koan_root)
+    assert status["synced"] is False
+    assert status["restart_pending"] is True
+    assert "error" in status
+
+
 def test_disabled_flag_suppresses_status(koan_root, monkeypatch):
     # An unsafe change would normally set restart_pending, but the disable
     # flag must suppress all UI feedback.
