@@ -53,6 +53,12 @@ class TestHandleRouting:
         assert "Usage:" in result
         assert "/rr" in result
 
+    def test_usage_message_mentions_fix(self, handler, ctx):
+        """The usage text must reflect that the rebase leg carries --fix, so
+        users understand /rr applies review feedback (not a bare rebase)."""
+        result = handler.handle(ctx)
+        assert "--fix" in result
+
     def test_invalid_url_returns_error(self, handler, ctx):
         ctx.args = "not-a-url"
         result = handler.handle(ctx)

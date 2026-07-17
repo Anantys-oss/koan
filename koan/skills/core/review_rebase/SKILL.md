@@ -11,7 +11,7 @@ github_context_aware: true
 sub_commands: [review, "rebase --fix"]
 commands:
   - name: reviewrebase
-    description: "Queue /review then /rebase for a PR — review insights feed the rebase"
+    description: "Queue /review then /rebase --fix for a PR — review insights feed the rebase, which then applies the feedback"
     usage: "/reviewrebase [--now] <github-pr-url>"
     aliases: [rr]
 handler: handler.py
