@@ -1465,6 +1465,8 @@ quota error, Koan still detects it and pauses.
 /models
 ```
 
+When a slot is routed to a **custom CLI** via the `cli:` config section (e.g. `cli.default.review_mode: "claude:/root/.local/bin/claude-deep"`), the line is annotated with the resolved binary — `review_mode: opus  [cli: claude-deep]`. Slots on the global provider show no annotation. This makes it obvious at a glance which mission types run a different CLI binary than the default.
+
 The active provider is also shown in `/status` output. See [Provider-specific model config](#provider-specific-model-config) below for how to configure `models.claude:` / `models.codex:` sections.
 
 **`/config_check`** — Detect drift between your `instance/config.yaml` and the template at `instance.example/config.yaml`. Reports two things:
