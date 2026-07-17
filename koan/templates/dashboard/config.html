@@ -431,6 +431,10 @@
         { key: 'devcontainer', type: 'bool' },
         { key: 'max_open_prs', type: 'int' },
         { key: 'max_pending_branches', type: 'int' },
+        { key: 'github_url', type: 'text' },
+        { key: 'git_auto_merge.enabled', type: 'bool' },
+        { key: 'git_auto_merge.base_branch', type: 'text' },
+        { key: 'git_auto_merge.strategy', type: 'select', options: ['', 'squash', 'merge', 'rebase'] },
     ];
 
     function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
@@ -440,6 +444,8 @@
             return `<label class="k-check"><input type="checkbox" data-key="${f.key}" ${val ? 'checked' : ''}> ${f.key}</label>`;
         if (f.type === 'int')
             return `<label class="k-field">${f.key}<input type="number" class="k-input" data-key="${f.key}" value="${val == null ? '' : esc(val)}"></label>`;
+        if (f.type === 'text')
+            return `<label class="k-field">${f.key}<input type="text" class="k-input" data-key="${f.key}" value="${val == null ? '' : esc(val)}"></label>`;
         const opts = f.options.map(o => `<option value="${esc(o)}" ${o === (val == null ? '' : val) ? 'selected' : ''}>${o || '(default)'}</option>`).join('');
         return `<label class="k-field">${f.key}<select class="k-select" data-key="${f.key}">${opts}</select></label>`;
     }
