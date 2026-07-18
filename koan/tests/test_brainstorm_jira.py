@@ -153,3 +153,44 @@ class TestSubReferenceResolution:
         )
         # run still succeeds despite the update raising
         assert res["success"] is True
+
+
+class TestMasterLinking:
+    def test_jira_links_master_to_each_sub(self):
+        urls = [
+            "https://test/browse/PROJ-1",
+            "https://test/browse/PROJ-2",
+            "https://test/browse/PROJ-100",  # master
+        ]
+        res = _run("jira", urls)
+        # one link per created sub-issue (2), master → sub
+        assert res["link_issues"].call_count == 2
+        parents = {c.args[0] for c in res["link_issues"].call_args_list}
+        children = {c.args[1] for c in res["link_issues"].call_args_list}
+        assert parents == {"https://test/browse/PROJ-100"}
+        assert children == {
+            "https://test/browse/PROJ-1",
+            "https://test/browse/PROJ-2",
+        }
+
+    def test_github_run_succeeds_with_linking_step(self):
+        # The runner invokes the neutral link_issues service uniformly; on
+        # GitHub the *backend* is a no-op (verified in the client tests), so no
+        # native links are created and the run is unaffected.
+        urls = [
+            "https://github.com/o/r/issues/1",
+            "https://github.com/o/r/issues/2",
+            "https://github.com/o/r/issues/100",
+        ]
+        res = _run("github", urls)
+        assert res["success"] is True
+
+    def test_link_failure_is_non_fatal(self):
+        urls = [
+            "https://test/browse/PROJ-1",
+            "https://test/browse/PROJ-2",
+            "https://test/browse/PROJ-100",
+        ]
+        res = _run("jira", urls, link_side_effect=RuntimeError("link boom"))
+        assert res["success"] is True
+        assert "PROJ-100" in res["summary"]

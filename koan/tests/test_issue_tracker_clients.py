@@ -338,6 +338,24 @@ class TestJiraIssueTracker:
             )
         assert ok is False
 
+    def test_link_issues_delegates_to_jira_link(self):
+        with patch(f"{_JIRA}.jira_link_issues", return_value=True) as mock_link:
+            ok = JiraIssueTracker(project_key="PROJ").link_issues(
+                "https://org.atlassian.net/browse/PROJ-1",
+                "https://org.atlassian.net/browse/PROJ-2",
+            )
+        assert ok is True
+        assert mock_link.call_args[0][0] == "PROJ-1"
+        assert mock_link.call_args[0][1] == "PROJ-2"
+
+    def test_link_issues_returns_false_on_error(self):
+        with patch(f"{_JIRA}.jira_link_issues", side_effect=RuntimeError("boom")):
+            ok = JiraIssueTracker(project_key="PROJ").link_issues(
+                "https://org.atlassian.net/browse/PROJ-1",
+                "https://org.atlassian.net/browse/PROJ-2",
+            )
+        assert ok is False
+
     def test_find_existing_plan_issue_none_without_key(self):
         ref = JiraIssueTracker(project_key="").find_existing_plan_issue("idea")
         assert ref is None
