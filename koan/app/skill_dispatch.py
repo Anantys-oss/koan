@@ -27,7 +27,11 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.github_url_parser import ISSUE_URL_PATTERN, JIRA_ISSUE_URL_PATTERN, PR_URL_PATTERN
-from app.missions import extract_now_flag, strip_all_lifecycle_markers
+from app.missions import (
+    extract_now_flag,
+    strip_all_lifecycle_markers,
+    strip_system_metadata,
+)
 from app.run_log import log_safe as _log_skill, suppress_logged
 from app.utils import (
     PROJECT_TAG_PREFIX_RE,
@@ -716,18 +720,29 @@ def _build_rebase_cmd(
 ) -> Optional[List[str]]:
     """Build rebase command, extracting an optional severity filter.
 
-    Accepts severity keywords after the PR URL:
-        /rebase <url> critical      → --min-severity critical
-        /rebase <url> --important   → --min-severity warning
-        /rebase <url>               → no filter (address everything)
+    The review-feedback leg is opt-in via ``--fix``. It is also implied by any
+    trailing text after the URL (a severity keyword or free-text focus), since
+    that text only makes sense when feedback is being addressed. A bare
+    ``/rebase <url>`` performs a pure rebase.
+
+        /rebase <url>                    → rebase only
+        /rebase <url> --fix              → rebase + address feedback
+        /rebase <url> critical           → --fix + --min-severity critical
+        /rebase <url> --important        → --fix + --min-severity warning
+        /rebase <url> fix the auth bug   → --fix (free-text focus threaded on)
     """
     url_match = _PR_URL_RE.search(args)
     if not url_match:
         return None
     cmd = base_cmd + [url_match.group(0), "--project-path", project_path]
 
-    # Look for severity keyword in the text after the URL
+    # Enable the feedback leg on an explicit --fix (which may sit before the
+    # URL, e.g. combo expansion "/rebase --fix <url>") or any trailing text.
     remainder = args[url_match.end():]
+    if "--fix" in args.split() or remainder.strip():
+        cmd.append("--fix")
+
+    # Look for severity keyword in the text after the URL
     sev_match = _SEVERITY_TOKEN_RE.search(remainder)
     if sev_match:
         from app.rebase_pr import parse_severity  # lazy import to avoid circular dep
@@ -1300,9 +1315,13 @@ def dispatch_skill_mission(
         return None
 
     parsed_project, command, args = parse_skill_mission(mission_text)
-    # Strip all lifecycle markers (⏳, ▶, ❌, ✅) and the 📬 GitHub origin
-    # marker — they are metadata, not arguments for the skill runner.
-    args = strip_all_lifecycle_markers(args).replace("📬", "").strip()
+    # Strip lifecycle markers (⏳, ▶, ❌, ✅) and queue-appended system
+    # metadata (📬/🎫 origin markers, [complexity:X], [r:N]) — they are
+    # metadata, not arguments for the skill runner. In particular they survive
+    # requeue, so leaving them in would let a trailing [complexity:…]/[r:…] on
+    # a requeued bare `/rebase <url>` be read as user focus and silently
+    # enable the feedback leg (--fix).
+    args = strip_system_metadata(strip_all_lifecycle_markers(args))
     debug_log(
         f"[skill_dispatch] dispatch: parsed project='{parsed_project}' "
         f"command='{command}' args='{args[:80]}'"

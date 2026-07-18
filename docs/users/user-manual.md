@@ -550,7 +550,7 @@ Before attempting a fix, `/fix` runs a lightweight read-only diagnostic phase us
 
 After a draft PR is created, `/fix` also runs the private review gate when it is enabled (opt-in; disabled by default during the testing phase). Findings and fix attempts stay backend-only: no review comment, verdict, or issue comment is posted by the gate.
 
-If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebase` — addressing review concerns on an existing PR is exactly what `/rebase` does. The `--now` flag and any trailing context are preserved through the redirect.
+If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebase --fix` — addressing review concerns on an existing PR is exactly what `/rebase --fix` does. It injects `--fix` (because a bare `/rebase` now only rebases), and the `--now` flag and any trailing context are preserved through the redirect.
 
 <details>
 <summary>Use cases</summary>
@@ -559,7 +559,7 @@ If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebas
 - `/fix https://github.com/org/repo/issues/99 Regression from v2.3` — Provide extra context
 - `/fix https://github.com/org/repo/issues/99 --skip-diagnose` — Skip diagnostic for a trivial fix
 - `/fix https://myorg.atlassian.net/browse/PROJ-123 branch:main` — Fix a Jira ticket using a one-off target branch
-- `/fix https://github.com/org/repo/pull/42 address the security concern` — PR URL redirects to `/rebase`, preserving the trailing context
+- `/fix https://github.com/org/repo/pull/42 address the security concern` — PR URL redirects to `/rebase --fix`, preserving the trailing context
 </details>
 
 **`/debug`** — Structured 4-step debugging when a previous fix attempt failed.
@@ -671,11 +671,23 @@ Produces a pedagogical walkthrough of the PR: what problem it solves (with examp
 
 **`/rebase`** — Rebase a PR onto its base branch.
 
-- **Usage:** `/rebase <pr-url> [focus area]`
+- **Usage:** `/rebase [--fix] <pr-url> [focus area]`
 - **Aliases:** `/rb`
 - **GitHub @mention:** `@koan-bot /rebase` on a PR
 
-Any text after the URL is threaded into the mission as extra focus context (e.g. `/rebase <pr-url> address the security concern`). A `/fix` invoked on a PR URL redirects here, preserving that context.
+**By default `/rebase` only rebases** the PR branch onto its base (resolving
+conflicts). To *also* read the PR's review comments and apply the requested
+changes, add **`--fix`**. `--fix` is **implied by any trailing text after the
+URL**, so `/rebase <pr-url> address the security concern` (a focus area) and
+`/rebase <pr-url> critical` (a severity keyword) both address feedback — only a
+bare `/rebase <pr-url>` skips the feedback leg. Trailing text is threaded into
+the mission as extra focus context. A `/fix` invoked on a PR URL redirects here
+**with `--fix`**, preserving that context.
+
+> **Transition (through 2026-08-17):** `/rebase` used to always apply review
+> feedback. Now a bare `/rebase` rebases only. During this window a bare
+> `/rebase` shows a temporary notice (in chat and as a PR comment) pointing you
+> to `/rebase --fix`; the notice disappears automatically after the deadline.
 
 By default, Telegram `/rebase` only queues PRs created by this instance
 (branch prefix match). Set `allow_rebase_foreign_prs: true` in
@@ -727,8 +739,9 @@ After completion, Kōan posts a structured comment on the PR with these sections
 <details>
 <summary>Use cases</summary>
 
-- `/rebase https://github.com/org/repo/pull/42` — Resolve conflicts and update the PR
-- `/rebase https://github.com/org/repo/pull/42 address the security concern` — Rebase with a focus area
+- `/rebase https://github.com/org/repo/pull/42` — Rebase only (resolve conflicts, no feedback)
+- `/rebase --fix https://github.com/org/repo/pull/42` — Rebase **and** address review feedback
+- `/rebase https://github.com/org/repo/pull/42 address the security concern` — Rebase with a focus area (implies `--fix`)
 </details>
 
 **`/reviewrebase`** — Review a PR then rebase it, so review insights feed the rebase.
@@ -740,7 +753,7 @@ After completion, Kōan posts a structured comment on the PR with these sections
 <details>
 <summary>Use cases</summary>
 
-- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase` at the **end** of the queue (review stays ahead of rebase)
+- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase --fix` at the **end** of the queue (review stays ahead of rebase; the rebase leg addresses the fresh review)
 - `/rr --now https://github.com/org/repo/pull/42` — Jumps the queue: inserts the combo at the **top** so it runs next
 - Extra context after the URL is passed to the review step (e.g., `/rr <url> focus on error handling`)
 </details>
@@ -1177,7 +1190,7 @@ Using `all` or `none` also sets the default for future projects added via `/add_
 
 ### Autoreview Mode
 
-When autoreview is enabled for a project, Kōan automatically queues `/review <pr-url>` then `/rebase <pr-url>` after any successful mission that creates a PR (and was not auto-merged). This provides an extra quality gate without manual intervention. Off by default.
+When autoreview is enabled for a project, Kōan automatically queues `/review <pr-url>` then `/rebase --fix <pr-url>` after any successful mission that creates a PR (and was not auto-merged). The rebase leg carries `--fix` so it addresses the review it just generated. This provides an extra quality gate without manual intervention. Off by default.
 
 **`/autoreview`** — Enable autoreview or show status.
 - **Usage:** `/autoreview [project|all|none]`
@@ -2367,14 +2380,14 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/deepplan <idea\|issue-url>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |
 | `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
-| `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR); a PR URL redirects to `/rebase` |
+| `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR); a PR URL redirects to `/rebase --fix` |
 | `/debug <issue>` | `/dbg` | I | Structured 4-step debug loop (reproduce → hypothesize → fix → verify) |
 | `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | I | Review one or more pull requests |
 | `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | `/question` | I | Ask a question about a PR/issue — posts AI reply to GitHub |
-| `/rebase <PR> [focus area]` | `/rb` | I | Rebase a PR onto its base branch; trailing text becomes focus context |
-| `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo) |
+| `/rebase [--fix] <PR> [focus area]` | `/rb` | I | Rebase a PR onto its base branch (rebase-only by default); `--fix` (or trailing text) also addresses review feedback |
+| `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo: /review → /rebase --fix) |
 | `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | I | Plan then implement an issue (combo) |
 | `/squash <PR>` | `/sq` | I | Squash all PR commits into one clean commit |
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |

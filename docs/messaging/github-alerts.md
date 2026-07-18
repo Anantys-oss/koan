@@ -19,7 +19,7 @@ from app.github_alerts import build_alert
 parts.append(
     build_alert(
         "WARNING",
-        "**Review feedback was NOT applied.** Re-run `/rebase` or apply manually.",
+        "**Review feedback was NOT applied.** Re-run `/rebase --fix` or apply manually.",
     )
     + "\n"  # caller owns the surrounding whitespace
 )

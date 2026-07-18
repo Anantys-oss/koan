@@ -1137,6 +1137,45 @@ class TestFormatReviewAsMarkdown:
         assert "> [!IMPORTANT]" not in md
         assert "Needs validation before merge." in md
 
+    # A review with findings at two severity levels so the severity-filter
+    # hint is emitted (it only shows when severity_count > 1).
+    _MULTI_SEVERITY_REVIEW = {
+        "file_comments": [
+            {
+                "file": "auth.py", "line_start": 42, "line_end": 42,
+                "severity": "critical", "title": "Missing validation",
+                "comment": "No input validation.", "code_snippet": "",
+            },
+            {
+                "file": "auth.py", "line_start": 90, "line_end": 90,
+                "severity": "warning", "title": "Broad except",
+                "comment": "Catch specific errors.", "code_snippet": "",
+            },
+        ],
+        "review_summary": {
+            "lgtm": False, "summary": "Needs work.", "checklist": [],
+        },
+    }
+
+    def test_severity_hint_catch_all_uses_fix_mention(self):
+        """The catch-all in the severity hint must advertise `--fix`, not a
+        bare rebase. After the /rebase split a bare `@bot rebase` only rebases
+        onto the base branch and applies no review feedback, so the old
+        `_or just … for all._` bare-rebase CTA would mislead users.
+        """
+        md = _format_review_as_markdown(
+            self._MULTI_SEVERITY_REVIEW, title="Fix auth", bot_username="koan-bot",
+        )
+        assert "@koan-bot rebase --fix" in md
+        # The old bare-rebase catch-all must be gone.
+        assert "_or just_ `@koan-bot rebase` _for all._" not in md
+
+    def test_severity_hint_catch_all_uses_fix_slash(self):
+        """Same contract for the no-bot slash-command variant of the hint."""
+        md = _format_review_as_markdown(self._MULTI_SEVERITY_REVIEW, title="Fix auth")
+        assert "/rebase --fix <url>" in md
+        assert "_or just_ `/rebase <url>` _for all._" not in md
+
     def test_lgtm_review_does_not_wrap_summary_in_alert(self):
         """When lgtm is True, the summary is plain text — no alert needed
         per the parsimony rule (clean reviews need no callout).

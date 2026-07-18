@@ -1996,17 +1996,19 @@ def _format_review_as_markdown(
         if bot_username:
             mention = f"@{bot_username}"
             lines.append(
-                f"_To rebase specific severity levels, mention me:_ "
+                f"_To rebase and address feedback, mention me:_ "
                 f"`{mention} rebase critical` _(fixes 🔴 only)_, "
                 f"`{mention} rebase important` _(fixes 🔴 + 🟡)_, "
-                f"_or just_ `{mention} rebase` _for all._"
+                f"_or_ `{mention} rebase --fix` _for all._ "
+                f"_(A bare_ `{mention} rebase` _only rebases onto the base branch.)_"
             )
         else:
             lines.append(
-                "_To rebase specific severity levels, use:_ "
+                "_To rebase and address feedback, use:_ "
                 "`/rebase <url> critical` _(fixes 🔴 only)_, "
                 "`/rebase <url> important` _(fixes 🔴 + 🟡)_, "
-                "_or just_ `/rebase <url>` _for all._"
+                "_or_ `/rebase --fix <url>` _for all._ "
+                "_(A bare_ `/rebase <url>` _only rebases onto the base branch.)_"
             )
 
     return "\n".join(lines)

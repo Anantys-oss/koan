@@ -1651,7 +1651,9 @@ def _maybe_queue_autoreview(
     try:
         project_tag = f"[project:{project_name}] " if project_name else ""
         review_entry = f"- {project_tag}/review {pr_url}"
-        rebase_entry = f"- {project_tag}/rebase {pr_url}"
+        # --fix so the post-review rebase also addresses the review it just
+        # generated (a bare /rebase only rebases onto the target branch).
+        rebase_entry = f"- {project_tag}/rebase {pr_url} --fix"
         inserted_review = insert_pending_mission(missions_path, review_entry)
         inserted_rebase = insert_pending_mission(missions_path, rebase_entry)
         if inserted_review or inserted_rebase:

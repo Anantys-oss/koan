@@ -18,7 +18,8 @@ def handle(ctx):
 
     Queues two missions in order:
     1. /review <url> — generates review insights and learnings
-    2. /rebase <url> — rebases the PR, informed by the fresh review
+    2. /rebase <url> --fix — rebases the PR AND applies the fresh review
+       feedback (a bare /rebase would only rebase onto the base branch)
 
     By default the combo is appended to the end of the pending queue. Pass
     --now (e.g. /rr --now <url>) to jump the queue and run it next.
@@ -29,7 +30,8 @@ def handle(ctx):
         return (
             "Usage: /rr [--now] <github-pr-url>\n"
             "Ex: /rr https://github.com/sukria/koan/pull/42\n\n"
-            "Queues /review then /rebase — review insights feed the rebase.\n"
+            "Queues /review then /rebase --fix — review insights feed the "
+            "rebase, which then applies the feedback.\n"
             "Add --now to jump the queue and run the combo next."
         )
 
@@ -63,11 +65,13 @@ def handle(ctx):
     # atomic batch keeps the order intact (the run loop never sees rebase
     # queued before review). urgent=True (via --now) puts the block at the
     # top; otherwise it appends at the end of the pending queue.
+    # The rebase leg carries --fix so it addresses the review that was just
+    # generated (a bare /rebase only rebases onto the target branch).
     review_ok, rebase_ok = queue_github_missions(
         ctx,
         [
             ("review", pr_url, project_name, context),
-            ("rebase", pr_url, project_name, None),
+            ("rebase", pr_url, project_name, "--fix"),
         ],
         urgent=urgent,
     )

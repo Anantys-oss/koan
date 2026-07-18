@@ -3335,12 +3335,16 @@ class TestExpandComboMission:
     """Tests for _expand_combo_mission — expanding /rr into /review + /rebase."""
 
     def test_rr_expands_to_review_and_rebase(self):
-        """The /rr combo should expand into /review and /rebase missions."""
+        """The /rr combo should expand into /review and /rebase --fix missions.
+
+        The rebase leg carries --fix so it addresses the review it just
+        generated (a bare /rebase only rebases onto the target branch).
+        """
         mission = "- [project:koan] /rr https://github.com/o/r/pull/42 📬"
         result = _expand_combo_mission("rr", mission, "koan")
         assert len(result) == 2
         assert "/review https://github.com/o/r/pull/42 📬" in result[0]
-        assert "/rebase https://github.com/o/r/pull/42 📬" in result[1]
+        assert "/rebase --fix https://github.com/o/r/pull/42 📬" in result[1]
 
     def test_reviewrebase_expands(self):
         """The /reviewrebase alias should also expand."""

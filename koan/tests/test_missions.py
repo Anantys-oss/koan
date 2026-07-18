@@ -43,6 +43,7 @@ from app.missions import (
     start_mission,
     canonical_mission_key,
     strip_all_lifecycle_markers,
+    strip_system_metadata,
     strip_timestamps,
     prune_completed_sections,
     validate_missions_structure,
@@ -2829,6 +2830,37 @@ class TestStripAllLifecycleMarkers:
 
     def test_no_markers(self):
         assert strip_all_lifecycle_markers("Fix the bug") == "Fix the bug"
+
+
+class TestStripSystemMetadata:
+    URL = "https://github.com/org/repo/pull/42"
+
+    def test_strips_complexity_tag(self):
+        assert strip_system_metadata(f"/rebase {self.URL} [complexity:medium]") == \
+            f"/rebase {self.URL}"
+
+    def test_strips_recovery_counter(self):
+        assert strip_system_metadata(f"/rebase {self.URL} [r:2]") == \
+            f"/rebase {self.URL}"
+
+    def test_strips_origin_markers(self):
+        assert strip_system_metadata(f"/rebase {self.URL} 📬") == f"/rebase {self.URL}"
+        assert strip_system_metadata(f"/rebase {self.URL} 🎫") == f"/rebase {self.URL}"
+
+    def test_strips_combined_metadata(self):
+        text = f"/rebase {self.URL} [complexity:complex] [r:3] 🎫"
+        assert strip_system_metadata(text) == f"/rebase {self.URL}"
+
+    def test_preserves_real_user_focus(self):
+        text = f"/rebase {self.URL} address the auth bug"
+        assert strip_system_metadata(text) == text
+
+    def test_keeps_user_focus_drops_only_metadata(self):
+        text = f"/rebase {self.URL} focus on tests [complexity:simple]"
+        assert strip_system_metadata(text) == f"/rebase {self.URL} focus on tests"
+
+    def test_no_metadata_is_noop(self):
+        assert strip_system_metadata("Fix the bug") == "Fix the bug"
 
 
 # --- parse_ideas ---
