@@ -17,8 +17,12 @@ def instance_dir(tmp_path: Path) -> Path:
 
 
 def _record_series(instance_dir: Path, samples):
-    """Record a series of (offset_minutes, cost_pct) samples from a base time."""
-    base = datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc)
+    """Record a series of (offset_minutes, cost_pct) samples from a base time.
+
+    The base is recent (now - 1h) so samples fall inside the
+    SAMPLE_MAX_AGE_HOURS freshness window used by rate estimation.
+    """
+    base = datetime.now(timezone.utc) - timedelta(hours=1)
     for offset_min, cost in samples:
         burn_rate.record_run(
             instance_dir, cost_pct=cost,
@@ -128,26 +132,36 @@ class TestBurnRateEstimate:
         assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
 
     def test_zero_span_returns_none(self, instance_dir):
-        # 5 samples all at the same timestamp
-        base = datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc)
+        # 5 samples all at the same (recent) timestamp
+        base = datetime.now(timezone.utc) - timedelta(minutes=30)
         for _ in range(burn_rate.MIN_SAMPLES_FOR_ESTIMATE):
             burn_rate.record_run(instance_dir, cost_pct=1.0, timestamp=base)
         assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
 
+    def test_short_span_returns_none(self, instance_dir):
+        """Five samples in under MIN_SPAN_MINUTES must not yield a rate.
+
+        Production false alarm: 5 large Grok runs in 11 minutes produced
+        286.9%/h and forced a burn-rate pause. Short windows are noise.
+        """
+        # 5 samples over 11 minutes — enough count, too little wall clock
+        _record_series(instance_dir, [(0, 4.0), (2, 9.0), (5, 18.0), (8, 11.0), (11, 12.0)])
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
+
     def test_constant_rate(self, instance_dir):
-        # 5 samples, 1% each, spaced 1 minute apart
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
-        # Total cost 5 over 4 minutes → 1.25/min
-        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(1.25)
+        # 5 samples, 1% each, spaced 5 minutes apart → 20 min span
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
+        # Total cost 5 over 20 minutes → 0.25/min
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(0.25)
 
     def test_variable_rate(self, instance_dir):
-        # Five samples: costs 2, 4, 2, 4, 8 over 10 minutes
+        # Five samples: costs 2, 4, 2, 4, 8 over 20 minutes
         _record_series(
             instance_dir,
-            [(0, 2.0), (3, 4.0), (5, 2.0), (8, 4.0), (10, 8.0)],
+            [(0, 2.0), (5, 4.0), (10, 2.0), (15, 4.0), (20, 8.0)],
         )
-        # Total cost = 2+4+2+4+8 = 20 over 10 min = 2.0/min
-        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(2.0)
+        # Total cost = 2+4+2+4+8 = 20 over 20 min = 1.0/min
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) == pytest.approx(1.0)
 
 
 class TestTimeToExhaustion:
@@ -155,17 +169,17 @@ class TestTimeToExhaustion:
         assert burn_rate.time_to_exhaustion(instance_dir, 50.0) is None
 
     def test_basic_estimate(self, instance_dir):
-        # 1.25%/min (5/4), 60% remaining → 48 min
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        # 0.25%/min (5/20), 60% remaining → 240 min
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         tte = burn_rate.time_to_exhaustion(instance_dir, session_pct=40.0)
-        assert tte == pytest.approx(48.0)
+        assert tte == pytest.approx(240.0)
 
     def test_zero_remaining(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         assert burn_rate.time_to_exhaustion(instance_dir, session_pct=100.0) == 0.0
 
     def test_mode_multiplier_makes_deep_faster(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         implement = burn_rate.time_to_exhaustion(instance_dir, 50.0, mode="implement")
         deep = burn_rate.time_to_exhaustion(instance_dir, 50.0, mode="deep")
         review = burn_rate.time_to_exhaustion(instance_dir, 50.0, mode="review")
@@ -199,25 +213,25 @@ class TestBurnRateSnapshot:
     """Tests for the read-once BurnRateSnapshot class."""
 
     def test_snapshot_loads_samples_once(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         assert len(snapshot.samples) == 5
         assert snapshot.samples[0].cost_pct == pytest.approx(1.0)
 
     def test_snapshot_burn_rate(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         # Same result as the free function
-        assert snapshot.burn_rate_pct_per_minute() == pytest.approx(1.25)
+        assert snapshot.burn_rate_pct_per_minute() == pytest.approx(0.25)
 
     def test_snapshot_time_to_exhaustion(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         tte = snapshot.time_to_exhaustion(session_pct=40.0)
-        assert tte == pytest.approx(48.0)
+        assert tte == pytest.approx(240.0)
 
     def test_snapshot_time_to_exhaustion_with_mode(self, instance_dir):
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         deep = snapshot.time_to_exhaustion(50.0, mode="deep")
         impl = snapshot.time_to_exhaustion(50.0, mode="implement")
@@ -233,7 +247,7 @@ class TestBurnRateSnapshot:
 
     def test_snapshot_is_frozen(self, instance_dir):
         """Snapshot is not affected by writes after construction."""
-        _record_series(instance_dir, [(i, 1.0) for i in range(5)])
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
         snapshot = burn_rate.BurnRateSnapshot(instance_dir)
         assert len(snapshot.samples) == 5
 
@@ -248,6 +262,20 @@ class TestBurnRateSnapshot:
         assert snapshot.last_warned_at is None
         assert snapshot.burn_rate_pct_per_minute() is None
         assert snapshot.time_to_exhaustion(50.0) is None
+
+
+class TestClearSamples:
+    def test_clear_samples_empties_buffer(self, instance_dir):
+        _record_series(instance_dir, [(i * 5, 1.0) for i in range(5)])
+        burn_rate.mark_warned(instance_dir)
+        assert len(burn_rate.get_samples(instance_dir)) == 5
+        assert burn_rate.get_last_warned_at(instance_dir) is not None
+
+        burn_rate.clear_samples(instance_dir)
+
+        assert burn_rate.get_samples(instance_dir) == []
+        assert burn_rate.get_last_warned_at(instance_dir) is None
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
 
 
 class TestTOCTOURace:
@@ -360,3 +388,64 @@ class TestStateFile:
         assert "samples" in data
         assert "last_warned_at" in data
         assert data["samples"][0]["cost_pct"] == pytest.approx(2.5)
+
+
+class TestSampleAging:
+    """Stale samples must not shape the estimate (SAMPLE_MAX_AGE_HOURS)."""
+
+    def test_month_old_samples_yield_no_estimate(self, instance_dir):
+        # A buffer full of mutually-close but weeks-old samples used to
+        # compute a rate over their short historical span and project it
+        # onto the current session (observed live: spurious "est. 1 min to
+        # exhaustion" downgrade from month-old data).
+        base = datetime.now(timezone.utc) - timedelta(days=30)
+        for i in range(10):
+            burn_rate.record_run(
+                instance_dir, cost_pct=300.0,
+                timestamp=base + timedelta(minutes=i),
+            )
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
+        assert burn_rate.time_to_exhaustion(instance_dir, 8.0, mode="deep") is None
+
+    def test_mixed_buffer_uses_only_fresh_samples(self, instance_dir):
+        stale_base = datetime.now(timezone.utc) - timedelta(days=30)
+        for i in range(5):
+            burn_rate.record_run(
+                instance_dir, cost_pct=500.0,
+                timestamp=stale_base + timedelta(minutes=i),
+            )
+        # Fresh samples must span at least MIN_SPAN_MINUTES to produce an
+        # estimate at all, so space them 5 minutes apart.
+        fresh_base = datetime.now(timezone.utc) - timedelta(minutes=25)
+        for i in range(5):
+            burn_rate.record_run(
+                instance_dir, cost_pct=1.0,
+                timestamp=fresh_base + timedelta(minutes=i * 5),
+            )
+        rate = burn_rate.burn_rate_pct_per_minute(instance_dir)
+        # 5 fresh samples x 1% over a 20-minute span = 0.25/min; the 500%
+        # stale samples must not participate (including them would both
+        # stretch the span to ~30 days and inflate the consumed total).
+        assert rate == pytest.approx(0.25)
+
+    def test_too_few_fresh_samples_yield_no_estimate(self, instance_dir):
+        stale_base = datetime.now(timezone.utc) - timedelta(days=30)
+        for i in range(10):
+            burn_rate.record_run(
+                instance_dir, cost_pct=1.0,
+                timestamp=stale_base + timedelta(minutes=i),
+            )
+        fresh_base = datetime.now(timezone.utc) - timedelta(minutes=5)
+        for i in range(3):  # below MIN_SAMPLES_FOR_ESTIMATE
+            burn_rate.record_run(
+                instance_dir, cost_pct=1.0,
+                timestamp=fresh_base + timedelta(minutes=i),
+            )
+        assert burn_rate.burn_rate_pct_per_minute(instance_dir) is None
+
+    def test_persisted_buffer_keeps_stale_samples(self, instance_dir):
+        # Aging is read-time only: the persisted buffer still holds stale
+        # entries (they age out of the circular buffer naturally).
+        base = datetime.now(timezone.utc) - timedelta(days=30)
+        burn_rate.record_run(instance_dir, cost_pct=1.0, timestamp=base)
+        assert len(burn_rate.get_samples(instance_dir)) == 1

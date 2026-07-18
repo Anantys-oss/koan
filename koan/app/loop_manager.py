@@ -65,6 +65,13 @@ def _emit_queued_aggregate(source_label, count, emit=None):
     msg = f"📬 {source_label}: {count} new {label} queued."
     if emit is None:
         from app.notify import NotificationPriority, send_telegram
+        # NOTE: intentionally NOT cross-restart deduped. The aggregate carries an
+        # event ("N missions were queued"), and the text keys only on the count —
+        # two genuinely distinct poll cycles that each queue the same count within
+        # the window would collapse, hiding a real notification. The restart-storm
+        # duplication of this line is a symptom of repeated cold-start re-polling;
+        # its correct fix is mission-queue-level dedup (reactions / comment
+        # tracker), not suppressing the user-facing count here.
         def emit(m):
             send_telegram(m, priority=NotificationPriority.ACTION)
     emit(msg)

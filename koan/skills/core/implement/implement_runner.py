@@ -620,6 +620,7 @@ def _build_prompt(
     issue_number: str = "",
     project_memory: str = "",
     base_branch: str = "main",
+    project_path: str = "",
 ) -> str:
     """Build the implementation prompt from the issue and plan."""
     template_vars = dict(
@@ -633,7 +634,11 @@ def _build_prompt(
         BASE_BRANCH=base_branch,
     )
 
-    return load_prompt_or_skill(skill_dir, "implement", **template_vars)
+    return load_prompt_or_skill(
+        skill_dir, "implement",
+        project_path=project_path or None,
+        **template_vars,
+    )
 
 
 def _generate_pr_summary(
@@ -654,6 +659,7 @@ def _generate_pr_summary(
     try:
         prompt = load_prompt_or_skill(
             skill_dir, "pr_summary",
+            project_path=project_path or None,
             ISSUE_URL=issue_url,
             ISSUE_TITLE=issue_title,
             COMMIT_SUBJECTS=commits_text,
@@ -705,7 +711,10 @@ def _execute_implementation(
 
     effective_context = context
     if escalate:
-        escalation_preamble = load_prompt_or_skill(skill_dir, "implement_retry_context")
+        escalation_preamble = load_prompt_or_skill(
+            skill_dir, "implement_retry_context",
+            project_path=project_path or None,
+        )
         effective_context = escalation_preamble + "\n\n" + context
 
     prompt = _build_prompt(
@@ -714,6 +723,7 @@ def _execute_implementation(
         issue_number=issue_number,
         project_memory=project_memory,
         base_branch=effective_base,
+        project_path=project_path,
     )
 
     from app.claude_step import run_skill_loop

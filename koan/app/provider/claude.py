@@ -132,6 +132,18 @@ class ClaudeProvider(CLIProvider):
             return ["--effort", effort]
         return []
 
+    def build_project_context_args(self, project_context: bool = True) -> List[str]:
+        """Suppress project CLAUDE.md / .claude skills when *project_context* is False.
+
+        Claude Code loads user / project / local setting sources by default.
+        ``--setting-sources user`` keeps user-level prefs but omits project
+        and local sources so KOAN_ROOT runtime sessions do not auto-load
+        contributor tooling (issue #2379).
+        """
+        if project_context:
+            return []
+        return ["--setting-sources", "user"]
+
     def build_thinking_args(
         self, enabled: bool = False, budget_tokens: int = 0,
     ) -> List[str]:

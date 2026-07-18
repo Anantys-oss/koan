@@ -163,6 +163,66 @@ class TestParseClaudeOutput:
         raw = json.dumps({"status": "ok", "data": "test"})
         assert parse_claude_output(raw) == raw.strip()
 
+    def test_grok_streaming_json_concatenates_text_deltas(self):
+        from app.mission_runner import parse_claude_output
+        from tests import grok_samples
+
+        assert (
+            parse_claude_output(grok_samples.STREAM_MULTI_DELTA)
+            == grok_samples.STREAM_MULTI_DELTA_RESULT_TEXT
+        )
+
+    def test_grok_streaming_json_success_sample(self):
+        from app.mission_runner import parse_claude_output
+        from tests import grok_samples
+
+        assert (
+            parse_claude_output(grok_samples.STREAM_SUCCESS)
+            == grok_samples.STREAM_SUCCESS_RESULT_TEXT
+        )
+
+    def test_grok_json_object_extracts_text(self):
+        from app.mission_runner import parse_claude_output
+        from tests import grok_samples
+
+        assert (
+            parse_claude_output(grok_samples.JSON_OBJECT_SUCCESS)
+            == grok_samples.JSON_OBJECT_SUCCESS_TEXT
+        )
+
+    def test_haze_stream_prefers_result_event(self):
+        from app.mission_runner import parse_claude_output
+        from tests import haze_samples
+
+        assert (
+            parse_claude_output(haze_samples.STREAM_SUCCESS)
+            == haze_samples.STREAM_SUCCESS_RESULT_TEXT
+        )
+
+    def test_claude_stream_json_result_event(self):
+        from app.mission_runner import parse_claude_output
+
+        raw = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [{"type": "text", "text": "partial"}],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "result": "final answer",
+                    }
+                ),
+            ]
+        )
+        assert parse_claude_output(raw) == "final answer"
+
 
 class TestCheckJsonSuccess:
     """Test check_json_success — detects successful sessions from JSON output."""
@@ -3707,6 +3767,8 @@ class TestMaybeQueueAutoreview:
         calls = [str(c) for c in mock_insert.call_args_list]
         assert any("/review" in c for c in calls)
         assert any("/rebase" in c for c in calls)
+        # the autoreview rebase leg addresses the review it just generated
+        assert any("/rebase" in c and "--fix" in c for c in calls)
         # review must come before rebase
         first_call_str = str(mock_insert.call_args_list[0])
         assert "/review" in first_call_str
@@ -4021,3 +4083,97 @@ class TestSkillOutcomeCapture:
         )
 
         assert result["success"] is True
+
+
+class TestApplyVerifyRequeueSignal:
+    """_apply_verify_requeue_signal flags re-queue when a code mission fails."""
+
+    # A code-mission title (contains "fix", no analysis keyword) so the signal
+    # is not short-circuited by the _is_code_mission gate.
+    CODE_TITLE = "Fix the parser"
+
+    @staticmethod
+    def _fail(n):
+        from app.mission_verifier import Check, CheckStatus
+        return Check(name=f"c{n}", status=CheckStatus.FAIL, message=f"failure {n}")
+
+    def test_single_reachable_failure_sets_verify_requeue(self):
+        """On a successful exit only check_diff_coherence can FAIL — that single,
+        realistic failure must trigger a re-queue (a >=2 threshold was unreachable)."""
+        from app.mission_verifier import Check, CheckStatus, VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(
+            passed=False,
+            checks=[Check(
+                name="diff_coherence",
+                status=CheckStatus.FAIL,
+                message="Branch has no changes compared to base",
+            )],
+            summary="1 failure(s)",
+        )
+        result = {}
+        _apply_verify_requeue_signal(result, vr, self.CODE_TITLE)
+        assert result["verify_requeue"] is True
+        assert "no changes" in result["verify_failure_summary"]
+
+    def test_multiple_failures_set_verify_requeue(self):
+        from app.mission_verifier import VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(
+            passed=False,
+            checks=[self._fail(1), self._fail(2)],
+            summary="2 checks failed",
+        )
+        result = {}
+        _apply_verify_requeue_signal(result, vr, self.CODE_TITLE)
+        assert result["verify_requeue"] is True
+        assert "failure 1" in result["verify_failure_summary"]
+
+    def test_passed_result_does_not_requeue(self):
+        from app.mission_verifier import VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(passed=True, checks=[], summary="ok")
+        result = {}
+        _apply_verify_requeue_signal(result, vr, self.CODE_TITLE)
+        assert result.get("verify_requeue") is not True
+
+    def test_analysis_mission_does_not_requeue(self):
+        """An empty branch is the expected outcome for an analysis / no-code
+        mission, so a failed verification must NOT re-queue it."""
+        from app.mission_verifier import Check, CheckStatus, VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(
+            passed=False,
+            checks=[Check(
+                name="diff_coherence",
+                status=CheckStatus.FAIL,
+                message="Branch has no changes compared to base",
+            )],
+            summary="1 failure(s)",
+        )
+        result = {}
+        _apply_verify_requeue_signal(result, vr, "Investigate the flaky test")
+        assert result.get("verify_requeue") is not True
+
+    def test_empty_title_does_not_requeue(self):
+        """An unclassifiable (empty) title is treated as non-code — do not
+        re-queue on an empty branch."""
+        from app.mission_verifier import Check, CheckStatus, VerifyResult
+        from app.mission_runner import _apply_verify_requeue_signal
+
+        vr = VerifyResult(
+            passed=False,
+            checks=[Check(
+                name="diff_coherence",
+                status=CheckStatus.FAIL,
+                message="Branch has no changes compared to base",
+            )],
+            summary="1 failure(s)",
+        )
+        result = {}
+        _apply_verify_requeue_signal(result, vr, "")
+        assert result.get("verify_requeue") is not True

@@ -1,10 +1,10 @@
 ---
 type: skill-spec
 title: "Skill Spec — fix"
-description: "Specifies the `/fix` skill, which fixes a tracker issue end-to-end (or batch-queues fixes for a repo) and redirects PR URLs to `/rebase`, with eval coverage on its diagnostic output."
+description: "Specifies the `/fix` skill, which fixes a tracker issue end-to-end (or batch-queues fixes for a repo) and redirects PR URLs to `/rebase --fix`, with eval coverage on its diagnostic output."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-02
+updated: 2026-07-17
 ---
 
 # Skill Spec — `fix`
@@ -34,7 +34,8 @@ See `docs/users/skills.md` for the end-user `/fix` reference and
 ## Outputs / side effects
 
 - Queues fix mission(s) (`model_key: mission`); agent opens a draft PR per issue.
-- On a PR URL, `/fix` **redirects to `/rebase`** (same intent: address PR concerns),
+- On a PR URL, `/fix` **redirects to `/rebase --fix`** (same intent: address PR
+  concerns) — it injects `--fix` because a bare `/rebase` now only rebases —
   preserving `--now` + trailing context.
 
 ## Error cases
@@ -42,7 +43,7 @@ See `docs/users/skills.md` for the end-user `/fix` reference and
 | Condition | Behavior |
 |---|---|
 | invalid URL | reply with usage |
-| PR URL given | delegated to `rebase/handler.py` with `ctx` untouched |
+| PR URL given | delegated to `rebase/handler.py` with `--fix` injected into `ctx.args` |
 | batch with no open issues | nothing queued, informative reply |
 
 ## Integration hooks
@@ -52,7 +53,8 @@ See `docs/users/skills.md` for the end-user `/fix` reference and
 
 ## Invariants
 
-- PR-URL redirect must keep `ctx` intact so `--now` and post-URL context survive.
+- PR-URL redirect keeps `ctx` intact (so `--now` and post-URL context survive) and
+  injects `--fix` so the delegated `/rebase` addresses review feedback.
 - Always draft PR on `<prefix>/*`.
 
 ## Evaluation

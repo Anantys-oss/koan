@@ -230,12 +230,14 @@ class HazeProvider(CLIProvider):
         system_prompt_file: str = "",
         effort: str = "",
         resume_session_id: str = "",
+        project_context: bool = True,
     ) -> List[str]:
         """Build ``haze [-m <sel>] [--output <fmt>] -p <prompt>``.
 
         Prompt args stay last so :meth:`rewrite_prompt_for_stdin` and human
         readers find them in a fixed position. Unsupported inputs are routed
         through their builders (which warn) rather than dropped here.
+        *project_context* is accepted for API parity (base no-op for haze).
         """
         if system_prompt_file:
             self._warn_unsupported_once(
@@ -263,6 +265,7 @@ class HazeProvider(CLIProvider):
             )
 
         cmd = [self.binary()]
+        cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(self.build_tool_args(allowed_tools, disallowed_tools))
         cmd.extend(self.build_model_args(model, fallback))
         cmd.extend(self.build_output_args(output_format))

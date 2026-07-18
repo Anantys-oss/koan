@@ -4,7 +4,7 @@ title: "Component Spec — Git & GitHub"
 description: "Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows."
 tags: [git-github]
 created: 2026-06-27
-updated: 2026-07-13
+updated: 2026-07-16
 ---
 
 # Component Spec — Git & GitHub
@@ -30,7 +30,7 @@ workflows.
 | `git_auto_merge.py` | Configurable per-project auto-merge; runs after `security_review.py`. |
 | `git_sync.py` | Branch tracking, sync awareness, time-throttled cleanup (24h/project), orphan-branch detection → outbox. |
 | `github_webhook.py::maybe_start_from_config()` | Opt-in HMAC-verified push receiver; writes `.koan-check-notifications` to collapse poll latency 60-180s → ~10s. Polling remains the fallback. |
-| `github_command_handler.py` | @mention → mission: validate → permission check → react → create mission. Also the assignment fallback (`process_single_notification` processes @mentions first, then `_try_assignment_notification`): `review_requested` → `/review`, `assign` → `/implement`. When `review_draft_skip.enabled` is true, a `review_requested` on a **draft** PR is a soft skip (mark read, no thread/cooldown tracking): because no dedup state is written, any re-surfaced request is re-evaluated fresh. An explicit `/review` once the PR is ready is the remedy — the gate does **not** rely on automatic resume (GitHub does not reliably re-fire `review_requested` on the draft→ready transition), so an info notification is sent on deferral to avoid silent loss; explicit `/review` mentions are never gated. |
+| `github_command_handler.py` | @mention → mission: validate → permission check → react → create mission. Also the assignment fallback (`process_single_notification` processes @mentions first, then `_try_assignment_notification`): `review_requested` → `/review`, `assign` → `/implement`. When `review_draft_skip.enabled` is true, a `review_requested` on a **draft** PR is a soft skip (mark read, no thread/cooldown tracking): because no dedup state is written, any re-surfaced request is re-evaluated fresh. An explicit `/review` once the PR is ready is the remedy — the gate does **not** rely on automatic resume (GitHub does not reliably re-fire `review_requested` on the draft→ready transition), so an info notification is sent on deferral to avoid silent loss; explicit `/review` mentions are never gated. When `review_pause_label` is a non-empty string and a `review_requested` subject's labels include that exact name, soft-skip (mark read, no thread/cooldown, INFO notify). Empty `review_pause_label` disables the check. Labels are fetched free on the existing `_fetch_subject_info` call. |
 | `claude_step.py::run_ci_fix_loop()` | Shared CI-fix loop; `use_polling` toggles polling vs single-shot recheck; caller supplies `prompt_builder`. |
 | `claude_step.py::_rebase_onto_target()` | Strict PR rebase: target is **only** `{base_remote}/{base}` (the remote matching the PR's base repo, resolved by `rebase_pr._find_remote_for_repo`); fails closed when no remote matches or the target fetch fails; always a plain `git rebase` (never `--onto`); post-rebase sanity gate before any push. Structured failure codes via `result_meta` (`no_base_remote` / `fetch_failed` / `rebase_failed` / `sanity_check_failed`). |
 | `claude_step.py::_verify_rebase_result()` | Post-rebase gate: branch must sit on the target's current tip and its unique-commit count (`rev-list --count target..HEAD`) must not grow vs the pre-rebase baseline. On violation the branch is hard-reset to its pre-rebase commit and the rebase reported failed — nothing is pushed. |
@@ -92,6 +92,37 @@ GitHub App:
   nothing.
 - Gated by a global `running_indicator` config block plus a per-project
   override; on by default, opt-out via `running_indicator.enabled: false`.
+
+### @mention intent resolution (natural language)
+
+When rigid parse (word-0 = github-enabled command) misses **and**
+`natural_language` is enabled, the bridge resolves intent via a strict ladder
+before any free-form fallback:
+
+1. **Keyword** — whole-word scan of the first N tokens (default 5) against
+   github-enabled skill names + aliases (excluding `gh_request`/`help`, and
+   `ask` for keyword only). Exactly one distinct skill hit **in an actionable
+   position** (token 0, or preceded within the window by an imperative lead-in
+   such as `do`/`can`/`please`) ⇒ promote (`confidence = 1.0`). Zero or ≥2
+   distinct hits, or a lone hit in a non-actionable position (an incidental noun
+   like `the review looks good`), ⇒ escalate. This precision gate keeps a bare
+   keyword from auto-dispatching a skill on incidental common-English words.
+2. **Model** — the `lightweight` classifier returns `{command, context,
+   confidence}`. Promote only when `command` is github-enabled,
+   `confidence ≥ min_confidence` (default 0.75), and the command's required
+   URL type matches the subject (PR vs issue).
+3. **Free-form** — residue keeps the `/gh_request` compatibility route.
+
+**Invariants**
+
+- Rigid word-0 matches never invoke the ladder.
+- A promoted intent dispatches the real skill directly (same URL/context/
+  reaction/ack as a rigid command) and never hops through `/gh_request`.
+- Classification fails open to free-form — a mention is never dropped.
+- One classifier implementation (`github_intent.resolve_github_intent`) is
+  shared by the bridge and `/gh_request`; the URL-type guard lives only in
+  `github_intent._url_type_ok` (never duplicated in the skill handler).
+- Missing/invalid model `confidence` fails closed to `0.0` (→ free-form).
 
 ## Integration points
 

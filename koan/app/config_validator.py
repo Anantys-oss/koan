@@ -21,7 +21,12 @@ from app.run_log import log
 # SECTION_SCHEMAS), because the sub-key set is open. ``effort`` keys are
 # mission types — an open set that grows as new skills land — so each key
 # is accepted and only its value (an effort level) is checked.
-_INLINE_VALIDATED_NESTED_KEYS = {"effort"}
+_INLINE_VALIDATED_NESTED_KEYS = {"effort", "models"}
+
+# Role keys allowed under models.default / models.{provider} / legacy flat models.
+_MODEL_ROLE_KEYS = frozenset({
+    "mission", "chat", "lightweight", "fallback", "review_mode", "reflect",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +50,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "skill_timeout": "int",
     "skill_max_turns": "int",
     "analysis_max_turns": "int",
+    "reply_max_turns": "int",
     "mission_timeout": "int",
     "bash_foreground_timeout": "int",
     "first_output_timeout": "int",
@@ -58,6 +64,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "post_mission_timeout": "int",
     "contemplative_chance": "int",
     "ci_fix_max_attempts": "int",
+    "preflight_cache_minutes": "int",
     "spec_complexity_threshold": "int",
     "start_on_pause": "bool",
     "start_passive": "bool",
@@ -96,6 +103,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "review_concurrency": _NESTED,
     "review_ignore": _NESTED,
     "review_draft_skip": _NESTED,
+    "review_pause_label": "str",
     "automation_rules": _NESTED,
     "effort": _NESTED,
     "thinking": _NESTED,
@@ -103,6 +111,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "optimizations": _NESTED,
     "ci_check": _NESTED,
     "running_indicator": _NESTED,
+    "verification": _NESTED,
 }
 
 # Top-level keys that are recognized but deprecated: they still work (honored
@@ -130,14 +139,10 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "mission": ("list", "str"),
         "description": "str",
     },
-    "models": {
-        "mission": "str",
-        "chat": "str",
-        "lightweight": "str",
-        "fallback": "str",
-        "reflect": "str",
-        "review_mode": "str",
-    },
+    # models: validated inline (open nested set) — see _validate_models_section.
+    # Supports both legacy flat models.{role} and nested models.default /
+    # models.{provider} maps. Leaving this out of SECTION_SCHEMAS alone is
+    # not enough: an empty schema would still reject every key.
     # cli: routes each mission role to a provider (flavor or flavor:path).
     # The global form is `cli.default.<role>` plus a single `cli.fallback`;
     # the per-role values live in the `default` mapping so only `default`
@@ -254,6 +259,9 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
         "sample_lines": "int",
         "max_retry_on_stagnation": "int",
     },
+    "verification": {
+        "max_requeue": "int",
+    },
     "branch_cleanup": {
         "enabled": "bool",
         "delete_remote_branches": "bool",
@@ -357,6 +365,57 @@ def _suggest_typo(key: str, known_keys: list) -> str:
     return ""
 
 
+def _validate_models_section(models: dict) -> List[Tuple[str, str]]:
+    """Validate nested or flat ``models:`` configuration.
+
+    Accepts:
+    - Nested: ``models.default.{role}``, ``models.{provider}.{role}`` (role
+      values must be strings when set).
+    - Legacy flat: ``models.{role}`` as a string.
+
+    Provider section names are an open set (claude, grok, codex, …).
+    """
+    warnings: List[Tuple[str, str]] = []
+    for sub_key, sub_value in models.items():
+        path = f"models.{sub_key}"
+        if sub_value is None:
+            continue
+        # Nested provider / default block
+        if isinstance(sub_value, dict):
+            for role, role_val in sub_value.items():
+                role_path = f"{path}.{role}"
+                if role not in _MODEL_ROLE_KEYS:
+                    suggestion = _suggest_typo(role, list(_MODEL_ROLE_KEYS))
+                    msg = f"unrecognized key '{role_path}'"
+                    if suggestion:
+                        msg += f" (did you mean '{path}.{suggestion}'?)"
+                    warnings.append((role_path, msg))
+                    continue
+                if role_val is None:
+                    continue
+                if not isinstance(role_val, str):
+                    warnings.append((
+                        role_path,
+                        f"'{role_path}' should be str, got {type(role_val).__name__}",
+                    ))
+            continue
+        # Legacy flat role key
+        if sub_key in _MODEL_ROLE_KEYS:
+            if not isinstance(sub_value, str):
+                warnings.append((
+                    path,
+                    f"'{path}' should be str, got {type(sub_value).__name__}",
+                ))
+            continue
+        # Unknown top-level under models (not a provider dict, not a role)
+        suggestion = _suggest_typo(sub_key, list(_MODEL_ROLE_KEYS) + ["default"])
+        msg = f"unrecognized key '{path}'"
+        if suggestion:
+            msg += f" (did you mean 'models.{suggestion}'?)"
+        warnings.append((path, msg))
+    return warnings
+
+
 def validate_config(config: dict) -> List[Tuple[str, str]]:
     """Validate a config dict against the known schema.
 
@@ -455,6 +514,11 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
                             f"'{path}' invalid effort '{sub_value}' "
                             f"(expected low/medium/high/max)",
                         ))
+                continue
+            # models: open nested set — models.default / models.{provider} maps
+            # of role→str, plus legacy flat models.{role} strings.
+            if key == "models":
+                warnings.extend(_validate_models_section(value))
                 continue
             section_schema = SECTION_SCHEMAS.get(key)
             if section_schema:

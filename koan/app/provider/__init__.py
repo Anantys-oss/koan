@@ -44,7 +44,9 @@ from app.provider.claude import ClaudeProvider  # noqa: F401
 from app.provider.cline import ClineProvider  # noqa: F401
 from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
+from app.provider.fake import FakeProvider, FakeProviderNotAllowed  # noqa: F401
 from app.provider.haze import HazeProvider  # noqa: F401
+from app.provider.grok import GrokProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
 
 
@@ -117,7 +119,9 @@ _PROVIDERS = {
     "cline": ClineProvider,
     "codex": CodexProvider,
     "copilot": CopilotProvider,
+    "fake": FakeProvider,
     "haze": HazeProvider,
+    "grok": GrokProvider,
     "ollama-launch": OllamaLaunchProvider,
 }
 
@@ -184,8 +188,22 @@ def known_providers() -> list:
 
     Single source of truth so dashboard forms stay in sync with the registry
     instead of hardcoding a provider list that drifts as providers are added.
+    Includes test/dev-only flavors (e.g. ``fake``) so name-based lookup and
+    config validation resolve them; use :func:`selectable_providers` for
+    UI-facing pickers that should hide them.
     """
     return sorted(_PROVIDERS)
+
+
+def selectable_providers() -> list:
+    """Sorted registered providers minus test/dev-only ones (``test_only``).
+
+    UI-facing surfaces (the dashboard provider dropdown) use this so a
+    fail-closed test stub like ``fake`` never appears as a selectable option on
+    a production instance, while it stays in :func:`known_providers` for
+    name-based lookup and config validation.
+    """
+    return sorted(name for name, cls in _PROVIDERS.items() if not cls.test_only)
 
 
 def get_provider_by_name(name: str) -> CLIProvider:
@@ -246,7 +264,23 @@ def get_fallback_provider(project_name: str = "") -> Optional[CLIProvider]:
         return None
     if not flavor or flavor not in _PROVIDERS:
         return None
-    return _PROVIDERS[flavor](binary_path=path)
+    try:
+        return _PROVIDERS[flavor](binary_path=path)
+    except FakeProviderNotAllowed:
+        # A fail-closed provider (``fake``) configured as the section-wide
+        # fallback must not crash the recovery path — ``get_fallback_provider``
+        # is contractually Optional and is called on *any* non-zero mission
+        # exit (see mission_executor._maybe_fallback_provider_rerun), including
+        # real-provider failures unrelated to ``fake``. Decline it so the
+        # original result stands. The PRIMARY selection paths
+        # (get_provider/get_provider_for_role) still error loudly, so this is
+        # not a silent swap: no work is ever routed to ``fake`` here.
+        print(
+            f"[provider] cli.fallback {flavor!r} is fail-closed and not "
+            "enabled (KOAN_ALLOW_FAKE_PROVIDER unset); ignoring fallback",
+            file=sys.stderr,
+        )
+        return None
 
 
 def resolve_role_provider(model_key: str, project_name: str = "") -> CLIProvider:
@@ -447,6 +481,7 @@ def build_full_command(
     system_prompt_file: str = "",
     effort: str = "",
     resume_session_id: str = "",
+    project_context: bool = True,
     provider: Optional[CLIProvider] = None,
 ) -> List[str]:
     """Build a complete CLI command for the configured provider.
@@ -464,6 +499,10 @@ def build_full_command(
         resume_session_id: When set and the provider supports session
             resumption, continues the given session instead of starting
             fresh.
+        project_context: When False, ask the provider to suppress
+            project-scope tooling (Claude: ``--setting-sources user``).
+            Use for KOAN_ROOT runtime sessions (chat, contemplative,
+            rituals, outbox). Mission sessions leave the default True.
         provider: Explicit provider instance to build for. ``None`` (default)
             uses the global :func:`get_provider`. Pass a per-role instance
             (from :func:`get_provider_for_role`) to build a command for a
@@ -489,6 +528,7 @@ def build_full_command(
         system_prompt_file=system_prompt_file,
         effort=effort,
         resume_session_id=resume_session_id,
+        project_context=project_context,
     )
 
 
@@ -551,6 +591,7 @@ def build_full_command_managed(
     system_prompt: str = "",
     effort: str = "",
     resume_session_id: str = "",
+    project_context: bool = True,
     system_prompt_dir: Optional[str] = None,
     system_prompt_container_dir: Optional[str] = None,
     provider: Optional[CLIProvider] = None,
@@ -583,6 +624,7 @@ def build_full_command_managed(
         plugin_dirs=plugin_dirs,
         effort=effort,
         resume_session_id=resume_session_id,
+        project_context=project_context,
         provider=provider,
     )
     if system_prompt and (provider or get_provider()).supports_system_prompt_file():
@@ -648,6 +690,7 @@ def run_command(
     timeout: int = 300,
     max_turns_source: Optional[str] = "skill_max_turns",
     project_name: str = "",
+    mcp_configs: Optional[List[str]] = None,
 ) -> str:
     """Build and run a CLI command, returning stripped stdout.
 
@@ -659,6 +702,11 @@ def run_command(
     the CLI provider (the ``cli:`` section). Pass ``project_name`` to honor
     per-project ``cli:`` overrides; omitting it uses the section/global
     resolution (which matches the historical behavior for these helpers).
+
+    ``mcp_configs`` is an optional list of MCP server config paths (or
+    ``None`` to omit ``--mcp-config``). Callers should resolve it through
+    ``config.mcp_configs_for_role(role, project_name)`` so the per-role
+    allowlist and kill switch apply.
 
     When the CLI hits its max-turns limit, the partial output is returned
     instead of raising — the caller can still extract useful results from
@@ -675,6 +723,7 @@ def run_command(
         model=models.get(model_key, ""),
         fallback=models.get("fallback", ""),
         max_turns=max_turns,
+        mcp_configs=mcp_configs,
         provider=provider,
     )
 
@@ -924,6 +973,26 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
         # marker above. See quota_handler._rate_limit_exhausted.
         return f"[cli] rate_limit_ok: {status or 'unknown'}{label}"
 
+    # Grok Build-style NDJSON (streaming-json): thought/text deltas + terminal
+    # ``end`` envelope. Shape-keyed on type + ``data`` / stopReason — no
+    # provider-name checks. See tests/grok_samples.py.
+    if etype == "thought" and isinstance(event.get("data"), str):
+        return "[cli] assistant — thinking"
+    if etype == "text" and isinstance(event.get("data"), str):
+        preview = _first_line(event.get("data"))
+        if preview:
+            return f"[cli] assistant — text: {_drop_part_sep(preview)}"
+        return "[cli] assistant — streaming"
+    if etype == "end":
+        stop = str(event.get("stopReason") or event.get("stop_reason") or "").strip()
+        turns = event.get("num_turns")
+        parts = ["end"]
+        if stop:
+            parts.append(stop)
+        if isinstance(turns, int):
+            parts.append(f"{turns} turns")
+        return f"[cli] result: {', '.join(parts)}"
+
     item = event.get("item")
     if isinstance(item, dict):
         item_type = item.get("type", "")
@@ -976,6 +1045,15 @@ def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
                 text = block.get("text")
                 if isinstance(text, str) and text:
                     chunks.append(text)
+
+    # Grok Build-style assistant text deltas: {"type":"text","data":"…"}.
+    # These are token/word deltas that must be concatenated with "" (see
+    # run_command_streaming delta flush). Not the same as Claude content
+    # blocks or haze message_end segments.
+    if event.get("type") == "text":
+        data = event.get("data")
+        if isinstance(data, str) and data:
+            chunks.append(data)
 
     # Haze-style segment completion: ``message_end`` carries the finalized
     # text for one assistant segment (one event per segment id). Cumulative
@@ -1041,15 +1119,21 @@ def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
                 "task.completed",
                 "turn_complete",
                 "task_complete",
+                # Grok Build terminal envelope carries usage/stopReason but not
+                # the assistant text — return None so callers fall back to
+                # accumulated text deltas.
+                "end",
             }
         ):
             return None
-        for key in ("output_text", "last_agent_message"):
+        if etype == "end":
+            return None
+        for key in ("output_text", "last_agent_message", "text"):
             result = event.get(key)
             if isinstance(result, str) and result:
                 return result
         return None
-    for key in ("result", "output_text", "last_agent_message"):
+    for key in ("result", "output_text", "last_agent_message", "text"):
         result = event.get(key)
         if isinstance(result, str) and result:
             return result
@@ -1071,6 +1155,27 @@ def _is_stream_json_max_turns(event: Dict[str, Any]) -> bool:
         return False
     subtype = str(event.get("subtype", "") or "").lower()
     return subtype in _STREAM_JSON_MAX_TURNS_SUBTYPES
+
+
+# Terminal ``end`` stopReasons that mean the session was aborted rather than
+# completed productively. Shape-keyed (type=end + stopReason) — used by Grok
+# Build headless when a tool permission would have prompted.
+_CANCELLED_STOP_REASONS = frozenset({"cancelled", "canceled"})
+
+
+def _is_cancelled_end_event(event: Dict[str, Any]) -> bool:
+    """Return True when a stream terminal event reports a cancelled stop.
+
+    Grok Build emits ``{"type":"end","stopReason":"Cancelled",...}`` when a
+    headless permission prompt is auto-cancelled. Treating that as soft
+    success left /implement with partial text and zero commits.
+    """
+    if str(event.get("type") or "") != "end":
+        return False
+    stop = str(
+        event.get("stopReason") or event.get("stop_reason") or ""
+    ).strip().lower()
+    return stop in _CANCELLED_STOP_REASONS
 
 
 def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1107,16 +1212,31 @@ def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
 
         input_tokens = int(usage.get("input_tokens", 0) or 0)
         output_tokens = int(usage.get("output_tokens", 0) or 0)
-        cached_input = int(usage.get("cached_input_tokens", 0) or 0)
-        if cached_input > 0:
-            input_tokens = max(0, input_tokens - cached_input)
+        # Claude/Codex: ``cached_input_tokens`` is a subset of input — subtract.
+        # Grok Build: ``cache_read_input_tokens`` may exceed ``input_tokens`` on
+        # multi-turn runs (cache spans prior turns). Only subtract when cache
+        # is a subset of input so we never zero out a real input count.
+        if "cached_input_tokens" in usage:
+            cached_input = int(usage.get("cached_input_tokens", 0) or 0)
+            if cached_input > 0:
+                input_tokens = max(0, input_tokens - cached_input)
+        else:
+            cached_input = int(usage.get("cache_read_input_tokens", 0) or 0)
+            if 0 < cached_input <= input_tokens:
+                input_tokens = max(0, input_tokens - cached_input)
         if input_tokens or output_tokens or cached_input:
+            model = str(event.get("model") or "")
+            if not model:
+                # Grok Build puts the model id in modelUsage keys, not event.model.
+                model_usage = event.get("modelUsage")
+                if isinstance(model_usage, dict) and model_usage:
+                    model = str(next(iter(model_usage)))
             return {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cache_read_input_tokens": cached_input,
                 "cache_creation_input_tokens": 0,
-                "model": str(event.get("model") or "unknown"),
+                "model": model or "unknown",
             }
 
     payload = event.get("payload")
@@ -1193,6 +1313,25 @@ def _persist_stream_usage_snapshot(snapshot: Optional[Dict[str, Any]]) -> None:
         print(f"[provider] WARNING: stream usage sidecar write failed: {exc}", file=sys.stderr)
 
 
+def missing_binary_message(err: "FileNotFoundError", cmd, provider_name: str, model_key: str) -> str:
+    """Actionable message for a provider launch that failed with FileNotFoundError.
+
+    Only fires when the missing executable IS the provider binary (``cmd[0]``);
+    a FileNotFoundError for some other file the CLI tried to open is re-raised
+    unchanged so it is never masked. Shared by ``run_command_streaming`` (skill
+    path, raises RuntimeError) and ``run.run_claude_task`` (mission path,
+    returns exit 127 + writes this to stderr).
+    """
+    executable = err.filename or str(cmd[0])
+    if executable != str(cmd[0]):
+        raise err
+    return (
+        f"CLI executable not found: {executable!r} "
+        f"(provider {provider_name!r}). Ensure it is on PATH or "
+        f"configure cli.{model_key}: {provider_name}:/absolute/path."
+    )
+
+
 def run_command_streaming(
     prompt: str,
     project_path: str,
@@ -1203,6 +1342,7 @@ def run_command_streaming(
     timeout: int = 300,
     max_turns_source: Optional[str] = "skill_max_turns",
     project_name: str = "",
+    mcp_configs: Optional[List[str]] = None,
 ) -> str:
     """Build and run a CLI command, streaming progress to stdout in real time.
 
@@ -1222,6 +1362,11 @@ def run_command_streaming(
     original raw text path; lines that fail to parse as JSON are still
     printed and contribute to the return value.
 
+    ``mcp_configs`` is an optional list of MCP server config paths (or
+    ``None`` to omit ``--mcp-config``). Callers should resolve it through
+    ``config.mcp_configs_for_role(role, project_name)`` so the per-role
+    allowlist and kill switch apply.
+
     Raises:
         RuntimeError: If the command exits with non-zero code (except
             max-turns, which returns partial output).
@@ -1238,6 +1383,7 @@ def run_command_streaming(
         fallback=models.get("fallback", ""),
         max_turns=max_turns,
         output_format="stream-json" if use_stream_json else "",
+        mcp_configs=mcp_configs,
         provider=provider,
     )
     last_message_path: Optional[str] = None
@@ -1263,21 +1409,38 @@ def run_command_streaming(
     raw_lines = deque(maxlen=2000)  # for error reporting (terminal lines)
     # text_lines IS the fallback return value when no result event arrives —
     # it must stay unbounded or long sessions would silently lose output.
+    # Block-style providers (Claude, Haze segments) append full segments and
+    # are joined with newlines. Delta-style providers (Grok Build text/data)
+    # buffer into text_delta_parts and flush as one segment so "hel"+"lo"
+    # becomes "hello", not "hel\\nlo".
     text_lines: List[str] = []  # fallback return value when no result event
+    text_delta_parts: List[str] = []
     final_result: Optional[str] = None
     usage_snapshot: Optional[Dict[str, Any]] = None
     saw_max_turns_event = False
+    saw_cancelled_end = False
     stderr_text = ""
+
+    def _flush_text_deltas() -> None:
+        if text_delta_parts:
+            text_lines.append("".join(text_delta_parts))
+            text_delta_parts.clear()
+
     try:
-        proc, cleanup = popen_cli(
-            cmd,
-            provider=provider,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
-            cwd=project_path,
-        )
+        try:
+            proc, cleanup = popen_cli(
+                cmd,
+                provider=provider,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                encoding="utf-8",
+                errors="replace",
+                cwd=project_path,
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                missing_binary_message(e, cmd, provider.name, model_key)
+            ) from e
         # Every print() in this loop is the load-bearing watchdog signal —
         # run.py's skill-runner liveness watchdog (600s) resets on each line
         # emitted to stdout. Do not silence these prints; doing so reintroduces
@@ -1305,17 +1468,29 @@ def run_command_streaming(
                     # before the final ``result`` event (timeout, watchdog
                     # kill, SIGPIPE) still returns whatever the provider managed
                     # to print, instead of silently returning "".
-                    text_lines.extend(_extract_assistant_text_chunks(event))
+                    chunks = _extract_assistant_text_chunks(event)
+                    if (
+                        event.get("type") == "text"
+                        and isinstance(event.get("data"), str)
+                    ):
+                        text_delta_parts.extend(chunks)
+                    else:
+                        _flush_text_deltas()
+                        text_lines.extend(chunks)
                     result_text = _extract_result_text(event)
                     if result_text is not None:
                         final_result = result_text
                     if _is_stream_json_max_turns(event):
                         saw_max_turns_event = True
+                    if _is_cancelled_end_event(event):
+                        saw_cancelled_end = True
                 else:
                     # Non-JSON: provider doesn't speak stream-json or a stray
                     # warning slipped in. Print and remember for the fallback.
+                    _flush_text_deltas()
                     print(stripped, flush=True)
                     text_lines.append(stripped)
+            _flush_text_deltas()
             stderr_text = proc.stderr.read() if proc.stderr else ""
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as e:
@@ -1344,6 +1519,20 @@ def run_command_streaming(
             return_text = final_result
         else:
             return_text = "\n".join(text_lines)
+
+        if saw_cancelled_end:
+            # Hard failure: cancelled sessions look like exit 0 with partial
+            # text (Grok headless permission_cancelled). Callers must not
+            # treat this as productive work.
+            _persist_stream_usage_snapshot(usage_snapshot)
+            detail = (return_text or "").strip()
+            suffix = f" Partial output: {detail[:200]}" if detail else ""
+            raise RuntimeError(
+                "CLI session cancelled (stopReason=Cancelled) — often a "
+                "headless permission denial. For Grok, ensure "
+                "skip_permissions: true so tools use --always-approve."
+                f"{suffix}"
+            )
 
         if proc.returncode != 0:
             # Max-turns is a graceful limit — return partial output so callers

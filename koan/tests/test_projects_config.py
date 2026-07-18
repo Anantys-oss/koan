@@ -2140,3 +2140,58 @@ class TestApplyProjectPatch:
         _pc.invalidate_projects_config_cache()
         fresh = _pc.load_projects_config(str(tmp_path))
         assert fresh["projects"]["bare"]["autoreview"] is True
+
+
+class TestApplyProjectPatchNestedFields:
+    def test_git_auto_merge_dotted_patch_preserves_siblings(self, tmp_path):
+        _write_projects_yaml(tmp_path, (
+            "projects:\n"
+            "  koan:\n"
+            "    path: /tmp/koan\n"
+            "    git_auto_merge:\n"
+            "      enabled: false\n"
+            "      strategy: rebase\n"
+        ))
+        _pc.invalidate_projects_config_cache()
+        merged = _pc.apply_project_patch(
+            str(tmp_path), "koan",
+            {"git_auto_merge.enabled": True, "git_auto_merge.base_branch": "develop"},
+        )
+        assert merged["git_auto_merge"]["enabled"] is True
+        assert merged["git_auto_merge"]["base_branch"] == "develop"
+        assert merged["git_auto_merge"]["strategy"] == "rebase"  # untouched sibling survives
+
+    def test_git_auto_merge_strategy_rejects_unknown_value(self, tmp_path):
+        _write_projects_yaml(tmp_path, "projects:\n  koan:\n    path: /tmp/koan\n")
+        _pc.invalidate_projects_config_cache()
+        with pytest.raises(ValueError, match="Invalid value for git_auto_merge.strategy"):
+            _pc.apply_project_patch(str(tmp_path), "koan", {"git_auto_merge.strategy": "octopus"})
+
+    def test_github_url_accepts_valid_and_empty(self, tmp_path):
+        _write_projects_yaml(tmp_path, "projects:\n  koan:\n    path: /tmp/koan\n")
+        _pc.invalidate_projects_config_cache()
+        merged = _pc.apply_project_patch(
+            str(tmp_path), "koan", {"github_url": "https://github.com/org/repo"},
+        )
+        assert merged["github_url"] == "https://github.com/org/repo"
+        merged = _pc.apply_project_patch(str(tmp_path), "koan", {"github_url": ""})
+        assert merged["github_url"] == ""
+
+    def test_github_url_rejects_non_github_value(self, tmp_path):
+        _write_projects_yaml(tmp_path, "projects:\n  koan:\n    path: /tmp/koan\n")
+        _pc.invalidate_projects_config_cache()
+        with pytest.raises(ValueError, match="Invalid value for github_url"):
+            _pc.apply_project_patch(str(tmp_path), "koan", {"github_url": "not-a-url"})
+
+    def test_get_editable_project_fields_resolves_dotted_keys(self, tmp_path):
+        _write_projects_yaml(tmp_path, (
+            "projects:\n"
+            "  koan:\n"
+            "    path: /tmp/koan\n"
+            "    git_auto_merge:\n"
+            "      enabled: true\n"
+        ))
+        config = _pc.load_projects_config(str(tmp_path))
+        fields = _pc.get_editable_project_fields(config, "koan")
+        assert fields["git_auto_merge.enabled"] is True
+        assert fields["git_auto_merge.base_branch"] is None

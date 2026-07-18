@@ -239,6 +239,10 @@ def test_refresh_dynamic_isolates_render_failures(tmp_path):
         app = tui.KoanDashboard(tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
+            # Pause the background 2s refresh tick so it cannot fire (and
+            # double-invoke the render stubs below) if this test is slow to
+            # reach the assertion under a loaded CI worker.
+            app._refresh_timer.pause()
             app._render_status = _boom
             app._render_logs = lambda: called.append("logs")
             app._render_usage = lambda: called.append("usage")

@@ -508,3 +508,47 @@ class TestStatusHandlerFocusIntegration:
         assert "Focus" not in result
 
 
+
+
+class TestFocusSignalLockSerialization:
+    """create_focus / check_focus serialize on the signal lock so an
+    expiry-remove cannot clobber a concurrently created focus."""
+
+    def test_create_focus_blocks_while_signal_lock_held(self, tmp_path):
+        import threading
+
+        from app.focus_manager import _focus_path, create_focus, get_focus_state
+        from app.locked_file import signal_lock
+
+        holding = threading.Event()
+        release = threading.Event()
+        created = threading.Event()
+
+        def hold_lock():
+            with signal_lock(_focus_path(str(tmp_path))):
+                holding.set()
+                release.wait(timeout=5)
+
+        def do_create():
+            create_focus(str(tmp_path), duration=3600, reason="missions")
+            created.set()
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        assert holding.wait(timeout=5)
+
+        creator = threading.Thread(target=do_create)
+        creator.start()
+
+        # Lock is held elsewhere → create_focus must not complete yet.
+        assert not created.wait(timeout=0.5)
+
+        release.set()  # release the lock
+        assert created.wait(timeout=5)  # create_focus can now finish
+
+        holder.join(timeout=5)
+        creator.join(timeout=5)
+
+        state = get_focus_state(str(tmp_path))
+        assert state is not None
+        assert state.duration == 3600

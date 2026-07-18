@@ -625,12 +625,18 @@ class TestProviderRegistry:
         assert "claude" in _PROVIDERS
         assert "copilot" in _PROVIDERS
         assert "haze" in _PROVIDERS
+        assert "grok" in _PROVIDERS
         assert "ollama-launch" in _PROVIDERS
 
     def test_haze_is_known_provider(self):
         from app.provider import is_known_provider, known_providers
         assert is_known_provider("haze")
         assert "haze" in known_providers()
+
+    def test_grok_is_known_provider(self):
+        from app.provider import is_known_provider, known_providers
+        assert is_known_provider("grok")
+        assert "grok" in known_providers()
 
     @patch("app.provider.get_provider_name", return_value="claude")
     def test_get_provider_claude(self, mock_name):
@@ -997,6 +1003,23 @@ class TestRunCommandStreaming:
             run_command_streaming("hi", "/tmp", [])
         call_kwargs = mock_popen.call_args[1]
         assert call_kwargs.get("errors") == "replace"
+
+    def test_missing_executable_raises_actionable_error(self):
+        """A missing provider binary must not crash a skill runner."""
+        from app.provider import run_command_streaming
+
+        with patch("app.config.get_model_config", return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.get_provider_name", return_value="codex"), \
+             patch("app.provider.build_full_command", return_value=["codex", "exec", "prompt"]), \
+             patch(
+                 "app.cli_exec.popen_cli",
+                 side_effect=FileNotFoundError(2, "No such file or directory", "codex"),
+             ):
+            with pytest.raises(RuntimeError, match="CLI executable not found: 'codex'") as exc:
+                run_command_streaming("hi", "/tmp", [])
+
+        assert "provider 'codex'" in str(exc.value)
+        assert "cli.chat: codex:/absolute/path" in str(exc.value)
 
     def test_failure_raises(self):
         from app.provider import run_command_streaming

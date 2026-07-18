@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-13
+updated: 2026-07-17
 ---
 
 # Kōan User Manual
@@ -232,7 +232,7 @@ If Kōan misclassifies your message, use `/chat` to force chat mode:
 - `/quota` — See how much API budget is left before adding heavy missions, plus the rolling burn rate (%/h) and estimated time to exhaustion
 - `/quota 32` — Tell Kōan it has 32% remaining (fixes drift when internal estimate is wrong)
 - If Kōan is paused due to quota but the API is actually available, `/quota 50` will correct the estimate and clear the pause
-- When the burn rate predicts session exhaustion in less than 30 min, the autonomous mode is automatically downgraded one tier (deep→implement→review). A Telegram alert fires once when projected exhaustion is under 60 min and the next quota reset is still more than 2 h away.
+- When the burn rate predicts session exhaustion in less than 30 min, the autonomous mode is automatically soft-throttled one tier (deep→implement→review) — burn rate never forces a pause (`wait`); absolute budget thresholds still own that. Estimates need ≥5 samples over ≥15 minutes of wall clock so a short burst of heavy missions does not look like a multi-hundred-%/h sustained rate. Only samples from the last 5 hours (the session-quota window) count toward the estimate, so a state file left over from an earlier session cannot shape the current one — older samples stay on disk and age out of the buffer naturally, and a buffer holding nothing fresh yields no estimate rather than a false alarm. A Telegram alert fires once when projected exhaustion is under 60 min and the next quota reset is still more than 2 h away. Session reset (`/resume` after a quota pause) also clears the burn-rate sample buffer so pre-pause costs cannot re-trigger false alarms.
 </details>
 
 **`/check_notifications`** — Force an immediate check of GitHub and Jira notifications, bypassing the exponential backoff timer.
@@ -477,6 +477,7 @@ Plans include a **File Map** (table of every file to create/modify/test), **chec
 - **Usage:** `/plan [--iterations N] <idea>`, `/plan <project> <idea>`, `/plan <issue-url>` (iterate on existing)
 - **GitHub @mention:** `@koan-bot /plan <idea>` on an issue
 - **Option:** `--iterations N` (1-5, default 1) — Run N rounds of critique+refine. A critic identifies gaps and contradictions after each generation, then the plan is regenerated with that feedback. Only the final iteration is posted. Cost scales linearly (~5× tokens at `--iterations 3`).
+- **MCP:** By default `plan` is in `mcp_roles`, so project MCP servers (Jira, docs, etc.) are loaded during plan generation. See [Claude provider docs](../providers/claude.md#per-role-mcp-access-mcp_roles). Other roles (`chat`, `github_reply`) stay opt-in only.
 
 <details>
 <summary>Use cases</summary>
@@ -549,7 +550,7 @@ Before attempting a fix, `/fix` runs a lightweight read-only diagnostic phase us
 
 After a draft PR is created, `/fix` also runs the private review gate when it is enabled (opt-in; disabled by default during the testing phase). Findings and fix attempts stay backend-only: no review comment, verdict, or issue comment is posted by the gate.
 
-If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebase` — addressing review concerns on an existing PR is exactly what `/rebase` does. The `--now` flag and any trailing context are preserved through the redirect.
+If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebase --fix` — addressing review concerns on an existing PR is exactly what `/rebase --fix` does. It injects `--fix` (because a bare `/rebase` now only rebases), and the `--now` flag and any trailing context are preserved through the redirect.
 
 <details>
 <summary>Use cases</summary>
@@ -558,7 +559,7 @@ If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebas
 - `/fix https://github.com/org/repo/issues/99 Regression from v2.3` — Provide extra context
 - `/fix https://github.com/org/repo/issues/99 --skip-diagnose` — Skip diagnostic for a trivial fix
 - `/fix https://myorg.atlassian.net/browse/PROJ-123 branch:main` — Fix a Jira ticket using a one-off target branch
-- `/fix https://github.com/org/repo/pull/42 address the security concern` — PR URL redirects to `/rebase`, preserving the trailing context
+- `/fix https://github.com/org/repo/pull/42 address the security concern` — PR URL redirects to `/rebase --fix`, preserving the trailing context
 </details>
 
 **`/debug`** — Structured 4-step debugging when a previous fix attempt failed.
@@ -584,7 +585,7 @@ The debug loop enforces four steps:
 **`/review`** — Queue a code review for a pull request or issue.
 
 - **Usage:** `/review <github-pr-or-issue-url> [additional-pr-or-issue-url ...] [--architecture] [--errors] [--comments] [--bot-comments] [--plan-url <issue-url>]`
-- **Aliases:** `/rv`
+- **Aliases:** `/rv`, `/rereview`, `/re_review`
 - **GitHub @mention:** `@koan-bot /review` on a PR
 - **Multiple URLs:** Queues one independent review mission per PR/issue URL. Shared flags such as `--errors` and `--plan-url <issue-url>` are applied to each queued review.
 - **Flags:**
@@ -592,7 +593,7 @@ The debug loop enforces four steps:
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
   - `--comments` — Comment quality review (factual accuracy, completeness, stale TODOs, misleading language)
   - `--bot-comments` — Triage inline comments from code-review bots (CodeRabbit, Copilot Review, Sourcery) and post replies to actionable findings
-- **Output:** Findings are grouped into severity buckets (🔴 Blocking / 🟡 Important / 🟢 Suggestions), each folded into a collapsible section. Every finding's location is shown on its own line inside the summary as a **clickable link** that jumps straight to the exact file and lines on GitHub, pinned to the reviewed commit (so the link stays accurate even after the PR gets new commits).
+- **Output:** Findings are grouped into severity buckets (🔴 Blocking / 🟡 Important / 🟢 Suggestions), each folded into a collapsible section. Every finding's location is shown on its own line inside the summary as a **clickable link** that jumps straight to the exact file and lines on GitHub, pinned to the reviewed commit (so the link stays accurate even after the PR gets new commits). The request-changes verdict and its red/yellow alert are derived from this same final list, so a blocking verdict always names at least one categorized Blocking or Important finding.
 - **Project memory:** Reviews automatically inject the project's filtered learnings plus human-curated `context.md`/`priorities.md`, ranked against the PR's title, body, and diff via the SQLite FTS5 memory index. Set `review_memory.enabled: true` in `config.yaml` to *also* include recent typed project memory (decisions, observations) for extra reviewer context. Both apply to `/review` and the backend private review gate.
 - **Prior review context:** On a re-review, the bot's own most recent structured review is surfaced in a dedicated, head-preserving prompt slot so the new review builds on it (confirming whether prior findings are resolved) instead of losing it to the recency-truncated conversation thread. That prior review comment is also collapsed to a short "superseded" pointer so it doesn't echo or crowd out human feedback — set `review_history.preserve_previous: true` to keep it intact instead. Tune the prompt slot via `review_context` in `config.yaml` (`include_bot_feedback`, `prior_review_max_chars`).
 
@@ -670,11 +671,23 @@ Produces a pedagogical walkthrough of the PR: what problem it solves (with examp
 
 **`/rebase`** — Rebase a PR onto its base branch.
 
-- **Usage:** `/rebase <pr-url> [focus area]`
+- **Usage:** `/rebase [--fix] <pr-url> [focus area]`
 - **Aliases:** `/rb`
 - **GitHub @mention:** `@koan-bot /rebase` on a PR
 
-Any text after the URL is threaded into the mission as extra focus context (e.g. `/rebase <pr-url> address the security concern`). A `/fix` invoked on a PR URL redirects here, preserving that context.
+**By default `/rebase` only rebases** the PR branch onto its base (resolving
+conflicts). To *also* read the PR's review comments and apply the requested
+changes, add **`--fix`**. `--fix` is **implied by any trailing text after the
+URL**, so `/rebase <pr-url> address the security concern` (a focus area) and
+`/rebase <pr-url> critical` (a severity keyword) both address feedback — only a
+bare `/rebase <pr-url>` skips the feedback leg. Trailing text is threaded into
+the mission as extra focus context. A `/fix` invoked on a PR URL redirects here
+**with `--fix`**, preserving that context.
+
+> **Transition (through 2026-08-17):** `/rebase` used to always apply review
+> feedback. Now a bare `/rebase` rebases only. During this window a bare
+> `/rebase` shows a temporary notice (in chat and as a PR comment) pointing you
+> to `/rebase --fix`; the notice disappears automatically after the deadline.
 
 By default, Telegram `/rebase` only queues PRs created by this instance
 (branch prefix match). Set `allow_rebase_foreign_prs: true` in
@@ -726,8 +739,9 @@ After completion, Kōan posts a structured comment on the PR with these sections
 <details>
 <summary>Use cases</summary>
 
-- `/rebase https://github.com/org/repo/pull/42` — Resolve conflicts and update the PR
-- `/rebase https://github.com/org/repo/pull/42 address the security concern` — Rebase with a focus area
+- `/rebase https://github.com/org/repo/pull/42` — Rebase only (resolve conflicts, no feedback)
+- `/rebase --fix https://github.com/org/repo/pull/42` — Rebase **and** address review feedback
+- `/rebase https://github.com/org/repo/pull/42 address the security concern` — Rebase with a focus area (implies `--fix`)
 </details>
 
 **`/reviewrebase`** — Review a PR then rebase it, so review insights feed the rebase.
@@ -739,7 +753,7 @@ After completion, Kōan posts a structured comment on the PR with these sections
 <details>
 <summary>Use cases</summary>
 
-- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase` at the **end** of the queue (review stays ahead of rebase)
+- `/rr https://github.com/org/repo/pull/42` — Queues `/review` then `/rebase --fix` at the **end** of the queue (review stays ahead of rebase; the rebase leg addresses the fresh review)
 - `/rr --now https://github.com/org/repo/pull/42` — Jumps the queue: inserts the combo at the **top** so it runs next
 - Extra context after the URL is passed to the review step (e.g., `/rr <url> focus on error handling`)
 </details>
@@ -921,16 +935,25 @@ Reads the Failed section of `missions.md`, finds the most recent failure (option
 
 ### Project Maintenance
 
-**`/claudemd`** — Refresh or create a project's `CLAUDE.md` based on recent architectural changes.
+**`/claudemd`** — Refresh or create a project's `CLAUDE.md` based on recent architectural changes, or sync Kōan's per-project learnings into it.
 
-- **Usage:** `/claudemd [project-name]`
+- **Usage:** `/claudemd [project-name] [learnings]`
 - **Aliases:** `/claude`, `/claude.md`, `/claude_md`
+
+Add the `learnings` sub-argument to distill the durable, generalizable
+conventions Kōan has accumulated in its private per-project learnings into a
+clearly-delimited, auto-managed `## Learnings from Kōan` block inside the
+project's own `CLAUDE.md`. Interactive Claude Code sessions never see Kōan's
+private `instance/memory`, so this surfaces those conventions for any AI
+assistant on the repo. The block is regenerated in place on each run (no
+duplication, human-authored content untouched) and delivered as a draft PR.
 
 <details>
 <summary>Use cases</summary>
 
 - `/claudemd webapp` — Update the CLAUDE.md after a big refactor
 - `/claudemd` — Refresh for the default/focused project
+- `/claudemd webapp learnings` — Distill Kōan's learnings into CLAUDE.md
 </details>
 
 #### Project-specific instructions (`KOAN.md`)
@@ -1167,7 +1190,7 @@ Using `all` or `none` also sets the default for future projects added via `/add_
 
 ### Autoreview Mode
 
-When autoreview is enabled for a project, Kōan automatically queues `/review <pr-url>` then `/rebase <pr-url>` after any successful mission that creates a PR (and was not auto-merged). This provides an extra quality gate without manual intervention. Off by default.
+When autoreview is enabled for a project, Kōan automatically queues `/review <pr-url>` then `/rebase --fix <pr-url>` after any successful mission that creates a PR (and was not auto-merged). The rebase leg carries `--fix` so it addresses the review it just generated. This provides an extra quality gate without manual intervention. Off by default.
 
 **`/autoreview`** — Enable autoreview or show status.
 - **Usage:** `/autoreview [project|all|none]`
@@ -1449,11 +1472,23 @@ probes. Use this when your CLI provider has no metered quota (e.g. a self-hosted
 API proxy or a plan with no hard token limits). If the CLI actually fails with a
 quota error, Koan still detects it and pauses.
 
+`preflight_cache_minutes` (default 10, `0` disables) controls how long a
+*successful* pre-flight quota probe is reused. The loop probes provider quota
+before every mission attempt; Claude reads local usage for free, but providers
+with no usage introspection (haze, cline) probe with a real LLM call — observed
+at ~16s per attempt. Within the TTL a recent success is reused instead of
+re-probing. Failures are never cached, so exhaustion verdicts always re-check
+and the pause/recovery behavior is unchanged. The trade-off is bounded: at worst
+one mission starts on a stale "available" verdict inside the TTL, which the
+in-run quota detection then catches.
+
 **`/models`** (alias `/model`) — Show the resolved model configuration for the active CLI provider. Useful when debugging model-routing issues — displays which model wins for each of the 6 slots (`mission`, `chat`, `lightweight`, `fallback`, `review_mode`, `reflect`) after applying the full resolution chain: per-project `models:` → `models.{provider}:` → `models.default:` → built-in defaults.
 
 ```
 /models
 ```
+
+When a slot is routed to a **custom CLI** via the `cli:` config section (e.g. `cli.default.review_mode: "claude:/root/.local/bin/claude-deep"`), the line is annotated with the resolved binary — `review_mode: opus  [cli: claude-deep]`. Slots on the global provider show no annotation. This makes it obvious at a glance which mission types run a different CLI binary than the default.
 
 The active provider is also shown in `/status` output. See [Provider-specific model config](#provider-specific-model-config) below for how to configure `models.claude:` / `models.codex:` sections.
 
@@ -1591,7 +1626,7 @@ projects:
 ```
 
 Key per-project settings:
-- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `haze`, `local`, or `ollama-launch`
+- **`cli_provider`** — `claude`, `cline`, `codex`, `copilot`, `haze`, `grok`, `local`, or `ollama-launch`
 - **`models`** — Override model selection per role
 - **`tools`** — Restrict available tools
 - **`git_auto_merge`** — Auto-merge completed PRs (strategy: squash/merge/rebase)
@@ -1676,6 +1711,20 @@ review_history:
 ```yaml
 review_draft_skip:
   enabled: false          # Defer auto-review of draft PRs (default: false)
+```
+
+**Pause-label review gate (default on):** While a PR carries the configured
+label (default `PauseReview`), Kōan skips LLM review — no prompt, no provider
+call, no review comment. Auto-queue from `review_requested` is soft-skipped
+(notification marked read; no dedup/cooldown). Already-queued or explicit
+`/review` missions also exit early at execution time. **Remedies:** remove the
+label (auto-review resumes on the next request), or send
+`/review --force <url>` to review once while the label stays. Set
+`review_pause_label: ""` to disable label checking entirely. Label match is
+exact and case-sensitive (GitHub label names are exact).
+
+```yaml
+review_pause_label: "PauseReview"   # default; "" disables
 ```
 
 ### Custom Skills
@@ -1777,6 +1826,7 @@ Kōan supports multiple CLI backends. Configure globally via `KOAN_CLI_PROVIDER`
 | **OpenAI Codex** | ChatGPT users who want Codex models | [codex.md](../providers/codex.md) |
 | **GitHub Copilot** | Teams with existing Copilot licenses | [copilot.md](../providers/copilot.md) |
 | **Haze** | Minimal multi-backend agentic CLI (OpenAI, OpenRouter, local endpoints) — [official docs](https://denizokcu.github.io/haze/) | [haze.md](../providers/haze.md) |
+| **Grok Build** | xAI Grok Build CLI (`grok`) with headless streaming-json | [grok.md](../providers/grok.md) |
 | **Ollama Launch** | Local/offline models behind the Claude CLI harness | [ollama-launch.md](../providers/ollama-launch.md) |
 | **OpenRouter** (via Claude CLI) | Claude CLI behavior with OpenRouter's model catalog/billing | [openrouter.md](../providers/openrouter.md) |
 
@@ -2330,14 +2380,14 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/plan <desc>` | — | I | Create a structured implementation plan |
 | `/deepplan <idea\|issue-url>` | `/deeplan` | I | Spec-first design: explore approaches, post spec, queue /plan |
 | `/implement <issue>` | `/impl` | I | Implement a GitHub or Jira issue |
-| `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR); a PR URL redirects to `/rebase` |
+| `/fix <issue>` | — | I | Full bug-fix pipeline (understand → plan → test → fix → PR); a PR URL redirects to `/rebase --fix` |
 | `/debug <issue>` | `/dbg` | I | Structured 4-step debug loop (reproduce → hypothesize → fix → verify) |
-| `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv` | I | Review one or more pull requests |
+| `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | I | Review one or more pull requests |
 | `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
 | `/ask <comment-url>` | `/question` | I | Ask a question about a PR/issue — posts AI reply to GitHub |
-| `/rebase <PR> [focus area]` | `/rb` | I | Rebase a PR onto its base branch; trailing text becomes focus context |
-| `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo) |
+| `/rebase [--fix] <PR> [focus area]` | `/rb` | I | Rebase a PR onto its base branch (rebase-only by default); `--fix` (or trailing text) also addresses review feedback |
+| `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo: /review → /rebase --fix) |
 | `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | I | Plan then implement an issue (combo) |
 | `/squash <PR>` | `/sq` | I | Squash all PR commits into one clean commit |
 | `/recreate <PR>` | `/rc` | I | Re-implement a PR from scratch |
@@ -2350,7 +2400,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/ci_check <PR>` | — | I | Check and fix CI failures on a PR |
 | `/diagnose [project]` | `/dx` | B | Analyze last failure and queue a fix attempt |
 | `/gh_request <url> <text>` | — | I | Route natural-language GitHub request to the right skill |
-| `/claudemd [project]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md |
+| `/claudemd [project] [learnings]` | `/claude`, `/claude.md`, `/claude_md` | I | Refresh a project's CLAUDE.md, or sync Kōan's learnings into it |
 | `/models` | `/model` | P | Show resolved model config for the active CLI provider |
 | `/config_check` | `/cfgcheck`, `/configcheck` | P | Detect config.yaml drift against instance.example template |
 | `/rescan` | `/rescan_heads` | P | Re-check all projects for remote HEAD branch changes |

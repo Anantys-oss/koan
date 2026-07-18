@@ -444,7 +444,7 @@ class KoanDashboard(App):
         self._build_config_tree()
         self._start_keepawake()  # keep the machine awake by default
         self.refresh_dynamic()
-        self.set_interval(2.0, self.refresh_dynamic)
+        self._refresh_timer = self.set_interval(2.0, self.refresh_dynamic)
 
     def on_unmount(self) -> None:
         self._stop_keepawake()

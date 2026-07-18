@@ -817,83 +817,77 @@ def _validate_and_parse_command(
     return skill, command_name, context
 
 
-def _try_nlp_classification(
+def _notification_subject_kind(notification: dict) -> str:
+    """Map a GitHub notification's subject type to "pr"/"issue"/"".
+
+    GitHub reports ``notification["subject"]["type"]`` as "PullRequest" or
+    "Issue". Anything else (or missing) maps to "" (unknown subject).
+    """
+    t = str((notification.get("subject") or {}).get("type", "")).lower()
+    if t == "pullrequest":
+        return "pr"
+    if t == "issue":
+        return "issue"
+    return ""
+
+
+def _try_intent_promotion(
     comment: dict,
     config: dict,
-    projects_config: Optional[dict],
     registry: SkillRegistry,
-    bot_username: str,
-    project_name: str,
     owner: str,
     repo: str,
+    notification: dict,
 ) -> Optional[Tuple[object, str, str]]:
-    """Attempt NLP intent classification for an unrecognized command.
+    """Intent ladder Layers 1–2: promote NL prose to a real github-enabled skill.
 
-    Only runs when natural_language is enabled in config. Calls Claude
-    to classify the comment text into a known github-enabled command.
-
-    Args:
-        comment: Comment dict.
-        config: Global config.
-        projects_config: Projects config.
-        registry: Skills registry.
-        bot_username: Bot's GitHub username.
-        project_name: Resolved project name.
-        owner: Repository owner.
-        repo: Repository name.
-
-    Returns:
-        Tuple of (skill, command_name, context) if classification succeeded,
-        or None if NLP is disabled, failed, or returned no match.
+    Returns (skill, command_name, context) to promote, or None to fall through
+    to the free-form /gh_request compatibility route.
     """
-    if not get_github_natural_language(config, project_name, projects_config):
+    from app.github_reply import extract_mention_text
+    from app.github_intent import resolve_github_intent
+    from app.github_config import get_github_intent_config
+    from app.utils import resolve_project_path
+
+    nickname = get_github_nickname(config)
+    text = extract_mention_text(comment.get("body", ""), nickname)
+    if not text:
         return None
 
-    # Resolve project path for Claude CLI
-    from app.utils import resolve_project_path
     project_path = resolve_project_path(repo, owner=owner)
     if not project_path:
-        log.debug("GitHub NLP: could not resolve project path for %s/%s", owner, repo)
+        log.debug("GitHub intent: could not resolve project path for %s/%s", owner, repo)
         return None
 
-    # Get available commands for the classifier
-    commands = get_github_enabled_commands_with_descriptions(registry)
-    if not commands:
+    cfg = get_github_intent_config(config)
+    match = resolve_github_intent(
+        text,
+        registry,
+        subject_kind=_notification_subject_kind(notification),
+        project_path=project_path,
+        min_confidence=cfg["min_confidence"],
+        keyword_window=cfg["keyword_window"],
+    )
+    if not match:
         return None
 
-    # Extract the full comment text (after @mention, code blocks stripped)
-    nickname = get_github_nickname(config)
-    from app.github_reply import extract_mention_text
-    message = extract_mention_text(comment.get("body", ""), nickname)
-    if not message:
-        return None
-
-    from app.github_intent import classify_intent
-
-    log.debug("GitHub NLP: classifying intent for: %s", message[:100])
-    result = classify_intent(message, commands, project_path)
-
-    if not result or not result.get("command"):
-        log.debug("GitHub NLP: no command classified")
-        return None
-
-    classified_command = result["command"]
-    classified_context = result.get("context", "")
-
-    # Validate the classified command is actually github_enabled
-    skill = validate_command(classified_command, registry)
-    if not skill:
-        log.debug(
-            "GitHub NLP: classified command '%s' is not github-enabled",
-            classified_command,
+    skill = validate_command(match.command, registry)
+    if skill is None:
+        # resolve_github_intent already vetted this command as github-enabled;
+        # a validate_command disagreement means the two validators are out of
+        # sync — surface it rather than dropping the mention silently.
+        log.warning(
+            "GitHub intent: resolved command /%s failed validate_command "
+            "(resolver/validator out of sync) on %s/%s",
+            match.command, owner, repo,
         )
         return None
 
     log.info(
-        "GitHub NLP: classified '%s' as /%s for %s/%s",
-        message[:80], classified_command, owner, repo,
+        "GitHub intent: promoted @mention to /%s (source=%s conf=%.2f) on %s/%s",
+        match.command, match.source, match.confidence, owner, repo,
     )
-    return skill, classified_command, classified_context
+    return skill, match.command, match.context
 
 
 def _try_reply(
@@ -1000,6 +994,7 @@ def _try_reply(
         issue_number=issue_number,
         comment_author=comment_author,
         project_path=project_path,
+        project_name=project_name,
     )
 
     if not reply_text:
@@ -1249,6 +1244,29 @@ def _try_assignment_notification(
             mark_notification_read(notif_id)
             notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
             return True
+
+    # Pause-label gate. When review_pause_label is non-empty and the PR carries
+    # that exact label, soft-skip the automatic /review. Mirrors the draft gate:
+    # mark read, do NOT track_thread / set_review_cooldown. Explicit /review
+    # still queues (mention path); the runner enforces the label at execution
+    # time unless --force.
+    pause_label = ""
+    if reason == "review_requested":
+        from app.config import get_review_pause_label
+        pause_label = get_review_pause_label()
+    if pause_label and pause_label in (subject_info.get("labels") or []):
+        subject_title = notification.get("subject", {}).get("title", "?")
+        pr_number = extract_issue_number_from_notification(notification)
+        log.info(
+            "GitHub assign: skipping review of %s/%s#%s — PR has pause label %r (%s)",
+            owner, repo, pr_number or "?", pause_label, subject_title,
+        )
+        _notify_pause_label_skipped(
+            owner, repo, subject_title, pause_label, notification,
+        )
+        mark_notification_read(notif_id)
+        notification[NOTIFICATION_OUTCOME_KEY] = NOTIFICATION_OUTCOME_HANDLED_NOOP
+        return True
 
     # Build web URL from subject
     subject_url = notification.get("subject", {}).get("url", "")
@@ -1900,29 +1918,30 @@ def _process_mention_comment(
         )
 
         if nlp_enabled:
-            gh_request_skill = validate_command("gh_request", registry)
-            if gh_request_skill:
-                nickname = get_github_nickname(config)
-                from app.github_reply import extract_mention_text
-                full_text = extract_mention_text(comment.get("body", ""), nickname)
-                if full_text:
-                    skill = gh_request_skill
-                    command_name = "gh_request"
-                    context = full_text
-                    log.info(
-                        "GitHub NLP: routing to /gh_request for %s/%s: %s",
-                        owner, repo, full_text[:80],
-                    )
-        else:
-            nlp_result = _try_nlp_classification(
-                comment, config, projects_config, registry,
-                bot_username, project_name, owner, repo,
+            # Intent ladder (Layers 1–2): promote clear NL intent to the real
+            # skill with the same mission machinery as a rigid command.
+            promoted = _try_intent_promotion(
+                comment, config, registry, owner, repo, notification,
             )
-            if nlp_result:
-                nlp_skill, nlp_command, nlp_context = nlp_result
-                skill = nlp_skill
-                command_name = nlp_command
-                context = nlp_context
+            if promoted is not None:
+                skill, command_name, context = promoted
+            else:
+                # Layer 3 — free-form compat: genuinely ambiguous prose keeps
+                # the /gh_request route (shares the same classifier).
+                gh_request_skill = validate_command("gh_request", registry)
+                if gh_request_skill:
+                    nickname = get_github_nickname(config)
+                    from app.github_reply import extract_mention_text
+                    full_text = extract_mention_text(comment.get("body", ""), nickname)
+                    if full_text:
+                        skill = gh_request_skill
+                        command_name = "gh_request"
+                        context = full_text
+                        log.info(
+                            "GitHub intent: no skill match, routing to /gh_request for %s/%s: %s",
+                            owner, repo, full_text[:80],
+                        )
+        # NL disabled → fall through to reply/error (no classification)
 
     # If still no skill after NLP, fall through to reply/error
     if skill is None and command_name is not None and command_name != "help":
@@ -2478,19 +2497,19 @@ def _try_subscription_notification(
 
 
 def _fetch_subject_info(notification: dict) -> dict:
-    """Fetch state, merged status, head SHA, and draft flag for a subject.
+    """Fetch state, merged, head SHA, draft, and labels for a subject.
 
     One API call returns everything the assignment path needs: the
     ``state``/``merged`` fields for the closed/merged check, ``head_sha``
-    for the review-request dedup key, and ``draft`` for the opt-in draft-PR
-    review gate. Issues have no ``head`` and no ``draft`` — both come back
-    null in that case.
+    for the review-request dedup key, ``draft`` for the opt-in draft-PR
+    review gate, and ``labels`` for the pause-label review gate. Issues have
+    no ``head`` and no ``draft`` — both come back null in that case.
 
     Returns:
-        A dict with keys ``state``, ``merged``, ``head_sha``, ``draft``
-        (values may be empty/None/False). Returns an empty dict when the
-        subject cannot be fetched, so callers must treat a missing
-        ``head_sha``/``draft`` as "unknown".
+        A dict with keys ``state``, ``merged``, ``head_sha``, ``draft``,
+        ``labels`` (list of name strings; empty when absent/unfetchable).
+        Returns an empty dict when the subject cannot be fetched, so callers
+        must treat a missing ``head_sha``/``draft``/``labels`` as "unknown".
     """
     from app.github import SSOAuthRequired, api as gh_api
 
@@ -2509,7 +2528,10 @@ def _fetch_subject_info(notification: dict) -> dict:
     try:
         raw = gh_api(
             endpoint,
-            jq="{state: .state, merged: .merged, head_sha: .head.sha, draft: .draft}",
+            jq=(
+                "{state: .state, merged: .merged, head_sha: .head.sha, "
+                "draft: .draft, labels: [.labels[].name]}"
+            ),
             timeout=15,
         )
         data = json.loads(raw) if raw else {}
@@ -2522,7 +2544,14 @@ def _fetch_subject_info(notification: dict) -> dict:
         # Can't determine state — don't block the notification
         return {}
 
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    # Normalize labels to a list of strings (defensive).
+    labels = data.get("labels") or []
+    if not isinstance(labels, list):
+        labels = []
+    data["labels"] = [str(x) for x in labels if x is not None]
+    return data
 
 
 def _closed_reason_from_subject_info(subject_info: dict) -> Optional[str]:
@@ -2605,6 +2634,32 @@ def _notify_draft_pr_skipped(
         )
     except Exception as e:
         log.warning("Failed to send draft-PR skip notification: %s", e)
+
+
+def _notify_pause_label_skipped(
+    owner: str,
+    repo: str,
+    subject_title: str,
+    pause_label: str,
+    notification: dict,
+) -> None:
+    """Best-effort INFO when auto-review is paused by a PR label."""
+    try:
+        from app.github_notifications import api_url_to_web_url
+        from app.notify import NotificationPriority, send_telegram
+
+        subject_url = notification.get("subject", {}).get("url", "")
+        web_url = api_url_to_web_url(subject_url) if subject_url else ""
+        url_part = f"\n{web_url}" if web_url else ""
+        send_telegram(
+            f"⏸ Review skipped: {owner}/{repo} — {subject_title}{url_part}\n"
+            f'Reason: Pull request contains label "{pause_label}"\n'
+            "Remove the label to resume auto-review, or send "
+            "`/review --force <url>` to review anyway.",
+            priority=NotificationPriority.INFO,
+        )
+    except Exception as e:
+        log.warning("Failed to send pause-label skip notification: %s", e)
 
 
 def _notify_github_question(

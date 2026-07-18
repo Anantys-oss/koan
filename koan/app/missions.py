@@ -187,6 +187,31 @@ def strip_all_lifecycle_markers(text: str) -> str:
     return text.rstrip()
 
 
+# Queue-appended system metadata that is never a skill argument: the
+# ``[complexity:X]`` classifier tag, the ``[r:N]`` crash-recovery counter, and
+# the 📬/🎫 origin markers (GitHub / ticket). Unlike lifecycle timestamps these
+# survive requeue, so any code that treats a mission's post-command text as
+# user input must strip them first — otherwise trailing metadata is mistaken
+# for arguments (e.g. silently enabling ``/rebase --fix`` on a requeued bare
+# rebase).
+_SYSTEM_METADATA_STRIP_RE = re.compile(
+    r"\s*\[r:\d+\]"                # [r:N] crash-recovery counter
+    r"|\s*\[complexity:[^\]]*\]"   # [complexity:X] classifier tag
+    r"|\s*[📬🎫]"                  # origin markers (GitHub / ticket)
+)
+
+
+def strip_system_metadata(text: str) -> str:
+    """Remove queue-appended system metadata that is never a skill argument.
+
+    Strips the ``[complexity:X]`` classifier tag, the ``[r:N]`` crash-recovery
+    counter, and the 📬/🎫 origin markers. Lifecycle timestamps are handled
+    separately by :func:`strip_all_lifecycle_markers`. Used by skill dispatch
+    so metadata that survives requeue is not mistaken for user-supplied args.
+    """
+    return _SYSTEM_METADATA_STRIP_RE.sub("", text).strip()
+
+
 # Markers that vary across a mission's lifecycle but do not change its identity:
 # lifecycle timestamps (⏳ ▶ ✅/❌), the [r:N] crash-recovery counter, and the
 # [complexity:X] classifier tag. Stripping them yields a key that is stable
@@ -197,7 +222,14 @@ _CANONICAL_KEY_STRIP_RE = re.compile(
     r"|\s*[✅❌]\s*\([^)]*\)"       # ✅/❌ (completed-timestamp)
     r"|\s*\[r:\d+\]"                # [r:N] crash-recovery counter
     r"|\s*\[complexity:[^\]]*\]"    # [complexity:X] classifier tag
+    r"|\s*\[verify-failed:?[^\]]*\]" # [verify-failed] or [verify-failed: …] tag
 )
+
+# Standalone matcher for the verify-failed context tag, used by requeue_mission
+# to drop a prior tag before appending a fresh one (so cycles don't stack tags).
+# The colon is optional so it also matches the bare "[verify-failed]" fallback
+# used when no summary text is available.
+_VERIFY_FAILED_TAG_RE = re.compile(r"\s*\[verify-failed:?[^\]]*\]")
 
 
 def canonical_mission_key(text: str) -> str:
@@ -1316,7 +1348,7 @@ def fail_mission(content: str, mission_text: str, cause_tag: str = "") -> str:
     return fail_mission_checked(content, mission_text, cause_tag=cause_tag)[0]
 
 
-def requeue_mission(content: str, mission_text: str) -> str:
+def requeue_mission(content: str, mission_text: str, append_tag: str = "") -> str:
     """Move a mission from In Progress (or Failed) back to Pending.
 
     Used when an error is recoverable (e.g. re-login, quota reset)
@@ -1358,6 +1390,11 @@ def requeue_mission(content: str, mission_text: str) -> str:
     display = _QUEUED_PATTERN.sub("", display).strip()
     display = _STARTED_PATTERN.sub("", display).strip()
     display = _COMPLETED_PATTERN.sub("", display).strip()
+
+    if append_tag:
+        # Drop any prior verify-failed tag so repeated cycles don't stack tags.
+        display = _VERIFY_FAILED_TAG_RE.sub("", display).strip()
+        display = f"{display} {append_tag.strip()}".strip()
 
     entry = f"- {display}"
 
@@ -2504,7 +2541,7 @@ _GITHUB_ACTION_RE = re.compile(
     r"/(ask|audit|benchmark|brainstorm|check|check_need|ci_check"
     r"|dbg|debug|deeplan|deepplan|doc|docs|doit|explain|fix|gh_request"
     r"|impl|implement|inspect|need|needs|perf|plan|plandoit|planimp|planimplement|planimpl|planit|profile|question"
-    r"|rb|rc|rebase|recreate|refactor|review|reviewrebase|rf|rr|rv|xp"
+    r"|rb|rc|rebase|recreate|refactor|rereview|re_review|review|reviewrebase|rf|rr|rv|xp"
     r"|secu|security|security_audit|sq|squash"
     r"|ultrareview|ultra_review|urv|speckit|speckit_from_branch)\s+"
     r"(https://github\.com/[^\s]+)"

@@ -89,11 +89,14 @@ def handle(ctx):
     args = ctx.args.strip() if ctx.args else ""
 
     # /fix is for issues, but users often call it on a PR to address review
-    # concerns — which is exactly what /rebase does (rebase onto target, read
-    # comments, push). Redirect PR URLs to the rebase mechanism, leaving ctx
-    # untouched so the --now flag and any extra context are preserved.
+    # concerns — which is exactly what /rebase --fix does (rebase onto target,
+    # read comments, apply changes, push). Redirect PR URLs to the rebase
+    # mechanism with --fix injected so the feedback leg runs (a bare /rebase
+    # only rebases). --now and any extra context are preserved.
     if extract_github_url(args, url_type="pr"):
         from skills.core.rebase.handler import handle as rebase_handle
+        if "--fix" not in ctx.args.split():
+            ctx.args = f"--fix {ctx.args}".strip()
         return rebase_handle(ctx)
 
     # Extract --now flag for priority queuing

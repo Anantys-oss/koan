@@ -454,7 +454,16 @@ def run_claude(
     # events so ``output`` stays clean text (raw JSONL never reaches callers).
     # The summarized event line is what gets printed — feeding both the inner
     # idle watchdog (every consumed line) and the parent run.py watchdog.
-    stream_text_chunks: List[str] = []
+    #
+    # Accumulation mirrors run_command_streaming / mission_runner:
+    # - Block-style events (Claude assistant blocks, Haze message_end) append
+    #   full segments joined with newlines.
+    # - Delta-style events (Grok ``{"type":"text","data":"…"}``) buffer into
+    #   stream_text_delta_parts and flush as one segment so "hel"+"lo" becomes
+    #   "hello", not "hel\\nlo". Joining deltas with "\\n" shredded Grok replies
+    #   into one-token-per-line bullets on /rebase PR comments.
+    stream_text_lines: List[str] = []
+    stream_text_delta_parts: List[str] = []
     # Summarized ``[cli] …`` lines (notably the ``rate_limit_rejected`` marker)
     # are printed to keep the watchdog alive but stripped from the clean
     # ``output``. Accumulate them separately so the caller can run the quota
@@ -462,6 +471,12 @@ def run_claude(
     # exhaustion as a stdout JSONL ``rate_limit_event``, never on stderr.
     stream_summary_lines: List[str] = []
     stream_final_result: Optional[str] = None
+
+    def _flush_stream_deltas() -> None:
+        if stream_text_delta_parts:
+            stream_text_lines.append("".join(stream_text_delta_parts))
+            stream_text_delta_parts.clear()
+
     if use_stream_json:
         from app.provider import (
             _extract_assistant_text_chunks,
@@ -481,15 +496,24 @@ def run_claude(
                 summary = _summarize_stream_event(parsed)
                 print(summary, flush=True)
                 stream_summary_lines.append(summary)
-                stream_text_chunks.extend(_extract_assistant_text_chunks(parsed))
+                chunks = _extract_assistant_text_chunks(parsed)
+                if (
+                    parsed.get("type") == "text"
+                    and isinstance(parsed.get("data"), str)
+                ):
+                    stream_text_delta_parts.extend(chunks)
+                else:
+                    _flush_stream_deltas()
+                    stream_text_lines.extend(chunks)
                 result_text = _extract_result_text(parsed)
                 if result_text is not None:
                     stream_final_result = result_text
             else:
                 # Stray non-JSON line (warning printed before the stream): keep
                 # it both on screen and as fallback text.
+                _flush_stream_deltas()
                 print(line, flush=True)
-                stream_text_chunks.append(line)
+                stream_text_lines.append(line)
     else:
         def on_line(line: str) -> None:
             print(line, flush=True)
@@ -506,6 +530,9 @@ def run_claude(
         if heartbeat_thread is not None:
             heartbeat_thread.cancel()
         cleanup()
+
+    # Flush any trailing Grok-style deltas after the last event.
+    _flush_stream_deltas()
 
     raw_stdout = stream_result.stdout
     stderr_text = stream_result.stderr
@@ -534,8 +561,8 @@ def run_claude(
             stdout_text = last_message_text
         elif stream_final_result is not None:
             stdout_text = stream_final_result
-        elif stream_text_chunks:
-            stdout_text = "\n".join(stream_text_chunks)
+        elif stream_text_lines:
+            stdout_text = "\n".join(stream_text_lines)
         else:
             stdout_text = raw_stdout
     else:
@@ -1963,6 +1990,7 @@ def _build_pr_prompt(
     skill_dir: Optional[Path] = None,
     max_diff_chars: int = 80_000,
     commit_conventions: str = "",
+    project_path: str = "",
 ) -> str:
     """Build a prompt for Claude to process PR feedback.
 
@@ -1978,6 +2006,8 @@ def _build_pr_prompt(
         commit_conventions: Project commit convention guidance to include
             in the prompt. When non-empty, also loads the commit subject
             instruction fragment.
+        project_path: Target checkout; enables ``.koan/skills/<skill>/``
+            append when the skill package is real.
     """
     diff = context.get("diff", "")
     if len(diff) > max_diff_chars:
@@ -2012,7 +2042,11 @@ def _build_pr_prompt(
         COMMIT_CONVENTIONS=commit_conventions,
         COMMIT_SUBJECT_INSTRUCTION=commit_subject_instruction,
     )
-    return load_prompt_or_skill(skill_dir, prompt_name, **kwargs)
+    return load_prompt_or_skill(
+        skill_dir, prompt_name,
+        project_path=project_path or None,
+        **kwargs,
+    )
 
 
 def _sanitize_commit_subject(subject: str) -> str:

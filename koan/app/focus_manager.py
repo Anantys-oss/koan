@@ -114,15 +114,19 @@ def create_focus(
         "reason": state.reason,
     }
 
+    from app.locked_file import signal_lock
     from app.utils import atomic_write
 
-    atomic_write(_focus_path(koan_root), json.dumps(data))
+    # Hold the signal lock so a concurrent check_focus() expiry-remove cannot
+    # delete this freshly written file between its own read and remove.
+    with signal_lock(_focus_path(koan_root)):
+        atomic_write(_focus_path(koan_root), json.dumps(data))
 
     return state
 
 
 def remove_focus(koan_root: str) -> None:
-    """Deactivate focus mode."""
+    """Deactivate focus mode (low-level, unlocked delete)."""
     _focus_path(koan_root).unlink(missing_ok=True)
 
 
@@ -130,13 +134,19 @@ def check_focus(koan_root: str) -> Optional[FocusState]:
     """Check focus state, auto-removing if expired.
 
     Returns the active FocusState, or None if not focused or expired.
+
+    The read-check-remove runs under :func:`signal_lock` so an expiry-remove
+    cannot clobber a focus that a concurrent :func:`create_focus` just wrote.
     """
-    state = get_focus_state(koan_root)
-    if state is None:
-        return None
-    if state.is_expired():
-        remove_focus(koan_root)
-        return None
+    from app.locked_file import signal_lock
+
+    with signal_lock(_focus_path(koan_root)):
+        state = get_focus_state(koan_root)
+        if state is None:
+            return None
+        if state.is_expired():
+            remove_focus(koan_root)
+            return None
     return state
 
 

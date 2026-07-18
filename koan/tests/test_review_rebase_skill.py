@@ -53,6 +53,12 @@ class TestHandleRouting:
         assert "Usage:" in result
         assert "/rr" in result
 
+    def test_usage_message_mentions_fix(self, handler, ctx):
+        """The usage text must reflect that the rebase leg carries --fix, so
+        users understand /rr applies review feedback (not a bare rebase)."""
+        result = handler.handle(ctx)
+        assert "--fix" in result
+
     def test_invalid_url_returns_error(self, handler, ctx):
         ctx.args = "not-a-url"
         result = handler.handle(ctx)
@@ -180,6 +186,19 @@ class TestComboQueuing:
             assert "focus on security" in review_entry
             assert "focus on security" not in rebase_entry
 
+    def test_rebase_leg_carries_fix(self, handler, ctx):
+        """The rebase leg addresses the freshly generated review, so it is
+        queued with --fix (a bare /rebase only rebases)."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
+             patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]), \
+             patch("app.utils.insert_pending_missions", return_value=[True, True]) as mock_insert:
+            handler.handle(ctx)
+
+            review_entry, rebase_entry = mock_insert.call_args[0][1]
+            assert "--fix" not in review_entry
+            assert "--fix" in rebase_entry
+
     def test_url_with_fragment_stripped(self, handler, ctx):
         ctx.args = "https://github.com/sukria/koan/pull/42#discussion_r123"
         with patch("app.utils.resolve_project_path", return_value="/home/koan"), \
@@ -238,3 +257,22 @@ class TestSkillMd:
         from app.skills import parse_skill_md
         skill = parse_skill_md(Path(__file__).parent.parent / "skills" / "core" / "review_rebase" / "SKILL.md")
         assert skill.group == "pr"
+
+    def test_rebase_sub_command_carries_fix(self):
+        """The rebase sub-command carries --fix so combo expansion (GitHub
+        @mention + agent-loop) addresses the review it just generated."""
+        from app.skills import parse_skill_md
+        skill = parse_skill_md(Path(__file__).parent.parent / "skills" / "core" / "review_rebase" / "SKILL.md")
+        assert skill.sub_commands == ["review", "rebase --fix"]
+
+    def test_github_combo_expansion_carries_fix(self):
+        """GitHub @mention expansion of /rr yields /rebase --fix <url>."""
+        from app.github_command_handler import _expand_combo_mission
+        entries = _expand_combo_mission(
+            "rr",
+            "- [project:koan] /rr https://github.com/sukria/koan/pull/42 📬",
+            "koan",
+        )
+        assert any(e.lstrip("- ").startswith("[project:koan] /review ") for e in entries)
+        rebase_entries = [e for e in entries if "/rebase" in e]
+        assert rebase_entries and "/rebase --fix " in rebase_entries[0]

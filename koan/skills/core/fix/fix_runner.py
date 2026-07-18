@@ -381,6 +381,7 @@ def _execute_fix(
         base_branch=effective_base,
         existing_branch=existing_branch,
         diagnostic=diagnostic,
+        project_path=project_path,
     )
 
     from app.claude_step import run_skill_loop
@@ -420,6 +421,7 @@ def _build_prompt(
     base_branch: str = "main",
     existing_branch: Optional[str] = None,
     diagnostic: str = "",
+    project_path: str = "",
 ) -> str:
     """Build the fix prompt from the issue content."""
     branch_section = _build_branch_section(
@@ -441,7 +443,9 @@ def _build_prompt(
         DIAGNOSTIC=diagnostic,
     )
 
-    return load_prompt_or_skill(skill_dir, "fix", **template_vars)
+    return load_prompt_or_skill(
+        skill_dir, "fix", project_path=project_path or None, **template_vars,
+    )
 
 
 def _build_branch_section(

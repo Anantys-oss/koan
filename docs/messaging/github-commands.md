@@ -111,6 +111,41 @@ If the context contains a GitHub URL, it overrides the default subject URL from 
 @koan-bot implement https://github.com/owner/other-repo/issues/99 phase 2
 ```
 
+## Natural-language intent ladder
+
+With `github.natural_language: true`, a mention whose first word isn't a
+command (e.g. `@koan-bot eh do a review`) is resolved via a three-layer ladder
+before any free-form fallback:
+
+1. **Keyword** — a whole-word scan of the first few tokens after the @mention
+   against github-enabled skill names + aliases. Exactly one distinct match in
+   an *actionable position* — token 0, or preceded by an imperative lead-in
+   (`do a review`, `can you rebase`) — is promoted straight to that skill
+   (`/review <url> …`), with the same handlers, acks, and URL guards as a rigid
+   command. An incidental noun use (`the review looks good`) is not treated as
+   intent; it escalates to the model layer instead of auto-dispatching.
+2. **Model** — if the keyword layer is ambiguous (zero or several matches, or a
+   non-actionable position), the
+   lightweight classifier picks the single best command and a confidence score.
+   It is promoted only at/above `min_confidence` and when the command's required
+   URL type matches the subject (a PR command on an Issue is rejected).
+3. **Free-form** — genuinely ambiguous prose keeps the `/gh_request`
+   compatibility route (which reuses the same classifier). A mention is never
+   dropped.
+
+Primary routing happens at the bridge. `/gh_request` remains for explicit
+invocation and as the free-form fallback for prose that neither layer resolved.
+
+Config (defaults shown):
+
+```yaml
+github:
+  natural_language: true
+  intent:
+    keyword_window: 5      # tokens after @mention scanned for a skill keyword
+    min_confidence: 0.75   # model promotes only at/above this certainty (0.0–1.0)
+```
+
 ## Configuration
 
 ### Global settings (`instance/config.yaml`)

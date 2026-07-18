@@ -173,7 +173,7 @@ class TestFinalizeRunningIndicator:
                             lambda i, t: 0)
         monkeypatch.setattr("app.stagnation_monitor.increment_retry_count",
                             lambda *a, **k: 1)
-        monkeypatch.setattr(run, "_requeue_mission_in_file", lambda *a, **k: None)
+        monkeypatch.setattr(run, "_requeue_mission_in_file", lambda *a, **k: True)
         monkeypatch.setattr(run, "_notify_stagnation_retry", lambda *a, **k: None)
         monkeypatch.setattr("app.mission_history.record_execution",
                             lambda *a, **k: None)
@@ -1338,6 +1338,48 @@ class TestRunClaudeTask:
 
         assert exit_code != 0
 
+    def test_missing_binary_returns_127_with_actionable_stderr(self, tmp_path):
+        """A missing provider binary fails the mission cleanly (exit 127) with an
+        actionable message on stderr — not a raw FileNotFoundError."""
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+
+        err = FileNotFoundError(2, "No such file or directory", "koan-missing-cli")
+        with patch("app.cli_exec.popen_cli", side_effect=err):
+            exit_code = run_claude_task(
+                cmd=["koan-missing-cli"],
+                stdout_file=stdout_f,
+                stderr_file=stderr_f,
+                cwd=str(tmp_path),
+            )
+
+        assert exit_code == 127
+        stderr_text = Path(stderr_f).read_text()
+        assert "CLI executable not found" in stderr_text
+        assert "koan-missing-cli" in stderr_text
+        assert _sig.task_running is False
+
+    def test_missing_other_file_propagates(self, tmp_path):
+        """A FileNotFoundError for a file other than the provider binary is not masked."""
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        stdout_f = str(tmp_path / "out.txt")
+        stderr_f = str(tmp_path / "err.txt")
+
+        err = FileNotFoundError(2, "No such file or directory", "/some/other/file")
+        with patch("app.cli_exec.popen_cli", side_effect=err):
+            with pytest.raises(FileNotFoundError):
+                run_claude_task(
+                    cmd=["claude"],
+                    stdout_file=stdout_f,
+                    stderr_file=stderr_f,
+                    cwd=str(tmp_path),
+                )
+
     def test_sets_and_reaps_per_mission_tmpdir(self, tmp_path, monkeypatch):
         """The child runs with a private TMPDIR that is removed afterwards."""
         from app import utils
@@ -2421,6 +2463,49 @@ class TestIdleWaitConfig:
         mock_sleep.assert_called_once()
         status_calls = [c for c in mock_status.call_args_list if "PR limit" in str(c)]
         assert len(status_calls) >= 1
+
+    @patch("app.run._notify_raw")
+    @patch("app.run.interruptible_sleep", return_value=None)
+    @patch("app.run.set_status")
+    @patch("app.run.log")
+    @patch("app.run.plan_iteration")
+    def test_cli_unavailable_wait_action(
+        self, mock_plan, mock_log, mock_status, mock_sleep, mock_notify, tmp_path,
+    ):
+        """cli_unavailable_wait blocks missions, never wakes on missions, warns (throttled)."""
+        import app.mission_executor as _me
+        _me._last_idle_msg = ""
+        from app import cli_health
+        cli_health.clear()
+        cli_health.set_unavailable("claude", "claude")
+        from app.run import _run_iteration
+        mock_plan.return_value = self._make_plan(
+            "cli_unavailable_wait",
+            decision_reason="CLI binary not on PATH — missions blocked (fix PATH & restart)",
+        )
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+        (tmp_path / ".koan-project").write_text("koan")
+
+        try:
+            _run_iteration(
+                koan_root=str(tmp_path),
+                instance=instance,
+                projects=[("koan", "/tmp/koan")],
+                count=0, max_runs=10, interval=60, git_sync_interval=5,
+            )
+        finally:
+            cli_health.clear()
+
+        # Missions must not wake this idle wait (would tight-loop until restart).
+        mock_sleep.assert_called_once_with(
+            60, str(tmp_path), instance, wake_on_mission=False,
+        )
+        status_calls = [c for c in mock_status.call_args_list if "CLI unavailable" in str(c)]
+        assert len(status_calls) >= 1
+        # A throttled reminder is sent exactly once (should_warn() True after clear()).
+        path_warnings = [c for c in mock_notify.call_args_list if "PATH" in str(c)]
+        assert len(path_warnings) == 1
 
     @patch("app.run.interruptible_sleep", return_value=None)
     @patch("app.run.set_status")
@@ -3786,7 +3871,7 @@ class TestNotifyRaw:
     def test_calls_send_telegram_directly(self, mock_send):
         from app.run import _notify_raw
         _notify_raw("/tmp/instance", "🔍 verbatim test")
-        mock_send.assert_called_once_with("🔍 verbatim test")
+        mock_send.assert_called_once_with("🔍 verbatim test", dedup_window=0.0)
 
     @patch("app.run.log")
     @patch("app.notify.send_telegram", side_effect=RuntimeError("boom"))
@@ -7844,7 +7929,9 @@ class TestRunIterationPaths:
                 return_value=(False, plan.get("mission_title", ""))
             ),
             "_start_mission_in_file": MagicMock(return_value=True),
-            "_finalize_mission": MagicMock(),
+            # False = "completed, not re-queued" (the common case here) so the
+            # default doesn't suppress the _notify_mission_end call below.
+            "_finalize_mission": MagicMock(return_value=False),
             "_notify": MagicMock(),
             "_notify_mission_end": MagicMock(),
             "_commit_instance": MagicMock(),
@@ -7980,6 +8067,20 @@ class TestRunIterationPaths:
             mocks["run_claude_task"].assert_called_once()
             mocks["_finalize_mission"].assert_called_once()
             mocks["_notify_mission_end"].assert_called_once()
+            assert result is True
+
+    def test_verify_requeue_skips_completion_notification(self, tmp_path):
+        """When _finalize_mission re-queues (verify-failure), the completion
+        notification must be suppressed — it already sent its own re-queue
+        notice, and a "completed" message would contradict missions.md state."""
+        plan = self._make_plan("mission", mission_title="implement feature X")
+        with self._patched_iteration(
+            tmp_path, plan,
+            _finalize_mission=MagicMock(return_value=True),
+        ) as mocks:
+            result = self._call(tmp_path)
+            mocks["_finalize_mission"].assert_called_once()
+            mocks["_notify_mission_end"].assert_not_called()
             assert result is True
 
     # --- start_mission transition failure aborts run ---
@@ -8532,6 +8633,7 @@ class TestClassifyTrustStdout:
         quota.assert_not_called()
 
 
+
 class TestMemoryWatchdog:
     def test_build_memory_monitor_disabled_returns_none(self):
         from app import run
@@ -8579,3 +8681,97 @@ class TestMemoryWatchdog:
             with pytest.raises(SystemExit) as exc:
                 run._handle_memory_restart(str(tmp_path), "test-instance", mon, count=3)
         assert exc.value.code == RESTART_EXIT_CODE
+
+
+class TestFinalizeVerifyRequeue:
+    """_finalize_mission re-queues verify-failed missions under cap, completes at cap."""
+
+    def test_verify_requeue_does_not_complete(self, tmp_path):
+        from app import run
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file") as requeue, \
+             patch.object(run, "_notify_verify_requeue") as notify, \
+             patch("app.config.get_verify_requeue_max", return_value=2):
+            result = run._finalize_mission(
+                inst, title, "my-toolkit", 0,
+                verify_requeue=True, verify_summary="no tests; no PR",
+            )
+        complete.assert_not_called()        # did NOT fall through to completion
+        requeue.assert_called_once()
+        notify.assert_called_once()
+        # The re-queue carries the verify-failed context tag.
+        assert "verify-failed" in requeue.call_args.kwargs["append_tag"]
+        # Callers (mission_executor) key off this to skip the completion notice.
+        assert result is True
+
+    def test_verify_requeue_completes_at_cap(self, tmp_path):
+        from app import run
+        from app import stagnation_monitor as sm
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        sm.increment_verify_count(inst, title)
+        sm.increment_verify_count(inst, title)   # at cap (2)
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file") as requeue, \
+             patch.object(run, "_notify_verify_requeue"), \
+             patch("app.config.get_verify_requeue_max", return_value=2):
+            run._finalize_mission(
+                inst, title, "my-toolkit", 0,
+                verify_requeue=True, verify_summary="no tests; no PR",
+            )
+        complete.assert_called_once()        # falls through to normal completion (Done)
+        requeue.assert_not_called()
+
+    def test_no_verify_requeue_completes_normally(self, tmp_path):
+        from app import run
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file") as requeue:
+            result = run._finalize_mission(inst, title, "my-toolkit", 0)
+        complete.assert_called_once()
+        assert result is False
+
+    def test_verify_requeue_aborts_when_counter_not_persisted(self, tmp_path):
+        """If the counter can't be persisted (-1), skip the re-queue and complete
+        normally — never re-queue without bumping the on-disk count (unbounded loop)."""
+        from app import run
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file") as requeue, \
+             patch.object(run, "_notify_verify_requeue") as notify, \
+             patch("app.stagnation_monitor.increment_verify_count", return_value=-1), \
+             patch("app.config.get_verify_requeue_max", return_value=2):
+            run._finalize_mission(
+                inst, title, "my-toolkit", 0,
+                verify_requeue=True, verify_summary="no tests; no PR",
+            )
+        requeue.assert_not_called()
+        notify.assert_not_called()
+        complete.assert_called_once()        # falls through to normal completion
+
+    def test_verify_requeue_completes_when_write_fails(self, tmp_path):
+        """If the missions.md re-queue write fails, do not notify — complete normally
+        instead of telling the user a re-queue landed while it is stuck In Progress."""
+        from app import run
+
+        inst = str(tmp_path)
+        title = "Implement feature Z"
+        with patch.object(run, "_update_mission_in_file") as complete, \
+             patch.object(run, "_requeue_mission_in_file", return_value=False) as requeue, \
+             patch.object(run, "_notify_verify_requeue") as notify, \
+             patch("app.config.get_verify_requeue_max", return_value=2):
+            run._finalize_mission(
+                inst, title, "my-toolkit", 0,
+                verify_requeue=True, verify_summary="no tests; no PR",
+            )
+        requeue.assert_called_once()
+        notify.assert_not_called()
+        complete.assert_called_once()        # falls through to normal completion

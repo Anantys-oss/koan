@@ -70,21 +70,29 @@ def build_contemplative_command(
     )
 
     from app.cli_provider import build_full_command, get_provider_for_role
-    from app.config import get_contemplative_max_turns, get_contemplative_tools, get_mcp_configs
+    from app.config import (
+        MCP_ROLE_CONTEMPLATIVE,
+        get_contemplative_max_turns,
+        get_contemplative_tools,
+        mcp_configs_for_role,
+    )
 
     tools_str = get_contemplative_tools(project_name=project_name)
     allowed_tools = [t.strip() for t in tools_str.split(",") if t.strip()]
-    mcp_configs = get_mcp_configs(project_name)
+    mcp_configs = mcp_configs_for_role(MCP_ROLE_CONTEMPLATIVE, project_name)
 
     # Contemplative sessions run on the lightweight role's provider (cli:
     # section); extra_flags supplies the matching lightweight model.
     provider = get_provider_for_role("lightweight", project_name)
+    # Contemplative runs at KOAN_ROOT; suppress contributor project tooling
+    # (issue #2379) while still using the lightweight provider/model.
     cmd = build_full_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
         mcp_configs=mcp_configs,
         max_turns=get_contemplative_max_turns(),
         provider=provider,
+        project_context=False,
     )
     if extra_flags:
         cmd.extend(extra_flags)

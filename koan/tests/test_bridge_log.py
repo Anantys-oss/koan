@@ -1,8 +1,12 @@
 """Tests for the bridge_log module — colored log output for awake process."""
 
+import re
 from unittest.mock import patch
 
 from app.bridge_log import log, _COLORS, _RESET, _DEFAULT_COLOR, _use_color
+
+# Matches the [HH:MM:SS] timestamp prefix bridge_log prepends in non-color mode.
+_TS = r"\[\d{2}:\d{2}:\d{2}\] "
 
 
 class TestUseColor:
@@ -104,14 +108,14 @@ class TestLogNoColor:
         with patch("app.bridge_log._use_color", return_value=False):
             log("error", "Something failed")
         output = capsys.readouterr().err
-        assert output == "[error] Something failed\n"
+        assert re.fullmatch(_TS + r"\[error\] Something failed\n", output)
         assert "\033[" not in output
 
     def test_plain_prefix_format(self, capsys):
         with patch("app.bridge_log._use_color", return_value=False):
             log("init", "Token loaded")
         output = capsys.readouterr().err
-        assert output == "[init] Token loaded\n"
+        assert re.fullmatch(_TS + r"\[init\] Token loaded\n", output)
 
     def test_all_categories_no_escape_codes(self, capsys):
         """Every category should produce clean output in non-TTY mode."""
@@ -148,7 +152,21 @@ class TestLogOutput:
         with patch("app.bridge_log._use_color", return_value=False):
             log("init", "")
         output = capsys.readouterr().err
-        assert output == "[init] \n"
+        assert re.fullmatch(_TS + r"\[init\] \n", output)
+
+    def test_timestamp_prefix_present(self, capsys):
+        """Every line starts with an [HH:MM:SS] timestamp for debugging."""
+        with patch("app.bridge_log._use_color", return_value=False):
+            log("mission", "queued")
+        output = capsys.readouterr().err
+        assert re.match(r"^\[\d{2}:\d{2}:\d{2}\] \[mission\] queued\n$", output)
+
+    def test_timestamp_prefix_present_with_color(self, capsys):
+        """Timestamp is emitted (dim-wrapped) even in color mode."""
+        with patch("app.bridge_log._use_color", return_value=True):
+            log("mission", "queued")
+        output = capsys.readouterr().err
+        assert re.search(r"\[\d{2}:\d{2}:\d{2}\]", output)
 
     def test_writes_to_stderr_not_stdout(self, capsys):
         """Log output must go to stderr, not stdout."""

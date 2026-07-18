@@ -28,9 +28,8 @@ EDITABLE_SETTINGS = {
 def api_project_get(name):
     """Return the editable subset of a project's merged config for the form."""
     from app.projects_config import (
-        EDITABLE_PROJECT_FIELDS,
         _project_exists,
-        get_project_config,
+        get_editable_project_fields,
         load_projects_config,
     )
     config = load_projects_config(str(state.KOAN_ROOT))
@@ -38,16 +37,19 @@ def api_project_get(name):
         return jsonify({"ok": False, "error": "No projects.yaml"}), 404
     if not _project_exists(config.get("projects", {}), name):
         return jsonify({"ok": False, "error": f"Unknown project: {name}"}), 404
-    merged = get_project_config(config, name)
-    editable = {k: merged.get(k) for k in EDITABLE_PROJECT_FIELDS}
+    editable = get_editable_project_fields(config, name)
     return jsonify({"ok": True, "name": name, "config": editable})
 
 
 @config_form_bp.route("/api/providers", methods=["GET"])
 def api_providers():
-    """Return registered CLI provider names so the form stays in sync."""
-    from app.provider import known_providers
-    return jsonify({"ok": True, "providers": known_providers()})
+    """Return selectable CLI provider names so the form stays in sync.
+
+    Uses ``selectable_providers()`` so test/dev-only flavors (e.g. the
+    fail-closed ``fake`` stub) never surface in the production picker.
+    """
+    from app.provider import selectable_providers
+    return jsonify({"ok": True, "providers": selectable_providers()})
 
 
 @config_form_bp.route("/api/config/settings", methods=["GET"])

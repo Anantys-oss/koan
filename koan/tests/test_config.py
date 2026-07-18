@@ -1030,6 +1030,35 @@ class TestGetAnalysisMaxTurns:
             assert get_analysis_max_turns() == 75
 
 
+# --- get_reply_max_turns ---
+
+
+class TestGetReplyMaxTurns:
+    def test_default(self):
+        from app.config import get_reply_max_turns
+
+        with _mock_config({}):
+            assert get_reply_max_turns() == 20
+
+    def test_custom(self):
+        from app.config import get_reply_max_turns
+
+        with _mock_config({"reply_max_turns": 30}):
+            assert get_reply_max_turns() == 30
+
+    def test_string_value_coerced(self):
+        from app.config import get_reply_max_turns
+
+        with _mock_config({"reply_max_turns": "12"}):
+            assert get_reply_max_turns() == 12
+
+    def test_invalid_string_returns_default(self):
+        from app.config import get_reply_max_turns
+
+        with _mock_config({"reply_max_turns": "many"}):
+            assert get_reply_max_turns() == 20
+
+
 # --- get_mission_timeout ---
 
 
@@ -2111,6 +2140,38 @@ class TestReviewDraftSkipConfig:
         assert cfg["enabled"] is False
 
 
+class TestReviewPauseLabelConfig:
+    def test_default_is_pause_review(self):
+        from app.config import get_review_pause_label
+        with _mock_config({}):
+            assert get_review_pause_label() == "PauseReview"
+
+    def test_custom_label(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": "AI:Paused"}):
+            assert get_review_pause_label() == "AI:Paused"
+
+    def test_empty_string_disables(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": ""}):
+            assert get_review_pause_label() == ""
+
+    def test_whitespace_only_disables(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": "   "}):
+            assert get_review_pause_label() == ""
+
+    def test_non_string_disables(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": 123}):
+            assert get_review_pause_label() == ""
+
+    def test_strips_surrounding_whitespace(self):
+        from app.config import get_review_pause_label
+        with _mock_config({"review_pause_label": "  Skip AI  "}):
+            assert get_review_pause_label() == "Skip AI"
+
+
 class TestMemoryMonitorConfig:
     def test_defaults(self):
         from app.config import get_memory_monitor_config
@@ -2310,6 +2371,86 @@ class TestCleanupMinTmpAgeSeconds:
             assert get_cleanup_min_tmp_age_seconds() == 0.0
 
 
+# --- get_mcp_roles / mcp_configs_for_role ---
+
+
+class TestGetMcpRoles:
+    def test_default_when_absent(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_roles() == ["mission", "contemplative", "plan"]
+
+    def test_global_override(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={"mcp_roles": ["mission"]}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_roles() == ["mission"]
+
+    def test_empty_list_is_kill_switch(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={"mcp_roles": []}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_roles() == []
+
+    def test_malformed_falls_back_to_default(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={"mcp_roles": "mission"}):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert get_mcp_roles() == ["mission", "contemplative", "plan"]
+
+    def test_project_override_replaces_global(self):
+        from app.config import get_mcp_roles
+
+        with patch("app.config._load_config", return_value={"mcp_roles": ["mission"]}):
+            with patch(
+                "app.config._load_project_overrides",
+                return_value={"mcp_roles": ["plan"]},
+            ):
+                assert get_mcp_roles("proj") == ["plan"]
+
+
+class TestMcpConfigsForRole:
+    def test_role_in_allowlist_returns_configs(self):
+        from app.config import MCP_ROLE_PLAN, mcp_configs_for_role
+
+        with patch("app.config.get_mcp_roles", return_value=[MCP_ROLE_PLAN]):
+            with patch("app.config.get_mcp_configs", return_value=["/a.json"]):
+                assert mcp_configs_for_role(MCP_ROLE_PLAN, "proj") == ["/a.json"]
+
+    def test_role_not_in_allowlist_returns_none(self):
+        from app.config import (
+            MCP_ROLE_GITHUB_REPLY,
+            MCP_ROLE_MISSION,
+            mcp_configs_for_role,
+        )
+
+        with patch("app.config.get_mcp_roles", return_value=[MCP_ROLE_MISSION]):
+            with patch("app.config.get_mcp_configs", return_value=["/a.json"]):
+                assert mcp_configs_for_role(MCP_ROLE_GITHUB_REPLY, "proj") is None
+
+    def test_allowlisted_but_no_configs_returns_none(self):
+        from app.config import MCP_ROLE_PLAN, mcp_configs_for_role
+
+        with patch("app.config.get_mcp_roles", return_value=[MCP_ROLE_PLAN]):
+            with patch("app.config.get_mcp_configs", return_value=[]):
+                assert mcp_configs_for_role(MCP_ROLE_PLAN, "proj") is None
+
+    def test_mission_role_disabled_by_empty_mcp_roles(self):
+        from app.config import MCP_ROLE_MISSION, mcp_configs_for_role
+
+        with patch(
+            "app.config._load_config",
+            return_value={"mcp_roles": [], "mcp": ["/a.json"]},
+        ):
+            with patch("app.config._load_project_overrides", return_value={}):
+                assert mcp_configs_for_role(MCP_ROLE_MISSION, "proj") is None
+
+
 class TestGetPageCacheReclaimConfig:
     def test_page_cache_reclaim_defaults(self):
         from app.config import get_page_cache_reclaim_config
@@ -2343,3 +2484,155 @@ class TestGetPageCacheReclaimConfig:
             cfg = get_page_cache_reclaim_config()
         assert cfg["enabled"] is True
         assert cfg["extra_roots"] == []
+
+
+# --- _get_config_with_overrides (shared helper, issue #2340) ---
+
+
+class TestGetConfigWithOverrides:
+    """The shared load->type-check->merge helper behind the get_*_config
+    functions. Individual functions keep their own field-level coercion;
+    this only covers the merge/resolution contract itself."""
+
+    def test_defaults_when_section_absent(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({}):
+            result = _get_config_with_overrides("widget", {"a": 1, "b": 2})
+        assert result == {"a": 1, "b": 2}
+
+    def test_global_section_overrides_defaults(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": {"a": 99}}):
+            result = _get_config_with_overrides("widget", {"a": 1, "b": 2})
+        assert result == {"a": 99, "b": 2}
+
+    def test_non_dict_section_falls_back_to_defaults(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": "nope"}):
+            result = _get_config_with_overrides("widget", {"a": 1})
+        assert result == {"a": 1}
+
+    def test_bare_false_ignored_by_default(self):
+        """Without bool_shortcut=True, a bare ``False`` section is just
+        malformed (-> ``{}``) — matching the pre-refactor behavior of the
+        many sections that never supported a ``key: false`` shorthand."""
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": False}):
+            result = _get_config_with_overrides("widget", {"enabled": True, "a": 1})
+        assert result == {"enabled": True, "a": 1}
+
+    def test_bare_false_shortcut_becomes_enabled_false_when_opted_in(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": False}):
+            result = _get_config_with_overrides(
+                "widget", {"enabled": True, "a": 1}, bool_shortcut=True,
+            )
+        assert result == {"enabled": False, "a": 1}
+
+    def test_project_override_wins_over_global(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": {"a": 2}}), \
+             patch("app.config._load_project_overrides", return_value={"widget": {"a": 3}}):
+            result = _get_config_with_overrides("widget", {"a": 1}, "myproj")
+        assert result == {"a": 3}
+
+    def test_project_bare_false_shortcut_disables_when_opted_in(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": {"enabled": True}}), \
+             patch("app.config._load_project_overrides", return_value={"widget": False}):
+            result = _get_config_with_overrides(
+                "widget", {"enabled": True}, "myproj", bool_shortcut=True,
+            )
+        assert result == {"enabled": False}
+
+    def test_no_project_name_skips_override_lookup(self):
+        from app.config import _get_config_with_overrides
+        with _mock_config({"widget": {"a": 1}}), \
+             patch("app.config._load_project_overrides") as mock_overrides:
+            result = _get_config_with_overrides("widget", {"a": 1})
+        mock_overrides.assert_not_called()
+        assert result == {"a": 1}
+
+
+class TestMigratedConfigFunctionsIgnoreBareFalse:
+    """Regression coverage (issue #2340): migrating these functions onto the
+    shared _get_config_with_overrides() helper must not grant a new
+    ``<key>: false`` disable-shorthand to sections that never documented one
+    — only stagnation/autonomous_health opt into that shortcut. Everything
+    else must keep treating a stray ``False`` as malformed config (falls
+    back to defaults, same as pre-refactor isinstance-dict checks)."""
+
+    def test_branch_cleanup_false_does_not_disable(self):
+        from app.config import get_branch_cleanup_config
+        with _mock_config({"branch_cleanup": False}):
+            assert get_branch_cleanup_config()["enabled"] is True
+
+    def test_plan_review_false_does_not_disable(self):
+        from app.config import get_plan_review_config
+        with _mock_config({"plan_review": False}):
+            assert get_plan_review_config()["enabled"] is True
+
+    def test_prompt_guard_false_does_not_disable(self):
+        from app.config import get_prompt_guard_config
+        with _mock_config({"prompt_guard": False}):
+            assert get_prompt_guard_config()["enabled"] is True
+
+    def test_review_concurrency_false_does_not_disable(self):
+        from app.config import get_review_concurrency_config
+        with _mock_config({"review_concurrency": False}):
+            assert get_review_concurrency_config()["enabled"] is True
+
+    def test_review_issue_context_false_does_not_disable(self):
+        from app.config import get_review_issue_context_config
+        with _mock_config({"review_issue_context": False}):
+            assert get_review_issue_context_config()["enabled"] is True
+
+    def test_page_cache_reclaim_false_does_not_disable(self):
+        from app.config import get_page_cache_reclaim_config
+        with _mock_config({"page_cache_reclaim": False}):
+            assert get_page_cache_reclaim_config()["enabled"] is True
+
+    def test_private_review_gate_false_stays_at_default(self):
+        # This section's default is already enabled=False, so a bare
+        # `False` value must resolve the same way as an absent section.
+        from app.config import get_private_review_gate_config
+        with _mock_config({"private_review_gate": False}), \
+             patch("app.config._load_project_overrides", return_value={}):
+            assert get_private_review_gate_config()["enabled"] is False
+
+
+# --- get_verify_requeue_max ---
+
+
+class TestGetVerifyRequeueMax:
+    def test_default(self):
+        from app.config import get_verify_requeue_max
+
+        with _mock_config({}):
+            assert get_verify_requeue_max() == 2
+
+    def test_override(self):
+        from app.config import get_verify_requeue_max
+
+        with _mock_config({"verification": {"max_requeue": 1}}):
+            assert get_verify_requeue_max() == 1
+
+    def test_zero_disables(self):
+        from app.config import get_verify_requeue_max
+
+        with _mock_config({"verification": {"max_requeue": 0}}):
+            assert get_verify_requeue_max() == 0
+
+    def test_negative_is_config_error_not_disable(self):
+        from app.config import get_verify_requeue_max
+
+        # A negative value is a mistake, not "disable" — returning the default
+        # keeps the re-queue on instead of silently clamping to 0 (disabled).
+        with _mock_config({"verification": {"max_requeue": -5}}):
+            assert get_verify_requeue_max() == 2
+
+    def test_non_numeric_falls_back_to_default(self):
+        from app.config import get_verify_requeue_max
+
+        with _mock_config({"verification": {"max_requeue": "lots"}}):
+            assert get_verify_requeue_max() == 2

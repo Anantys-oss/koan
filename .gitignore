@@ -1,8 +1,13 @@
 # Kōan instance data (private to each user)
 instance
-.koan*
+# Runtime signal files (.koan-status, .koan-stop, …) — not the project
+# steering directory `.koan/` (KOAN.md + skills/*.md), which is committed.
+.koan-*
 .claude/*
 !.claude/settings.json
+!.claude/commands
+.claude/commands/*
+!.claude/commands/koan.incubate.md
 !.claude/skills
 .claude/skills/*
 !.claude/skills/brain

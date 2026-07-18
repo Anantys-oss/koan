@@ -26,6 +26,25 @@ def test_system_thinking_tokens_is_tick():
     assert is_tick("system: thinking_tokens") is True
 
 
+def test_system_task_progress_is_tick():
+    assert r("system: task_progress") == "•"
+    assert is_tick("system: task_progress") is True
+
+
+def test_run_collapses_task_progress_into_dot_run():
+    # Interleaved as it appears live: a real tool line, then heartbeats.
+    src = io.StringIO(
+        "[cli] assistant — tool_use: Grep: achievement|journey\n"
+        "[cli] system: task_progress\n"
+        "[cli] system: task_progress\n"
+    )
+    out = io.StringIO()  # not a TTY → buffered dot-run path
+    run(src, out)
+    result = out.getvalue()
+    assert "system: task_progress" not in result   # never verbatim
+    assert result == "🔎 Grep achievement|journey\n••\n"
+
+
 def test_text_preview_gets_brain_glyph():
     assert r("assistant — text: Now run.py — inject PYTEST_ADDOPTS") == \
         "🧠 Now run.py — inject PYTEST_ADDOPTS"
@@ -141,3 +160,63 @@ def test_run_never_crashes_on_garbled_line():
     out = io.StringIO()
     run(src, out)  # must not raise
     assert "🧠 ok" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# classify_cli — structured rows for the dashboard progress timeline
+# ---------------------------------------------------------------------------
+from app.log_fmt import classify_cli
+
+
+def test_classify_thinking_is_tick():
+    rows = classify_cli("assistant — thinking")
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "thinking"
+    assert rows[0]["is_tick"] is True
+
+
+def test_classify_task_progress_is_tick():
+    rows = classify_cli("system: task_progress")
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "thinking"
+    assert rows[0]["is_tick"] is True
+
+
+def test_classify_tool_use_with_preview():
+    rows = classify_cli("assistant — tool_use: Bash: make test")
+    assert rows == [{
+        "kind": "tool_use",
+        "tool_name": "Bash",
+        "icon": "💻",
+        "preview": "make test",
+        "label": "Bash",
+        "is_tick": False,
+        "raw": "assistant — tool_use: Bash: make test",
+    }]
+
+
+def test_classify_multipart_splits_tool_and_text():
+    rows = classify_cli("assistant — tool_use: Edit, text: fix run.py, then test")
+    assert [r["kind"] for r in rows] == ["tool_use", "text"]
+    assert rows[0]["tool_name"] == "Edit"
+    assert rows[1]["preview"] == "fix run.py, then test"
+
+
+def test_classify_successful_tool_result_suppressed():
+    assert classify_cli("tool_result toolu_015i88") == []
+
+
+def test_classify_tool_result_error():
+    rows = classify_cli("tool_result toolu_015i88 (error)")
+    assert rows[0]["kind"] == "tool_error"
+
+
+def test_classify_result_and_warning():
+    assert classify_cli("result: success (12s)")[0]["kind"] == "result"
+    assert classify_cli("retry 2/3: overloaded")[0]["kind"] == "warning"
+
+
+def test_classify_unknown_is_raw():
+    rows = classify_cli("something totally new")
+    assert rows[0]["kind"] == "raw"
+    assert rows[0]["preview"] == "something totally new"

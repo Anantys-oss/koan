@@ -1,5 +1,10 @@
 name: 🚀 Release
 
+# The sole executor of a stable release. /koan.incubate preps the changelog
+# (a `## ${NEXT}` section in changes/incubating.md); this workflow finalizes
+# it into CHANGES.md, tags, publishes the GitHub release, and pushes the
+# Docker images. Dispatch it on the `incubating` ref only.
+
 on:
   workflow_dispatch:
     inputs:
@@ -7,11 +12,6 @@ on:
         description: "Release version (e.g. v0.5, v1.0.0)"
         required: true
         type: string
-      update_stable:
-        description: "Update the 'stable' tag to point to this release"
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -29,60 +29,134 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: 🔍 Validate version format
+      - name: 🔍 Refuse to release from anything but incubating
         run: |
-          if ! echo "${{ inputs.version }}" | grep -qE '^v[0-9]+(\.[0-9]+){1,2}$'; then
+          # main is the unstable integration branch: it may contain commits not
+          # yet validated by an incubate pass nor documented in the changelog.
+          # incubating is the single source of truth for releases; the stable
+          # branch and the latest tag are outputs of this workflow, never inputs.
+          if [ "${{ github.ref_name }}" != "incubating" ]; then
+            echo "::error::Releases must be dispatched on 'incubating', not '${{ github.ref_name }}'."
+            exit 1
+          fi
+
+      - name: 🔍 Validate version format
+        env:
+          VERSION: ${{ inputs.version }}   # bound as data, never interpolated into the shell
+        run: |
+          if ! printf '%s' "$VERSION" | grep -qE '^v[0-9]+(\.[0-9]+){1,2}$'; then
             echo "::error::Version must match vMAJOR.MINOR or vMAJOR.MINOR.PATCH (e.g. v0.5, v1.0.0)"
             exit 1
           fi
 
       - name: 🔍 Check tag does not already exist
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          if git rev-parse "${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "::error::Tag ${{ inputs.version }} already exists"
+          if git rev-parse "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag $VERSION already exists"
             exit 1
           fi
 
-      - name: 📝 Check for commits since last tag
-        id: changelog
+      - name: 📝 Finalize changelog (CHANGES.md) and extract release notes
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          LAST_TAG=$(git tag --sort=-v:refname --list 'v*' | head -1)
-          if [ -n "$LAST_TAG" ]; then
-            RANGE="${LAST_TAG}..HEAD"
-            COMMIT_COUNT=$(git rev-list --count "$RANGE")
-            if [ "$COMMIT_COUNT" -eq 0 ]; then
-              echo "::error::No commits since $LAST_TAG — nothing to release"
-              exit 1
-            fi
-            NOTES=$(git log "$RANGE" --pretty=format:"- %s (%h)")
-          else
-            NOTES=$(git log --pretty=format:"- %s (%h)")
+          # /koan.incubate accumulates curated entries under a literal
+          # `## ${NEXT}` heading in changes/incubating.md. Releasing without a
+          # non-empty ${NEXT} section is a process error — hard failure, never
+          # a git-log fallback.
+          JOURNAL=changes/incubating.md
+          if [ ! -f "$JOURNAL" ]; then
+            echo "::error::$JOURNAL not found — run /koan.incubate before dispatching this workflow"
+            exit 1
           fi
 
-          # Write notes to file (multi-line safe)
-          echo "$NOTES" > /tmp/release-notes.md
-          echo "last_tag=${LAST_TAG:-none}" >> "$GITHUB_OUTPUT"
+          # Extract the ${NEXT} section body (up to the next `## ` heading),
+          # matching the heading literally — no regex on user-controlled text.
+          awk '
+            !found && $0 == "## ${NEXT}" { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' "$JOURNAL" > /tmp/release-notes.md
+          if ! grep -q '[^[:space:]]' /tmp/release-notes.md; then
+            echo "::error::No non-empty '## \${NEXT}' section in $JOURNAL — run /koan.incubate first"
+            exit 1
+          fi
 
-      - name: 🏷️ Create and push tag
+          # CHANGES.md = released history only: this release's section (the
+          # ${NEXT} token replaced by version + date) on top of the previously
+          # released sections carried in the journal.
+          DATE=$(date -u +%Y-%m-%d)
+          {
+            echo "# Kōan changelog"
+            echo
+            echo "Released versions of Kōan, newest on top. Each section corresponds to a"
+            echo 'git tag cut by the release workflow from the `## ${NEXT}` section curated'
+            echo 'by `/koan.incubate` in `changes/incubating.md`.'
+            echo
+            echo "---"
+            echo
+            echo "## $VERSION — $DATE"
+            cat /tmp/release-notes.md
+            # previously released sections, verbatim (everything from the first
+            # non-${NEXT} `## ` heading of the journal onward)
+            awk '
+              seen { print; next }
+              /^## / && $0 != "## ${NEXT}" { seen=1; print }
+            ' "$JOURNAL"
+          } > CHANGES.md
+
+          # Reset the journal: keep its intro (everything before the first
+          # `## ` heading), then a fresh empty ${NEXT} section, then the full
+          # released history from CHANGES.md.
+          {
+            awk '/^## / { exit } { print }' "$JOURNAL"
+            echo '## ${NEXT}'
+            echo
+            awk 'seen { print; next } /^## / { seen=1; print }' CHANGES.md
+          } > "$JOURNAL.new"
+          mv "$JOURNAL.new" "$JOURNAL"
+
+      - name: 📝 Commit changelog rotation on incubating
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ inputs.version }}" -m "Release ${{ inputs.version }}"
-          git push origin "${{ inputs.version }}"
+          git add CHANGES.md changes/incubating.md
+          git commit -m "docs(changes): release $VERSION"
+          git push origin HEAD:refs/heads/incubating
 
-      - name: 🏷️ Update stable tag
-        if: inputs.update_stable
+      - name: 🏷️ Create release tag and move the latest tag
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          echo "Updating stable tag → ${{ inputs.version }}"
-          git tag -f stable "${{ inputs.version }}"
-          git push origin stable --force
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "refs/tags/$VERSION"
+          # Moving last-release pointer. Named `latest` (not `stable`) so it
+          # never collides with the `stable` branch Railway deploys from.
+          git tag -f latest "$VERSION"
+          git push origin "+refs/tags/latest"
+
+      - name: 🏷️ Fast-forward the stable branch
+        run: |
+          # Railway deploys from the stable branch. It must only ever be a
+          # fast-forward of the released commit on incubating — if this push is
+          # rejected as non-ff, stable diverged and needs human investigation;
+          # never paper over it with a merge commit or a force-push.
+          git push origin HEAD:refs/heads/stable
+        # explicit refs/heads: a `latest`/version tag exists locally, and older
+        # clones may still carry a legacy `stable` tag — never rely on a bare
+        # refname here.
 
       - name: 🚀 Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
         run: |
-          gh release create "${{ inputs.version }}" \
-            --title "Kōan ${{ inputs.version }}" \
+          gh release create "$VERSION" \
+            --title "Kōan $VERSION" \
             --notes-file /tmp/release-notes.md \
             --latest
 
@@ -94,5 +168,5 @@ jobs:
         type=semver,pattern={{version}},value=${{ inputs.version }}
         type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
         type=raw,value=latest
-        type=raw,value=stable,enable=${{ inputs.update_stable }}
+        type=raw,value=stable
     secrets: inherit

@@ -156,6 +156,23 @@ class TestBuildPrompt:
         assert "{KOAN_PYTHON}" not in prompt
         assert " -m app.issue_cli" in prompt
 
+    def test_injects_project_skill_instructions(self, tmp_path):
+        """When project_path has .koan/skills/fix/*.md, append them to the prompt."""
+        skill_dir = Path(__file__).resolve().parent.parent / "skills" / "core" / "fix"
+        d = tmp_path / ".koan" / "skills" / "fix"
+        d.mkdir(parents=True)
+        (d / "quality-gates.md").write_text("KOAN_FIX_EXTRA_RULE")
+        prompt = _build_prompt(
+            issue_url="https://github.com/o/r/issues/1",
+            issue_title="Bug",
+            issue_body="Body",
+            context="ctx",
+            skill_dir=skill_dir,
+            project_path=str(tmp_path),
+        )
+        assert "KOAN_FIX_EXTRA_RULE" in prompt
+        assert "fix skill" in prompt
+
 
 class TestExecuteFix:
     def test_uses_mission_model_key(self):

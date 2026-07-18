@@ -108,10 +108,16 @@ def _downgrade_if_burning_fast(instance_dir: Path, session_pct: float,
                                mode: str):
     """Drop one tier when projected exhaustion is imminent.
 
+    Soft-throttles only within active modes (deep → implement → review).
+    Never forces ``wait`` — absolute budget gates own the pause decision.
+    Cascading review→wait from a short-window burn spike was pausing the
+    agent while real session usage was still well below the stop threshold.
+
     Returns (mode, downgraded_from) where downgraded_from is the previous
     mode if a downgrade fired, else None.
     """
-    if mode == "wait" or mode not in _MODE_DOWNGRADE:
+    # Floor at review: burn-rate is advisory throttle, not a pause signal.
+    if mode in ("wait", "review") or mode not in _MODE_DOWNGRADE:
         return mode, None
     from app.config import is_unlimited_quota
     if is_unlimited_quota():
@@ -125,7 +131,7 @@ def _downgrade_if_burning_fast(instance_dir: Path, session_pct: float,
     if tte is None or tte >= BURN_RATE_DOWNGRADE_THRESHOLD_MIN:
         return mode, None
     downgraded = _MODE_DOWNGRADE.get(mode, mode)
-    if downgraded == mode:
+    if downgraded == mode or downgraded == "wait":
         return mode, None
     _log_iteration("koan",
         f"Burn-rate downgrade: {mode} → {downgraded} "
@@ -1381,7 +1387,7 @@ def plan_iteration(
     Returns:
         dict with iteration plan:
         {
-            "action": "mission" | "autonomous" | "contemplative" | "passive_wait" | "focus_wait" | "schedule_wait" | "exploration_wait" | "pr_limit_wait" | "wait_pause" | "error",
+            "action": "mission" | "autonomous" | "contemplative" | "cli_unavailable_wait" | "passive_wait" | "focus_wait" | "schedule_wait" | "exploration_wait" | "pr_limit_wait" | "wait_pause" | "error",
             "project_name": str,
             "project_path": str,
             "mission_title": str (empty for autonomous/contemplative),
@@ -1521,6 +1527,32 @@ def plan_iteration(
             f"Mission picked: [{mission_project}] {mission_title[:80]}")
     else:
         _log_iteration("koan", "No pending mission — entering autonomous mode")
+
+    # Step 4a2: CLI-unavailable gate — block all execution.
+    # The primary provider binary was missing at startup (app.cli_health, set
+    # by startup_manager.check_cli_binary). Running a mission would crash the
+    # provider subprocess with FileNotFoundError, so block ALL execution;
+    # missions stay Pending and the inbox is still polled. Must check before
+    # start_mission(). In-memory only — restart to clear.
+    from app import cli_health
+    if cli_health.is_unavailable():
+        _log_iteration("koan",
+            "CLI binary unavailable — skipping execution (missions stay pending)")
+        return _make_result(
+            action="cli_unavailable_wait",
+            project_name=mission_project or (projects[0][0] if projects else "default"),
+            project_path="",
+            mission_title="",
+            autonomous_mode=autonomous_mode,
+            focus_area="CLI unavailable: missions blocked",
+            available_pct=available_pct,
+            decision_reason="CLI binary not on PATH — missions blocked (fix PATH & restart)",
+            display_lines=display_lines,
+            recurring_injected=recurring_injected,
+            focus_remaining=None,
+            schedule_mode=schedule_state.mode if schedule_state else "normal",
+            tracker_error=tracker_error,
+        )
 
     # Step 4b: Passive mode gate — block all execution
     # Missions stay Pending, no autonomous work. Must check before start_mission().

@@ -4,7 +4,7 @@ title: "Daemon Runtime"
 description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-26
+updated: 2026-07-17
 ---
 
 # Daemon Runtime
@@ -65,6 +65,32 @@ blocks an interactive chat reply, and neither blocks the poll loop. One
 in-flight task per lane provides back-pressure (no unbounded fan-out). No
 extra OS process is forked — the "dedicated chat channel vs bg tasks" split is
 realized with threads inside the existing bridge process.
+
+#### Staying responsive during missions (#1084)
+
+While a mission runs, the agent loop and the bridge invoke the AI CLI
+concurrently against the same account (the default provider takes no
+cross-invocation lock), so a chat call can come back empty or time out. Two
+in-process measures keep chat responsive without adding a third process:
+
+- **Chat retries the contention symptom.** `handle_chat` treats an empty
+  response (clean exit, blank stdout) as retryable — the same class as a
+  timeout — and retries with backoff and a lighter context
+  (`cli_exec.CLI_RETRY_BACKOFF` / `CLI_RETRY_MAX_ATTEMPTS`) before showing any
+  degraded message. The "I didn't get a response" apology now appears only on a
+  genuine outage, not on the first contention hit. The chat lane is
+  single-flight (`_CHAT_LOCK`), so the retry loop is bounded by a wall-clock
+  budget (`CHAT_RETRY_BUDGET`, default 1.5× `CHAT_TIMEOUT`) — one stuck chat
+  can't hold the lane for the full retry worst case and starve later chats —
+  and the typing indicator wraps only each live CLI call, not the backoff
+  sleeps, so a retrying chat doesn't flood Telegram with typing pulses.
+- **Outbox formatting yields to active missions.** AI outbox formatting is
+  cosmetic and the lowest-value concurrent AI caller. `OutboxManager` skips it
+  and uses the instant local `fallback_format()` while a mission is *actively
+  executing*, determined by `active_mission.is_mission_active()` (the
+  authoritative `.koan-active` provider-liveness signal, #2086 — never the
+  free-form `.koan-status` string). Polished AI formatting resumes as soon as no
+  mission is executing; the check fail-opens on an absent/corrupt signal.
 
 ## Agent Loop
 
@@ -137,6 +163,14 @@ Consequences and safeguards:
 - Pause mode uses `.koan-pause` state and can be time-bounded.
 - Focus mode narrows work to a project or focus area.
 - Passive mode keeps Koan alive but blocks execution.
+- CLI-unavailable degraded mode: if the primary provider binary is missing from
+  `PATH` at startup, the loop stays alive (chat and the GitHub/Jira inbox still
+  work) but starts **no** missions — running one would crash the provider
+  subprocess. Detected once at startup (`startup_manager.check_cli_binary` →
+  `cli_health.check_primary_cli`), advertised to the operator with one ⚠️ warning,
+  and held **in memory** (`app.cli_health`) with no signal file, so it clears only
+  on restart. Fix `PATH` / install the CLI, then `make stop && make start`. See
+  [troubleshooting](../operations/troubleshooting.md).
 - Restart signaling uses a file so the bridge can ask the runner to restart.
 - The stagnation monitor watches provider output, kills stuck subprocess groups,
   and requeues missions up to the configured retry limit.

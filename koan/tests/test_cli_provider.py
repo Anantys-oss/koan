@@ -270,6 +270,41 @@ class TestClaudeProvider:
         cmd = self.provider.build_command(prompt="hello", skip_permissions=False)
         assert "--dangerously-skip-permissions" not in cmd
 
+    def test_project_context_false_adds_setting_sources_user(self):
+        """KOAN_ROOT sessions suppress project CLAUDE.md / .claude skills."""
+        cmd = self.provider.build_command(prompt="hello", project_context=False)
+        assert "--setting-sources" in cmd
+        idx = cmd.index("--setting-sources")
+        assert cmd[idx + 1] == "user"
+        # Default mission path must not inject the flag.
+        default_cmd = self.provider.build_command(prompt="hello")
+        assert "--setting-sources" not in default_cmd
+        assert self.provider.build_command(
+            prompt="hello", project_context=True,
+        ) == default_cmd
+
+    def test_build_full_command_forwards_project_context(self):
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="hello",
+                project_context=False,
+                provider=ClaudeProvider(),
+            )
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
+
+    def test_codex_accepts_project_context_false_noop(self):
+        """Codex isolation is deferred; flag must not break build_command."""
+        from app.provider.codex import CodexProvider
+
+        p = CodexProvider()
+        cmd = p.build_command(prompt="hello", project_context=False)
+        assert cmd[0] == "codex"
+        assert "--setting-sources" not in cmd
+        assert "hello" in cmd
+
     def test_permission_args_under_root_drop_flag_and_warn_once(self, capsys, monkeypatch):
         import app.provider.claude as claude_module
 
@@ -994,6 +1029,83 @@ class TestRunCommand:
         )
         cmd = mock_run.call_args[0][0]
         assert "--model" not in cmd
+
+    def test_run_command_forwards_mcp_configs(self):
+        """mcp_configs is forwarded to build_full_command."""
+        import app.provider as provider
+
+        with patch.object(
+            provider,
+            "_resolve_role_provider_and_models",
+            return_value=(MagicMock(name="prov"), {"plan": "", "fallback": ""}),
+        ), patch.object(
+            provider, "build_full_command", return_value=["cli"]
+        ) as bfc, patch(
+            "app.cli_exec.run_cli_with_retry",
+            return_value=MagicMock(returncode=0, stdout="ok", stderr=""),
+        ):
+            provider.run_command(
+                "p",
+                "/proj",
+                allowed_tools=["Read"],
+                model_key="mission",
+                mcp_configs=["/a.json"],
+            )
+        assert bfc.call_args.kwargs["mcp_configs"] == ["/a.json"]
+
+    def test_run_command_defaults_mcp_configs_none(self):
+        """mcp_configs defaults to None when omitted."""
+        import app.provider as provider
+
+        with patch.object(
+            provider,
+            "_resolve_role_provider_and_models",
+            return_value=(MagicMock(), {"chat": "", "fallback": ""}),
+        ), patch.object(
+            provider, "build_full_command", return_value=["cli"]
+        ) as bfc, patch(
+            "app.cli_exec.run_cli_with_retry",
+            return_value=MagicMock(returncode=0, stdout="ok", stderr=""),
+        ):
+            provider.run_command("p", "/proj", allowed_tools=["Read"])
+        assert bfc.call_args.kwargs["mcp_configs"] is None
+
+    def test_run_command_streaming_forwards_mcp_configs(self):
+        """run_command_streaming forwards mcp_configs to build_full_command."""
+        import contextlib
+
+        import app.provider as provider
+
+        mock_provider = MagicMock()
+        mock_provider.supports_stream_json.return_value = False
+        mock_provider.supports_last_message_file.return_value = False
+        mock_provider.name = "fake"
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_proc.wait.return_value = 0
+        mock_proc.returncode = 0
+
+        with patch.object(
+            provider,
+            "_resolve_role_provider_and_models",
+            return_value=(mock_provider, {"mission": "", "fallback": ""}),
+        ), patch.object(
+            provider, "build_full_command", return_value=["cli"]
+        ) as bfc, patch(
+            "app.cli_exec.popen_cli", return_value=mock_proc
+        ):
+            # Streaming path may raise on empty stdout; we only care that
+            # build_full_command received mcp_configs.
+            with contextlib.suppress(Exception):
+                provider.run_command_streaming(
+                    "p",
+                    "/proj",
+                    allowed_tools=["Read"],
+                    model_key="mission",
+                    mcp_configs=["/a.json"],
+                )
+        assert bfc.call_args.kwargs["mcp_configs"] == ["/a.json"]
 
 
 # ---------------------------------------------------------------------------

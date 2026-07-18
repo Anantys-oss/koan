@@ -4,7 +4,7 @@ title: "make logs formatting"
 description: "Documents the display-side [cli] log formatter (log_fmt.py) behind make logs, its glyph legend, tool-input previews, accumulating thinking dots, and the raw=1 escape hatch."
 tags: [operations, observability, logs]
 created: 2026-07-13
-updated: 2026-07-14
+updated: 2026-07-17
 ---
 
 # Pretty `make logs`
@@ -20,7 +20,7 @@ presentational — the log **files** and the `[cli]` grammar emitted by
 
 | Raw `[cli]` line                    | Shown as        |
 |-------------------------------------|-----------------|
-| `assistant — thinking`, `system: thinking_tokens` | dim `•`, one per event, **accumulated** into a growing run (`••••`) — rewritten in place on a TTY, emitted as one `•×N` line when piped |
+| `assistant — thinking`, `system: thinking_tokens`, `system: task_progress` | dim `•`, one per event, **accumulated** into a growing run (`••••`) — rewritten in place on a TTY, emitted as one `•×N` line when piped |
 | `assistant — text: <preview>`       | `🧠 <preview>` (preview skips leading code fences / bare brackets, e.g. ```` ```json ```` → first real line) |
 | `assistant — tool_use: Bash: <cmd>` | `💻 Bash <cmd…>` (per-tool icon + dim, first-line input preview: command / file path / pattern / url, truncated with `…`; `🔧` default) |
 | `tool_result …`                     | *(suppressed — adds no signal)* |
@@ -37,6 +37,11 @@ TTY (`KOAN_FORCE_COLOR` forces it; `NO_COLOR` disables it).
 ```bash
 make logs raw=1   # skip the formatter, show the exact bytes
 ```
+
+The same classifier (`classify_cli`) also powers the dashboard
+`/progress` timeline — keep both surfaces in sync when the grammar
+changes (see Maintenance note below). See
+[`docs/operations/dashboard.md`](dashboard.md) for the timeline UX.
 
 ## Maintenance note
 

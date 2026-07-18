@@ -25,7 +25,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from app.signals import PAUSE_FILE
 
@@ -180,6 +180,39 @@ def remove_pause(koan_root: str) -> None:
         os.remove(os.path.join(koan_root, PAUSE_FILE))
 
 
+def consume_pause(koan_root: str) -> Tuple[bool, Optional[PauseState]]:
+    """Atomically claim and remove the pause file under an exclusive lock.
+
+    Serializes concurrent resume attempts -- the agent-loop's auto-resume
+    (:func:`check_and_resume`) and a manual ``/resume`` from the bridge can
+    fire at the same moment on different processes. Without serialization
+    both read the pause file, both remove it (idempotent), and both send a
+    "resumed" notification. Under the lock, exactly one caller observes the
+    file present and wins the claim.
+
+    Returns ``(claimed, state)``: *claimed* is True only for the single
+    winner; *state* is the parsed :class:`PauseState` at claim time (may be
+    None for an empty/legacy marker). Do slow I/O (notifications, restart)
+    *after* this returns -- the lock is already released.
+
+    Other resume paths (``/v1/resume`` in ``routes_admin.py``, the dashboard
+    ``/api/agent/resume``, the reset skill, the TUI) currently call
+    :func:`remove_pause` directly with no notification, so they produce no
+    observable double-action. If any of them starts emitting user-facing
+    "resumed" feedback, route it through this function so it can't race a
+    concurrent resume into a double-notification.
+    """
+    from app.locked_file import signal_lock
+
+    pause_file = Path(koan_root) / PAUSE_FILE
+    with signal_lock(pause_file):
+        if not pause_file.is_file():
+            return False, None
+        state = get_pause_state(koan_root)
+        remove_pause(koan_root)
+    return True, state
+
+
 def check_and_resume(koan_root: str) -> Optional[str]:
     """
     Check if paused and if auto-resume conditions are met.
@@ -190,19 +223,23 @@ def check_and_resume(koan_root: str) -> Optional[str]:
 
     Side effects:
         Removes the pause file if auto-resuming.
+
+    The read-check-remove runs under :func:`signal_lock` so it cannot race a
+    concurrent manual resume (:func:`consume_pause`) into a double-resume.
     """
-    state = get_pause_state(koan_root)
-    if state is None:
-        # Empty or unparseable .koan-pause — stay paused (safe default).
-        # The user can always /resume manually.
-        return None
+    from app.locked_file import signal_lock
 
-    if not should_auto_resume(state):
-        return None
+    pause_file = Path(koan_root) / PAUSE_FILE
+    with signal_lock(pause_file):
+        state = get_pause_state(koan_root)
+        # Empty/unparseable .koan-pause -- stay paused (safe default); the
+        # user can always /resume manually.
+        if state is None or not should_auto_resume(state):
+            return None
+        # Auto-resume: claim by removing the pause file while locked.
+        remove_pause(koan_root)
 
-    # Auto-resume: remove pause file
-    remove_pause(koan_root)
-
+    # Lock released -- build the message outside the critical section.
     if state.is_quota:
         return f"quota reset time reached ({state.display})"
     elif state.is_timed:

@@ -287,6 +287,38 @@ class TestHandleSocketEvent:
         update = provider._message_queue.get_nowait()
         assert update.message.text == "and continue"
 
+    def test_thread_reply_to_other_user_ignored(self, provider):
+        # A thread reply that opens with another user's @mention is addressed
+        # to that person, not the bot — even in an engaged thread.
+        root = self._make_request("app_mention", "C123", "<@U999> start", ts="10.0")
+        provider._handle_socket_event(MagicMock(), root)
+        provider._message_queue.get_nowait()
+        reply = self._make_request("message", "C123", "<@U555> what do you think?",
+                                   ts="11.0", thread_ts="10.0")
+        provider._handle_socket_event(MagicMock(), reply)
+        assert provider._message_queue.empty()
+
+    def test_thread_reply_to_other_user_with_name_ignored(self, provider):
+        # Same, but with the <@ID|name> mention form.
+        root = self._make_request("app_mention", "C123", "<@U999> start", ts="10.0")
+        provider._handle_socket_event(MagicMock(), root)
+        provider._message_queue.get_nowait()
+        reply = self._make_request("message", "C123", "<@U555|alice> ping",
+                                   ts="11.0", thread_ts="10.0")
+        provider._handle_socket_event(MagicMock(), reply)
+        assert provider._message_queue.empty()
+
+    def test_thread_reply_mentioning_bot_still_handled(self, provider):
+        # A reply that re-mentions the bot is for us regardless of position.
+        root = self._make_request("app_mention", "C123", "<@U999> start", ts="10.0")
+        provider._handle_socket_event(MagicMock(), root)
+        provider._message_queue.get_nowait()
+        reply = self._make_request("message", "C123", "<@U999> keep going",
+                                   ts="11.0", thread_ts="10.0")
+        provider._handle_socket_event(MagicMock(), reply)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "keep going"
+
     def test_envelope_is_telegram_shaped(self, provider):
         # The bridge main loop reads message.text / message.chat.id / message_id.
         req = self._make_request("app_mention", "C123", "<@U999> hi")

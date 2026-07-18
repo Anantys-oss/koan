@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-12
+updated: 2026-07-17
 ---
 
 # Skills Reference
@@ -49,15 +49,15 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 
 | Command | Aliases | Description | GitHub @mention |
 |---------|---------|-------------|:-:|
-| `/plan [--iterations N] <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review). `--iterations N` (1-5) runs N critique+refine rounds. | — |
+| `/plan [--iterations N] <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review). `--iterations N` (1-5) runs N critique+refine rounds. Loads project MCP servers when `plan` is in `mcp_roles` (default). | — |
 | `/deepplan <desc>` | `/deeplan` | Spec-first design: explore approaches, post spec, queue /plan | — |
 | `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; creates a draft PR, then privately reviews/fixes Important+ findings by default | Yes |
-| `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic. A PR URL is redirected to `/rebase` (preserving `--now` and trailing context) | Yes |
+| `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic. A PR URL is redirected to `/rebase --fix` (preserving `--now` and trailing context) so review feedback is addressed | Yes |
 | `/debug <issue>` | `/dbg` | Structured 4-step debug loop: reproduce → hypothesize → minimal fix → verify. Auto-queued when `/fix` fails (opt-in via `debug_escalation.on_fix_failure` in config.yaml) | Yes |
-| `/review <PR> [PR ...] [--bot-comments]` | `/rv` | Review one or more pull requests; each URL queues a separate review mission. `--bot-comments` triages bot findings | Yes |
+| `/review <PR> [PR ...] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | Review one or more pull requests; each URL queues a separate review mission. `--bot-comments` triages bot findings | Yes |
 | `/ultrareview <PR>` | `/urv` | Ultra-thorough review: architecture + silent-failure passes combined | Yes |
 | `/explain <PR>` | `/xp` | Explain a PR's changes in plain language with examples and alternative approaches | Yes |
-| `/rebase <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch; trailing text after the URL is threaded into the mission as focus context | Yes |
+| `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context | Yes |
 | `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |
@@ -65,12 +65,18 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/check_need <url>` | `/need`, `/needs` | Analyze if a PR or issue is still needed vs. current main | — |
 | `/ci_check <PR>\|--enable\|--disable` | — | Check and fix CI failures on a PR (non-blocking, bounded, one attempt per mission); toggle CI system | — |
 | `/pr <PR>` | — | Review and update a GitHub pull request | — |
-| `/claudemd [project]` | `/claude`, `/claude.md` | Refresh or create a project's CLAUDE.md | — |
+| `/claudemd [project] [learnings]` | `/claude`, `/claude.md` | Refresh or create a project's CLAUDE.md, or sync Kōan's learnings into it | — |
 | `/doc <project> [cats]` | `/docs` | Extract structured documentation to docs/ | Yes |
 | `/profile <project>` | `/perf`, `/benchmark` | Performance profiling mission | Yes |
 
 For URL-based `/plan`, `/deepplan`, `/implement`, and `/fix`, append `branch:<name>` to
 override the base branch for that mission.
+
+`plan` runs with the project's MCP servers loaded when `plan` is in `mcp_roles`
+(the default), so it can consult MCP-backed trackers and knowledge bases. See
+[docs/providers/claude.md](../providers/claude.md) → "Per-role MCP access".
+Conversational roles (`chat`, `github_reply`) stay excluded by default; add them
+to `mcp_roles` to opt in. `mcp_roles: []` is a kill switch for every role.
 
 **Assumptions audit (advisory, never blocks):** before a `/plan` result is posted, a
 lightweight auditor pressure-tests the plan's hidden assumptions; unverified-critical
@@ -99,6 +105,12 @@ detail, so reviewers can react or resolve in place. Cap the volume with
 idempotent (already-anchored findings are skipped); multi-line findings anchor
 to their full range; if all posts fail, you are notified. Disabled by default.
 
+**Verdict consistency:** The formal APPROVE / REQUEST_CHANGES state and its
+green/red/yellow alert are derived from the final bucketed findings. Reflection
+cannot leave a failed checklist item pointing at a hidden finding, and Kōan will
+not submit REQUEST_CHANGES unless the summary lists at least one 🔴 Blocking or
+🟡 Important finding.
+
 **Stale-HEAD alert:** the review comment's footer shows the commit it was run
 against (`HEAD=<short-sha>`). A review can take minutes, and you may push (or
 force-push) new commits meanwhile. If the branch tip moved between when the
@@ -126,7 +138,7 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 | Command | Aliases | Description | GitHub @mention |
 |---------|---------|-------------|:-:|
 | `/ask <comment-url>` | `/question` | Ask a question about a PR/issue — posts AI reply to GitHub | Yes |
-| `/reviewrebase <PR>` | `/rr` | Review then rebase a PR (combo: /review → /rebase) | Yes |
+| `/reviewrebase <PR>` | `/rr` | Review then rebase a PR (combo: /review → /rebase --fix, so the rebase addresses the fresh review) | Yes |
 | `/planimplement <issue>` | `/planimp`, `/planimpl`, `/planit`, `/plandoit` | Plan then implement an issue (combo: /plan → /implement) | Yes |
 | `/checkup` | `/checkprs` | Health-check all open PRs across projects — auto-queues `/rebase` on conflicts, `/check` on CI failures | — |
 | `/branches [project]` | `/br`, `/prs` | List koan branches + open PRs with merge order | — |

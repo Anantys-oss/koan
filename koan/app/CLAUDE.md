@@ -60,6 +60,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`restart_manager.py`** — File-based restart signaling between bridge and run loop (`.koan-restart`)
 - **`focus_manager.py`** — Focus mode management (`.koan-focus` JSON); skips contemplative sessions when active
 - **`passive_manager.py`** — Passive mode management (`.koan-passive` JSON); read-only mode that blocks all execution while keeping loop alive
+- **`cli_health.py`** — Startup CLI-binary-on-PATH probe (`check_primary_cli()` wrapping `CLIProvider.is_available()`) + in-memory degraded (no-mission) state and warn throttle. Set by `startup_manager.check_cli_binary()`, gated in `iteration_manager.plan_iteration` (`cli_unavailable_wait`), surfaced by `/status` and `/doctor`. Restart clears it (no signal file).
 
 **CLI provider abstraction** (`koan/app/provider/`):
 
@@ -104,7 +105,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`memory_manager.py`** — Per-project memory isolation, compaction, and cleanup. Includes semantic learnings compaction (Claude-powered dedup/merge), global memory file rotation, and configurable thresholds via `config.yaml` `memory:` section. Dual-writes to SQLite FTS5 index alongside JSONL truth log. `read_memory_window()` supports FTS5-ranked two-phase retrieval (relevance + recency fill).
 - **`memory_db.py`** — SQLite FTS5 secondary index over the JSONL memory truth log. Provides `ensure_db()`, `insert_entry()`, `search_entries()` (BM25-ranked), `search_learnings()` (transient in-memory FTS5), `recent_entries()`, `delete_before()`, and `migrate_jsonl_to_sqlite()`. All functions catch `DatabaseError` and return empty results. Graceful degradation when FTS5 unavailable.
 - **`usage_tracker.py`** — Per-provider budget tracking; decides autonomous mode (REVIEW/IMPLEMENT/DEEP/WAIT) based on each provider's independent quota percentage. Pure parser + threshold class — burn-rate-driven downgrades live in `iteration_manager._downgrade_if_burning_fast` next to the existing affordability downgrade.
-- **`burn_rate.py`** — Rolling burn-rate estimator (% session quota per minute). Maintains a 20-sample circular buffer in `instance/.burn-rate.json` with `fcntl.flock(LOCK_SH)` on reads, exposes `record_run()`, `burn_rate_pct_per_minute()` (total cost / span across all samples), `time_to_exhaustion(session_pct, mode=None)`, and the canonical `MODE_MULTIPLIERS` table shared with `usage_tracker.can_afford_run`. Also tracks the last-warning timestamp so the iteration manager fires at most one Telegram alert per quota cycle.
+- **`burn_rate.py`** — Rolling burn-rate estimator (% session quota per minute). Maintains a 20-sample circular buffer in `instance/.burn-rate.json` with `fcntl.flock(LOCK_SH)` on reads, exposes `record_run()`, `burn_rate_pct_per_minute()` (total cost / span; requires ≥5 samples and ≥15 min wall-clock span), `time_to_exhaustion(session_pct, mode=None)`, `clear_samples()` (called on session reset so pre-reset costs don't poison TTE), and the canonical `MODE_MULTIPLIERS` table shared with `usage_tracker.can_afford_run`. Also tracks the last-warning timestamp so the iteration manager fires at most one Telegram alert per quota cycle. Burn-rate mode downgrades soft-throttle only (deep→implement→review); they never force `wait`.
 - **`recover.py`** — Crash recovery for stale in-progress missions
 - **`prompts.py`** — System prompt loader; `load_prompt()` for `koan/system-prompts/*.md`, `load_skill_prompt()` for skill-bound prompts. Supports `{@include partial-name}` directive for reusable prompt fragments from `koan/system-prompts/_partials/`.
 - **`skill_manager.py`** — External skill package manager: install from Git repos, update, remove, track via `instance/skills.yaml`
@@ -117,6 +118,7 @@ Communication between processes happens through shared files in `instance/` with
 - **`mission_ctl.py`** — Break-glass CLI to inspect/edit the mission store from the terminal when the Telegram bridge is unresponsive (agent stuck on a mission). `list [state]` reads the authoritative store directly; `delete <selector>` (`i<N>`/`p<N>`/keyword) removes a pending mission or aborts an in-progress one (→ Failed) through the same flock-protected `utils.modify_missions_file` chokepoint the daemons use, so the store + `missions.md` export stay consistent. Invoked via `make missions` / `make mission-rm sel=i1`. See `docs/operations/mission-cli.md`.
 - **`usage_service.py`** — Shared usage-payload builder (`build_usage_payload()` + week/month bucketing) used by both the dashboard and the REST API (`GET /v1/usage`).
 - **`log_reader.py`** — Shared log-tailing helpers (`tail_log()`, `read_logs()`) used by both the dashboard and the REST API (`GET /v1/logs`).
+- **`artifact_db.py`** — Unified artifact schema + migration harness. `ARTIFACT_SCHEMAS` (TableSpec/ColumnSpec dataclasses) for missions/journal_entries/memory_entries/outbox_messages/audit_log; `create_tables()`, `verify_schema()` (PRAGMA drift check), `dual_write()` (file authoritative + best-effort DB projection), `rebuild_from_file()` (re-read file + replace projection, clears dirty flag — recovery handle for diverged append projections), `read_from_db_or_file()` (DB-first, file fallback, file-stable order). File stays source of truth (mirrors `memory_db`). Library only — downstream issues wire it into live artifact paths. See `docs/architecture/artifact-db.md`.
 
 **Web dashboard** (`koan/app/dashboard/`):
 
@@ -148,6 +150,7 @@ Config additions in `config.py`: `is_api_enabled()`, `get_api_host()` (default `
 - `missions.md` — Generated **read-only export** of the mission store (human-readable; edits ignored after the one-time sync)
 - `outbox.md` — Bot → Telegram message queue (written atomically by `append_to_outbox()`)
 - `outbox-sending.md` — Crash-safety staging file for outbox flush; `OutboxManager.recover_staged()` re-sends on restart
+- `.notify-dedup.json` — Persistent `{hash: last_sent_ts}` map for cross-restart dedup of idempotent lifecycle notices (`notify_dedup.py`, #2426); prunes entries older than the dedup window
 - `config.yaml` — Per-instance configuration (tools, auto-merge rules)
 - `soul.md` — Agent personality definition
 - `memory/` — Global summary + per-project learnings/context + `memory.db` (SQLite FTS5 index)

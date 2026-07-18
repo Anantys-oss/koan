@@ -23,6 +23,8 @@ from app.review_runner import (
     _format_repliable_comments,
     _normalize_review_data,
     _parse_review_json,
+    _parse_and_validate_review,
+    _build_review_retry_prompt,
     _format_review_as_markdown,
     _extract_json_text,
     _build_review_footer,
@@ -38,6 +40,7 @@ from app.review_runner import (
     _parse_line_hint,
     _write_review_findings_sidecar,
     _load_calibration_hints,
+    _reconcile_review_after_reflection,
 )
 
 
@@ -877,6 +880,27 @@ class TestParseReviewJson:
         result = _parse_review_json(json.dumps(data))
         assert result is None
 
+    @pytest.mark.parametrize(
+        ("severity", "lgtm"),
+        [("critical", True), ("warning", True), ("suggestion", False)],
+    )
+    def test_rejects_verdict_that_contradicts_finding_severity(
+        self, severity, lgtm,
+    ):
+        """The model verdict cannot disagree with its categorized findings."""
+        data = {
+            "file_comments": [{
+                "file": "a.py", "line_start": 1, "line_end": 1,
+                "severity": severity, "title": "t", "comment": "c",
+                "code_snippet": "",
+            }],
+            "review_summary": {
+                "lgtm": lgtm, "summary": "s", "checklist": [],
+            },
+        }
+
+        assert _parse_review_json(json.dumps(data)) is None
+
     def test_markdown_text_returns_none(self):
         raw = "## PR Review — Title\n\nGood code.\n\n### Summary\n\nLGTM."
         result = _parse_review_json(raw)
@@ -990,6 +1014,67 @@ class TestParseReviewJson:
         result = _parse_review_json(raw)
         assert result is None
 
+    def test_validate_surfaces_verdict_rule_errors(self):
+        """A verdict that contradicts severities yields its rule errors, not None.
+
+        The retry path needs the specific rule the model broke (otherwise it
+        gets re-prompted about JSON validity and the guidance never lands).
+        """
+        data = {
+            "file_comments": [{
+                "file": "a.py", "line_start": 1, "line_end": 1,
+                "severity": "critical", "title": "t", "comment": "c",
+                "code_snippet": "",
+            }],
+            "review_summary": {"lgtm": True, "summary": "s", "checklist": []},
+        }
+        parsed, errors = _parse_and_validate_review(json.dumps(data))
+        assert parsed is None
+        assert errors and any("lgtm" in e and "severities" in e for e in errors)
+
+    def test_validate_returns_none_errors_on_unparseable(self):
+        parsed, errors = _parse_and_validate_review("not json at all")
+        assert parsed is None
+        assert errors is None
+
+    def test_validate_returns_data_no_errors_on_success(self):
+        parsed, errors = _parse_and_validate_review(json.dumps(VALID_REVIEW_JSON))
+        assert parsed is not None
+        assert errors is None
+
+
+# ---------------------------------------------------------------------------
+# _build_review_retry_prompt
+# ---------------------------------------------------------------------------
+
+class TestBuildReviewRetryPrompt:
+    """The retry prompt must match the failure mode so guidance reaches the model."""
+
+    BASE = "Review this PR."
+
+    def test_validation_errors_list_the_broken_rules(self):
+        """Valid JSON that broke a rule → list the rules, not 'not valid JSON'."""
+        prompt = _build_review_retry_prompt(
+            self.BASE, ["review_summary.lgtm must match finding severities "
+                        "(critical/warning findings are blocking)"],
+        )
+        assert self.BASE in prompt
+        assert "broke these review rules" in prompt
+        assert "must match finding severities" in prompt
+        assert "not valid JSON" not in prompt
+
+    def test_parse_failure_asks_for_valid_json(self):
+        """Unparseable output (no errors) → the JSON-only instruction."""
+        prompt = _build_review_retry_prompt(self.BASE, None)
+        assert self.BASE in prompt
+        assert "not valid JSON" in prompt
+        assert "broke these review rules" not in prompt
+
+    def test_empty_error_list_treated_as_parse_failure(self):
+        """An empty error list is falsy → JSON-only instruction (defensive)."""
+        prompt = _build_review_retry_prompt(self.BASE, [])
+        assert "not valid JSON" in prompt
+
 
 # ---------------------------------------------------------------------------
 # _format_review_as_markdown
@@ -1051,6 +1136,45 @@ class TestFormatReviewAsMarkdown:
         md = _format_review_as_markdown(VALID_REVIEW_JSON, title="Fix auth")
         assert "> [!IMPORTANT]" not in md
         assert "Needs validation before merge." in md
+
+    # A review with findings at two severity levels so the severity-filter
+    # hint is emitted (it only shows when severity_count > 1).
+    _MULTI_SEVERITY_REVIEW = {
+        "file_comments": [
+            {
+                "file": "auth.py", "line_start": 42, "line_end": 42,
+                "severity": "critical", "title": "Missing validation",
+                "comment": "No input validation.", "code_snippet": "",
+            },
+            {
+                "file": "auth.py", "line_start": 90, "line_end": 90,
+                "severity": "warning", "title": "Broad except",
+                "comment": "Catch specific errors.", "code_snippet": "",
+            },
+        ],
+        "review_summary": {
+            "lgtm": False, "summary": "Needs work.", "checklist": [],
+        },
+    }
+
+    def test_severity_hint_catch_all_uses_fix_mention(self):
+        """The catch-all in the severity hint must advertise `--fix`, not a
+        bare rebase. After the /rebase split a bare `@bot rebase` only rebases
+        onto the base branch and applies no review feedback, so the old
+        `_or just … for all._` bare-rebase CTA would mislead users.
+        """
+        md = _format_review_as_markdown(
+            self._MULTI_SEVERITY_REVIEW, title="Fix auth", bot_username="koan-bot",
+        )
+        assert "@koan-bot rebase --fix" in md
+        # The old bare-rebase catch-all must be gone.
+        assert "_or just_ `@koan-bot rebase` _for all._" not in md
+
+    def test_severity_hint_catch_all_uses_fix_slash(self):
+        """Same contract for the no-bot slash-command variant of the hint."""
+        md = _format_review_as_markdown(self._MULTI_SEVERITY_REVIEW, title="Fix auth")
+        assert "/rebase --fix <url>" in md
+        assert "_or just_ `/rebase <url>` _for all._" not in md
 
     def test_lgtm_review_does_not_wrap_summary_in_alert(self):
         """When lgtm is True, the summary is plain text — no alert needed
@@ -1368,32 +1492,80 @@ class TestBuildReviewFooter:
 
 
 # ---------------------------------------------------------------------------
+# _extract_comment_ref / posted-comment ref capture
+# ---------------------------------------------------------------------------
+
+class TestExtractCommentRef:
+    def test_extract_comment_ref_parses_id_and_url(self):
+        from app.review_runner import _extract_comment_ref
+        raw = json.dumps({
+            "id": 12345,
+            "html_url": "https://github.com/o/r/pull/7#issuecomment-12345",
+        })
+        assert _extract_comment_ref(raw) == {
+            "id": 12345,
+            "html_url": "https://github.com/o/r/pull/7#issuecomment-12345",
+        }
+
+    def test_extract_comment_ref_tolerates_garbage(self):
+        from app.review_runner import _extract_comment_ref
+        assert _extract_comment_ref("not json") is None
+        assert _extract_comment_ref(json.dumps({"html_url": "x"})) is None  # no id
+
+    @patch("app.review_runner.run_gh")
+    def test_post_review_comment_new_returns_ref(self, mock_gh):
+        raw = json.dumps({"id": 999, "html_url": "https://github.com/o/r/pull/7#issuecomment-999"})
+        mock_gh.return_value = raw
+        ok, err, ref = _post_review_comment("o", "r", "7", "## Code Review\n\nLGTM")
+        assert ok is True and err == ""
+        assert ref == {"id": 999, "html_url": "https://github.com/o/r/pull/7#issuecomment-999"}
+        # posts via the issues-comments API, not `gh pr comment`
+        assert mock_gh.call_args.args[:2] == ("api", "repos/o/r/issues/7/comments")
+
+    @patch("app.review_runner.run_gh")
+    def test_post_review_comment_patch_returns_ref(self, mock_gh):
+        raw = json.dumps({"id": 42, "html_url": "https://github.com/o/r/pull/7#issuecomment-42"})
+        mock_gh.return_value = raw
+        ok, err, ref = _post_review_comment(
+            "o", "r", "7", "## Code Review\n\nupdated",
+            existing_comment={"id": 42, "body": ""},
+        )
+        assert ok is True
+        assert ref == {"id": 42, "html_url": "https://github.com/o/r/pull/7#issuecomment-42"}
+
+    @patch("app.review_runner.run_gh")
+    def test_post_review_comment_tolerates_non_json(self, mock_gh):
+        mock_gh.return_value = "not json"
+        ok, err, ref = _post_review_comment("o", "r", "7", "LGTM")
+        assert ok is True and err == ""
+        assert ref is None
+
+
+# ---------------------------------------------------------------------------
 # _post_review_comment
 # ---------------------------------------------------------------------------
 
 class TestPostReviewComment:
     @patch("app.review_runner.run_gh")
     def test_posts_comment(self, mock_gh):
-        """Posts review as PR comment via gh CLI."""
-        success, error = _post_review_comment("owner", "repo", "42", "LGTM")
+        """Posts review via the issues-comments API so a {id, html_url} JSON returns."""
+        success, error, _ref = _post_review_comment("owner", "repo", "42", "LGTM")
         assert success is True
         assert error == ""
         mock_gh.assert_called_once()
         call_args = mock_gh.call_args
-        assert "pr" in call_args[0]
-        assert "comment" in call_args[0]
-        assert "42" in call_args[0]
+        assert call_args[0][:2] == ("api", "repos/owner/repo/issues/42/comments")
+        assert "POST" in call_args[0]
         # Body should contain the review text
-        body_arg = call_args[1].get("body") or call_args[0][-1]
-        # The body is passed via --body flag
         assert any("LGTM" in str(a) for a in call_args[0])
 
     @patch("app.review_runner.run_gh", side_effect=RuntimeError("API error"))
     def test_returns_false_on_error(self, mock_gh):
-        """Returns (False, error_detail) when gh CLI fails."""
-        success, error = _post_review_comment("owner", "repo", "42", "review")
+        """Returns (False, error_detail, None) when gh CLI fails."""
+        success, error, ref = _post_review_comment("owner", "repo", "42", "review")
         assert success is False
         assert "API error" in error
+        assert ref is None
 
     @patch("app.review_runner.run_gh")
     def test_truncates_long_review(self, mock_gh):
@@ -1777,6 +1949,7 @@ class TestReviewPostsBeforeEnrichment:
 
 
 class TestRunReview:
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -1785,7 +1958,7 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_full_pipeline_with_json(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """Full review pipeline with JSON output: fetch -> claude -> parse -> post."""
         mock_fetch.return_value = pr_context
@@ -1846,6 +2019,7 @@ class TestRunReview:
         assert "branch moved during review" in posted_bodies[0]
         assert "HEAD=2222222" in posted_bodies[0]
 
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -1854,7 +2028,7 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_fallback_to_markdown_on_invalid_json(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """Falls back to regex extraction when JSON parsing fails twice."""
         mock_fetch.return_value = pr_context
@@ -1879,6 +2053,7 @@ class TestRunReview:
         assert mock_claude.call_count == 2
         mock_gh.assert_called_once()
 
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner._run_error_hunter", return_value="")
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -1887,7 +2062,7 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_unparseable_output_posts_placeholder_not_raw(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable,
-        _mock_hunter, _mock_shas, pr_context, review_skill_dir,
+        _mock_hunter, _mock_shas, _mock_state, pr_context, review_skill_dir,
     ):
         """Guardrail: when neither attempt yields parseable/structured output,
         post a short placeholder (never the raw narration) and alert a human."""
@@ -1924,11 +2099,15 @@ class TestRunReview:
     @patch("app.review_runner.fetch_pr_context")
     def test_normal_mode_single_outcome_with_pr_url(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        _mock_debug, pr_context, review_skill_dir,
+        _mock_debug, pr_context, review_skill_dir, monkeypatch,
     ):
         """Under normal mode (notify_fn defaulting to progress_notify), progress
         lines are suppressed but exactly one outcome line carrying the canonical
         PR URL is sent."""
+        # The agent loop sets KOAN_SUPPRESS_RUNNER_OUTCOME=1 to dedup the ✅
+        # line; clear any ambient value so this test exercises the runner's own
+        # outcome delivery regardless of the environment it runs in.
+        monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
         mock_fetch.return_value = pr_context
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
         sent = []
@@ -1942,7 +2121,10 @@ class TestRunReview:
         assert not any("..." in m for m in sent)  # progress gated under normal
         assert any("https://github.com/owner/repo/pull/42" in m for m in sent)
 
-    @patch("app.review_runner._reflect_findings", side_effect=lambda findings, *a, **kw: findings)
+    @patch(
+        "app.review_runner._reflect_findings",
+        side_effect=lambda findings, *a, **kw: (findings, list(range(len(findings)))),
+    )
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
@@ -2092,7 +2274,10 @@ class TestRunPrivateReview:
 
     @patch("app.review_runner._post_comment_replies")
     @patch("app.review_runner._post_review_comment")
-    @patch("app.review_runner._reflect_findings", side_effect=lambda findings, *a, **kw: findings)
+    @patch(
+        "app.review_runner._reflect_findings",
+        side_effect=lambda findings, *a, **kw: (findings, list(range(len(findings)))),
+    )
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     @patch("app.review_runner._fetch_pr_state", return_value="OPEN")
@@ -2150,7 +2335,7 @@ class TestRunPrivateReview:
 class TestRunReviewClosedPrGuard:
     """run_review skips closed/merged PRs unless force=True."""
 
-    @patch("app.review_runner._fetch_pr_state", return_value="MERGED")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("MERGED", []))
     def test_skips_merged_pr(self, _mock_state):
         mock_notify = MagicMock()
         success, summary, data = run_review(
@@ -2162,7 +2347,7 @@ class TestRunReviewClosedPrGuard:
         assert "skipping review" in summary.lower()
         assert data is None
 
-    @patch("app.review_runner._fetch_pr_state", return_value="CLOSED")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("CLOSED", []))
     def test_skips_closed_pr(self, _mock_state):
         mock_notify = MagicMock()
         success, summary, data = run_review(
@@ -2179,7 +2364,7 @@ class TestRunReviewClosedPrGuard:
     @patch("app.review_runner.run_gh")
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
-    @patch("app.review_runner._fetch_pr_state", return_value="MERGED")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("MERGED", []))
     def test_force_reviews_merged_pr(
         self, _mock_state, mock_fetch, mock_claude, mock_gh,
         mock_repliable, _mock_shas, pr_context, review_skill_dir,
@@ -2197,7 +2382,7 @@ class TestRunReviewClosedPrGuard:
         assert data is not None
         mock_fetch.assert_called_once()
 
-    @patch("app.review_runner._fetch_pr_state", return_value="OPEN")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
@@ -2218,7 +2403,7 @@ class TestRunReviewClosedPrGuard:
         assert success is True
         assert data is not None
 
-    @patch("app.review_runner._fetch_pr_state", return_value="")
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
@@ -2232,6 +2417,99 @@ class TestRunReviewClosedPrGuard:
         mock_fetch.return_value = pr_context
         mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
 
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+        assert success is True
+        assert data is not None
+
+
+class TestRunReviewPauseLabelGate:
+    """run_review skips when the configured pause label is on the PR."""
+
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner._fetch_pr_state_and_labels",
+           return_value=("OPEN", ["PauseReview", "enhancement"]))
+    @patch("app.config.get_review_pause_label", return_value="PauseReview")
+    def test_skips_when_pause_label_present(
+        self, _mock_cfg, _mock_state, mock_claude, mock_fetch,
+    ):
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+        )
+        assert success is True
+        assert data is None
+        assert "PauseReview" in summary
+        assert "skipped" in summary.lower()
+        mock_fetch.assert_not_called()
+        mock_claude.assert_not_called()
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._fetch_pr_state_and_labels",
+           return_value=("OPEN", ["PauseReview"]))
+    @patch("app.config.get_review_pause_label", return_value="PauseReview")
+    def test_force_bypasses_pause_label(
+        self, _mock_cfg, _mock_state, mock_fetch, mock_claude, mock_gh,
+        mock_repliable, _mock_shas, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            force=True,
+        )
+        assert success is True
+        assert data is not None
+        mock_fetch.assert_called_once()
+        mock_claude.assert_called_once()
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._fetch_pr_state_and_labels",
+           return_value=("OPEN", ["PauseReview"]))
+    @patch("app.config.get_review_pause_label", return_value="")
+    def test_disabled_feature_does_not_check_labels(
+        self, _mock_cfg, _mock_state, mock_fetch, mock_claude, mock_gh,
+        mock_repliable, _mock_shas, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        success, summary, data = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+        assert success is True
+        assert data is not None
+        mock_claude.assert_called_once()
+
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    @patch("app.review_runner._fetch_pr_state_and_labels",
+           return_value=("OPEN", ["bug"]))
+    @patch("app.config.get_review_pause_label", return_value="PauseReview")
+    def test_other_labels_do_not_skip(
+        self, _mock_cfg, _mock_state, mock_fetch, mock_claude, mock_gh,
+        mock_repliable, _mock_shas, pr_context, review_skill_dir,
+    ):
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
         success, summary, data = run_review(
             "owner", "repo", "42", "/tmp/project",
             notify_fn=MagicMock(),
@@ -2298,6 +2576,23 @@ class TestRunClaudeReview:
         output, error = _run_claude_review("prompt", "/tmp/project")
         assert output == ""
         assert "Timeout" in error
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    def test_missing_executable_returns_error_detail(
+        self, mock_max_turns, mock_models, mock_run,
+    ):
+        """A provider launch error is returned as a failed review, not raised."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.side_effect = RuntimeError(
+            "CLI executable not found: 'codex' (provider 'codex')."
+        )
+        output, error = _run_claude_review("prompt", "/tmp/project")
+
+        assert output == ""
+        assert "CLI executable not found" in error
 
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
@@ -2981,12 +3276,99 @@ class TestPostCommentReplies:
 
         assert results == []
 
+    @patch("app.review_runner.run_gh")
+    def test_needs_clarification_wraps_review_comment_with_alert(self, mock_gh):
+        """needs_clarification review-comment replies lead with an IMPORTANT alert."""
+        from app.github_alerts import build_alert
+
+        reply = "Which API version should we target?"
+        replies = [
+            {
+                "comment_id": 100,
+                "reply": reply,
+                "action": "needs_clarification",
+            },
+        ]
+        repliable = [
+            {"id": 100, "type": "review_comment", "user": "alice", "body": "Why?"},
+        ]
+
+        results = _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        assert results == [{"comment_id": 100, "action": "needs_clarification"}]
+        body_arg = next(
+            a for a in mock_gh.call_args[0]
+            if isinstance(a, str) and a.startswith("body=")
+        )
+        posted_body = body_arg.removeprefix("body=")
+        assert posted_body == build_alert("IMPORTANT", reply)
+
+    @patch("app.review_runner.run_gh")
+    def test_needs_clarification_wraps_issue_comment_with_alert(self, mock_gh):
+        """needs_clarification issue-comment replies wrap the reply (not the quote)."""
+        from app.github_alerts import build_alert
+
+        reply = "Can you share the expected status code?"
+        replies = [
+            {
+                "comment_id": 200,
+                "reply": reply,
+                "action": "needs_clarification",
+            },
+        ]
+        repliable = [
+            {"id": 200, "type": "issue_comment", "user": "bob", "body": "Please fix"},
+        ]
+
+        _post_comment_replies("owner", "repo", "42", replies, repliable)
+
+        body = next(
+            a for a in mock_gh.call_args[0]
+            if isinstance(a, str) and "@bob" in a
+        )
+        assert body.startswith("> @bob:")
+        assert "> [!IMPORTANT]" in body
+        assert reply in body
+        # Quote precedes the alert; alert wraps only the reply text
+        quote_end = body.index("\n\n")
+        after_quote = body[quote_end + 2 :]
+        assert after_quote.startswith(build_alert("IMPORTANT", reply).split("\n")[0])
+
+    @patch("app.review_runner.run_gh")
+    def test_non_clarification_actions_unchanged(self, mock_gh):
+        """fixed / wont_fix / acknowledged replies are posted without an alert."""
+        cases = [
+            ("fixed", "Applied the suggested rename."),
+            ("wont_fix", "Leaving as-is — intentional."),
+            ("acknowledged", "Noted, thanks."),
+            (None, "Thanks for the note."),  # missing action → acknowledged
+        ]
+        for action, reply in cases:
+            mock_gh.reset_mock()
+            item = {"comment_id": 100, "reply": reply}
+            if action is not None:
+                item["action"] = action
+            repliable = [
+                {"id": 100, "type": "review_comment", "user": "a", "body": "b"},
+            ]
+
+            _post_comment_replies("owner", "repo", "42", [item], repliable)
+
+            body_arg = next(
+                a for a in mock_gh.call_args[0]
+                if isinstance(a, str) and a.startswith("body=")
+            )
+            posted_body = body_arg.removeprefix("body=")
+            assert "> [!IMPORTANT]" not in posted_body
+            assert posted_body == reply
+
 
 # ---------------------------------------------------------------------------
 # run_review with comment replies
 # ---------------------------------------------------------------------------
 
 class TestRunReviewWithReplies:
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments")
@@ -2995,7 +3377,7 @@ class TestRunReviewWithReplies:
     @patch("app.review_runner.fetch_pr_context")
     def test_posts_replies_when_present(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """Posts replies to user comments when review includes comment_replies."""
         mock_fetch.return_value = pr_context
@@ -3022,6 +3404,7 @@ class TestRunReviewWithReplies:
         # run_gh called: 1 for post_review_comment + 1 for reply
         assert mock_gh.call_count == 2
 
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3030,7 +3413,7 @@ class TestRunReviewWithReplies:
     @patch("app.review_runner.fetch_pr_context")
     def test_no_replies_when_no_repliable_comments(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """No reply posting when there are no repliable comments."""
         mock_fetch.return_value = pr_context
@@ -3322,6 +3705,7 @@ class TestFormatReviewWithPlanAlignment:
 # ---------------------------------------------------------------------------
 
 class TestRunReviewPlanAlignment:
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3330,7 +3714,7 @@ class TestRunReviewPlanAlignment:
     @patch("app.review_runner.fetch_pr_context")
     def test_auto_detects_plan_from_pr_body(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        plan_review_skill_dir,
+        _mock_state, plan_review_skill_dir,
     ):
         """Auto-detects plan URL from PR body and includes plan in prompt."""
         context = {
@@ -3370,6 +3754,7 @@ class TestRunReviewPlanAlignment:
         # Verify that plan fetching was attempted (gh api called for issues/10)
         assert mock_gh.call_count >= 2
 
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3378,7 +3763,7 @@ class TestRunReviewPlanAlignment:
     @patch("app.review_runner.fetch_pr_context")
     def test_no_plan_when_no_issue_in_body(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, review_skill_dir,
+        _mock_state, pr_context, review_skill_dir,
     ):
         """No plan alignment when PR body has no linked issue URL."""
         pr_context["body"] = "Refactoring pass. No linked issue."
@@ -3394,6 +3779,7 @@ class TestRunReviewPlanAlignment:
         # run_gh only called once: to post the review comment
         assert mock_gh.call_count == 1
 
+    @patch("app.review_runner._fetch_pr_state_and_labels", return_value=("OPEN", []))
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=[])
 
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
@@ -3402,7 +3788,7 @@ class TestRunReviewPlanAlignment:
     @patch("app.review_runner.fetch_pr_context")
     def test_explicit_plan_url_overrides_auto_detection(
         self, mock_fetch, mock_claude, mock_gh, mock_repliable, _mock_shas,
-        pr_context, plan_review_skill_dir,
+        _mock_state, pr_context, plan_review_skill_dir,
     ):
         """Explicit --plan-url fetches the specified issue, skipping auto-detect."""
         pr_context["body"] = "No issue URLs here."
@@ -4030,7 +4416,8 @@ class TestPostReviewCommentIdempotent:
         from app.review_markers import SUMMARY_TAG
         _post_review_comment("owner", "repo", "42", "LGTM")
         body_arg = [a for a in mock_gh.call_args[0] if isinstance(a, str) and "LGTM" in a][0]
-        assert body_arg.startswith(SUMMARY_TAG)
+        # The body is passed as a `-f body=<content>` gh api field.
+        assert body_arg.removeprefix("body=").startswith(SUMMARY_TAG)
 
     @patch("app.review_runner.run_gh")
     def test_patch_used_when_existing_comment_found(self, mock_gh):
@@ -4045,11 +4432,11 @@ class TestPostReviewCommentIdempotent:
 
     @patch("app.review_runner.run_gh")
     def test_post_used_when_no_existing_comment(self, mock_gh):
-        """Without existing_comment, the standard 'pr comment' POST is used."""
+        """Without existing_comment, the issues-comments API POST is used."""
         _post_review_comment("owner", "repo", "42", "Review", None)
         call_args = mock_gh.call_args[0]
-        assert "pr" in call_args
-        assert "comment" in call_args
+        assert call_args[:2] == ("api", "repos/owner/repo/issues/42/comments")
+        assert "POST" in call_args
 
     @patch("app.review_runner.run_gh")
     def test_preserves_commit_ids_from_existing_comment(self, mock_gh):
@@ -4089,12 +4476,12 @@ class TestPostReviewCommentIdempotent:
 
         mock_gh.side_effect = _side_effect
         existing = {"id": 555, "body": "old body", "user": "other-bot"}
-        success, error = _post_review_comment("owner", "repo", "42", "New review", existing)
+        success, error, _ref = _post_review_comment("owner", "repo", "42", "New review", existing)
         assert success is True
-        # Last call should be the POST fallback ('pr comment'), not PATCH
+        # Last call should be the POST fallback (issues-comments API), not PATCH
         last_call = mock_gh.call_args[0]
-        assert "pr" in last_call
-        assert "comment" in last_call
+        assert last_call[:2] == ("api", "repos/owner/repo/issues/42/comments")
+        assert "POST" in last_call
 
 
 
@@ -4221,7 +4608,7 @@ class TestIncrementalReview:
         assert success is True
         comment_calls = [
             c for c in mock_gh.call_args_list
-            if "comment" in c[0]
+            if any("comment" in str(a) for a in c[0])
         ]
         assert len(comment_calls) >= 1
         body_arg = " ".join(str(a) for a in comment_calls[0][0])
@@ -4272,12 +4659,13 @@ class TestReReviewFreshComment:
         )
 
         assert success is True
-        # Should have a "pr comment" call (POST), not a PATCH-only flow
+        # Should have an issues-comments API POST call, not a PATCH-only flow
         post_calls = [
             c for c in mock_gh.call_args_list
-            if len(c[0]) >= 2 and c[0][0] == "pr" and c[0][1] == "comment"
+            if len(c[0]) >= 2 and c[0][0] == "api"
+            and str(c[0][1]).endswith("/issues/42/comments")
         ]
-        assert len(post_calls) >= 1, "Expected a fresh 'pr comment' call for re-review"
+        assert len(post_calls) >= 1, "Expected a fresh comment POST for re-review"
 
         # The old comment should be collapsed via a PATCH call
         collapse_calls = [
@@ -4924,11 +5312,15 @@ class TestReflectFindings:
         findings = [dict(self.FINDING), dict(self.FINDING), dict(self.FINDING)]
         mock_claude.return_value = (self._make_scores(3, 7, 5), "")
 
-        result = _reflect_findings(findings, "diff text", "/tmp/p", "haiku", 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff text", "/tmp/p", "haiku", 5,
+            skill_dir=skill_dir,
+        )
 
         assert len(result) == 2
         assert result[0] is findings[1]
         assert result[1] is findings[2]
+        assert retained_indices == [1, 2]
 
     @patch("app.review_runner._run_claude_review")
     def test_parse_failure_returns_original(self, mock_claude, skill_dir):
@@ -4938,9 +5330,12 @@ class TestReflectFindings:
         findings = [dict(self.FINDING)]
         mock_claude.return_value = ("not json at all", "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir,
+        )
 
         assert result is findings
+        assert retained_indices == [0]
 
     @patch("app.review_runner._run_claude_review")
     def test_threshold_zero_short_circuits(self, mock_claude, skill_dir):
@@ -4949,9 +5344,12 @@ class TestReflectFindings:
 
         findings = [dict(self.FINDING), dict(self.FINDING)]
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 0, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 0, skill_dir=skill_dir,
+        )
 
         assert len(result) == 2
+        assert retained_indices == [0, 1]
         mock_claude.assert_not_called()
 
     @patch("app.review_runner._run_claude_review")
@@ -4962,18 +5360,24 @@ class TestReflectFindings:
         findings = [dict(self.FINDING), dict(self.FINDING)]
         mock_claude.return_value = (self._make_scores(8, 9), "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 10, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 10, skill_dir=skill_dir,
+        )
 
         assert result == []
+        assert retained_indices == []
 
     @patch("app.review_runner._run_claude_review")
     def test_empty_findings_skips_claude(self, mock_claude, skill_dir):
         """Empty findings list returns immediately without calling Claude."""
         from app.review_runner import _reflect_findings
 
-        result = _reflect_findings([], "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            [], "diff", "/tmp/p", None, 5, skill_dir=skill_dir,
+        )
 
         assert result == []
+        assert retained_indices == []
         mock_claude.assert_not_called()
 
     @patch("app.review_runner._run_claude_review")
@@ -4984,9 +5388,12 @@ class TestReflectFindings:
         findings = [dict(self.FINDING)]
         mock_claude.return_value = ("", "timeout")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir,
+        )
 
         assert result is findings
+        assert retained_indices == [0]
 
     @patch("app.review_runner._run_claude_review")
     def test_out_of_range_indices_ignored(self, mock_claude, skill_dir):
@@ -5000,9 +5407,103 @@ class TestReflectFindings:
         ])
         mock_claude.return_value = (scores, "")
 
-        result = _reflect_findings(findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir)
+        result, retained_indices = _reflect_findings(
+            findings, "diff", "/tmp/p", None, 5, skill_dir=skill_dir,
+        )
 
         assert len(result) == 1
+        assert retained_indices == [0]
+
+
+class TestReconcileReviewAfterReflection:
+    """Final review data must stay coherent after findings are filtered."""
+
+    @staticmethod
+    def _finding(severity, title):
+        return {
+            "file": "a.py", "line_start": 1, "line_end": 1,
+            "severity": severity, "title": title, "comment": "detail",
+            "code_snippet": "",
+        }
+
+    def test_restores_filtered_findings_referenced_by_failed_checks(self):
+        """A blocking verdict must never render with an empty blocker list."""
+        data = {
+            "file_comments": [
+                self._finding("warning", "Preserve provisioning metadata"),
+                self._finding("warning", "Add regression coverage"),
+            ],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Two issues must be fixed.",
+                "checklist": [
+                    {"item": "Metadata preserved", "passed": False,
+                     "finding_refs": [0]},
+                    {"item": "Covered by tests", "passed": False,
+                     "finding_refs": [1]},
+                ],
+            },
+        }
+
+        result = _reconcile_review_after_reflection(data, [], [])
+
+        assert [f["title"] for f in result["file_comments"]] == [
+            "Preserve provisioning metadata", "Add regression coverage",
+        ]
+        assert result["review_summary"]["lgtm"] is False
+        md = _format_review_as_markdown(result)
+        assert "### 🟡 Important" in md
+        assert "Preserve provisioning metadata" in md
+        assert "Add regression coverage" in md
+
+    def test_remaps_checklist_references_after_partial_filtering(self):
+        data = {
+            "file_comments": [
+                self._finding("suggestion", "Filtered nit"),
+                self._finding("warning", "Kept blocker"),
+                self._finding("suggestion", "Kept suggestion"),
+            ],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "One blocker.",
+                "checklist": [
+                    {"item": "Blocker fixed", "passed": False,
+                     "finding_refs": [1]},
+                    {"item": "Optional cleanup", "passed": True,
+                     "finding_refs": [0, 2]},
+                ],
+            },
+        }
+
+        result = _reconcile_review_after_reflection(
+            data, [data["file_comments"][1], data["file_comments"][2]], [1, 2],
+        )
+
+        assert [f["title"] for f in result["file_comments"]] == [
+            "Kept blocker", "Kept suggestion",
+        ]
+        assert result["review_summary"]["checklist"][0]["finding_refs"] == [0]
+        assert result["review_summary"]["checklist"][1]["finding_refs"] == [1]
+
+    def test_restores_original_blockers_when_reflection_removes_them_all(self):
+        data = {
+            "file_comments": [
+                self._finding("critical", "Original blocker"),
+                self._finding("suggestion", "Optional cleanup"),
+            ],
+            "review_summary": {
+                "lgtm": False, "summary": "Blocked.", "checklist": [],
+            },
+        }
+
+        result = _reconcile_review_after_reflection(
+            data, [data["file_comments"][1]], [1],
+        )
+
+        assert [f["title"] for f in result["file_comments"]] == [
+            "Original blocker", "Optional cleanup",
+        ]
+        assert result["review_summary"]["lgtm"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -5265,7 +5766,7 @@ class TestRunReviewReflectionIntegration:
         }
         mock_fetch.return_value = pr_ctx
         mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
-        mock_reflect.return_value = []
+        mock_reflect.return_value = ([], [])
 
         run_review(
             "owner", "repo", "1", "/tmp/project",
@@ -5395,7 +5896,7 @@ class TestCalibrationHintsThreadedToReflect:
         }
         mock_fetch.return_value = pr_ctx
         mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
-        mock_reflect.return_value = []
+        mock_reflect.return_value = ([], [])
 
         with patch("app.review_runner.KOAN_ROOT", tmp_path):
             run_review(
@@ -5435,7 +5936,7 @@ class TestCalibrationHintsThreadedToReflect:
         }
         mock_fetch.return_value = pr_ctx
         mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
-        mock_reflect.return_value = []
+        mock_reflect.return_value = ([], [])
 
         with patch("app.review_runner.KOAN_ROOT", tmp_path):
             run_review(
@@ -5456,7 +5957,7 @@ class TestCalibrationHintsThreadedToReflect:
 _CLOSE_REVIEW_JSON_TEMPLATE = {
     "file_comments": [],
     "review_summary": {
-        "lgtm": False,
+        "lgtm": True,
         "summary": "Maintainer requested closure.",
         "checklist": [],
     },
@@ -5629,7 +6130,7 @@ class TestRunReviewClosePr:
     @patch("app.review_runner.find_bot_comment", return_value=None)
     @patch("app.review_runner.fetch_repliable_comments", return_value=[])
     @patch("app.review_runner.run_gh")
-    @patch("app.review_runner._post_review_comment", return_value=(False, "rate limited"))
+    @patch("app.review_runner._post_review_comment", return_value=(False, "rate limited", None))
     @patch("app.review_runner._run_claude_review")
     @patch("app.review_runner.fetch_pr_context")
     def test_close_pr_skipped_when_review_post_fails(
@@ -5997,14 +6498,27 @@ class TestBuildVerdictBody:
         assert body == ""
 
     def test_request_changes_no_review_data(self):
-        """No structured data → default to a yellow WARNING (blocked, severity unknown)."""
+        """A blocked verdict with no categorized blockers degrades, not raises.
+
+        The builder runs after the review comment is posted, so a broken
+        invariant must never abort the run: it logs and returns an empty body
+        (the REQUEST_CHANGES state still shows in the Reviewers panel).
+        """
         from app.review_runner import _build_verdict_body
         body = _build_verdict_body(
             approve=False, review_data=None,
             body_enabled=True, include_blockers=True,
         )
-        assert "> [!WARNING]" in body
-        assert "Important issues found" in body
+        assert body == ""
+
+    def test_degrades_when_approve_flag_disagrees_with_findings(self):
+        """An APPROVE flag that contradicts blockers degrades, not raises."""
+        from app.review_runner import _build_verdict_body
+        body = _build_verdict_body(
+            approve=True, review_data=_WARNING_ONLY_REVIEW_OBJ,
+            body_enabled=True, include_blockers=True,
+        )
+        assert body == ""
 
     def test_blockers_include_critical_and_warning(self):
         """Both critical and warning findings appear in the blocker list."""

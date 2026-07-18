@@ -4,7 +4,7 @@ title: "Telegram Setup Guide"
 description: "Step-by-step guide to configuring Kōan with Telegram (bot creation, chat ID, env vars), including group-chat privacy-mode setup and troubleshooting."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-07-08
+updated: 2026-07-16
 ---
 
 # Telegram Setup Guide
@@ -101,6 +101,7 @@ Your `.env` file is missing or the variable name is wrong. Double-check the form
 
 - Telegram has a 4000-character limit per message. Long messages are auto-chunked. Messages containing ` ``` ` code blocks are converted to HTML `<pre>` and chunked at code-block boundaries so a split never leaves an unbalanced `<pre>` tag (which Telegram rejects with a parse error, dropping the whole message — e.g. a long `/report`).
 - Duplicate messages within 5 minutes are flood-protected (first duplicate triggers a warning, subsequent ones are silently dropped).
+- **Duplicate startup/shutdown notices across restarts are also suppressed.** The flood protection above lives in memory and resets on every process restart, so a crash/restart loop (or repeated `stop`+`start`) used to re-announce idempotent lifecycle notices — "🌅 Running morning ritual…", "🛑 Shutting down…" — once per incarnation. These now dedupe across restarts (and across providers) via a persistent `instance/.notify-dedup.json` window (default 5 min), so you see each notice once even if the process restarts several times in quick succession. The dedup is fail-open: if its state file is unreadable, the notice is sent rather than dropped. (Event-bearing lines like "📬 GitHub: N new mission(s) queued." are intentionally not deduped — that count can differ per real batch.)
 
 ## Group chats
 
@@ -153,6 +154,21 @@ Once fixed you'll instead see:
 > **Quick check**: even with Privacy Mode on, a `/help` typed in the group
 > should get a reply — commands are always delivered. If it does, your chat ID
 > is correct and Privacy Mode is the only remaining blocker.
+
+### Messages Kōan ignores
+
+Even with full group visibility, Kōan stays silent for messages that aren't
+meant for it:
+
+- **Addressed to someone else** — a message opening with `@other-user` is
+  handled by that participant, not the bot. Only `@BotName …` (or no leading
+  mention) is processed.
+- **Internal comments** — a message opening with **two or more minus
+  characters** (e.g. `-- server was down`) is treated as an internal channel
+  note / advertisement. Kōan does not react or reply. A single leading minus
+  (`-5`, `-v`) is not affected. This applies to Slack too, since both providers
+  share the same bridge loop, and to your primary 1:1 chat — a `-- aside` typed
+  in a direct message is dropped the same way.
 
 ## Architecture Notes
 

@@ -32,15 +32,15 @@ def run(koan_root: str, instance_dir: str) -> List[CheckResult]:
         ))
 
     # --- Required binaries ---
-    # Determine which CLI binary to check based on configured provider
+    # Resolve the actual provider binary via the provider abstraction so ALL
+    # providers (codex/grok/haze/cline/…), per-role cli.<role> paths, and the
+    # KOAN_CLAUDE_CLI_PATH override are covered — not a hardcoded partial map.
     cli_binary = "claude"
     try:
-        from app.utils import get_cli_provider_env
-        provider = get_cli_provider_env()
-        if provider == "copilot":
-            cli_binary = "gh"  # Copilot uses gh CLI
-        elif provider == "ollama-launch":
-            cli_binary = "ollama"
+        from app.cli_health import check_primary_cli
+        cli = check_primary_cli()
+        if cli.binary:
+            cli_binary = cli.binary
     except Exception:
         pass
 

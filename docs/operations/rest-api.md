@@ -254,7 +254,8 @@ Response (202):
       {"file": "a.py", "line_start": 1, "line_end": 1, "severity": "warning",
        "title": "…", "comment": "…", "code_snippet": ""}
     ],
-    "review_summary": {"lgtm": false, "summary": "…", "checklist": []}
+    "review_summary": {"lgtm": false, "summary": "…", "checklist": []},
+    "review_comment": {"id": 555, "html_url": "https://github.com/o/r/pull/5#issuecomment-555"}
   },
   "result_ref": null,
   "outcome": {
@@ -318,6 +319,13 @@ On a successful `done` outcome, `reason_category` is `null`.
 (e.g. `/review`); other missions leave it `null`. `result_line` remains the
 short free-text summary for backward compatibility.
 
+For `/review` (and `/ultrareview`) missions, `result.review_comment` carries the
+`id` and `html_url` of the PR comment koan posted, letting a consumer deep-link
+to (and dedup) the exact review rather than only the PR. It is `null` when no
+comment ref was captured (e.g. no head SHA at post time, or the GitHub response
+could not be parsed). It is retained in the trimmed inline `result` even when the
+payload spills to `instance/.api-results/<id>.json`.
+
 When a result exceeds the inline size cap (`DEFAULT_RESULT_CAP_BYTES`, 256 KB)
 the full payload is written to `instance/.api-results/<id>.json` and
 `result_ref` points at that relative path. The record still carries a trimmed
@@ -372,12 +380,25 @@ Response (200):
 |---|---|---|---|
 | `GET` | `/v1/projects` | yes | List known projects |
 | `POST` | `/v1/projects` | yes | Add a project (runs `add_project` skill) |
+| `PATCH` | `/v1/projects/{name}` | yes | Update allow-listed per-project settings |
 | `DELETE` | `/v1/projects/{name}` | yes | Remove a project (runs `delete_project` skill) |
 
 **POST /v1/projects** body:
 ```json
 {"github_url": "https://github.com/org/repo", "name": "optional-name"}
 ```
+
+**PATCH /v1/projects/{name}** body:
+```json
+{"patch": {"cli_provider": "cline", "github_url": "https://github.com/org/repo", "git_auto_merge.enabled": true}}
+```
+
+Response (200):
+```json
+{"name": "my-project", "config": {"...": "merged project config"}}
+```
+
+Only allow-listed fields may be patched — see `EDITABLE_PROJECT_FIELDS` in `koan/app/projects_config.py` (mirrors the dashboard's Projects (form) tab; both surfaces reuse the same `apply_project_patch()`). Returns `404` for an unknown project, `422` for a non-editable field or an invalid value (unknown `cli_provider`, malformed `github_url`, unrecognized `git_auto_merge.strategy`).
 
 ### Pause / resume
 

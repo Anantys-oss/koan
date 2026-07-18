@@ -405,10 +405,27 @@ class SlackProvider(MessagingProvider):
                 self._mark_engaged(thread_root)
             return True
 
-        # Continuation: a reply within a thread the bot is already part of.
+        # Continuation: a reply within a thread the bot is already part of —
+        # unless it opens with a mention of another user, in which case the
+        # message is directed at that person, not the bot, so we stay silent.
+        if self._starts_with_other_user_mention(text):
+            return False
         event_thread = event.get("thread_ts", "")
         with self._state_lock:
             return bool(event_thread) and event_thread in self._engaged_threads
+
+    def _starts_with_other_user_mention(self, text: str) -> bool:
+        """True if the message opens with an @mention of a user other than the bot.
+
+        Slack encodes user mentions as ``<@U123>`` (optionally ``<@U123|name>``).
+        A thread reply that begins with someone else's mention is addressed to
+        that person; the bot must not answer it. A leading mention of the bot
+        itself is already handled by the explicit-mention path above.
+        """
+        if not self._bot_user_id:
+            return False
+        m = re.match(r"\s*<@([A-Z0-9]+)(?:\|[^>]*)?>", text or "")
+        return bool(m) and m.group(1) != self._bot_user_id
 
     # -- bounded-state helpers -------------------------------------------------
 

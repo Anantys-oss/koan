@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.cli_provider import run_command
+from app.config import get_reply_max_turns
 from app.github import api, sanitize_github_comment
 from app.prompts import load_prompt
 from app.utils import truncate_text
@@ -270,6 +271,7 @@ def generate_reply(
     issue_number: str,
     comment_author: str,
     project_path: str,
+    project_name: str = "",
 ) -> Optional[str]:
     """Generate an AI reply using Claude CLI.
 
@@ -281,10 +283,13 @@ def generate_reply(
         issue_number: Issue/PR number.
         comment_author: Who asked the question.
         project_path: Local path to the project (for CLI cwd).
+        project_name: Project name for per-project config (MCP opt-in).
 
     Returns:
         The reply text, or None on failure.
     """
+    from app.config import MCP_ROLE_GITHUB_REPLY, mcp_configs_for_role
+
     prompt = build_reply_prompt(
         question, thread_context, owner, repo, issue_number, comment_author,
     )
@@ -295,9 +300,13 @@ def generate_reply(
             project_path=project_path,
             allowed_tools=["Read", "Glob", "Grep"],
             model_key="chat",
-            max_turns=5,
+            max_turns=get_reply_max_turns(),
             timeout=300,
-            max_turns_source=None,
+            max_turns_source="reply_max_turns",
+            project_name=project_name,
+            # github_reply is excluded from mcp_roles by default (untrusted
+            # input); operators opt in knowingly via config.
+            mcp_configs=mcp_configs_for_role(MCP_ROLE_GITHUB_REPLY, project_name),
         )
         return clean_reply(reply) if reply else None
     except Exception as e:

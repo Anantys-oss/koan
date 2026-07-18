@@ -20,6 +20,10 @@ BOT_TOKEN = os.environ.get("KOAN_TELEGRAM_TOKEN", "")
 CHAT_ID = get_telegram_chat_id()
 POLL_INTERVAL = int(os.environ.get("KOAN_BRIDGE_INTERVAL", "3"))
 CHAT_TIMEOUT = int(os.environ.get("KOAN_CHAT_TIMEOUT", "180"))
+# Total wall-clock budget for one chat exchange, retries included. Bounds how
+# long the single-flight chat lane (_CHAT_LOCK) is held so one stuck chat can't
+# block every subsequent chat for the full retry worst case (#1084).
+CHAT_RETRY_BUDGET = int(os.environ.get("KOAN_CHAT_RETRY_BUDGET", str(CHAT_TIMEOUT * 3 // 2)))
 
 KOAN_ROOT = Path(os.environ["KOAN_ROOT"])
 INSTANCE_DIR = KOAN_ROOT / "instance"

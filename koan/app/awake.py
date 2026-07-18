@@ -30,6 +30,7 @@ from app.bridge_log import log
 from app.bridge_state import (
     BOT_TOKEN,
     CHAT_ID,
+    CHAT_RETRY_BUDGET,
     CHAT_TIMEOUT,
     INSTANCE_DIR,
     KOAN_ROOT,
@@ -242,6 +243,17 @@ def _is_addressed_to_other_user(text: str, msg: dict, bot_username: str) -> bool
             return match.group(1).lower() != bot_username.lower()
 
     return False
+
+
+def _is_internal_comment(text: str) -> bool:
+    """Return True if the message is an internal channel note, not a request.
+
+    Messages that open with two or more minus characters (e.g. ``-- server was
+    down``) are treated as internal comments / advertisements posted in the
+    channel — the bot does not react or reply to them. A single leading minus
+    (e.g. ``-5`` or ``-v``) is not matched.
+    """
+    return text.lstrip().startswith("--")
 
 
 def _strip_bot_mention_from_text(text: str, msg: dict) -> str:
@@ -460,13 +472,44 @@ def _clean_chat_response(text: str, user_message: str = "") -> str:
     return expand_github_refs_auto(cleaned, user_message)
 
 
+def _send_chat_reply(message: str, *, as_chat: bool = False) -> None:
+    """Deliver a chat reply to Telegram and persist it to conversation history.
+
+    ``as_chat=True`` records the assistant turn with the last message id and
+    ``chat`` type (a real answer); otherwise it saves a plain degraded/error
+    notice.
+
+    If the Telegram send fails outright (``send_telegram`` returns ``False``),
+    the assistant turn is NOT persisted: recording a message the human never
+    saw would leave a phantom turn that skews later conversation context.
+    """
+    if send_telegram(message) is False:
+        log("error", "Chat reply failed to send; not persisting to history.")
+        return
+    if as_chat:
+        msg_id = _get_last_message_id()
+        save_conversation_message(
+            CONVERSATION_HISTORY_FILE, "assistant", message,
+            message_id=msg_id, message_type="chat",
+        )
+    else:
+        save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", message)
+
+
 def handle_chat(text: str):
     """Lightweight Claude call for conversational messages — fast response.
 
     Uses restricted tools (Read/Glob/Grep by default) to prevent prompt
     injection attacks via Telegram messages. No Bash, Edit, or Write access.
+
+    Resilient to API contention while a mission runs (#1084): an empty response
+    (clean exit, blank stdout — the contention symptom) or a timeout is retried
+    with backoff and lighter context, up to a bounded number of attempts, before
+    any degraded message reaches the human. A non-zero exit or an unexpected
+    exception is a genuine error and is surfaced immediately (retrying won't
+    help).
     """
-    from app.cli_exec import run_cli
+    from app.cli_exec import run_cli, CLI_RETRY_BACKOFF, CLI_RETRY_MAX_ATTEMPTS
 
     # Save user message to history
     save_conversation_message(CONVERSATION_HISTORY_FILE, "user", text)
@@ -483,7 +526,6 @@ def handle_chat(text: str):
             log("guard", f"WARNING chat: {guard_result.reason} | {text[:100]}")
             quarantine_mission(text, guard_result.reason, source="telegram-chat")
 
-    prompt = _build_chat_prompt(text)
     chat_tools_list = get_chat_tools().split(",")
     models = get_model_config()
 
@@ -493,91 +535,102 @@ def handle_chat(text: str):
     # The prompt tells Claude where to look.
     chat_cwd = str(KOAN_ROOT)
 
-    cmd = build_full_command(
-        prompt=prompt,
-        allowed_tools=chat_tools_list,
-        model=models["chat"],
-        fallback=models["fallback"],
-        max_turns=5,
-    )
-
     # Serialize chat CLI calls: Claude takes a per-cwd session lock, so two
-    # overlapping chats in INSTANCE_DIR collide and one exits 1.
-    with _CHAT_LOCK, TypingIndicator():
-        try:
-            result = run_cli(
-                cmd,
-                capture_output=True, text=True, timeout=CHAT_TIMEOUT,
-                cwd=chat_cwd,
-            )
-            response = _clean_chat_response(result.stdout.strip(), text)
-            if response:
-                send_telegram(response)
-                msg_id = _get_last_message_id()
-                save_conversation_message(
-                    CONVERSATION_HISTORY_FILE, "assistant", response,
-                    message_id=msg_id, message_type="chat",
-                )
-                log("chat", f"Chat reply: {response[:80]}...")
-            elif result.returncode != 0:
-                log("error", f"Claude error (exit {result.returncode}): {result.stderr[:200]}")
-                error_msg = "⚠️ Hmm, I couldn't formulate a response. Try again?"
-                send_telegram(error_msg)
-                save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
-            else:
-                log("chat", "Empty response from Claude.")
-                empty_msg = "⚠️ I didn't get a response — please try again."
-                send_telegram(empty_msg)
-                save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", empty_msg)
-        except subprocess.TimeoutExpired:
-            log("error", f"Claude timed out ({CHAT_TIMEOUT}s). Retrying with lite context...")
-            # Brief backoff before retry to let API pressure ease
-            time.sleep(4)
-            # Retry with reduced context and shorter timeout
-            retry_timeout = CHAT_TIMEOUT // 2
-            lite_prompt = _build_chat_prompt(text, lite=True)
-            lite_cmd = build_full_command(
-                prompt=lite_prompt,
+    # overlapping chats in INSTANCE_DIR collide and one exits 1. The lock spans
+    # every retry, but a wall-clock budget (CHAT_RETRY_BUDGET) bounds how long
+    # it is held so one stuck chat can't block the single-flight lane for the
+    # full retry worst case (#1084).
+    with _CHAT_LOCK:
+        deadline = time.monotonic() + CHAT_RETRY_BUDGET
+        last_timeout = False
+        last_timeout_secs = CHAT_TIMEOUT
+        for attempt in range(CLI_RETRY_MAX_ATTEMPTS):
+            lite = attempt > 0
+            if attempt > 0:
+                # Back off (typing indicator stopped, so no Telegram typing flood
+                # across the retry window) to let API pressure ease, then retry
+                # with a lighter prompt and a shorter timeout.
+                delay = CLI_RETRY_BACKOFF[min(attempt - 1, len(CLI_RETRY_BACKOFF) - 1)]
+                remaining = deadline - time.monotonic()
+                if remaining <= 1:
+                    break  # out of wall-clock budget — stop retrying
+                log("chat",
+                    f"Retrying chat (attempt {attempt + 1}/{CLI_RETRY_MAX_ATTEMPTS}, "
+                    f"lite) in {delay}s")
+                time.sleep(min(delay, remaining))
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 1:
+                break  # out of wall-clock budget — surface a degraded message
+            base = CHAT_TIMEOUT if attempt == 0 else max(CHAT_TIMEOUT // 2, 1)
+            timeout = max(int(min(base, remaining)), 1)
+
+            prompt = _build_chat_prompt(text, lite=lite)
+            # project_context=False: cwd is KOAN_ROOT; do not load contributor
+            # CLAUDE.md / .claude skills (issue #2379).
+            cmd = build_full_command(
+                prompt=prompt,
                 allowed_tools=chat_tools_list,
                 model=models["chat"],
                 fallback=models["fallback"],
                 max_turns=5,
+                project_context=False,
             )
+
             try:
-                result = run_cli(
-                    lite_cmd,
-                    capture_output=True, text=True, timeout=retry_timeout,
-                    cwd=chat_cwd,
-                )
-                response = _clean_chat_response(result.stdout.strip(), text)
-                if response:
-                    send_telegram(response)
-                    msg_id = _get_last_message_id()
-                    save_conversation_message(
-                        CONVERSATION_HISTORY_FILE, "assistant", response,
-                        message_id=msg_id, message_type="chat",
+                # TypingIndicator wraps only the live CLI call, so it stops
+                # during the backoff sleeps above (no typing flood, #1084).
+                with TypingIndicator():
+                    result = run_cli(
+                        cmd,
+                        capture_output=True, text=True, timeout=timeout,
+                        cwd=chat_cwd,
                     )
-                    log("chat", f"Chat reply (lite retry): {response[:80]}...")
-                else:
-                    if result.stderr:
-                        log("error", f"Lite retry stderr: {result.stderr[:500]}")
-                    timeout_msg = f"⏱ Timeout after {CHAT_TIMEOUT}s — try a shorter question, or send 'mission: ...' for complex tasks."
-                    send_telegram(timeout_msg)
-                    save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", timeout_msg)
             except subprocess.TimeoutExpired:
-                timeout_msg = f"Timeout after {CHAT_TIMEOUT}s — try a shorter question, or send 'mission: ...' for complex tasks."
-                send_telegram(timeout_msg)
-                save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", timeout_msg)
+                # Timeout is a retryable contention symptom.
+                log("error", f"Claude timed out ({timeout}s).")
+                last_timeout = True
+                last_timeout_secs = timeout
+                continue
             except Exception as e:
-                log("error", f"Lite retry error: {e}")
-                error_msg = "⚠️ Something went wrong — try again?"
-                send_telegram(error_msg)
-                save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
-        except Exception as e:
-            log("error", f"Claude error: {e}")
-            error_msg = "⚠️ Something went wrong — try again?"
-            send_telegram(error_msg)
-            save_conversation_message(CONVERSATION_HISTORY_FILE, "assistant", error_msg)
+                # Unexpected error (not contention) — surface immediately.
+                log("error", f"Claude error: {e}")
+                _send_chat_reply("⚠️ Something went wrong — try again?")
+                return
+
+            response = _clean_chat_response(result.stdout.strip(), text)
+            if response:
+                _send_chat_reply(response, as_chat=True)
+                suffix = " (lite retry)" if lite else ""
+                log("chat", f"Chat reply{suffix}: {response[:80]}...")
+                return
+
+            if result.returncode != 0:
+                # A non-zero exit is a genuine error, not the contention symptom
+                # (which is a clean exit with empty stdout) — retrying won't help.
+                log("error",
+                    f"Claude error (exit {result.returncode}): "
+                    f"{(result.stderr or '')[:200]}")
+                _send_chat_reply("⚠️ Hmm, I couldn't formulate a response. Try again?")
+                return
+
+            # Empty stdout on a clean exit: the API-contention symptom (#1084).
+            # Retryable — loop to the next attempt with lighter context.
+            last_timeout = False
+            if result.stderr:
+                log("error", f"Empty chat response stderr: {result.stderr[:500]}")
+            log("chat", "Empty response from Claude — retrying with lite context...")
+
+        # Attempts exhausted (or wall-clock budget spent) — surface a single
+        # degraded message reflecting the last failure mode.
+        if last_timeout:
+            degraded = (
+                f"⏱ Timeout after {last_timeout_secs}s — try a shorter question, "
+                "or send 'mission: ...' for complex tasks."
+            )
+        else:
+            degraded = "⚠️ I didn't get a response — please try again."
+        _send_chat_reply(degraded)
 
 
 # ---------------------------------------------------------------------------
@@ -1137,7 +1190,20 @@ def _bridge_loop():
                 # poison message would be re-delivered, and we'd crash-loop
                 # forever (see logs/awake.log KeyError: 'update_id').
                 if "update_id" in update:
-                    offset = update["update_id"] + 1
+                    uid = update["update_id"]
+                    # Idempotency guard against re-delivery. After a bridge
+                    # reexec (memory watchdog reclaim / /restart), the offset was
+                    # persisted locally but never confirmed to Telegram before
+                    # os.execv, so Telegram can re-hand the last message on the
+                    # next poll. Without this skip the command runs twice and
+                    # sends its output twice in a row (e.g. /status, /ls). A
+                    # genuine new update always carries update_id >= offset, so
+                    # only true re-deliveries are dropped. Non-Telegram providers
+                    # omit update_id (their raw envelope has no such key) and
+                    # never reach here, so their own cursor/dedup is untouched.
+                    if offset is not None and uid < offset:
+                        continue
+                    offset = uid + 1
                     _save_offset(offset)
 
                 # Handle reaction updates
@@ -1171,6 +1237,9 @@ def _bridge_loop():
                 # `"" in (channel_id, "")` and slip past the channel filter.
                 valid_chat_ids = {str(channel_id), str(CHAT_ID)} - {""}
                 if text and chat_id and chat_id in valid_chat_ids:
+                    if _is_internal_comment(text):
+                        log("chat", f"Ignoring internal channel comment: {text[:60]}")
+                        continue
                     if _is_addressed_to_other_user(text, msg, bot_username):
                         log("chat", f"Ignoring message addressed to another user: {text[:60]}")
                         continue

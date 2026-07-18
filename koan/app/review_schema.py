@@ -316,6 +316,25 @@ def validate_review(data: object) -> tuple:
         else:
             errors.extend(_validate_review_summary(rs))
 
+            # The formal verdict is derived from the categorized findings.
+            # Reject contradictory model output before reflection/formatting so
+            # a request-changes review can never exist without a rendered
+            # critical/warning item (or approve despite one).
+            fc = data.get("file_comments")
+            lgtm = rs.get("lgtm")
+            if isinstance(fc, list) and isinstance(lgtm, bool):
+                has_blocker = any(
+                    isinstance(item, dict)
+                    and item.get("severity") in {"critical", "warning"}
+                    for item in fc
+                )
+                expected_lgtm = not has_blocker
+                if lgtm != expected_lgtm:
+                    errors.append(
+                        "review_summary.lgtm must match finding severities "
+                        "(critical/warning findings are blocking)"
+                    )
+
     # -- comment_replies (optional) --
     if "comment_replies" in data:
         cr = data["comment_replies"]

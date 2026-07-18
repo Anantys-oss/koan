@@ -4,7 +4,7 @@ title: "Claude Code CLI Provider"
 description: "Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-07-01
+updated: 2026-07-17
 ---
 
 # Claude Code CLI Provider
@@ -314,6 +314,25 @@ output under `permission_denials`.
    tool allowlist
 3. Restart Koan (`systemctl restart koan.service`)
 
+### Per-role MCP access (`mcp_roles`)
+
+MCP servers listed under `mcp:` are loaded per **execution role**, controlled by
+`mcp_roles` (default `["mission", "contemplative", "plan"]`). This lets, e.g.,
+`@bot plan` consult Jira/internal-docs MCP servers while conversational replies
+stay isolated.
+
+- **Kill switch**: `mcp_roles: []` → no runner passes `--mcp-config`.
+- **Per-project**: a `mcp_roles` list in projects.yaml replaces the global list.
+- **Tools still gated**: loading a server does not grant its tools. With
+  `skip_permissions` unset, allow MCP tools by qualified name in the role's
+  `tools:` list — e.g. `tools: { plan: [Read, Glob, Grep, "mcp__jira"] }` or a
+  single tool `mcp__jira__search_issues`.
+- **Excluded by default**: `chat` and `github_reply` handle untrusted input and
+  are opt-in only — add them to `mcp_roles` to enable.
+
+Secondary planning sub-agents (critic/improve/review/assumptions) stay
+local-read-only by design; only primary plan generation loads MCP.
+
 ### Max Turns
 
 The `max_turns` setting controls how many tool-use rounds Claude gets
@@ -337,6 +356,42 @@ models:
 ```
 
 This is a Claude-specific feature — other providers don't support it.
+
+## Project context isolation (KOAN_ROOT sessions)
+
+A deployed instance is a git clone of the Koan repo. Several **runtime**
+CLI sessions intentionally use `cwd=KOAN_ROOT` (Telegram chat bridge,
+dashboard web chat, contemplative, rituals, outbox formatting). Without
+isolation, Claude Code would auto-load **project** scope from that directory:
+
+- root `CLAUDE.md` / `AGENTS.md` (contributor instructions)
+- `.claude/skills/` (e.g. `brain`, `speckit-*`)
+
+That leaks contributor-only advice into operator-facing replies (e.g.
+“run `/brain sync`”). See issue
+[#2379](https://github.com/Anantys-oss/koan/issues/2379).
+
+**Fix (CLI boundary, not filesystem quarantine):** those sessions pass
+`project_context=False` into `build_full_command`, which for Claude
+becomes:
+
+```bash
+claude … --setting-sources user
+```
+
+Omitting `project` (and `local`) skips project settings, project
+`CLAUDE.md`, and project `.claude` skills. User-level prefs under
+`~/.claude/` still apply.
+
+**Mission / project work is unchanged.** When `cwd` is a project under
+`workspace/` (normally its own git root), Claude loads **that** project's
+`CLAUDE.md` as usual (`project_context` defaults to true). Projects
+should be real git roots (or external checkouts); a non-git folder that
+is only a subdirectory of the Koan clone can still walk up to KOAN_ROOT
+and pick up contributor docs — keep projects as separate repos.
+
+This approach does **not** move files on disk or use `git skip-worktree`
+(contrast the alternative explored in PR #2384).
 
 ## Troubleshooting
 

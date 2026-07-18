@@ -486,8 +486,22 @@ class TestPrRedirectsToRebase:
         result = handle(ctx)
 
         # queue_github_mission(ctx, command, url, project_name, context, ...)
+        # The redirect injects --fix (a /fix on a PR addresses review feedback),
+        # while the user's extra context still survives.
         context = mock_queue.call_args[0][4]
-        assert context == "address the security concern"
+        assert "address the security concern" in context
+        assert "--fix" in context
+
+    @patch("skills.core.rebase.handler.is_rebase_foreign_prs_allowed", return_value=True)
+    @patch("app.github_skill_helpers.queue_github_mission", return_value=True)
+    @patch("app.github_skill_helpers.is_own_pr", return_value=(True, "koan/feature"))
+    @patch("app.github_skill_helpers.resolve_project_for_repo", return_value=("/path/repo", "repo"))
+    def test_pr_url_injects_fix(self, mock_resolve, mock_own, mock_queue, mock_foreign):
+        """Even a bare /fix on a PR delegates to /rebase --fix."""
+        ctx = self._make_ctx("https://github.com/owner/repo/pull/42")
+        handle(ctx)
+        context = mock_queue.call_args[0][4]
+        assert "--fix" in (context or "")
 
     @patch("skills.core.rebase.handler.is_rebase_foreign_prs_allowed", return_value=True)
     @patch("app.github_skill_helpers.queue_github_mission", return_value=True)

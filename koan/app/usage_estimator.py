@@ -56,8 +56,27 @@ def _save_state(state_file: Path, state: dict):
     atomic_write(state_file, json.dumps(state, indent=2) + "\n")
 
 
-def _maybe_reset(state: dict) -> dict:
-    """Reset session/weekly counters if their windows have elapsed."""
+def _clear_burn_rate_for_state_file(state_file: Path) -> None:
+    """Drop burn-rate samples when the session counter is reset.
+
+    Burn samples are % of session quota; after a session reset they describe a
+    window that no longer exists and would poison TTE / burn-rate warnings.
+    Best-effort — failure must not block the usage update path.
+    """
+    try:
+        from app.burn_rate import clear_samples
+        clear_samples(state_file.parent)
+    except Exception as exc:
+        print(f"[usage_estimator] burn-rate clear failed: {exc}", file=sys.stderr)
+
+
+def _maybe_reset(state: dict, state_file: Optional[Path] = None) -> dict:
+    """Reset session/weekly counters if their windows have elapsed.
+
+    When *state_file* is provided and a session window actually rolls over,
+    also clear the burn-rate sample buffer so stale pre-reset costs do not
+    keep projecting imminent exhaustion.
+    """
     now = datetime.now()
 
     # Session reset: 5h since session_start
@@ -71,6 +90,8 @@ def _maybe_reset(state: dict) -> dict:
         state["session_start"] = now.isoformat()
         state["session_tokens"] = 0
         state["runs"] = 0
+        if state_file is not None:
+            _clear_burn_rate_for_state_file(state_file)
 
     # Weekly reset: Monday 00:00 boundary
     try:
@@ -200,7 +221,8 @@ def _current_provider(config: dict) -> str:
     return config.get("cli_provider", "claude")
 
 
-def _maybe_reset_provider(state: dict, current_provider: str) -> dict:
+def _maybe_reset_provider(state: dict, current_provider: str,
+                          state_file: Optional[Path] = None) -> dict:
     """Reset counters when the CLI provider has changed.
 
     Local providers (ollama-launch) do not share API quota with
@@ -216,6 +238,8 @@ def _maybe_reset_provider(state: dict, current_provider: str) -> dict:
         state["weekly_start"] = now
         state["weekly_tokens"] = 0
         state["runs"] = 0
+        if state_file is not None:
+            _clear_burn_rate_for_state_file(state_file)
     elif not stored:
         state["provider"] = current_provider
     return state
@@ -232,8 +256,8 @@ def cmd_update(claude_json_path: Path, state_file: Path,
     config = load_config()
     current_provider = _current_provider(config)
     state = _load_state(state_file)
-    state = _maybe_reset(state)
-    state = _maybe_reset_provider(state, current_provider)
+    state = _maybe_reset(state, state_file=state_file)
+    state = _maybe_reset_provider(state, current_provider, state_file=state_file)
 
     tokens = _extract_tokens(claude_json_path)
     cost_pct: Optional[float] = None
@@ -255,8 +279,8 @@ def cmd_refresh(state_file: Path, usage_md: Path):
     config = load_config()
     current_provider = _current_provider(config)
     state = _load_state(state_file)
-    state = _maybe_reset(state)
-    state = _maybe_reset_provider(state, current_provider)
+    state = _maybe_reset(state, state_file=state_file)
+    state = _maybe_reset_provider(state, current_provider, state_file=state_file)
     _save_state(state_file, state)
     _write_usage_md(state, usage_md, config)
 
@@ -267,11 +291,14 @@ def cmd_reset_session(state_file: Path, usage_md: Path):
     Called when resuming from a quota pause — the human has verified
     that API quota is available, so the internal token counter should
     not block the next iteration with a stale high percentage.
+
+    Also clears the burn-rate sample buffer: pre-pause costs would otherwise
+    keep projecting imminent exhaustion against the zeroed session counter.
     """
     config = load_config()
     current_provider = _current_provider(config)
     state = _load_state(state_file)
-    state = _maybe_reset_provider(state, current_provider)
+    state = _maybe_reset_provider(state, current_provider, state_file=state_file)
 
     # Force session reset regardless of elapsed time
     state["session_start"] = datetime.now().isoformat()
@@ -280,6 +307,7 @@ def cmd_reset_session(state_file: Path, usage_md: Path):
 
     _save_state(state_file, state)
     _write_usage_md(state, usage_md, config)
+    _clear_burn_rate_for_state_file(state_file)
 
 
 def cmd_set_used(used_pct: int, state_file: Path, usage_md: Path):

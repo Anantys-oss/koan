@@ -132,6 +132,13 @@ fast_reply: false
 # it's visible in your task queue. Default: 5.
 # ci_fix_max_attempts: 5
 
+# Pre-flight probe cache — minutes a successful quota probe stays valid.
+# The loop probes provider quota before every mission attempt; for providers
+# with no free usage introspection (haze, cline) each probe is a real LLM
+# call, so recent successes are reused. Failures are never cached.
+# Set to 0 to probe before every mission (historical behavior). Default: 10.
+# preflight_cache_minutes: 10
+
 # Skill timeout — maximum seconds for heavy skill execution (fix, implement, recreate)
 # These skills invoke Claude with full tool access and can run for a long time.
 # Complex /implement missions with multi-phase plans routinely exceed 60 min.
@@ -294,6 +301,19 @@ skill_timeout: 7200
 #   sample_lines: 50
 #   max_retry_on_stagnation: 3
 
+# Verify-before-completion — re-queue a mission when post-mission verification
+# fails. After a mission exits successfully, the RARV Verify phase checks that
+# the work matches the mission title (meaningful changes, tests, a PR). When it
+# fails (an empty branch is the signal on a successful exit), the mission is
+# moved back to Pending with a
+# ``[verify-failed: <summary>]`` context tag and re-tried, instead of landing as
+# a draft PR a human must reject. ``max_requeue`` caps how many times this
+# happens (default 2); at the cap the mission completes (Done) so a human
+# reviews the draft (auto-merge stays blocked regardless). Set
+# ``max_requeue: 0`` to disable the verify re-queue entirely.
+# verification:
+#   max_requeue: 2
+
 # Crash and error recovery — how the agent loop tolerates failures.
 # ``max_consecutive_errors`` is the number of iteration failures before
 # the loop enters pause mode. ``max_main_crashes`` is the number of
@@ -425,7 +445,8 @@ tools:
 
 # CLI provider — which AI CLI to use as the backend
 # Options: "claude" (default), "codex" (OpenAI Codex CLI), "copilot" (GitHub Copilot CLI),
-#          "local" (local LLM via OpenAI-compatible API), "ollama-launch" (Ollama-managed Claude CLI)
+#          "haze", "grok" (xAI Grok Build CLI), "ollama-launch" (Ollama-managed Claude CLI)
+#          ("local" was removed — use ollama-launch)
 # Can also be set via KOAN_CLI_PROVIDER env var (overrides this)
 cli_provider: "claude"
 
@@ -433,6 +454,10 @@ cli_provider: "claude"
 # Claude: adds --dangerously-skip-permissions; does not work when Koan runs as root.
 # Codex: adds --dangerously-bypass-approvals-and-sandbox so Codex can use git
 # directly. Only enable this when Koan already runs in a trusted external sandbox.
+# Grok: always uses --always-approve in headless mode (Grok cannot prompt; the
+# CLI acceptEdits flag is a no-op). Set skip_permissions: true when using
+# cli_provider: grok so autonomous missions (/implement, etc.) are not cancelled
+# on shell tools. See docs/providers/grok.md.
 # For MCP tools, use provider-specific allowlists/settings instead.
 # See docs/provider-claude.md and docs/provider-codex.md for details.
 # skip_permissions: false
@@ -440,10 +465,23 @@ cli_provider: "claude"
 # MCP server configuration — paths to MCP config JSON files.
 # Passed as --mcp-config to the Claude CLI.
 # For autonomous mode, pre-approve MCP tools in the project's
-# .claude/settings.local.json (see docs/provider-claude.md).
+# .claude/settings.local.json (see docs/providers/claude.md).
 # Per-project overrides available in projects.yaml (replaces global list).
 # mcp:
 #   - "/path/to/mcp-servers.json"
+
+# Which execution roles may load MCP servers (--mcp-config). Loading a server
+# is NOT the same as granting its tools — MCP tools must still be allowlisted
+# by qualified name (mcp__<server> / mcp__<server>__<tool>) in the role's
+# tools: list unless skip_permissions is set.
+# Default: ["mission", "contemplative", "plan"]. Conversational roles that read
+# untrusted input (chat, github_reply) are excluded by default; opt them in
+# knowingly. Set to [] to disable MCP for every role (kill switch).
+# Per-project override in projects.yaml replaces this list.
+# mcp_roles:
+#   - "mission"
+#   - "contemplative"
+#   - "plan"
 
 # NOTE: The 'local' CLI provider has been removed. To run local models use
 # 'ollama-launch' (see below) — the Claude CLI driven by ``ollama launch claude``.
@@ -493,44 +531,55 @@ models:
     review_mode: ""          # Override model for REVIEW mode (cheaper audits)
     reflect: ""              # Model for review reflection pass (empty = lightweight)
 
-  # Claude provider overrides (uncomment to customize):
-  # claude:
-  #   mission: "opus"          # Main mission execution
-  #   chat: "haiku"            # Chat responses
-  #   lightweight: "haiku"     # Low-cost calls
-  #   fallback: "sonnet"       # Fallback when primary is overloaded
-  #   review_mode: "sonnet"    # Override model for REVIEW mode
-  #   reflect: "sonnet"        # Model for review reflection pass
-  #
+  # Claude provider overrides:
+  claude:
+    mission: "opus"          # Main mission execution
+    chat: "haiku"            # Chat responses
+    lightweight: "haiku"     # Low-cost calls
+    fallback: "sonnet"       # Fallback when primary is overloaded
+    review_mode: "sonnet"    # Override model for REVIEW mode
+    reflect: "sonnet"        # Model for review reflection pass
+
   # Z.ai (GLM): no change needed here — bin/zai-claude maps these tier names
   # (haiku/sonnet/opus) to GLM models. See docs/providers/zai.md.
 
-  # Codex (OpenAI) provider overrides (uncomment to customize):
-  # codex:
-  #   mission: "gpt-5.6-sol"        # complex implementation
-  #   chat: "gpt-5.6-terra"         # general discussion / planning
-  #   lightweight: "gpt-5.6-luna"   # simple tasks if cost is acceptable
-  #   fallback: ""                  # ignored by Codex (no --fallback-model)
-  #   review_mode: "gpt-5.6-sol"    # serious code review
-  #   reflect: "gpt-5.6-luna"       # summarize / reason about result
+  # Codex (OpenAI) provider overrides:
+  codex:
+    mission: "gpt-5.6-sol"        # complex implementation
+    chat: "gpt-5.6-terra"         # general discussion / planning
+    lightweight: "gpt-5.6-luna"   # simple tasks if cost is acceptable
+    fallback: ""                  # ignored by Codex (no --fallback-model)
+    review_mode: "gpt-5.6-sol"    # serious code review
+    reflect: "gpt-5.6-luna"       # summarize / reason about result
 
-  # Haze provider overrides (uncomment to customize). Values are haze model
-  # selectors: an unambiguous model name, or provider:model, as configured
-  # inside haze via /provider + /model. See docs/providers/haze.md.
-  # haze:
-  #   mission: "glm-5.2"       # main mission execution
-  #   review_mode: "glm-5.2"   # code review
-  #   chat: "glm-4.7"          # chat responses
-  #   lightweight: "glm-4.7"   # low-cost calls (format_outbox, pick_mission)
+  # Haze provider overrides. Values are haze model selectors: an unambiguous
+  # model name, or provider:model, as configured inside haze via /provider +
+  # /model. See docs/providers/haze.md.
+  haze:
+    mission: "glm-5.2"       # main mission execution
+    review_mode: "glm-5.2"   # code review
+    chat: "glm-4.7"          # chat responses
+    lightweight: "glm-4.7"   # low-cost calls (format_outbox, pick_mission)
 
-  # Ollama Launch provider overrides (uncomment to customize):
-  # ollama-launch:
-  #   mission: "kimi-k2.7:cloud"         # main mission execution
-  #   chat: "glm-5:cloud"                # chat responses
-  #   lightweight: "minimax-m2.5:cloud"  # low-cost calls
-  #   fallback: "minimax-m2.5:cloud"     # empty = use provider default
-  #   review_mode: "glm-5:cloud"
-  #   reflect: "glm-5:cloud"
+  # Grok Build overrides (when cli_provider: grok).
+  # Use real Grok model ids from `grok models` — never haiku/sonnet/opus.
+  # Also set skip_permissions: true (see above). docs/providers/grok.md
+  grok:
+    mission: "grok-4.5"                    # Main mission execution (empty = default)
+    chat: "grok-composer-2.5-fast"         # Telegram/dashboard chat responses
+    lightweight: "grok-composer-2.5-fast"  # Low-cost calls: format_outbox, pick_mission, contemplative
+    fallback: "grok-composer-2.5-fast"     # Fallback when primary model is overloaded
+    review_mode: "grok-4.5"                # Override model for REVIEW mode (cheaper audits)
+    reflect: "grok-4.5"                    # Model for review reflection pass (empty = lightweight)
+
+  # Ollama Launch provider overrides:
+  ollama-launch:
+    mission: "kimi-k2.7:cloud"         # main mission execution
+    chat: "glm-5:cloud"                # chat responses
+    lightweight: "minimax-m2.5:cloud"  # low-cost calls
+    fallback: "minimax-m2.5:cloud"     # empty = use provider default
+    review_mode: "glm-5:cloud"
+    reflect: "glm-5:cloud"
 
 # Reasoning effort (optional) — sets the Claude Code `--effort` flag
 # (low/medium/high/max). Omit the section to keep the DYNAMIC default: effort
@@ -891,6 +940,10 @@ page_cache_reclaim:
 #                                    # When enabled, unrecognized commands are sent to Claude
 #                                    # for intent classification before falling back to error.
 #                                    # Per-project override available in projects.yaml.
+#   intent:                           # Natural-language intent-ladder knobs (only used when
+#                                     # natural_language is enabled). See docs/messaging/github-commands.md.
+#     keyword_window: 5               # Tokens after @mention scanned for a skill keyword (default: 5)
+#     min_confidence: 0.75            # Model promotes only at/above this certainty (0.0–1.0, default: 0.75)
 #   webhook:                          # Push-based triggering (opt-in, default: off)
 #     enabled: false                  # Start a local HTTP receiver in the bridge process.
 #                                     # On a relevant GitHub event it triggers an IMMEDIATE
@@ -1074,6 +1127,13 @@ page_cache_reclaim:
 # GitHub @mention) is ALWAYS honored regardless.
 # review_draft_skip:
 #   enabled: false          # Defer auto-review of draft PRs (default: false)
+
+# Pause LLM review when a PR carries this label (exact name match).
+# Default "PauseReview". Set to "" to disable the feature entirely
+# (Koan then never checks labels for this purpose).
+# Remove the label to resume auto-review, or `/review --force <url>` to
+# review while the label remains.
+# review_pause_label: "PauseReview"
 
 # Dashboard attention zone — GitHub @mention notifications
 # When true, the dashboard attention zone also shows unread GitHub @mention

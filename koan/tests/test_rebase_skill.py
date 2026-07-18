@@ -130,7 +130,9 @@ class TestMissionQueuing:
              patch("app.utils.insert_pending_mission"), \
              self._own_pr_patch(handler):
             result = handler.handle(ctx)
-            assert result == "Rebase queued for PR #42 (sukria/koan)"
+            # A bare /rebase appends the transient transition notice during the
+            # rollout window, so assert on the ack line rather than equality.
+            assert result.startswith("Rebase queued for PR #42 (sukria/koan)")
 
     def test_mission_entry_format(self, handler, ctx):
         """Verify mission text contains project tag and clean /rebase format."""
@@ -286,6 +288,110 @@ class TestNowFlag:
         ctx.args = ""
         result = handler.handle(ctx)
         assert "--now" in result
+
+
+# ---------------------------------------------------------------------------
+# handle() — --fix feedback flag
+# ---------------------------------------------------------------------------
+
+class TestFixFlag:
+    def _own_pr_patch(self):
+        return patch(
+            "app.github_skill_helpers.is_own_pr",
+            return_value=(True, "koan/some-branch"),
+        )
+
+    def _queue_patches(self):
+        return (
+            patch("app.utils.resolve_project_path", return_value="/home/koan"),
+            patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]),
+            patch("app.utils.insert_pending_mission"),
+        )
+
+    def test_fix_before_url_preserved_in_mission_text(self, handler, ctx):
+        """--fix before the URL survives into the queued mission text."""
+        ctx.args = "--fix https://github.com/sukria/koan/pull/42"
+        p1, p2, p3 = self._queue_patches()
+        with p1, p2, p3 as mock_insert, self._own_pr_patch():
+            handler.handle(ctx)
+            mission_entry = mock_insert.call_args[0][1]
+            assert "--fix" in mission_entry
+
+    def test_fix_after_url_preserved_in_mission_text(self, handler, ctx):
+        """--fix after the URL survives into the queued mission text."""
+        ctx.args = "https://github.com/sukria/koan/pull/42 --fix"
+        p1, p2, p3 = self._queue_patches()
+        with p1, p2, p3 as mock_insert, self._own_pr_patch():
+            handler.handle(ctx)
+            mission_entry = mock_insert.call_args[0][1]
+            assert "--fix" in mission_entry
+
+    def test_bare_rebase_has_no_fix(self, handler, ctx):
+        """A bare /rebase queues no --fix (pure rebase)."""
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        p1, p2, p3 = self._queue_patches()
+        with p1, p2, p3 as mock_insert, self._own_pr_patch():
+            handler.handle(ctx)
+            mission_entry = mock_insert.call_args[0][1]
+            assert "--fix" not in mission_entry
+
+    def test_fix_usage_documented(self, handler, ctx):
+        """Empty args help text mentions --fix."""
+        ctx.args = ""
+        result = handler.handle(ctx)
+        assert "--fix" in result
+
+
+# ---------------------------------------------------------------------------
+# handle() — transition notice (temporary, date-gated)
+# ---------------------------------------------------------------------------
+
+class TestTransitionNotice:
+    def _own_pr_patch(self):
+        return patch(
+            "app.github_skill_helpers.is_own_pr",
+            return_value=(True, "koan/some-branch"),
+        )
+
+    def _queue_patches(self):
+        return (
+            patch("app.utils.resolve_project_path", return_value="/home/koan"),
+            patch("app.utils.get_known_projects", return_value=[("koan", "/home/koan")]),
+            patch("app.utils.insert_pending_mission"),
+        )
+
+    def test_bare_rebase_shows_notice_in_window(self, handler, ctx):
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        p1, p2, p3 = self._queue_patches()
+        with p1, p2, p3, self._own_pr_patch(), \
+             patch("app.rebase_transition.notice_active", return_value=True):
+            result = handler.handle(ctx)
+            assert "Heads up" in result
+            assert "--fix" in result
+
+    def test_fix_suppresses_notice(self, handler, ctx):
+        ctx.args = "--fix https://github.com/sukria/koan/pull/42"
+        p1, p2, p3 = self._queue_patches()
+        with p1, p2, p3, self._own_pr_patch(), \
+             patch("app.rebase_transition.notice_active", return_value=True):
+            result = handler.handle(ctx)
+            assert "Heads up" not in result
+
+    def test_trailing_text_suppresses_notice(self, handler, ctx):
+        ctx.args = "https://github.com/sukria/koan/pull/42 address the concern"
+        p1, p2, p3 = self._queue_patches()
+        with p1, p2, p3, self._own_pr_patch(), \
+             patch("app.rebase_transition.notice_active", return_value=True):
+            result = handler.handle(ctx)
+            assert "Heads up" not in result
+
+    def test_no_notice_after_deadline(self, handler, ctx):
+        ctx.args = "https://github.com/sukria/koan/pull/42"
+        p1, p2, p3 = self._queue_patches()
+        with p1, p2, p3, self._own_pr_patch(), \
+             patch("app.rebase_transition.notice_active", return_value=False):
+            result = handler.handle(ctx)
+            assert "Heads up" not in result
 
 
 # ---------------------------------------------------------------------------

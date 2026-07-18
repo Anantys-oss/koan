@@ -19,6 +19,7 @@ File location: resolved by resolve_projects_config_path() — instance/projects.
 (persistent volume) takes priority, then projects.yaml at KOAN_ROOT (next to .env).
 """
 
+import re
 import sys
 import threading
 from pathlib import Path
@@ -871,9 +872,12 @@ def get_project_security_config(config: dict, project_name: str) -> dict:
     return {"pvrs": pvrs, "pvrs_threshold": threshold}
 
 
-# Fields a non-technical operator may safely toggle through the dashboard.
-# Anything off this allow-list is rejected so the UI can never write an
-# arbitrary key or clobber `path`/secrets/nested-dict sections.
+# Fields a non-technical operator may safely toggle through the dashboard
+# form or the REST API. Anything off this allow-list is rejected so neither
+# surface can ever write an arbitrary key or clobber `path`/secrets/unlisted
+# nested sections. Dotted keys (`git_auto_merge.*`) address one leaf of a
+# nested dict — apply_project_patch() writes/reads them without disturbing
+# sibling leaves.
 EDITABLE_PROJECT_FIELDS = {
     "cli_provider": str,
     "autoreview": bool,
@@ -883,7 +887,14 @@ EDITABLE_PROJECT_FIELDS = {
     "devcontainer": bool,
     "max_open_prs": int,
     "max_pending_branches": int,
+    "github_url": str,
+    "git_auto_merge.enabled": bool,
+    "git_auto_merge.base_branch": str,
+    "git_auto_merge.strategy": str,
 }
+
+_ALLOWED_MERGE_STRATEGIES = ("squash", "merge", "rebase")
+_GITHUB_URL_RE = re.compile(r"^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/?$")
 
 
 _TRUE_TOKENS = ("1", "true", "yes", "on")
@@ -909,16 +920,72 @@ def _coerce_editable_value(expected, raw):
     return expected(raw)
 
 
+def _validate_editable_value(key: str, value) -> None:
+    """Extra semantic validation beyond type coercion.
+
+    Raises ``ValueError`` with a message starting "Invalid value for {key}"
+    so callers can surface a consistent error regardless of which field
+    failed.
+    """
+    if key == "cli_provider" and value:
+        from app.provider import is_known_provider
+        if not is_known_provider(value):
+            raise ValueError(f"Invalid value for cli_provider: {value!r}")
+    elif key == "github_url" and value:
+        if not _GITHUB_URL_RE.match(value.strip()):
+            raise ValueError(f"Invalid value for github_url: {value!r}")
+    elif key == "git_auto_merge.strategy" and value not in _ALLOWED_MERGE_STRATEGIES:
+        raise ValueError(f"Invalid value for git_auto_merge.strategy: {value!r}")
+
+
+def _apply_clean_patch(project_entry: dict, clean: dict) -> None:
+    """Write allow-listed, coerced values into a project's override entry.
+
+    Dotted keys address one leaf of a nested dict without disturbing sibling
+    leaves already present (e.g. patching git_auto_merge.enabled must not
+    drop an existing git_auto_merge.strategy).
+    """
+    for key, value in clean.items():
+        if "." in key:
+            top, sub = key.split(".", 1)
+            if not isinstance(project_entry.get(top), dict):
+                project_entry[top] = {}
+            project_entry[top][sub] = value
+        else:
+            project_entry[key] = value
+
+
+def get_editable_project_fields(config: dict, project_name: str) -> dict:
+    """Return the current value of every ``EDITABLE_PROJECT_FIELDS`` key.
+
+    Dotted keys are resolved against the merged (defaults + overrides)
+    nested dict; a missing nested section reads as ``None`` rather than
+    raising. Shared by the dashboard form GET route and any REST consumer
+    that needs to hydrate a form/CLI with current values.
+    """
+    merged = get_project_config(config, project_name)
+    result = {}
+    for key in EDITABLE_PROJECT_FIELDS:
+        if "." in key:
+            top, sub = key.split(".", 1)
+            section = merged.get(top)
+            result[key] = section.get(sub) if isinstance(section, dict) else None
+        else:
+            result[key] = merged.get(key)
+    return result
+
+
 def apply_project_patch(koan_root: str, project_name: str, patch: dict) -> dict:
     """Validate and persist a partial update to one project's overrides.
 
     Only ``EDITABLE_PROJECT_FIELDS`` keys are accepted; values are coerced to
-    the declared type. Persists via :func:`save_projects_config`
-    (comment-preserving, ``instance/``-aware) and invalidates the cache.
-    Returns the merged project config after the write.
+    the declared type, then validated (see ``_validate_editable_value``).
+    Persists via :func:`save_projects_config` (comment-preserving,
+    ``instance/``-aware) and invalidates the cache. Returns the merged
+    project config after the write.
 
     Raises ``ValueError`` on unknown project, non-editable field, or a value
-    that cannot be coerced to the declared type.
+    that cannot be coerced/validated for the declared type.
     """
     import copy
 
@@ -936,13 +1003,7 @@ def apply_project_patch(koan_root: str, project_name: str, patch: dict) -> dict:
             clean[key] = _coerce_editable_value(EDITABLE_PROJECT_FIELDS[key], raw)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid value for {key}: {raw!r}") from exc
-
-    # cli_provider is free-text-typed but must name a registered provider —
-    # reject unknowns now so a typo can't become a KeyError at run time.
-    if clean.get("cli_provider"):
-        from app.provider import is_known_provider
-        if not is_known_provider(clean["cli_provider"]):
-            raise ValueError(f"Invalid value for cli_provider: {clean['cli_provider']!r}")
+        _validate_editable_value(key, clean[key])
 
     # Resolve canonical casing so we update the existing entry instead of
     # creating a case-variant duplicate.
@@ -959,10 +1020,10 @@ def apply_project_patch(koan_root: str, project_name: str, patch: dict) -> dict:
     full = copy.deepcopy(config)
     full.setdefault("projects", {})
     # A tag-only entry parses to None (not a dict), so setdefault won't replace
-    # it — normalize to {} before updating so `.update()` doesn't hit None.
+    # it — normalize to {} before updating so nested writes don't hit None.
     if not isinstance(full["projects"].get(canonical), dict):
         full["projects"][canonical] = {}
-    full["projects"][canonical].update(clean)
+    _apply_clean_patch(full["projects"][canonical], clean)
 
     save_projects_config(koan_root, full)
     invalidate_projects_config_cache()

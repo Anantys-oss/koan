@@ -48,6 +48,43 @@ def _load_project_overrides(project_name: str) -> dict:
         return {}
 
 
+def _get_config_with_overrides(
+    section_key: str,
+    defaults: dict,
+    project_name: str = "",
+    bool_shortcut: bool = False,
+) -> dict:
+    """Resolve a config.yaml section merged with defaults and project overrides.
+
+    Centralizes the load-config -> type-check -> merge pattern duplicated
+    across this module's ``get_*_config`` functions (issue #2340). Resolution
+    order, highest priority first: projects.yaml override (only consulted
+    when ``project_name`` is given) > config.yaml global section > defaults.
+
+    Any non-dict section value degrades to ``{}`` rather than raising. Pass
+    ``bool_shortcut=True`` for the handful of config keys that additionally
+    accept the bare boolean ``False`` as a ``{"enabled": False}`` shortcut
+    (e.g. ``stagnation: false``) — it defaults to off so sections without
+    that documented shorthand keep treating a stray ``False`` as malformed
+    (-> ``{}``) rather than silently gaining a new disable switch. Field-level
+    type coercion/clamping (int/bool parsing, min/max bounds, aliasing) stays
+    with each caller since it varies per config key.
+    """
+    def _as_section(value: object) -> dict:
+        if bool_shortcut and value is False:
+            return {"enabled": False}
+        return value if isinstance(value, dict) else {}
+
+    config = _load_config()
+    merged = {**defaults, **_as_section(config.get(section_key, {}))}
+
+    if project_name:
+        project_overrides = _load_project_overrides(project_name)
+        merged.update(_as_section(project_overrides.get(section_key, {})))
+
+    return merged
+
+
 def _get_tools_for_role(role: str, default: List[str], project_name: str = "") -> str:
     """Get comma-separated tool list for a role, with per-project override.
 
@@ -470,6 +507,59 @@ def get_mcp_configs(project_name: str = "") -> List[str]:
     return [entry for entry in result if isinstance(entry, str) and entry]
 
 
+# Named role identifiers for MCP opt-in. Call sites must use these constants
+# (not bare strings) so typos fail at import/grep time rather than silently
+# fail-closed with MCP disabled.
+MCP_ROLE_MISSION = "mission"
+MCP_ROLE_CONTEMPLATIVE = "contemplative"
+MCP_ROLE_PLAN = "plan"
+MCP_ROLE_GITHUB_REPLY = "github_reply"
+MCP_ROLE_CHAT = "chat"
+
+# Roles permitted to load MCP servers (--mcp-config) by default. Conversational
+# roles consuming untrusted input (chat, github_reply) are deliberately excluded.
+_MCP_ROLE_DEFAULTS = [MCP_ROLE_MISSION, MCP_ROLE_CONTEMPLATIVE, MCP_ROLE_PLAN]
+
+
+def get_mcp_roles(project_name: str = "") -> List[str]:
+    """Roles allowed to load MCP servers (--mcp-config).
+
+    Resolution order:
+    1. projects.yaml ``mcp_roles`` for the project (replaces global if set)
+    2. config.yaml ``mcp_roles``
+    3. Default ``["mission", "contemplative", "plan"]``
+
+    An explicit empty list (``mcp_roles: []``) is honored as a kill switch.
+    A malformed (non-list) value falls back to the default.
+    """
+    project_overrides = _load_project_overrides(project_name)
+    project_roles = project_overrides.get("mcp_roles")
+    if project_roles is not None:
+        if isinstance(project_roles, list):
+            return [r for r in project_roles if isinstance(r, str) and r]
+        return list(_MCP_ROLE_DEFAULTS)
+
+    config = _load_config()
+    roles = config.get("mcp_roles")
+    if roles is None or not isinstance(roles, list):
+        return list(_MCP_ROLE_DEFAULTS)
+    return [r for r in roles if isinstance(r, str) and r]
+
+
+def mcp_configs_for_role(role: str, project_name: str = "") -> Optional[List[str]]:
+    """MCP config paths for *role*, or ``None`` when the role is not opted in.
+
+    Centralizes the per-role MCP safety boundary: returns ``None`` (→ no
+    ``--mcp-config`` emitted) unless *role* is present in
+    :func:`get_mcp_roles`. Always prefer this over calling
+    :func:`get_mcp_configs` directly in a runner.
+    """
+    if role not in get_mcp_roles(project_name):
+        return None
+    configs = get_mcp_configs(project_name)
+    return configs or None
+
+
 # Default tier-to-resource mapping used when complexity_routing is enabled
 # but specific tier values are absent from config.yaml.
 _COMPLEXITY_ROUTING_DEFAULTS: dict = {
@@ -555,17 +645,21 @@ def get_memory_monitor_config() -> dict:
     Uses the module-local _safe_int (defined above) to coerce string YAML
     values; never raises on bad input.
     """
-    config = _load_config()
-    section = config.get("memory_monitor", {})
-    if not isinstance(section, dict):
-        section = {}
+    defaults = {
+        "enabled": False,
+        "threshold_mb": 1200,
+        "sustained_samples": 3,
+        "tracemalloc": False,
+        "min_runs_before_restart": 1,
+    }
+    section = _get_config_with_overrides("memory_monitor", defaults)
     return {
-        "enabled": bool(section.get("enabled", False)),
-        "threshold_mb": _safe_int(section.get("threshold_mb", 1200), 1200),
-        "sustained_samples": _safe_int(section.get("sustained_samples", 3), 3),
-        "tracemalloc": bool(section.get("tracemalloc", False)),
+        "enabled": bool(section["enabled"]),
+        "threshold_mb": _safe_int(section["threshold_mb"], defaults["threshold_mb"]),
+        "sustained_samples": _safe_int(section["sustained_samples"], defaults["sustained_samples"]),
+        "tracemalloc": bool(section["tracemalloc"]),
         "min_runs_before_restart": _safe_int(
-            section.get("min_runs_before_restart", 1), 1
+            section["min_runs_before_restart"], defaults["min_runs_before_restart"]
         ),
     }
 
@@ -578,16 +672,19 @@ def get_page_cache_reclaim_config() -> dict:
     ``idle_interval_s: 0`` disables the idle tick (post-mission hook remains).
     Uses the module-local ``_safe_int`` coercion; never raises on bad input.
     """
-    config = _load_config()
-    section = config.get("page_cache_reclaim", {})
-    if not isinstance(section, dict):
-        section = {}
-    raw_roots = section.get("extra_roots", [])
+    defaults = {
+        "enabled": True,
+        "idle_interval_s": 900,
+        "time_budget_s": 10,
+        "extra_roots": [],
+    }
+    section = _get_config_with_overrides("page_cache_reclaim", defaults)
+    raw_roots = section.get("extra_roots", defaults["extra_roots"])
     extra_roots = [str(r) for r in raw_roots] if isinstance(raw_roots, list) else []
     return {
-        "enabled": bool(section.get("enabled", True)),
-        "idle_interval_s": _safe_int(section.get("idle_interval_s", 900), 900),
-        "time_budget_s": _safe_int(section.get("time_budget_s", 10), 10),
+        "enabled": bool(section["enabled"]),
+        "idle_interval_s": _safe_int(section["idle_interval_s"], defaults["idle_interval_s"]),
+        "time_budget_s": _safe_int(section["time_budget_s"], defaults["time_budget_s"]),
         "extra_roots": extra_roots,
     }
 
@@ -942,6 +1039,21 @@ def get_api_threads() -> int:
     if isinstance(api_cfg, dict):
         return _safe_int(api_cfg.get("threads", 2), 2)
     return 2
+
+
+def get_preflight_cache_minutes() -> int:
+    """Minutes a successful pre-flight quota probe stays valid (default: 10).
+
+    The agent loop probes provider quota before every mission attempt. For
+    providers with no free usage introspection (haze, cline) the probe is a
+    real LLM call costing time and tokens, so a recent SUCCESS is reused for
+    this many minutes. Failures are never cached. ``0`` disables caching
+    (probe every mission, the historical behavior).
+
+    Config key: preflight_cache_minutes (default: 10)
+    """
+    config = _load_config()
+    return max(0, _safe_int(config.get("preflight_cache_minutes", 10), 10))
 
 
 def get_cli_output_journal() -> bool:
@@ -1433,6 +1545,23 @@ def get_contemplative_max_turns() -> int:
     return _safe_int(config.get("contemplative_max_turns", 15), 15)
 
 
+def get_reply_max_turns() -> int:
+    """Get max turns for GitHub reply generation (/ask + @mention replies).
+
+    Reply generation reads repo files (Read, Glob, Grep) to ground its answer
+    and then writes the reply.  The previous hardcoded value of 5 was too tight:
+    the model would exhaust its turns exploring the repo before emitting a final
+    answer, leaving an empty reply and the user's question unanswered.
+
+    Config key: reply_max_turns (default: 20).
+
+    Returns:
+        Maximum number of turns.
+    """
+    config = _load_config()
+    return _safe_int(config.get("reply_max_turns", 20), 20)
+
+
 def get_post_mission_timeout() -> int:
     """Get timeout in seconds for the post-mission pipeline.
 
@@ -1640,14 +1769,12 @@ def get_thinking_config() -> dict:
     Returns a dict with keys ``enabled`` (bool), ``budget_tokens`` (int),
     and ``min_mode`` (str).
     """
-    config = _load_config()
-    section = config.get("thinking") or {}
-    if not isinstance(section, dict):
-        return {"enabled": False, "budget_tokens": 0, "min_mode": "deep"}
+    defaults = {"enabled": False, "budget_tokens": 0, "min_mode": "deep"}
+    section = _get_config_with_overrides("thinking", defaults)
     return {
-        "enabled": bool(section.get("enabled", False)),
-        "budget_tokens": int(section.get("budget_tokens", 0)),
-        "min_mode": str(section.get("min_mode", "deep")).strip().lower(),
+        "enabled": bool(section["enabled"]),
+        "budget_tokens": int(section["budget_tokens"]),
+        "min_mode": str(section["min_mode"]).strip().lower(),
     }
 
 
@@ -1720,21 +1847,9 @@ def get_stagnation_config(project_name: str = "") -> dict:
         "max_total_retries": 0,
         "max_crash_retries": 3,
     }
-    config = _load_config()
-    base = config.get("stagnation", {})
-    if base is False:
-        base = {"enabled": False}
-    elif not isinstance(base, dict):
-        base = {}
-
-    project_overrides = _load_project_overrides(project_name)
-    proj = project_overrides.get("stagnation", {})
-    if proj is False:
-        proj = {"enabled": False}
-    elif not isinstance(proj, dict):
-        proj = {}
-
-    merged = {**defaults, **base, **proj}
+    merged = _get_config_with_overrides(
+        "stagnation", defaults, project_name, bool_shortcut=True,
+    )
 
     abort_after = _safe_int(merged.get("abort_after_cycles"), defaults["abort_after_cycles"])
     if abort_after < 2:
@@ -1763,6 +1878,27 @@ def get_stagnation_config(project_name: str = "") -> dict:
         "max_total_retries": max_total,
         "max_crash_retries": max_crash,
     }
+
+
+def get_verify_requeue_max() -> int:
+    """Max times a mission is re-queued on verification failure (default 2).
+
+    Read from ``verification.max_requeue`` in ``config.yaml``. When a mission
+    exits successfully but post-mission verification reports failures, it is
+    re-queued to Pending with a ``[verify-failed: …]`` context tag up to this
+    many times before completing normally for human review. ``0`` disables the
+    verify-failure re-queue entirely.
+    """
+    cfg = _load_config() or {}
+    raw = (cfg.get("verification") or {}).get("max_requeue", 2)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 2
+    # A negative value is a config mistake, not "disable" — clamp it to the
+    # default rather than to 0 (which would silently turn the re-queue off).
+    # ``0`` is the explicit, documented way to disable.
+    return value if value >= 0 else 2
 
 
 def get_autonomous_health_config() -> dict:
@@ -1794,14 +1930,7 @@ def get_autonomous_health_config() -> dict:
         "cooldown_days": 21,
         "min_mode": "implement",
     }
-    config = _load_config()
-    section = config.get("autonomous_health", {})
-    if section is False:
-        section = {"enabled": False}
-    elif not isinstance(section, dict):
-        section = {}
-
-    merged = {**defaults, **section}
+    merged = _get_config_with_overrides("autonomous_health", defaults, bool_shortcut=True)
 
     staleness_floor = _safe_int(merged.get("staleness_floor"), defaults["staleness_floor"])
     if staleness_floor < 1:
@@ -1849,15 +1978,18 @@ def get_plan_review_config() -> dict:
             /plan folds findings into the plan's Open Questions before
             posting; /implement injects them as verification context.
     """
-    config = _load_config()
-    plan_review = config.get("plan_review", {})
-    if not isinstance(plan_review, dict):
-        plan_review = {}
+    defaults = {
+        "enabled": True,
+        "max_rounds": 3,
+        "implement_gate": True,
+        "assumptions_check": True,
+    }
+    merged = _get_config_with_overrides("plan_review", defaults)
     return {
-        "enabled": bool(plan_review.get("enabled", True)),
-        "max_rounds": _safe_int(plan_review.get("max_rounds", 3), 3),
-        "implement_gate": bool(plan_review.get("implement_gate", True)),
-        "assumptions_check": bool(plan_review.get("assumptions_check", True)),
+        "enabled": bool(merged["enabled"]),
+        "max_rounds": _safe_int(merged["max_rounds"], defaults["max_rounds"]),
+        "implement_gate": bool(merged["implement_gate"]),
+        "assumptions_check": bool(merged["assumptions_check"]),
     }
 
 
@@ -1924,11 +2056,6 @@ def _normalize_private_review_gate_skills(value) -> list:
     ]
 
 
-def _review_gate_section(config: dict, key: str) -> dict:
-    section = config.get(key, {})
-    return section if isinstance(section, dict) else {}
-
-
 def get_private_review_gate_config(
     project_name: str = "",
     skill_origin: str = "",
@@ -1953,15 +2080,8 @@ def get_private_review_gate_config(
     Per-project overrides in projects.yaml use the same key and override
     global values one field at a time.
     """
-    config = _load_config()
-    merged = {
-        **_PRIVATE_REVIEW_GATE_DEFAULTS,
-        **_review_gate_section(config, "private_review_gate"),
-    }
-
-    project_overrides = _load_project_overrides(project_name)
-    merged.update(
-        _review_gate_section(project_overrides, "private_review_gate")
+    merged = _get_config_with_overrides(
+        "private_review_gate", _PRIVATE_REVIEW_GATE_DEFAULTS, project_name,
     )
 
     max_rounds = _safe_int(
@@ -2125,7 +2245,7 @@ def get_cli_binary_for_shell() -> str:
 def get_cli_provider_name() -> str:
     """Get the configured CLI provider name for display.
 
-    Returns "claude", "codex", "copilot", or "ollama-launch".
+    Returns a registered provider flavor (e.g. "claude", "codex", "grok").
     """
     from app.cli_provider import get_provider_name
     return get_provider_name()
@@ -2181,15 +2301,18 @@ def get_branch_cleanup_config() -> dict:
     Returns:
         Dict with keys: enabled (bool), delete_remote_branches (bool).
     """
-    config = _load_config()
-    cleanup_cfg = config.get("branch_cleanup", {})
-    if not isinstance(cleanup_cfg, dict):
-        cleanup_cfg = {}
+    defaults = {
+        "enabled": True,
+        "delete_remote_branches": True,
+        "cleanup_interval_hours": 24,
+        "notify_orphans": True,
+    }
+    merged = _get_config_with_overrides("branch_cleanup", defaults)
     return {
-        "enabled": bool(cleanup_cfg.get("enabled", True)),
-        "delete_remote_branches": bool(cleanup_cfg.get("delete_remote_branches", True)),
-        "cleanup_interval_hours": int(cleanup_cfg.get("cleanup_interval_hours", 24)),
-        "notify_orphans": bool(cleanup_cfg.get("notify_orphans", True)),
+        "enabled": bool(merged["enabled"]),
+        "delete_remote_branches": bool(merged["delete_remote_branches"]),
+        "cleanup_interval_hours": int(merged["cleanup_interval_hours"]),
+        "notify_orphans": bool(merged["notify_orphans"]),
     }
 
 
@@ -2200,12 +2323,9 @@ def get_prompt_guard_config() -> dict:
         Dict with keys: enabled (bool), block_mode (bool).
         Defaults: enabled=True, block_mode=True (reject).
     """
-    config = _load_config()
-    guard_cfg = config.get("prompt_guard", {})
-    return {
-        "enabled": guard_cfg.get("enabled", True),
-        "block_mode": guard_cfg.get("block_mode", True),
-    }
+    defaults = {"enabled": True, "block_mode": True}
+    merged = _get_config_with_overrides("prompt_guard", defaults)
+    return {"enabled": merged["enabled"], "block_mode": merged["block_mode"]}
 
 
 def get_review_concurrency_config() -> dict:
@@ -2224,13 +2344,11 @@ def get_review_concurrency_config() -> dict:
           - enabled (bool): Whether parallel fetching is active.
           - github_workers (int): ThreadPoolExecutor max_workers for gh calls.
     """
-    config = _load_config()
-    review_cfg = config.get("review_concurrency", {})
-    if not isinstance(review_cfg, dict):
-        review_cfg = {}
+    defaults = {"enabled": True, "github_workers": 4}
+    merged = _get_config_with_overrides("review_concurrency", defaults)
     return {
-        "enabled": bool(review_cfg.get("enabled", True)),
-        "github_workers": _safe_int(review_cfg.get("github_workers", 4), 4),
+        "enabled": bool(merged["enabled"]),
+        "github_workers": _safe_int(merged["github_workers"], defaults["github_workers"]),
     }
 
 
@@ -2266,15 +2384,11 @@ def get_recovery_config() -> dict:
         "max_backoff_iteration": 300,
         "error_notification_interval": 5,
     }
-    config = _load_config()
-    section = config.get("recovery", {})
-    if not isinstance(section, dict):
-        section = {}
-
-    result = {}
-    for key, default in defaults.items():
-        result[key] = _safe_int(section.get(key, default), default)
-    return result
+    merged = _get_config_with_overrides("recovery", defaults)
+    return {
+        key: _safe_int(merged.get(key, default), default)
+        for key, default in defaults.items()
+    }
 
 
 def get_review_reply_config() -> dict:
@@ -2291,12 +2405,10 @@ def get_review_reply_config() -> dict:
         Dict with keys:
           - max_thread_depth (int): Maximum comments per thread.
     """
-    config = _load_config()
-    review_cfg = config.get("review_reply", {})
-    if not isinstance(review_cfg, dict):
-        review_cfg = {}
+    defaults = {"max_thread_depth": 5}
+    merged = _get_config_with_overrides("review_reply", defaults)
     return {
-        "max_thread_depth": _safe_int(review_cfg.get("max_thread_depth", 5), 5),
+        "max_thread_depth": _safe_int(merged["max_thread_depth"], defaults["max_thread_depth"]),
     }
 
 
@@ -2315,16 +2427,14 @@ def get_review_ignore_config() -> dict:
         Dict with keys: glob (list), regex (list). Both always present;
         values default to [].
     """
-    config = _load_config()
-    review_ignore = config.get("review_ignore", {}) or {}
-    if not isinstance(review_ignore, dict):
-        return {"glob": [], "regex": []}
+    defaults = {"glob": [], "regex": []}
+    merged = _get_config_with_overrides("review_ignore", defaults)
 
-    globs = review_ignore.get("glob", [])
+    globs = merged.get("glob", [])
     if not isinstance(globs, list):
         globs = []
 
-    regexes = review_ignore.get("regex", [])
+    regexes = merged.get("regex", [])
     if not isinstance(regexes, list):
         regexes = []
 
@@ -2344,15 +2454,13 @@ def get_review_reflect_config() -> dict:
     Returns:
         Dict with key: threshold (int). Always present; defaults to 5.
     """
-    config = _load_config()
-    reflect_cfg = config.get("review_reflect", {}) or {}
-    if not isinstance(reflect_cfg, dict):
-        reflect_cfg = {}
-    threshold = reflect_cfg.get("threshold", 5)
+    defaults = {"threshold": 5}
+    merged = _get_config_with_overrides("review_reflect", defaults)
+    threshold = merged["threshold"]
     try:
         threshold = int(threshold)
     except (TypeError, ValueError):
-        threshold = 5
+        threshold = defaults["threshold"]
     return {"threshold": max(0, min(10, threshold))}
 
 
@@ -2374,28 +2482,30 @@ def get_speckit_config() -> dict:
         Dict with keys ``quota_threshold`` (int), ``review_max_iterations``
         (int), ``review_severity`` (str). Always present; safe defaults applied.
     """
-    config = _load_config()
-    speckit_cfg = config.get("speckit", {}) or {}
-    if not isinstance(speckit_cfg, dict):
-        speckit_cfg = {}
+    defaults = {
+        "quota_threshold": 15,
+        "review_max_iterations": 3,
+        "review_severity": "important",
+    }
+    speckit_cfg = _get_config_with_overrides("speckit", defaults)
 
-    quota_threshold = speckit_cfg.get("quota_threshold", 15)
+    quota_threshold = speckit_cfg.get("quota_threshold", defaults["quota_threshold"])
     try:
         quota_threshold = int(quota_threshold)
     except (TypeError, ValueError):
-        quota_threshold = 15
+        quota_threshold = defaults["quota_threshold"]
     quota_threshold = max(0, min(100, quota_threshold))
 
-    review_max_iterations = speckit_cfg.get("review_max_iterations", 3)
+    review_max_iterations = speckit_cfg.get("review_max_iterations", defaults["review_max_iterations"])
     try:
         review_max_iterations = int(review_max_iterations)
     except (TypeError, ValueError):
-        review_max_iterations = 3
+        review_max_iterations = defaults["review_max_iterations"]
     review_max_iterations = max(0, review_max_iterations)
 
-    review_severity = speckit_cfg.get("review_severity", "important")
+    review_severity = speckit_cfg.get("review_severity", defaults["review_severity"])
     if not isinstance(review_severity, str) or not review_severity.strip():
-        review_severity = "important"
+        review_severity = defaults["review_severity"]
 
     return {
         "quota_threshold": quota_threshold,
@@ -2420,13 +2530,11 @@ def get_review_memory_config() -> dict:
     Returns:
         Dict with keys: enabled (bool), max_entries (int >= 0).
     """
-    config = _load_config()
-    mem_cfg = config.get("review_memory", {}) or {}
-    if not isinstance(mem_cfg, dict):
-        mem_cfg = {}
-    max_entries = _safe_int(mem_cfg.get("max_entries"), 8)
+    defaults = {"enabled": False, "max_entries": 8}
+    merged = _get_config_with_overrides("review_memory", defaults)
+    max_entries = _safe_int(merged.get("max_entries"), defaults["max_entries"])
     return {
-        "enabled": _safe_bool(mem_cfg.get("enabled"), False),
+        "enabled": _safe_bool(merged.get("enabled"), defaults["enabled"]),
         "max_entries": max(0, max_entries),
     }
 
@@ -2475,23 +2583,21 @@ def get_review_calibration_config() -> dict:
       - stale_days (int, >=1): Days after which unprocessed sidecar
         files are cleaned up. Default: 90.
     """
-    config = _load_config()
-    cal_cfg = config.get("review_calibration", {}) or {}
-    if not isinstance(cal_cfg, dict):
-        cal_cfg = {}
+    defaults = {"batch_size": 10, "stale_days": 90}
+    cal_cfg = _get_config_with_overrides("review_calibration", defaults)
 
-    batch_size = cal_cfg.get("batch_size", 10)
+    batch_size = cal_cfg.get("batch_size", defaults["batch_size"])
     try:
         batch_size = int(batch_size)
     except (TypeError, ValueError):
-        batch_size = 10
+        batch_size = defaults["batch_size"]
     batch_size = max(1, batch_size)
 
-    stale_days = cal_cfg.get("stale_days", 90)
+    stale_days = cal_cfg.get("stale_days", defaults["stale_days"])
     try:
         stale_days = int(stale_days)
     except (TypeError, ValueError):
-        stale_days = 90
+        stale_days = defaults["stale_days"]
     stale_days = max(1, stale_days)
 
     return {"batch_size": batch_size, "stale_days": stale_days}
@@ -2517,22 +2623,20 @@ def get_review_triage_config() -> dict:
     Returns:
         Dict with boolean flags.  All keys always present; defaults shown above.
     """
-    config = _load_config()
-    triage = config.get("review_triage", {}) or {}
-    if not isinstance(triage, dict):
-        triage = {}
+    defaults = {
+        "enabled": False,
+        "skip_lockfiles": True,
+        "skip_generated": True,
+        "skip_whitespace_only": True,
+        "skip_renames": True,
+    }
+    triage = _get_config_with_overrides("review_triage", defaults)
 
     def _bool(key: str, default: bool) -> bool:
         val = triage.get(key, default)
         return bool(val) if isinstance(val, bool) else default
 
-    return {
-        "enabled": _bool("enabled", False),
-        "skip_lockfiles": _bool("skip_lockfiles", True),
-        "skip_generated": _bool("skip_generated", True),
-        "skip_whitespace_only": _bool("skip_whitespace_only", True),
-        "skip_renames": _bool("skip_renames", True),
-    }
+    return {key: _bool(key, default) for key, default in defaults.items()}
 
 
 def get_review_bot_triage_config() -> dict:
@@ -2552,10 +2656,8 @@ def get_review_bot_triage_config() -> dict:
     Returns:
         Dict with keys: enabled (bool), bot_usernames (list of str).
     """
-    config = _load_config()
-    section = config.get("review_bot_triage", {}) or {}
-    if not isinstance(section, dict):
-        section = {}
+    defaults = {"enabled": False, "bot_usernames": []}
+    section = _get_config_with_overrides("review_bot_triage", defaults)
 
     enabled = section.get("enabled", False)
     if not isinstance(enabled, bool):
@@ -2588,11 +2690,9 @@ def get_review_issue_context_config() -> dict:
         gated on references actually appearing in the PR body and is
         best-effort, so projects without references see no behavioral change.
     """
-    config = _load_config()
-    section = config.get("review_issue_context", {}) or {}
-    if not isinstance(section, dict):
-        section = {}
-    enabled = _safe_bool(section.get("enabled"), True)
+    defaults = {"enabled": True}
+    section = _get_config_with_overrides("review_issue_context", defaults)
+    enabled = _safe_bool(section.get("enabled"), defaults["enabled"])
     return {"enabled": enabled}
 
 
@@ -2657,13 +2757,11 @@ def get_review_history_config() -> dict:
         to False. Fails closed to False on any malformed value so a bad config
         never silently accumulates duplicate review comments.
     """
-    config = _load_config()
-    section = config.get("review_history", {})
-    if not isinstance(section, dict):
-        return {"preserve_previous": False}
+    defaults = {"preserve_previous": False}
+    section = _get_config_with_overrides("review_history", defaults)
     val = section.get("preserve_previous", False)
     if not isinstance(val, bool):
-        return {"preserve_previous": False}
+        return dict(defaults)
     return {"preserve_previous": val}
 
 
@@ -2683,18 +2781,16 @@ def get_review_inline_comments_config() -> dict:
     Returns:
         Dict with keys: enabled (bool), max_comments (int, >= 0).
     """
-    config = _load_config()
-    section = config.get("review_inline_comments", {})
-    if not isinstance(section, dict):
-        section = {}
+    defaults = {"enabled": False, "max_comments": 25}
+    section = _get_config_with_overrides("review_inline_comments", defaults)
 
-    enabled = section.get("enabled", False)
+    enabled = section.get("enabled", defaults["enabled"])
     if not isinstance(enabled, bool):
-        enabled = False
+        enabled = defaults["enabled"]
 
-    max_comments = section.get("max_comments", 25)
+    max_comments = section.get("max_comments", defaults["max_comments"])
     if not isinstance(max_comments, int) or isinstance(max_comments, bool) or max_comments < 0:
-        max_comments = 25
+        max_comments = defaults["max_comments"]
 
     return {"enabled": enabled, "max_comments": max_comments}
 
@@ -2719,16 +2815,34 @@ def get_review_draft_skip_config() -> dict:
         Dict with key: enabled (bool). Defaults to disabled so the historical
         "review always" behavior (including draft PRs) is preserved.
     """
-    config = _load_config()
-    section = config.get("review_draft_skip", {}) or {}
-    if not isinstance(section, dict):
-        section = {}
+    defaults = {"enabled": False}
+    section = _get_config_with_overrides("review_draft_skip", defaults)
 
-    enabled = section.get("enabled", False)
+    enabled = section.get("enabled", defaults["enabled"])
     if not isinstance(enabled, bool):
-        enabled = False
+        enabled = defaults["enabled"]
 
     return {"enabled": enabled}
+
+
+def get_review_pause_label() -> str:
+    """Return the PR label that pauses LLM review, or "" if disabled.
+
+    Config key: review_pause_label (string). Default ``"PauseReview"``.
+    Empty / whitespace / non-string disables the feature entirely — no
+    label check is performed by callers when this returns "".
+
+    Example::
+
+        review_pause_label: "PauseReview"   # default
+        review_pause_label: ""              # disable
+        review_pause_label: "AI:Paused"     # org-specific label
+    """
+    config = _load_config()
+    raw = config.get("review_pause_label", "PauseReview")
+    if not isinstance(raw, str):
+        return ""
+    return raw.strip()
 
 
 def is_caveman_mode() -> bool:

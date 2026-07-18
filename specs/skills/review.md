@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-09
+updated: 2026-07-16
 ---
 
 # Skill Spec — `review`
@@ -13,7 +13,7 @@ updated: 2026-07-09
 
 - **Primary:** `/review [--now] <pr-or-issue-url> [more urls] [context] [flags]`
   or `/review <repo-url> [--limit=N]`
-- **Aliases:** `rv`
+- **Aliases:** `rv`, `rereview`, `re_review`
 - **Group:** `code`
 
 ## Purpose
@@ -36,7 +36,7 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 | `--errors` | flag | no | silent-failure-hunter pass |
 | `--comments` | flag | no | comment-quality pass |
 | `--plan-url <issue-url>` | flag | no | check PR against its plan |
-| `--force` | flag | no | review even if closed/merged |
+| `--force` | flag | no | review even if closed/merged or pause-label is present |
 | trailing context | command arg | no | extra reviewer guidance |
 
 ## Outputs / side effects
@@ -55,6 +55,7 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 |---|---|
 | invalid/missing URL | reply with usage |
 | closed/merged target | skipped unless `--force` |
+| pause-label present | success-with-skip unless `--force` (see invariant) |
 | unresolved project | alias resolution then skip if unknown |
 
 ## Integration hooks
@@ -67,14 +68,33 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
+- **Pause label:** When `get_review_pause_label()` is non-empty and the PR
+  carries that exact label, `run_review` returns success-with-skip **before**
+  `fetch_pr_context`, prompt build, or any provider invocation. `force=True`
+  / `--force` bypasses. Does not apply to `run_private_review`. Empty config
+  (`review_pause_label: ""`) disables the check entirely. Default label name
+  is `PauseReview`.
 - **Verdict follows severity, not vibes.** `lgtm` (the merge verdict that drives
   the GitHub APPROVE / request-changes) is `true` whenever no `critical` or
   `warning` finding exists. `suggestion`-only findings are non-blocking — a PR
   with only nits is merge-ready and must NOT be rejected. `lgtm: false` requires
   at least one `critical`/`warning`. If a concern truly blocks merge, it is not a
-  `suggestion`; promote it before blocking. This mirrors the code-level fallback
-  in `_normalize_review_data` (`blocking iff any critical/warning`) and the
-  verdict body builder's definition of "blockers".
+  `suggestion`; promote it before blocking. Schema validation rejects a supplied
+  verdict that contradicts the finding severities, and post-reflection
+  finalization derives the verdict from the reconciled finding list again.
+- **Reflection preserves review consistency.** The reflection pass carries the
+  retained original finding indices into a final reconciliation step. Findings
+  referenced by failed checklist items are restored; if reflection would remove
+  every blocker from a primary blocking review, the original blockers are
+  restored. Checklist references are then remapped to the final finding array,
+  and `lgtm` is derived again from those final severities. Schema validation
+  rejects a contradictory verdict (REQUEST_CHANGES with no 🔴 Blocking / 🟡
+  Important finding, or APPROVE despite one) before anything is posted. As a
+  defensive backstop, the verdict body builder (`_build_verdict_body`) — which
+  runs *after* the review comment is already posted — never raises on such an
+  inconsistency: it logs and submits the verdict with an empty body, so a
+  broken invariant can never abort the run post-side-effect (and never renders
+  a blocker-less "issues found" alert).
 - **Verdict presentation is severity-graded, not the summary paragraph.** The
   formal APPROVE / request-changes verdict body (`_build_verdict_body`) is wrapped
   in a native GitHub alert whose color grades the outcome: `> [!TIP]` (green) when

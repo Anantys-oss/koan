@@ -47,7 +47,11 @@ def run_diagnostic(
         CONTEXT=context or "No additional context.",
     )
     try:
-        prompt = load_prompt_or_skill(skill_dir, "fix-diagnose", **template_vars)
+        prompt = load_prompt_or_skill(
+            skill_dir, "fix-diagnose",
+            project_path=project_path,
+            **template_vars,
+        )
         output = run_command_streaming(
             prompt,
             project_path,

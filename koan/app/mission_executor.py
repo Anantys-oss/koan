@@ -850,7 +850,8 @@ def _run_iteration(
 
     # Display usage — skip for idle-wait iterations (nothing to spend on)
     _IDLE_ACTIONS = {"exploration_wait", "passive_wait", "focus_wait",
-                     "schedule_wait", "pr_limit_wait", "branch_saturated_wait"}
+                     "schedule_wait", "pr_limit_wait", "branch_saturated_wait",
+                     "cli_unavailable_wait"}
     if plan["action"] not in _IDLE_ACTIONS:
         log("quota", "Usage (token estimate — may differ from real API quota):")
         if plan["display_lines"]:
@@ -916,6 +917,10 @@ def _run_iteration(
             p.get("decision_reason") or "Project branch-saturated — waiting for reviews/merges",
             f"Branch-saturated — waiting ({time.strftime('%H:%M')})",
         ),
+        "cli_unavailable_wait": lambda p: (
+            p.get("decision_reason") or "CLI binary not on PATH — missions blocked (fix PATH & restart)",
+            "⚠️ CLI unavailable — missions blocked (fix PATH & restart)",
+        ),
     }
     if action in _IDLE_WAIT_CONFIG:
         global _last_idle_msg
@@ -924,6 +929,18 @@ def _run_iteration(
             log("koan", log_msg)
             _last_idle_msg = log_msg
         _run.set_status(koan_root, status_msg)
+        # Remind the operator (throttled) that missions can't start. Startup
+        # already sent the first warning and stamped the throttle, so this fires
+        # at most once per cooldown — never per iteration.
+        if action == "cli_unavailable_wait":
+            from app import cli_health
+            if cli_health.should_warn():
+                info = cli_health.get_unavailable_info() or {}
+                _run._notify_raw(
+                    instance,
+                    cli_health.warning_message(info.get("binary", ""), info.get("provider", "")),
+                )
+                cli_health.mark_warned()
         idle_interval = _run._resolve_idle_wait_interval(
             interval, github_enabled, jira_enabled,
         )
@@ -933,7 +950,11 @@ def _run_iteration(
         # blocked state. Wait the full interval for PR count to change.
         # passive_wait: passive mode blocks all execution, so waking on
         # a pending mission tight-loops (logs flood in make logs).
-        wake_on_mission = action not in ("branch_saturated_wait", "passive_wait")
+        # cli_unavailable_wait: same — missions are blocked until restart, so
+        # waking on a queued mission would just tight-loop the gate.
+        wake_on_mission = action not in (
+            "branch_saturated_wait", "passive_wait", "cli_unavailable_wait",
+        )
         with _run.protected_phase(status_msg):
             wake = interruptible_sleep(
                 idle_interval, koan_root, instance,
@@ -1541,6 +1562,9 @@ def _run_iteration(
         # PR URL captured during post-mission processing (before pending.md is
         # deleted) so the concise completion line can attach it afterward.
         _completion_pr_url = ""
+        # Initialized before the try so the verify-requeue flags below are always
+        # safe to read even if run_post_mission raises.
+        post_result = {}
         try:
             from app.mission_runner import run_post_mission
             from app.restart_manager import RESTART_EXIT_CODE
@@ -1586,8 +1610,13 @@ def _run_iteration(
 
         # Complete/fail mission in missions.md after quota handling has had a
         # chance to requeue transient quota failures.
+        _mission_requeued = False
         if original_mission_title:
-            _run._finalize_mission(instance, original_mission_title, project_name, claude_exit)
+            _mission_requeued = _run._finalize_mission(
+                instance, original_mission_title, project_name, claude_exit,
+                verify_requeue=bool(post_result.get("verify_requeue")),
+                verify_summary=post_result.get("verify_failure_summary", ""),
+            )
 
         # --- Clean up checkpoint after mission finalization ---
         # Delete on both success and failure to prevent orphaned checkpoint files.
@@ -1617,14 +1646,17 @@ def _run_iteration(
             except Exception as e:
                 print(f"[run] plugin cleanup error: {e}", file=sys.stderr)
 
-    # Report result — always notify on completion (success or failure)
-    if claude_exit == 0:
-        log("mission", f"Run {run_num}/{max_runs} — [{project_name}] completed successfully")
-    _run._notify_mission_end(
-        instance, project_name, run_num, max_runs,
-        claude_exit, mission_title,
-        pr_url=_completion_pr_url,
-    )
+    # Report result — always notify on completion (success or failure), unless
+    # _finalize_mission re-queued the mission to Pending instead of completing
+    # it (verify-failure or stagnation retry already sent its own notification).
+    if not _mission_requeued:
+        if claude_exit == 0:
+            log("mission", f"Run {run_num}/{max_runs} — [{project_name}] completed successfully")
+        _run._notify_mission_end(
+            instance, project_name, run_num, max_runs,
+            claude_exit, mission_title,
+            pr_url=_completion_pr_url,
+        )
 
     # Commit instance
     _run._commit_instance(instance)

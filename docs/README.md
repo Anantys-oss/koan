@@ -55,6 +55,7 @@ memory, or integration changes:
 - [Provider Architecture](architecture/providers.md)
 - [Skills System](architecture/skills-system.md)
 - [Memory Architecture](architecture/memory.md)
+- [Artifact DB Harness](architecture/artifact-db.md)
 - [GitHub And Trackers](architecture/github-and-trackers.md)
 - [GitHub Webhooks](messaging/github-webhooks.md)
 - [PR Activity Reports](operations/pr-reports.md)

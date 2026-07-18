@@ -28,6 +28,7 @@ from app.awake import (
     _flush_outbox_async,
     _strip_bot_mention_from_text,
     _is_addressed_to_other_user,
+    _is_internal_comment,
     _check_group_chat_mode,
     get_updates,
     check_config,
@@ -875,13 +876,15 @@ class TestHandleChat:
                                            mock_tools_desc, mock_fmt, mock_hist,
                                            mock_save, tmp_path):
         """Empty Claude response (exit 0, blank stdout) must still reply to the user."""
+        # Empty on every attempt → retried, then a single degraded reply.
         mock_run.return_value = MagicMock(stdout="", returncode=0, stderr="")
         with patch("app.awake.INSTANCE_DIR", tmp_path), \
              patch("app.awake.KOAN_ROOT", tmp_path), \
              patch("app.awake.PROJECT_PATH", ""), \
              patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
              patch("app.awake.SOUL", ""), \
-             patch("app.awake.SUMMARY", ""):
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
             handle_chat("hello")
         # User must receive a reply — not silence
         mock_send.assert_called_once()
@@ -1613,6 +1616,55 @@ class TestMainLoop:
             _bridge_loop()
         mock_handle.assert_not_called()
 
+    @patch("app.awake.write_heartbeat")
+    @patch("app.awake._flush_outbox_async")
+    @patch("app.awake.handle_message")
+    @patch("app.awake.get_updates")
+    @patch("app.awake.check_config")
+    @patch("app.awake._load_offset", return_value=43)
+    @patch("app.awake.CHAT_ID", TEST_CHAT_ID)
+    @patch("app.awake.time.sleep", side_effect=StopIteration)
+    def test_main_skips_redelivered_update(self, mock_sleep, mock_config,
+                                           mock_load_offset, mock_updates,
+                                           mock_handle, mock_flush, mock_heartbeat):
+        """A Telegram update whose update_id is below the confirmed offset is a
+        redelivery (e.g. after a bridge reexec by the memory watchdog, where the
+        offset was persisted locally but never confirmed to Telegram) and must
+        NOT be processed again — otherwise /status, /ls etc. send their output
+        twice in a row."""
+        from app.awake import _bridge_loop
+        # Persisted offset is 43 → update_id 42 was already handled. Telegram
+        # re-hands it to us; the loop must skip it.
+        mock_updates.return_value = [
+            {"update_id": 42, "message": {"text": "/status",
+                                          "chat": {"id": int(self.TEST_CHAT_ID)}}}
+        ]
+        with pytest.raises(StopIteration):
+            _bridge_loop()
+        mock_handle.assert_not_called()
+
+    @patch("app.awake.write_heartbeat")
+    @patch("app.awake._flush_outbox_async")
+    @patch("app.awake.handle_message")
+    @patch("app.awake.get_updates")
+    @patch("app.awake.check_config")
+    @patch("app.awake._load_offset", return_value=43)
+    @patch("app.awake.CHAT_ID", TEST_CHAT_ID)
+    @patch("app.awake.time.sleep", side_effect=StopIteration)
+    def test_main_processes_fresh_update_at_or_above_offset(
+        self, mock_sleep, mock_config, mock_load_offset, mock_updates,
+        mock_handle, mock_flush, mock_heartbeat):
+        """A genuine new update (update_id >= confirmed offset) is still
+        processed — the redelivery guard must not suppress fresh messages."""
+        from app.awake import _bridge_loop
+        mock_updates.return_value = [
+            {"update_id": 43, "message": {"text": "/status",
+                                          "chat": {"id": int(self.TEST_CHAT_ID)}}}
+        ]
+        with pytest.raises(StopIteration):
+            _bridge_loop()
+        mock_handle.assert_called_once_with("/status")
+
     # -- Non-Telegram provider regressions (matrix/slack/discord) ------------
     #
     # These providers leave CHAT_ID unset and match on the resolved
@@ -2093,8 +2145,9 @@ class TestChatLiteRetryErrors:
     @patch("app.awake.subprocess.run")
     def test_lite_retry_timeout_says_timeout(self, mock_run, mock_send, mock_tools,
                                               mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path):
-        """Timeout on lite retry should still say 'timeout'."""
+        """Timeout on every attempt should surface a single 'timeout' message."""
         mock_run.side_effect = [
+            subprocess.TimeoutExpired("claude", 180),
             subprocess.TimeoutExpired("claude", 180),
             subprocess.TimeoutExpired("claude", 180),
         ]
@@ -2118,7 +2171,9 @@ class TestChatLiteRetryErrors:
     @patch("app.awake.subprocess.run")
     def test_lite_retry_backoff_delay(self, mock_run, mock_send, mock_tools,
                                       mock_tools_desc, mock_fmt, mock_hist, mock_save, tmp_path):
-        """Lite retry should sleep before retrying to let API pressure ease."""
+        """A retry should back off (first backoff step) before the next attempt."""
+        from app.cli_exec import CLI_RETRY_BACKOFF
+
         mock_run.side_effect = [
             subprocess.TimeoutExpired("claude", 180),
             MagicMock(stdout="OK reply", returncode=0),
@@ -2132,7 +2187,8 @@ class TestChatLiteRetryErrors:
              patch("app.awake.CHAT_TIMEOUT", 180), \
              patch("app.awake.time.sleep") as mock_sleep:
             handle_chat("complex question")
-        mock_sleep.assert_called_once_with(4)
+        # One retry happened (success on the 2nd attempt) → one backoff sleep.
+        mock_sleep.assert_called_once_with(CLI_RETRY_BACKOFF[0])
 
     @patch("app.awake.save_conversation_message")
     @patch("app.awake.load_recent_history", return_value=[])
@@ -2160,6 +2216,179 @@ class TestChatLiteRetryErrors:
         # Second call (lite retry) should use timeout=90 (180//2)
         retry_call = mock_run.call_args_list[1]
         assert retry_call.kwargs["timeout"] == 90
+
+
+class TestChatEmptyResponseRetry:
+    """Empty AI responses (the API-contention symptom, #1084) are retried."""
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_empty_then_success_delivers_real_reply(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # First attempt empty (contention), retry returns a real answer.
+        mock_run.side_effect = [
+            MagicMock(stdout="", returncode=0, stderr=""),
+            MagicMock(stdout="Real answer", returncode=0, stderr=""),
+        ]
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        # The real reply is delivered; the "didn't get a response" apology is not.
+        mock_send.assert_called_once_with("Real answer")
+        # user turn + assistant reply
+        assert mock_save.call_count == 2
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_timeout_then_success_delivers_real_reply(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired("claude", 180),
+            MagicMock(stdout="Recovered", returncode=0, stderr=""),
+        ]
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        mock_send.assert_called_once_with("Recovered")
+        assert mock_save.call_count == 2
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_all_empty_sends_single_degraded_message(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # Genuine outage: every attempt empty → exactly one degraded reply.
+        mock_run.return_value = MagicMock(stdout="", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        # Retried the bounded number of times, then one degraded message.
+        from app.cli_exec import CLI_RETRY_MAX_ATTEMPTS
+        assert mock_run.call_count == CLI_RETRY_MAX_ATTEMPTS
+        mock_send.assert_called_once()
+        assert "didn't get a response" in mock_send.call_args[0][0]
+        # exactly one user turn + one degraded assistant turn
+        assert mock_save.call_count == 2
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_timeout_then_empty_reports_no_response_not_timeout(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # Mixed failure: the LAST attempt decides the message. Timeout first,
+        # then empty → the degraded reply is "no response", not "timeout".
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired("claude", 180),
+            MagicMock(stdout="", returncode=0, stderr=""),
+            MagicMock(stdout="", returncode=0, stderr=""),
+        ]
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        mock_send.assert_called_once()
+        msg = mock_send.call_args[0][0]
+        assert "didn't get a response" in msg
+        assert "timeout" not in msg.lower()
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram")
+    @patch("app.awake.subprocess.run")
+    def test_wall_clock_budget_bounds_the_retry_loop(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # With no wall-clock budget left, the loop must not keep invoking the
+        # CLI (which would hold the single-flight lane, #1084) — it surfaces a
+        # degraded message immediately instead.
+        mock_run.return_value = MagicMock(stdout="", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.CHAT_RETRY_BUDGET", 0), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        mock_run.assert_not_called()
+        mock_send.assert_called_once()
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=False)
+    @patch("app.awake.subprocess.run")
+    def test_send_failure_does_not_persist_history(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc,
+        mock_fmt, mock_hist, mock_save, tmp_path,
+    ):
+        # send_telegram fails → the assistant turn must NOT be written to
+        # history (no phantom turn the human never saw). Only the user turn is.
+        mock_run.return_value = MagicMock(stdout="Real answer", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""), \
+             patch("app.awake.time.sleep"):
+            handle_chat("hello")
+        # Only the user turn was persisted; the failed assistant reply was not.
+        # save_conversation_message(file, role, message): role is positional arg 1.
+        assert mock_save.call_count == 1
+        assert mock_save.call_args_list[0][0][1] == "user"
 
 
 class TestCleanChatResponse:
@@ -2384,6 +2613,30 @@ class TestChatToolsSecurity:
         tools_arg = call_args[allowed_idx + 1]
         assert tools_arg == "Read,Glob,Grep"
         assert "Bash" not in tools_arg
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="Read")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.cli_exec.run_cli")
+    def test_handle_chat_suppresses_project_context(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc, mock_fmt,
+        mock_hist, mock_save, tmp_path,
+    ):
+        """Chat runs at KOAN_ROOT — must not load contributor tooling (#2379)."""
+        mock_run.return_value = MagicMock(stdout="ok", returncode=0, stderr="")
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", ""), \
+             patch("app.awake.SUMMARY", ""):
+            handle_chat("hello")
+        cmd = mock_run.call_args[0][0]
+        assert "--setting-sources" in cmd
+        assert cmd[cmd.index("--setting-sources") + 1] == "user"
 
 
 # ---------------------------------------------------------------------------
@@ -3544,6 +3797,39 @@ class TestIsAddressedToOtherUser:
     def test_non_mention_entity_at_start(self):
         msg = {"entities": [{"type": "bold", "offset": 0, "length": 5}]}
         assert _is_addressed_to_other_user("hello world", msg, "MyBot") is False
+
+
+# ---------------------------------------------------------------------------
+# _is_internal_comment — skip messages opening with two or more minus chars
+# ---------------------------------------------------------------------------
+
+
+class TestIsInternalComment:
+    """Messages starting with ``--`` are internal notes the bot ignores."""
+
+    def test_double_dash_prefix(self):
+        assert _is_internal_comment("-- the server was down") is True
+
+    def test_more_than_two_dashes(self):
+        assert _is_internal_comment("--- section break ---") is True
+
+    def test_leading_whitespace_before_dashes(self):
+        assert _is_internal_comment("   -- indented note") is True
+
+    def test_single_dash_not_matched(self):
+        assert _is_internal_comment("-5 degrees outside") is False
+
+    def test_plain_text_not_matched(self):
+        assert _is_internal_comment("fix the login bug") is False
+
+    def test_slash_command_not_matched(self):
+        assert _is_internal_comment("/review https://example.com") is False
+
+    def test_dash_not_at_start(self):
+        assert _is_internal_comment("please note -- this is inline") is False
+
+    def test_bare_double_dash(self):
+        assert _is_internal_comment("--") is True
 
 
 # ---------------------------------------------------------------------------

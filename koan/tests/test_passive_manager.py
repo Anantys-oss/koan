@@ -447,3 +447,51 @@ class TestPassiveAutoResumePause:
         assert not is_paused(str(tmp_path))
         assert "pause lifted" in result
         assert "2h00m" in result
+
+
+class TestPassiveSignalLockSerialization:
+    """create_passive / check_passive serialize on the signal lock so an
+    expiry-remove cannot clobber a concurrently created passive state."""
+
+    def test_create_passive_blocks_while_signal_lock_held(self, tmp_path):
+        import threading
+
+        from app.locked_file import signal_lock
+        from app.passive_manager import (
+            _passive_path,
+            create_passive,
+            get_passive_state,
+        )
+
+        holding = threading.Event()
+        release = threading.Event()
+        created = threading.Event()
+
+        def hold_lock():
+            with signal_lock(_passive_path(str(tmp_path))):
+                holding.set()
+                release.wait(timeout=5)
+
+        def do_create():
+            create_passive(str(tmp_path), duration=3600, reason="manual")
+            created.set()
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        assert holding.wait(timeout=5)
+
+        creator = threading.Thread(target=do_create)
+        creator.start()
+
+        # Lock is held elsewhere → create_passive must not complete yet.
+        assert not created.wait(timeout=0.5)
+
+        release.set()
+        assert created.wait(timeout=5)
+
+        holder.join(timeout=5)
+        creator.join(timeout=5)
+
+        state = get_passive_state(str(tmp_path))
+        assert state is not None
+        assert state.duration == 3600

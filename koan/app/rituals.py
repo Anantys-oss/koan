@@ -76,10 +76,12 @@ def run_ritual(ritual_type: str, instance_dir: Path) -> bool:
         return False
 
     try:
+        # Rituals run at KOAN_ROOT — suppress contributor project tooling (#2379).
         cmd = build_full_command(
             prompt=prompt,
             allowed_tools=["Read", "Write", "Glob"],
             max_turns=7,
+            project_context=False,
         )
         result = run_cli(
             cmd,

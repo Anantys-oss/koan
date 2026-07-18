@@ -247,3 +247,57 @@ class TestLockedJsonlTail:
         lines = locked_jsonl_tail(p, 10)
         assert len(lines) == 10
         assert json.loads(lines[0])["i"] == 90
+
+
+# ---------------------------------------------------------------------------
+# signal_lock
+# ---------------------------------------------------------------------------
+
+class TestSignalLock:
+    """signal_lock serializes read-check-act on marker files."""
+
+    def test_yields_and_creates_sidecar(self, tmp):
+        from app.locked_file import signal_lock
+
+        sig = tmp / ".koan-pause"
+        with signal_lock(sig):
+            # Body runs; sidecar lock lives next to the signal file.
+            assert (tmp / ".koan-pause.lock").exists()
+
+    def test_does_not_touch_signal_file(self, tmp):
+        from app.locked_file import signal_lock
+
+        sig = tmp / ".koan-stop"
+        with signal_lock(sig):
+            pass
+        # The lock is a sidecar -- the signal file itself is never created.
+        assert not sig.exists()
+
+    def test_serializes_across_threads(self, tmp):
+        """Two threads entering signal_lock never overlap the critical section."""
+        import threading
+        import time
+
+        from app.locked_file import signal_lock
+
+        sig = tmp / ".koan-stop"
+        order = []
+
+        def worker(tag):
+            with signal_lock(sig):
+                order.append(f"enter-{tag}")
+                time.sleep(0.05)
+                order.append(f"exit-{tag}")
+
+        t1 = threading.Thread(target=worker, args=("a",))
+        t2 = threading.Thread(target=worker, args=("b",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Each enter is immediately followed by its own exit (no interleaving).
+        assert order[0].startswith("enter-")
+        assert order[1] == order[0].replace("enter-", "exit-")
+        assert order[2].startswith("enter-")
+        assert order[3] == order[2].replace("enter-", "exit-")

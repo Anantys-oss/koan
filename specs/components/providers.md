@@ -1,16 +1,16 @@
 ---
 type: component-spec
 title: "Component Spec — CLI Provider Abstraction"
-description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze) behind one `CLIProvider` contract."
+description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-14
+updated: 2026-07-17
 ---
 
 # Component Spec — CLI Provider Abstraction
 
 **Package:** `koan/app/provider/` (`base.py`, `claude.py`, `cline.py`, `codex.py`,
-`copilot.py`, `haze.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
+`copilot.py`, `fake.py`, `haze.py`, `grok.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
 
 ## Purpose
 
@@ -28,7 +28,9 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
        ├─ cline.py     → ClineProvider
        ├─ codex.py     → CodexProvider (quota via stream-json summary only)
        ├─ copilot.py   → CopilotProvider (with tool-name mapping)
-       └─ haze.py      → HazeProvider (haze ≥0.7.0 headless stream-json)
+       ├─ fake.py      → FakeProvider (fail-closed test/dev stub; never a real LLM)
+       ├─ haze.py      → HazeProvider (haze ≥0.7.0 headless stream-json)
+       └─ grok.py      → GrokProvider (xAI Grok Build headless streaming-json)
 ```
 
 ## Key types & functions
@@ -37,7 +39,7 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 |---|---|
 | `base.CLIProvider` | The contract: build command, run, stream, tool-name vocabulary. |
 | `base.supports_usage_tracking()` / `record_usage()` | Per-provider usage hooks. Not all CLIs surface usage the same way. |
-| `__init__.run_command()` / `run_command_streaming()` | The single invocation entry points. Callers should not spawn provider subprocesses directly. |
+| `__init__.run_command()` / `run_command_streaming()` | The single invocation entry points. Both accept an optional `mcp_configs` list; callers pass it only for roles opted into MCP via `config.mcp_roles` (resolved through `config.mcp_configs_for_role(role, project_name)`). Omitted/`None` → no `--mcp-config` is emitted. Callers should not spawn provider subprocesses directly. |
 | `__init__.build_full_command()` | Assembles the provider-specific argv. |
 | `__init__.get_provider_display()` / `get_cli_binary_name()` | Display helpers. `get_provider_display()` returns `"<name>"` or `"<name> (<binary>)"` when `KOAN_CLAUDE_CLI_PATH` points at a different binary. Single source of truth for the global provider line shown by the startup banner and `/status`. Per-role provider overrides are summarized separately by `describe_cli_roles()`. |
 | `base.custom_binary_name()` / `__init__.provider_cli_display(provider)` | Per-instance attribution helpers. `custom_binary_name()` returns the basename of a pinned custom binary (per-role `_binary_override` from `cli.<role>: flavor:path`; Claude also surfaces the global `KOAN_CLAUDE_CLI_PATH`), or `''` when no override is configured. `provider_cli_display(provider)` returns that basename or, failing that, the provider flavor name — used by `review_runner._review_attribution()` so the review footer shows the CLI that actually ran (e.g. `claude-deep`), not just the flavor. Only real overrides count: a provider's natural fallback (Copilot's `gh`) is never surfaced as "custom". |
@@ -46,9 +48,33 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
 | `effort:` config / `config.get_effort(mode, mission_type)` / `CLIProvider.build_effort_args()` | Reasoning-effort control for the Claude `--effort` flag (low/medium/high/max). `effort:` mapping keys are **mission types** (the `session_tracker.classify_mission_type` taxonomy: plan/review/implement/audit/…), not budget modes. Resolution in `get_effort()`: `effort.<mission_type>` → `effort.<autonomous_mode>` (legacy) → `_DEFAULT_EFFORT_MAP[mode]` (the dynamic default). The dynamic default — review→low, deep→high, else none — is preserved verbatim when `effort:` is absent; a per-type pin only layers on top. `build_mission_command()` classifies the mission type and passes it through, so a pin only reaches `get_effort()` for missions that run through the main agent loop — **not** for skill-dispatched commands (`/review`, `/plan`, …), which bypass `build_mission_command()` (see reach caveat below); `get_effort_for_mode()` is the type-unaware wrapper for callers outside the mission build path. `extended thinking` short-circuits effort to `max`. |
 | Provider resolution | Order: `KOAN_CLI_PROVIDER` env (fallback `CLI_PROVIDER`) → `projects.yaml`/`config.yaml` → default. Centralized in `utils.get_cli_provider_env()`. This resolves the GLOBAL provider; `cli.<role>` layers per-role selection on top via `get_provider_for_role`. |
 | `CLIProvider(binary_path="")` / `ClaudeProvider.binary()` | The base class takes an optional per-instance `binary_path` override (the replacement for the removed review ContextVar); `_resolve_binary_path()` is the shared resolver (absolute → as-is / relative → `normpath(join(KOAN_ROOT, …))` / bare name → PATH lookup). `ClaudeProvider.binary()`: `_binary_override` if set → else `KOAN_CLAUDE_CLI_PATH` → else `"claude"`. Every provider's `binary()` honors the override so `flavor:path` works uniformly. Relative paths root at `KOAN_ROOT` (not CWD — the agent runs from `KOAN_ROOT/koan`); bare names are never re-rooted. |
+| `build_command(..., project_context=True)` / `build_project_context_args` / `build_full_command(..., project_context=…)` | When `project_context=False`, the provider must suppress **project-scope** tooling loaded from cwd (Claude: `--setting-sources user`). Default `True` preserves mission/project CLAUDE.md / skills. Other providers may no-op. Callers that run with `cwd=KOAN_ROOT` (Telegram chat, **dashboard web chat**, contemplative, rituals, outbox formatting) **must** pass `False`. Do not implement isolation by mutating the worktree (`skip-worktree` / quarantine) on this path. |
+
+### MCP per-role boundary (safety contract)
+
+MCP servers are loaded per **execution role**, not globally. `config.mcp_roles`
+(default `["mission", "contemplative", "plan"]`; per-project override in
+projects.yaml replaces the list) is the allowlist of roles that receive
+`--mcp-config`. Conversational roles consuming untrusted input (`chat`,
+`github_reply`) are excluded by default and opt-in only. `mcp_roles: []` is a
+kill switch: no runner passes `--mcp-config`. Loading a server never grants its
+tools — MCP tools must still be allowlisted via qualified names
+(`mcp__<server>` / `mcp__<server>__<tool>`) in the role's `tools:` list unless
+`skip_permissions` is set. Callers resolve configs through
+`config.mcp_configs_for_role(role, project_name)` rather than
+`get_mcp_configs()` directly so the gate and kill switch always apply.
 
 ## Invariants
 
+- **KOAN_ROOT runtime sessions must not load contributor project tooling.**
+  Telegram chat, dashboard web chat, contemplative, rituals, and outbox
+  formatting run with `cwd=KOAN_ROOT` on a deployed clone (dashboard may
+  also target a selected project path — only the KOAN_ROOT case requires
+  `False`). They must pass `project_context=False` so Claude does not
+  auto-load root `CLAUDE.md` / `AGENTS.md` / `.claude/skills` (e.g. `brain`,
+  `speckit-*`) into operator-facing output. Mission sessions keep the default
+  (`True`) so `workspace/` project guidance still loads. Isolation is at the
+  **CLI flag boundary**, not by relocating tracked files on disk.
 - **One invocation lock per uid.** Provider auth state is per-user, so the subprocess
   lock lives under `koan_tmp_dir()` (per-uid), not a fixed `/tmp` path.
 - **Provider resolution has a fixed precedence** (env → config → default) for the
@@ -113,14 +139,44 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   `config.get_skip_permissions()` stays a pure config read — moving the root
   check there would silently strip Codex full access and Cline auto-approve
   for root deployments, whose CLIs accept the setting.
-- **Tool-name vocabularies differ per provider.** Copilot maps its own names; the
-  abstraction must translate, not leak provider-specific tool names upward.
+- **The `fake` provider is fail-closed by construction.** `FakeProvider` is a
+  test/dev stub that never invokes a real LLM. Its `__init__` raises
+  `FakeProviderNotAllowed` (a `RuntimeError`) unless `KOAN_ALLOW_FAKE_PROVIDER`
+  is truthy (`1`/`true`/`yes`/`on`). The guard lives in the constructor — not at
+  selection time — so **every** resolution path that instantiates a provider
+  (`get_provider`, `get_provider_by_name`, `get_provider_for_role`,
+  `get_fallback_provider`, all via `_PROVIDERS[name]()`) fails closed identically.
+  Selecting `fake` without the flag must **error**, never silently fall back to a
+  real provider. `binary()` returns the POSIX no-op `true` (never `claude`) so the
+  built command runs harmlessly with empty output; `is_available()` is
+  unconditionally `True` (no external binary) and `has_api_quota()` is `False`
+  (no budget gating). The `RuntimeError` base means the broad `except Exception`
+  guards in `quota_handler._detect_quota_for_provider` /
+  `cli_errors._detect_auth_for_provider` degrade conservatively when a name-based
+  lookup of `fake` is attempted without the flag. **`get_fallback_provider` is the
+  one exception to "fail loud":** it is contractually `Optional` and is called on
+  *any* non-zero mission exit (`mission_executor._maybe_fallback_provider_rerun`),
+  so a `cli.fallback: fake` without the flag must return `None` (decline the
+  fallback), not raise — otherwise an unrelated real-provider failure would crash
+  during finalization. This is still not a silent swap: no work is routed to `fake`,
+  and the primary selection paths (`get_provider`/`get_provider_for_role`) still
+  error loudly. Response routing (canned/scripted output) is out of scope for this
+  foundation — `build_command` is a no-op stub. `FakeProvider` sets the base-class
+  `test_only = True` flag: it stays in `_PROVIDERS` (so `known_providers`,
+  name-based lookup, and config validation resolve it), but UI-facing pickers use
+  `selectable_providers()` — which filters `test_only` flavors — so `fake` never
+  appears as a selectable option in the dashboard provider dropdown. The refusal
+  message derives its real-provider hint from the registry (`known_providers()`
+  minus `fake`) so it does not drift as providers are added.
 - **Quota/usage extraction is provider-specific.** Claude exposes usage in
   `modelUsage` (no top-level `model` field); codex surfaces quota only via the
   stream-json summary (`rate_limit_rejected`, stdout JSONL — never stderr); haze
   reports usage only in its terminal result envelope with **camelCase** fields
-  (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`reasoningTokens`).
-  Detectors read the summary stream, not assistant text.
+  (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`reasoningTokens`);
+  Grok Build reports **snake_case** `usage` on the terminal ``end`` event
+  (`input_tokens`/`output_tokens`/`cache_read_input_tokens`/…) plus optional
+  `modelUsage` map (camelCase per model id). Shared extractors are shape-keyed
+  on field names. Detectors read the summary stream, not assistant text.
 - **`tool_use` summary grammar carries an optional input preview.**
   `_summarize_stream_event()` renders a `tool_use` block as
   `[cli] assistant — tool_use: <name>[: <input-preview>]`. The optional
@@ -173,9 +229,54 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
   project dir, whose CLAUDE.md/AGENTS.md context haze would ingest (~12K
   tokens per probe); probe errors never block work. Invocation lock:
   `haze-cli` (shared `~/.haze/settings.json` state).
+- **Grok Build headless contract (verified 0.2.101).** `GrokProvider` targets
+  xAI Grok Build headless mode: `grok` with `--output-format streaming-json`
+  (Koan internal name `stream-json` maps to CLI spelling `streaming-json`).
+  NDJSON event vocabulary is shape-keyed: `thought`/`text` carry incremental
+  `data` deltas; terminal `end` carries `stopReason`, `usage` (snake_case),
+  `num_turns`, and optional `modelUsage` — **not** the final assistant body.
+  Final text is the concatenation of `text.data` deltas (joined with `""`, not
+  newlines). `--output-format json` returns a single object with top-level
+  `text` + `usage` (probe mode).
+  **Permissions (headless invariant):** Koan **always** passes
+  `--always-approve` for Grok headless invokes. Grok’s CLI `--permission-mode`
+  flag only effectively applies `bypassPermissions` and `default`; passing
+  `acceptEdits` is a no-op on the flag. In headless mode, any tool call that
+  would prompt is **cancelled immediately** (`stopReason: Cancelled`,
+  `cancellation_category: permission_cancelled`) — shell tools such as
+  `run_terminal_command` then fail, so `/implement` lands no commits. Do not
+  reintroduce `acceptEdits` as a “safer” headless default. Operators who want
+  to signal intent still set `skip_permissions: true`; when it is false, Grok
+  still emits `--always-approve` and logs a once-per-process notice.
+  **Tools:** Claude/Koan tool names are mapped to Grok internal IDs before
+  `--tools` / `--disallowed-tools` (e.g. `Read`→`read_file`, `Edit`→
+  `search_replace`, `Bash`→`run_terminal_cmd`, `Grep`→`grep`, `Glob`→
+  `list_dir`, `Write`→`write`, `WebFetch`→`web_fetch`). Unknown names warn
+  once; unmapped `Skill` is dropped. Max turns → `--max-turns`; system prompt
+  append → `--rules` (file prompts are inlined); effort → `--reasoning-effort`;
+  resume → `--resume`. **Models:** Claude tier aliases (`haiku`/`sonnet`/
+  `opus`/…) are never passed as `-m` — warn once and omit so Grok’s default
+  model is used. **Cancelled is hard failure:** a terminal `end` with
+  `stopReason` Cancelled/canceled raises (never soft-success with partial
+  text). **Prompt delivery:** large prompts use `--prompt-file` (temp file +
+  cleanup); stdin prompt passing stays off. Unsupported inputs (MCP flags,
+  plugin dirs, fallback model) warn once and are skipped — never silently
+  accepted. Quota/auth: stderr trusted; stdout only on non-zero exit with an
+  error-marker gate. Pre-flight probe uses `--output-format json -p ok` from an
+  empty scratch dir. Invocation lock: `grok-cli` (shared `~/.grok/` state).
+  Recorded samples: `koan/tests/grok_samples.py`. Operator docs:
+  `docs/providers/grok.md`.
 
 ## Integration points
 
+- **Startup availability gate.** `app.cli_health.check_primary_cli()` wraps
+  `get_provider().is_available()` (`shutil.which(binary())`) as the single probe used by
+  `startup_manager.check_cli_binary()` (enters an in-memory degraded/no-mission mode on a
+  miss — see `specs/components/agent-loop.md`), the `/status` skill, and the `/doctor`
+  diagnostics (`environment_check` / `connectivity_check`, which resolve the real
+  `provider.binary()` rather than a hardcoded provider→binary map). `provider.missing_binary_message()`
+  is the shared constructor for the actionable "CLI executable not found" error raised by
+  `run_command_streaming` and (as an exit-127 failure) by `run.run_claude_task`.
 - Invoked by `run.run_claude_task()` and skill runners.
 - Usage flows to `usage_tracker.py` / `burn_rate.py` via the `record_usage()` hook.
   Structured per-call events are written to `instance/usage/*.jsonl` by

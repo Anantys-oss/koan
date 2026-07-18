@@ -86,6 +86,59 @@ class TestAddProject:
         assert "error" in resp.get_json()
 
 
+class TestRunSkillResolvesRegistry:
+    """Regression: _run_skill must resolve skills via the real SkillRegistry.
+
+    The other tests in this module mock _run_skill wholesale, so they never
+    exercise the registry lookup — which is exactly where issue #2385 lived
+    ('SkillRegistry' object has no attribute 'lookup'). These tests patch only
+    execute_skill (the slow, side-effecting leaf) and let the real registry
+    resolve the command, so a future rename of the lookup API re-breaks them.
+    """
+
+    def test_run_skill_resolves_add_project(self, api_client):
+        import app.api.routes_projects as rp
+        from app.bridge_state import _reset_registry
+
+        _reset_registry()  # ensure a fresh real registry is built
+        with patch("app.skills.execute_skill", return_value="Project added") as mock_exec:
+            with api_client.application.app_context():
+                ok, result = rp._run_skill("add_project", "https://github.com/org/repo")
+
+        assert ok is True, f"_run_skill failed to resolve skill: {result!r}"
+        assert "Project added" in result
+        # Prove the real skill object (not None / not an error path) reached execute_skill.
+        assert mock_exec.call_count == 1
+        skill_arg = mock_exec.call_args.args[0]
+        assert skill_arg is not None
+
+    def test_run_skill_resolves_delete_project(self, api_client):
+        import app.api.routes_projects as rp
+        from app.bridge_state import _reset_registry
+
+        _reset_registry()
+        with patch("app.skills.execute_skill", return_value="Deleted"):
+            with api_client.application.app_context():
+                ok, result = rp._run_skill("delete_project", "alpha")
+
+        assert ok is True, f"_run_skill failed to resolve skill: {result!r}"
+        assert "Deleted" in result
+
+    def test_post_project_round_trips_through_real_registry(self, api_client):
+        import app.api.routes_projects as rp
+        from app.bridge_state import _reset_registry
+
+        _reset_registry()
+        with patch("app.skills.execute_skill", return_value="Project added"):
+            resp = api_client.post(
+                "/v1/projects",
+                json={"github_url": "https://github.com/org/repo"},
+                headers=_AUTH,
+            )
+        assert resp.status_code == 201, resp.get_json()
+        assert "result" in resp.get_json()
+
+
 class TestDeleteProject:
     def test_delete_project_calls_skill(self, api_client):
         with patch("app.api.routes_projects._run_skill", return_value=(True, "Deleted")) as mock_skill:
@@ -100,3 +153,56 @@ class TestDeleteProject:
             resp = api_client.delete("/v1/projects/alpha", headers=_AUTH)
         assert resp.status_code == 500
         assert "error" in resp.get_json()
+
+
+class TestPatchProject:
+    def test_patch_updates_editable_field(self, api_client, instance_dir, tmp_path):
+        (instance_dir / "projects.yaml").write_text(
+            "projects:\n  koan:\n    path: /tmp/koan\n"
+        )
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        resp = api_client.patch(
+            "/v1/projects/koan",
+            json={"patch": {"cli_provider": "claude"}},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["config"]["cli_provider"] == "claude"
+
+    def test_patch_unknown_project_returns_404(self, api_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text("projects:\n  koan:\n    path: /tmp/koan\n")
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        resp = api_client.patch(
+            "/v1/projects/ghost",
+            json={"patch": {"cli_provider": "claude"}},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 404
+
+    def test_patch_non_editable_field_returns_422(self, api_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text("projects:\n  koan:\n    path: /tmp/koan\n")
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        resp = api_client.patch(
+            "/v1/projects/koan",
+            json={"patch": {"path": "/etc"}},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422
+
+    def test_patch_invalid_github_url_returns_422(self, api_client, instance_dir):
+        (instance_dir / "projects.yaml").write_text("projects:\n  koan:\n    path: /tmp/koan\n")
+        from app import projects_config as pc
+        pc.invalidate_projects_config_cache()
+        resp = api_client.patch(
+            "/v1/projects/koan",
+            json={"patch": {"github_url": "not-a-url"}},
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422
+
+    def test_patch_unauthenticated_returns_401(self, api_client):
+        resp = api_client.patch("/v1/projects/koan", json={"patch": {}})
+        assert resp.status_code == 401

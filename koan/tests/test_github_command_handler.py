@@ -33,7 +33,8 @@ from app.github_command_handler import (
     _expand_multi_target_review_mission,
     _save_reply_timestamps,
     _try_assignment_notification,
-    _try_nlp_classification,
+    _try_intent_promotion,
+    _notification_subject_kind,
     _try_reply,
     _validate_and_parse_command,
     build_mission_from_command,
@@ -97,24 +98,45 @@ def subject_draft():
     return False
 
 
+@pytest.fixture
+def subject_labels():
+    """Per-test override for stubbed subject labels. Default: none."""
+    return []
+
+
 @pytest.fixture(autouse=True)
-def _stub_subject_info(subject_closed_state, subject_head_sha, subject_draft):
+def _stub_subject_info(
+    subject_closed_state, subject_head_sha, subject_draft, subject_labels,
+):
     """Stub the network-hitting subject fetch shared by both notification paths.
 
     ``_fetch_subject_info`` is the single seam that calls the GitHub API for a
-    subject's state/merged/head SHA/draft. The @mention path reaches it through
-    ``_is_subject_closed`` and the assignment path calls it directly, so
+    subject's state/merged/head SHA/draft/labels. The @mention path reaches it
+    through ``_is_subject_closed`` and the assignment path calls it directly, so
     stubbing it here keeps the whole module offline and parallel-safe. The
     returned dict is consistent with ``subject_closed_state`` and carries
     ``subject_head_sha`` so review-request dedup keys are deterministic, plus
-    ``draft`` for the opt-in draft-PR review gate.
+    ``draft`` for the opt-in draft-PR review gate and ``labels`` for the
+    pause-label review gate.
     """
     if subject_closed_state == "merged":
-        info = {"state": "closed", "merged": True, "head_sha": subject_head_sha, "draft": subject_draft}
+        info = {
+            "state": "closed", "merged": True,
+            "head_sha": subject_head_sha, "draft": subject_draft,
+            "labels": list(subject_labels),
+        }
     elif subject_closed_state == "closed":
-        info = {"state": "closed", "merged": False, "head_sha": subject_head_sha, "draft": subject_draft}
+        info = {
+            "state": "closed", "merged": False,
+            "head_sha": subject_head_sha, "draft": subject_draft,
+            "labels": list(subject_labels),
+        }
     else:
-        info = {"state": "open", "merged": False, "head_sha": subject_head_sha, "draft": subject_draft}
+        info = {
+            "state": "open", "merged": False,
+            "head_sha": subject_head_sha, "draft": subject_draft,
+            "labels": list(subject_labels),
+        }
     with patch(
         "app.github_command_handler._fetch_subject_info",
         return_value=info,
@@ -3077,106 +3099,68 @@ class TestProcessNotificationPlanCommand:
 # ---------------------------------------------------------------------------
 
 
-class TestTryNlpClassification:
-    """Unit tests for _try_nlp_classification."""
+class TestNotificationSubjectKind:
+    """Unit tests for _notification_subject_kind."""
 
-    def test_disabled_by_default(self, registry):
-        comment = {"body": "@bot fix this bug", "user": {"login": "alice"}}
-        config = {"github": {"nickname": "bot"}}
-        result = _try_nlp_classification(
-            comment, config, None, registry, "bot", "myproject", "owner", "repo",
+    def test_pull_request(self):
+        assert _notification_subject_kind({"subject": {"type": "PullRequest"}}) == "pr"
+
+    def test_issue(self):
+        assert _notification_subject_kind({"subject": {"type": "Issue"}}) == "issue"
+
+    def test_unknown(self):
+        assert _notification_subject_kind({"subject": {}}) == ""
+        assert _notification_subject_kind({}) == ""
+
+
+class TestTryIntentPromotion:
+    """Unit tests for _try_intent_promotion (intent ladder Layers 1–2)."""
+
+    def test_promotes_real_skill(self, registry, monkeypatch):
+        from app.github_intent import IntentMatch
+
+        monkeypatch.setattr(
+            "app.github_intent.resolve_github_intent",
+            lambda *a, **k: IntentMatch("rebase", "onto main", "keyword", 1.0),
         )
-        assert result is None
+        monkeypatch.setattr("app.utils.resolve_project_path", lambda repo, owner=None: "/tmp/proj")
+        monkeypatch.setattr(
+            "app.github_reply.extract_mention_text",
+            lambda body, nick: "eh please rebase",
+        )
 
-    @patch("app.github_intent.classify_intent")
-    @patch("app.github_reply.extract_mention_text", return_value="fix this bug")
-    @patch("app.utils.resolve_project_path", return_value="/tmp/myproject")
-    def test_successful_classification(
-        self, mock_resolve, mock_extract, mock_classify, registry,
-    ):
-        mock_classify.return_value = {"command": "implement", "context": "the auth bug"}
-        comment = {"body": "@bot fix this bug", "user": {"login": "alice"}}
+        comment = {"body": "@bot eh please rebase"}
         config = {"github": {"nickname": "bot", "natural_language": True}}
+        notification = {"subject": {"type": "PullRequest"}}
 
-        result = _try_nlp_classification(
-            comment, config, None, registry, "bot", "myproject", "owner", "repo",
-        )
+        result = _try_intent_promotion(comment, config, registry, "o", "r", notification)
         assert result is not None
         skill, cmd, ctx = result
-        assert skill.name == "implement"
-        assert cmd == "implement"
-        assert ctx == "the auth bug"
+        assert cmd == "rebase"
+        assert ctx == "onto main"
+        assert skill.name == "rebase"
 
-    @patch("app.github_intent.classify_intent")
-    @patch("app.github_reply.extract_mention_text", return_value="do something")
-    @patch("app.utils.resolve_project_path", return_value="/tmp/myproject")
-    def test_no_match_returns_none(
-        self, mock_resolve, mock_extract, mock_classify, registry,
-    ):
-        mock_classify.return_value = {"command": None, "context": ""}
-        comment = {"body": "@bot do something", "user": {"login": "alice"}}
-        config = {"github": {"nickname": "bot", "natural_language": True}}
-
-        result = _try_nlp_classification(
-            comment, config, None, registry, "bot", "myproject", "owner", "repo",
+    def test_no_match_returns_none(self, registry, monkeypatch):
+        monkeypatch.setattr("app.github_intent.resolve_github_intent", lambda *a, **k: None)
+        monkeypatch.setattr("app.utils.resolve_project_path", lambda repo, owner=None: "/tmp/proj")
+        monkeypatch.setattr(
+            "app.github_reply.extract_mention_text",
+            lambda body, nick: "some ambiguous prose",
         )
+
+        comment = {"body": "@bot some ambiguous prose"}
+        config = {"github": {"nickname": "bot", "natural_language": True}}
+        result = _try_intent_promotion(comment, config, registry, "o", "r", {})
         assert result is None
 
-    @patch("app.github_intent.classify_intent", return_value=None)
-    @patch("app.github_reply.extract_mention_text", return_value="test")
-    @patch("app.utils.resolve_project_path", return_value="/tmp/myproject")
-    def test_cli_failure_returns_none(
-        self, mock_resolve, mock_extract, mock_classify, registry,
-    ):
-        comment = {"body": "@bot test", "user": {"login": "alice"}}
+    def test_empty_mention_text_returns_none(self, registry, monkeypatch):
+        monkeypatch.setattr(
+            "app.github_reply.extract_mention_text",
+            lambda body, nick: "",
+        )
+        comment = {"body": "@bot"}
         config = {"github": {"nickname": "bot", "natural_language": True}}
-
-        result = _try_nlp_classification(
-            comment, config, None, registry, "bot", "myproject", "owner", "repo",
-        )
-        assert result is None
-
-    @patch("app.github_intent.classify_intent")
-    @patch("app.github_reply.extract_mention_text", return_value="do status check")
-    @patch("app.utils.resolve_project_path", return_value="/tmp/myproject")
-    def test_classified_non_github_command_returns_none(
-        self, mock_resolve, mock_extract, mock_classify,
-    ):
-        """If NLP classifies to a command that isn't github_enabled, return None."""
-        mock_classify.return_value = {"command": "status", "context": ""}
-        # Registry with only a non-github-enabled skill
-        skill = Skill(
-            name="status", scope="core", github_enabled=False,
-            commands=[SkillCommand(name="status")],
-        )
-        reg = SkillRegistry()
-        reg._register(skill)
-
-        comment = {"body": "@bot do status check", "user": {"login": "alice"}}
-        config = {"github": {"nickname": "bot", "natural_language": True}}
-
-        result = _try_nlp_classification(
-            comment, config, None, reg, "bot", "myproject", "owner", "repo",
-        )
-        assert result is None
-
-    def test_per_project_override_disables(self, registry):
-        """Per-project natural_language=false overrides global true."""
-        comment = {"body": "@bot fix this", "user": {"login": "alice"}}
-        config = {"github": {"nickname": "bot", "natural_language": True}}
-        projects_config = {
-            "projects": {
-                "myproject": {
-                    "path": "/tmp/myproject",
-                    "github": {"natural_language": False},
-                }
-            }
-        }
-
-        result = _try_nlp_classification(
-            comment, config, projects_config, registry, "bot",
-            "myproject", "owner", "repo",
-        )
+        result = _try_intent_promotion(comment, config, registry, "o", "r", {})
         assert result is None
 
 
@@ -3190,13 +3174,13 @@ class TestProcessNotificationWithNLP:
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
-    @patch("app.github_command_handler._try_nlp_classification")
+    @patch("app.github_command_handler._try_intent_promotion")
     def test_nlp_fallback_creates_mission(
         self, mock_nlp, mock_insert, mock_resolve, mock_mentions,
         mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
-        """NLP classification succeeds → mission is created."""
+        """Intent promotion succeeds → mission is created."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
             "id": 99999,
@@ -3205,12 +3189,18 @@ class TestProcessNotificationWithNLP:
             "url": "https://api.github.com/repos/sukria/koan/issues/comments/99999",
         }]
 
-        # Rigid parse will produce command_name="this" which is invalid
-        # NLP fallback should kick in
+        # Rigid parse will produce command_name="this" which is invalid;
+        # the intent ladder should promote it to the real skill.
         impl_skill = registry.find_by_command("implement")
         mock_nlp.return_value = (impl_skill, "implement", "fix the login bug")
 
-        config = {"github": {"nickname": "testbot", "authorized_users": ["*"]}}
+        config = {
+            "github": {
+                "nickname": "testbot",
+                "authorized_users": ["*"],
+                "natural_language": True,
+            }
+        }
 
         with patch.dict("os.environ", {"KOAN_ROOT": str(tmp_path)}):
             success, error = process_single_notification(
@@ -3228,13 +3218,12 @@ class TestProcessNotificationWithNLP:
     @patch("app.github_command_handler.check_already_processed", return_value=False)
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
-    @patch("app.github_command_handler._try_nlp_classification", return_value=None)
     def test_nlp_fails_falls_through_to_error(
-        self, mock_nlp, mock_resolve, mock_mentions,
+        self, mock_resolve, mock_mentions,
         mock_processed, mock_read, mock_error_reply,
         registry, sample_notification,
     ):
-        """NLP returns None → help-message error returned for the caller to post."""
+        """NL disabled + unrecognized command → help-message error returned."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
             "id": "99999",
@@ -3261,13 +3250,13 @@ class TestProcessNotificationWithNLP:
     @patch("app.github_command_handler._find_all_thread_mentions")
     @patch("app.github_command_handler.resolve_project_from_notification")
     @patch("app.utils.insert_pending_mission")
-    @patch("app.github_command_handler._try_nlp_classification")
+    @patch("app.github_command_handler._try_intent_promotion")
     def test_rigid_parse_takes_priority(
         self, mock_nlp, mock_insert, mock_resolve, mock_mentions,
         mock_processed, mock_perm,
         mock_react, mock_read, registry, sample_notification, tmp_path,
     ):
-        """Rigid parse succeeds → NLP is NOT called."""
+        """Rigid parse succeeds → the intent resolver is NOT called."""
         mock_resolve.return_value = ("koan", "sukria", "koan")
         mock_mentions.return_value = [{
             "id": 99999,
@@ -3346,12 +3335,16 @@ class TestExpandComboMission:
     """Tests for _expand_combo_mission — expanding /rr into /review + /rebase."""
 
     def test_rr_expands_to_review_and_rebase(self):
-        """The /rr combo should expand into /review and /rebase missions."""
+        """The /rr combo should expand into /review and /rebase --fix missions.
+
+        The rebase leg carries --fix so it addresses the review it just
+        generated (a bare /rebase only rebases onto the target branch).
+        """
         mission = "- [project:koan] /rr https://github.com/o/r/pull/42 📬"
         result = _expand_combo_mission("rr", mission, "koan")
         assert len(result) == 2
         assert "/review https://github.com/o/r/pull/42 📬" in result[0]
-        assert "/rebase https://github.com/o/r/pull/42 📬" in result[1]
+        assert "/rebase --fix https://github.com/o/r/pull/42 📬" in result[1]
 
     def test_reviewrebase_expands(self):
         """The /reviewrebase alias should also expand."""
@@ -4699,7 +4692,13 @@ class TestFetchSubjectInfo:
         with patch("app.github.api",
                     return_value='{"state": "open", "merged": false, "head_sha": "abc123"}'):
             info = _fetch_subject_info(notification)
-        assert info == {"state": "open", "merged": False, "head_sha": "abc123"}
+        # labels is always normalized to a list (empty when the API omits it)
+        assert info == {
+            "state": "open",
+            "merged": False,
+            "head_sha": "abc123",
+            "labels": [],
+        }
 
     def test_issue_has_null_head_sha(self):
         notification = {
@@ -5090,6 +5089,132 @@ class TestTryAssignmentNotificationDraftGate:
         mock_assign.assert_not_called()
         # The mention-routed /review was still queued despite the draft + gate.
         mock_insert.assert_called_once()
+
+
+class TestTryAssignmentNotificationPauseLabel:
+    """Pause-label review gate (review_pause_label) in _try_assignment_notification."""
+
+    @pytest.fixture
+    def review_notification(self):
+        return {
+            "id": "n-pause-1",
+            "reason": "review_requested",
+            "repository": {"full_name": "sukria/koan"},
+            "subject": {
+                "type": "PullRequest",
+                "title": "WIP feature",
+                "url": "https://api.github.com/repos/sukria/koan/pulls/88",
+            },
+        }
+
+    @pytest.fixture
+    def review_registry(self):
+        reg = SkillRegistry()
+        reg._register(Skill(
+            name="review",
+            scope="core",
+            description="Review PR",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="review", aliases=["rv"])],
+        ))
+        reg._register(Skill(
+            name="implement",
+            scope="core",
+            description="Implement issue",
+            github_enabled=True,
+            github_context_aware=True,
+            commands=[SkillCommand(name="implement", aliases=["impl"])],
+        ))
+        return reg
+
+    def _setup_missions(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        missions_path = tmp_path / "instance" / "missions.md"
+        missions_path.parent.mkdir(parents=True)
+        missions_path.write_text("# Pending\n\n# In Progress\n\n# Done\n")
+        return missions_path
+
+    def test_pause_label_soft_skips_auto_review(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        missions_path = self._setup_missions(tmp_path, monkeypatch)
+        with patch("app.config.get_review_pause_label",
+                   return_value="PauseReview"), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale",
+                   return_value=False), \
+             patch("app.github_command_handler.mark_notification_read") as mock_read, \
+             patch("app.github_command_handler._notify_pause_label_skipped") as mock_notify, \
+             patch("app.github_notification_tracker.set_review_cooldown") as mock_cd, \
+             patch("app.github_notification_tracker.track_thread") as mock_track, \
+             patch(
+                 "app.github_command_handler._fetch_subject_info",
+                 return_value={
+                     "state": "open", "merged": False,
+                     "head_sha": "deadbeefcafe0001", "draft": False,
+                     "labels": ["PauseReview"],
+                 },
+             ):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_HANDLED_NOOP
+        assert "/review" not in missions_path.read_text()
+        mock_read.assert_called_once()
+        mock_notify.assert_called_once()
+        mock_cd.assert_not_called()
+        mock_track.assert_not_called()
+
+    def test_pause_label_absent_queues_review(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """No pause label on PR → review still queued (default path)."""
+        # subject_labels fixture defaults to []
+        missions_path = self._setup_missions(tmp_path, monkeypatch)
+        with patch("app.config.get_review_pause_label",
+                   return_value="PauseReview"), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale",
+                   return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        assert review_notification[NOTIFICATION_OUTCOME_KEY] == NOTIFICATION_OUTCOME_QUEUED
+        assert "/review https://github.com/sukria/koan/pull/88" in missions_path.read_text()
+
+    def test_feature_disabled_ignores_label(
+        self, review_notification, review_registry, tmp_path, monkeypatch,
+    ):
+        """Empty pause label config → never checks; queues even if PR has PauseReview."""
+        missions_path = self._setup_missions(tmp_path, monkeypatch)
+        with patch("app.config.get_review_pause_label", return_value=""), \
+             patch("app.github_command_handler.resolve_project_from_notification",
+                   return_value=("koan", "sukria", "koan")), \
+             patch("app.github_command_handler.is_notification_stale",
+                   return_value=False), \
+             patch("app.github_command_handler.mark_notification_read"), \
+             patch(
+                 "app.github_command_handler._fetch_subject_info",
+                 return_value={
+                     "state": "open", "merged": False,
+                     "head_sha": "deadbeefcafe0001", "draft": False,
+                     "labels": ["PauseReview"],
+                 },
+             ):
+            result = _try_assignment_notification(
+                review_notification, review_registry, {},
+            )
+
+        assert result is True
+        assert "/review" in missions_path.read_text()
 
 
 class TestTryAssignmentNotificationClosedSubject:

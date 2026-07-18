@@ -104,27 +104,28 @@ def run(koan_root: str, instance_dir: str, full: bool = False) -> List[CheckResu
             message=f"GitHub CLI check failed: {e}",
         ))
 
-    # --- Claude CLI ---
+    # --- CLI provider binary ---
+    # Probe the real provider binary via the provider abstraction (covers all
+    # providers, per-role cli.<role> paths, and KOAN_CLAUDE_CLI_PATH), not a
+    # hardcoded provider→binary map.
     try:
-        from app.utils import get_cli_provider_env
-        provider = get_cli_provider_env()
-        cli_binary = "claude"
-        if provider == "copilot":
-            cli_binary = "gh"
+        from app.cli_health import check_primary_cli
+        cli = check_primary_cli()
+        provider = cli.provider_name or "default"
+        cli_binary = cli.binary or "claude"
 
-        import shutil
-        if shutil.which(cli_binary):
+        if cli.available:
             results.append(CheckResult(
                 name="cli_provider",
                 severity="ok",
-                message=f"CLI provider '{provider}' binary found",
+                message=f"CLI provider '{provider}' binary found: {cli_binary}",
             ))
         else:
             results.append(CheckResult(
                 name="cli_provider",
                 severity="error",
                 message=f"CLI provider '{provider}' binary not found: {cli_binary}",
-                hint=f"Install {cli_binary}",
+                hint=f"Install {cli_binary} / fix PATH, then restart",
             ))
     except Exception as e:
         results.append(CheckResult(

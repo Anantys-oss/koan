@@ -178,7 +178,12 @@ def format_message(raw_content: str, soul: str, prefs: str,
         from app.cli_exec import run_cli
 
         models = get_model_config()
-        cmd = build_full_command(prompt=prompt, model=models["lightweight"])
+        # Outbox formatting runs at KOAN_ROOT — suppress contributor tooling (#2379).
+        cmd = build_full_command(
+            prompt=prompt,
+            model=models["lightweight"],
+            project_context=False,
+        )
         result = run_cli(
             cmd,
             cwd=koan_root,
