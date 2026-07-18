@@ -1880,6 +1880,27 @@ def get_stagnation_config(project_name: str = "") -> dict:
     }
 
 
+def get_verify_requeue_max() -> int:
+    """Max times a mission is re-queued on verification failure (default 2).
+
+    Read from ``verification.max_requeue`` in ``config.yaml``. When a mission
+    exits successfully but post-mission verification reports failures, it is
+    re-queued to Pending with a ``[verify-failed: …]`` context tag up to this
+    many times before completing normally for human review. ``0`` disables the
+    verify-failure re-queue entirely.
+    """
+    cfg = _load_config() or {}
+    raw = (cfg.get("verification") or {}).get("max_requeue", 2)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 2
+    # A negative value is a config mistake, not "disable" — clamp it to the
+    # default rather than to 0 (which would silently turn the re-queue off).
+    # ``0`` is the explicit, documented way to disable.
+    return value if value >= 0 else 2
+
+
 def get_autonomous_health_config() -> dict:
     """Get autonomous health diagnostic configuration.
 

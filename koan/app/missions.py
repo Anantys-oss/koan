@@ -222,7 +222,14 @@ _CANONICAL_KEY_STRIP_RE = re.compile(
     r"|\s*[✅❌]\s*\([^)]*\)"       # ✅/❌ (completed-timestamp)
     r"|\s*\[r:\d+\]"                # [r:N] crash-recovery counter
     r"|\s*\[complexity:[^\]]*\]"    # [complexity:X] classifier tag
+    r"|\s*\[verify-failed:?[^\]]*\]" # [verify-failed] or [verify-failed: …] tag
 )
+
+# Standalone matcher for the verify-failed context tag, used by requeue_mission
+# to drop a prior tag before appending a fresh one (so cycles don't stack tags).
+# The colon is optional so it also matches the bare "[verify-failed]" fallback
+# used when no summary text is available.
+_VERIFY_FAILED_TAG_RE = re.compile(r"\s*\[verify-failed:?[^\]]*\]")
 
 
 def canonical_mission_key(text: str) -> str:
@@ -1341,7 +1348,7 @@ def fail_mission(content: str, mission_text: str, cause_tag: str = "") -> str:
     return fail_mission_checked(content, mission_text, cause_tag=cause_tag)[0]
 
 
-def requeue_mission(content: str, mission_text: str) -> str:
+def requeue_mission(content: str, mission_text: str, append_tag: str = "") -> str:
     """Move a mission from In Progress (or Failed) back to Pending.
 
     Used when an error is recoverable (e.g. re-login, quota reset)
@@ -1383,6 +1390,11 @@ def requeue_mission(content: str, mission_text: str) -> str:
     display = _QUEUED_PATTERN.sub("", display).strip()
     display = _STARTED_PATTERN.sub("", display).strip()
     display = _COMPLETED_PATTERN.sub("", display).strip()
+
+    if append_tag:
+        # Drop any prior verify-failed tag so repeated cycles don't stack tags.
+        display = _VERIFY_FAILED_TAG_RE.sub("", display).strip()
+        display = f"{display} {append_tag.strip()}".strip()
 
     entry = f"- {display}"
 

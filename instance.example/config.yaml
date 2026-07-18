@@ -301,6 +301,19 @@ skill_timeout: 7200
 #   sample_lines: 50
 #   max_retry_on_stagnation: 3
 
+# Verify-before-completion — re-queue a mission when post-mission verification
+# fails. After a mission exits successfully, the RARV Verify phase checks that
+# the work matches the mission title (meaningful changes, tests, a PR). When it
+# fails (an empty branch is the signal on a successful exit), the mission is
+# moved back to Pending with a
+# ``[verify-failed: <summary>]`` context tag and re-tried, instead of landing as
+# a draft PR a human must reject. ``max_requeue`` caps how many times this
+# happens (default 2); at the cap the mission completes (Done) so a human
+# reviews the draft (auto-merge stays blocked regardless). Set
+# ``max_requeue: 0`` to disable the verify re-queue entirely.
+# verification:
+#   max_requeue: 2
+
 # Crash and error recovery — how the agent loop tolerates failures.
 # ``max_consecutive_errors`` is the number of iteration failures before
 # the loop enters pause mode. ``max_main_crashes`` is the number of

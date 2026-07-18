@@ -2370,7 +2370,11 @@ def _handle_auth_error(
 ) -> None:
     """Requeue mission, enter auth pause, and notify on auth failure."""
     log("error", f"{provider_label} is logged out — requeueing mission to Pending")
-    _requeue_mission_in_file(instance, mission_title)
+    if not _requeue_mission_in_file(instance, mission_title):
+        # Surface a dropped write: the pause still fires (provider is genuinely
+        # logged out) but the mission stays In Progress, contradicting the
+        # "moved back to Pending" notice below.
+        log("error", "Auth re-queue write failed — mission may still be In Progress")
     from app.pause_manager import create_pause
     create_pause(koan_root, "auth")
     _notify(instance, (
@@ -2398,7 +2402,10 @@ def _handle_quota_error(
     ``stdout_file``/``stderr_file`` (regular mission path).
     """
     log("quota", "API quota exhausted — requeueing mission to Pending")
-    _requeue_mission_in_file(instance, mission_title)
+    if not _requeue_mission_in_file(instance, mission_title):
+        # Surface a dropped write: the quota pause still fires but the mission
+        # stays In Progress, contradicting the "moved back to Pending" notice.
+        log("error", "Quota re-queue write failed — mission may still be In Progress")
     from app.quota_handler import handle_quota_exhaustion, QUOTA_CHECK_UNRELIABLE
     quota_result = handle_quota_exhaustion(
         koan_root=koan_root,
@@ -2956,22 +2963,43 @@ def _prune_missions_history(instance: str) -> None:
         log("error", f"Missions history pruning failed: {e}")
 
 
-def _requeue_mission_in_file(instance: str, mission_title: str):
-    """Move mission from In Progress back to Pending via locked write."""
+def _requeue_mission_in_file(instance: str, mission_title: str, append_tag: str = "") -> bool:
+    """Move mission from In Progress back to Pending via locked write.
+
+    When *append_tag* is set, it is appended to the re-queued mission text (a
+    prior ``[verify-failed: …]`` tag is replaced rather than stacked).
+
+    Returns ``True`` when the write succeeded, ``False`` otherwise. Callers that
+    bump retry counters / notify on a re-queue must check this so they do not
+    report a re-queue that never landed (leaving the mission stuck In Progress).
+    """
     try:
         from app.missions import requeue_mission
         from app.utils import modify_missions_file
         missions_path = Path(instance, "missions.md")
         if not missions_path.exists():
-            return
-        modify_missions_file(missions_path, lambda c: requeue_mission(c, mission_title))
+            return False
+        modify_missions_file(
+            missions_path,
+            lambda c: requeue_mission(c, mission_title, append_tag=append_tag),
+        )
+        return True
     except Exception as e:
         log("error", f"Could not requeue mission in missions.md: {e}")
+        return False
 
 
-def _finalize_mission(instance: str, mission_title: str, project_name: str,
-                      exit_code: int, *, failure_reason: Optional[str] = None,
-                      failure_detail: Optional[str] = None):
+def _finalize_mission(
+    instance: str,
+    mission_title: str,
+    project_name: str,
+    exit_code: int,
+    *,
+    failure_reason: Optional[str] = None,
+    failure_detail: Optional[str] = None,
+    verify_requeue: bool = False,
+    verify_summary: str = "",
+) -> bool:
     """Complete or fail a mission and record execution history.
 
     When the last mission was killed by the stagnation monitor, the
@@ -2990,6 +3018,11 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str,
     On success, all retry counters are cleared. On failure (stagnation
     cap or crash) the counters are left intact for diagnostic visibility
     while the mission remains in Failed state.
+
+    Returns ``True`` when the mission was re-queued to Pending (verify-failure
+    or stagnation retry) instead of being completed/failed — callers must
+    treat this as "not actually finished" and skip end-of-mission notifications
+    that announce completion.
     """
     failed = exit_code != 0
     cause_tag = ""
@@ -2997,6 +3030,59 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str,
     if failed and _last_mission_stagnated.is_set():
         stagnated = True
         _last_mission_stagnated.clear()
+
+    # Verify-failure re-queue (exit 0, but post-mission verification said the
+    # mission did not actually do what its title implies). Runs before the
+    # success-path counter clear so a re-queued mission keeps its retry state.
+    if verify_requeue and exit_code == 0 and not stagnated:
+        from app.config import get_stagnation_config, get_verify_requeue_max
+        from app.stagnation_monitor import (
+            get_total_attempts,
+            get_verify_count,
+            increment_verify_count,
+        )
+
+        max_verify = get_verify_requeue_max()
+        max_total = get_stagnation_config(project_name)["max_total_retries"]
+        already = get_verify_count(instance, mission_title)
+        total = get_total_attempts(instance, mission_title)
+        total_cap_hit = max_total > 0 and total >= max_total
+        if max_verify > 0 and already < max_verify and not total_cap_hit:
+            # Persist the counter first. If it can't be written, do NOT re-queue:
+            # the on-disk count would stay below the cap and the mission could be
+            # re-queued unboundedly. Fall through to normal completion instead.
+            new_count = increment_verify_count(instance, mission_title)
+            if new_count < 0:
+                log("error", "Verify re-queue aborted: could not persist counter")
+            else:
+                # Brackets in the summary would corrupt the [verify-failed: …]
+                # tag (the strip regex stops at the first ]); neutralize them.
+                safe_summary = verify_summary.replace("[", "(").replace("]", ")")
+                tag = (
+                    f"[verify-failed: {safe_summary[:120]}]"
+                    if safe_summary else "[verify-failed]"
+                )
+                # Only announce / record the re-queue once the missions.md write
+                # is confirmed, so the user is never told a re-queue landed when
+                # the mission is actually still stuck In Progress.
+                if _requeue_mission_in_file(instance, mission_title, append_tag=tag):
+                    log("koan", (
+                        f"Verify re-queue {new_count}/{max_verify} — "
+                        f"requeueing mission: {mission_title[:60]}"
+                    ))
+                    _notify_verify_requeue(
+                        mission_title, project_name, new_count, max_verify, verify_summary,
+                    )
+                    try:
+                        from app.mission_history import record_execution
+                        record_execution(instance, mission_title, project_name, exit_code)
+                    except (OSError, ValueError) as e:
+                        log("error", f"Mission history recording error: {e}")
+                    return True
+                log("error", "Verify re-queue write failed; completing normally")
+        # Cap reached (or re-queue could not be applied) → fall through to normal
+        # completion (Done). verify_blocking already prevented auto-merge, so a
+        # human reviews the draft PR.
 
     if stagnated:
         from app.config import get_stagnation_config
@@ -3029,17 +3115,23 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str,
                 f"Stagnation retry {new_count}/{max_retry} ({pattern}) — "
                 f"requeueing mission: {mission_title[:60]}"
             ))
-            _requeue_mission_in_file(instance, mission_title)
-            _notify_stagnation_retry(
-                mission_title, project_name, new_count, max_retry,
-                pattern_type=pattern, pattern_excerpt=excerpt,
-            )
-            try:
-                from app.mission_history import record_execution
-                record_execution(instance, mission_title, project_name, exit_code)
-            except (OSError, ValueError) as e:
-                log("error", f"Mission history recording error: {e}")
-            return
+            # Only announce / record the retry once the missions.md write is
+            # confirmed, so the user is never told a re-queue landed while the
+            # mission is actually still stuck In Progress. On write failure,
+            # fall through to the Failed path below rather than silently losing
+            # the mission.
+            if _requeue_mission_in_file(instance, mission_title):
+                _notify_stagnation_retry(
+                    mission_title, project_name, new_count, max_retry,
+                    pattern_type=pattern, pattern_excerpt=excerpt,
+                )
+                try:
+                    from app.mission_history import record_execution
+                    record_execution(instance, mission_title, project_name, exit_code)
+                except (OSError, ValueError) as e:
+                    log("error", f"Mission history recording error: {e}")
+                return True
+            log("error", "Stagnation re-queue write failed; marking mission Failed")
 
         # Retry cap reached (or retries disabled): mark Failed with cause tag.
         # Counter is preserved — cleared when the human retries the mission.
@@ -3121,6 +3213,7 @@ def _finalize_mission(instance: str, mission_title: str, project_name: str,
         record_execution(instance, mission_title, project_name, exit_code)
     except (OSError, ValueError) as e:
         log("error", f"Mission history recording error: {e}")
+    return False
 
 
 def _notify_stagnation(
@@ -3171,6 +3264,28 @@ def _notify_stagnation_retry(
         send_telegram(message, priority=NotificationPriority.WARNING)
     except Exception as e:
         log("error", f"Stagnation retry notification failed: {e}")
+
+
+def _notify_verify_requeue(
+    mission_title: str,
+    project_name: str,
+    attempt: int,
+    max_attempts: int,
+    summary: str = "",
+) -> None:
+    """Send a Telegram message announcing a verification-failure requeue."""
+    try:
+        from app.notify import NotificationPriority, send_telegram
+        prefix = f"[{project_name}] " if project_name else ""
+        message = (
+            f"🔁 {prefix}Verification failed — re-queueing for attempt "
+            f"{attempt}/{max_attempts}.\n\nMission: {mission_title[:120]}"
+        )
+        if summary:
+            message += f"\n\nWhat failed: {summary[:200]}"
+        send_telegram(message, priority=NotificationPriority.WARNING)
+    except Exception as e:
+        log("error", f"Verify re-queue notification failed: {e}")
 
 
 def _get_koan_branch(koan_root: str) -> str:

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from app.locked_file import locked_json_modify, locked_json_read
+from app.run_log import log
 
 
 # Default configuration — overridable via config.yaml stagnation: section.
@@ -538,6 +539,87 @@ def increment_crash_count(instance_dir: str, mission_title: str) -> int:
         return new_crash
 
     return locked_json_modify(path, _mutate, default_factory=dict, validator=_validate_tracker)
+
+
+def get_verify_count(instance_dir: str, mission_title: str) -> int:
+    """Return how many times *mission_title* has been verify-failure requeued.
+
+    Tracks only verification-failure requeues (verify-before-completion), not
+    stagnation or crash-recovery requeues. Used to decide when to stop
+    re-queueing and let the mission complete for human review.
+    """
+    path = _retry_tracker_path(instance_dir)
+    data = locked_json_read(path, default={})
+    if not isinstance(data, dict):
+        # A corrupt tracker silently reads as 0 (never-requeued), which would
+        # reset the verify budget. Unlike increment_verify_count's -1 sentinel,
+        # callers here can't distinguish "genuinely 0" from "corrupt, treated
+        # as 0" — route through the structured log so operators see it.
+        log(
+            "error",
+            f"verify tracker not a dict ({type(data).__name__}); "
+            f"treating verify_count as 0",
+        )
+        return 0
+    raw = data.get(_mission_key(mission_title), {})
+    if isinstance(raw, dict):
+        try:
+            return max(0, int(raw.get("verify_count", 0)))
+        except (TypeError, ValueError):
+            log(
+                "error",
+                f"unparseable verify_count {raw.get('verify_count')!r}; "
+                f"treating as 0",
+            )
+            return 0
+    return 0
+
+
+def increment_verify_count(instance_dir: str, mission_title: str) -> int:
+    """Increment both verify_count and total_attempts for *mission_title*.
+
+    Called by the verify-before-completion re-queue path so that both the
+    per-system verify cap and the combined max_total_retries cap remain
+    effective. Preserves sibling sub-counters (count, crash_count).
+
+    Returns the new verify_count value, or ``-1`` if the tracker could not be
+    persisted — callers MUST treat a negative return as "not incremented" and
+    skip the re-queue, otherwise the on-disk count stays below the cap and the
+    mission could be re-queued unboundedly.
+    """
+    path = _retry_tracker_path(instance_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = _mission_key(mission_title)
+
+    def _mutate(data: dict) -> int:
+        _prune_tracker(data)
+        existing = data.get(key, {})
+        if isinstance(existing, dict):
+            total = max(0, int(existing.get("total_attempts", 0)))
+            verify = max(0, int(existing.get("verify_count", 0)))
+            new_verify = verify + 1
+            new_total = total + 1
+            data[key] = {
+                **existing,
+                "verify_count": new_verify,
+                "total_attempts": new_total,
+                "updated_at": time.time(),
+            }
+        else:
+            new_verify = 1
+            data[key] = {
+                "count": _extract_count(existing),
+                "verify_count": 1,
+                "total_attempts": 1,
+                "updated_at": time.time(),
+            }
+        return new_verify
+
+    try:
+        return locked_json_modify(path, _mutate, default_factory=dict, validator=_validate_tracker)
+    except OSError as e:
+        print(f"[stagnation_monitor] verify tracker save error: {e}", file=sys.stderr)
+        return -1
 
 
 def seed_crash_count(instance_dir: str, mission_title: str, seed_value: int) -> None:
