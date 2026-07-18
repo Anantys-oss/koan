@@ -60,16 +60,14 @@ def _run(provider, create_urls, decomposition=None, link_side_effect=None,
         patch.object(brainstorm_runner, "tracker_is_configured", return_value=True),
         patch.object(brainstorm_runner, "tracker_supports_labels",
                      return_value=(provider == "github")),
-        patch.object(brainstorm_runner, "tracker_provider", return_value=provider),
         patch.object(brainstorm_runner, "client_for_project", return_value=client),
         patch.object(brainstorm_runner, "create_issue", create_issue),
         patch.object(brainstorm_runner, "_build_decompose_prompt", return_value="P"),
         patch.object(brainstorm_runner, "_call_claude_with_prompt",
                      return_value=decomposition),
         patch.object(brainstorm_runner, "_ensure_label"),
-        patch("app.issue_tracker.update_issue", update_issue),
-        patch("app.issue_tracker.link_issues", link_issues),
-        patch.object(brainstorm_runner, "issue_edit") as issue_edit,
+        patch.object(brainstorm_runner, "update_issue", update_issue),
+        patch.object(brainstorm_runner, "link_issues", link_issues),
     ):
         success, summary = brainstorm_runner.run_brainstorm(
             project_path="/tmp/proj",
@@ -84,7 +82,6 @@ def _run(provider, create_urls, decomposition=None, link_side_effect=None,
         "create_issue": create_issue,
         "update_issue": update_issue,
         "link_issues": link_issues,
-        "issue_edit": issue_edit,
     }
 
 
@@ -112,3 +109,47 @@ class TestJiraCreateRouting:
         ]
         res = _run("jira", urls)
         assert "PROJ-100" in res["summary"]
+
+
+class TestSubReferenceResolution:
+    def test_jira_sub_refs_become_real_keys(self):
+        urls = [
+            "https://test/browse/PROJ-1",
+            "https://test/browse/PROJ-2",
+            "https://test/browse/PROJ-100",
+        ]
+        res = _run("jira", urls, decomposition=_decomposition(cross_ref=True))
+        assert res["success"] is True
+        # issue 1 (PROJ-1) referenced SUB-2 → must be updated to PROJ-2
+        calls = {c.args[0]: c.args[1] for c in res["update_issue"].call_args_list}
+        assert "https://test/browse/PROJ-1" in calls
+        body = calls["https://test/browse/PROJ-1"]
+        assert "PROJ-2" in body
+        assert "SUB-2" not in body
+
+    def test_github_sub_refs_become_hash_numbers(self):
+        urls = [
+            "https://github.com/o/r/issues/1",
+            "https://github.com/o/r/issues/2",
+            "https://github.com/o/r/issues/100",
+        ]
+        res = _run("github", urls, decomposition=_decomposition(cross_ref=True))
+        assert res["success"] is True
+        calls = {c.args[0]: c.args[1] for c in res["update_issue"].call_args_list}
+        body = calls["https://github.com/o/r/issues/1"]
+        assert "#2" in body
+        assert "SUB-2" not in body
+
+    def test_update_failure_is_non_fatal(self):
+        urls = [
+            "https://test/browse/PROJ-1",
+            "https://test/browse/PROJ-2",
+            "https://test/browse/PROJ-100",
+        ]
+        res = _run(
+            "jira", urls,
+            decomposition=_decomposition(cross_ref=True),
+            update_side_effect=RuntimeError("boom"),
+        )
+        # run still succeeds despite the update raising
+        assert res["success"] is True
