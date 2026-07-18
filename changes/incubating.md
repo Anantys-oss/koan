@@ -14,90 +14,38 @@ Do not hand-edit released entries — they are the source for `CHANGES.md`.
 
 ## ${NEXT}
 
-### Merged 2026-07-18 — main @ 51bba29c (95 commits)
+_Everything merged into `incubating` since v0.79 (main through `51bba29c`)._
 
-**Features**
-- **Unified artifact DB schema + migration harness** (#2193).
-- **Chat priority lane** — keep chat responsive during missions (#1084, #2436).
-- **`/rebase` split** — rebase-only default with an explicit `/rebase --fix` for the review-feedback leg (#2439).
-- **Grok Build CLI provider** — new provider with stream shapes, recorded samples, and unit tests.
-- **Fail-closed fake CLI provider foundation** — hidden from the dashboard picker; refusal hint derived from the registry.
-- **GitHub NL @mention intent ladder** — promote natural-language mentions to named skills (#2402).
-- **Per-role MCP opt-in** across execution roles (#2422).
-- **Release pipeline unification** — `incubate → incubating → release.yml`; ships `/koan.incubate` and `/koan.release` skills, `${NEXT}` changelog token, and the `latest` tag flow.
-- **Dashboard** — structured live mission timeline on `/progress` (enriched `/api/progress`); edit `github_url` and auto-merge settings via allow-listed `PATCH /v1/projects/<name>`.
-- **`/claudemd <project>`** — managed CLAUDE.md learnings-sync block; `/rereview` + `/re_review` aliases; degraded no-mission mode when the CLI binary is missing at startup; `/models` slots annotated with per-role CLI; configurable label to pause automatic PR reviews.
+**Added**
 
-**Refactors / perf**
-- Mission-store: extract shared SQLite connect + pending-select helpers (#2427).
-- Extract shared config section/override resolver.
-- Provider: hide fake from dashboard picker; derive refusal hint from registry.
-- Delete orphaned `scripts/release.sh` (tag-from-main bypass removed).
+- **Chat stays responsive during missions** — your chat messages now get a priority lane, so the bot answers you even while it is busy running a mission (#1084).
+- **Split `/rebase`** — a bare `/rebase <pr>` now only rebases the PR onto its base branch. Use `/rebase --fix` (implied when you add a focus area or severity after the URL) to also apply review feedback (#2439).
+- **More CLI providers** — added the Grok Build and Haze providers, so you can run missions on additional backends. `/models` slots can now be annotated with a per-role CLI, and MCP tools can be enabled per execution role (#2422).
+- **Plain-English GitHub mentions** — mentioning the bot in natural language now routes to the right skill instead of requiring an exact command (#2402).
+- **Authoritative mission store** — missions now live in a SQLite store (`missions.md` becomes a read-only export). New `/list <state>` shows done/failed history, and `make missions` is a break-glass CLI when the bridge is down.
+- **Live mission timeline** — the dashboard `/progress` view now shows a structured, live timeline; you can edit a project's GitHub URL and auto-merge settings from the dashboard and via `PATCH /v1/projects/<name>`.
+- **GitHub "Running" indicator** — a label and commit status now mark a PR while a mission is working on it (#2365).
+- **`/claudemd <project>`** keeps a managed learnings block in `CLAUDE.md`; added the `/rereview` alias and a configurable label to pause automatic PR reviews.
+- **Review upgrades** — severity-graded verdict alerts, stale-HEAD warnings on posted reviews, and per-mission token usage/cost reported over the REST API.
+- **`.koan/` steering tree** — koan-only `KOAN.md` and per-skill instructions that apply to the autonomous agent without affecting interactive sessions (#2293).
+- **Cloud deploy** — hydrate `instance/` from a repo on cold boot, with an opt-in periodic pull.
+- **Non-blocking CI checks** — CI-fix missions no longer stall the queue behind other work.
+- Prettier `make logs` output (set `raw=1` to bypass), and per-mission-type reasoning-effort configuration.
 
-**Fixes** — highlights
-- Concurrency/safety: lock focus/passive read-check-act against expiry clobber; serialize pause/resume to close a TOCTOU double-resume race (#2437); skip re-delivered Telegram updates (double command output); dedup idempotent lifecycle notices across restarts (#2429); re-queue mission on verification failure (#2210).
-- Grok: detect 403 credit/spending-limit exhaustion as quota; stop false burn-rate alerts and pauses; always-approve headless tools so `/implement` can commit.
-- Misc: unwrap provider stream/json envelopes before tier parse; suppress project tooling at CLI for KOAN_ROOT sessions (#2404); resolve project skills via `find_by_command` (#2385); skip Slack thread replies addressed to another user; review verdict-consistency and graceful-degradation fixes.
+**Changed**
 
-**Docs / tests / CI**
-- Specs updated contract-first for the `/rebase` split, chat priority lane (008), providers, bridge, git-github, skills, and web components; user manual + skills reference kept in sync; large test additions across run, skill dispatch, providers, and usage tracking.
+- **Large review diffs are no longer silently truncated** — the old 32k-character cap is now a configurable budget, and a review that couldn't cover the whole diff says so with a partial-coverage warning (#2292).
+- **The bot stays up when the CLI binary is missing** at startup, entering a degraded no-mission mode instead of failing outright.
+- **Unified release pipeline** — releases are now cut from the `incubating` branch through the release workflow, and `CHANGES.md` is the published changelog.
 
+**Fixed**
 
-### Merged 2026-07-13 — main @ bc71e88e (2 commits)
-
-**Features**
-- **GitHub "Running" indicator (#2365)** — new `mission_status.py`: applies a `koan:working` label and a `koan/mission` commit status while a mission runs, with hooks in `github.py`, `run.py`, `pr_submit.py`, and `startup_manager.py`; new config options; documented in `docs/architecture/github-and-trackers.md`, `docs/messaging/github-commands.md`, and `specs/components/git-github.md`.
-- **Pretty `make logs` formatter (#2366)** — new `log_fmt.py` human-readable formatter with a `raw=1` Makefile bypass; new `docs/operations/log-formatting.md`.
-
-**Docs / tests / CI**
-- ~760 lines of new tests across 7 files covering both features; user manual, troubleshooting, and wiki index updated.
-
-### Merged 2026-07-13 — main @ 51262b36 (35 commits)
-
-**Features**
-- **Bridge memory retention (#2360)** — fixes `awake.py` RSS ratcheting up over uptime: bounded caches/buffers in the bridge, memory-footprint monitoring, new `docs/architecture/bridge-memory.md` and `docs/operations/memory-footprint.md`.
-- Authoritative mission outcomes: append-only `OutcomeStore`, `mission_outcome` façade (`classify_failure` + `record_outcome`), terminal outcome recorded at mission finalization and reported on `GET /v1/missions/{id}`.
-- Experience capture: new `experience_capture` module hooked into `run_post_mission`, structured experience fields in memory entries, capture of stagnation-cap and CI-fix outcomes.
-- CI: manual GHCR publish workflow, sharing build code with release.
-
-**Refactors / perf**
-- `resolve_workspace_dir` extracted as single source of truth for workspace resolution.
-
-**Fixes** — highlights
-- Security: CI shell-injection closed in dispatch-tag validation (bind tag to env var).
-- API: stale outcomes no longer resurrect removed missions; outcome override gated to non-live missions; dropped outcome writes surfaced; narrowed finalize catch.
-- Telegram: long `/report` HTML chunked at `<pre>` boundaries so delivery succeeds.
-- Workspace: `add_project` clones into the resolved workspace dir; projects cache watches the resolved dir.
-- Plan gate restored to fail-open for `/implement` (assumptions audit advisory); caveman mode disabled in `/explain`; wiki-check excludes generated `index.md`.
-
-**Docs / tests / CI**
-- Codex docs updated to GPT-5.6 model tiers; shared-workspace resolution contract documented; large test additions (experience capture, mission outcomes, locked file, plan runner, wiki check).
-
-### Merged 2026-07-12 — main @ 9f9467b6 (188 commits)
-
-**Features**
-- SQLite mission store (specs/004): `MissionStore` port + `SqliteMissionStore` (`instance/missions.db`, WAL), sibling CI/Ideas/Quarantine stores, one-time boot ingest of `missions.md`, S8 flip — the store is authoritative and `missions.md` becomes a read-only export; break-glass `mission_ctl` CLI (`make missions`); `/list <state>` for done/failed history.
-- Haze CLI provider (specs/006): stream-json mission execution, usage accounting, failure classification, onboarding + docs.
-- Cloud deploy: cold-boot `instance/` hydration from `KOAN_INSTANCE_REPO`, opt-in periodic pull (`KOAN_INSTANCE_SYNC_INTERVAL`).
-- `.koan/` steering tree: koan-only `KOAN.md` (#2293), `.koan/KOAN.md` + per-skill instructions from `.koan/skills/<name>/`; one-time feature notice to users.
-- Review: stale-HEAD alert on posted reviews, severity-graded verdict alert, `[!IMPORTANT]`/`[!CAUTION]` callouts via shared `build_alert()`.
-- REST API: auto-generated + CI-enforced OpenAPI 3.1 spec, per-mission token usage/cost on `GET /v1/missions/{id}`, structured review results.
-- Non-blocking bounded `/ci_check` (specs/005): fix missions no longer starve the serial queue; `ci_check.timeout`, `ci_check.idle_timeout`, `ci_check.max_fix_attempts_per_mission`.
-- Per-mission-type reasoning effort config; spec-change governance CI guard; speckit polish.
-
-**Fixes** — highlights
-- **Review diff truncation (#2292 / PR #2294): large diffs are no longer silently truncated at 32k chars** — the hard cap becomes a configurable `review_compressor.token_budget` (derived `max_diff_chars`), fetch-time skips are surfaced via `truncate_diff_with_skips`, and posted reviews carry a unified partial-coverage warning (preserved on compressor-off and hunter-append paths).
-- Mission store hardening: quarantine (prompt-injection record) migration is fatal on failure and retried next boot; cutover double-ingest guard; 7+ silent-failure read paths closed; stale-export gates.
-- Rebase: strict target remote, fail-closed fetch, pre-push sanity gate; "applied" vs "not changed" separated in PR comments.
-- Deploy: tri-state `instance/` pull, failed `rebase --abort` surfaced, partial-hydrate wipe.
-- git-prep self-heals interrupted merge/rebase before stashing; `/projects` deduped by resolved path + normalized name (#2339); unregistered-repo @mention alert reset on registration (#2279); Telegram `chat_id` coerced to int (#2281); Jira alert-block flattening; GitHub exception handlers now log instead of swallowing.
-
-**Refactors / perf**
-- Dedicated `ci_check.idle_timeout` decoupled from `first_output_timeout`; review/rebase alerts routed through `build_alert()`; `prune_memory_log` streams line-by-line.
-
-**Docs / tests / CI**
-- Constitution v2.0.0 (Principles III & VI for the SQLite store); specs 004/005/006 + reconciled component specs; mission-cli, haze, koan-md, github-alerts docs; large test additions (mission store conformance/ingest/startup/render, haze provider, spec-change guard, OpenAPI gen); fork-safe spec-change-guard CI; OpenAPI drift check workflow.
-
+- No more duplicate command output when Telegram re-delivers an update, and no more double-resume when pausing/resuming in quick succession (#2437).
+- Missions no longer wrongly resurrect after removal, and a mission is re-queued when verification fails (#2210).
+- Grok: credit/spending-limit exhaustion is now correctly treated as quota, false burn-rate alerts and pauses are gone, and headless tool calls are approved so `/implement` can commit.
+- The Telegram bridge no longer grows its memory footprint over long uptime (#2360), and long `/report` messages now deliver reliably.
+- Slack: the bot no longer replies in threads addressed to someone else.
+- Security: closed a shell-injection path in CI dispatch-tag validation.
 
 ## v0.79 — 2026-07-08
 
