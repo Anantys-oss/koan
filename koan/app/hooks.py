@@ -35,6 +35,7 @@ Supported events:
     - session_end: Fired on shutdown (in finally block)
     - pre_mission: Fired before Claude execution
     - post_mission: Fired after post-mission pipeline completes
+    - post_review: Fired after a PR review is successfully posted
 
 Automation rules:
     Declarative rules from instance/automation_rules.yaml are evaluated
@@ -62,6 +63,7 @@ _VALID_SKILL_HOOK_EVENTS = (
     "session_end",
     "pre_mission",
     "post_mission",
+    "post_review",
 )
 
 

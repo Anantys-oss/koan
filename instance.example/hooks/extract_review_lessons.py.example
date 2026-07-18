@@ -1,0 +1,52 @@
+"""Default post_review hook — capture raw review metadata for later learning.
+
+Activate by copying this file to instance/hooks/extract_review_lessons.py
+(drop the .example suffix) and restarting Kōan. It writes one JSON file per
+review under instance/reviews/<pr_number>_<timestamp>.json.
+
+Fire-and-forget: any exception is logged by the hook registry and never
+blocks the review. Keep it fast — it runs inline in the review process.
+"""
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def on_post_review(ctx):
+    instance_dir = ctx.get("instance_dir")
+    if not instance_dir:
+        return
+    reviews_dir = Path(instance_dir) / "reviews"
+    reviews_dir.mkdir(parents=True, exist_ok=True)
+
+    pr_number = str(ctx.get("pr_number") or "unknown")
+    # Microseconds avoid same-second collisions on re-review of the same PR.
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    out_path = reviews_dir / f"{pr_number}_{ts}.json"
+
+    review_data = ctx.get("review_data") or {}
+    record = {
+        "captured_at": ts,
+        "project_name": ctx.get("project_name"),
+        "owner": ctx.get("owner"),
+        "repo": ctx.get("repo"),
+        "pr_number": pr_number,
+        "pr_url": ctx.get("pr_url"),
+        "lgtm": ctx.get("lgtm"),
+        "verdict_submitted": ctx.get("verdict_submitted"),
+        "closed": ctx.get("closed"),
+        "ultra": ctx.get("ultra"),
+        "review_summary": ctx.get("review_summary") or {},
+        "findings": review_data.get("findings", []),
+        # The human hasn't reacted yet at review-post time; a later
+        # reaction-capture pipeline fills this in (deferred — issue #2331).
+        "human_reaction": None,
+    }
+
+    tmp = out_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(record, indent=2, ensure_ascii=False))
+    tmp.replace(out_path)
+
+
+HOOKS = {"post_review": on_post_review}

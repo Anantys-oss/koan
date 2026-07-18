@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "Lifecycle Hooks & Automation Rules"
-description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission): instance-wide and skill-bound Python hooks via `HookRegistry`, plus the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard."
+description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission/post_review): instance-wide and skill-bound Python hooks via `HookRegistry`, plus the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard."
 tags: [architecture]
 created: 2026-07-08
-updated: 2026-07-08
+updated: 2026-07-17
 ---
 
 # Lifecycle Hooks & Automation Rules
@@ -22,14 +22,21 @@ implemented in `koan/app/hooks.py`.
 | `session_end` | On shutdown (`finally` block) | `instance_dir`, `total_runs` |
 | `pre_mission` | Before Claude CLI execution | `instance_dir`, `project_name`, `project_path`, `mission_title`, `autonomous_mode`, `run_num` |
 | `post_mission` | After the post-mission pipeline completes | `instance_dir`, `project_name`, `project_path`, `exit_code`, `mission_title`, `duration_minutes`, `result`, `result_text` |
+| `post_review` | After a PR review is successfully posted (`run_review`) | `instance_dir`, `project_name`, `project_path`, `owner`, `repo`, `pr_number`, `pr_url`, `review_summary`, `review_data`, `lgtm`, `verdict_submitted`, `closed`, `ultra` |
 
 `result_text` is the truncated Claude stdout summary (up to 4000 chars) — useful
 for parsing JIRA keys, PR URLs, or `RESULT:` lines without re-reading the full
 stdout capture file. `result` is a snapshot copy; mutating it inside a handler
 has no effect.
 
+`post_review` fires only on the public-PR posting path (`run_review`), not
+`run_private_review` (which posts nothing to GitHub). Human reaction is not
+known at fire time — the default capture hook records `human_reaction: null`
+for a later reaction-capture pipeline.
+
 Fired from `startup_manager.py` (`session_start`), `run.py` (`session_end`),
-`mission_executor.py` (`pre_mission`), and `mission_runner.py` (`post_mission`).
+`mission_executor.py` (`pre_mission`), `mission_runner.py` (`post_mission`),
+and `review_runner.py` (`post_review`).
 
 ## Hooks
 
@@ -52,7 +59,7 @@ locations, in this order:
    exports a `run(ctx)` function instead of a `HOOKS` dict. Lets a custom
    skill own its lifecycle behavior next to its `handler.py` without touching
    Kōan core. These run *after* all instance-wide hooks for the same event.
-   Only the four event filenames above are recognized; any other `.py` in a
+   Only the five event filenames above are recognized; any other `.py` in a
    skill directory (`handler.py`, `helpers.py`, ...) is ignored for hook
    discovery.
 
@@ -79,7 +86,7 @@ startup, not on every fire.
 
 After user hook modules run, `fire()` also evaluates declarative rules loaded
 from `instance/automation_rules.yaml` (`app/automation_rules.py`). Each rule
-maps one of the same four events to a fixed action:
+maps one of the same five events to a fixed action:
 
 ```yaml
 - id: "abc123"

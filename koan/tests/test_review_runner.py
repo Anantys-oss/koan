@@ -7702,3 +7702,90 @@ class TestBuildReviewPromptDotKoanSkill:
             project_path=str(tmp_path),
         )
         assert ".koan/skills/review" not in prompt
+
+
+def test_fire_post_review_passes_expected_context():
+    from app import review_runner
+    with patch("app.hooks.fire_hook", return_value={}) as mock_fire:
+        review_runner._fire_post_review(
+            instance_dir="/tmp/inst",
+            project_name="my-toolkit",
+            project_path="/tmp/proj",
+            owner="octo",
+            repo="repo",
+            pr_number="42",
+            pr_url="https://github.com/octo/repo/pull/42",
+            review_summary={"lgtm": True},
+            review_data={"findings": [{"severity": "nit"}]},
+            verdict_submitted=True,
+            closed=False,
+            ultra=False,
+        )
+    assert mock_fire.call_count == 1
+    event = mock_fire.call_args.args[0]
+    ctx = mock_fire.call_args.kwargs
+    assert event == "post_review"
+    assert ctx["pr_number"] == "42"
+    assert ctx["lgtm"] is True
+    assert ctx["review_data"]["findings"] == [{"severity": "nit"}]
+    assert ctx["instance_dir"] == "/tmp/inst"
+    assert ctx["verdict_submitted"] is True
+    assert ctx["project_name"] == "my-toolkit"
+
+
+def test_fire_post_review_swallows_handler_errors():
+    from app import review_runner
+    with patch("app.hooks.fire_hook", side_effect=RuntimeError("boom")):
+        # Must not raise — fire-and-forget.
+        review_runner._fire_post_review(
+            instance_dir="/tmp/inst",
+            project_name="p",
+            project_path="/tmp/proj",
+            owner="o",
+            repo="r",
+            pr_number="1",
+            pr_url="u",
+            review_summary={},
+            review_data={},
+            verdict_submitted=False,
+            closed=False,
+            ultra=False,
+        )
+
+
+def test_fire_post_review_inits_registry_when_uninitialized(tmp_path):
+    """Review subprocess never inherits daemon hooks; must init before fire."""
+    import sys
+
+    from app import hooks, review_runner
+
+    hooks.reset_registry()
+    assert hooks.get_registry() is None
+
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "capture.py").write_text(
+        "seen = []\n"
+        "def on_post_review(ctx):\n"
+        "    seen.append(ctx.get('pr_number'))\n"
+        "HOOKS = {'post_review': on_post_review}\n"
+    )
+
+    review_runner._fire_post_review(
+        instance_dir=str(tmp_path),
+        project_name="my-toolkit",
+        project_path="/tmp/proj",
+        owner="octo",
+        repo="repo",
+        pr_number="42",
+        pr_url="https://github.com/octo/repo/pull/42",
+        review_summary={"lgtm": True},
+        review_data={},
+        verdict_submitted=True,
+        closed=False,
+        ultra=False,
+    )
+
+    assert hooks.get_registry() is not None
+    mod = sys.modules["koan_hook_capture"]
+    assert mod.seen == ["42"]

@@ -67,7 +67,7 @@ def run(ctx):
 ```
 
 Recognized filenames: `session_start.py`, `session_end.py`, `pre_mission.py`,
-`post_mission.py`.
+`post_mission.py`, `post_review.py`.
 
 ## Available events
 
@@ -77,10 +77,20 @@ Recognized filenames: `session_start.py`, `session_end.py`, `pre_mission.py`,
 | `session_end` | On shutdown (finally block) | `instance_dir`, `total_runs` |
 | `pre_mission` | Before Claude execution | `instance_dir`, `project_name`, `project_path`, `mission_title`, `autonomous_mode`, `run_num` |
 | `post_mission` | After post-mission pipeline | `instance_dir`, `project_name`, `project_path`, `exit_code`, `mission_title`, `duration_minutes`, `result`, `result_text` |
+| `post_review` | After a PR review is successfully posted | `instance_dir`, `project_name`, `project_path`, `owner`, `repo`, `pr_number`, `pr_url`, `review_summary`, `review_data`, `lgtm`, `verdict_submitted`, `closed`, `ultra` |
 
 `result_text` is the truncated Claude stdout summary (up to 4000 chars) —
 useful for parsing JIRA keys, PR URLs, or `RESULT:` lines without re-reading
 the stdout capture file.
+
+## extract_review_lessons.py.example — post_review capture
+
+Copy to `instance/hooks/extract_review_lessons.py` (drop `.example`) and
+restart to activate. On every posted PR review it writes a raw metadata
+record to `instance/reviews/<pr_number>_<timestamp>.json` (PR info, verdict,
+findings; `human_reaction` is null — filled by a future reaction pipeline).
+Files accumulate until a future cleanup policy is added — prune manually if
+`instance/reviews/` grows large.
 
 ## Tips
 
