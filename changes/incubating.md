@@ -14,6 +14,8 @@ Do not hand-edit released entries — they are the source for `CHANGES.md`.
 
 ## ${NEXT}
 
+## v0.8.0 — 2026-07-18
+
 **Added**
 
 - **Chat stays responsive during missions** — your chat messages now get a priority lane, so the bot answers you even while it is busy running a mission (#1084).
