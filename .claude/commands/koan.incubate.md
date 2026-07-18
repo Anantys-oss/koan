@@ -30,10 +30,15 @@ Arguments:
    git log incubating..origin/<source> --no-merges --format='%s'
    git diff --stat incubating..origin/<source>
    ```
-5. **Group the log by type** (`feat` / `fix` / `refactor` / `perf` / `docs` / `test` / `ci`) and write a **concise grouped changelog** — do NOT dump the raw log. Highlight:
+5. **Group the log by type** (`feat` / `fix` / `refactor` / `perf` / `docs` / `test` / `ci`) and write a **concise grouped summary** — do NOT dump the raw log. Highlight:
    - Notable features (1 line each).
    - Security-relevant fixes.
    - Refactors that move/rename/delete files.
+
+   This summary is for the **go/no-go review only** — it is developer-facing
+   (commit types, PR numbers, file churn are fine here). It is **NOT** the
+   journal entry: do not paste it verbatim into `changes/incubating.md`. The
+   journal is written separately in step 9 for a different audience.
 6. **Assess risk** and state it plainly:
    - **Conflicts** — does any file changed on `incubating` also change on `<source>`? (`git merge --no-commit --no-ff` dry check, then `git merge --abort`).
    - **Lost work** — any commit unique to `incubating` (`git log origin/<source>..incubating --oneline`) whose files were refactored/deleted on `<source>`? Flag it — its change may be silently orphaned.
@@ -50,14 +55,33 @@ Arguments:
 
 ## Update the journal
 
-9. Append a new entry under the top `## ${NEXT}` heading in `changes/incubating.md` (create the file/section if missing — the token is literal, one `$`, exactly `## ${NEXT}`; the release workflow matches it verbatim and replaces it with the version). Use this shape — reuse the grouped changelog from step 5:
+9. Append a new entry under the top `## ${NEXT}` heading in `changes/incubating.md` (create the file/section if missing — the token is literal, one `$`, exactly `## ${NEXT}`; the release workflow matches it verbatim and replaces it with the version).
+
+   **Write this entry for USERS, not developers.** `release.yml` copies the
+   `## ${NEXT}` body **verbatim** into `CHANGES.md` and into the published
+   GitHub release notes — so this is what your users read, not a diff summary.
+   Do NOT reuse the step-5 review text. Instead:
+   - **Group by user impact**, Keep-a-Changelog style: `**Added**` /
+     `**Changed**` / `**Fixed**` / `**Removed**` / `**Deprecated**` (omit empty
+     groups). Do NOT group by commit type (`feat`/`refactor`/`test`/`ci`).
+   - **Describe behavior and benefit** — what a user can now do, what changed
+     for them, what was broken and is now fixed. Lead with the capability, not
+     the mechanism.
+   - **Drop internal noise**: no file names, test names, LoC counts, module
+     paths, or refactor churn. Pure-internal work (refactors, test-only,
+     CI-only, internal docs) is **omitted** unless it changes observable
+     behavior. PR/issue numbers are fine as trailing references (e.g. `(#2439)`).
+   - **Plain, present-tense, user language.** "Chat stays responsive while a
+     mission runs" — not "add chat priority lane to bridge dispatch loop".
+
+   Shape:
    ```markdown
    ### Merged <YYYY-MM-DD> — <source> @ <short-sha> (<N> commits)
 
-   **Features** …
-   **Refactors / perf** …
-   **Fixes** — highlights …
-   **Docs / tests / CI** …
+   **Added** — new user-facing capabilities …
+   **Changed** — behavior changes users will notice …
+   **Fixed** — bugs resolved, described by symptom …
+   **Removed** / **Deprecated** — as applicable …
    ```
    Get the values with `date -u +%Y-%m-%d` and `git rev-parse --short origin/<source>`.
 10. Stage and commit the journal:
@@ -75,5 +99,7 @@ Arguments:
 - **Always run the review phase** and wait for go/no-go unless `--yes`.
 - **main wins** on substantive conflicts; never silently drop incubating-only work — flag it instead.
 - **Never edit released entries** in `changes/incubating.md` (only append under `## ${NEXT}`).
+- **Journal entries are user-facing release notes** (published verbatim by `release.yml`) — group by user impact (Added/Changed/Fixed), describe behavior and benefit, and omit internal-only churn and file/test/LoC detail. The step-5 review summary is separate and developer-facing.
+- **`CHANGES.md` is the released changelog** (finalized by `release.yml`); `changes/incubating.md` is only the staging journal. There is no `changes/stable.md` — do not create or reference one.
 - **Never tag, never release** — this skill preps `incubating` only; the release itself belongs to the `release.yml` workflow dispatch.
 - English only in all commits and journal text.
