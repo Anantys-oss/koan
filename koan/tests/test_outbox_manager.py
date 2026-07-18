@@ -206,6 +206,62 @@ class TestFlush:
         mgr = OutboxManager(outbox_file, instance_dir, conv_file)
         mgr.flush()  # should not raise
 
+    @patch("app.outbox_manager.fallback_format", return_value="FALLBACK")
+    @patch("app.outbox_manager.format_message", return_value="AI-FORMATTED")
+    @patch("app.active_mission.is_mission_active")
+    def test_skips_ai_format_during_active_mission(
+        self, mock_active, mock_ai, mock_fallback, outbox_env
+    ):
+        # While a mission executes, formatting uses the instant local fallback
+        # and makes NO AI call (frees account headroom for chat — #1084).
+        mgr, _, _ = outbox_env
+        mock_active.return_value = True
+
+        result = mgr._format_message("Mission progress")
+
+        assert result == "FALLBACK"
+        mock_ai.assert_not_called()
+        mock_fallback.assert_called_once_with("Mission progress")
+
+    @patch("app.outbox_manager.fallback_format", return_value="FALLBACK")
+    @patch("app.outbox_manager.load_memory_context", return_value="")
+    @patch("app.outbox_manager.load_human_prefs", return_value="")
+    @patch("app.outbox_manager.load_soul", return_value="")
+    @patch("app.outbox_manager.format_message", return_value="AI-FORMATTED")
+    @patch("app.active_mission.is_mission_active")
+    def test_uses_ai_format_when_no_mission(
+        self, mock_active, mock_ai, mock_soul, mock_prefs, mock_mem, mock_fallback, outbox_env
+    ):
+        # No mission executing → the AI formatter runs as before.
+        mgr, _, _ = outbox_env
+        mock_active.return_value = False
+
+        result = mgr._format_message("A notification")
+
+        assert result == "AI-FORMATTED"
+        mock_ai.assert_called_once()
+        mock_fallback.assert_not_called()
+
+    @patch("app.outbox_manager.fallback_format", return_value="FALLBACK")
+    @patch("app.outbox_manager.load_memory_context", return_value="")
+    @patch("app.outbox_manager.load_human_prefs", return_value="")
+    @patch("app.outbox_manager.load_soul", return_value="")
+    @patch("app.outbox_manager.format_message", return_value="AI-FORMATTED")
+    @patch("app.active_mission.is_mission_active")
+    def test_mission_awareness_is_not_sticky(
+        self, mock_active, mock_ai, mock_soul, mock_prefs, mock_mem, mock_fallback, outbox_env
+    ):
+        # Each call re-evaluates: mission active → fallback, then mission ends → AI.
+        mgr, _, _ = outbox_env
+        mock_active.side_effect = [True, False]
+
+        first = mgr._format_message("during")
+        second = mgr._format_message("after")
+
+        assert first == "FALLBACK"
+        assert second == "AI-FORMATTED"
+        assert mock_ai.call_count == 1
+
     @patch("app.outbox_manager.OutboxManager._get_last_message_id", return_value=42)
     @patch("app.outbox_manager.save_conversation_message")
     @patch("app.outbox_manager.send_telegram", return_value=True)
