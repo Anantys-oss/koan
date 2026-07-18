@@ -12,6 +12,8 @@ from app.issue_tracker import (
     UnresolvedJiraProjectError,
     client_for_project,
     client_for_url,
+    link_issues,
+    update_issue,
 )
 from app.issue_tracker.base import IssueTracker
 from app.issue_tracker.github import GitHubIssueTracker
@@ -186,6 +188,29 @@ class TestGitHubIssueTracker:
         assert mock_create.call_args[1]["labels"] == ["plan"]
         assert mock_create.call_args[1]["repo"] == "o/r"
 
+    def test_update_issue_delegates_to_issue_edit(self):
+        with patch("app.github.issue_edit") as mock_edit:
+            ok = GitHubIssueTracker(repo="o/r", project_path="/p").update_issue(
+                "https://github.com/o/r/issues/42", "new body",
+            )
+        assert ok is True
+        assert mock_edit.call_args[0][0] == "42"
+        assert mock_edit.call_args[0][1] == "new body"
+
+    def test_update_issue_returns_false_on_error(self):
+        with patch("app.github.issue_edit", side_effect=RuntimeError("boom")):
+            ok = GitHubIssueTracker(repo="o/r").update_issue(
+                "https://github.com/o/r/issues/42", "b",
+            )
+        assert ok is False
+
+    def test_link_issues_is_noop(self):
+        # GitHub expresses linkage via #N references; no native link call.
+        assert GitHubIssueTracker(repo="o/r").link_issues(
+            "https://github.com/o/r/issues/1",
+            "https://github.com/o/r/issues/2",
+        ) is False
+
     def test_find_existing_plan_issue_returns_ref(self):
         results = json.dumps([
             {"number": 42, "title": "Add dark mode",
@@ -295,6 +320,40 @@ class TestJiraIssueTracker:
         assert ref.key == "PROJ-3"
         assert ref.provider == "jira"
 
+    def test_update_issue_delegates_to_jira_description_update(self):
+        with patch(f"{_JIRA}.jira_update_issue_description",
+                   return_value=True) as mock_upd:
+            ok = JiraIssueTracker(project_key="PROJ").update_issue(
+                "https://org.atlassian.net/browse/PROJ-42", "new body",
+            )
+        assert ok is True
+        assert mock_upd.call_args[0][0] == "PROJ-42"
+        assert mock_upd.call_args[0][1] == "new body"
+
+    def test_update_issue_returns_false_on_error(self):
+        with patch(f"{_JIRA}.jira_update_issue_description",
+                   side_effect=RuntimeError("boom")):
+            ok = JiraIssueTracker(project_key="PROJ").update_issue(
+                "https://org.atlassian.net/browse/PROJ-42", "b",
+            )
+        assert ok is False
+
     def test_find_existing_plan_issue_none_without_key(self):
         ref = JiraIssueTracker(project_key="").find_existing_plan_issue("idea")
         assert ref is None
+
+
+class TestServiceLayerUpdateAndLink:
+    """update_issue/link_issues route through the client that owns the URL."""
+
+    def test_update_issue_routes_to_github(self):
+        with patch("app.github.issue_edit") as mock_edit:
+            ok = update_issue("https://github.com/o/r/issues/5", "body")
+        assert ok is True
+        assert mock_edit.call_args[0][0] == "5"
+
+    def test_link_issues_github_is_noop(self):
+        assert link_issues(
+            "https://github.com/o/r/issues/1",
+            "https://github.com/o/r/issues/2",
+        ) is False
