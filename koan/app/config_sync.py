@@ -8,7 +8,6 @@ safe (already live) vs unsafe (need a restart to take effect).
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import sys
 from pathlib import Path
@@ -72,9 +71,13 @@ def write_baseline(koan_root: Path) -> None:
     """Persist the current config as the post-restart baseline."""
     path = koan_root / "instance" / BASELINE_FILE
     # If config is broken at startup there is no meaningful baseline to
-    # snapshot; skip rather than crash the startup hook.
-    with contextlib.suppress(OSError, _ConfigReadError):
+    # snapshot; skip rather than crash the startup hook. Log the failure so a
+    # persistent write problem (disk full, permissions) is observable — a
+    # missing baseline silently reports "synced", masking restart-pending state.
+    try:
         atomic_write(path, json.dumps(_snapshot(koan_root)))
+    except (OSError, _ConfigReadError) as e:
+        print(f"[config_sync] baseline write failed: {e}", file=sys.stderr)
 
 
 def _read_baseline(koan_root: Path) -> Optional[Dict[str, Dict[str, Any]]]:

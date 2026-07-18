@@ -102,9 +102,20 @@ def api_config_sync():
 def api_config_restart_if_idle():
     """Restart the agent only when idle (no in-flight mission); 409 if busy."""
     import sys
-    # Only an in-flight mission ("working") blocks a restart; idle/sleeping/paused/stopped are safe.
+    from app.active_mission import is_mission_active
+    # Authoritative in-flight check: the ``.koan-active`` provider-liveness
+    # signal, NOT the derived ``.koan-status`` string (which flips to a stale
+    # "idle" after 5 min, so a mission running longer would be misclassified
+    # idle and the restart would drop in-flight work). Also treat error_recovery
+    # and a stale status writer as busy — err on the side of not restarting.
     agent_state = stats_svc.get_agent_state()
-    if agent_state.get("state") == "working":
+    label = (agent_state.get("label") or "").lower()
+    busy = (
+        is_mission_active(state.KOAN_ROOT)
+        or agent_state.get("state") in ("working", "error_recovery")
+        or "stale" in label
+    )
+    if busy:
         return jsonify({"ok": False, "error": "agent_busy",
                         "state": agent_state.get("state")}), 409
     from app.restart_manager import request_restart

@@ -72,7 +72,9 @@
                 if (data.config_sync) {
                     handleConfigSync(data.config_sync);
                 }
-            } catch (ex) {}
+            } catch (ex) {
+                console.error('[dashboard] state stream handler error', ex);
+            }
         };
         src.onerror = function () {
             src.close();
@@ -132,14 +134,32 @@
         var modal = document.getElementById('config-restart-modal');
         if (now) {
             now.addEventListener('click', function () {
+                var busy = document.getElementById('config-restart-busy');
                 fetch('/api/config/restart-if-idle', { method: 'POST' })
                     .then(function (r) {
                         if (r.status === 409) {
-                            var busy = document.getElementById('config-restart-busy');
-                            if (busy) busy.hidden = false;
+                            if (busy) {
+                                busy.textContent = 'Agent is busy — try again when it is idle.';
+                                busy.hidden = false;
+                            }
                             return;
                         }
+                        if (!r.ok) {
+                            if (busy) {
+                                busy.textContent = 'Restart failed — check the agent logs.';
+                                busy.hidden = false;
+                            }
+                            return;
+                        }
+                        // Only dismiss on a 2xx (restart actually signaled).
                         if (modal) modal.hidden = true;
+                    })
+                    .catch(function (ex) {
+                        console.error('[config] restart request failed', ex);
+                        if (busy) {
+                            busy.textContent = 'Restart request failed — check your connection.';
+                            busy.hidden = false;
+                        }
                     });
             });
         }
