@@ -15,7 +15,7 @@ tasks), following the repo's conventional-commit style.
 
 ## Phase 1: Setup
 
-- [ ] T001 Confirm the Jira transport seams exist and are mockable in `koan/app/jira_notifications.py` (`_jira_post`, `_jira_put`, `_jira_auth_from_config`, existing `_text_to_adf`) and the tracker factory seams in `koan/app/issue_tracker/__init__.py` (`client_for_url`, `client_for_project`); no code change — a read-only verification that the plan's integration points are accurate before edits.
+- [X] T001 Confirm the Jira transport seams exist and are mockable in `koan/app/jira_notifications.py` (`_jira_post`, `_jira_put`, `_jira_auth_from_config`, existing `_text_to_adf`) and the tracker factory seams in `koan/app/issue_tracker/__init__.py` (`client_for_url`, `client_for_project`); no code change — a read-only verification that the plan's integration points are accurate before edits.
 
 ---
 
@@ -85,10 +85,10 @@ sub-issue on Jira; zero on GitHub.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T018 [P] Update durable contract `specs/components/issue-tracking.md` — document the new `update_issue`/`link_issues` neutral operations, the ADF rich-rendering responsibility of the Jira transport for issue descriptions (and the comment carve-out), and the master↔sub native-link behavior. (Declared architectural change — PR checkbox.)
-- [ ] T019 [P] Update durable skill spec `specs/skills/brainstorm.md` — brainstorm now creates rich, natively-linked issues on Jira via the provider-neutral service layer (rendering + SUB-N resolution + master linking), GitHub unchanged.
-- [ ] T020 [P] Update `docs/messaging/jira-integration.md` (rich brainstorm rendering, SUB-N key resolution, native master↔sub links) and, if user-facing behavior warrants, the `/brainstorm` entries in `docs/users/skills.md` / `docs/users/user-manual.md`. Then run `/brain sync` to refresh frontmatter/indexes.
-- [ ] T021 Run `make lint` and the full targeted test suite (`KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_jira_adf.py koan/tests/test_jira_transport_ops.py koan/tests/test_brainstorm_jira.py koan/tests/test_issue_tracker*.py -v`); fix any failures. Confirm no `.specify/feature.json` is staged for the PR.
+- [X] T018 [P] Update durable contract `specs/components/issue-tracking.md` — document the new `update_issue`/`link_issues` neutral operations, the ADF rich-rendering responsibility of the Jira transport for issue descriptions (and the comment carve-out), and the master↔sub native-link behavior. (Declared architectural change — PR checkbox.)
+- [X] T019 [P] Update durable skill spec `specs/skills/brainstorm.md` — brainstorm now creates rich, natively-linked issues on Jira via the provider-neutral service layer (rendering + SUB-N resolution + master linking), GitHub unchanged.
+- [X] T020 [P] Update `docs/messaging/jira-integration.md` (rich brainstorm rendering, SUB-N key resolution, native master↔sub links) and, if user-facing behavior warrants, the `/brainstorm` entries in `docs/users/skills.md` / `docs/users/user-manual.md`. Then run `/brain sync` to refresh frontmatter/indexes.
+- [X] T021 Run `make lint` and the full targeted test suite (`KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/test_jira_adf.py koan/tests/test_jira_transport_ops.py koan/tests/test_brainstorm_jira.py koan/tests/test_issue_tracker*.py -v`); fix any failures. Confirm no `.specify/feature.json` is staged for the PR.
 
 ---
 
