@@ -119,6 +119,14 @@ class TestDockerfile:
         assert "hasCompletedOnboarding" in self.dockerfile
         assert ".claude.json" in self.dockerfile
 
+    def test_does_not_copy_claude_md(self):
+        """CLAUDE.md must not be copied into the image (see #2379/#2383)."""
+        offending = [
+            ln for ln in self.dockerfile.splitlines()
+            if ln.strip().startswith("COPY") and "CLAUDE.md" in ln
+        ]
+        assert not offending, f"Dockerfile still copies CLAUDE.md: {offending}"
+
 
 class TestEntrypoint:
     """Validate docker-entrypoint.sh structure and correctness."""
@@ -420,6 +428,14 @@ class TestDockerIgnore:
         """claude-auth/ should not be in build context."""
         assert "claude-auth/" in self.patterns
 
+    def test_excludes_dev_tooling_root_and_nested(self):
+        """koan's own contributor tooling must be kept out of the build context."""
+        lines = {ln.strip() for ln in self.dockerignore.splitlines()}
+        for name in ("CLAUDE.md", "AGENTS.md", "KOAN.md"):
+            assert name in lines, f"{name} not excluded at root in .dockerignore"
+            assert f"**/{name}" in lines, f"**/{name} (nested) not excluded"
+        assert ".claude/" in lines, ".claude/ not excluded in .dockerignore"
+
 
 class TestDockerCompose:
     """Validate docker-compose.yml structure."""
@@ -621,3 +637,34 @@ class TestInstanceHydration:
             capture_output=True, text=True,
         )
         assert result.returncode == 0, result.stderr
+
+
+class TestImageCleanGuard:
+    """Issue #2383: live-image guard script exists and is wired into publish."""
+
+    def test_guard_script_exists_and_executable(self):
+        script = REPO_ROOT / "scripts" / "verify_image_clean.sh"
+        assert script.exists(), "scripts/verify_image_clean.sh missing"
+        assert os.access(script, os.X_OK), "verify_image_clean.sh not executable"
+        body = script.read_text()
+        for name in ("CLAUDE.md", "AGENTS.md", ".claude", "KOAN.md"):
+            assert name in body, f"guard does not check for {name}"
+
+    def test_guard_script_valid_bash(self):
+        result = subprocess.run(
+            ["bash", "-n", str(REPO_ROOT / "scripts" / "verify_image_clean.sh")],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.xfail(
+        strict=False,
+        reason="Wiring verify_image_clean.sh into docker-publish.yml requires a "
+        "token with the 'workflow' GitHub scope, which the automation account "
+        "lacks; a maintainer must apply the workflow diff from the PR body. "
+        "This test auto-XPASSes once wired — drop the marker then (#2383).",
+    )
+    def test_docker_publish_workflow_runs_the_guard(self):
+        wf = (REPO_ROOT / ".github" / "workflows" / "docker-publish.yml").read_text()
+        assert "verify_image_clean.sh" in wf, \
+            "docker-publish.yml does not invoke the image guard"
