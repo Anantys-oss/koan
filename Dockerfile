@@ -76,7 +76,6 @@ RUN pip install --no-cache-dir -r /app/koan/requirements.txt \
 COPY koan/ /app/koan/
 COPY instance.example/ /app/instance.example/
 COPY Makefile /app/
-COPY CLAUDE.md /app/
 COPY docs/ /app/docs/
 COPY projects.example.yaml /app/
 
