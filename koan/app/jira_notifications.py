@@ -1027,6 +1027,64 @@ def jira_create_issue(
     return f"{base_url}/browse/{result['key']}"
 
 
+def jira_update_issue_description(issue_key: str, body_text: str) -> bool:
+    """Rewrite a Jira issue's description with rich ADF. False on failure.
+
+    Used to resolve SUB-N cross-references after all sibling issues exist.
+    Never raises — a transport failure returns False so callers can degrade.
+    """
+    if not str(issue_key).strip():
+        return False
+    base_url, auth_header = _jira_auth_from_config()
+    # _jira_put returns {} on an empty successful body, None on error.
+    result = _jira_put(
+        base_url,
+        auth_header,
+        f"/rest/api/3/issue/{issue_key}",
+        {"fields": {"description": markdown_to_adf(body_text)}},
+    )
+    return result is not None
+
+
+def jira_link_issues(
+    outward_key: str,
+    inward_key: str,
+    link_type: str = "Relates",
+) -> bool:
+    """Create a native Jira issue link ``outward`` → ``inward``. False on failure.
+
+    ``outward_key`` is typically the master tracking issue and ``inward_key`` a
+    sub-issue; the default ``"Relates"`` link type is always present in Jira. The
+    issue-link endpoint returns ``201`` with an empty body, so this checks the
+    HTTP status directly rather than relying on a parsed JSON return. Never
+    raises — a failure returns False so linking can degrade non-fatally.
+    """
+    if not str(outward_key).strip() or not str(inward_key).strip():
+        return False
+    base_url, auth_header = _jira_auth_from_config()
+    payload = {
+        "type": {"name": link_type or "Relates"},
+        "outwardIssue": {"key": outward_key},
+        "inwardIssue": {"key": inward_key},
+    }
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            base_url + "/rest/api/3/issueLink",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+        )
+        req.add_header("Authorization", auth_header)
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return 200 <= resp.status < 300
+    except Exception as e:
+        log.warning("Jira issue link %s -> %s failed: %s", outward_key, inward_key, e)
+        return False
+
+
 def jira_search_issues(
     project_key: str,
     text: str,
