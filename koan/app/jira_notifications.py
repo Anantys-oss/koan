@@ -216,6 +216,187 @@ def _text_to_adf(text: str) -> Dict[str, Any]:
     return {"version": 1, "type": "doc", "content": content}
 
 
+_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_MD_ULIST_RE = re.compile(r"^\s*[-*+]\s+(.*)$")
+_MD_OLIST_RE = re.compile(r"^\s*\d+\.\s+(.*)$")
+_MD_RULE_RE = re.compile(r"^\s*([-*_])\1{2,}\s*$")
+_MD_FENCE_RE = re.compile(r"^\s*```(.*)$")
+_MD_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
+_MD_INLINE_RE = re.compile(
+    r"(?P<code>`[^`]+`)"
+    r"|(?P<bold>\*\*[^*]+\*\*)"
+    r"|(?P<em>\*[^*\s][^*]*\*|_[^_\s][^_]*_)"
+)
+
+
+def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
+    """Split a line of markdown into ADF text nodes with inline marks.
+
+    Recognizes ``**bold**``, ``*em*`` / ``_em_``, and ``` `code` ```. Inline
+    code takes precedence (its content is never re-parsed for other marks). A
+    lone or unbalanced marker is emitted as literal text — never raises.
+    """
+    nodes: List[Dict[str, Any]] = []
+    pos = 0
+    for match in _MD_INLINE_RE.finditer(text):
+        if match.start() > pos:
+            nodes.append({"type": "text", "text": text[pos:match.start()]})
+        if match.group("code"):
+            nodes.append({
+                "type": "text",
+                "text": match.group("code")[1:-1],
+                "marks": [{"type": "code"}],
+            })
+        elif match.group("bold"):
+            nodes.append({
+                "type": "text",
+                "text": match.group("bold")[2:-2],
+                "marks": [{"type": "strong"}],
+            })
+        else:  # em
+            nodes.append({
+                "type": "text",
+                "text": match.group("em")[1:-1],
+                "marks": [{"type": "em"}],
+            })
+        pos = match.end()
+    if pos < len(text):
+        nodes.append({"type": "text", "text": text[pos:]})
+    return nodes
+
+
+def _adf_list_items(item_texts: List[str]) -> List[Dict[str, Any]]:
+    """Build ADF ``listItem`` nodes (each a paragraph) from raw item texts."""
+    return [
+        {
+            "type": "listItem",
+            "content": [{"type": "paragraph", "content": _inline_to_adf(text)}],
+        }
+        for text in item_texts
+    ]
+
+
+def markdown_to_adf(text: str) -> Dict[str, Any]:
+    """Convert the markdown subset Kōan emits into a Jira ADF ``doc``.
+
+    Structural constructs are mapped to native ADF nodes so Jira renders them
+    richly instead of showing literal markdown:
+
+    - ``#``–``######`` → ``heading`` (level = number of ``#``)
+    - ``-``/``*``/``+`` list items → ``bulletList`` (task markers ``[ ]``/``[x]``
+      are preserved as leading text)
+    - ``1.`` list items → ``orderedList``
+    - ``---``/``***``/``___`` → ``rule``
+    - ``> `` lines → ``blockquote``
+    - fenced ```` ``` ```` blocks → ``codeBlock`` (content is emitted verbatim,
+      never re-parsed)
+    - inline ``**bold**`` / ``*em*`` / ``` `code` `` → marks
+
+    Any line that matches none of the above degrades to paragraph text, so
+    unmodeled markdown is readable rather than dropped. Empty input yields a
+    ``doc`` with a single empty paragraph (mirrors :func:`_text_to_adf`).
+    This is a superset of ``_text_to_adf`` and is used for issue descriptions;
+    comments deliberately keep the plainer converter.
+    """
+    lines = (text or "").splitlines()
+    content: List[Dict[str, Any]] = []
+    paragraph: List[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            content.append({
+                "type": "paragraph",
+                "content": _inline_to_adf("\n".join(paragraph)),
+            })
+            paragraph.clear()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        fence = _MD_FENCE_RE.match(line)
+        if fence:
+            flush_paragraph()
+            language = fence.group(1).strip()
+            code_lines: List[str] = []
+            i += 1
+            while i < len(lines) and not _MD_FENCE_RE.match(lines[i]):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # consume closing fence (if present)
+            node: Dict[str, Any] = {"type": "codeBlock"}
+            if language:
+                node["attrs"] = {"language": language}
+            if code_lines:
+                node["content"] = [{"type": "text", "text": "\n".join(code_lines)}]
+            content.append(node)
+            continue
+
+        if not line.strip():
+            flush_paragraph()
+            i += 1
+            continue
+
+        if _MD_RULE_RE.match(line):
+            flush_paragraph()
+            content.append({"type": "rule"})
+            i += 1
+            continue
+
+        heading = _MD_HEADING_RE.match(line)
+        if heading:
+            flush_paragraph()
+            content.append({
+                "type": "heading",
+                "attrs": {"level": len(heading.group(1))},
+                "content": _inline_to_adf(heading.group(2).strip()),
+            })
+            i += 1
+            continue
+
+        if _MD_ULIST_RE.match(line):
+            flush_paragraph()
+            items: List[str] = []
+            while i < len(lines) and _MD_ULIST_RE.match(lines[i]):
+                items.append(_MD_ULIST_RE.match(lines[i]).group(1))
+                i += 1
+            content.append({"type": "bulletList", "content": _adf_list_items(items)})
+            continue
+
+        if _MD_OLIST_RE.match(line):
+            flush_paragraph()
+            items = []
+            while i < len(lines) and _MD_OLIST_RE.match(lines[i]):
+                items.append(_MD_OLIST_RE.match(lines[i]).group(1))
+                i += 1
+            content.append({"type": "orderedList", "content": _adf_list_items(items)})
+            continue
+
+        if _MD_QUOTE_RE.match(line):
+            flush_paragraph()
+            quote_lines: List[str] = []
+            while i < len(lines) and _MD_QUOTE_RE.match(lines[i]):
+                quote_lines.append(_MD_QUOTE_RE.match(lines[i]).group(1))
+                i += 1
+            content.append({
+                "type": "blockquote",
+                "content": [
+                    {"type": "paragraph", "content": _inline_to_adf("\n".join(quote_lines))}
+                ],
+            })
+            continue
+
+        paragraph.append(line)
+        i += 1
+
+    flush_paragraph()
+
+    if not content:
+        content = [{"type": "paragraph", "content": []}]
+
+    return {"version": 1, "type": "doc", "content": content}
+
+
 def _extract_comment_text(comment_body: Any) -> str:
     """Extract plain text from a Jira comment body.
 
