@@ -557,62 +557,71 @@ class TestApplySubReplacements:
 
 
 class TestReplaceSubPlaceholders:
-    def test_calls_issue_edit_for_changed_bodies(self):
+    """SUB-N resolution now flows through the provider-neutral update_issue
+    service (works for both #N GitHub numbers and PROJ-N Jira keys)."""
+
+    def test_calls_update_issue_for_changed_bodies(self):
         created = [("42", "Title A", "url1", 1), ("43", "Title B", "url2", 2)]
         original = [
             {"title": "Title A", "body": "Depends on SUB-2."},
             {"title": "Title B", "body": "No deps."},
         ]
-        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
-            _replace_sub_placeholders(created, original, "/fake")
-            # Only issue 42 had a placeholder that changed
-            mock_edit.assert_called_once_with("42", "Depends on #43.", cwd="/fake", repo=None)
+        with patch("skills.core.brainstorm.brainstorm_runner.update_issue") as mock_upd:
+            _replace_sub_placeholders(created, original, "proj", "/fake")
+            # Only issue 42 had a placeholder that changed; routed by its URL.
+            mock_upd.assert_called_once_with(
+                "url1", "Depends on #43.", "proj", "/fake",
+            )
 
-    def test_skips_edit_when_no_placeholders(self):
+    def test_resolves_jira_keys(self):
+        created = [
+            ("PROJ-1", "A", "https://x/browse/PROJ-1", 1),
+            ("PROJ-2", "B", "https://x/browse/PROJ-2", 2),
+        ]
+        original = [
+            {"title": "A", "body": "Depends on SUB-2."},
+            {"title": "B", "body": "No deps."},
+        ]
+        with patch("skills.core.brainstorm.brainstorm_runner.update_issue") as mock_upd:
+            _replace_sub_placeholders(created, original, "proj", "/fake")
+            url, body, _name, _path = mock_upd.call_args.args
+            assert url == "https://x/browse/PROJ-1"
+            # Jira key rendered verbatim (no leading '#'), no literal SUB-2.
+            assert body == "Depends on PROJ-2."
+
+    def test_skips_update_when_no_placeholders(self):
         created = [("10", "T", "u", 1)]
         original = [{"title": "T", "body": "No placeholders here."}]
-        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
-            _replace_sub_placeholders(created, original, "/fake")
-            mock_edit.assert_not_called()
+        with patch("skills.core.brainstorm.brainstorm_runner.update_issue") as mock_upd:
+            _replace_sub_placeholders(created, original, "proj", "/fake")
+            mock_upd.assert_not_called()
 
-    def test_handles_edit_failure_gracefully(self):
+    def test_handles_update_failure_gracefully(self):
         created = [("42", "T", "u", 1), ("43", "T2", "u2", 2)]
         original = [
             {"title": "T", "body": "See SUB-2"},
             {"title": "T2", "body": "See SUB-1"},
         ]
-        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit",
-                    side_effect=RuntimeError("API error")):
+        with patch("skills.core.brainstorm.brainstorm_runner.update_issue",
+                   side_effect=RuntimeError("API error")):
             # Should not raise — errors are caught and logged
-            _replace_sub_placeholders(created, original, "/fake")
+            _replace_sub_placeholders(created, original, "proj", "/fake")
 
     def test_gap_in_positions_uses_correct_original_body(self):
         """When issue 2 failed to create, issue 3's body should still be
         fetched from original_issues[2], not original_issues[1]."""
-        created = [("42", "A", "u", 1), ("44", "C", "u", 3)]
+        created = [("42", "A", "u42", 1), ("44", "C", "u44", 3)]
         original = [
             {"title": "A", "body": "See SUB-3"},
             {"title": "B", "body": "See SUB-1"},  # this one failed
             {"title": "C", "body": "See SUB-1"},
         ]
-        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
-            _replace_sub_placeholders(created, original, "/fake")
-            # Both issues reference existing ones, so both get edited
-            calls = {c.args[0]: c.args[1] for c in mock_edit.call_args_list}
-            assert calls["42"] == "See #44"  # SUB-3 → #44
-            assert calls["44"] == "See #42"  # SUB-1 → #42
-
-    def test_passes_repo_to_issue_edit(self):
-        """When repo is provided, it must be forwarded to issue_edit."""
-        created = [("42", "A", "u1", 1)]
-        original = [{"title": "A", "body": "See SUB-1"}]
-        with patch("skills.core.brainstorm.brainstorm_runner.issue_edit") as mock_edit:
-            _replace_sub_placeholders(
-                created, original, "/fake", repo="upstream/myapp",
-            )
-            mock_edit.assert_called_once_with(
-                "42", "See #42", cwd="/fake", repo="upstream/myapp",
-            )
+        with patch("skills.core.brainstorm.brainstorm_runner.update_issue") as mock_upd:
+            _replace_sub_placeholders(created, original, "proj", "/fake")
+            # Both issues reference existing ones, so both get updated
+            calls = {c.args[0]: c.args[1] for c in mock_upd.call_args_list}
+            assert calls["u42"] == "See #44"  # SUB-3 → #44
+            assert calls["u44"] == "See #42"  # SUB-1 → #42
 
 
 class TestEnsureLabel:
@@ -1016,8 +1025,6 @@ class TestRunBrainstormRetry:
                           return_value=True), \
              patch.object(brainstorm_runner, "tracker_supports_labels",
                           return_value=True), \
-             patch.object(brainstorm_runner, "tracker_provider",
-                          return_value="github"), \
              patch.object(brainstorm_runner, "create_issue", mock_create), \
              patch.object(brainstorm_runner, "_ensure_label"), \
              patch.object(brainstorm_runner, "_replace_sub_placeholders"):
@@ -1088,8 +1095,6 @@ class TestRunBrainstormRetry:
                           return_value=True), \
              patch.object(brainstorm_runner, "tracker_supports_labels",
                           return_value=True), \
-             patch.object(brainstorm_runner, "tracker_provider",
-                          return_value="github"), \
              patch.object(brainstorm_runner, "create_issue", mock_create), \
              patch.object(brainstorm_runner, "_ensure_label"), \
              patch.object(brainstorm_runner, "_replace_sub_placeholders"):

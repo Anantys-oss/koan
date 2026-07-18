@@ -20,14 +20,15 @@ import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
-from app.github import issue_edit, run_gh
+from app.github import run_gh
 from app.issue_tracker import (
     client_for_project,
     create_issue,
+    link_issues,
     project_name_for_path,
     tracker_is_configured,
-    tracker_provider,
     tracker_supports_labels,
+    update_issue,
 )
 from app.prompts import load_prompt_or_skill
 
@@ -187,11 +188,10 @@ def run_brainstorm(
     if not created_issues:
         return False, "No issues were created."
 
-    # Replace SUB-N placeholders in issue bodies with real GitHub numbers
+    # Replace SUB-N placeholders in issue bodies with real refs (#N on GitHub,
+    # PROJ-N on Jira) via the provider-neutral update_issue service.
     _replace_sub_placeholders(
-        created_issues, issues, project_path,
-        tracker_provider(project_name, project_path),
-        repo=target_repo,
+        created_issues, issues, project_name, project_path,
     )
 
     # Build master issue
@@ -228,38 +228,45 @@ def run_brainstorm(
 
 
 def _replace_sub_placeholders(
-    created_issues, original_issues, project_path, provider="github",
-    repo=None,
+    created_issues, original_issues, project_name, project_path,
 ):
-    """Replace SUB-N placeholders in created issue bodies with real #numbers.
+    """Replace SUB-N placeholders in created issue bodies with real refs.
 
-    After all sub-issues are created on GitHub, we know each ordinal position's
-    real issue number. This function patches each issue body to replace
-    ``SUB-1``, ``SUB-2``, etc. with ``#42``, ``#43``, etc.
+    After all sub-issues exist we know each ordinal position's real identifier
+    (``#42`` on GitHub, ``PROJ-42`` on Jira). This patches each issue body to
+    replace ``SUB-1``, ``SUB-2``, etc. and persists the change through the
+    provider-neutral ``update_issue`` service so both trackers work via one
+    code path.
 
     Uses ``original_pos`` from each created_issues entry to map back to the
-    correct original issue body and to build the SUB-N → #number mapping.
+    correct original issue body and to build the SUB-N → ref mapping. Per-issue
+    failures are logged and skipped — never fatal.
     """
-    if provider != "github":
-        return
-
-    # Build original_pos → real number mapping (preserves original positions)
+    # Build original_pos → real ref mapping (preserves original positions).
+    # `_apply_sub_replacements` renders each ref via `_format_issue_ref`, which
+    # already handles numeric GitHub numbers and Jira keys.
     ordinal_to_number = {
         original_pos: number
         for number, _title, _url, original_pos in created_issues
     }
 
-    for number, _title, _url, original_pos in created_issues:
+    for number, _title, url, original_pos in created_issues:
         body = original_issues[original_pos - 1]["body"]
         updated = _apply_sub_replacements(body, ordinal_to_number)
-        if updated != body:
-            try:
-                issue_edit(number, updated, cwd=project_path, repo=repo)
-            except (RuntimeError, OSError) as e:
+        if updated == body:
+            continue
+        try:
+            if not update_issue(url, updated, project_name, project_path):
                 print(
-                    f"[brainstorm_runner] Failed to update issue #{number}: {e}",
+                    f"[brainstorm_runner] update_issue reported failure "
+                    f"for {number}",
                     file=sys.stderr,
                 )
+        except (RuntimeError, OSError) as e:
+            print(
+                f"[brainstorm_runner] Failed to update issue {number}: {e}",
+                file=sys.stderr,
+            )
 
 
 def _apply_sub_replacements(text, ordinal_to_number):

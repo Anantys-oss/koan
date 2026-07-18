@@ -64,6 +64,14 @@ class JiraIssueTracker(IssueTracker):
             issue_type=self.issue_type,
         )
 
+    def update_issue(self, url: str, body: str) -> bool:
+        from app.jira_notifications import jira_update_issue_description
+
+        try:
+            return jira_update_issue_description(parse_jira_url(url), body)
+        except (RuntimeError, OSError, ValueError):
+            return False
+
     def find_existing_plan_issue(self, idea: str) -> Optional[IssueRef]:
         if not self.project_key:
             return None
