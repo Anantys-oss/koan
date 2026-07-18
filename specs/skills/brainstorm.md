@@ -1,10 +1,10 @@
 ---
 type: skill-spec
 title: "Skill Spec — brainstorm"
-description: "Specifies the `/brainstorm` skill, which decomposes a topic into structured, linked GitHub sub-issues under a master tracking issue and is covered by the skill-eval harness."
+description: "Specifies the `/brainstorm` skill, which decomposes a topic into structured, linked sub-issues (GitHub or Jira) under a master tracking issue and is covered by the skill-eval harness."
 tags: [skill]
 created: 2026-07-02
-updated: 2026-07-02
+updated: 2026-07-18
 ---
 
 # Skill Spec — `brainstorm`
@@ -16,10 +16,29 @@ updated: 2026-07-02
 
 ## Purpose
 
-Decompose a broad topic into linked GitHub sub-issues grouped under a master
-tracking issue. Each sub-issue carries a structured body (why / approach /
-acceptance criteria / risks / scores / priority / dependencies) so the work is
-actionable and rankable.
+Decompose a broad topic into linked sub-issues grouped under a master tracking
+issue. Each sub-issue carries a structured body (why / approach / acceptance
+criteria / risks / scores / priority / dependencies) so the work is actionable
+and rankable.
+
+The **tracker is chosen per project** by the provider-neutral `issue_tracker`
+service layer (`tracker:` in `projects.yaml`) — brainstorm never branches on
+GitHub vs Jira itself:
+
+- **GitHub** (default) — sub-issues and master are GitHub Issues; `SUB-N`
+  cross-references resolve to `#N`; the master's task list expresses linkage.
+- **Jira** — sub-issues and master are created via the Jira REST API with the
+  project's configured issue type. Bodies are rendered as **rich ADF** (headings,
+  lists, checklists, rules, blockquotes, code, inline marks) rather than raw
+  markdown; `SUB-N` references resolve to real Jira keys (e.g. `PROJ-42`); and the
+  master is **natively linked** to each sub-issue via Jira "Linked issues"
+  relationships.
+
+Both paths run through one code path — `create_issue` / `update_issue`
+(`SUB-N` resolution) / `link_issues` (master↔sub) — so the "link them properly
+together" behavior is identical in shape across trackers. See
+`specs/components/issue-tracking.md` for the neutral operations and the ADF
+rendering / native-link contract.
 
 See `docs/users/skills.md` for the end-user `/brainstorm` reference and
 `docs/users/user-manual.md` for the fuller walkthrough.
@@ -34,11 +53,19 @@ See `docs/users/skills.md` for the end-user `/brainstorm` reference and
 
 ## Outputs / side effects
 
-- Generates a tag (if not provided) and ensures the GitHub label exists.
+- Generates a tag (if not provided) and ensures the GitHub label exists (labels
+  are a GitHub-only nicety; Jira ignores them per `supports_labels`).
 - Invokes Claude to decompose the topic into a JSON `{issues[]}` (each with
   `title` + structured `body`), plus optional synthesis (`top_ranked`,
   `fast_wins`, `overall_assessment`).
-- Creates the sub-issues and a master tracking issue linking them.
+- Creates the sub-issues and a master tracking issue linking them, via the
+  provider-neutral `issue_tracker` service.
+- Resolves `SUB-N` placeholders in sub-issue bodies to the real created refs
+  (`#N` on GitHub, `PROJ-N` on Jira) via `update_issue`; per-issue failures are
+  logged and skipped (non-fatal).
+- On Jira, renders bodies as rich ADF and creates native master↔sub links via
+  `link_issues`; on GitHub `link_issues` is a no-op. Link failures are logged and
+  skipped (non-fatal).
 
 ## Error cases
 
@@ -52,6 +79,9 @@ See `docs/users/skills.md` for the end-user `/brainstorm` reference and
 
 - **Runner:** `brainstorm_runner.py` (`run_brainstorm`). **GitHub:** `github_enabled`
   + `github_context_aware`.
+- **Tracker routing:** the `app.issue_tracker` service layer
+  (`create_issue` / `update_issue` / `link_issues`) — never a direct `gh`/Jira
+  call in the runner. Provider is resolved per project from `projects.yaml`.
 
 ## Invariants
 
