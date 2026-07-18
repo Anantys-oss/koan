@@ -43,8 +43,8 @@ surface that every user story builds on.
 brainstorm sub-issue is an ADF doc with heading/list/rule/mark nodes (not raw
 markdown).
 
-- [ ] T008 [US1] Change `jira_create_issue` in `koan/app/jira_notifications.py` to build the `description` field via `markdown_to_adf(body_text)` instead of `_text_to_adf(body_text)`. Leave `jira_add_comment`/`jira_edit_comment` on `_text_to_adf` (FR-009 — no comment regression).
-- [ ] T009 [P] [US1] Add/extend tests in `koan/tests/test_jira_create_issue.py` (or nearest existing Jira create test; mock `_jira_post`) asserting the created-issue `description` is a structured ADF doc (heading + bulletList + rule + strong mark) for a representative brainstorm body, and that `jira_add_comment` still uses the plain `_text_to_adf` shape.
+- [X] T008 [US1] Change `jira_create_issue` in `koan/app/jira_notifications.py` to build the `description` field via `markdown_to_adf(body_text)` instead of `_text_to_adf(body_text)`. Leave `jira_add_comment`/`jira_edit_comment` on `_text_to_adf` (FR-009 — no comment regression).
+- [X] T009 [P] [US1] Add/extend tests in `koan/tests/test_jira_create_issue.py` (or nearest existing Jira create test; mock `_jira_post`) asserting the created-issue `description` is a structured ADF doc (heading + bulletList + rule + strong mark) for a representative brainstorm body, and that `jira_add_comment` still uses the plain `_text_to_adf` shape.
 - [ ] T010 [US1] Add a regression guard in `koan/tests/test_brainstorm_jira.py`: run `run_brainstorm` over a fixed decomposition with a **mocked Jira tracker** (patch `create_issue`/`client_for_project`/`tracker_provider` at the runner's import site) and assert every created Jira issue body was carried through unchanged to the create call (rich rendering is verified at the transport layer in T009; here assert routing selects Jira create).
 
 **Checkpoint**: US1 independently testable — Jira issues render richly; GitHub untouched.

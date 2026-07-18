@@ -1017,7 +1017,10 @@ def jira_create_issue(
         "fields": {
             "project": {"key": project_key},
             "summary": title,
-            "description": _text_to_adf(body_text),
+            # Rich ADF so brainstorm/plan markdown bodies (headings, lists,
+            # rules, marks) render natively. Comments keep _text_to_adf so
+            # human /comment content is never restructured.
+            "description": markdown_to_adf(body_text),
             "issuetype": {"name": issue_type or "Task"},
         }
     }
