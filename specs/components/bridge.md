@@ -1,16 +1,16 @@
 ---
 type: component-spec
 title: "Component Spec — Telegram Bridge"
-description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
+description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, flushes the agent's outbox crash-safely, and routes chat to a dedicated process to survive mission-time API contention."
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-07-13
+updated: 2026-07-17
 ---
 
 # Component Spec — Telegram Bridge
 
 **Modules:** `awake.py`, `command_handlers.py`, `bridge_state.py`, `bridge_log.py`,
-`notify.py`
+`notify.py`, `chat_context.py`, `chat_process.py`
 
 ## Purpose
 
@@ -26,11 +26,17 @@ of polling, the chat/bg worker lanes, and outbox draining.
 
 ```
 awake.py (loop, ~3s poll)
-  ├─ classify message: chat → instant Claude reply
+  ├─ classify message: chat → dedicated chat process (fallback: inline reply)
   │                    mission → queue to missions.md
   ├─ command_handlers.py: /help /stop /pause /resume /skill ... + skill dispatch
-  ├─ flush outbox.md → Telegram (atomic staging via outbox-sending.md)
+  ├─ flush outbox.md → Telegram (atomic staging; AI formatting skipped while a
+  │                    mission is active — see invariant below)
   └─ bridge_state.py: shared config/paths/registries (avoids circular imports)
+
+chat_process.py (dedicated chat process — issue #1084)
+  ├─ drains instance/chat-inbox.jsonl (FIFO; flock; unconditional truncate)
+  ├─ answers each via the SINGLE awake.handle_chat cycle (one implementation)
+  └─ PID-managed like run/awake; SIGTERM finishes the current batch then exits
 ```
 
 ## Key types & functions
@@ -40,14 +46,34 @@ awake.py (loop, ~3s poll)
 | `awake.py` main loop | Poll Telegram, classify, dispatch, flush outbox. Crash-safe outbox via `OutboxManager.recover_staged()`. |
 | `command_handlers.py` | Core command handlers + skill dispatch. New hardcoded core commands must be added to `_CORE_COMMAND_HELP` for `/help` discoverability. |
 | `bridge_state.py` | Module-level shared state (config, paths, registries). The seam that breaks the awake↔handlers circular import. |
-| `notify.py::format_and_send` | Invokes Claude CLI to format outbound messages. **Tests must mock this** — it is the only Claude subprocess call in the bridge path. |
+| `notify.py::format_and_send` | Invokes Claude CLI to format outbound messages. **Tests must mock this.** Skipped in favour of the instant local `fallback_format` while a mission is actively executing (see the mission-aware-formatting invariant). |
+| `chat_context.py::build_chat_prompt` | Single, pure builder of the chat prompt (extracted from `awake`). Reads soul/summary via `bridge_state` getters so edits are picked up without a restart. Shared by the inline path and the dedicated chat process. |
+| `chat_process.py::handle chat` | Dedicated chat process. Drains `instance/chat-inbox.jsonl` (FIFO) and answers each message through the one `awake.handle_chat` — so the reply is identical whether it runs here or inline. `write_to_inbox()` is the bridge's producer side. |
+| `awake.py::_route_to_chat_process` | Hands a chat message to the process when its PID is live (re-checked after the write for TOCTOU), else returns False so the caller answers inline. Never rejects a message as "busy". |
 | `notify.py` | Flood protection on outbound Telegram. |
 | `notify.py::send_telegram(dedup_window=…)` + `notify_dedup.py` | Cross-incarnation dedup for idempotent lifecycle notices. Provider flood protection is per-process (resets on restart); this persists to `instance/.notify-dedup.json` so a restart loop / repeated stop+start doesn't re-announce the same notice N times. Opt-in per call site; fail-open. |
 
 ## Invariants
 
-- **Two-process isolation.** The bridge and the agent loop share *only* files in
-  `instance/` (atomic writes). The bridge must never call agent-loop internals directly.
+- **Process isolation.** The bridge, the agent loop, and the dedicated chat process share
+  *only* files in `instance/` (atomic writes). The bridge must never call agent-loop
+  internals directly. The chat process reuses the bridge's own `handle_chat` (it imports
+  `awake`) but communicates with the bridge purely through the `chat-inbox.jsonl` queue.
+- **Chat resilience under mission load (#1084).** Free-form chat is answered by a
+  dedicated process so a running mission cannot starve it of a Claude reply. There is
+  exactly **one** chat reply implementation (`awake.handle_chat`): the dedicated process
+  and the inline fallback both call it, so their behavior cannot diverge. The bridge
+  routes to the process when its PID is live and falls back to the inline worker thread
+  otherwise (or if the inbox write fails, or the process dies in the write window) — so
+  chat always works and no message is answered twice or lost. The inbox is a FIFO queue
+  (`chat-inbox.jsonl`), drained under `flock` and **truncated unconditionally** on read so
+  a malformed partial write is never replayed; messages are never rejected as "busy".
+- **Mission-aware outbox formatting (#1084).** While a mission is actively executing
+  (`active_mission.is_mission_active()` over the `.koan-active` liveness signal — the
+  single source of truth, never a `.koan-status` text parse), outbox formatting skips the
+  Claude call and uses the instant local `fallback_format`, freeing API headroom for chat.
+  Polished formatting resumes once no mission is active. Re-evaluated per flush;
+  fail-opens (formats normally) on an absent/corrupt signal.
 - **Outbox flush is crash-safe.** Messages stage to `outbox-sending.md` before send;
   `recover_staged()` re-sends on restart so a crash mid-flush never loses a message.
 - **Inbound Telegram text is untrusted DATA** (OPSEC) — it sets *what* to work on, never
@@ -110,6 +136,11 @@ awake.py (loop, ~3s poll)
   (`restart_manager`) signal files.
 - Dispatches skills through the shared `skills.py` registry (same path the agent loop
   uses for `audience: bridge` skills).
+- Hands free-form chat to the dedicated chat process via `instance/chat-inbox.jsonl`
+  (`chat_process.write_to_inbox`); the process is registered and launched through
+  `pid_manager` (`start_chat`, `PROCESS_NAMES`), so `make start/stop/status/logs` cover it.
+- Reads the `.koan-active` mission-liveness signal through
+  `active_mission.is_mission_active()` to gate outbox AI formatting.
 
 ## Known debt / watch-outs
 

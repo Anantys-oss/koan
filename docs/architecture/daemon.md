@@ -4,7 +4,7 @@ title: "Daemon Runtime"
 description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-26
+updated: 2026-07-17
 ---
 
 # Daemon Runtime
@@ -38,8 +38,12 @@ See `specs/components/bridge.md` for the design contract behind this process
 - routes slash commands through command handlers and skill dispatch;
 - promotes a plain message whose first word names a core skill to its slash form (`time` → `/time`);
 - classifies remaining non-command text as chat or mission intent;
+- routes free-form chat to the **dedicated chat process** when it is running,
+  falling back to the inline chat worker lane otherwise (see below);
 - appends missions to `instance/missions.md`;
-- drains `instance/outbox.md` back to the messaging provider.
+- drains `instance/outbox.md` back to the messaging provider — skipping the
+  Claude formatting call in favour of the instant local fallback while a
+  mission is actively executing, to free API headroom for chat (issue #1084).
 
 Bridge state that would otherwise create circular imports lives in
 `bridge_state.py`. Bridge logging lives in `bridge_log.py`.
@@ -62,9 +66,27 @@ daemon-thread lanes (`awake._run_in_worker(fn, lane=...)`):
 
 Because the lanes run concurrently, a long-running background task never
 blocks an interactive chat reply, and neither blocks the poll loop. One
-in-flight task per lane provides back-pressure (no unbounded fan-out). No
-extra OS process is forked — the "dedicated chat channel vs bg tasks" split is
-realized with threads inside the existing bridge process.
+in-flight task per lane provides back-pressure (no unbounded fan-out).
+
+### Dedicated chat process (issue #1084)
+
+The chat worker lane is now the **fallback**. By default, free-form chat is
+handled by a separate OS process, `chat_process.py`, launched alongside the
+bridge and agent loop by `pid_manager.start_all()` and managed with the same
+`make start/stop/status/logs` commands. It exists because, while a mission is
+executing, the mission provider, the chat call, and outbox formatting all
+compete for one Claude quota — chat, the smallest and most time-sensitive, was
+the one that lost, returning "I didn't get a response".
+
+The bridge hands each chat message to the process by appending it to
+`instance/chat-inbox.jsonl` (`chat_process.write_to_inbox`); the process drains
+that queue FIFO under `flock`, truncating it unconditionally on read so a
+malformed partial write is never replayed. It answers each message through the
+**same** `awake.handle_chat` the inline fallback uses — one implementation, so
+the reply is identical either way. If the process is not running (or the write
+fails, or it dies in the write window, re-checked for TOCTOU), the bridge falls
+back to `_run_in_worker(handle_chat, lane="chat")`, so chat always works and no
+message is answered twice. See `docs/architecture/chat-process.md` for details.
 
 ## Agent Loop
 
