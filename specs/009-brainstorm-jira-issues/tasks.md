@@ -75,8 +75,8 @@ issue-link mechanism; no-op on GitHub.
 **Independent Test**: Mocked tracker — one `link_issues(master, sub)` per created
 sub-issue on Jira; zero on GitHub.
 
-- [ ] T015 [US3] Implement `link_issues` on both backends: `koan/app/issue_tracker/jira.py` delegates to `jira_link_issues(parse_jira_url(parent), parse_jira_url(child), link_type)`; `koan/app/issue_tracker/github.py` returns False (no-op). (Base default already False from T006.)
-- [ ] T016 [US3] In `koan/skills/core/brainstorm/brainstorm_runner.py`, after the master issue is created, add a best-effort step that calls the service `link_issues(master_url, sub_url)` for each successfully-created sub-issue. Non-fatal: log and continue on any failure; do not change the success summary/return. GitHub returns no-op so no behavior change there.
+- [X] T015 [US3] Implement `link_issues` on both backends: `koan/app/issue_tracker/jira.py` delegates to `jira_link_issues(parse_jira_url(parent), parse_jira_url(child), link_type)`; `koan/app/issue_tracker/github.py` returns False (no-op). (Base default already False from T006.)
+- [X] T016 [US3] In `koan/skills/core/brainstorm/brainstorm_runner.py`, after the master issue is created, add a best-effort step that calls the service `link_issues(master_url, sub_url)` for each successfully-created sub-issue. Non-fatal: log and continue on any failure; do not change the success summary/return. GitHub returns no-op so no behavior change there.
 - [ ] T017 [P] [US3] Tests in `koan/tests/test_brainstorm_jira.py`: mocked Jira tracker asserts N `link_issues` calls (master→each sub) after master creation, and that a raised/False link failure leaves the run successful with all issues intact; mocked GitHub run asserts zero `link_issues` calls and unchanged output.
 
 **Checkpoint**: US3 independently testable — native links appear on Jira, GitHub unchanged.

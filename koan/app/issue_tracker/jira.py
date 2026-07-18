@@ -72,6 +72,18 @@ class JiraIssueTracker(IssueTracker):
         except (RuntimeError, OSError, ValueError):
             return False
 
+    def link_issues(
+        self, parent_url: str, child_url: str, link_type: str = "Relates",
+    ) -> bool:
+        from app.jira_notifications import jira_link_issues
+
+        try:
+            return jira_link_issues(
+                parse_jira_url(parent_url), parse_jira_url(child_url), link_type,
+            )
+        except (RuntimeError, OSError, ValueError):
+            return False
+
     def find_existing_plan_issue(self, idea: str) -> Optional[IssueRef]:
         if not self.project_key:
             return None

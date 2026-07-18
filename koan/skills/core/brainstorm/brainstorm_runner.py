@@ -220,11 +220,37 @@ def run_brainstorm(
             )
 
     master_url = master_url.strip()
+
+    # Natively link the master tracking issue to each sub-issue. On GitHub this
+    # is a no-op (linkage is expressed via #N refs / the task list); on Jira it
+    # creates real "Linked issues" relationships. Best-effort — never fatal.
+    _link_master_to_subs(master_url, created_issues, project_name, project_path)
+
     summary = (
         f"Created {len(created_issues)} sub-issues + master issue: {master_url}"
     )
     notify_fn(f"\U0001f3af {summary}")
     return True, summary
+
+
+def _link_master_to_subs(master_url, created_issues, project_name, project_path):
+    """Create native tracker links from the master issue to each sub-issue.
+
+    Provider-neutral via the ``link_issues`` service (no-op on GitHub). Each
+    link failure is logged and skipped so linking never aborts the run.
+    """
+    for _number, _title, sub_url, _pos in created_issues:
+        try:
+            link_issues(
+                master_url, sub_url,
+                project_name=project_name, project_path=project_path,
+            )
+        except (RuntimeError, OSError, ValueError) as e:
+            print(
+                f"[brainstorm_runner] Failed to link {master_url} -> "
+                f"{sub_url}: {e}",
+                file=sys.stderr,
+            )
 
 
 def _replace_sub_placeholders(
@@ -262,7 +288,7 @@ def _replace_sub_placeholders(
                     f"for {number}",
                     file=sys.stderr,
                 )
-        except (RuntimeError, OSError) as e:
+        except (RuntimeError, OSError, ValueError) as e:
             print(
                 f"[brainstorm_runner] Failed to update issue {number}: {e}",
                 file=sys.stderr,
