@@ -14,8 +14,6 @@ Do not hand-edit released entries — they are the source for `CHANGES.md`.
 
 ## ${NEXT}
 
-_Everything merged into `incubating` since v0.79 (main through `51bba29c`)._
-
 **Added**
 
 - **Chat stays responsive during missions** — your chat messages now get a priority lane, so the bot answers you even while it is busy running a mission (#1084).
