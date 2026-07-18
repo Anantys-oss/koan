@@ -225,7 +225,10 @@ _MD_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
 _MD_INLINE_RE = re.compile(
     r"(?P<code>`[^`]+`)"
     r"|(?P<bold>\*\*[^*]+\*\*)"
-    r"|(?P<em>\*[^*\s][^*]*\*|_[^_\s][^_]*_)"
+    # Underscore emphasis must be flanked by non-word boundaries so intra-word
+    # underscores (snake_case identifiers, file paths like ``my_module.py``) are
+    # left literal — matching CommonMark. Asterisk emphasis stays intra-word.
+    r"|(?P<em>\*[^*\s][^*]*\*|(?<!\w)_[^_\s][^_]*_(?!\w))"
 )
 
 
@@ -327,8 +330,12 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
             node: Dict[str, Any] = {"type": "codeBlock"}
             if language:
                 node["attrs"] = {"language": language}
-            if code_lines:
-                node["content"] = [{"type": "text", "text": "\n".join(code_lines)}]
+            # Only attach a text node when there is actual code — an ADF text
+            # node with an empty string is invalid and 400s the whole request
+            # (e.g. a fence wrapping a single blank line).
+            code_text = "\n".join(code_lines)
+            if code_text:
+                node["content"] = [{"type": "text", "text": code_text}]
             content.append(node)
             continue
 
@@ -346,11 +353,15 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
         heading = _MD_HEADING_RE.match(line)
         if heading:
             flush_paragraph()
-            content.append({
-                "type": "heading",
-                "attrs": {"level": len(heading.group(1))},
-                "content": _inline_to_adf(heading.group(2).strip()),
-            })
+            heading_content = _inline_to_adf(heading.group(2).strip())
+            # Skip a hashes-only heading (``## `` with no text) — an ADF heading
+            # with an empty content array can be rejected by the API.
+            if heading_content:
+                content.append({
+                    "type": "heading",
+                    "attrs": {"level": len(heading.group(1))},
+                    "content": heading_content,
+                })
             i += 1
             continue
 

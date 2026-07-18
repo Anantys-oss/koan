@@ -89,7 +89,10 @@ class GitHubIssueTracker(IssueTracker):
                 repo=self._target_repo() or None,
             )
             return True
-        except (RuntimeError, OSError):
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            # run_gh re-raises TimeoutExpired after exhausting retries; it is not
+            # a RuntimeError/OSError, so catch it here to honor the "→ False"
+            # contract and keep SUB-N resolution non-fatal.
             return False
 
     def find_existing_plan_issue(self, idea: str) -> Optional[IssueRef]:

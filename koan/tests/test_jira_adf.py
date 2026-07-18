@@ -106,6 +106,20 @@ class TestMarkdownToAdfInline:
         texts = "".join(t["text"] for t in doc["content"][0]["content"])
         assert "*" in texts
 
+    def test_intra_word_underscore_is_literal(self):
+        # snake_case identifiers / file paths must not be italicized and must
+        # keep their underscores (CommonMark: intra-word _ is not emphasis).
+        doc = markdown_to_adf("see mission_executor.py and run_claude_task")
+        node = doc["content"][0]
+        assert _marks(node) == []
+        texts = "".join(t["text"] for t in node["content"])
+        assert texts == "see mission_executor.py and run_claude_task"
+
+    def test_delimited_underscore_em_still_marks(self):
+        # a properly flanked _word_ is still emphasis
+        doc = markdown_to_adf("this is _emphasized_ text")
+        assert "em" in _marks(doc["content"][0])
+
 
 class TestMarkdownToAdfEdgeCases:
     def test_empty_input_yields_empty_paragraph(self):
@@ -115,6 +129,22 @@ class TestMarkdownToAdfEdgeCases:
     def test_whitespace_only_input(self):
         doc = markdown_to_adf("   \n  \n")
         assert doc["content"] == [{"type": "paragraph", "content": []}]
+
+    def test_blank_only_code_fence_has_no_empty_text_node(self):
+        # a fence wrapping only a blank line must not emit an empty-string ADF
+        # text node (invalid ADF → 400).
+        doc = markdown_to_adf("```\n\n```")
+        block = doc["content"][0]
+        assert block["type"] == "codeBlock"
+        assert "content" not in block or all(
+            t["text"] for t in block.get("content", [])
+        )
+
+    def test_empty_heading_is_dropped(self):
+        # a hashes-only heading has no inline content; it must not emit a
+        # heading node with an empty content array.
+        doc = markdown_to_adf("## \n\nreal text")
+        assert "heading" not in _types(doc)
 
     def test_representative_brainstorm_body(self):
         body = (

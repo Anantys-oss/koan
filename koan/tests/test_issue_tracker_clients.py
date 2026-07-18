@@ -204,6 +204,20 @@ class TestGitHubIssueTracker:
             )
         assert ok is False
 
+    def test_update_issue_returns_false_on_timeout(self):
+        # run_gh re-raises subprocess.TimeoutExpired after exhausting retries;
+        # it must degrade to False, not escape and crash the caller.
+        import subprocess
+
+        with patch(
+            "app.github.issue_edit",
+            side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30),
+        ):
+            ok = GitHubIssueTracker(repo="o/r").update_issue(
+                "https://github.com/o/r/issues/42", "b",
+            )
+        assert ok is False
+
     def test_link_issues_is_noop(self):
         # GitHub expresses linkage via #N references; no native link call.
         assert GitHubIssueTracker(repo="o/r").link_issues(
