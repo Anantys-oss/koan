@@ -64,7 +64,7 @@ limits** — a signal to stop and consider splitting, not a hard gate that block
   it — never a feature with zero new coverage.
 - **Test observable behavior, not implementation.** Assert on return values, exceptions,
   and observable state — not on how internals were called. See the test-suite section above
-  and `koan/tests/testing-anti-patterns.md`.
+  and `koan/system-prompts/testing-anti-patterns.md`.
 - **Names carry intent.** Prefer a clear name over a comment. Comment the *why*, not the
   *what*; code says what it does, comments say why it does it that way.
 - **No dead code.** Delete unused code rather than commenting it out — git remembers. Avoid
