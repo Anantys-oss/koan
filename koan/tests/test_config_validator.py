@@ -1059,3 +1059,9 @@ class TestPreflightCacheMinutesKey:
         warnings = validate_config({"preflight_cache_minutes": "ten"})
         assert len(warnings) == 1
         assert "should be int" in warnings[0][1]
+
+
+class TestConfigSyncSection:
+    def test_config_sync_section_valid(self):
+        errors = validate_config({"config_sync": {"enabled": True}})
+        assert not errors  # well-formed section produces no errors

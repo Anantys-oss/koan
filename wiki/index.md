@@ -45,6 +45,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 
 ### Operations
 - [`operations/auto-update.md`](docs/operations/auto-update.md) — Describes Kōan's opt-in auto-update feature that checks for and pulls upstream commits, plus the always-on release-tag notification.
+- [`operations/config-sync.md`](docs/operations/config-sync.md) — Documents real-time config sync: the dashboard reflects config.yaml/projects.yaml edits within ~2s over the existing SSE, classifying safe hot-reload keys vs restart-required changes and gating restarts on agent idleness.
 - [`operations/dashboard.md`](docs/operations/dashboard.md) — Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, design-system integration, and structured `/progress` mission timeline.
 - [`operations/interactive-launcher.md`](docs/operations/interactive-launcher.md) — Describes `make koan`, the TTY-gated interactive launcher and its textual terminal dashboard (tabs, toggles, keybindings).
 - [`operations/log-formatting.md`](docs/operations/log-formatting.md) — Documents the display-side `[cli]` log formatter (log_fmt.py) behind `make logs` and the shared `classify_cli` grammar used by the dashboard `/progress` timeline.

@@ -297,6 +297,10 @@ def api_state_stream():
         # Mutable container for mtime-based forecast caching
         burn_rate_mtime = [0.0]
         forecast_cache = [{**_EMPTY_FORECAST}]
+        # Mutable container for mtime-based config-sync caching
+        config_mtime = [0.0]
+        config_sync_cache = [{"synced": True, "restart_pending": False,
+                              "changed_safe_keys": [], "changed_unsafe_keys": []}]
 
         while True:
             try:
@@ -335,6 +339,21 @@ def api_state_stream():
                     burn_rate_mtime[0] = br_mtime
                     forecast_cache[0] = stats_svc.build_forecast()
                 agent_state["forecast"] = forecast_cache[0]
+                # Add config-sync status (mtime-gated on config files + baseline)
+                try:
+                    from app import config_sync as _cs
+                    newest = 0.0
+                    for p in (state.INSTANCE_DIR / "config.yaml",
+                              state.INSTANCE_DIR / "projects.yaml",
+                              state.INSTANCE_DIR / _cs.BASELINE_FILE):
+                        if p.exists():
+                            newest = max(newest, p.stat().st_mtime)
+                    if newest != config_mtime[0]:
+                        config_mtime[0] = newest
+                        config_sync_cache[0] = _cs.compute_status(state.KOAN_ROOT)
+                except (OSError, ImportError) as e:
+                    print(f"[dashboard] config_sync error: {e}", file=sys.stderr)
+                agent_state["config_sync"] = config_sync_cache[0]
                 state_json = json.dumps(agent_state, sort_keys=True)
                 if state_json != last_json:
                     last_json = state_json

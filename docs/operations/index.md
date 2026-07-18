@@ -1,6 +1,7 @@
 # Operations
 
 * [Auto-Update](auto-update.md) - Describes Kōan's opt-in auto-update feature that checks for and pulls upstream commits, plus the always-on release-tag notification.
+* [Real-time Config Sync](config-sync.md) - Documents real-time config sync: the dashboard reflects config.yaml/projects.yaml edits within ~2s over the existing SSE, classifying safe hot-reload keys vs restart-required changes and gating restarts on agent idleness.
 * [Web Dashboard](dashboard.md) - Documents the local Flask web dashboard's architecture, blueprints, pages, passphrase gate, and design-system integration.
 * [Interactive launcher (make koan)](interactive-launcher.md) - Describes `make koan`, the TTY-gated interactive launcher and its textual terminal dashboard (tabs, toggles, keybindings).
 * [make logs formatting](log-formatting.md) - Documents the display-side [cli] log formatter (log_fmt.py) behind make logs, its glyph legend, tool-input previews, accumulating thinking dots, and the raw=1 escape hatch.

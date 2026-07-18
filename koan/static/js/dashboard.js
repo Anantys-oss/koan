@@ -69,7 +69,12 @@
                 if (data.status) {
                     updateFavicon(data.status);
                 }
-            } catch (ex) {}
+                if (data.config_sync) {
+                    handleConfigSync(data.config_sync);
+                }
+            } catch (ex) {
+                console.error('[dashboard] state stream handler error', ex);
+            }
         };
         src.onerror = function () {
             src.close();
@@ -78,8 +83,89 @@
         };
     }
 
+    /* ----- Config-sync badge / toast / restart modal (config page only) ----- */
+    var _lastSyncKey = null;
+
+    function handleConfigSync(cs) {
+        var badge = document.getElementById('config-sync-badge');
+        if (badge) {
+            badge.hidden = false;
+            badge.setAttribute('data-state', cs.restart_pending ? 'pending' : 'synced');
+            var label = badge.querySelector('.label');
+            if (label) label.textContent = cs.restart_pending ? 'Restart pending' : 'Synced';
+        }
+        var key = JSON.stringify([cs.changed_safe_keys, cs.changed_unsafe_keys]);
+        if (key === _lastSyncKey) return;       // only act on transitions
+        _lastSyncKey = key;
+
+        if (cs.changed_safe_keys && cs.changed_safe_keys.length) {
+            showToast('Settings updated');
+        }
+        if (cs.restart_pending) {
+            showRestartModal(cs.changed_unsafe_keys || []);
+        }
+    }
+
+    function showRestartModal(keys) {
+        var modal = document.getElementById('config-restart-modal');
+        if (!modal) return;
+        var list = document.getElementById('config-restart-keys');
+        if (list) {
+            list.innerHTML = '';
+            keys.forEach(function (k) {
+                var li = document.createElement('li');
+                li.textContent = k;
+                list.appendChild(li);
+            });
+        }
+        modal.hidden = false;
+    }
+
+    function showToast(msg) {
+        if (window.koanToast) { window.koanToast(msg); return; }
+        console.log('[config]', msg);
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         connectAttentionSSE();
+
+        var now = document.getElementById('config-restart-now');
+        var dismiss = document.getElementById('config-restart-dismiss');
+        var modal = document.getElementById('config-restart-modal');
+        if (now) {
+            now.addEventListener('click', function () {
+                var busy = document.getElementById('config-restart-busy');
+                fetch('/api/config/restart-if-idle', { method: 'POST' })
+                    .then(function (r) {
+                        if (r.status === 409) {
+                            if (busy) {
+                                busy.textContent = 'Agent is busy — try again when it is idle.';
+                                busy.hidden = false;
+                            }
+                            return;
+                        }
+                        if (!r.ok) {
+                            if (busy) {
+                                busy.textContent = 'Restart failed — check the agent logs.';
+                                busy.hidden = false;
+                            }
+                            return;
+                        }
+                        // Only dismiss on a 2xx (restart actually signaled).
+                        if (modal) modal.hidden = true;
+                    })
+                    .catch(function (ex) {
+                        console.error('[config] restart request failed', ex);
+                        if (busy) {
+                            busy.textContent = 'Restart request failed — check your connection.';
+                            busy.hidden = false;
+                        }
+                    });
+            });
+        }
+        if (dismiss && modal) {
+            dismiss.addEventListener('click', function () { modal.hidden = true; });
+        }
     });
 })();
 

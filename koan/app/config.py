@@ -937,6 +937,33 @@ def get_dashboard_nickname() -> str:
     return ""
 
 
+# Keys (dotted paths into config.yaml) that can be hot-reloaded without
+# restarting the agent. Anything NOT matching one of these is treated as
+# requiring a restart. A path matches if it equals an entry or is nested
+# under one (e.g. "tools.allowed" matches the "tools" entry).
+_HOT_RELOAD_SAFE_KEYS = frozenset({
+    "dashboard.nickname",
+    "tools",             # tools.chat / tools.mission re-read per mission
+    "automation_rules",  # whole section
+    "messaging_level",
+    "verbose",
+})
+
+
+def get_hot_reload_safe_keys() -> frozenset:
+    """Return the set of config.yaml dotted paths safe to hot-reload."""
+    return _HOT_RELOAD_SAFE_KEYS
+
+
+def is_config_sync_enabled() -> bool:
+    """Whether real-time config sync UI feedback is enabled (default True)."""
+    config = _load_config()
+    section = config.get("config_sync", {})
+    if not isinstance(section, dict):
+        return True
+    return bool(section.get("enabled", True))
+
+
 def is_api_enabled() -> bool:
     """Check if REST API is enabled for managed startup.
 
