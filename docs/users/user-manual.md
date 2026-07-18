@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-07-18
 ---
 
 # Kōan User Manual
@@ -422,7 +422,7 @@ These features turn Kōan from a task runner into a full development workflow pa
 
 ### Code Operations
 
-**`/brainstorm`** — Decompose a broad topic into 3-8 high-leverage GitHub sub-issues grouped under a master tracking issue.
+**`/brainstorm`** — Decompose a broad topic into 3-8 high-leverage sub-issues grouped under a master tracking issue, on whichever tracker the project uses (GitHub Issues by default, or Jira when the project is Jira-backed in `projects.yaml`).
 
 The decomposer runs as a senior-engineer-style ideation pass: it explores the codebase (if provided) or external source, hunts for compounding improvements, and refuses to pad with generic refactors. Every sub-issue body follows this template:
 
@@ -461,6 +461,7 @@ The master tracking issue then synthesizes the set with three optional sections:
 
 - **Usage:** `/brainstorm <topic>`, `/brainstorm <project> <topic>`, `/brainstorm <topic> --tag <label>`
 - **GitHub @mention:** `@koan-bot /brainstorm <topic>` on an issue
+- **Jira-backed projects:** sub-issues and the master are created in Jira with rich (ADF) bodies; `SUB-N` cross-references resolve to real Jira keys and the master is natively linked to each sub-issue via "Linked issues". See [Jira integration → Brainstorm on Jira](../messaging/jira-integration.md#brainstorm-on-jira). (`--tag` labels apply to GitHub only.)
 
 <details>
 <summary>Use cases</summary>

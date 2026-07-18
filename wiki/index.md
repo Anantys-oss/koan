@@ -117,7 +117,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 Per `specs/README.md`'s coverage policy: only the ~10 highest-impact skills have a spec today (as templates for the remaining ~80), filled in on-demand as touched. This index reflects only what exists.
 
 - [`skills/ask.md`](specs-skills/ask.md) — Specifies the `/ask` skill, which answers a question about a GitHub PR/issue by fetching context and posting an AI-generated reply as a read-only, non-mutating worker.
-- [`skills/brainstorm.md`](specs-skills/brainstorm.md) — Specifies the `/brainstorm` skill, which decomposes a topic into structured, linked GitHub sub-issues under a master tracking issue and is covered by the skill-eval harness.
+- [`skills/brainstorm.md`](specs-skills/brainstorm.md) — Specifies the `/brainstorm` skill, which decomposes a topic into structured, linked sub-issues (GitHub or Jira) under a master tracking issue and is covered by the skill-eval harness.
 - [`skills/ci_check.md`](specs-skills/ci_check.md) — Specifies the `/ci_check` skill, which checks a PR's CI status, runs the shared CI-fix loop on failures, and toggles automatic CI-fix dispatch.
 - [`skills/fix.md`](specs-skills/fix.md) — Specifies the `/fix` skill, which fixes a tracker issue end-to-end (or batch-queues fixes for a repo) and redirects PR URLs to `/rebase --fix`, with eval coverage on its diagnostic output.
 - [`skills/implement.md`](specs-skills/implement.md) — Specifies the `/implement` skill, which queues an end-to-end implementation mission for a tracker issue that results in a draft PR, and is eval-exempt as pure orchestration.

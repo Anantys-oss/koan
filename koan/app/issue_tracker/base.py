@@ -47,3 +47,25 @@ class IssueTracker(ABC):
     @abstractmethod
     def find_existing_plan_issue(self, idea: str) -> Optional[IssueRef]:
         """Return an open issue roughly matching ``idea``, or None."""
+
+    def update_issue(self, url: str, body: str) -> bool:
+        """Rewrite an existing issue's body/description. Return True on success.
+
+        Concrete (non-abstract) with a safe default so existing backends keep
+        working: the default reports the operation as unsupported (``False``).
+        Backends that can edit an issue override this. Callers use the
+        provider-neutral ``app.issue_tracker.update_issue`` service function.
+        """
+        return False
+
+    def link_issues(
+        self, parent_url: str, child_url: str, link_type: str = "Relates",
+    ) -> bool:
+        """Create a native tracker link ``parent`` → ``child``. True on success.
+
+        Concrete (non-abstract) with a safe no-op default (``False``) so
+        providers that express linkage in body text (e.g. GitHub ``#N``
+        references) need not implement it. Backends with a native link concept
+        (Jira) override this. Callers use ``app.issue_tracker.link_issues``.
+        """
+        return False

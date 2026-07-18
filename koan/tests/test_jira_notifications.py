@@ -781,6 +781,45 @@ class TestJiraIssueHelpers:
         assert payload["fields"]["issuetype"]["name"] == "Bug"
         assert payload["fields"]["project"]["key"] == "FOO"
 
+    def test_jira_create_issue_description_is_rich_adf(self):
+        from app.jira_notifications import jira_create_issue
+
+        body = "## Why This Matters\n\n- one\n- two\n\n---\n\nSome **bold** text."
+        with (
+            patch("app.jira_notifications._jira_auth_from_config", return_value=("https://test", "Basic token")),
+            patch("app.jira_notifications._jira_post", return_value={"key": "FOO-9"}) as mock_post,
+        ):
+            jira_create_issue("FOO", "Title", body)
+
+        desc = mock_post.call_args.args[3]["fields"]["description"]
+        assert desc["type"] == "doc"
+        block_types = [n["type"] for n in desc["content"]]
+        # markdown structure became native ADF, not a wall of paragraphs
+        assert "heading" in block_types
+        assert "bulletList" in block_types
+        assert "rule" in block_types
+        marks = [
+            m["type"]
+            for n in desc["content"] if n["type"] == "paragraph"
+            for t in n["content"] for m in t.get("marks", [])
+        ]
+        assert "strong" in marks
+
+    def test_jira_add_comment_stays_plain_text_adf(self):
+        """Comments must NOT be restructured by the rich converter (FR-009)."""
+        from app.jira_notifications import jira_add_comment
+
+        body = "## Heading-looking line\n\n- bullet-looking line"
+        with (
+            patch("app.jira_notifications._jira_auth_from_config", return_value=("https://test", "Basic token")),
+            patch("app.jira_notifications._jira_post", return_value={"id": "1"}) as mock_post,
+        ):
+            jira_add_comment("FOO-1", body)
+
+        adf = mock_post.call_args.args[3]["body"]
+        # plain converter → only paragraph blocks, no heading/bulletList
+        assert {n["type"] for n in adf["content"]} == {"paragraph"}
+
     def test_jira_search_issues_rejects_unsafe_project_key(self):
         from app.jira_notifications import jira_search_issues
 

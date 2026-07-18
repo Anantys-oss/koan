@@ -216,6 +216,198 @@ def _text_to_adf(text: str) -> Dict[str, Any]:
     return {"version": 1, "type": "doc", "content": content}
 
 
+_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_MD_ULIST_RE = re.compile(r"^\s*[-*+]\s+(.*)$")
+_MD_OLIST_RE = re.compile(r"^\s*\d+\.\s+(.*)$")
+_MD_RULE_RE = re.compile(r"^\s*([-*_])\1{2,}\s*$")
+_MD_FENCE_RE = re.compile(r"^\s*```(.*)$")
+_MD_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
+_MD_INLINE_RE = re.compile(
+    r"(?P<code>`[^`]+`)"
+    r"|(?P<bold>\*\*[^*]+\*\*)"
+    # Underscore emphasis must be flanked by non-word boundaries so intra-word
+    # underscores (snake_case identifiers, file paths like ``my_module.py``) are
+    # left literal — matching CommonMark. Asterisk emphasis stays intra-word.
+    r"|(?P<em>\*[^*\s][^*]*\*|(?<!\w)_[^_\s][^_]*_(?!\w))"
+)
+
+
+def _inline_to_adf(text: str) -> List[Dict[str, Any]]:
+    """Split a line of markdown into ADF text nodes with inline marks.
+
+    Recognizes ``**bold**``, ``*em*`` / ``_em_``, and ``` `code` ```. Inline
+    code takes precedence (its content is never re-parsed for other marks). A
+    lone or unbalanced marker is emitted as literal text — never raises.
+    """
+    nodes: List[Dict[str, Any]] = []
+    pos = 0
+    for match in _MD_INLINE_RE.finditer(text):
+        if match.start() > pos:
+            nodes.append({"type": "text", "text": text[pos:match.start()]})
+        if match.group("code"):
+            nodes.append({
+                "type": "text",
+                "text": match.group("code")[1:-1],
+                "marks": [{"type": "code"}],
+            })
+        elif match.group("bold"):
+            nodes.append({
+                "type": "text",
+                "text": match.group("bold")[2:-2],
+                "marks": [{"type": "strong"}],
+            })
+        else:  # em
+            nodes.append({
+                "type": "text",
+                "text": match.group("em")[1:-1],
+                "marks": [{"type": "em"}],
+            })
+        pos = match.end()
+    if pos < len(text):
+        nodes.append({"type": "text", "text": text[pos:]})
+    return nodes
+
+
+def _adf_list_items(item_texts: List[str]) -> List[Dict[str, Any]]:
+    """Build ADF ``listItem`` nodes (each a paragraph) from raw item texts."""
+    return [
+        {
+            "type": "listItem",
+            "content": [{"type": "paragraph", "content": _inline_to_adf(text)}],
+        }
+        for text in item_texts
+    ]
+
+
+def markdown_to_adf(text: str) -> Dict[str, Any]:
+    """Convert the markdown subset Kōan emits into a Jira ADF ``doc``.
+
+    Structural constructs are mapped to native ADF nodes so Jira renders them
+    richly instead of showing literal markdown:
+
+    - ``#``–``######`` → ``heading`` (level = number of ``#``)
+    - ``-``/``*``/``+`` list items → ``bulletList`` (task markers ``[ ]``/``[x]``
+      are preserved as leading text)
+    - ``1.`` list items → ``orderedList``
+    - ``---``/``***``/``___`` → ``rule``
+    - ``> `` lines → ``blockquote``
+    - fenced ```` ``` ```` blocks → ``codeBlock`` (content is emitted verbatim,
+      never re-parsed)
+    - inline ``**bold**`` / ``*em*`` / ``` `code` `` → marks
+
+    Any line that matches none of the above degrades to paragraph text, so
+    unmodeled markdown is readable rather than dropped. Empty input yields a
+    ``doc`` with a single empty paragraph (mirrors :func:`_text_to_adf`).
+    This is a superset of ``_text_to_adf`` and is used for issue descriptions;
+    comments deliberately keep the plainer converter.
+    """
+    lines = (text or "").splitlines()
+    content: List[Dict[str, Any]] = []
+    paragraph: List[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            content.append({
+                "type": "paragraph",
+                "content": _inline_to_adf("\n".join(paragraph)),
+            })
+            paragraph.clear()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        fence = _MD_FENCE_RE.match(line)
+        if fence:
+            flush_paragraph()
+            language = fence.group(1).strip()
+            code_lines: List[str] = []
+            i += 1
+            while i < len(lines) and not _MD_FENCE_RE.match(lines[i]):
+                code_lines.append(lines[i])
+                i += 1
+            i += 1  # consume closing fence (if present)
+            node: Dict[str, Any] = {"type": "codeBlock"}
+            if language:
+                node["attrs"] = {"language": language}
+            # Only attach a text node when there is actual code — an ADF text
+            # node with an empty string is invalid and 400s the whole request
+            # (e.g. a fence wrapping a single blank line).
+            code_text = "\n".join(code_lines)
+            if code_text:
+                node["content"] = [{"type": "text", "text": code_text}]
+            content.append(node)
+            continue
+
+        if not line.strip():
+            flush_paragraph()
+            i += 1
+            continue
+
+        if _MD_RULE_RE.match(line):
+            flush_paragraph()
+            content.append({"type": "rule"})
+            i += 1
+            continue
+
+        heading = _MD_HEADING_RE.match(line)
+        if heading:
+            flush_paragraph()
+            heading_content = _inline_to_adf(heading.group(2).strip())
+            # Skip a hashes-only heading (``## `` with no text) — an ADF heading
+            # with an empty content array can be rejected by the API.
+            if heading_content:
+                content.append({
+                    "type": "heading",
+                    "attrs": {"level": len(heading.group(1))},
+                    "content": heading_content,
+                })
+            i += 1
+            continue
+
+        if _MD_ULIST_RE.match(line):
+            flush_paragraph()
+            items: List[str] = []
+            while i < len(lines) and _MD_ULIST_RE.match(lines[i]):
+                items.append(_MD_ULIST_RE.match(lines[i]).group(1))
+                i += 1
+            content.append({"type": "bulletList", "content": _adf_list_items(items)})
+            continue
+
+        if _MD_OLIST_RE.match(line):
+            flush_paragraph()
+            items = []
+            while i < len(lines) and _MD_OLIST_RE.match(lines[i]):
+                items.append(_MD_OLIST_RE.match(lines[i]).group(1))
+                i += 1
+            content.append({"type": "orderedList", "content": _adf_list_items(items)})
+            continue
+
+        if _MD_QUOTE_RE.match(line):
+            flush_paragraph()
+            quote_lines: List[str] = []
+            while i < len(lines) and _MD_QUOTE_RE.match(lines[i]):
+                quote_lines.append(_MD_QUOTE_RE.match(lines[i]).group(1))
+                i += 1
+            content.append({
+                "type": "blockquote",
+                "content": [
+                    {"type": "paragraph", "content": _inline_to_adf("\n".join(quote_lines))}
+                ],
+            })
+            continue
+
+        paragraph.append(line)
+        i += 1
+
+    flush_paragraph()
+
+    if not content:
+        content = [{"type": "paragraph", "content": []}]
+
+    return {"version": 1, "type": "doc", "content": content}
+
+
 def _extract_comment_text(comment_body: Any) -> str:
     """Extract plain text from a Jira comment body.
 
@@ -836,7 +1028,10 @@ def jira_create_issue(
         "fields": {
             "project": {"key": project_key},
             "summary": title,
-            "description": _text_to_adf(body_text),
+            # Rich ADF so brainstorm/plan markdown bodies (headings, lists,
+            # rules, marks) render natively. Comments keep _text_to_adf so
+            # human /comment content is never restructured.
+            "description": markdown_to_adf(body_text),
             "issuetype": {"name": issue_type or "Task"},
         }
     }
@@ -844,6 +1039,64 @@ def jira_create_issue(
     if not isinstance(result, dict) or not result.get("key"):
         raise RuntimeError(f"Failed to create Jira issue in {project_key}")
     return f"{base_url}/browse/{result['key']}"
+
+
+def jira_update_issue_description(issue_key: str, body_text: str) -> bool:
+    """Rewrite a Jira issue's description with rich ADF. False on failure.
+
+    Used to resolve SUB-N cross-references after all sibling issues exist.
+    Never raises — a transport failure returns False so callers can degrade.
+    """
+    if not str(issue_key).strip():
+        return False
+    base_url, auth_header = _jira_auth_from_config()
+    # _jira_put returns {} on an empty successful body, None on error.
+    result = _jira_put(
+        base_url,
+        auth_header,
+        f"/rest/api/3/issue/{issue_key}",
+        {"fields": {"description": markdown_to_adf(body_text)}},
+    )
+    return result is not None
+
+
+def jira_link_issues(
+    outward_key: str,
+    inward_key: str,
+    link_type: str = "Relates",
+) -> bool:
+    """Create a native Jira issue link ``outward`` → ``inward``. False on failure.
+
+    ``outward_key`` is typically the master tracking issue and ``inward_key`` a
+    sub-issue; the default ``"Relates"`` link type is always present in Jira. The
+    issue-link endpoint returns ``201`` with an empty body, so this checks the
+    HTTP status directly rather than relying on a parsed JSON return. Never
+    raises — a failure returns False so linking can degrade non-fatally.
+    """
+    if not str(outward_key).strip() or not str(inward_key).strip():
+        return False
+    base_url, auth_header = _jira_auth_from_config()
+    payload = {
+        "type": {"name": link_type or "Relates"},
+        "outwardIssue": {"key": outward_key},
+        "inwardIssue": {"key": inward_key},
+    }
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            base_url + "/rest/api/3/issueLink",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+        )
+        req.add_header("Authorization", auth_header)
+        req.add_header("Accept", "application/json")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return 200 <= resp.status < 300
+    except Exception as e:
+        log.warning("Jira issue link %s -> %s failed: %s", outward_key, inward_key, e)
+        return False
 
 
 def jira_search_issues(
