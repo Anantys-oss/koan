@@ -6800,6 +6800,89 @@ class TestReviewVerdictInRunReview:
         mock_verdict.assert_not_called()
 
 
+class TestBatchVerdictRideInRunReview:
+    """run_review: batch createReview carries the verdict — no double-submit."""
+
+    @patch(
+        "app.review_runner.get_review_inline_comments_config",
+        return_value={"enabled": True, "max_comments": 25},
+    )
+    @patch(
+        "app.review_runner.get_review_verdict_config",
+        return_value={
+            "approved": True, "body_enabled": True, "include_blockers": True,
+        },
+    )
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._submit_review_verdict")
+    @patch("app.review_runner._submit_batch_review", return_value=(True, 1))
+    @patch("app.review_runner._fetch_existing_inline_anchors", return_value=set())
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_batch_success_skips_separate_verdict(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        _shas, _anchors, mock_batch, mock_verdict, _mock_req,
+        _mock_cfg, _inline_cfg, pr_context, review_skill_dir,
+    ):
+        """When batch createReview carries the event, do not POST a second verdict."""
+        mock_fetch.return_value = pr_context
+        # Findings required so the batch path has comments to submit.
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        assert success is True
+        mock_batch.assert_called_once()
+        assert mock_batch.call_args.kwargs["event"] == "REQUEST_CHANGES"
+        mock_verdict.assert_not_called()
+        assert "REQUEST_CHANGES" in summary
+
+    @patch(
+        "app.review_runner.get_review_inline_comments_config",
+        return_value={"enabled": True, "max_comments": 25},
+    )
+    @patch(
+        "app.review_runner.get_review_verdict_config",
+        return_value={
+            "approved": True, "body_enabled": True, "include_blockers": True,
+        },
+    )
+    @patch("app.review_runner._is_review_requested", return_value=False)
+    @patch("app.review_runner._submit_review_verdict", return_value=True)
+    @patch("app.review_runner._post_inline_finding_comments", return_value=(1, 1))
+    @patch("app.review_runner._submit_batch_review", return_value=(False, 0))
+    @patch("app.review_runner._fetch_existing_inline_anchors", return_value=set())
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc"])
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_batch_failure_submits_separate_verdict_once(
+        self, mock_fetch, mock_claude, mock_gh, _repliable,
+        _shas, _anchors, mock_batch, mock_indiv, mock_verdict, _mock_req,
+        _mock_cfg, _inline_cfg, pr_context, review_skill_dir,
+    ):
+        """Batch failure falls back to individual posts + one separate verdict."""
+        mock_fetch.return_value = pr_context
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(), skill_dir=review_skill_dir,
+        )
+        assert success is True
+        mock_batch.assert_called_once()
+        mock_indiv.assert_called_once()
+        mock_verdict.assert_called_once()
+        assert mock_verdict.call_args.kwargs["approve"] is False
+        assert "REQUEST_CHANGES" in summary
+
+
 class TestResolveVerdictConfig:
     """_resolve_verdict_config merges global + project-level overrides."""
 
@@ -7663,6 +7746,50 @@ class TestSubmitBatchReview:
         )
         assert ok is False
         assert n == 0
+
+    @patch("app.review_runner.api")
+    def test_empty_body_gets_fallback_for_comment_event(self, mock_api):
+        """GitHub requires body for COMMENT; empty input gets a minimal fallback."""
+        from app.review_runner import _submit_batch_review
+        mock_api.return_value = '{"id": 1}'
+        ok, n = _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="COMMENT",
+            body="",
+        )
+        assert ok is True
+        assert n == 1
+        post_calls = [
+            c for c in mock_api.call_args_list
+            if c.kwargs.get("raw_body") is True
+        ]
+        assert len(post_calls) == 1
+        payload = json.loads(post_calls[0].kwargs["input_data"])
+        assert payload["event"] == "COMMENT"
+        assert payload.get("body")  # non-empty fallback
+
+    @patch("app.review_runner.api")
+    def test_empty_body_gets_fallback_for_request_changes(self, mock_api):
+        """GitHub requires body for REQUEST_CHANGES when body_enabled is off."""
+        from app.review_runner import _submit_batch_review
+        mock_api.return_value = '{"id": 1}'
+        ok, _ = _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="REQUEST_CHANGES",
+            body="",
+        )
+        assert ok is True
+        post_calls = [
+            c for c in mock_api.call_args_list
+            if c.kwargs.get("raw_body") is True
+        ]
+        payload = json.loads(post_calls[0].kwargs["input_data"])
+        assert payload["event"] == "REQUEST_CHANGES"
+        assert "Blocking" in payload["body"]
 
 
 class TestMaybePostInlineCommentsBatch:

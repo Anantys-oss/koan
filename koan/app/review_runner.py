@@ -2548,19 +2548,34 @@ def _submit_batch_review(
 
     Returns (ok, posted_count). On self-authored PR 422 for APPROVE /
     REQUEST_CHANGES, retries once with event=COMMENT (comments preserved).
+
+    GitHub requires a non-empty ``body`` when ``event`` is COMMENT or
+    REQUEST_CHANGES (even when ``comments`` is non-empty). Mirror
+    ``_submit_review_verdict`` and supply a minimal fallback so the batch
+    path does not 422-and-silently-fallback on the common verdict-disabled
+    COMMENT case.
     """
     if not head_sha or not comments:
         return False, 0
 
     _delete_pending_reviews(owner, repo, pr_number)
 
+    # GitHub: body required for COMMENT / REQUEST_CHANGES events.
+    review_body = body
+    if not review_body and event in ("COMMENT", "REQUEST_CHANGES"):
+        review_body = (
+            "Review comments attached."
+            if event == "COMMENT"
+            else "Blocking issues found — see the review comment above."
+        )
+
     payload = {
         "commit_id": head_sha,
         "event": event,
         "comments": comments,
     }
-    if body:
-        payload["body"] = body
+    if review_body:
+        payload["body"] = review_body
 
     endpoint = f"repos/{owner}/{repo}/pulls/{pr_number}/reviews"
     try:
