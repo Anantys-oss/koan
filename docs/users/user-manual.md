@@ -800,6 +800,7 @@ After completion, Kōan posts a structured comment on the PR with these sections
 **`/pr`** — Review and update a GitHub pull request (interactive).
 
 - **Usage:** `/pr <pr-url>`
+- The pipeline rebases the branch, addresses review feedback, then runs a refactor pass, a quality-review pass, and a readability-only **simplify pass** (when a refactor skill is available) before re-running tests and force-pushing. The simplify pass amends the head commit on single-commit branches, otherwise it lands as its own `refactor:` commit.
 
 <details>
 <summary>Use cases</summary>

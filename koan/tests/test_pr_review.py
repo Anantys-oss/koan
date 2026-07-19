@@ -23,6 +23,7 @@ from app.pr_review import (
     build_pr_prompt,
     build_refactor_prompt,
     build_quality_review_prompt,
+    build_simplify_prompt,
     detect_test_command,
     detect_skills,
     run_pr_review,
@@ -681,6 +682,31 @@ class TestBuildQualityReviewPrompt:
         assert "team.review" in prompt
 
 
+class TestBuildSimplifyPrompt:
+    def test_includes_project_path(self):
+        prompt = build_simplify_prompt("/tmp/project", skill_dir=PR_SKILL_DIR)
+        assert "/tmp/project" in prompt
+
+    def test_includes_skill_name_with_simplify_flag(self):
+        prompt = build_simplify_prompt("/tmp/project", "team.refactor", skill_dir=PR_SKILL_DIR)
+        assert "team.refactor" in prompt
+        assert "--simplify" in prompt
+
+    def test_empty_skill_name_no_invocation(self):
+        prompt = build_simplify_prompt("/tmp/project", "", skill_dir=PR_SKILL_DIR)
+        assert "/tmp/project" in prompt
+        assert "--simplify" not in prompt
+
+    def test_default_base_templated_into_diff_range(self):
+        prompt = build_simplify_prompt("/tmp/project", skill_dir=PR_SKILL_DIR)
+        assert "origin/main...HEAD" in prompt
+
+    def test_custom_base_templated_into_diff_range(self):
+        prompt = build_simplify_prompt("/tmp/project", skill_dir=PR_SKILL_DIR, base="develop")
+        assert "origin/develop...HEAD" in prompt
+        assert "origin/main...HEAD" not in prompt
+
+
 # ---------------------------------------------------------------------------
 # run_pr_review (integration-level with mocks)
 # ---------------------------------------------------------------------------
@@ -751,6 +777,7 @@ class TestRunPrReview:
         assert success is False
         assert "Failed to fetch" in summary
 
+    @patch("app.pr_review.subprocess")
     @patch("app.pr_review.detect_skills", return_value=("team.refactor", "team.review"))
     @patch("app.pr_review.detect_test_command", return_value="make test")
     @patch("app.pr_review.run_project_tests")
@@ -764,14 +791,16 @@ class TestRunPrReview:
     @patch("app.rebase_pr.run_gh")
     def test_full_pipeline_with_skills_and_tests(
         self, mock_rebase_gh, mock_flags, mock_models, mock_cs_git, mock_commit,
-        mock_claude, mock_git, mock_gh, mock_tests, mock_test_cmd, mock_skills
+        mock_claude, mock_git, mock_gh, mock_tests, mock_test_cmd, mock_skills,
+        mock_subprocess
     ):
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
+        mock_subprocess.run.return_value = MagicMock(stdout="1\n")
 
         mock_rebase_gh.side_effect = [
             self._mock_pr_context(), "0", "diff", "comment", "review", "thread",
         ]
-        # 3 Claude calls: review feedback, refactor, quality review
+        # 4 Claude calls: review feedback, refactor, quality review, simplify
         mock_claude.return_value = {"success": True, "output": "Done", "error": ""}
         mock_commit.return_value = True
         mock_tests.return_value = {"passed": True, "output": "", "details": "800 tests passed"}
@@ -779,9 +808,13 @@ class TestRunPrReview:
         notify = MagicMock()
         success, summary = run_pr_review("o", "r", "1", "/tmp/p", notify_fn=notify, skill_dir=PR_SKILL_DIR)
         assert success is True
-        # Should have called Claude 3 times (feedback + refactor + review)
-        assert mock_claude.call_count == 3
-        assert "refactoring" in summary.lower() or "quality" in summary.lower()
+        # Should have called Claude 4 times (feedback + refactor + quality review + simplify)
+        assert mock_claude.call_count == 4
+        assert (
+            "refactoring" in summary.lower()
+            or "quality" in summary.lower()
+            or "simplify" in summary.lower()
+        )
 
     @patch("app.pr_review.detect_skills", return_value=(None, None))
     @patch("app.pr_review.detect_test_command", return_value=None)
@@ -852,3 +885,68 @@ class TestRunPrReview:
         success, summary = run_pr_review("o", "r", "1", "/tmp/p", notify_fn=notify)
         assert success is True
         assert "fixed" in summary.lower() or "passing" in summary.lower()
+
+    @patch("app.pr_review.subprocess")
+    @patch("app.pr_review.detect_skills", return_value=("team.refactor", None))
+    @patch("app.pr_review.detect_test_command", return_value=None)
+    @patch("app.pr_review.run_gh")
+    @patch("app.pr_review._run_git")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.commit_if_changes")
+    @patch("app.claude_step._run_git")
+    @patch("app.claude_step.get_model_config")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch("app.rebase_pr.run_gh")
+    def test_simplify_pass_runs_after_refactor(
+        self, mock_rebase_gh, mock_flags, mock_models, mock_cs_git, mock_commit,
+        mock_claude, mock_git, mock_gh, mock_test_cmd, mock_skills,
+        mock_subprocess
+    ):
+        """Simplify pass (--simplify) runs after refactor when refactor skill exists."""
+        mock_models.return_value = {"mission": "", "fallback": "sonnet"}
+        mock_subprocess.run.return_value = MagicMock(stdout="1\n")
+        mock_rebase_gh.side_effect = [
+            self._mock_pr_context(), "0", "diff", "reviewer comment", "review", "thread",
+        ]
+        mock_claude.return_value = {"success": True, "output": "Done", "error": ""}
+        mock_commit.return_value = True
+
+        notify = MagicMock()
+        success, summary = run_pr_review("o", "r", "1", "/tmp/p", notify_fn=notify, skill_dir=PR_SKILL_DIR)
+        assert success is True
+        # feedback + refactor + simplify = 3 Claude calls (no review skill)
+        assert mock_claude.call_count == 3
+        # Simplify notification should have been sent
+        simplify_calls = [str(c) for c in notify.call_args_list]
+        assert any("simplify" in c.lower() for c in simplify_calls)
+
+    @patch("app.pr_review.detect_skills", return_value=(None, None))
+    @patch("app.pr_review.detect_test_command", return_value=None)
+    @patch("app.pr_review.run_gh")
+    @patch("app.pr_review._run_git")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.commit_if_changes")
+    @patch("app.claude_step._run_git")
+    @patch("app.claude_step.get_model_config")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch("app.rebase_pr.run_gh")
+    def test_simplify_pass_skipped_without_refactor_skill(
+        self, mock_rebase_gh, mock_flags, mock_models, mock_cs_git, mock_commit,
+        mock_claude, mock_git, mock_gh, mock_test_cmd, mock_skills
+    ):
+        """Simplify pass is skipped when no refactor skill is detected."""
+        mock_models.return_value = {"mission": "", "fallback": "sonnet"}
+        # Empty review feedback so the pr-review prompt is not loaded (no skill_dir here)
+        mock_rebase_gh.side_effect = [
+            self._mock_pr_context(), "0", "diff", "", "", "",
+        ]
+        mock_commit.return_value = False
+
+        notify = MagicMock()
+        success, summary = run_pr_review("o", "r", "1", "/tmp/p", notify_fn=notify)
+        assert success is True
+        # No Claude calls (no feedback, no skills)
+        assert mock_claude.call_count == 0
+        # No simplify notification
+        simplify_calls = [str(c) for c in notify.call_args_list]
+        assert not any("simplify" in c.lower() for c in simplify_calls)
