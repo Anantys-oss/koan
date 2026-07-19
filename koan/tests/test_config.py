@@ -2636,3 +2636,37 @@ class TestGetVerifyRequeueMax:
 
         with _mock_config({"verification": {"max_requeue": "lots"}}):
             assert get_verify_requeue_max() == 2
+
+
+class TestGetDecomposeConfig:
+    """app.config.get_decompose_config resolution."""
+
+    def test_defaults_when_absent(self):
+        from app.config import get_decompose_config
+        with _mock_config({}):
+            cfg = get_decompose_config()
+        assert cfg == {"enabled": False, "auto": False}
+
+    def test_reads_values(self):
+        from app.config import get_decompose_config
+        with _mock_config({"decompose": {"enabled": True, "auto": True}}):
+            cfg = get_decompose_config()
+        assert cfg == {"enabled": True, "auto": True}
+
+    def test_bare_false_shortcut(self):
+        from app.config import get_decompose_config
+        with _mock_config({"decompose": False}):
+            cfg = get_decompose_config()
+        assert cfg == {"enabled": False, "auto": False}
+
+    def test_malformed_section_uses_defaults(self):
+        from app.config import get_decompose_config
+        with _mock_config({"decompose": "nonsense"}):
+            cfg = get_decompose_config()
+        assert cfg == {"enabled": False, "auto": False}
+
+    def test_partial_section(self):
+        from app.config import get_decompose_config
+        with _mock_config({"decompose": {"enabled": True}}):
+            cfg = get_decompose_config()
+        assert cfg == {"enabled": True, "auto": False}

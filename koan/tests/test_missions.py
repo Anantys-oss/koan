@@ -3916,3 +3916,137 @@ class TestIsDuplicateMission:
         )
         new_entry = "- [project:koan] /rebase https://github.com/owner/repo/pull/10"
         assert is_duplicate_mission(content, new_entry) is False
+
+
+class TestDecompositionTags:
+    """Mission decomposition tag helpers."""
+
+    def test_extract_group_tag(self):
+        from app.missions import extract_group_tag
+        assert extract_group_tag("- Do A [group:abc123]") == "abc123"
+        assert extract_group_tag("- Do A") == ""
+
+    def test_extract_decomposed_tag(self):
+        from app.missions import extract_decomposed_tag
+        assert extract_decomposed_tag("- Big [decomposed:ff00aa11]") == "ff00aa11"
+        assert extract_decomposed_tag("- Big") == ""
+
+    def test_inject_subtasks_adds_group_lines_in_order(self):
+        from app.missions import (
+            extract_group_tag,
+            inject_subtasks,
+            parse_sections,
+        )
+        content = (
+            "# Missions\n\n## Pending\n\n- Big mission\n\n"
+            "## In Progress\n\n## Done\n"
+        )
+        out = inject_subtasks(content, "- Big mission", ["Sub one", "Sub two"], "g1")
+        pending = parse_sections(out)["pending"]
+        # parent + 2 subtasks
+        assert len(pending) == 3
+        subs = [p for p in pending if extract_group_tag(p) == "g1"]
+        assert len(subs) == 2
+        assert "Sub one" in subs[0]
+        assert "Sub two" in subs[1]
+
+    def test_inject_subtasks_inherits_project_tag(self):
+        from app.missions import inject_subtasks
+        content = (
+            "# Missions\n\n## Pending\n\n- [project:koan] Big\n\n## Done\n"
+        )
+        out = inject_subtasks(content, "- [project:koan] Big", ["Sub"], "g1")
+        assert "[project:koan]" in out
+        # subtask line carries both tags
+        assert "[group:g1]" in out
+
+    def test_inject_subtasks_noop_when_parent_absent(self):
+        from app.missions import inject_subtasks
+        content = "# Missions\n\n## Pending\n\n- Other\n\n## Done\n"
+        out = inject_subtasks(content, "- Missing", ["Sub"], "g1")
+        assert out == content
+
+    def test_inject_subtasks_noop_when_all_blank(self):
+        from app.missions import inject_subtasks
+        content = "# Missions\n\n## Pending\n\n- Big\n\n## Done\n"
+        out = inject_subtasks(content, "- Big", ["", "  "], "g1")
+        assert out == content
+
+    def test_mark_parent_decomposed(self):
+        from app.missions import extract_decomposed_tag, mark_parent_decomposed
+        content = "# Missions\n\n## Pending\n\n- Big mission\n\n## Done\n"
+        out = mark_parent_decomposed(content, "- Big mission", "g1")
+        assert extract_decomposed_tag(out) == "g1"
+
+    def test_mark_parent_decomposed_idempotent(self):
+        from app.missions import mark_parent_decomposed
+        content = "# Missions\n\n## Pending\n\n- Big [decomposed:g1]\n\n## Done\n"
+        out = mark_parent_decomposed(content, "- Big", "g2")
+        # already tagged → unchanged
+        assert out == content
+
+    def test_extract_next_pending_skips_decomposed_parent(self):
+        from app.missions import extract_next_pending
+        content = (
+            "# Missions\n\n## Pending\n\n"
+            "- Big [decomposed:g1]\n"
+            "- Sub one [group:g1]\n\n"
+            "## Done\n"
+        )
+        # picker must skip the parent and return the sub-task
+        assert "Sub one" in extract_next_pending(content)
+
+    def test_find_decomposed_parents_ready_when_no_active_subtasks(self):
+        from app.missions import find_decomposed_parents_ready
+        content = (
+            "# Missions\n\n## Pending\n\n"
+            "- Big [decomposed:g1]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n- Sub one [group:g1] ✅ (2026-05-16 10:00)\n"
+        )
+        ready = find_decomposed_parents_ready(content)
+        assert len(ready) == 1
+        assert "Big" in ready[0]
+
+    def test_find_decomposed_parents_not_ready_with_active_subtask(self):
+        from app.missions import find_decomposed_parents_ready
+        content = (
+            "# Missions\n\n## Pending\n\n"
+            "- Big [decomposed:g1]\n"
+            "- Sub one [group:g1]\n\n"
+            "## Done\n"
+        )
+        assert find_decomposed_parents_ready(content) == []
+
+    def test_find_decomposed_parents_not_ready_with_in_progress_subtask(self):
+        from app.missions import find_decomposed_parents_ready
+        content = (
+            "# Missions\n\n## Pending\n\n"
+            "- Big [decomposed:g1]\n\n"
+            "## In Progress\n\n- Sub one [group:g1]\n\n"
+            "## Done\n"
+        )
+        assert find_decomposed_parents_ready(content) == []
+
+    def test_check_all_subtasks_failed_true(self):
+        from app.missions import check_all_subtasks_failed
+        content = (
+            "# Missions\n\n## Pending\n\n## Failed\n\n"
+            "- Sub one [group:g1] ❌ (2026-05-16 10:00)\n"
+            "- Sub two [group:g1] ❌ (2026-05-16 10:01)\n\n## Done\n"
+        )
+        assert check_all_subtasks_failed(content, "g1") is True
+
+    def test_check_all_subtasks_failed_false_when_one_done(self):
+        from app.missions import check_all_subtasks_failed
+        content = (
+            "# Missions\n\n## Failed\n\n"
+            "- Sub one [group:g1] ❌ (2026-05-16 10:00)\n\n"
+            "## Done\n\n- Sub two [group:g1] ✅ (2026-05-16 10:01)\n"
+        )
+        assert check_all_subtasks_failed(content, "g1") is False
+
+    def test_check_all_subtasks_failed_false_when_none(self):
+        from app.missions import check_all_subtasks_failed
+        content = "# Missions\n\n## Failed\n\n## Done\n"
+        assert check_all_subtasks_failed(content, "g1") is False
