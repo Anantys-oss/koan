@@ -688,7 +688,8 @@ the mission as extra focus context. A `/fix` invoked on a PR URL redirects here
 > **Transition (through 2026-08-17):** `/rebase` used to always apply review
 > feedback. Now a bare `/rebase` rebases only. During this window a bare
 > `/rebase` shows a temporary notice (in chat and as a PR comment) pointing you
-> to `/rebase --fix`; the notice disappears automatically after the deadline.
+> to `/fix` (or alternatively `/rebase --fix`); the notice disappears
+> automatically after the deadline.
 
 By default, Telegram `/rebase` only queues PRs created by this instance
 (branch prefix match). Set `allow_rebase_foreign_prs: true` in
