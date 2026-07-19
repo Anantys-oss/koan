@@ -331,12 +331,17 @@ def run_pr_review(
     if refactor_skill:
         notify_fn(f"Running simplify pass ({refactor_skill} --simplify)...")
         # Amend into HEAD when the branch is a single commit; otherwise land the
-        # readability changes as their own refactor commit.
-        rev_count = subprocess.run(
-            ["git", "rev-list", "--count", f"{base}..HEAD"],
-            capture_output=True, text=True, cwd=project_path, timeout=30,
-        )
-        single_commit = rev_count.stdout.strip() == "1"
+        # readability changes as their own refactor commit. On any git failure,
+        # fall back to a new commit — safer than risking a bad amend.
+        try:
+            rev_count = subprocess.run(
+                ["git", "rev-list", "--count", f"{base}..HEAD"],
+                capture_output=True, text=True, cwd=project_path, timeout=30,
+            )
+            single_commit = rev_count.stdout.strip() == "1"
+        except subprocess.SubprocessError as e:
+            notify_fn(f"Commit count check failed ({e}); landing simplify as a new commit")
+            single_commit = False
         _run_claude_step(
             prompt=build_simplify_prompt(
                 project_path, refactor_skill, skill_dir=skill_dir, base=base,

@@ -919,6 +919,85 @@ class TestRunPrReview:
         # Simplify notification should have been sent
         simplify_calls = [str(c) for c in notify.call_args_list]
         assert any("simplify" in c.lower() for c in simplify_calls)
+        # Single commit → simplify amends HEAD
+        simplify_commit = [
+            c for c in mock_commit.call_args_list
+            if "simplify readability" in str(c)
+        ]
+        assert simplify_commit
+        assert simplify_commit[0].kwargs.get("amend") is True
+
+    @patch("app.pr_review.subprocess")
+    @patch("app.pr_review.detect_skills", return_value=("team.refactor", None))
+    @patch("app.pr_review.detect_test_command", return_value=None)
+    @patch("app.pr_review.run_gh")
+    @patch("app.pr_review._run_git")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.commit_if_changes")
+    @patch("app.claude_step._run_git")
+    @patch("app.claude_step.get_model_config")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch("app.rebase_pr.run_gh")
+    def test_simplify_pass_multi_commit_adds_new_commit(
+        self, mock_rebase_gh, mock_flags, mock_models, mock_cs_git, mock_commit,
+        mock_claude, mock_git, mock_gh, mock_test_cmd, mock_skills,
+        mock_subprocess
+    ):
+        """Multi-commit branch → simplify lands as a new commit (amend=False)."""
+        mock_models.return_value = {"mission": "", "fallback": "sonnet"}
+        mock_subprocess.run.return_value = MagicMock(stdout="2\n")
+        mock_rebase_gh.side_effect = [
+            self._mock_pr_context(), "0", "diff", "reviewer comment", "review", "thread",
+        ]
+        mock_claude.return_value = {"success": True, "output": "Done", "error": ""}
+        mock_commit.return_value = True
+
+        notify = MagicMock()
+        success, summary = run_pr_review("o", "r", "1", "/tmp/p", notify_fn=notify, skill_dir=PR_SKILL_DIR)
+        assert success is True
+        simplify_commit = [
+            c for c in mock_commit.call_args_list
+            if "simplify readability" in str(c)
+        ]
+        assert simplify_commit
+        assert simplify_commit[0].kwargs.get("amend") is False
+
+    @patch("app.pr_review.subprocess")
+    @patch("app.pr_review.detect_skills", return_value=("team.refactor", None))
+    @patch("app.pr_review.detect_test_command", return_value=None)
+    @patch("app.pr_review.run_gh")
+    @patch("app.pr_review._run_git")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.commit_if_changes")
+    @patch("app.claude_step._run_git")
+    @patch("app.claude_step.get_model_config")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch("app.rebase_pr.run_gh")
+    def test_simplify_rev_list_failure_falls_back_to_new_commit(
+        self, mock_rebase_gh, mock_flags, mock_models, mock_cs_git, mock_commit,
+        mock_claude, mock_git, mock_gh, mock_test_cmd, mock_skills,
+        mock_subprocess
+    ):
+        """git rev-list failure → simplify falls back to a new commit, pipeline survives."""
+        import subprocess as _sp
+        mock_models.return_value = {"mission": "", "fallback": "sonnet"}
+        mock_subprocess.SubprocessError = _sp.SubprocessError
+        mock_subprocess.run.side_effect = _sp.TimeoutExpired("git", 30)
+        mock_rebase_gh.side_effect = [
+            self._mock_pr_context(), "0", "diff", "reviewer comment", "review", "thread",
+        ]
+        mock_claude.return_value = {"success": True, "output": "Done", "error": ""}
+        mock_commit.return_value = True
+
+        notify = MagicMock()
+        success, summary = run_pr_review("o", "r", "1", "/tmp/p", notify_fn=notify, skill_dir=PR_SKILL_DIR)
+        assert success is True
+        simplify_commit = [
+            c for c in mock_commit.call_args_list
+            if "simplify readability" in str(c)
+        ]
+        assert simplify_commit
+        assert simplify_commit[0].kwargs.get("amend") is False
 
     @patch("app.pr_review.detect_skills", return_value=(None, None))
     @patch("app.pr_review.detect_test_command", return_value=None)
