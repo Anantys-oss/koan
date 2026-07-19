@@ -121,6 +121,20 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   (byte-identical output), and the alert never blocks the post, changes the LGTM
   verdict, or re-runs analysis — re-covering the new commits is the
   incremental-review path's job on the next `/review`.
+- **Inline findings (opt-in):** When `review_inline_comments.enabled` is true,
+  resolvable findings are submitted as a **single** GitHub pull-request review
+  (`POST …/pulls/{n}/reviews` with a `comments` array), not as N separate
+  `…/pulls/{n}/comments` posts. Cap with `max_comments`. Re-runs stay
+  idempotent (existing anchors skipped). If the batch create fails (e.g. line
+  not in diff), fall back to individual inline posts without failing the run.
+- **Verdict may ride the batch:** When a formal verdict is submitted in the
+  same run (`review_verdict.approved`) and there is at least one new inline
+  comment to post, the verdict `event` (`APPROVE` / `REQUEST_CHANGES`, or
+  `COMMENT` on self-authored PRs) is attached to that same review so the
+  author gets one review notification. If there are no new inline comments,
+  the existing verdict-only path is unchanged. The summary **issue** comment
+  remains the durable review body (`SUMMARY_TAG`, collapse, hunter-append,
+  stale-HEAD, footer) and is **not** replaced by the review body.
 - **Core review is posted before the optional enrichment passes.** The core
   summary comment is posted first (`_post_review_comment`); the bot-comment
   triage and silent-failure-hunter passes run *after* and are strictly
