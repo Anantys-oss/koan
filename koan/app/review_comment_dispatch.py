@@ -109,11 +109,15 @@ def fetch_unresolved_review_comments(
     full_repo: str,
     pr_number: int,
     bot_username: str = "",
-) -> List[dict]:
+) -> Optional[List[dict]]:
     """Fetch non-bot review comments for a PR.
 
     Returns list of dicts: {id, user, body, path}.  Excludes bot-authored
     comments to prevent self-reply loops.
+
+    Returns ``None`` on transport/API failure (timeout, OS error, gh
+    non-zero).  Callers must distinguish ``None`` (unknown — do not
+    mutate dedup state) from ``[]`` (authoritative empty set).
 
     Uses a single API page (``per_page=100``, no ``--paginate``) and
     ``max_attempts=1`` so a slow GitHub response cannot stall the
@@ -130,8 +134,12 @@ def fetch_unresolved_review_comments(
             timeout=15,
             max_attempts=1,
         )
-    except (RuntimeError, OSError, subprocess.TimeoutExpired):
-        return results
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+        log.warning(
+            "fetch_unresolved_review_comments failed for %s#%s: %s",
+            full_repo, pr_number, e,
+        )
+        return None
 
     if not raw.strip():
         return results
@@ -160,11 +168,15 @@ def fetch_review_body_comments(
     full_repo: str,
     pr_number: int,
     bot_username: str = "",
-) -> List[dict]:
+) -> Optional[List[dict]]:
     """Fetch review-body comments (top-level review submissions).
 
     Only includes reviews with body text and state CHANGES_REQUESTED or
     COMMENTED.
+
+    Returns ``None`` on transport/API failure (timeout, OS error, gh
+    non-zero).  Callers must distinguish ``None`` (unknown — do not
+    mutate dedup state) from ``[]`` (authoritative empty set).
 
     Uses a single API page (``per_page=100``, no ``--paginate``) and
     ``max_attempts=1`` so a slow GitHub response cannot stall the
@@ -181,8 +193,12 @@ def fetch_review_body_comments(
             timeout=15,
             max_attempts=1,
         )
-    except (RuntimeError, OSError, subprocess.TimeoutExpired):
-        return results
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+        log.warning(
+            "fetch_review_body_comments failed for %s#%s: %s",
+            full_repo, pr_number, e,
+        )
+        return None
 
     if not raw.strip():
         return results
@@ -382,6 +398,11 @@ def check_and_dispatch_review_comments(
             reviews = fetch_review_body_comments(
                 full_repo, pr_number, bot_username,
             )
+            # None = fetch failed (timeout/OS/gh).  Do not treat as empty —
+            # clearing the fingerprint would re-dispatch on the next success.
+            if inline is None or reviews is None:
+                continue
+
             all_comments = inline + reviews
 
             if not all_comments:
