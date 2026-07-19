@@ -4,7 +4,7 @@ title: "GitHub And Trackers"
 description: "Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-13
+updated: 2026-07-19
 ---
 
 # GitHub And Trackers
@@ -124,7 +124,11 @@ Tracker files in `instance/` prevent duplicate work across daemon iterations.
 Examples include:
 
 - GitHub notification and reaction tracking.
-- Review comment dispatch fingerprints.
+- Review comment dispatch fingerprints (`.review-dispatch-tracker.json`).
+  Fetch failures (timeout/OS/`gh` error) return `None` rather than `[]`, so
+  the dispatch loop skips that PR without clearing its fingerprint — a
+  transient GitHub timeout must not re-dispatch the same unresolved comments
+  as a duplicate mission on the next successful poll.
 - CI dispatch fingerprints keyed by PR, SHA, and job.
 - Remote rename and default-branch tracking.
 - Burn-rate and quota-related state.
