@@ -24,9 +24,10 @@ from typing import Optional
 FIX_NOTICE_DEADLINE = datetime(2026, 8, 17, tzinfo=timezone.utc)
 
 _NOTICE_BODY = (
-    "`/rebase` now only rebases the PR onto its base branch. To also address "
-    "review feedback (the previous default), use `/rebase --fix` — this is "
-    "implied when you add a focus area or severity after the URL."
+    "`/rebase` now only rebases the PR onto its base branch.\n"
+    "To also address review feedback (the previous default), use `/fix` "
+    "(or alternatively `/rebase --fix`) — you can also provide extra context "
+    "after `/rebase` or `/fix`."
 )
 
 
