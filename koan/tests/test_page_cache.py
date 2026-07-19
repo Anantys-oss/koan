@@ -145,14 +145,20 @@ def test_priority_roots_ordered_before_projects(tmp_path, monkeypatch):
     assert roots.index(str(venv.resolve())) < roots.index(str(proj.resolve()))
 
 
-def test_stray_tmp_roots_ignores_non_tmp_patterns(tmp_path, monkeypatch):
-    # A matching dir outside /tmp must be ignored: the sweep only honors /tmp/*.
-    (tmp_path / "pytest-of-koan").mkdir()
+def test_stray_tmp_roots_ignores_non_tmp_patterns(monkeypatch):
+    # A pattern outside /tmp must be skipped outright: the sweep only honors
+    # /tmp/* patterns. Use a fixed non-/tmp pattern (not tmp_path, which pytest
+    # roots under /tmp on CI) and spy on glob to prove the guard short-circuits
+    # before globbing rather than merely matching nothing.
+    globbed: list[str] = []
     monkeypatch.setattr(
         page_cache, "get_cleanup_extra_tmp_globs",
-        lambda: [str(tmp_path / "pytest-of-*")],
+        lambda: ["/var/tmp/pytest-of-*"],
     )
+    import glob as _glob
+    monkeypatch.setattr(_glob, "glob", lambda p: globbed.append(p) or [])
     assert page_cache._stray_tmp_roots() == []
+    assert globbed == []  # non-/tmp pattern never reached glob
 
 
 @pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX-only")
