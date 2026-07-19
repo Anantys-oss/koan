@@ -16,6 +16,7 @@ from app.prompt_builder import (
     _get_deep_research,
     _get_staleness_section,
     _get_mission_type_section,
+    _get_stagnation_retry_section,
     _get_tdd_section,
     _get_testing_antipatterns_section,
     _get_verification_gate_section,
@@ -571,6 +572,64 @@ class TestBuildAgentPrompt:
         assert "Deep" in result
         # Staleness appears before deep research
         assert result.index("Staleness") < result.index("Deep")
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.stagnation_monitor.get_retry_info", return_value={
+        "count": 3, "pattern_type": "infinite_retry", "sample_lines": "Error x3",
+    })
+    @patch("app.prompts.load_prompt")
+    def test_includes_stagnation_retry_context_when_retried(
+        self, mock_load, mock_info, mock_prefix, mock_merge,
+        mock_submit_pr, mock_verbose, prompt_env,
+    ):
+        mock_load.side_effect = lambda name, **kw: (
+            "Base prompt" if name == "agent" else
+            "Stagnation: {RETRY_COUNT}x".format(**kw) if name == "stagnation-retry-context" else
+            ""
+        )
+        result = build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="implement",
+            focus_area="Test area",
+            available_pct=50,
+            mission_title="Fix flaky test",
+        )
+        assert "Stagnation: 3x" in result
+
+    @patch("app.prompt_builder._get_verbose_section", return_value="")
+    @patch("app.prompt_builder._get_submit_pr_section", return_value="")
+    @patch("app.prompt_builder._get_merge_policy", return_value="\nMerge\n")
+    @patch("app.prompt_builder._get_branch_prefix", return_value="koan/")
+    @patch("app.stagnation_monitor.get_retry_info", return_value={
+        "count": 0, "pattern_type": "", "sample_lines": "",
+    })
+    @patch("app.prompts.load_prompt")
+    def test_excludes_stagnation_retry_context_for_first_run(
+        self, mock_load, mock_info, mock_prefix, mock_merge,
+        mock_submit_pr, mock_verbose, prompt_env,
+    ):
+        mock_load.side_effect = lambda name, **kw: (
+            "Base prompt" if name == "agent" else ""
+        )
+        result = build_agent_prompt(
+            instance=prompt_env["instance"],
+            project_name="testproj",
+            project_path=prompt_env["project_path"],
+            run_num=1,
+            max_runs=20,
+            autonomous_mode="implement",
+            focus_area="Test area",
+            available_pct=50,
+            mission_title="New mission",
+        )
+        assert "Stagnation" not in result
 
 
 # --- Tests for build_contemplative_prompt ---
@@ -1425,6 +1484,47 @@ class TestGetMissionTypeSection:
         mock_type_section.assert_called_once_with("")
 
 
+# --- Tests for _get_stagnation_retry_section ---
+
+
+class TestGetStagnationRetrySection:
+    """Tests for stagnation retry context injection."""
+
+    @patch("app.stagnation_monitor.get_retry_info", return_value={
+        "count": 2, "pattern_type": "tool_loop", "sample_lines": "Bash x5",
+    })
+    def test_injects_context_when_retry_count_positive(self, mock_info):
+        result = _get_stagnation_retry_section("/tmp/instance", "Fix auth bug")
+        assert "attempted 2 time(s)" in result
+        assert "tool_loop" in result
+        assert "Bash x5" in result
+        mock_info.assert_called_once_with("/tmp/instance", "Fix auth bug")
+
+    @patch("app.stagnation_monitor.get_retry_info", return_value={
+        "count": 0, "pattern_type": "", "sample_lines": "",
+    })
+    def test_returns_empty_for_first_run(self, mock_info):
+        result = _get_stagnation_retry_section("/tmp/instance", "New mission")
+        assert result == ""
+
+    def test_returns_empty_for_no_mission(self):
+        result = _get_stagnation_retry_section("/tmp/instance", "")
+        assert result == ""
+
+    @patch("app.stagnation_monitor.get_retry_info", side_effect=OSError("disk error"))
+    def test_returns_empty_on_read_error(self, mock_info):
+        result = _get_stagnation_retry_section("/tmp/instance", "Some mission")
+        assert result == ""
+
+    @patch("app.stagnation_monitor.get_retry_info", return_value={
+        "count": 1, "pattern_type": "", "sample_lines": "",
+    })
+    def test_handles_missing_pattern_gracefully(self, mock_info):
+        result = _get_stagnation_retry_section("/tmp/instance", "Retry mission")
+        assert "attempted 1 time(s)" in result
+        assert "unknown" in result.lower()
+
+
 # --- Tests for _get_security_flagging_section ---
 
 
@@ -1661,6 +1761,22 @@ class TestBuildAgentPromptParts:
             assert lang_pos < tdd_pos
             assert merge_pos < verify_pos
             assert merge_pos < security_pos
+
+    def test_stagnation_retry_context_in_user_prompt_not_system(self, prompt_env):
+        """Stagnation retry coaching goes to user prompt (varies per mission)."""
+        with patch(
+            "app.prompt_builder._get_stagnation_retry_section",
+            return_value="\n\n# Stagnation Recovery Context\nTry something different\n",
+        ):
+            sys_prompt, user_prompt = self._build(prompt_env, mission_title="Fix flaky test")
+            assert "Stagnation Recovery Context" in user_prompt
+            assert "Stagnation Recovery Context" not in sys_prompt
+
+    def test_stagnation_retry_context_absent_for_first_run(self, prompt_env):
+        """No stagnation coaching when the retry tracker has no entry."""
+        with patch("app.prompt_builder._get_stagnation_retry_section", return_value=""):
+            _, user_prompt = self._build(prompt_env, mission_title="New mission")
+            assert "Stagnation Recovery Context" not in user_prompt
 
 
 # --- Tests for _get_caveman_section ---
