@@ -66,6 +66,16 @@ class TestRunGh:
 
     @patch("app.retry.time.sleep")
     @patch("app.github.subprocess.run")
+    def test_max_attempts_one_skips_timeout_retry(self, mock_run, mock_sleep):
+        """Hot-path callers can disable retry amplification on timeout."""
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=15)
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_gh("api", "repos/o/r/pulls/1/comments", timeout=15, max_attempts=1)
+        assert mock_run.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("app.retry.time.sleep")
+    @patch("app.github.subprocess.run")
     def test_retries_on_transient_network_error(self, mock_run, mock_sleep):
         """Transient network errors trigger retry with backoff."""
         mock_run.side_effect = [

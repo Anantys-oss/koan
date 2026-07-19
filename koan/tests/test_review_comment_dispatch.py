@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -188,6 +189,16 @@ class TestFetchUnresolvedReviewComments:
 
         assert fetch_unresolved_review_comments("owner/repo", 1) == []
 
+    @patch(
+        "app.review_comment_dispatch.run_gh",
+        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15),
+    )
+    def test_handles_timeout(self, _):
+        """Timeout must not propagate — hot path must degrade to []."""
+        from app.review_comment_dispatch import fetch_unresolved_review_comments
+
+        assert fetch_unresolved_review_comments("owner/repo", 1) == []
+
     @patch("app.review_comment_dispatch.run_gh", return_value="")
     def test_gh_api_invocation_has_no_invalid_limit_flag(self, mock_gh):
         """`gh api` rejects --limit; pagination must use the per_page query param.
@@ -205,6 +216,23 @@ class TestFetchUnresolvedReviewComments:
         endpoint = args[1]
         assert endpoint.startswith("repos/owner/repo/pulls/1/comments")
         assert "per_page=100" in endpoint
+
+    @patch("app.review_comment_dispatch.run_gh", return_value="")
+    def test_no_paginate_and_no_timeout_retry_amplification(self, mock_gh):
+        """Issue #1670: paginated gh + timeout retries stalled the notify loop.
+
+        Cap at one page (per_page=100, no --paginate) and max_attempts=1 so a
+        slow response fails fast instead of burning ~45s of retries per call.
+        """
+        from app.review_comment_dispatch import fetch_unresolved_review_comments
+
+        fetch_unresolved_review_comments("owner/repo", 42)
+        args = mock_gh.call_args.args
+        kwargs = mock_gh.call_args.kwargs
+        assert "--paginate" not in args
+        assert "per_page=100" in args[1]
+        assert kwargs.get("timeout") == 15
+        assert kwargs.get("max_attempts") == 1
 
 
 class TestFetchReviewBodyComments:
@@ -250,6 +278,29 @@ class TestFetchReviewBodyComments:
         endpoint = args[1]
         assert endpoint.startswith("repos/owner/repo/pulls/1/reviews")
         assert "per_page=100" in endpoint
+
+    @patch(
+        "app.review_comment_dispatch.run_gh",
+        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15),
+    )
+    def test_handles_timeout(self, _):
+        """Timeout must not propagate — hot path must degrade to []."""
+        from app.review_comment_dispatch import fetch_review_body_comments
+
+        assert fetch_review_body_comments("owner/repo", 1) == []
+
+    @patch("app.review_comment_dispatch.run_gh", return_value="")
+    def test_no_paginate_and_no_timeout_retry_amplification(self, mock_gh):
+        """Issue #1670: same single-page / no-retry contract as inline comments."""
+        from app.review_comment_dispatch import fetch_review_body_comments
+
+        fetch_review_body_comments("owner/repo", 42)
+        args = mock_gh.call_args.args
+        kwargs = mock_gh.call_args.kwargs
+        assert "--paginate" not in args
+        assert "per_page=100" in args[1]
+        assert kwargs.get("timeout") == 15
+        assert kwargs.get("max_attempts") == 1
 
 
 class TestReviewDispatchConfigHelpers:
