@@ -674,7 +674,7 @@ def get_page_cache_reclaim_config() -> dict:
     """
     defaults = {
         "enabled": True,
-        "idle_interval_s": 900,
+        "idle_interval_s": 180,
         "time_budget_s": 10,
         "extra_roots": [],
     }
