@@ -1391,7 +1391,11 @@ def _sweep_decomposed_parents(instance_dir: Path) -> None:
     # the first parent completes — defeating the short-circuit in steady state.
     try:
         content_probe = missions_path.read_text()
-    except OSError:
+    except OSError as e:
+        # Don't silently no-op: a persistently unreadable missions.md would
+        # leave decomposed parents stuck in Pending with no signal. Log it so
+        # the failure surfaces rather than vanishing every loop iteration.
+        _log_iteration("error", f"Group sweep: cannot read missions.md: {e}")
         return
     from app.missions import parse_sections
 

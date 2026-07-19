@@ -694,6 +694,27 @@ def extract_decomposed_tag(text: str) -> str:
     return match.group(1) if match else ""
 
 
+_MATCH_TAG_STRIP_RE = re.compile(r"\s*\[[^\]]*\]")
+
+
+def _parent_match_body(text: str) -> str:
+    """Normalize a mission line to its prose body for anchored parent matching.
+
+    Strips the leading ``- `` bullet, every ``[...]`` tag, and lifecycle
+    timestamps, then collapses whitespace. Parent lookup compares these bodies
+    for *equality* rather than a substring test: the picker hands us a
+    project-tag-stripped title, so a bare substring check let a shorter picked
+    mission match an earlier, longer Pending line that merely contained it
+    (auto-decompose has no distinguishing ``[decompose]`` tag to disambiguate).
+    """
+    body = text.strip()
+    if body.startswith("- "):
+        body = body[2:]
+    body = strip_timestamps(body)
+    body = _MATCH_TAG_STRIP_RE.sub("", body)
+    return " ".join(body.split())
+
+
 def inject_subtasks(
     content: str,
     parent_text: str,
@@ -713,6 +734,9 @@ def inject_subtasks(
     """
     search_key = parent_text.splitlines()[0].strip() if parent_text else ""
     if not search_key or not subtasks or not group_id:
+        return content
+    search_body = _parent_match_body(search_key)
+    if not search_body:
         return content
 
     project = extract_project_tag(parent_text)
@@ -737,7 +761,7 @@ def inject_subtasks(
             continue
         if not in_pending:
             continue
-        if stripped.startswith("- ") and search_key in raw_line:
+        if stripped.startswith("- ") and _parent_match_body(raw_line) == search_body:
             lines[i + 1:i + 1] = new_items
             return normalize_content("\n".join(lines))
 
@@ -761,6 +785,9 @@ def mark_parent_decomposed(
     search_key = parent_text.splitlines()[0].strip() if parent_text else ""
     if not search_key or not group_id:
         return content
+    search_body = _parent_match_body(search_key)
+    if not search_body:
+        return content
 
     lines = content.splitlines(keepends=True)
     in_pending = False
@@ -774,7 +801,7 @@ def mark_parent_decomposed(
             continue
         if (
             stripped.startswith("- ")
-            and search_key in raw_line
+            and _parent_match_body(raw_line) == search_body
             and not _DECOMPOSED_TAG_RE.search(raw_line)
         ):
             base = raw_line.rstrip("\n").rstrip("\r")
