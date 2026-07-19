@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import subprocess
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -113,16 +114,23 @@ def fetch_unresolved_review_comments(
 
     Returns list of dicts: {id, user, body, path}.  Excludes bot-authored
     comments to prevent self-reply loops.
+
+    Uses a single API page (``per_page=100``, no ``--paginate``) and
+    ``max_attempts=1`` so a slow GitHub response cannot stall the
+    notification loop via retry amplification (issue #1670).
     """
     results: List[dict] = []
     try:
+        # Single page only — no --paginate.  max_attempts=1 avoids
+        # timeout×retry stalls on this hot polling path.
         raw = run_gh(
             "api", f"repos/{full_repo}/pulls/{pr_number}/comments?per_page=100",
             "--jq",
             r'.[] | {id: .id, user: .user.login, body: .body, path: .path, user_type: .user.type}',
             timeout=15,
+            max_attempts=1,
         )
-    except RuntimeError:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
         return results
 
     if not raw.strip():
@@ -157,16 +165,23 @@ def fetch_review_body_comments(
 
     Only includes reviews with body text and state CHANGES_REQUESTED or
     COMMENTED.
+
+    Uses a single API page (``per_page=100``, no ``--paginate``) and
+    ``max_attempts=1`` so a slow GitHub response cannot stall the
+    notification loop via retry amplification (issue #1670).
     """
     results: List[dict] = []
     try:
+        # Single page only — no --paginate.  max_attempts=1 avoids
+        # timeout×retry stalls on this hot polling path.
         raw = run_gh(
             "api", f"repos/{full_repo}/pulls/{pr_number}/reviews?per_page=100",
             "--jq",
             r'.[] | {id: .id, user: .user.login, body: .body, state: .state, user_type: .user.type}',
             timeout=15,
+            max_attempts=1,
         )
-    except RuntimeError:
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
         return results
 
     if not raw.strip():
