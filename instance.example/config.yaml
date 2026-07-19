@@ -844,9 +844,13 @@ memory_monitor:
 # posix_fadvise(DONTNEED) — unprivileged, read-only, no-op on macOS dev boxes.
 page_cache_reclaim:
   enabled: true          # Master switch (default: true — unattended billing hygiene)
-  idle_interval_s: 900   # Min seconds between idle reclaims; 0 disables the idle tick
+  idle_interval_s: 180   # Min seconds between idle reclaims; 0 disables the idle tick
   time_budget_s: 10      # Soft wall-clock budget per sweep so it never stalls the loop
   extra_roots: []        # Operator additions, e.g. large data dirs outside projects
+  # The reclaim also sweeps the stray per-mission /tmp trees matched by
+  # cleanup.extra_tmp_globs (own-uid only) — those hold big out-of-root page-cache
+  # residuals (observed ~570 MB pinned for ~4.5h) until the age-gated sweep deletes
+  # them; reclaiming their clean pages decouples billed footprint from that latency.
 
 # Conversation history retention (#2354). Mid-session compaction of
 # conversation-history.jsonl so the append-only file stays bounded over long

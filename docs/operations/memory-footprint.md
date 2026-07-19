@@ -119,7 +119,34 @@ unprivileged `posix_fadvise(POSIX_FADV_DONTNEED)` to drop clean pages
 - **Platform:** no-op where `os.posix_fadvise` is absent (macOS dev boxes) —
   every hook returns `ReclaimStats(supported=False)` and touches zero files.
 - **Config:** `page_cache_reclaim: { enabled, idle_interval_s, time_budget_s,
-  extra_roots }` — see `instance.example/config.yaml`. Default on.
+  extra_roots }` — see `instance.example/config.yaml`. Default on. `idle_interval_s`
+  defaults to **180s** — short enough that boot/between-tick page cache never sits
+  billed for long.
+
+## Out-of-root residuals: the stray `/tmp` trees
+
+The reclaim only drops pages for files **under its roots**. Mission subprocesses
+read large files into the page cache from trees the standard roots
+(`instance/` + venv + scratch + project workdirs) never cover — chiefly the stray
+`/tmp` mission trees (`pytest-of-*`, `test-koan*`, `koan-*`, `jest_rs`). Those
+pages stay billed until the underlying files are **deleted** by the age-gated
+post-mission sweep, which can be hours away.
+
+Observed live (2026-07-19, fresh idle instance): `anon` 78 MB / per-process RSS
+~124 MB (healthy), but billed `memory.current` sat at ~600–900 MB. The reclaim
+log showed two floors — `file` dropping to **~95 MB** (everything reclaimed) or
+plateauing at **~663 MB** (a mission tree pinning ~570 MB of out-of-root cache).
+The high floor held **10:44→15:16 (~4.5h)** — this is the "stable at ~1 GB for
+hours" an operator sees — then fell to ~98 MB the instant the file was deleted.
+
+**Fix:** `default_reclaim_roots()` now also sweeps the same stray-`/tmp` trees the
+post-mission tmp sweep targets (`cleanup.extra_tmp_globs`, **own-uid dirs only** so
+it never churns on another user's `/tmp`). Reclaiming their clean pages decouples
+the billed baseline from the sweep's deletion latency. If a large residual persists
+elsewhere, add its dir to `page_cache_reclaim.extra_roots`; the ultimate backstop
+for *any* out-of-root cache is a **cgroup memory limit** on the service (Railway
+Resources), which forces the kernel to evict reclaimable page cache **and** slab
+under pressure — `fadvise` cannot touch slab.
 
 See also: [bridge-memory](../architecture/bridge-memory.md),
 [memory-watchdog](memory-watchdog.md).

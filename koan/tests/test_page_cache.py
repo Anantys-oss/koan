@@ -45,6 +45,9 @@ def test_default_roots_include_projects_and_instance(tmp_path, monkeypatch):
     monkeypatch.setattr(
         page_cache, "get_known_projects", lambda: [("proj", str(proj))]
     )
+    # Neutralize ambient stray-/tmp trees (the pytest tmpdir itself matches
+    # /tmp/pytest-of-*) so this test only exercises the standard roots.
+    monkeypatch.setattr(page_cache, "_stray_tmp_roots", list)
     roots = page_cache.default_reclaim_roots()
     resolved = {str(Path(r).resolve()) for r in roots}
     assert str(proj.resolve()) in resolved
@@ -60,6 +63,7 @@ def test_nested_roots_deduped(tmp_path, monkeypatch):
         page_cache, "get_known_projects", lambda: [("proj", str(proj))]
     )
     monkeypatch.setattr(page_cache.sys, "prefix", str(venv))
+    monkeypatch.setattr(page_cache, "_stray_tmp_roots", list)
     roots = {str(r) for r in page_cache.default_reclaim_roots()}
     assert str(proj.resolve()) in roots
     assert str(venv.resolve()) not in roots  # nested → dropped
@@ -134,10 +138,48 @@ def test_priority_roots_ordered_before_projects(tmp_path, monkeypatch):
         page_cache, "get_known_projects", lambda: [("proj", str(proj))]
     )
     monkeypatch.setattr(page_cache.sys, "prefix", str(venv))
+    monkeypatch.setattr(page_cache, "_stray_tmp_roots", list)
     roots = [str(r) for r in page_cache.default_reclaim_roots()]
     # instance/ and venv (small, high-value) come before the project workdir.
     assert roots.index(str(inst.resolve())) < roots.index(str(proj.resolve()))
     assert roots.index(str(venv.resolve())) < roots.index(str(proj.resolve()))
+
+
+def test_stray_tmp_roots_ignores_non_tmp_patterns(tmp_path, monkeypatch):
+    # A matching dir outside /tmp must be ignored: the sweep only honors /tmp/*.
+    (tmp_path / "pytest-of-koan").mkdir()
+    monkeypatch.setattr(
+        page_cache, "get_cleanup_extra_tmp_globs",
+        lambda: [str(tmp_path / "pytest-of-*")],
+    )
+    assert page_cache._stray_tmp_roots() == []
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX-only")
+def test_stray_tmp_roots_dir_and_uid_filters(monkeypatch):
+    import app.page_cache as pc
+
+    captured = {}
+
+    def fake_glob(pattern):
+        captured["pattern"] = pattern
+        return ["/tmp/pytest-of-me", "/tmp/pytest-of-other", "/tmp/pytest-file"]
+
+    def fake_lstat(path):
+        import stat as _stat
+        from types import SimpleNamespace
+        if path == "/tmp/pytest-file":
+            return SimpleNamespace(st_mode=_stat.S_IFREG, st_uid=os.getuid())
+        uid = os.getuid() if path == "/tmp/pytest-of-me" else os.getuid() + 1
+        return SimpleNamespace(st_mode=_stat.S_IFDIR, st_uid=uid)
+
+    monkeypatch.setattr(pc, "get_cleanup_extra_tmp_globs", lambda: ["/tmp/pytest-of-*"])
+    monkeypatch.setattr(pc.os, "lstat", fake_lstat)
+    import glob as _g
+    monkeypatch.setattr(_g, "glob", fake_glob)
+    roots = {str(r) for r in pc._stray_tmp_roots()}
+    # Only the own-uid directory survives (other-uid dir and regular file dropped).
+    assert roots == {"/tmp/pytest-of-me"}
 
 
 def _run_stats(monkeypatch, stats):
