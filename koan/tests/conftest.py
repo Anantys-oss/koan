@@ -29,6 +29,15 @@ if _xdist_worker and _xdist_worker != "master":
     (_per_worker_root / "instance").mkdir(parents=True, exist_ok=True)
     os.environ["KOAN_ROOT"] = str(_per_worker_root)
 
+# Agent-loop skill missions set KOAN_SUPPRESS_RUNNER_OUTCOME=1 so the runner's
+# ✅/❌ outcome line is deduped against the agent-loop completion line. When
+# pytest is launched under such a mission the flag inherits into every test
+# process. skill_env is built via ``{**os.environ, ...}``, so tests that assert
+# the key is *absent* for non-PR skills (or that notify_outcome still sends)
+# fail under agent-driven runs. Strip it at suite start; tests that need the
+# flag set it themselves via monkeypatch/setenv.
+os.environ.pop("KOAN_SUPPRESS_RUNNER_OUTCOME", None)
+
 
 @pytest.fixture(autouse=True)
 def _reset_run_module_state():
