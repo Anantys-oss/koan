@@ -3960,6 +3960,39 @@ class TestDecompositionTags:
         # subtask line carries both tags
         assert "[group:g1]" in out
 
+    def test_inject_subtasks_inherits_tag_from_stripped_parent_text(self):
+        """Regression: the picker strips [project:X] from the title it hands
+        back, so parent_text arrives untagged. The tag must still be inherited
+        from the authoritative line in content, or sub-tasks run untagged and
+        fall back to the wrong project in a multi-project install."""
+        from app.missions import extract_project_tag, inject_subtasks, parse_sections
+        content = (
+            "# Missions\n\n## Pending\n\n"
+            "- [project:koan] Big [decompose]\n\n## Done\n"
+        )
+        # parent_text as pick_mission delivers it: project tag stripped.
+        out = inject_subtasks(content, "- Big [decompose]", ["Sub one", "Sub two"], "g1")
+        subs = [
+            item for item in parse_sections(out)["pending"]
+            if "[group:g1]" in item
+        ]
+        assert len(subs) == 2
+        for sub in subs:
+            assert extract_project_tag(sub) == "koan", sub
+
+    def test_inject_subtasks_untagged_parent_stays_untagged(self):
+        """A parent with no project tag yields untagged sub-tasks (no spurious
+        [project:default])."""
+        from app.missions import inject_subtasks, parse_sections
+        content = "# Missions\n\n## Pending\n\n- Big mission\n\n## Done\n"
+        out = inject_subtasks(content, "- Big mission", ["Sub"], "g1")
+        subs = [
+            item for item in parse_sections(out)["pending"]
+            if "[group:g1]" in item
+        ]
+        assert len(subs) == 1
+        assert "[project:" not in subs[0]
+
     def test_inject_subtasks_noop_when_parent_absent(self):
         from app.missions import inject_subtasks
         content = "# Missions\n\n## Pending\n\n- Other\n\n## Done\n"

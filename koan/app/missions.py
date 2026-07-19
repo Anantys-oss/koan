@@ -739,16 +739,19 @@ def inject_subtasks(
     if not search_body:
         return content
 
-    project = extract_project_tag(parent_text)
-    project_tag = f" [project:{project}]" if project and project != "default" else ""
-
-    new_items: List[str] = []
-    for st in subtasks:
-        st_clean = re.sub(r"\r\n|\r|\n", " ", str(st)).strip()
-        if not st_clean:
-            continue
-        new_items.append(stamp_queued(f"- {st_clean} [group:{group_id}]{project_tag}"))
-    if not new_items:
+    # Filter blank sub-tasks up front. The parent's [project:X] tag is inherited
+    # from the *matched line* below, not from parent_text: the picker hands us a
+    # project-tag-stripped title (see pick_mission.fallback_extract), so deriving
+    # the tag from parent_text would silently drop it and leave sub-tasks
+    # untagged — they would then fall back to the first project and run against
+    # the wrong repo in a multi-project install. The line in ``content`` is
+    # authoritative because it still carries the original [project:X] tag.
+    cleaned = [
+        st_clean
+        for st in subtasks
+        if (st_clean := re.sub(r"\r\n|\r|\n", " ", str(st)).strip())
+    ]
+    if not cleaned:
         return content
 
     lines = content.splitlines()
@@ -762,6 +765,14 @@ def inject_subtasks(
         if not in_pending:
             continue
         if stripped.startswith("- ") and _parent_match_body(raw_line) == search_body:
+            project = extract_project_tag(raw_line)
+            project_tag = (
+                f" [project:{project}]" if project and project != "default" else ""
+            )
+            new_items = [
+                stamp_queued(f"- {st_clean} [group:{group_id}]{project_tag}")
+                for st_clean in cleaned
+            ]
             lines[i + 1:i + 1] = new_items
             return normalize_content("\n".join(lines))
 
