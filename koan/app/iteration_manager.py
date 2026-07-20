@@ -1385,17 +1385,27 @@ def _sweep_decomposed_parents(instance_dir: Path) -> None:
     # Short-circuit before taking the exclusive missions lock / rewriting the
     # store. Decomposition is off by default, so the overwhelming majority of
     # installs have no [decomposed:] parents and should not pay the write-path
-    # cost every loop cycle. Probe only the Pending section: complete_mission /
-    # fail_mission preserve the parent's [decomposed:ID] tag when moving it to
-    # Done/Failed, so a full-file substring check would stay true forever after
-    # the first parent completes — defeating the short-circuit in steady state.
+    # cost every loop cycle. Probe the authoritative store (not the missions.md
+    # export, which can lag the store) so the short-circuit can't diverge from
+    # the state the sweep actually mutates — a stale export would otherwise let
+    # a ready [decomposed:] parent be missed and the failure counter reset,
+    # leaving it stuck with no alert. Probe only the Pending section:
+    # complete_mission / fail_mission preserve the parent's [decomposed:ID] tag
+    # when moving it to Done/Failed, so a full-file substring check would stay
+    # true forever after the first parent completes — defeating the
+    # short-circuit in steady state.
     try:
-        content_probe = missions_path.read_text()
-    except OSError as e:
-        # Don't silently no-op: a persistently unreadable missions.md would
-        # leave decomposed parents stuck in Pending with no signal. Log it so
-        # the failure surfaces rather than vanishing every loop iteration.
-        _log_iteration("error", f"Group sweep: cannot read missions.md: {e}")
+        from app.mission_store import get_mission_store
+        from app.mission_store.transition import ensure_store_synced
+
+        instance_str = str(instance_dir)
+        ensure_store_synced(instance_str)
+        content_probe = get_mission_store(instance_str).render_content()
+    except Exception as e:
+        # Don't silently no-op: a persistently failing store read would leave
+        # decomposed parents stuck in Pending with no signal. Log it so the
+        # failure surfaces rather than vanishing every loop iteration.
+        _log_iteration("error", f"Group sweep: cannot read mission store: {e}")
         return
     from app.missions import parse_sections
 
@@ -1522,8 +1532,12 @@ def _maybe_decompose_mission(
         from app.config import get_decompose_config
         cfg = get_decompose_config()
     except Exception as e:
-        _log_iteration("error", f"Decompose config load failed: {e}")
-        return None
+        # Fall back to safe defaults (feature off, tag still honored) rather
+        # than returning None — otherwise a config-read hiccup silently drops
+        # an explicit [decompose] request. The tag path below still fires.
+        _log_iteration("error",
+            f"Decompose config load failed: {e} — using safe defaults")
+        cfg = {"enabled": False, "auto": False}
 
     has_tag = "[decompose]" in mission_title.lower()
     # The [decompose] tag always works. Otherwise both enabled and auto must
