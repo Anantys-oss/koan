@@ -158,3 +158,40 @@ class TestPlanIterationPassive:
 
         assert result["action"] == "passive_wait"
         assert "h" in result["passive_remaining"]
+
+
+class TestPassiveSuppressesDecompose:
+    """Passive mode must suppress the group sweep and decomposition gate,
+    both of which mutate state / invoke the CLI (read-only contract)."""
+
+    @patch("app.iteration_manager._sweep_decomposed_parents")
+    @patch("app.iteration_manager._maybe_decompose_mission")
+    @patch("app.pick_mission.pick_mission", return_value="koan:Big A, B, C [decompose]")
+    @patch("app.usage_estimator.cmd_refresh")
+    def test_passive_skips_sweep_and_decompose(
+        self, mock_refresh, mock_pick, mock_decomp, mock_sweep,
+        instance_dir, koan_root, usage_state,
+    ):
+        from app.passive_manager import create_passive
+
+        create_passive(str(koan_root))
+        (instance_dir / "usage.md").write_text(
+            "Session (5hr) : 30% (reset in 3h)\nWeekly (7 day) : 20%\n"
+        )
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n- Big [decomposed:g1]\n\n## Done\n"
+        )
+
+        result = plan_iteration(
+            instance_dir=str(instance_dir),
+            koan_root=str(koan_root),
+            run_num=2,
+            count=1,
+            projects=PROJECTS_LIST,
+            last_project="koan",
+            usage_state_path=str(usage_state),
+        )
+
+        assert result["action"] == "passive_wait"
+        mock_sweep.assert_not_called()
+        mock_decomp.assert_not_called()

@@ -4198,3 +4198,161 @@ class TestBudgetModeFallbackUnlimitedQuota:
         )
         assert result["action"] == "mission"
         mock_warn_burn.assert_not_called()
+
+
+class TestMaybeDecomposeMission:
+    """app.iteration_manager._maybe_decompose_mission gate."""
+
+    PROJECTS = [("koan", "/tmp/koan")]
+
+    def test_skips_slash_command(self, instance_dir):
+        from app.iteration_manager import _maybe_decompose_mission
+        with patch("app.decompose.decompose_mission") as dm:
+            result = _maybe_decompose_mission(
+                "/rebase https://x/pull/1", "koan", instance_dir, self.PROJECTS)
+        assert result is None
+        dm.assert_not_called()
+
+    def test_skips_already_group_tagged(self, instance_dir):
+        from app.iteration_manager import _maybe_decompose_mission
+        with patch("app.decompose.decompose_mission") as dm:
+            result = _maybe_decompose_mission(
+                "Sub [group:g1]", "koan", instance_dir, self.PROJECTS)
+        assert result is None
+        dm.assert_not_called()
+
+    def test_skips_already_decomposed(self, instance_dir):
+        from app.iteration_manager import _maybe_decompose_mission
+        with patch("app.decompose.decompose_mission") as dm:
+            result = _maybe_decompose_mission(
+                "Big [decomposed:g1]", "koan", instance_dir, self.PROJECTS)
+        assert result is None
+        dm.assert_not_called()
+
+    def test_config_off_no_tag_skips_classifier(self, instance_dir):
+        from app.iteration_manager import _maybe_decompose_mission
+        with patch("app.config.get_decompose_config",
+                   return_value={"enabled": False, "auto": False}), \
+             patch("app.decompose.decompose_mission") as dm:
+            result = _maybe_decompose_mission(
+                "Do a thing", "koan", instance_dir, self.PROJECTS)
+        assert result is None
+        dm.assert_not_called()
+
+    def test_tag_triggers_even_when_disabled(self, instance_dir):
+        from app.iteration_manager import _maybe_decompose_mission
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n- Do A, B, C [decompose]\n\n## Done\n")
+        with patch("app.config.get_decompose_config",
+                   return_value={"enabled": False, "auto": False}), \
+             patch("app.decompose.decompose_mission",
+                   return_value=["Do A", "Do B"]):
+            result = _maybe_decompose_mission(
+                "- Do A, B, C [decompose]", "koan", instance_dir, self.PROJECTS)
+        assert result == ["Do A", "Do B"]
+        content = (instance_dir / "missions.md").read_text()
+        assert "[group:" in content
+        assert "[decomposed:" in content
+
+    def test_auto_mode_triggers_without_tag(self, instance_dir):
+        from app.iteration_manager import _maybe_decompose_mission
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n- Do A and B and C\n\n## Done\n")
+        with patch("app.config.get_decompose_config",
+                   return_value={"enabled": True, "auto": True}), \
+             patch("app.decompose.decompose_mission",
+                   return_value=["Do A", "Do B"]):
+            result = _maybe_decompose_mission(
+                "- Do A and B and C", "koan", instance_dir, self.PROJECTS)
+        assert result == ["Do A", "Do B"]
+
+    def test_classifier_failure_runs_whole(self, instance_dir):
+        from app.decompose import DecomposeError
+        from app.iteration_manager import _maybe_decompose_mission
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n- Do A, B [decompose]\n\n## Done\n")
+        with patch("app.config.get_decompose_config",
+                   return_value={"enabled": True, "auto": True}), \
+             patch("app.decompose.decompose_mission",
+                   side_effect=DecomposeError("boom")):
+            result = _maybe_decompose_mission(
+                "- Do A, B [decompose]", "koan", instance_dir, self.PROJECTS)
+        assert result is None
+
+    def test_atomic_verdict_runs_whole(self, instance_dir):
+        from app.iteration_manager import _maybe_decompose_mission
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n- Do A [decompose]\n\n## Done\n")
+        with patch("app.config.get_decompose_config",
+                   return_value={"enabled": True, "auto": True}), \
+             patch("app.decompose.decompose_mission", return_value=None):
+            result = _maybe_decompose_mission(
+                "- Do A [decompose]", "koan", instance_dir, self.PROJECTS)
+        assert result is None
+
+
+class TestSweepDecomposedParents:
+    """app.iteration_manager._sweep_decomposed_parents group completion."""
+
+    def _reset(self):
+        import app.iteration_manager as im
+        im._sweep_consecutive_failures = 0
+
+    def test_no_missions_file_noop(self, instance_dir):
+        from app.iteration_manager import _sweep_decomposed_parents
+        self._reset()
+        # no missions.md
+        _sweep_decomposed_parents(instance_dir)  # must not raise
+
+    def test_short_circuits_without_decomposed_parent(self, instance_dir):
+        from app.iteration_manager import _sweep_decomposed_parents
+        self._reset()
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n- Ordinary mission\n\n## Done\n")
+        with patch("app.utils.modify_missions_file") as mod:
+            _sweep_decomposed_parents(instance_dir)
+        mod.assert_not_called()
+
+    def test_completes_ready_parent(self, instance_dir):
+        from app.iteration_manager import _sweep_decomposed_parents
+        from app.missions import parse_sections
+        self._reset()
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- Big mission [decomposed:g1]\n\n"
+            "## In Progress\n\n"
+            "## Done\n\n- Sub one [group:g1] ✅ (2026-05-16 10:00)\n"
+        )
+        _sweep_decomposed_parents(instance_dir)
+        sections = parse_sections((instance_dir / "missions.md").read_text())
+        assert not any("Big mission" in p for p in sections["pending"])
+        assert any("Big mission" in d for d in sections["done"])
+
+    def test_fails_parent_when_all_subtasks_failed(self, instance_dir):
+        from app.iteration_manager import _sweep_decomposed_parents
+        from app.missions import parse_sections
+        self._reset()
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- Big mission [decomposed:g1]\n\n"
+            "## In Progress\n\n"
+            "## Failed\n\n- Sub one [group:g1] ❌ (2026-05-16 10:00)\n\n"
+            "## Done\n"
+        )
+        _sweep_decomposed_parents(instance_dir)
+        sections = parse_sections((instance_dir / "missions.md").read_text())
+        assert any("Big mission" in f for f in sections["failed"])
+
+    def test_leaves_parent_with_active_subtask(self, instance_dir):
+        from app.iteration_manager import _sweep_decomposed_parents
+        from app.missions import parse_sections
+        self._reset()
+        (instance_dir / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n"
+            "- Big mission [decomposed:g1]\n"
+            "- Sub one [group:g1]\n\n"
+            "## Done\n"
+        )
+        _sweep_decomposed_parents(instance_dir)
+        sections = parse_sections((instance_dir / "missions.md").read_text())
+        assert any("Big mission" in p for p in sections["pending"])

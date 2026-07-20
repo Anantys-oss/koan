@@ -1985,6 +1985,30 @@ def get_autonomous_health_config() -> dict:
     }
 
 
+def get_decompose_config() -> dict:
+    """Get mission decomposition configuration from config.yaml.
+
+    Config keys (under ``decompose:`` in ``config.yaml``):
+        enabled (bool): master switch for config-driven decomposition.
+            When False, only the explicit [decompose] tag triggers
+            classification; auto-decompose is off regardless of ``auto``.
+            When True, the [decompose] tag is honored and ``auto`` may
+            enable tagless classification. Note the [decompose] tag works
+            even when False. Default False.
+        auto (bool): when True, all missions are classified (no tag
+            needed). Requires enabled=True to have any effect. Default False.
+
+    Returns:
+        Dict with keys ``enabled`` and ``auto``, always populated.
+    """
+    defaults = {"enabled": False, "auto": False}
+    merged = _get_config_with_overrides("decompose", defaults, bool_shortcut=True)
+    return {
+        "enabled": bool(merged.get("enabled", defaults["enabled"])),
+        "auto": bool(merged.get("auto", defaults["auto"])),
+    }
+
+
 def get_plan_review_config() -> dict:
     """Get plan review loop configuration from config.yaml.
 

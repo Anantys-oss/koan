@@ -56,6 +56,8 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `run._is_ci_check_mission()` | Classifies a mission title as CI-related (`/ci_check …`, ci_dispatch `Fix CI failure: …`). |
 | `run._mission_fail_icon()` | **The single source of truth for the emoji prefix on a mission-failure notification** — 🚦 for CI missions, ❌ otherwise. Every failure-notification site MUST call this, never hardcode ❌. |
 | `iteration_manager._downgrade_if_burning_fast()` | Burn-rate-driven mode downgrade, next to affordability downgrade. |
+| `iteration_manager._maybe_decompose_mission()` | Decomposition gate: classifies an eligible mission and, on a composite verdict, injects `[group:ID]` sub-missions + retags the parent `[decomposed:ID]`. Runs after the passive/CLI-unavailable gates. |
+| `iteration_manager._sweep_decomposed_parents()` | Group-completion sweep: a distinct Pending→terminal parent transition (no CLI run, no `_maybe_retry_mission` guard). Alerts the operator after `_SWEEP_FAILURE_NOTIFY_THRESHOLD` stuck sweeps. |
 | `stagnation_monitor` | Daemon thread hashing last-N stdout lines; kills the subprocess group after K identical hashes; requeues up to `max_retry_on_stagnation`. |
 | `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
 | `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, `post_review`, each error-isolated. |
@@ -170,6 +172,23 @@ see it.
   mistaken for a quota/auth message. Keep that default for new dispatch pathways.
 - **Every termination pathway needs a retry guard.** Stagnation kill, timeout kill,
   and CLI error all route through `_maybe_retry_mission`'s RETRYABLE check.
+- **Mission decomposition adds a distinct Pending→terminal transition that bypasses
+  the CLI/`_finalize_mission` path.** A natural-language mission tagged `[decompose]`
+  (or any eligible mission when `decompose.auto` is on) is classified by a lightweight
+  model at the **decomposition gate** (`_maybe_decompose_mission`), which runs *after*
+  the passive and CLI-unavailable gates because it invokes the classifier CLI and
+  mutates the store. A composite verdict injects `[group:ID]` sub-missions into Pending
+  and retags the parent `[decomposed:ID]`; the picker skips `[decomposed:]` parents. A
+  **group-completion sweep** (`_sweep_decomposed_parents`, also after the read-only
+  gates) transitions a parent out of Pending — completed if any sub-task succeeded,
+  failed if all did — once no `[group:ID]` sub-mission remains in Pending/In Progress.
+  This parent transition is a store mutation, **not** a CLI run: the parent never enters
+  In Progress and never spawns a subprocess, so it needs **no** `_maybe_retry_mission`
+  guard (the retry-guard invariant covers subprocess-terminating pathways only). The
+  sweep short-circuits before taking the store lock when no `[decomposed:]` parent sits
+  in Pending, logs (not swallows) an unreadable-store probe, and counts per-parent
+  transition no-ops so a parent stuck in Pending trips an operator alert after
+  `_SWEEP_FAILURE_NOTIFY_THRESHOLD` consecutive failures.
 - **Mission-failure notifications route their emoji through `_mission_fail_icon()`.**
   CI-related missions (`/ci_check`, ci_dispatch `Fix CI failure:`) surface 🚦 — a
   status signal, not an alarm, per operator preference; all other failures surface ❌.
