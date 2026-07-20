@@ -44,6 +44,13 @@ class TestGetLanguage:
         with patch("app.language_preference._get_language_file", return_value=lang_file):
             assert get_language() == "english"
 
+    def test_non_dict_json_defaults_to_english(self, tmp_path):
+        """Valid-but-non-dict JSON (bare string/list/number) fails safe to English."""
+        lang_file = tmp_path / "language.json"
+        lang_file.write_text(json.dumps("english"))
+        with patch("app.language_preference._get_language_file", return_value=lang_file):
+            assert get_language() == "english"
+
 
 class TestSetLanguage:
     def test_creates_file(self, tmp_path):

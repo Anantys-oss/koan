@@ -1887,6 +1887,16 @@ fresh install — no `/english` needed.
 - `/language reset` — Reply in the same language as each incoming message
 </details>
 
+> **Upgrade note:** English is now the default when no preference is set. Two
+> cohorts change behavior on upgrade:
+> - If you previously ran `/language reset` to reply in each message's own
+>   language, that state was stored by deleting the preference file — now
+>   indistinguishable from a fresh install and read as English. Re-run
+>   `/language reset` once to restore input-language mode.
+> - If you relied on a non-English `soul.md` for replies without ever setting
+>   `/language`, replies are now enforced to English. Set your language
+>   explicitly (e.g. `/french`) to keep it.
+
 ### System Management
 
 **`/pause`** — Pause mission processing. Kōan stays running but won't pick up new missions.

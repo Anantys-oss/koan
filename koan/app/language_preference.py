@@ -43,6 +43,8 @@ def get_language() -> str:
         data = json.loads(lang_file.read_text())
     except (json.JSONDecodeError, OSError):
         return DEFAULT_LANGUAGE
+    if not isinstance(data, dict):
+        return DEFAULT_LANGUAGE
     return data.get("language", DEFAULT_LANGUAGE)
 
 
