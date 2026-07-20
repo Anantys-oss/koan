@@ -1869,7 +1869,8 @@ Use `/models` to inspect the resolved values for the active provider at any time
 
 ### Language Preference
 
-**`/language`** — Set or reset the reply language.
+**`/language`** — Set or reset the reply language. Defaults to **English** on a
+fresh install — no `/english` needed.
 
 - **Usage:** `/language <lang>`, `/language reset`
 - **Aliases:** `/lng`
@@ -1883,7 +1884,7 @@ Use `/models` to inspect the resolved values for the active provider at any time
 
 - `/fr` — Switch to French replies
 - `/en` — Switch back to English
-- `/language reset` — Use default language
+- `/language reset` — Reply in the same language as each incoming message
 </details>
 
 ### System Management

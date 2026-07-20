@@ -14,27 +14,35 @@ from app.language_preference import (
 
 
 class TestGetLanguage:
-    def test_no_file_returns_empty(self, tmp_path):
+    def test_no_file_defaults_to_english(self, tmp_path):
+        """Fresh install (no language.json) defaults to English."""
         with patch("app.language_preference._get_language_file", return_value=tmp_path / "language.json"):
-            assert get_language() == ""
+            assert get_language() == "english"
 
     def test_reads_language_from_file(self, tmp_path):
         lang_file = tmp_path / "language.json"
-        lang_file.write_text(json.dumps({"language": "english"}))
+        lang_file.write_text(json.dumps({"language": "french"}))
         with patch("app.language_preference._get_language_file", return_value=lang_file):
-            assert get_language() == "english"
+            assert get_language() == "french"
 
-    def test_invalid_json_returns_empty(self, tmp_path):
+    def test_empty_sentinel_returns_empty(self, tmp_path):
+        """Explicit reset stores ``{"language": ""}`` → input-language mode."""
+        lang_file = tmp_path / "language.json"
+        lang_file.write_text(json.dumps({"language": ""}))
+        with patch("app.language_preference._get_language_file", return_value=lang_file):
+            assert get_language() == ""
+
+    def test_invalid_json_defaults_to_english(self, tmp_path):
         lang_file = tmp_path / "language.json"
         lang_file.write_text("not json")
         with patch("app.language_preference._get_language_file", return_value=lang_file):
-            assert get_language() == ""
+            assert get_language() == "english"
 
-    def test_missing_key_returns_empty(self, tmp_path):
+    def test_missing_key_defaults_to_english(self, tmp_path):
         lang_file = tmp_path / "language.json"
         lang_file.write_text(json.dumps({"other": "value"}))
         with patch("app.language_preference._get_language_file", return_value=lang_file):
-            assert get_language() == ""
+            assert get_language() == "english"
 
 
 class TestSetLanguage:
@@ -69,22 +77,39 @@ class TestSetLanguage:
 
 
 class TestResetLanguage:
-    def test_removes_file(self, tmp_path):
+    def test_writes_empty_sentinel(self, tmp_path):
+        """Reset persists an explicit empty sentinel (input-language mode)."""
         lang_file = tmp_path / "language.json"
         lang_file.write_text(json.dumps({"language": "english"}))
         with patch("app.language_preference._get_language_file", return_value=lang_file):
             reset_language()
-        assert not lang_file.exists()
+        assert json.loads(lang_file.read_text())["language"] == ""
 
-    def test_no_error_if_file_missing(self, tmp_path):
+    def test_reset_distinguishable_from_fresh_install(self, tmp_path):
+        """After reset, get_language() is empty (input mode), not the English default."""
+        lang_file = tmp_path / "language.json"
+        with patch("app.language_preference._get_language_file", return_value=lang_file):
+            reset_language()
+            assert get_language() == ""
+
+    def test_creates_file_if_missing(self, tmp_path):
         lang_file = tmp_path / "language.json"
         with patch("app.language_preference._get_language_file", return_value=lang_file):
             reset_language()  # Should not raise
+        assert lang_file.exists()
 
 
 class TestGetLanguageInstruction:
-    def test_no_language_returns_empty(self, tmp_path):
+    def test_no_file_enforces_english(self, tmp_path):
+        """Fresh install enforces English without the user running /english."""
         with patch("app.language_preference._get_language_file", return_value=tmp_path / "language.json"):
+            assert "english" in get_language_instruction()
+
+    def test_reset_sentinel_returns_empty(self, tmp_path):
+        """Explicit reset → no enforcement (reply in input language)."""
+        lang_file = tmp_path / "language.json"
+        lang_file.write_text(json.dumps({"language": ""}))
+        with patch("app.language_preference._get_language_file", return_value=lang_file):
             assert get_language_instruction() == ""
 
     def test_with_language_returns_instruction(self, tmp_path):
