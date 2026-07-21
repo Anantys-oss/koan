@@ -445,7 +445,7 @@ def build_skill_command(
         "implement": lambda: _build_implement_cmd(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
-        "fix": lambda: _build_implement_cmd(
+        "fix": lambda: _build_fix_cmd(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
         "rebase": lambda: _build_rebase_cmd(base_cmd, args, project_path),
@@ -690,6 +690,38 @@ def _build_implement_cmd(
     GitHub's issues API works for PRs too, so both URL types are valid.
     """
     return _build_url_context_cmd(
+        base_cmd, args, project_name, project_path, instance_dir,
+    )
+
+
+def _build_fix_cmd(
+    base_cmd: List[str],
+    args: str,
+    project_name: str,
+    project_path: str,
+    instance_dir: str,
+) -> Optional[List[str]]:
+    """Build the /fix command, redirecting PR URLs to /rebase --fix.
+
+    /fix on an *issue* runs the full fix_runner pipeline (new branch + new
+    PR). /fix on a *PR* addresses review feedback on the SAME branch and
+    force-pushes — never opening a new PR — which is exactly what
+    /rebase --fix does. handler.py already does this on the bridge path,
+    but GitHub @mentions queue a raw ``/fix <url>`` mission that reaches the
+    agent loop through this chokepoint instead, so the redirect must live
+    here too. See specs/skills/fix.md (issue #2458).
+    """
+    if _PR_URL_RE.search(args):
+        # base_cmd targets fix_runner; rebuild it to invoke rebase_pr,
+        # reusing base_cmd[0] (the interpreter) so venv/Docker paths hold.
+        rebase_base = [base_cmd[0], "-m", "app.rebase_pr"]
+        cmd = _build_rebase_cmd(rebase_base, args, project_path)
+        # _build_rebase_cmd only appends --fix on trailing text/severity;
+        # /fix always wants the feedback leg, so force it for a bare URL.
+        if cmd and "--fix" not in cmd:
+            cmd.append("--fix")
+        return cmd
+    return _build_implement_cmd(
         base_cmd, args, project_name, project_path, instance_dir,
     )
 
