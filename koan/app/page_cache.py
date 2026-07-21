@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from app.config import get_page_cache_reclaim_config
+from app.config import get_cleanup_extra_tmp_globs, get_page_cache_reclaim_config
 from app.memory_monitor import read_cgroup_memory_stat
 from app.run_log import log_safe as _log
 from app.utils import get_known_projects, koan_tmp_dir
@@ -56,18 +56,58 @@ def _reset_idle_throttle() -> None:
     _last_idle_reclaim_ts = 0.0
 
 
+def _stray_tmp_roots() -> list[Path]:
+    """Stray per-mission ``/tmp`` trees that hold big page-cache residuals
+    *outside* the project/instance/venv roots.
+
+    Mission subprocesses (pytest → ``/tmp/pytest-of-*``, koan test runs →
+    ``/tmp/test-koan*``, jest → ``/tmp/jest_rs``) read large files into the
+    kernel page cache from trees the standard roots never cover. Observed live
+    (2026-07-19): such a tree pinned ~570 MB of billed ``file`` cache for ~4.5h
+    until the age-gated post-mission sweep finally deleted it. Reclaiming the
+    same glob list (``cleanup.extra_tmp_globs``) drops those clean pages
+    immediately, decoupling billed footprint from the sweep's deletion latency.
+
+    Strictly read-only (the caller only ``fadvise(DONTNEED)``s), and restricted
+    to **own-uid** directories so it never churns on another user's ``/tmp``
+    trees with permission-denied noise (mirrors the sweep's own-uid guard).
+    """
+    import glob as _glob
+
+    try:
+        uid: int | None = os.getuid()
+    except AttributeError:  # non-POSIX; no uid concept
+        uid = None
+    roots: list[Path] = []
+    for pattern in get_cleanup_extra_tmp_globs():
+        if not pattern.startswith("/tmp/"):
+            continue  # sweep only honors /tmp/* patterns; stay in lockstep
+        for match in _glob.glob(pattern):
+            try:
+                st = os.lstat(match)
+                if not stat.S_ISDIR(st.st_mode):
+                    continue  # skip symlinks / non-dirs — never escape /tmp
+                if uid is not None and st.st_uid != uid:
+                    continue  # another user's tree — skip (no perms anyway)
+            except OSError:
+                continue
+            roots.append(Path(match))
+    return roots
+
+
 def default_reclaim_roots() -> list[Path]:
     """The known heavy page-cache contributors, resolved centrally (DRY anchor).
 
     Every configured project workdir, ``KOAN_ROOT/instance/`` (logs + SQLite),
-    the venv, and the per-uid scratch dir. Non-existent roots are dropped;
+    the venv, the per-uid scratch dir, and the stray per-mission ``/tmp`` trees
+    (``cleanup.extra_tmp_globs``, own-uid only). Non-existent roots are dropped;
     operator ``extra_roots`` are appended. ``KOAN_ROOT`` is read from the
     environment (not the import-time constant) so it stays correct if it changed.
 
-    Ordering matters: the small, high-value roots (``instance/``, venv, scratch)
-    are emitted **before** the large project workdirs so a truncated sweep (time
-    budget hit) still reclaims them rather than spending the whole budget walking
-    one big ``node_modules``/``.git`` tree.
+    Ordering matters: the small, high-value roots (``instance/``, venv, scratch,
+    stray-tmp) are emitted **before** the large project workdirs so a truncated
+    sweep (time budget hit) still reclaims them rather than spending the whole
+    budget walking one big ``node_modules``/``.git`` tree.
     """
     # Priority roots first — small + high-value, so they always get their turn
     # within the time budget before the large project trees.
@@ -79,6 +119,9 @@ def default_reclaim_roots() -> list[Path]:
     priority.append(Path(sys.prefix))
     with contextlib.suppress(OSError):
         priority.append(Path(koan_tmp_dir()))
+    # Stray per-mission /tmp residuals — the out-of-root page cache that made the
+    # billed baseline ratchet up; reclaim them before the big project trees.
+    priority.extend(_stray_tmp_roots())
     project_roots = [Path(path) for _name, path in get_known_projects()]
     cfg = get_page_cache_reclaim_config()
     extra = [Path(str(e)) for e in cfg.get("extra_roots", [])]
@@ -230,7 +273,7 @@ def maybe_reclaim_page_cache_idle(now: float | None = None) -> ReclaimStats | No
     cfg = get_page_cache_reclaim_config()
     if not cfg.get("enabled", True):
         return None
-    interval = cfg.get("idle_interval_s", 900)
+    interval = cfg.get("idle_interval_s", 180)
     if interval <= 0:
         return None
     ts = time.monotonic() if now is None else now

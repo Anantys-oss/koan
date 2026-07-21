@@ -4,7 +4,7 @@ title: "Skill Spec — rebase"
 description: "Documents the `/rebase` skill that rebases a PR onto its current base by default and, with `--fix` (or any trailing context), also addresses review feedback, including its already-solved detection JSON scored by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-07-18
 ---
 
 # Skill Spec — `rebase`
@@ -76,7 +76,8 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 
 The default flipped from "rebase + feedback" to "rebase only" on 2026-07-17. To
 avoid a silent surprise, a bare `/rebase` surfaces a temporary notice (chat reply
-+ PR comment via `build_alert("NOTE", …)`) pointing users to `/rebase --fix`.
++ PR comment via `build_alert("NOTE", …)`) pointing users to `/fix` (or
+alternatively `/rebase --fix`).
 The notice is date-gated by `rebase_transition.FIX_NOTICE_DEADLINE`
 (2026-08-17) and disappears automatically; the behavior change is permanent.
 After the deadline the notice code + `_FEEDBACK_ON_BY_DEFAULT` are removed

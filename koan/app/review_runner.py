@@ -3054,6 +3054,55 @@ def run_private_review(
     return True, f"Private review completed for PR #{pr_number}.", review_data, context
 
 
+def _fire_post_review(
+    *,
+    instance_dir: str,
+    project_name: str,
+    project_path: str,
+    owner: str,
+    repo: str,
+    pr_number: str,
+    pr_url: str,
+    review_summary: dict,
+    review_data: dict,
+    verdict_submitted: bool,
+    closed: bool,
+    ultra: bool,
+) -> None:
+    """Fire the post_review lifecycle hook. Fire-and-forget.
+
+    Called once from run_review() after the review comment is posted.
+    Any failure is logged and swallowed so hook errors never affect the
+    review's own return value.
+
+    Review skills run as a subprocess (``python -m app.review_runner``), so
+    the daemon's hook registry is not inherited. Initialize here (idempotent)
+    before firing so instance-wide and skill-bound handlers actually run.
+    """
+    try:
+        from app.hooks import fire_hook, init_hooks
+        # Subprocess entry: registry starts None; init is per-process.
+        init_hooks(instance_dir)
+        fire_hook(
+            "post_review",
+            instance_dir=instance_dir,
+            project_name=project_name or "",
+            project_path=project_path,
+            owner=owner,
+            repo=repo,
+            pr_number=str(pr_number),
+            pr_url=pr_url,
+            review_summary=dict(review_summary or {}),
+            review_data=review_data if isinstance(review_data, dict) else {},
+            lgtm=(review_summary or {}).get("lgtm"),
+            verdict_submitted=verdict_submitted,
+            closed=closed,
+            ultra=ultra,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[hooks] post_review hook error: {e}", file=sys.stderr)
+
+
 def run_review(
     owner: str,
     repo: str,
@@ -3563,6 +3612,20 @@ def run_review(
         pr_url = f"https://github.com/{owner}/{repo}/pull/{pr_number}"
         verb = "Ultra reviewed" if ultra else "Reviewed"
         notify_outcome(f"✅ {verb} {pr_url}", notify_fn)
+        _fire_post_review(
+            instance_dir=str(KOAN_ROOT / "instance"),
+            project_name=project_name or "",
+            project_path=project_path,
+            owner=owner,
+            repo=repo,
+            pr_number=str(pr_number),
+            pr_url=pr_url,
+            review_summary=review_summary,
+            review_data=review_data if isinstance(review_data, dict) else {},
+            verdict_submitted=verdict_submitted,
+            closed=closed,
+            ultra=ultra,
+        )
         return True, summary, review_data
     else:
         detail = f" Error: {post_error}" if post_error else ""

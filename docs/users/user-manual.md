@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-07-18
 ---
 
 # Kōan User Manual
@@ -422,7 +422,7 @@ These features turn Kōan from a task runner into a full development workflow pa
 
 ### Code Operations
 
-**`/brainstorm`** — Decompose a broad topic into 3-8 high-leverage GitHub sub-issues grouped under a master tracking issue.
+**`/brainstorm`** — Decompose a broad topic into 3-8 high-leverage sub-issues grouped under a master tracking issue, on whichever tracker the project uses (GitHub Issues by default, or Jira when the project is Jira-backed in `projects.yaml`).
 
 The decomposer runs as a senior-engineer-style ideation pass: it explores the codebase (if provided) or external source, hunts for compounding improvements, and refuses to pad with generic refactors. Every sub-issue body follows this template:
 
@@ -461,6 +461,7 @@ The master tracking issue then synthesizes the set with three optional sections:
 
 - **Usage:** `/brainstorm <topic>`, `/brainstorm <project> <topic>`, `/brainstorm <topic> --tag <label>`
 - **GitHub @mention:** `@koan-bot /brainstorm <topic>` on an issue
+- **Jira-backed projects:** sub-issues and the master are created in Jira with rich (ADF) bodies; `SUB-N` cross-references resolve to real Jira keys and the master is natively linked to each sub-issue via "Linked issues". See [Jira integration → Brainstorm on Jira](../messaging/jira-integration.md#brainstorm-on-jira). (`--tag` labels apply to GitHub only.)
 
 <details>
 <summary>Use cases</summary>
@@ -687,7 +688,8 @@ the mission as extra focus context. A `/fix` invoked on a PR URL redirects here
 > **Transition (through 2026-08-17):** `/rebase` used to always apply review
 > feedback. Now a bare `/rebase` rebases only. During this window a bare
 > `/rebase` shows a temporary notice (in chat and as a PR comment) pointing you
-> to `/rebase --fix`; the notice disappears automatically after the deadline.
+> to `/fix` (or alternatively `/rebase --fix`); the notice disappears
+> automatically after the deadline.
 
 By default, Telegram `/rebase` only queues PRs created by this instance
 (branch prefix match). Set `allow_rebase_foreign_prs: true` in
@@ -1867,7 +1869,8 @@ Use `/models` to inspect the resolved values for the active provider at any time
 
 ### Language Preference
 
-**`/language`** — Set or reset the reply language.
+**`/language`** — Set or reset the reply language. Defaults to **English** on a
+fresh install — no `/english` needed.
 
 - **Usage:** `/language <lang>`, `/language reset`
 - **Aliases:** `/lng`
@@ -1881,8 +1884,18 @@ Use `/models` to inspect the resolved values for the active provider at any time
 
 - `/fr` — Switch to French replies
 - `/en` — Switch back to English
-- `/language reset` — Use default language
+- `/language reset` — Reply in the same language as each incoming message
 </details>
+
+> **Upgrade note:** English is now the default when no preference is set. Two
+> cohorts change behavior on upgrade:
+> - If you previously ran `/language reset` to reply in each message's own
+>   language, that state was stored by deleting the preference file — now
+>   indistinguishable from a fresh install and read as English. Re-run
+>   `/language reset` once to restore input-language mode.
+> - If you relied on a non-English `soul.md` for replies without ever setting
+>   `/language`, replies are now enforced to English. Set your language
+>   explicitly (e.g. `/french`) to keep it.
 
 ### System Management
 
@@ -2319,8 +2332,19 @@ Run `make dashboard` to start a local web UI on port 5001. The dashboard provide
 - Mission queue management
 - Chat interface
 - Journal browsing
+- Real-time config sync
 
 The dashboard binds to `localhost` only — not accessible from the network.
+
+**Real-time config sync:** Edits to `instance/config.yaml` and
+`instance/projects.yaml` are reflected on the Config page within ~2s without a
+`make stop && make start` round-trip. Safe settings (`dashboard.nickname`,
+`tools.*`, `automation_rules.*`, `messaging_level`, `verbose`) are already
+re-read per use, so they toast "Settings updated" and stay live. Unsafe settings
+(`cli_provider`, `models`, anything in `projects.yaml`, and any other key) show a
+"Restart required" modal; the restart only runs when the agent is idle. Disable
+with `config_sync: { enabled: false }`. See
+[Real-time Config Sync](../operations/config-sync.md).
 
 ### Deployment
 

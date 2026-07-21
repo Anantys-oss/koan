@@ -61,6 +61,7 @@ memory, or integration changes:
 - [PR Activity Reports](operations/pr-reports.md)
 - [Memory Watchdog](operations/memory-watchdog.md)
 - [Skill Evaluation Harness](operations/skill-evals.md) — golden-dataset evals for LLM skills (regression detection + improvement measurement)
+- [Real-time Config Sync](operations/config-sync.md)
 - [Messaging Level (bridge verbosity)](messaging/messaging-level.md)
 - [Design Decisions](design/decisions.md)
 

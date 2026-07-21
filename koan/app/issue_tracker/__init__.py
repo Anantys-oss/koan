@@ -261,6 +261,40 @@ def create_issue(
     return client_for_project(project_name, project_path).create_issue(title, body, labels=labels)
 
 
+def update_issue(
+    url: str,
+    body: str,
+    project_name: str = "",
+    project_path: str = "",
+) -> bool:
+    """Rewrite the body/description of an existing GitHub or Jira issue URL.
+
+    Routes to the client that owns ``url``. Returns the backend's success
+    boolean (``False`` when the backend cannot update or the write failed) —
+    never raises, so callers can degrade non-fatally.
+    """
+    return client_for_url(
+        url, project_name=project_name, project_path=project_path,
+    ).update_issue(url, body)
+
+
+def link_issues(
+    parent_url: str,
+    child_url: str,
+    link_type: str = "Relates",
+    project_name: str = "",
+    project_path: str = "",
+) -> bool:
+    """Create a native tracker link from ``parent_url`` to ``child_url``.
+
+    Routes to the client that owns ``parent_url``. No-op (``False``) for
+    providers without a native link concept (e.g. GitHub). Never raises.
+    """
+    return client_for_url(
+        parent_url, project_name=project_name, project_path=project_path,
+    ).link_issues(parent_url, child_url, link_type)
+
+
 def find_existing_plan_issue(
     project_name: str,
     project_path: str,

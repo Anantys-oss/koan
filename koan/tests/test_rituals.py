@@ -233,13 +233,28 @@ class TestRitualLanguagePreference:
         assert "reply in english" in sink["prompt"].lower()
 
     @patch("app.rituals.subprocess.run")
-    def test_no_language_instruction_when_unset(
+    def test_defaults_to_english_when_unset(
         self, mock_run, prompt_dir, instance_dir, tmp_path, monkeypatch
     ):
-        """With no language.json, no override text is appended to the prompt."""
+        """With no language.json, English is enforced by default (no /english needed)."""
         sink = {}
         mock_run.side_effect = self._capturing_run(sink)
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))  # no instance/language.json
+
+        run_ritual("evening", instance_dir)
+
+        assert "reply in english" in sink["prompt"].lower()
+
+    @patch("app.rituals.subprocess.run")
+    def test_no_language_instruction_when_reset(
+        self, mock_run, prompt_dir, instance_dir, tmp_path, monkeypatch
+    ):
+        """After an explicit reset, no override is appended (reply in input language)."""
+        sink = {}
+        mock_run.side_effect = self._capturing_run(sink)
+        (tmp_path / "instance").mkdir()
+        (tmp_path / "instance" / "language.json").write_text('{"language": ""}')
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
 
         run_ritual("evening", instance_dir)
 

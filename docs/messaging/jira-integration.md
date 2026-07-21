@@ -4,7 +4,7 @@ title: "Jira Integration"
 description: "Full reference for controlling Kōan via `@mention` commands in Jira issue comments, including project mapping, ADF parsing, and coexistence with GitHub."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-07-10
+updated: 2026-07-18
 ---
 
 # Jira Integration
@@ -207,6 +207,12 @@ projects:
 
 For Jira-backed projects, `/plan <idea>`, `/brainstorm`, `/deepplan`, and audit issue creation post tracker issues in Jira. `/fix` and `/implement` still create GitHub draft PRs for code review, then comment the PR URL back on the Jira issue.
 
+`/brainstorm` in particular creates its sub-issues and master tracking issue in
+Jira with **rich ADF bodies**, resolves `SUB-N` cross-references to real Jira
+keys, and **natively links** the master to each sub-issue — see
+[Brainstorm on Jira](#brainstorm-on-jira). No `jira_issue_type` override is
+needed; sub-issues use the project's configured `jira_issue_type`.
+
 ## How It Works
 
 ### Architecture
@@ -273,6 +279,39 @@ human-written Jira blockquote is left untouched. Alert syntax inside a fenced
 code block is preserved verbatim (it is example text, not an alert), and
 back-to-back alert blocks with no separating blank line are degraded
 independently rather than merged.
+
+### Rich issue descriptions
+
+Whereas Jira *comments* are rendered from a deliberately plain markdown subset
+(so human blockquotes survive intact), issue *descriptions* created on Jira are
+rendered as **rich ADF**. `markdown_to_adf()` in `jira_notifications.py` converts
+the markdown that skills like `/brainstorm` and `/plan` produce — headings
+(`#`–`####`), unordered and ordered lists (including `- [ ]` / `- [x]`
+checklists), horizontal rules (`---`), blockquotes, fenced code blocks, and
+inline `**bold**` / `*em*` / `` `code` `` — into native ADF nodes so the Jira
+issue reads as a properly formatted document rather than raw markdown. Lines that
+don't match a known structure degrade to a plain paragraph, and empty input
+yields a single empty paragraph. This applies to `jira_create_issue` and
+`jira_update_issue_description`; comments are unaffected.
+
+### Brainstorm on Jira
+
+`/brainstorm` decomposes a topic into sub-issues under a master tracking issue on
+whichever tracker the project uses. On Jira it produces the same "link them
+properly together" result as GitHub, expressed with Jira's native mechanisms:
+
+- **Rich bodies** — each sub-issue and the master render as ADF (see above).
+- **Cross-references resolve to real keys** — `SUB-N` placeholders in a
+  sub-issue body (used before the real issue keys are known) are rewritten to the
+  actual created keys, e.g. `SUB-2` → `APP-4213`, via the neutral `update_issue`
+  operation. On GitHub the same step rewrites `SUB-2` → `#4213`.
+- **Native master↔sub links** — the master tracking issue is linked to each
+  sub-issue through Jira "Linked issues" relationships (`link_issues`, POSTing
+  `/rest/api/3/issueLink`). On GitHub this is a no-op — the master's task list and
+  `#N` references already express the relationship.
+
+Both reference-resolution and linking are best-effort: a failure on any single
+issue is logged and skipped, never aborting the brainstorm run.
 
 ### Deduplication
 

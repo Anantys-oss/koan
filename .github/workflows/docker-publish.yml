@@ -1,4 +1,7 @@
-name: 🐳 Container Build
+name: 🔒 Container Build (internal)
+
+# Internal reusable worker (workflow_call only) — not directly runnable.
+# Called by 🐳 Publish Container and 🚀 Release to build + push the GHCR image.
 
 on:
   workflow_call:

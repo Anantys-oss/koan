@@ -474,6 +474,44 @@ class TestBuildSkillCommand:
         cmd = self._build("fix", url)
         assert "--context" not in cmd
 
+    def test_fix_with_pr_url_redirects_to_rebase_fix(self):
+        """A queued /fix on a PR URL must dispatch rebase_pr with --fix,
+        never fix_runner — mirrors handler.py so GitHub @bot fix force-pushes
+        the same branch instead of opening a new PR (issue #2458)."""
+        url = "https://github.com/sukria/koan/pull/42"
+        cmd = self._build("fix", url)
+        assert cmd is not None
+        assert "app.rebase_pr" in cmd
+        assert "skills.core.fix.fix_runner" not in cmd
+        assert "--fix" in cmd
+        assert url in cmd
+        assert "--project-path" in cmd
+        assert self.PROJECT_PATH in cmd
+        # No new-PR machinery: issue-runner flags must be absent.
+        assert "--issue-url" not in cmd
+
+    def test_fix_with_pr_url_and_severity(self):
+        """Trailing severity after a PR URL threads through the rebase path."""
+        url = "https://github.com/sukria/koan/pull/42"
+        cmd = self._build("fix", f"{url} critical")
+        assert cmd is not None
+        assert "app.rebase_pr" in cmd
+        assert "--fix" in cmd
+        assert "--min-severity" in cmd
+        sev_idx = cmd.index("--min-severity")
+        assert cmd[sev_idx + 1] == "critical"
+
+    def test_fix_with_issue_url_still_uses_fix_runner(self):
+        """Regression: issue URLs keep the full fix_runner pipeline
+        (new branch + new PR)."""
+        url = "https://github.com/sukria/koan/issues/42"
+        cmd = self._build("fix", url)
+        assert cmd is not None
+        assert "skills.core.fix.fix_runner" in cmd
+        assert "--issue-url" in cmd
+        assert url in cmd
+        assert "app.rebase_pr" not in cmd
+
     def test_url_skill_command_resolves_project_name_from_path_when_missing(self):
         cmd = build_skill_command(
             command="fix",
@@ -525,6 +563,26 @@ class TestDispatchSkillMission:
         cmd = self._dispatch("/recreate https://github.com/sukria/koan/pull/42")
         assert cmd is not None
         assert "app.recreate_pr" in cmd
+
+    def test_fix_pr_url_dispatch_redirects_to_rebase(self):
+        """A GitHub-queued '/fix <PR-URL> 📬' mission dispatches to rebase_pr
+        with --fix, not fix_runner (issue #2458)."""
+        cmd = self._dispatch(
+            "[project:koan] /fix https://github.com/sukria/koan/pull/42 📬"
+        )
+        assert cmd is not None
+        assert "app.rebase_pr" in cmd
+        assert "--fix" in cmd
+        assert "skills.core.fix.fix_runner" not in cmd
+
+    def test_fix_issue_url_dispatch_uses_fix_runner(self):
+        """Regression: a /fix on an issue URL still dispatches fix_runner."""
+        cmd = self._dispatch(
+            "[project:koan] /fix https://github.com/sukria/koan/issues/42 📬"
+        )
+        assert cmd is not None
+        assert "skills.core.fix.fix_runner" in cmd
+        assert "app.rebase_pr" not in cmd
 
     def test_ai_dispatch(self):
         cmd = self._dispatch("/ai koan")

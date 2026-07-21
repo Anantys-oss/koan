@@ -4,7 +4,7 @@ title: "Docker Setup"
 description: "Covers Docker Compose setup for Koan (pull vs. build from source), workspace project mounts, authentication (Claude/GitHub), volume layout, and troubleshooting common container issues."
 tags: [setup]
 created: 2026-05-28
-updated: 2026-07-12
+updated: 2026-07-18
 ---
 
 # Docker Setup
@@ -203,6 +203,21 @@ script:
 | `run.py` | Agent loop — picks missions, executes via Claude CLI |
 
 If either process crashes, the entrypoint restarts it automatically.
+
+### What the image deliberately excludes
+
+The published image contains koan's runtime and the `docs/` it needs, but **none
+of koan's own contributor tooling** — `CLAUDE.md`, `AGENTS.md`, `KOAN.md`, and
+`.claude/` (project skills, agents, settings) are kept out of the build context
+via `.dockerignore`. These files guide humans and agents *developing koan itself*;
+if they shipped, a CLI session whose `cwd` fell inside the image's `/app` checkout
+could auto-load them (the leak class addressed at runtime by isolating session
+`cwd`). Excluding them removes the material from the artifact entirely.
+
+This is enforced at build time: `docker-publish.yml` (the shared build/push
+workflow behind both the release and manual-publish flows) runs
+`scripts/verify_image_clean.sh` against the freshly built image and fails the
+build if any of that tooling is found under `/app`. See issue #2383.
 
 ### Recommended dev packages
 

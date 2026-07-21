@@ -3,8 +3,9 @@
 Language preference management for Kōan.
 
 Stores and retrieves the user's preferred reply language.
-When set, all Claude-mediated replies (chat, outbox) will be in that language.
-When reset, Kōan replies in the same language as the input.
+When unset (fresh install), Kōan defaults to English so a new user never has
+to run /english to get consistent replies.
+When explicitly reset, Kōan replies in the same language as the input.
 
 Storage: instance/language.json
 """
@@ -14,6 +15,11 @@ import os
 from pathlib import Path
 
 from app.utils import atomic_write
+
+# Default reply language when the user has never configured a preference.
+# A fresh install has no language.json, so replies would otherwise fall back to
+# soul.md's language — forcing the user to run /english. English is the default.
+DEFAULT_LANGUAGE = "english"
 
 
 def _get_language_file() -> Path:
@@ -26,16 +32,20 @@ def get_language() -> str:
     """Get the current language preference.
 
     Returns:
-        Language name (e.g. "english", "french") or empty string if not set.
+        Language name (e.g. "english", "french"). Defaults to English when no
+        preference file exists. Returns an empty string only when the user has
+        explicitly reset (input-language mode), stored as ``{"language": ""}``.
     """
     lang_file = _get_language_file()
     if not lang_file.exists():
-        return ""
+        return DEFAULT_LANGUAGE
     try:
         data = json.loads(lang_file.read_text())
-        return data.get("language", "")
     except (json.JSONDecodeError, OSError):
-        return ""
+        return DEFAULT_LANGUAGE
+    if not isinstance(data, dict):
+        return DEFAULT_LANGUAGE
+    return data.get("language", DEFAULT_LANGUAGE)
 
 
 def set_language(language: str) -> None:
@@ -50,10 +60,15 @@ def set_language(language: str) -> None:
 
 
 def reset_language() -> None:
-    """Reset the language preference (reply in same language as input)."""
+    """Reset to input-language mode (reply in same language as input).
+
+    Persists an explicit empty sentinel rather than deleting the file, so a
+    deliberate reset is distinguishable from a fresh install (which defaults to
+    English via :func:`get_language`).
+    """
     lang_file = _get_language_file()
-    if lang_file.exists():
-        lang_file.unlink()
+    lang_file.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(lang_file, json.dumps({"language": ""}))
 
 
 def get_language_instruction() -> str:

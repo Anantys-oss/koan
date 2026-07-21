@@ -3,6 +3,8 @@
 NOTE: this module is ``app.dashboard.config`` — it must never shadow the global
 ``app.config``. All references to the global config use absolute imports.
 """
+import sys
+
 from flask import Blueprint, jsonify, render_template, request
 
 from app.automation_rules import (
@@ -17,6 +19,7 @@ from app.automation_rules import (
 from app.dashboard import state
 from app.dashboard_service import journal as journal_svc
 from app.dashboard_service import missions as missions_svc
+from app.dashboard_service import stats as stats_svc
 from app.dashboard_service import validate_yaml
 from app.recurring import (
     _locked_modify as _recurring_locked_modify,
@@ -32,10 +35,6 @@ from app.recurring import (
 
 config_bp = Blueprint("config", __name__)
 
-
-# ---------------------------------------------------------------------------
-# Config page
-# ---------------------------------------------------------------------------
 
 @config_bp.route("/config")
 def config_page():
@@ -81,8 +80,6 @@ def api_config_save(target: str):
 @config_bp.route("/api/config/restart", methods=["POST"])
 def api_config_restart():
     """Signal the agent loop to restart."""
-    import sys
-
     from app.restart_manager import request_restart
     try:
         request_restart(str(state.KOAN_ROOT))
@@ -90,6 +87,37 @@ def api_config_restart():
     except Exception as e:
         print(f"[dashboard] restart signal failed: {e}", file=sys.stderr)
         return jsonify({"ok": False, "error": "Failed to send restart signal"}), 500
+
+
+@config_bp.route("/api/config/sync", methods=["GET"])
+def api_config_sync():
+    """Non-SSE poll fallback for config-sync status."""
+    from app import config_sync
+    return jsonify(config_sync.compute_status(state.KOAN_ROOT))
+
+
+@config_bp.route("/api/config/restart-if-idle", methods=["POST"])
+def api_config_restart_if_idle():
+    """Restart the agent only when idle (no in-flight mission); 409 if busy."""
+    from app.active_mission import is_mission_active
+    # Authoritative in-flight check via ``.koan-active`` (the derived ``.koan-status``
+    # goes stale "idle" after 5 min, so a longer mission would be misclassified and the
+    # restart would drop in-flight work). error_recovery / a stale writer also count busy.
+    agent_state = stats_svc.get_agent_state()
+    label = (agent_state.get("label") or "").lower()
+    busy = (is_mission_active(state.KOAN_ROOT)
+            or agent_state.get("state") in ("working", "error_recovery")
+            or "stale" in label)
+    if busy:
+        return jsonify({"ok": False, "error": "agent_busy",
+                        "state": agent_state.get("state")}), 409
+    from app.restart_manager import request_restart
+    try:
+        request_restart(str(state.KOAN_ROOT))
+    except Exception as e:
+        print(f"[dashboard] restart-if-idle failed: {e}", file=sys.stderr)
+        return jsonify({"ok": False, "error": "restart_failed"}), 500
+    return jsonify({"ok": True, "status": "restart_signaled"})
 
 
 @config_bp.route("/api/nickname", methods=["GET"])
@@ -114,10 +142,6 @@ def api_nickname_set():
     update_config_yaml(config_path, ["dashboard", "nickname"], nickname)
     return jsonify({"ok": True, "nickname": nickname})
 
-
-# ---------------------------------------------------------------------------
-# Automation rules
-# ---------------------------------------------------------------------------
 
 @config_bp.route("/rules")
 def rules_page():
@@ -188,10 +212,6 @@ def api_rules_delete(rule_id):
         return jsonify({"error": "Rule not found"}), 404
     return jsonify({"ok": True})
 
-
-# ---------------------------------------------------------------------------
-# Recurring tasks
-# ---------------------------------------------------------------------------
 
 @config_bp.route("/recurring")
 def recurring_page():

@@ -1,7 +1,7 @@
 # Skills
 
 * [Skill Spec — ask](ask.md) - Specifies the `/ask` skill, which answers a question about a GitHub PR/issue by fetching context and posting an AI-generated reply as a read-only, non-mutating worker.
-* [Skill Spec — brainstorm](brainstorm.md) - Specifies the `/brainstorm` skill, which decomposes a topic into structured, linked GitHub sub-issues under a master tracking issue and is covered by the skill-eval harness.
+* [Skill Spec — brainstorm](brainstorm.md) - Specifies the `/brainstorm` skill, which decomposes a topic into structured, linked sub-issues (GitHub or Jira) under a master tracking issue and is covered by the skill-eval harness.
 * [Skill Spec — ci_check](ci_check.md) - Specifies the `/ci_check` skill, which checks a PR's CI status, runs the shared CI-fix loop on failures, and toggles automatic CI-fix dispatch.
 * [Skill Spec — fix](fix.md) - Specifies the `/fix` skill, which fixes a tracker issue end-to-end (or batch-queues fixes for a repo) and redirects PR URLs to `/rebase --fix`, with eval coverage on its diagnostic output.
 * [Skill Spec — implement](implement.md) - Specifies the `/implement` skill, which queues an end-to-end implementation mission for a tracker issue that results in a draft PR, and is eval-exempt as pure orchestration.

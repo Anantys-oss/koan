@@ -306,6 +306,22 @@ class TestFireHookConvenience:
         assert result == {}
 
 
+def test_skill_bound_post_review_discovered_and_fires(tmp_path):
+    """Skill-bound post_review.py is discovered and fires with ctx."""
+    skill = tmp_path / "skills" / "my_team" / "my_fix"
+    skill.mkdir(parents=True)
+    (skill / "post_review.py").write_text(
+        "calls = []\n"
+        "def run(ctx): calls.append(ctx)\n"
+    )
+    (tmp_path / "hooks").mkdir(exist_ok=True)
+    init_hooks(str(tmp_path))
+    failures = fire_hook("post_review", pr_number="42")
+    mod = sys.modules["koan_skill_hook_my_team_my_fix_post_review"]
+    assert [c["pr_number"] for c in mod.calls] == ["42"]
+    assert failures == {}
+
+
 class TestInitHooks:
     def test_creates_hooks_dir_if_missing(self, tmp_path):
         instance = tmp_path / "instance"

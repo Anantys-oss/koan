@@ -22,10 +22,17 @@ class TestNoticeActive:
 class TestNoticeText:
     def test_chat_notice_mentions_fix(self):
         text = rebase_transition.chat_notice()
+        assert "`/fix`" in text
         assert "--fix" in text
         assert "Heads up" in text
+
+    def test_chat_notice_advertises_fix_before_rebase_fix(self):
+        # /fix is the simpler, preferred form; --fix is the alternative.
+        text = rebase_transition.chat_notice()
+        assert text.index("`/fix`") < text.index("`/rebase --fix`")
 
     def test_pr_comment_notice_is_note_alert(self):
         text = rebase_transition.pr_comment_notice()
         assert text.startswith("> [!NOTE]")
+        assert "`/fix`" in text
         assert "--fix" in text

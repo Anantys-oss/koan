@@ -37,3 +37,16 @@ claude-auth/
 
 # Workspace (mounted at runtime, not copied)
 workspace/
+
+# Repo dev tooling — koan's OWN contributor instructions and project skills.
+# These are for developing koan itself; they must never ship in the image, or a
+# CLI session with cwd inside /app could auto-load them (see issues #2379/#2383).
+# Both root and nested (**/) forms — koan/CLAUDE.md, koan/app/CLAUDE.md, etc.
+CLAUDE.md
+**/CLAUDE.md
+AGENTS.md
+**/AGENTS.md
+KOAN.md
+**/KOAN.md
+.koan/
+.claude/

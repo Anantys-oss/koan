@@ -78,6 +78,23 @@ class GitHubIssueTracker(IssueTracker):
             cwd=self.project_path or None,
         )
 
+    def update_issue(self, url: str, body: str) -> bool:
+        from app.github import issue_edit
+
+        _owner, _repo, _url_type, number = parse_github_url(url)
+        try:
+            issue_edit(
+                number, body,
+                cwd=self.project_path or None,
+                repo=self._target_repo() or None,
+            )
+            return True
+        except (RuntimeError, OSError, subprocess.TimeoutExpired):
+            # run_gh re-raises TimeoutExpired after exhausting retries; it is not
+            # a RuntimeError/OSError, so catch it here to honor the "→ False"
+            # contract and keep SUB-N resolution non-fatal.
+            return False
+
     def find_existing_plan_issue(self, idea: str) -> Optional[IssueRef]:
         repo = self._target_repo()
         if not repo:

@@ -58,7 +58,7 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `iteration_manager._downgrade_if_burning_fast()` | Burn-rate-driven mode downgrade, next to affordability downgrade. |
 | `stagnation_monitor` | Daemon thread hashing last-N stdout lines; kills the subprocess group after K identical hashes; requeues up to `max_retry_on_stagnation`. |
 | `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
-| `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, each error-isolated. |
+| `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, `post_review`, each error-isolated. |
 | `prompt_builder._get_koan_md_section()` | Delegates reading to `project_koan.read_general_koan_md()` (root `KOAN.md` + `.koan/KOAN.md`, combined cap `_MAX_KOAN_MD_CHARS` 16k), frames via the `koan-md` template. Returns `""` for absent/blank/unreadable. |
 
 ### KOAN.md injection
@@ -119,14 +119,19 @@ see it.
   reclaimable page cache (`file`) that mission file I/O leaves warm, and Railway's
   `/sys/fs/cgroup/memory.reclaim` is read-only. The agent loop therefore runs a
   single reclaim primitive (`app/page_cache.reclaim_page_cache`, over
-  `default_reclaim_roots()` = project workdirs + `instance/` + venv + scratch dir)
+  `default_reclaim_roots()` = project workdirs + `instance/` + venv + scratch dir +
+  the stray per-mission `/tmp` trees matched by `cleanup.extra_tmp_globs`, own-uid
+  only — those hold big *out-of-root* page-cache residuals that the standard roots
+  never cover, observed live 2026-07-19 as ~570 MB of `file` pinned for ~4.5h until
+  the age-gated sweep deleted the files; reclaiming their clean pages decouples the
+  billed baseline from that deletion latency)
   at exactly two non-bypassable choke points: the `run_claude_task` outer `finally`
   (post-mission, after the CLI subprocess has exited) and **inside
   `loop_manager.interruptible_sleep()` itself** — the single sleep primitive every
   idle path shares (between-runs sleep, contemplative sleep, and the whole
   `_IDLE_WAIT_CONFIG` family: `focus_wait`, `passive_wait`, `schedule_wait`,
   `exploration_wait`, `pr_limit_wait`, `branch_saturated_wait`) — throttled to
-  `page_cache_reclaim.idle_interval_s` by `maybe_reclaim_page_cache_idle()`'s
+  `page_cache_reclaim.idle_interval_s` (default 180s) by `maybe_reclaim_page_cache_idle()`'s
   module-level timestamp, which makes the call idempotent per tick. Wiring the
   idle hook at individual call-sites instead of inside the primitive is a
   contract violation: it is exactly how `focus_wait` shipped with no reclaim at
