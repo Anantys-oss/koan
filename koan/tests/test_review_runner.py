@@ -7791,6 +7791,63 @@ class TestSubmitBatchReview:
         assert payload["event"] == "REQUEST_CHANGES"
         assert "Blocking" in payload["body"]
 
+    @patch("app.review_runner.api", side_effect=OSError("connection reset"))
+    def test_oserror_returns_false_not_raises(self, _mock_api):
+        """Transient gh failures must return (False, 0) so fallback can run."""
+        from app.review_runner import _submit_batch_review
+        ok, n = _submit_batch_review(
+            "o", "r", "42", head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="COMMENT", body="",
+        )
+        assert ok is False
+        assert n == 0
+
+    @patch(
+        "app.review_runner.api",
+        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30),
+    )
+    def test_timeout_returns_false_not_raises(self, _mock_api):
+        """TimeoutExpired must not abort the rest of the review pipeline."""
+        from app.review_runner import _submit_batch_review
+        ok, n = _submit_batch_review(
+            "o", "r", "42", head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="COMMENT", body="",
+        )
+        assert ok is False
+        assert n == 0
+
+    @patch("app.review_runner.api")
+    def test_self_review_approve_empty_body_injects_on_comment_retry(self, mock_api):
+        """APPROVE with empty body: self-PR retry as COMMENT needs a body."""
+        from app.review_runner import _submit_batch_review
+        self_err = RuntimeError(
+            "HTTP 422 Can not approve your own pull request"
+        )
+        # pending list GET, first POST fails, second POST succeeds
+        mock_api.side_effect = ["[]", self_err, '{"id": 3}']
+        ok, n = _submit_batch_review(
+            "o", "r", "42",
+            head_sha="abc",
+            comments=[{"path": "a.py", "line": 1, "side": "RIGHT", "body": "n"}],
+            event="APPROVE",
+            body="",
+        )
+        assert ok is True
+        assert n == 1
+        post_calls = [
+            c for c in mock_api.call_args_list
+            if c.kwargs.get("raw_body") is True
+        ]
+        assert len(post_calls) == 2
+        first = json.loads(post_calls[0].kwargs["input_data"])
+        second = json.loads(post_calls[1].kwargs["input_data"])
+        assert first["event"] == "APPROVE"
+        assert "body" not in first  # APPROVE may omit body
+        assert second["event"] == "COMMENT"
+        assert second.get("body")  # non-empty — GitHub requires it for COMMENT
+
 
 class TestMaybePostInlineCommentsBatch:
     def test_batch_success_skips_individual(self):

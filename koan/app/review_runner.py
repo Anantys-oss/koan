@@ -2578,6 +2578,9 @@ def _submit_batch_review(
         payload["body"] = review_body
 
     endpoint = f"repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+    # Catch broadly: api()/run_gh() re-raise OSError and TimeoutExpired after
+    # retries (not only RuntimeError). Returning (False, 0) lets the caller
+    # fall back to individual posts instead of aborting the review pipeline.
     try:
         api(endpoint, method="POST", input_data=json.dumps(payload), raw_body=True)
         log(
@@ -2586,10 +2589,14 @@ def _submit_batch_review(
             f"comment(s) on PR #{pr_number}",
         )
         return True, len(comments)
-    except RuntimeError as e:
+    except Exception as e:
         if event in ("APPROVE", "REQUEST_CHANGES") and _is_self_review_error(e):
             try:
                 payload["event"] = "COMMENT"
+                # GitHub requires a non-empty body for COMMENT. APPROVE may
+                # omit body (body_enabled:false); inject before the retry.
+                if not payload.get("body"):
+                    payload["body"] = "Review comments attached."
                 api(
                     endpoint,
                     method="POST",
@@ -2601,7 +2608,7 @@ def _submit_batch_review(
                     f"Posted batch {event} as COMMENT on own PR #{pr_number}",
                 )
                 return True, len(comments)
-            except RuntimeError as e2:
+            except Exception as e2:
                 log("review", f"Batch review failed on PR #{pr_number}: {e2}")
                 return False, 0
         log("review", f"Batch review failed on PR #{pr_number}: {e}")
