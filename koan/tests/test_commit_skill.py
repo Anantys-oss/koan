@@ -282,6 +282,92 @@ class TestRunnerPreflight:
         assert "clean" in summary.lower() or "nothing" in summary.lower()
         notify.assert_called()
 
+    def test_preflight_rejects_conflict_probe_failure(self, runner, tmp_path):
+        """Conflict-check git failure is a hard abort, not 'no conflicts'."""
+        repo = _init_git_repo(tmp_path / "proj", with_change=True)
+        real_git = runner._git
+
+        def _fake_git(project_path, args, timeout=15):
+            if args[:1] == ["diff"] and "--diff-filter=U" in args:
+                return 1, "", "diff failed"
+            return real_git(project_path, args, timeout=timeout)
+
+        with patch.object(runner, "_git", side_effect=_fake_git):
+            reason = runner._preflight_git_state(str(repo))
+        assert reason is not None
+        assert "conflict" in reason.lower()
+
+    def test_run_commit_fails_when_head_unchanged(self, runner, tmp_path):
+        """Model text claiming COMMITTED is not enough — HEAD must advance."""
+        repo = _init_git_repo(tmp_path / "proj", with_change=True)
+        notify = MagicMock()
+        fake_report = (
+            "COMMITTED\n"
+            "branch: koan/feature\n"
+            "sha: deadbeef\n"
+            "message: feat: pretend\n"
+        )
+        with patch.object(
+            runner, "_run_claude_commit", return_value=fake_report,
+        ), patch("app.messaging_level.notify_outcome") as mock_outcome:
+            success, summary = runner.run_commit(
+                project_path=str(repo),
+                project_name="demo",
+                instance_dir=str(tmp_path / "instance"),
+                notify_fn=notify,
+                skill_dir=SKILL_DIR,
+            )
+        assert success is False
+        assert "HEAD unchanged" in summary or "no new commit" in summary.lower()
+        mock_outcome.assert_not_called()
+        # Failure path uses the error notifier, not a success outcome.
+        assert any(
+            "\u274c" in str(c) or "failed" in str(c).lower()
+            for c in (call.args[0] for call in notify.call_args_list if call.args)
+        )
+
+    def test_run_commit_succeeds_only_when_head_advances(self, runner, tmp_path):
+        """Success requires a real new commit (HEAD SHA change)."""
+        repo = _init_git_repo(tmp_path / "proj", with_change=True)
+        notify = MagicMock()
+
+        def _do_commit(_prompt, project_path):
+            subprocess.run(
+                ["git", "add", "hello.py"],
+                cwd=project_path, check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "feat: add hello"],
+                cwd=project_path, check=True, capture_output=True,
+            )
+            return (
+                "COMMITTED\n"
+                "branch: koan/feature\n"
+                "message: feat: add hello\n"
+            )
+
+        with patch.object(runner, "_run_claude_commit", side_effect=_do_commit), patch(
+            "app.messaging_level.notify_outcome",
+        ) as mock_outcome:
+            success, summary = runner.run_commit(
+                project_path=str(repo),
+                project_name="demo",
+                instance_dir=str(tmp_path / "instance"),
+                notify_fn=notify,
+                skill_dir=SKILL_DIR,
+            )
+        assert success is True
+        assert "feat: add hello" in summary or "Commit for demo" in summary
+        mock_outcome.assert_called_once()
+
+    def test_read_context_file_logs_on_oserror(self, runner, tmp_path, capsys):
+        missing = tmp_path / "no-such-hint.txt"
+        result = runner._read_context_file(str(missing))
+        assert result == ""
+        err = capsys.readouterr().err
+        assert "failed to read context file" in err
+        assert str(missing) in err
+
 
 class TestSkillDispatch:
     def test_commit_registered_in_runners(self):

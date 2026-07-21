@@ -14,7 +14,6 @@ CLI:
 from __future__ import annotations
 
 import argparse
-import contextlib
 import subprocess
 import sys
 from pathlib import Path
@@ -27,9 +26,15 @@ def _read_context_file(path: str) -> str:
     """Read optional free-text message hint from a context file."""
     if not path:
         return ""
-    with contextlib.suppress(OSError):
+    try:
         return Path(path).read_text(encoding="utf-8").strip()
-    return ""
+    except OSError as exc:
+        # Surface the failure so a lost hint is diagnosable (not silent).
+        print(
+            f"Warning: failed to read context file {path}: {exc}",
+            file=sys.stderr,
+        )
+        return ""
 
 
 def _git(project_path: str, args: list, timeout: int = 15) -> Tuple[int, str, str]:
@@ -48,6 +53,15 @@ def _git(project_path: str, args: list, timeout: int = 15) -> Tuple[int, str, st
         return 1, "", str(exc)
 
 
+def _head_sha(project_path: str) -> Optional[str]:
+    """Return the full HEAD SHA, or None if it cannot be resolved."""
+    rc, out, _ = _git(project_path, ["rev-parse", "HEAD"])
+    if rc != 0:
+        return None
+    sha = out.strip()
+    return sha or None
+
+
 def _preflight_git_state(project_path: str) -> Optional[str]:
     """Return an abort reason if the tree is not safe to commit, else None."""
     rc, branch, err = _git(project_path, ["rev-parse", "--abbrev-ref", "HEAD"])
@@ -61,8 +75,13 @@ def _preflight_git_state(project_path: str) -> Optional[str]:
             "Switch to a feature branch first."
         )
 
-    rc, conflicts, _ = _git(project_path, ["diff", "--name-only", "--diff-filter=U"])
-    if rc == 0 and conflicts.strip():
+    rc, conflicts, err = _git(project_path, ["diff", "--name-only", "--diff-filter=U"])
+    if rc != 0:
+        return (
+            "Failed to check for merge conflicts: "
+            f"{err.strip() or 'unknown error'}"
+        )
+    if conflicts.strip():
         files = ", ".join(conflicts.strip().splitlines()[:5])
         return f"Unresolved merge conflicts: {files}"
 
@@ -123,7 +142,8 @@ def run_commit(
     """Execute the conventional-commit pipeline.
 
     Returns:
-        (success, summary) tuple.
+        (success, summary) tuple. Success is True only when HEAD advances
+        (a new commit is positively confirmed), never from model text alone.
     """
     if notify_fn is None:
         from app.notify import send_telegram
@@ -134,6 +154,12 @@ def run_commit(
         msg = f"❌ Commit aborted for {project_name}: {abort}"
         notify_fn(msg)
         return False, abort
+
+    head_before = _head_sha(project_path)
+    if not head_before:
+        err = "Failed to read HEAD before commit."
+        notify_fn(f"❌ Commit aborted for {project_name}: {err}")
+        return False, err
 
     hint_note = f" (hint: {message_hint})" if message_hint else ""
     notify_fn(f"📝 Creating conventional commit for {project_name}{hint_note}...")
@@ -163,24 +189,31 @@ def run_commit(
     from app.text_utils import clean_cli_response
 
     report = clean_cli_response(raw_output).strip()
-    success = "COMMITTED" in report and "ABORTED" not in report.splitlines()[0:3]
 
-    # Prefer a post-hoc git check when the model claims success.
-    rc, log_line, _ = _git(project_path, ["log", "-1", "--oneline"])
-    if success and rc == 0 and log_line.strip():
-        summary = f"Commit for {project_name}: {log_line.strip()}\n\n{report}"
-    else:
+    # Only treat the run as success when HEAD actually advanced. Model tokens
+    # like COMMITTED / ABORTED are informative for the summary, not proof.
+    head_after = _head_sha(project_path)
+    committed = bool(head_after and head_after != head_before)
+
+    if committed:
+        rc, log_line, _ = _git(project_path, ["log", "-1", "--oneline"])
+        log_part = log_line.strip() if rc == 0 and log_line.strip() else head_after[:12]
+        summary = f"Commit for {project_name}: {log_part}\n\n{report}"
+        from app.messaging_level import notify_outcome
+
+        notify_outcome(f"📝 {summary}", notify_fn)
+        return True, summary
+
+    # HEAD unchanged — fail closed for abort text, truncated output, or false claims.
+    if report.lstrip().startswith("ABORTED") or "\nABORTED" in report[:200]:
         summary = f"Commit result for {project_name}:\n\n{report}"
-        # If model reported ABORTED or we cannot confirm a new commit, treat as soft fail
-        # only when explicitly aborted; otherwise still surface the report as success of run.
-        if report.lstrip().startswith("ABORTED") or "\nABORTED" in report[:200]:
-            notify_fn(f"❌ {summary}")
-            return False, summary
-
-    from app.messaging_level import notify_outcome
-
-    notify_outcome(f"📝 {summary}", notify_fn)
-    return True, summary
+    else:
+        summary = (
+            f"Commit failed for {project_name}: HEAD unchanged "
+            f"(no new commit created).\n\n{report}"
+        )
+    notify_fn(f"❌ {summary}")
+    return False, summary
 
 
 def main(argv=None) -> int:

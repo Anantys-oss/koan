@@ -42,7 +42,6 @@ def _queue_commit(ctx, args: str) -> str:
     from app.utils import (
         get_known_projects,
         insert_pending_mission,
-        resolve_project_name_and_path,
     )
 
     project_name, project_path, message_hint = _resolve_project_and_hint(args)
