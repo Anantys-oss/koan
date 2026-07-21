@@ -127,7 +127,7 @@ Per `specs/README.md`'s coverage policy: only the ~10 highest-impact skills have
 - [`skills/plan.md`](specs-skills/plan.md) — Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness.
 - [`skills/rebase.md`](specs-skills/rebase.md) — Documents the `/rebase` skill that rebases a PR onto its current base by default and, with `--fix` (or any trailing context), also addresses review feedback, including its already-solved detection JSON scored by the eval harness.
 - [`skills/recreate.md`](specs-skills/recreate.md) — Documents the `/recreate` skill that rebuilds a too-far-diverged PR from scratch on current upstream via a fresh branch and reimplementation, rather than rebasing.
-- [`skills/review.md`](specs-skills/review.md) — Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness.
+- [`skills/review.md`](specs-skills/review.md) — Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic, batched opt-in inline review submission, and re-review comment handling, covered by the eval harness.
 - [`skills/security_audit.md`](specs-skills/security_audit.md) — Documents the `/security_audit` skill that runs a background SDLC security audit of a project and files up to 5 critical-vulnerability tracker issues via the provider-neutral tracker service.
 
 ### Overview

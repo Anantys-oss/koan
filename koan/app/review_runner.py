@@ -30,7 +30,7 @@ from app.claude_step import resolve_pr_location
 from app.config import get_review_bot_triage_config, get_review_compressor_token_budget, get_review_history_config, get_review_inline_comments_config, get_review_max_diff_chars, get_review_reply_config, get_review_uncompressed_max_diff_chars, get_review_verdict_config, is_review_compressor_enabled
 from app.run_log import log
 from app.diff_compressor import compress_diff
-from app.github import run_gh, sanitize_github_comment, find_bot_comment
+from app.github import api, run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
 from app.github_alerts import build_alert
@@ -2454,25 +2454,213 @@ def _post_inline_finding_comments(
     return (posted, attempted)
 
 
+def _build_review_comment_payloads(
+    findings: list,
+    *,
+    existing_anchors: set,
+    max_comments: int,
+) -> tuple:
+    """Build GitHub createReview ``comments`` objects from structured findings.
+
+    Returns (payloads, attempted) where attempted counts new resolvable
+    findings that passed the anchor filter (same semantics as the individual
+    poster). Bodies use ``_format_inline_finding_body`` + sanitize.
+    """
+    if not findings or max_comments <= 0:
+        return [], 0
+
+    payloads: list = []
+    attempted = 0
+    for item in findings:
+        if attempted >= max_comments:
+            break
+        if not isinstance(item, dict):
+            continue
+        line_start = item.get("line_start") or 0
+        if line_start <= 0 or not item.get("file"):
+            continue
+        line = item.get("line_end") or line_start
+        body = sanitize_github_comment(_format_inline_finding_body(item))
+        first_line = body.split("\n", 1)[0] if body else ""
+        if (item["file"], int(line), first_line) in existing_anchors:
+            continue
+        attempted += 1
+        entry = {
+            "path": item["file"],
+            "line": int(line),
+            "side": "RIGHT",
+            "body": body,
+        }
+        if line_start < line:
+            entry["start_line"] = int(line_start)
+            entry["start_side"] = "RIGHT"
+        payloads.append(entry)
+    return payloads, attempted
+
+
+def _delete_pending_reviews(owner: str, repo: str, pr_number: str) -> None:
+    """Best-effort: delete the caller's PENDING reviews so createReview can proceed.
+
+    GitHub allows only one pending review per user per PR. A crashed prior
+    run can leave a PENDING review that blocks a new createReview.
+    """
+    try:
+        raw = api(
+            f"repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+            method="GET",
+        )
+        reviews = json.loads(raw) if raw else []
+    except Exception as e:
+        log(
+            "review",
+            f"Could not list reviews for pending cleanup on PR #{pr_number}: {e}",
+        )
+        return
+    if not isinstance(reviews, list):
+        return
+    for rev in reviews:
+        if not isinstance(rev, dict) or rev.get("state") != "PENDING":
+            continue
+        rid = rev.get("id")
+        if not rid:
+            continue
+        try:
+            api(
+                f"repos/{owner}/{repo}/pulls/{pr_number}/reviews/{rid}",
+                method="DELETE",
+            )
+            log("review", f"Deleted PENDING review {rid} on PR #{pr_number}")
+        except Exception as e:
+            log("review", f"Failed to delete PENDING review {rid}: {e}")
+
+
+def _submit_batch_review(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    *,
+    head_sha: str,
+    comments: list,
+    event: str,
+    body: str = "",
+) -> tuple:
+    """POST one pull-request review with inline comments.
+
+    Returns (ok, posted_count). On self-authored PR 422 for APPROVE /
+    REQUEST_CHANGES, retries once with event=COMMENT (comments preserved).
+
+    GitHub requires a non-empty ``body`` when ``event`` is COMMENT or
+    REQUEST_CHANGES (even when ``comments`` is non-empty). Mirror
+    ``_submit_review_verdict`` and supply a minimal fallback so the batch
+    path does not 422-and-silently-fallback on the common verdict-disabled
+    COMMENT case.
+    """
+    if not head_sha or not comments:
+        return False, 0
+
+    _delete_pending_reviews(owner, repo, pr_number)
+
+    # GitHub: body required for COMMENT / REQUEST_CHANGES events.
+    review_body = body
+    if not review_body and event in ("COMMENT", "REQUEST_CHANGES"):
+        review_body = (
+            "Review comments attached."
+            if event == "COMMENT"
+            else "Blocking issues found — see the review comment above."
+        )
+
+    payload = {
+        "commit_id": head_sha,
+        "event": event,
+        "comments": comments,
+    }
+    if review_body:
+        payload["body"] = review_body
+
+    endpoint = f"repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+    # Catch broadly: api()/run_gh() re-raise OSError and TimeoutExpired after
+    # retries (not only RuntimeError). Returning (False, 0) lets the caller
+    # fall back to individual posts instead of aborting the review pipeline.
+    try:
+        api(endpoint, method="POST", input_data=json.dumps(payload), raw_body=True)
+        log(
+            "review",
+            f"Submitted batch review ({event}) with {len(comments)} "
+            f"comment(s) on PR #{pr_number}",
+        )
+        return True, len(comments)
+    except Exception as e:
+        if event in ("APPROVE", "REQUEST_CHANGES") and _is_self_review_error(e):
+            try:
+                payload["event"] = "COMMENT"
+                # GitHub requires a non-empty body for COMMENT. APPROVE may
+                # omit body (body_enabled:false); inject before the retry.
+                if not payload.get("body"):
+                    payload["body"] = "Review comments attached."
+                api(
+                    endpoint,
+                    method="POST",
+                    input_data=json.dumps(payload),
+                    raw_body=True,
+                )
+                log(
+                    "review",
+                    f"Posted batch {event} as COMMENT on own PR #{pr_number}",
+                )
+                return True, len(comments)
+            except Exception as e2:
+                log("review", f"Batch review failed on PR #{pr_number}: {e2}")
+                return False, 0
+        log("review", f"Batch review failed on PR #{pr_number}: {e}")
+        return False, 0
+
+
 def _maybe_post_inline_comments(
     owner: str, repo: str, pr_number: str,
     review_data: Optional[dict], head_sha: str,
+    *,
+    event: str = "COMMENT",
+    body: str = "",
 ) -> tuple:
-    """Config-gated inline posting of structured findings (additive).
+    """Config-gated inline posting (batch-first, individual fallback).
 
-    Returns (posted, attempted) — see _post_inline_finding_comments.
+    Returns (posted, attempted, batch_ok).
+    ``batch_ok`` is True only when createReview succeeded (so the caller can
+    skip a separate verdict POST when the event was already applied).
     """
     cfg = get_review_inline_comments_config()
     if not cfg["enabled"]:
-        return (0, 0)
-    if not isinstance(review_data, dict):
-        return (0, 0)
+        return (0, 0, False)
+    if not isinstance(review_data, dict) or not head_sha:
+        return (0, 0, False)
     findings = review_data.get("file_comments") or []
     if not findings:
-        return (0, 0)
-    return _post_inline_finding_comments(
+        return (0, 0, False)
+
+    existing = _fetch_existing_inline_anchors(owner, repo, pr_number)
+    payloads, attempted = _build_review_comment_payloads(
+        findings,
+        existing_anchors=existing,
+        max_comments=cfg["max_comments"],
+    )
+    if not payloads:
+        return (0, attempted, False)
+
+    ok, n = _submit_batch_review(
+        owner, repo, pr_number,
+        head_sha=head_sha,
+        comments=payloads,
+        event=event,
+        body=body,
+    )
+    if ok:
+        return (n, attempted, True)
+
+    # Fallback: individual posts (existing best-effort path).
+    posted, att2 = _post_inline_finding_comments(
         owner, repo, pr_number, findings, head_sha, cfg["max_comments"],
     )
+    return (posted, max(attempted, att2), False)
 
 
 def _patch_comment_body(
@@ -3511,13 +3699,40 @@ def run_review(
             f"(review still landed): {exc}"
         )
 
+    # Resolve verdict intent before inline so a batch createReview can carry
+    # the APPROVE / REQUEST_CHANGES event (one notification) when both fire.
+    verdict_submitted = False
+    review_summary = {}
+    verdict_event = "COMMENT"
+    verdict_body = ""
+    want_verdict = False
+    if posted and isinstance(review_data, dict):
+        review_summary = review_data.get("review_summary") or {}
+        lgtm = review_summary.get("lgtm")
+        if isinstance(lgtm, bool) and current_shas:
+            verdict_cfg = _resolve_verdict_config(project_name)
+            if verdict_cfg["approved"]:
+                want_verdict = True
+                verdict_event = "APPROVE" if lgtm else "REQUEST_CHANGES"
+                verdict_body = _build_verdict_body(
+                    approve=lgtm,
+                    review_data=review_data,
+                    body_enabled=verdict_cfg["body_enabled"],
+                    include_blockers=verdict_cfg["include_blockers"],
+                )
+            else:
+                log("review", f"Verdict submission disabled — skipping on PR #{pr_number}")
+
     # Step 7c: Optionally post each finding as an inline PR comment (opt-in).
+    # Batch-first via createReview; falls back to individual posts on failure.
     # Additive to the summary comment above and independently failable, so an
     # inline-posting error never affects the already-posted summary.
     if posted:
-        inline_posted, inline_attempted = _maybe_post_inline_comments(
+        inline_posted, inline_attempted, batch_ok = _maybe_post_inline_comments(
             owner, repo, pr_number, review_data,
             current_shas[-1] if current_shas else "",
+            event=verdict_event if want_verdict else "COMMENT",
+            body=verdict_body if want_verdict else "",
         )
         if inline_posted:
             notify_fn(f"Posted {inline_posted} inline comment(s) on PR #{pr_number}.")
@@ -3525,6 +3740,18 @@ def run_review(
             notify_fn(
                 f"Inline posting failed: 0 of {inline_attempted} comment(s) "
                 f"posted on PR #{pr_number}."
+            )
+        if batch_ok and want_verdict:
+            # Event already applied on the batch review — do not double-submit.
+            verdict_submitted = True
+        elif want_verdict and current_shas:
+            # Step 7b: separate verdict when batch did not carry it
+            # (inline off, no new comments, or batch failed and fell back).
+            verdict_submitted = _submit_review_verdict(
+                owner, repo, pr_number,
+                approve=bool(review_summary.get("lgtm")),
+                head_sha=current_shas[-1],
+                body=verdict_body,
             )
 
     # Step 7a: Persist structured findings for post-merge outcome tracking
@@ -3549,34 +3776,6 @@ def run_review(
                 "[review_runner] skipping outcome sidecar: no head SHA captured",
                 file=sys.stderr,
             )
-
-    # Step 7b: Submit formal review verdict (APPROVE / REQUEST_CHANGES)
-    # so the bot's decision shows in GitHub's Reviewers panel.  Only
-    # submitted when we have structured data (lgtm field) and the
-    # comment was posted successfully.  The commit_id anchors the
-    # verdict to the reviewed code state.
-    verdict_submitted = False
-    review_summary = {}
-    if posted and isinstance(review_data, dict):
-        review_summary = review_data.get("review_summary") or {}
-        lgtm = review_summary.get("lgtm")
-        if isinstance(lgtm, bool) and current_shas:
-            verdict_cfg = _resolve_verdict_config(project_name)
-            if verdict_cfg["approved"]:
-                verdict_body = _build_verdict_body(
-                    approve=lgtm,
-                    review_data=review_data,
-                    body_enabled=verdict_cfg["body_enabled"],
-                    include_blockers=verdict_cfg["include_blockers"],
-                )
-                verdict_submitted = _submit_review_verdict(
-                    owner, repo, pr_number,
-                    approve=lgtm,
-                    head_sha=current_shas[-1],
-                    body=verdict_body,
-                )
-            else:
-                log("review", f"Verdict submission disabled — skipping on PR #{pr_number}")
 
     # Step 8: Close the PR if the review decided closure is warranted
     closed = False

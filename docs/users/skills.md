@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-07-19
 ---
 
 # Skills Reference
@@ -99,8 +99,11 @@ project memory (decisions, observations) from the SQLite memory index.
 **Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in
 `config.yaml` to also post each finding as an inline PR comment anchored to its
 code location, in addition to the bucketed summary comment (which is unchanged).
-Each inline thread shows the same severity marker (🔴/🟡/🟢) and the full finding
-detail, so reviewers can react or resolve in place. Cap the volume with
+When enabled, Kōan submits those inline findings as **one** GitHub pull-request
+review (single notification for the comment set), and attaches the formal
+APPROVE / REQUEST_CHANGES verdict to that same review when verdicts are on.
+If the batch API call fails (e.g. a line is not part of the diff), it falls back
+to posting comments individually. Cap volume with
 `review_inline_comments.max_comments` (default 25). Re-running `/review` is
 idempotent (already-anchored findings are skipped); multi-line findings anchor
 to their full range; if all posts fail, you are notified. Disabled by default.

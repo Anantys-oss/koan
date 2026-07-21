@@ -1114,9 +1114,11 @@ page_cache_reclaim:
 #   preserve_previous: false    # Keep the previous review comment intact (default: false)
 
 # Review inline comments — in addition to the single bucketed summary comment,
-# post each finding as an inline PR comment anchored to its code location, so a
-# reviewer can react/resolve/discuss each one in place. Additive: never
-# replaces the summary comment. Opt-in (default: disabled).
+# post each finding as an inline PR comment anchored to its code location.
+# When enabled, findings are submitted as ONE GitHub PR review (comments array)
+# so the author gets a single review notification; on API failure Kōan falls
+# back to individual posts. The formal verdict (APPROVE / REQUEST_CHANGES)
+# rides that same review when review_verdict.approved is true.
 # review_inline_comments:
 #   enabled: false        # Master switch (default: false)
 #   max_comments: 25      # Cap inline threads posted per review (default: 25)
