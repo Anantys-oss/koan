@@ -579,8 +579,9 @@ class TestBuildAgentPrompt:
 class TestBuildContemplativePrompt:
     """Tests for contemplative prompt building."""
 
+    @patch("app.prompt_builder._get_language_section", return_value="")
     @patch("app.prompts.load_prompt")
-    def test_basic_contemplative(self, mock_load, prompt_env):
+    def test_basic_contemplative(self, mock_load, _mock_lang, prompt_env):
         mock_load.return_value = "Contemplative template"
 
         result = build_contemplative_prompt(

@@ -1869,7 +1869,8 @@ Use `/models` to inspect the resolved values for the active provider at any time
 
 ### Language Preference
 
-**`/language`** — Set or reset the reply language.
+**`/language`** — Set or reset the reply language. Defaults to **English** on a
+fresh install — no `/english` needed.
 
 - **Usage:** `/language <lang>`, `/language reset`
 - **Aliases:** `/lng`
@@ -1883,8 +1884,18 @@ Use `/models` to inspect the resolved values for the active provider at any time
 
 - `/fr` — Switch to French replies
 - `/en` — Switch back to English
-- `/language reset` — Use default language
+- `/language reset` — Reply in the same language as each incoming message
 </details>
+
+> **Upgrade note:** English is now the default when no preference is set. Two
+> cohorts change behavior on upgrade:
+> - If you previously ran `/language reset` to reply in each message's own
+>   language, that state was stored by deleting the preference file — now
+>   indistinguishable from a fresh install and read as English. Re-run
+>   `/language reset` once to restore input-language mode.
+> - If you relied on a non-English `soul.md` for replies without ever setting
+>   `/language`, replies are now enforced to English. Set your language
+>   explicitly (e.g. `/french`) to keep it.
 
 ### System Management
 
