@@ -14,6 +14,35 @@ Do not hand-edit released entries — they are the source for `CHANGES.md`.
 
 ## ${NEXT}
 
+### Merged 2026-07-21 — main @ 376b048a (11 commits)
+
+**Added**
+
+- Brainstorming now creates rich, properly formatted Jira issues with native
+  links between them, so a brainstorm lands as a readable, connected set of
+  tickets instead of flat text. (#2443)
+- Config changes now take effect on the running agent without a restart —
+  edit settings in the dashboard and the daemon picks them up live. (#2208)
+- A new post-review hook lets you run your own automation once a review
+  finishes, and the agent captures lessons from each review it performs. (#2440)
+
+**Changed**
+
+- The agent reclaims leftover working directories from finished missions,
+  noticeably reducing disk usage (and hosting cost) on long-running
+  instances. (#2454)
+- Transition notices now point you to `/fix` instead of the older
+  `/rebase --fix`. (#2452)
+- Published Docker images no longer ship Kōan's own development tooling,
+  making them smaller and cleaner. (#2442)
+
+**Fixed**
+
+- Sending `/fix` with a pull-request URL no longer stalls in the queue — it is
+  routed to the right handler automatically. (#2459)
+- Replies default to English when no language preference is set, instead of
+  falling back unpredictably. (#2456)
+
 ## v0.8.0 — 2026-07-18
 
 **Added**
