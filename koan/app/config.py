@@ -2491,6 +2491,124 @@ def get_review_reflect_config() -> dict:
     return {"threshold": max(0, min(10, threshold))}
 
 
+def get_review_snippet_validation_config(project_name: str = "") -> dict:
+    """Validate each finding's code_snippet against the file at the reviewed SHA.
+
+    A finding's quoted code block is model-authored and, before this gate, was
+    never checked against the actual source at the reviewed HEAD — so a
+    re-review could quote pre-fix lines under a permalink that points at the
+    already-fixed code. This gate reconciles the quote with authoritative
+    content at the reviewed SHA.
+
+    Config key: review_snippet_validation
+      - enabled (bool): run the gate. Default: True.
+      - on_mismatch (str): action when the snippet no longer matches at the
+        anchor — "resync" (replace the quote with the real current lines,
+        default), "drop" (remove the finding), "annotate" (append the current
+        source), or "off" (leave the snippet untouched). Invalid values fall
+        back to "resync". Findings whose file/lines no longer exist are always
+        dropped regardless of this setting.
+
+    Returns:
+        Dict with keys: enabled (bool), on_mismatch (str).
+    """
+    defaults = {"enabled": True, "on_mismatch": "resync"}
+    merged = _get_config_with_overrides(
+        "review_snippet_validation", defaults, project_name)
+    on_mismatch = str(merged.get("on_mismatch") or "resync").strip().lower()
+    if on_mismatch not in ("resync", "drop", "annotate", "off"):
+        on_mismatch = "resync"
+    return {
+        "enabled": _safe_bool(merged.get("enabled"), defaults["enabled"]),
+        "on_mismatch": on_mismatch,
+    }
+
+
+def get_review_reconcile_config(project_name: str = "") -> dict:
+    """Programmatically reconcile prior findings against the reviewed HEAD.
+
+    On a re-review, prior findings that are already fixed must not be raised
+    again. This pass reads the previous run's structured findings (the review
+    sidecar), checks each against authoritative content at the reviewed SHA,
+    suppresses re-raised copies of resolved findings, and can surface a
+    "Resolved since last review" section. Suppression is conservative and
+    fail-open, so on-by-default is safe.
+
+    Config key: review_reconcile
+      - enabled (bool): run the reconciliation pass. Default: True.
+      - show_resolved (bool): render a "Resolved since last review" section.
+        Default: True.
+
+    Returns:
+        Dict with keys: enabled (bool), show_resolved (bool).
+    """
+    defaults = {"enabled": True, "show_resolved": True}
+    merged = _get_config_with_overrides("review_reconcile", defaults, project_name)
+    return {
+        "enabled": _safe_bool(merged.get("enabled"), defaults["enabled"]),
+        "show_resolved": _safe_bool(
+            merged.get("show_resolved"), defaults["show_resolved"]),
+    }
+
+
+def get_review_convention_docs_config(project_name: str = "") -> dict:
+    """Native ingestion of the reviewed repo's own convention/knowledge docs.
+
+    When enabled, /review reads the reviewed repo's convention docs
+    (AGENTS.md/CLAUDE.md/CONTRIBUTING.md + an auto-detected OKF ``docs/`` bundle)
+    and injects them into a dedicated ``{REPO_CONVENTIONS}`` prompt slot, so the
+    reviewer applies repo-specific conventions and stops raising
+    convention-based false positives. Auto-detecting: a repo shipping none of
+    these files yields an empty block, so it is safe to leave enabled.
+
+    Config key: review_convention_docs
+      - enabled (bool): master switch. Default: True.
+      - auto_detect_okf (bool): detect an OKF docs/ bundle via docs/index.md.
+        Default: True.
+      - okf_docs_dir (str): bundle directory. Default: "docs".
+      - include_topic_indexes (bool): include per-topic index.md catalogs
+        (not full topic pages). Default: True.
+      - well_known (list[str]): root convention files, priority order.
+        Default: ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"].
+      - max_chars (int >= 0): cap for the whole injected block. Default: 16000.
+
+    Returns:
+        Fully-populated dict; malformed values fall back to defaults.
+    """
+    defaults = {
+        "enabled": True,
+        "auto_detect_okf": True,
+        "okf_docs_dir": "docs",
+        "include_topic_indexes": True,
+        "well_known": ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"],
+        "max_chars": 16000,
+    }
+    merged = _get_config_with_overrides(
+        "review_convention_docs", defaults, project_name)
+
+    well_known = merged.get("well_known", defaults["well_known"])
+    if not isinstance(well_known, list):
+        well_known = defaults["well_known"]
+    well_known = [str(p) for p in well_known]
+
+    okf_docs_dir = merged.get("okf_docs_dir", defaults["okf_docs_dir"])
+    if not isinstance(okf_docs_dir, str) or not okf_docs_dir.strip():
+        okf_docs_dir = defaults["okf_docs_dir"]
+
+    max_chars = _safe_int(merged.get("max_chars"), defaults["max_chars"])
+
+    return {
+        "enabled": _safe_bool(merged.get("enabled"), defaults["enabled"]),
+        "auto_detect_okf": _safe_bool(
+            merged.get("auto_detect_okf"), defaults["auto_detect_okf"]),
+        "okf_docs_dir": okf_docs_dir,
+        "include_topic_indexes": _safe_bool(
+            merged.get("include_topic_indexes"), defaults["include_topic_indexes"]),
+        "well_known": well_known,
+        "max_chars": max(0, max_chars),
+    }
+
+
 def get_speckit_config() -> dict:
     """Get the native ``/speckit`` skill configuration from config.yaml.
 

@@ -98,3 +98,81 @@ def read_skill_instructions(project_path: str, skill_name: str) -> str:
     if not parts:
         return ""
     return _cap("\n\n".join(parts), _MAX_KOAN_SKILL_CHARS, ".koan skill instructions")
+
+
+_MAX_CONVENTION_DOC_CHARS = 16000    # per-source cap (applied before the block cap)
+_MAX_CONVENTION_BLOCK_CHARS = 16000  # whole-block cap
+
+# Well-known root convention files, in signal-priority order.
+_WELL_KNOWN_CONVENTION_FILES = ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md")
+
+# OKF bundle: the small, high-signal root pages worth injecting whole.
+_OKF_ROOT_DOCS = ("index.md", "SPEC.md", "SCHEMA.md")
+
+
+def read_repo_convention_docs(
+    project_path: str,
+    *,
+    well_known=_WELL_KNOWN_CONVENTION_FILES,
+    okf_docs_dir: str = "docs",
+    include_topic_indexes: bool = True,
+    auto_detect_okf: bool = True,
+    max_source_chars: int = _MAX_CONVENTION_DOC_CHARS,
+    max_block_chars: int = _MAX_CONVENTION_BLOCK_CHARS,
+) -> str:
+    """Concatenate a repo's own convention/knowledge docs, provenance-labelled.
+
+    Sources, in priority order:
+      1. Well-known root files (AGENTS.md, CLAUDE.md, CONTRIBUTING.md).
+      2. An OKF/docs bundle detected by ``<docs>/index.md``: the curated bundle
+         index + SPEC.md + SCHEMA.md, plus (optionally) each topic folder's
+         generated ``index.md`` catalog — never the full topic pages, which the
+         reviewer can Read on demand.
+
+    Each fragment is prefixed with a ``# <relpath>`` provenance marker (matching
+    :func:`read_skill_instructions`). De-dupes by resolved realpath so an
+    ``AGENTS.md -> CLAUDE.md`` symlink is read once. Per-source content is capped
+    at ``max_source_chars``; the whole block at ``max_block_chars``. Returns ""
+    when ``project_path`` is empty or nothing is found.
+    """
+    if not project_path:
+        return ""
+    root = Path(project_path)
+    parts: list = []
+    seen: set = set()
+
+    def _add(rel: str, path: Path) -> None:
+        if not path.is_file():
+            return
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            return
+        seen.add(key)
+        body = _read_or_empty(path)
+        if body:
+            parts.append(f"# {rel}\n\n{_cap(body, max_source_chars, rel)}")
+
+    for name in well_known:
+        _add(str(name), root / str(name))
+
+    if auto_detect_okf and okf_docs_dir:
+        docs = root / okf_docs_dir
+        if (docs / "index.md").is_file():
+            for name in _OKF_ROOT_DOCS:
+                _add(f"{okf_docs_dir}/{name}", docs / name)
+            if include_topic_indexes:
+                try:
+                    topic_indexes = sorted(
+                        docs.glob("*/index.md"), key=lambda p: p.as_posix())
+                except OSError:
+                    topic_indexes = []
+                for idx in topic_indexes:
+                    rel = f"{okf_docs_dir}/{idx.parent.name}/index.md"
+                    _add(rel, idx)
+
+    if not parts:
+        return ""
+    return _cap("\n\n".join(parts), max_block_chars, "repo convention docs")

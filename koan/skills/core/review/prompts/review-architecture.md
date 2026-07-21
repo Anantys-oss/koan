@@ -12,7 +12,7 @@ respect boundaries, manage dependencies, and uphold design principles.
 ### PR Description
 
 {BODY}
-{PROJECT_MEMORY}
+{PROJECT_MEMORY}{REPO_CONVENTIONS}
 ---
 
 ## Current Diff

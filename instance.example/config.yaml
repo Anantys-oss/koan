@@ -1039,6 +1039,47 @@ page_cache_reclaim:
 # review_reflect:
 #   threshold: 5            # Min score to keep a finding (0-10, default: 5)
 
+# Review snippet validation — reconcile each finding's quoted code block against
+# the actual file content at the reviewed commit before posting. The quote is
+# model-authored; without this gate a re-review can show pre-fix source under a
+# permalink that points at the already-fixed code. Fail-open (a transient fetch
+# failure leaves the finding untouched); findings whose file/lines no longer
+# exist are dropped. Applies to /review and the backend private review gate.
+# review_snippet_validation:
+#   enabled: true           # Master switch (default: true)
+#   on_mismatch: resync     # resync (replace quote with real lines, default) |
+#                           # drop | annotate | off
+
+# Review reconciliation — on a re-review, programmatically detect prior findings
+# that are already fixed at the reviewed commit (via the review sidecar), and
+# suppress current findings that merely re-raise them. Conservative + fail-open:
+# a current finding is dropped only when it matches a resolved prior finding AND
+# its own quote no longer matches live source, so still-broken code is never
+# suppressed. Resolved priors are listed in a "Resolved since last review" note.
+# review_reconcile:
+#   enabled: true           # Master switch (default: true)
+#   show_resolved: true     # Render the "Resolved since last review" section
+
+# Review convention docs — NATIVE ingestion of the REVIEWED repo's own
+# convention/knowledge docs into the review prompt, so the reviewer applies
+# repo-specific conventions and stops raising convention-based false positives
+# (e.g. flagging a documented link style as "broken"). Auto-detecting: it reads
+# AGENTS.md/CLAUDE.md/CONTRIBUTING.md at the repo root and, when a docs/index.md
+# OKF bundle is present, the curated index + SPEC.md + SCHEMA.md + per-topic
+# index catalogs. Degrades to a no-op for repos that ship none of these, so it
+# is safe to leave enabled. Unlike .koan/skills/review/*.md (which repos must
+# author explicitly), this needs no per-repo setup.
+# review_convention_docs:
+#   enabled: true                 # Master switch (default: true)
+#   auto_detect_okf: true         # Detect an OKF docs/ bundle via docs/index.md
+#   okf_docs_dir: docs            # Bundle directory (default: docs)
+#   include_topic_indexes: true   # Include per-topic index.md catalogs (not full pages)
+#   well_known:                   # Root convention files, priority order
+#     - AGENTS.md
+#     - CLAUDE.md
+#     - CONTRIBUTING.md
+#   max_chars: 16000              # Cap for the whole injected block (~4.5K tokens)
+
 # Review session memory — opt-in injection of recent typed project memory
 # (decisions, observations) into the review prompt, ranked against the PR
 # content via the SQLite FTS5 memory index. Project learnings are always

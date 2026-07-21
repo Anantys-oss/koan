@@ -1554,6 +1554,109 @@ class TestReviewMemoryConfig:
         assert result["max_entries"] == 0
 
 
+class TestReviewSnippetValidationConfig:
+    def test_defaults(self):
+        from app.config import get_review_snippet_validation_config
+
+        with _mock_config({}):
+            assert get_review_snippet_validation_config() == {
+                "enabled": True, "on_mismatch": "resync",
+            }
+
+    def test_global_override(self):
+        from app.config import get_review_snippet_validation_config
+
+        with _mock_config({
+            "review_snippet_validation": {"enabled": False, "on_mismatch": "drop"}
+        }):
+            assert get_review_snippet_validation_config() == {
+                "enabled": False, "on_mismatch": "drop",
+            }
+
+    def test_invalid_on_mismatch_falls_back(self):
+        from app.config import get_review_snippet_validation_config
+
+        with _mock_config({"review_snippet_validation": {"on_mismatch": "explode"}}):
+            assert get_review_snippet_validation_config()["on_mismatch"] == "resync"
+
+    def test_per_project_override(self):
+        from app.config import get_review_snippet_validation_config
+
+        with _mock_config({"review_snippet_validation": {"enabled": True}}), patch(
+            "app.config._load_project_overrides",
+            return_value={"review_snippet_validation": {"enabled": False}},
+        ):
+            assert get_review_snippet_validation_config("proj")["enabled"] is False
+
+
+class TestReviewReconcileConfig:
+    def test_defaults(self):
+        from app.config import get_review_reconcile_config
+
+        with _mock_config({}):
+            assert get_review_reconcile_config() == {
+                "enabled": True, "show_resolved": True,
+            }
+
+    def test_global_override(self):
+        from app.config import get_review_reconcile_config
+
+        with _mock_config({
+            "review_reconcile": {"enabled": False, "show_resolved": False}
+        }):
+            assert get_review_reconcile_config() == {
+                "enabled": False, "show_resolved": False,
+            }
+
+
+class TestReviewConventionDocsConfig:
+    def test_defaults(self):
+        from app.config import get_review_convention_docs_config
+
+        with _mock_config({}):
+            result = get_review_convention_docs_config()
+        assert result == {
+            "enabled": True,
+            "auto_detect_okf": True,
+            "okf_docs_dir": "docs",
+            "include_topic_indexes": True,
+            "well_known": ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"],
+            "max_chars": 16000,
+        }
+
+    def test_global_override(self):
+        from app.config import get_review_convention_docs_config
+
+        with _mock_config({
+            "review_convention_docs": {"enabled": False, "max_chars": 5000}
+        }):
+            result = get_review_convention_docs_config()
+        assert result["enabled"] is False
+        assert result["max_chars"] == 5000
+
+    def test_per_project_override(self):
+        from app.config import get_review_convention_docs_config
+
+        with _mock_config({"review_convention_docs": {"enabled": True}}), patch(
+            "app.config._load_project_overrides",
+            return_value={"review_convention_docs": {"enabled": False}},
+        ):
+            assert get_review_convention_docs_config("proj")["enabled"] is False
+
+    def test_malformed_values_fall_back(self):
+        from app.config import get_review_convention_docs_config
+
+        with _mock_config({
+            "review_convention_docs": {
+                "max_chars": "abc", "well_known": "AGENTS.md", "okf_docs_dir": 5,
+            }
+        }):
+            result = get_review_convention_docs_config()
+        assert result["max_chars"] == 16000
+        assert result["well_known"] == ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"]
+        assert result["okf_docs_dir"] == "docs"
+
+
 class TestReviewContextConfig:
     def test_defaults_fall_back_to_rebase_flag(self):
         from app.config import get_review_context_config
