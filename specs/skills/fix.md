@@ -4,7 +4,7 @@ title: "Skill Spec — fix"
 description: "Specifies the `/fix` skill, which fixes a tracker issue end-to-end (or batch-queues fixes for a repo) and redirects PR URLs to `/rebase --fix`, with eval coverage on its diagnostic output."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-07-21
 ---
 
 # Skill Spec — `fix`
@@ -80,3 +80,9 @@ prompt MUST be reflected in the golden cases / baseline.
 
 - The issue-vs-PR branch is URL-shape-driven; `github_url_parser` is the single
   classifier — don't reimplement URL detection in the handler.
+- The PR-URL → `/rebase --fix` redirect must be enforced on **both** dispatch
+  paths: the in-process bridge handler (`handler.py`) *and* the queued-mission
+  chokepoint (`skill_dispatch._build_fix_cmd`). GitHub `@mention` `/fix`
+  missions are queued as raw `/fix <url>` and reach the agent loop through the
+  latter, never through `handler.py` — enforcing the redirect in only one place
+  reopens issue #2458 (a new PR is created instead of force-pushing the branch).
