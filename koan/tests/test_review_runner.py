@@ -4704,6 +4704,39 @@ class TestReReviewFreshComment:
         assert "no new commits" in summary.lower()
         mock_claude.assert_not_called()
 
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_same_shas_posts_blue_note_notice(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """When skipping for no new commits, a blue [!NOTE] comment is posted."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {"id": 99, "body": f"{SUMMARY_TAG}\n{sha_block}", "user": "koan-bot"}
+        mock_find_bot.return_value = prior_comment
+
+        success, _, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+        )
+
+        assert success is True
+        notice_posts = [
+            c for c in mock_gh.call_args_list
+            if len(c[0]) >= 2 and c[0][0] == "api"
+            and str(c[0][1]).endswith("/issues/42/comments")
+            and any("[!NOTE]" in str(a) and "No code changes" in str(a) for a in c[0])
+        ]
+        assert len(notice_posts) == 1, "Expected exactly one blue [!NOTE] skip notice"
+
 
 class TestCollapseOldReview:
     """Tests for _collapse_old_review helper."""

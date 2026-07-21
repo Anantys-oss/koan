@@ -2173,6 +2173,37 @@ def _post_review_comment(
         return False, str(e), None
 
 
+def _post_no_changes_notice(
+    owner: str, repo: str, pr_number: str, head_sha: str = "",
+) -> bool:
+    """Post a blue ``> [!NOTE]`` telling the requester the review was skipped.
+
+    Fired when the incremental-review check finds no new commits since the
+    last review. Best-effort: a failed post only logs and returns False so
+    the skip still succeeds.
+    """
+    tip = f" (`{head_sha[:7]}`)" if head_sha else ""
+    body = build_alert(
+        "NOTE",
+        f"No code changes since the last review{tip} — skipping. "
+        "Push new commits or re-request a review to run again.",
+    )
+    try:
+        run_gh(
+            "api",
+            f"repos/{owner}/{repo}/issues/{pr_number}/comments",
+            "-X", "POST",
+            "-f", f"body={sanitize_github_comment(body)}",
+        )
+        return True
+    except Exception as e:
+        print(
+            f"[review_runner] failed to post no-changes notice: {e}",
+            file=sys.stderr,
+        )
+        return False
+
+
 def _append_error_section_to_review(
     owner: str,
     repo: str,
@@ -3300,6 +3331,11 @@ def run_review(
                             f"[review_runner] posted {len(bot_reply_results)} bot triage reply(ies)",
                             file=sys.stderr,
                         )
+        # Tell the requester why nothing happened instead of skipping silently.
+        _post_no_changes_notice(
+            owner, repo, pr_number,
+            head_sha=(current_shas[-1] if current_shas else ""),
+        )
         return (
             True,
             f"PR #{pr_number} has no new commits since last review — skipping.",
