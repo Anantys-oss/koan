@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-07-19
 ---
 
 # Skills Reference
@@ -61,6 +61,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |
+| `/commit [project] [hint]` | `/cm` | Analyze staged/unstaged diffs and create a conventional commit (no push; refuses main/master and secrets) | — |
 | `/check <url>` | `/inspect` | Run project health checks on a PR or issue (rebase, review, plan) | — |
 | `/check_need <url>` | `/need`, `/needs` | Analyze if a PR or issue is still needed vs. current main | — |
 | `/ci_check <PR>\|--enable\|--disable` | — | Check and fix CI failures on a PR (non-blocking, bounded, one attempt per mission); toggle CI system | — |

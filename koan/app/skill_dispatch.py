@@ -96,6 +96,7 @@ _CANONICAL_RUNNERS = {
     "deep": "skills.core.deep.deep_runner",
     "brief": "skills.core.brief.brief_runner",
     "debug": "skills.core.debug.debug_runner",
+    "commit": "skills.core.commit.commit_runner",
 }
 
 # Alias -> canonical command name. Declared once, expanded into
@@ -120,6 +121,7 @@ _COMMAND_ALIASES = {
     "urv": "ultrareview",
     "ultra_review": "ultrareview",
     "digest": "brief",
+    "cm": "commit",
 }
 
 # Full mapping including aliases — used for runner module lookup.
@@ -478,6 +480,10 @@ def build_skill_command(
             base_cmd, args, project_name, project_path, instance_dir,
         ),
         "explain": lambda: _build_explain_cmd(base_cmd, args, project_path, project_name),
+        # Generic builder: project info + optional --context-file for message hint.
+        "commit": lambda: _build_generic_runner_cmd(
+            base_cmd, args, project_name, project_path, instance_dir,
+        ),
     }
     def _audit_builder():
         return _build_audit_cmd(

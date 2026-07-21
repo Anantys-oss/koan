@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-18
+updated: 2026-07-19
 ---
 
 # Kōan User Manual
@@ -652,6 +652,26 @@ Produces a pedagogical walkthrough of the PR: what problem it solves (with examp
 
 - `/refactor https://github.com/org/repo/pull/60` — Refactor code in a PR
 - `/rf https://github.com/org/repo/issues/70` — Refactor based on an issue description
+</details>
+
+**`/commit`** — Analyze git changes and create a conventional commit.
+
+- **Usage:** `/commit [project] [message hint]`
+- **Aliases:** `/cm`
+- **GitHub @mention:** not enabled (local git operation)
+
+Inspects staged and unstaged diffs, picks a conventional type (`feat`, `fix`,
+`refactor`, `docs`, `test`, `chore`, …), stages the coherent set of files, and
+creates **one** local commit. Never commits to `main`/`master`, never stages
+secrets (`.env`, keys, credentials), and never pushes.
+
+<details>
+<summary>Use cases</summary>
+
+- `/commit` — Commit in the default project from the current working tree
+- `/commit myproject` — Commit in a named project
+- `/cm myproject fix the login timeout` — Named project + subject guidance
+- `/commit fix the login timeout` — Default project + subject guidance
 </details>
 
 ### PR Management
@@ -2409,6 +2429,7 @@ All commands at a glance. **Tier:** B = Beginner, I = Intermediate, P = Power Us
 | `/review <PR> [PR ...] [--architecture] [--errors] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | I | Review one or more pull requests |
 | `/explain <PR>` | `/xp` | I | Explain a PR in plain language with examples |
 | `/refactor <desc>` | `/rf` | I | Targeted refactoring mission |
+| `/commit [project] [hint]` | `/cm` | I | Analyze diffs and create a conventional commit |
 | `/ask <comment-url>` | `/question` | I | Ask a question about a PR/issue — posts AI reply to GitHub |
 | `/rebase [--fix] <PR> [focus area]` | `/rb` | I | Rebase a PR onto its base branch (rebase-only by default); `--fix` (or trailing text) also addresses review feedback |
 | `/reviewrebase <PR>` | `/rr` | I | Review then rebase a PR (combo: /review → /rebase --fix) |
