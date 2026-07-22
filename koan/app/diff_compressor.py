@@ -191,18 +191,29 @@ class CompressedDiff:
 # ---------------------------------------------------------------------------
 
 
-def compress_diff(raw_diff: str, token_budget: int = 80_000) -> CompressedDiff:
+def compress_diff(
+    raw_diff: str,
+    token_budget: int = 80_000,
+    pinned_patterns: Optional[List[str]] = None,
+) -> CompressedDiff:
     """Compress a unified diff to fit within *token_budget* tokens.
 
     Algorithm:
     1. Parse into FileDiff objects.
-    2. Sort by (language_priority desc, file_size asc).
+    2. Sort by (pinned first, language_priority desc, file_size asc).
     3. Greedily include whole files until the budget is exhausted.
     4. For each file that doesn't fit whole: deduct header tokens first, then
        greedily include hunks within the remaining hunk budget.
     5. Files that don't fit at all are recorded in skipped_files.
     6. Safety: if the output would be completely empty (single file larger than
        the budget), force-include the first hunk so the diff is never blank.
+
+    *pinned_patterns* (from a repo's ``.koan/config.yaml`` ``review.always_check``)
+    are file globs; a file matching one sorts ahead of all non-pinned files
+    (see :func:`path_matches_any`), so it consumes budget first and is never fully
+    skipped while budget remains. Pinning reorders inclusion **only** — it never
+    raises the budget, so an enormous pinned file still degrades to partial hunks.
+    A falsy *pinned_patterns* is byte-identical to the unpinned behavior.
 
     Special cases:
     - Empty diff → CompressedDiff(diff_text="", skipped_files=[])
@@ -216,10 +227,14 @@ def compress_diff(raw_diff: str, token_budget: int = 80_000) -> CompressedDiff:
     if not file_diffs:
         return CompressedDiff(diff_text=raw_diff, skipped_files=[])
 
-    # Sort: higher priority first; ties broken by smaller file first.
+    # Sort: pinned files first, then higher priority; ties broken by smaller file.
     sorted_diffs = sorted(
         file_diffs,
-        key=lambda fd: (-_language_priority(fd.path), fd.token_estimate()),
+        key=lambda fd: (
+            0 if path_matches_any(fd.path, pinned_patterns) else 1,
+            -_language_priority(fd.path),
+            fd.token_estimate(),
+        ),
     )
 
     included_blocks: list[str] = []
