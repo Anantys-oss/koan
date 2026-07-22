@@ -7990,3 +7990,43 @@ class TestDiscoverySignature:
         off = request_signature([], False)
         on = request_signature([], True)
         assert off != on
+
+
+class TestTriageAccounting:
+    """Compact demote/drop accounting note (spec 010, US4, FR-024)."""
+
+    def test_absent_when_nothing_filtered(self):
+        from app.review_runner import _format_triage_accounting
+        assert _format_triage_accounting({"file_comments": []}) == ""
+
+    def test_counts_and_collapsed(self):
+        from app.review_runner import _format_triage_accounting
+        rd = {
+            "_freeze_summary": {"suppressed": 2, "kept_pre_existing_critical": 0},
+            "_pre_existing_summary": {"demoted": 3, "critical_labeled": 1},
+            "_deferred_summary": {"deferred": 1},
+        }
+        note = _format_triage_accounting(rd)
+        assert "<details>" in note and "</details>" in note  # collapsed/secondary
+        assert "2 pre-existing finding(s) on unchanged code suppressed" in note
+        assert "3 pre-existing finding(s) demoted" in note
+        assert "1 finding(s) deferred" in note
+
+    def test_partial_only_shows_present(self):
+        from app.review_runner import _format_triage_accounting
+        note = _format_triage_accounting({"_deferred_summary": {"deferred": 2}})
+        assert "2 finding(s) deferred" in note
+        assert "suppressed" not in note
+
+    def test_malformed_input_safe(self):
+        from app.review_runner import _format_triage_accounting
+        assert _format_triage_accounting(None) == ""
+
+    def test_rendered_into_review_body(self):
+        rd = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "ok", "checklist": []},
+            "_freeze_summary": {"suppressed": 1, "kept_pre_existing_critical": 0},
+        }
+        body = _format_review_as_markdown(rd, title="X")
+        assert "Triage summary" in body

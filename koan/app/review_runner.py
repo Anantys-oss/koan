@@ -2346,6 +2346,40 @@ def _resolve_finding_labels(
     return []
 
 
+def _format_triage_accounting(review_data: dict) -> str:
+    """Compact, collapsed accounting of triage filtering (spec 010, US4, FR-024).
+
+    Summarizes what triage did — findings frozen (suppressed on unchanged code),
+    demoted to recommendation (pre-existing), or downgraded as deferred — so the
+    filtering is auditable without competing with the primary findings (it is a
+    single collapsed line). Returns "" when nothing was filtered, so a review with
+    no filtering is byte-identical to before.
+    """
+    if not isinstance(review_data, dict):
+        return ""
+    freeze = review_data.get("_freeze_summary") or {}
+    pre = review_data.get("_pre_existing_summary") or {}
+    deferred = review_data.get("_deferred_summary") or {}
+    parts: list = []
+    if int(freeze.get("suppressed") or 0):
+        parts.append(
+            f"{int(freeze['suppressed'])} pre-existing finding(s) on unchanged "
+            "code suppressed (freeze)")
+    if int(pre.get("demoted") or 0):
+        parts.append(
+            f"{int(pre['demoted'])} pre-existing finding(s) demoted to recommendation")
+    if int(deferred.get("deferred") or 0):
+        parts.append(
+            f"{int(deferred['deferred'])} finding(s) deferred at a reviewer's request")
+    if not parts:
+        return ""
+    return (
+        "<details><summary>ℹ️ Triage summary</summary>\n\n"
+        + "; ".join(parts)
+        + ".\n</details>"
+    )
+
+
 def _format_review_as_markdown(
     review_data: dict, title: str = "", bot_username: str = "",
     owner: str = "", repo: str = "", head_sha: str = "",
@@ -2541,6 +2575,11 @@ def _format_review_as_markdown(
                 "_or_ `/rebase --fix <url>` _for all._ "
                 "_(A bare_ `/rebase <url>` _only rebases onto the base branch.)_"
             )
+
+    triage_note = _format_triage_accounting(review_data)
+    if triage_note:
+        lines.append("")
+        lines.append(triage_note)
 
     return "\n".join(lines)
 

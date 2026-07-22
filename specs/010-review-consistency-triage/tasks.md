@@ -172,8 +172,8 @@ single-pass findings, no duplicates, immediate re-review adds ~nothing.
 **Independent Test**: a review that demoted/dropped findings shows a compact "N demoted, M dropped"
 note (secondary/collapsed), not competing with the primary findings.
 
-- [ ] T040 [P] [US4] Write tests in `koan/tests/test_review_runner.py` for the demote/drop accounting note (counts correct; rendered secondary/collapsed; absent when nothing filtered) — FR-024
-- [ ] T041 [US4] Render the compact demote/drop accounting from `review_triage` output into the posted review body (parsimony: collapsed/footnoted) in `koan/app/review_runner.py` (depends on T019, T040) — FR-024
+- [X] T040 [P] [US4] Tests in `TestTriageAccounting` (correct counts; collapsed `<details>`; only present categories shown; absent when nothing filtered; rendered into the body; malformed-safe) — FR-024
+- [X] T041 [US4] `_format_triage_accounting()` renders a single collapsed `ℹ️ Triage summary` line from the stashed `_freeze_summary`/`_pre_existing_summary`/`_deferred_summary`, appended at the end of `_format_review_as_markdown` (parsimony — secondary, collapsed; "" when nothing filtered, so no-filter reviews are byte-identical) — FR-024
 
 **Checkpoint**: filtering auditable; trust in the aggressive triage.
 
