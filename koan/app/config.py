@@ -1555,6 +1555,12 @@ def get_rebase_max_conflict_rounds() -> int:
     return max(1, _safe_int(config.get("rebase_max_conflict_rounds", 10), 10))
 
 
+def get_rebase_conflict_timeout() -> int:
+    """Get the per-round conflict-resolution agent timeout (default 600s)."""
+    config = _load_config()
+    return max(1, _safe_int(config.get("rebase_conflict_timeout", 600), 600))
+
+
 def get_contemplative_max_turns() -> int:
     """Get max turns for contemplative reflection sessions.
 

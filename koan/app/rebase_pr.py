@@ -48,6 +48,7 @@ from app.config import (
     get_rebase_include_bot_feedback,
     get_rebase_ci_idle_timeout,
     get_rebase_ci_max_duration,
+    get_rebase_conflict_timeout,
     get_rebase_max_conflict_rounds,
     get_rebase_review_idle_timeout,
     get_rebase_review_max_duration,
@@ -862,7 +863,8 @@ def _run_rebase_impl(
             return False, (
                 "[conflict_unresolved] "
                 f"Rebase failed on `{base_remote or '?'}/{base}`. "
-                f"Could not resolve conflicts.\n{guidance}"
+                f"Could not resolve conflicts."
+                f"{' Cause: ' + detail if detail else ''}\n{guidance}"
             )
         return False, (
             f"[{error_code}] Rebase of `{branch}` onto "
@@ -1371,14 +1373,19 @@ def _rebase_with_conflict_resolution(
         (*result_meta*, when given, then carries ``error``/``detail``).
     """
 
+    conflict_failure: List[str] = []
+
     def _on_conflict(proj_path: str) -> bool:
         """Conflict callback: resolve via Claude then continue the rebase."""
-        return _resolve_rebase_conflicts(
+        resolved = _resolve_rebase_conflicts(
             base, "",  # remote not needed — conflicts already in progress
             proj_path, context, actions_log,
             notify_fn=notify_fn, skill_dir=skill_dir,
-            max_rounds=max_conflict_rounds,
+            max_rounds=max_conflict_rounds, failure_detail=conflict_failure,
         )
+        if not resolved and result_meta is not None and conflict_failure:
+            result_meta["detail"] = conflict_failure[-1]
+        return resolved
 
     return _rebase_onto_target(
         base, project_path,
@@ -1432,6 +1439,7 @@ def _resolve_rebase_conflicts(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     max_rounds: int = 5,
+    failure_detail: Optional[List[str]] = None,
 ) -> bool:
     """Resolve rebase conflicts via Claude, then continue the rebase.
 
@@ -1480,12 +1488,20 @@ def _resolve_rebase_conflicts(
             fallback=models["fallback"],
             max_turns=get_skill_max_turns(),
         )
-        result = run_claude(cmd, project_path, timeout=300)
+        timeout = get_rebase_conflict_timeout()
+        result = run_claude(cmd, project_path, timeout=timeout)
 
         if not result["success"]:
+            detail = result.get("error", "agent failed")
+            if "timed out" in detail.lower():
+                detail = f"conflict-resolution agent timed out after {timeout}s"
+            else:
+                detail = f"conflict-resolution agent failed: {detail[:200]}"
+            if failure_detail is not None:
+                failure_detail.append(detail)
             print(
                 f"[rebase_pr] Claude conflict resolution failed (round {round_num}): "
-                f"{result['error'][:200]}",
+                f"{detail}",
                 file=sys.stderr,
             )
             return False
@@ -1551,6 +1567,7 @@ def _build_conflict_resolution_prompt(
     return load_prompt_or_skill(
         skill_dir, "conflict_resolution",
         project_path=project_path or None,
+        apply_caveman=False,
         **kwargs,
     )
 

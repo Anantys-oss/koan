@@ -173,7 +173,11 @@ def load_prompt(name: str, **kwargs: str) -> str:
 
 
 def load_skill_prompt(
-    skill_dir: Path, name: str, project_path: Optional[str] = None, **kwargs: str
+    skill_dir: Path,
+    name: str,
+    project_path: Optional[str] = None,
+    apply_caveman: bool = True,
+    **kwargs: str,
 ) -> str:
     """Load a prompt from a skill's prompts/ directory.
 
@@ -194,6 +198,9 @@ def load_skill_prompt(
         name: Prompt file name without .md extension.
         project_path: Target project checkout; enables ``.koan/skills/`` reads.
             Default ``None`` keeps every existing caller byte-identical.
+        apply_caveman: Whether to append the skill's Caveman directive. Defaults
+            to ``True``; callers with correctness-sensitive sub-prompts may
+            explicitly opt out.
         **kwargs: Placeholder values to substitute. Keys map to {KEY} in the template.
 
     Returns:
@@ -207,7 +214,8 @@ def load_skill_prompt(
         template = _read_prompt_with_git_fallback(get_prompt_path(name))
     template = _resolve_includes(template, skill_dir=skill_dir)
     prompt = _substitute(template, kwargs)
-    prompt = _maybe_append_caveman(prompt, skill_dir)
+    if apply_caveman:
+        prompt = _maybe_append_caveman(prompt, skill_dir)
     prompt = _maybe_append_project_skill_instructions(prompt, skill_dir, project_path)
     # General KOAN.md rides BELOW the per-skill block: precedence is
     # `.koan/skills/<skill>/* > KOAN.md` (see specs/components/skills.md).
@@ -216,7 +224,9 @@ def load_skill_prompt(
 
 def load_prompt_or_skill(
     skill_dir: Optional[Path], name: str,
-    project_path: Optional[str] = None, **kwargs: str,
+    project_path: Optional[str] = None,
+    apply_caveman: bool = True,
+    **kwargs: str,
 ) -> str:
     """Load a prompt, preferring the skill directory when available.
 
@@ -238,13 +248,21 @@ def load_prompt_or_skill(
         project_path: Target project checkout; threaded to
             :func:`load_skill_prompt` for ``.koan/skills/`` reads. Default
             ``None`` is a no-op.
+        apply_caveman: Whether to append the skill's Caveman directive when a
+            skill directory is supplied. Defaults to ``True``.
         **kwargs: Placeholder values to substitute.
 
     Returns:
         The prompt string with placeholders replaced.
     """
     if skill_dir is not None:
-        return load_skill_prompt(skill_dir, name, project_path=project_path, **kwargs)
+        return load_skill_prompt(
+            skill_dir,
+            name,
+            project_path=project_path,
+            apply_caveman=apply_caveman,
+            **kwargs,
+        )
     return load_prompt(name, **kwargs)
 
 

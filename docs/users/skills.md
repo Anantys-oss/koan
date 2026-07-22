@@ -57,7 +57,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/review <PR> [PR ...] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | Review one or more pull requests; each URL queues a separate review mission. `--bot-comments` triages bot findings | Yes |
 | `/ultrareview <PR>` | `/urv` | Ultra-thorough review: architecture + silent-failure passes combined | Yes |
 | `/explain <PR>` | `/xp` | Explain a PR's changes in plain language with examples and alternative approaches | Yes |
-| `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context | Yes |
+| `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context. Conflict resolution has a 10-minute per-round budget before the existing recreate fallback. | Yes |
 | `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |

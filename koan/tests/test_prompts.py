@@ -283,6 +283,15 @@ class TestLoadSkillPromptCavemanInjection:
                 result = load_skill_prompt(skill_dir, "p", VAR="ok")
         assert "CAVEMAN-X" not in result
 
+    def test_caveman_can_be_suppressed_for_a_specific_prompt(self, tmp_path):
+        skill_dir = self._make_skill(tmp_path, "myskill", caveman_flag=True)
+        with patch("app.prompts._maybe_append_caveman") as append_caveman:
+            result = load_skill_prompt(
+                skill_dir, "p", VAR="ok", apply_caveman=False,
+            )
+        assert result == "Body ok"
+        append_caveman.assert_not_called()
+
     def test_no_skill_md_means_no_injection(self, tmp_path):
         """A bare directory without SKILL.md is not treated as a skill — caveman not appended."""
         from unittest.mock import patch

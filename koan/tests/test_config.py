@@ -958,6 +958,20 @@ class TestGetRebaseCiMaxDuration:
             assert get_rebase_ci_max_duration() == 9000
 
 
+class TestGetRebaseConflictTimeout:
+    def test_default_is_ten_minutes(self):
+        from app.config import get_rebase_conflict_timeout
+
+        with _mock_config({}):
+            assert get_rebase_conflict_timeout() == 600
+
+    def test_uses_override(self):
+        from app.config import get_rebase_conflict_timeout
+
+        with _mock_config({"rebase_conflict_timeout": 900}):
+            assert get_rebase_conflict_timeout() == 900
+
+
 class TestGetRebaseIncludeBotFeedback:
     def test_default_true(self):
         from app.config import get_rebase_include_bot_feedback

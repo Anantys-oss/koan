@@ -710,6 +710,8 @@ reported in the rebase summary but do not fail an otherwise successful rebase.
 
 When `/rebase` runs long, Kōan uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout), Kōan now restores the clean rebased checkpoint and still pushes the rebase (without partial feedback edits), so timeout noise does not discard a valid rebase. If the feedback step hits a *provider quota limit*, the rebase still stops so you can retry after quota reset. Any other transient feedback error remains best-effort and does not block pushing the rebase.
 
+Conflict resolution has a separate per-round agent budget of 600 seconds (`rebase_conflict_timeout`). If it expires or conflicts remain unresolved, Kōan aborts the partial rebase and retains the existing recreate fallback; the failure summary identifies an agent timeout when that was the cause.
+
 `/rebase` is strict about *what* it rebases onto: the branch is rebased only
 onto the PR's actual base repository's branch, freshly fetched. The mission
 fails loudly — instead of pushing a suspect result — when no local git remote
@@ -1400,6 +1402,7 @@ rebase_review_idle_timeout: 1800   # /rebase review phase: kill on inactivity
 rebase_review_max_duration: 10800  # /rebase review phase: absolute cap
 rebase_ci_idle_timeout: 1800       # /rebase CI-fix phase: kill on inactivity
 rebase_ci_max_duration: 7200       # /rebase CI-fix phase: absolute cap
+rebase_conflict_timeout: 600       # Per conflict-resolution round before recreate fallback
 rebase_include_bot_feedback: true  # Include bot-authored PR comments in feedback analysis (set false to filter them out)
 allow_rebase_foreign_prs: false    # Telegram /rebase can target non-instance PRs
 strip_co_authored_by: false        # Strip Co-Authored-By trailers from generated commits (set true to enable)

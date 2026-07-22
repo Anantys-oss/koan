@@ -75,6 +75,11 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 - A feedback run that makes no commit must return a structured `SKIPPED:`
   disposition. Otherwise it fails before force-pushing and cannot be reported
   as a simple rebase.
+- Conflict resolution treats `HEAD`/`ours` as the current target branch and
+  `theirs` as the replayed PR commit. It verifies no unmerged paths remain
+  before continuing. Its per-round agent budget is `rebase_conflict_timeout`
+  (600 seconds by default); exhaustion aborts the rebase and preserves the
+  existing recreate fallback.
 
 ## Transition (temporary)
 

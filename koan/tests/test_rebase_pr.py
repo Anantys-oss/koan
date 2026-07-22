@@ -33,6 +33,7 @@ from app.rebase_pr import (
     _find_remote_for_repo,
     _fix_existing_ci_failures,
     _get_conflicted_files,
+    _resolve_rebase_conflicts,
     _truncate_recent,
     _get_current_branch,
     _is_conflict_failure,
@@ -2105,6 +2106,19 @@ class TestBuildConflictAndCiFixPrompts:
         )
         assert "KOAN_CONFLICT_EXTRA" in prompt
 
+    def test_conflict_prompt_uses_correct_rebase_sides_without_caveman(self):
+        from app.rebase_pr import _build_conflict_resolution_prompt
+
+        context = {"title": "T", "body": "B", "branch": "br", "base": "main"}
+        with patch("app.prompts._maybe_append_caveman") as append_caveman:
+            prompt = _build_conflict_resolution_prompt(
+                context, ["a.py"], "main", skill_dir=REBASE_SKILL_DIR,
+            )
+        assert "`HEAD`/`ours` is the target branch's current version" in prompt
+        assert "`theirs` is the\n   PR commit being replayed" in prompt
+        assert "git diff --name-only --diff-filter=U" in prompt
+        append_caveman.assert_not_called()
+
     def test_ci_fix_prompt_injects_project_skill(self, tmp_path):
         d = tmp_path / ".koan" / "skills" / "rebase"
         d.mkdir(parents=True)
@@ -2935,6 +2949,25 @@ class TestRebaseWithConflictResolutionCrossFork:
 
         assert result is None
         assert meta["error"] == "rebase_failed"
+
+
+class TestResolveRebaseConflicts:
+    def test_timeout_uses_configured_budget_and_reports_cause(self):
+        failure_detail = []
+        with patch("app.rebase_pr._get_conflicted_files", return_value=["a.py"]), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={
+                 "success": False, "error": "process timed out",
+             }) as run_agent, \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=777):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=1,
+                skill_dir=REBASE_SKILL_DIR, failure_detail=failure_detail,
+            )
+
+        assert result is False
+        assert run_agent.call_args.kwargs["timeout"] == 777
+        assert failure_detail == ["conflict-resolution agent timed out after 777s"]
 
 
 class TestFetchPrContextHeadOwner:
