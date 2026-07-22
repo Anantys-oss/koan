@@ -212,9 +212,15 @@ def test_gate_end_to_end_resync_and_resolved_render():
     def fake_read(owner, repo, sha, path, project_path, timeout=20):
         return {"old.py": "fixed now", "b.py": "x\nAUTHORITATIVE\ny"}.get(path)
 
+    # A prior head is set, so the accuracy gate runs the re-review freeze,
+    # which calls _compare_changed_files -> run_gh. This test exercises
+    # reconcile + snippet-resync + resolved render, not the freeze, so pin the
+    # changed-files lookup (fail-open None = freeze inert) to keep the test off
+    # the real `gh` boundary — mirroring TestReviewFreezeWiring._gate.
     with patch("app.review_runner._read_prior_findings_sidecar",
                return_value=(prior, "psha")), \
          patch("app.review_runner._read_file_at_sha", side_effect=fake_read), \
+         patch("app.review_runner._compare_changed_files", return_value=None), \
          patch("app.config.get_review_reconcile_config",
                return_value={"enabled": True, "show_resolved": True}), \
          patch("app.config.get_review_snippet_validation_config",
