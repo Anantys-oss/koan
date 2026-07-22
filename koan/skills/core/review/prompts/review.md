@@ -28,6 +28,7 @@ actionable, constructive feedback that helps the author improve the code.
 ---
 
 ## Your Task
+{COMPREHENSIVE_DISCOVERY}
 
 Analyze the code changes and produce a structured review. Focus on:
 

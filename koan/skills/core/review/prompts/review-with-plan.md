@@ -41,6 +41,7 @@ each plan requirement independently against the actual diff.
 ---
 
 ## Your Task
+{COMPREHENSIVE_DISCOVERY}
 
 ### Part 1: Plan Alignment
 

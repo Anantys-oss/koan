@@ -2789,3 +2789,22 @@ class TestGetReviewDispositionsConfig:
         from app.config import get_review_dispositions_config
         with _mock_config({"review_dispositions": {"enabled": "??"}}):
             assert get_review_dispositions_config()["enabled"] is True
+
+
+class TestGetReviewDiscoveryConfig:
+    """spec 010 US3 — review_discovery getter (default OFF)."""
+
+    def test_default_off(self):
+        from app.config import get_review_discovery_config
+        with _mock_config({}):
+            assert get_review_discovery_config() == {"enabled": False}
+
+    def test_explicit_enable(self):
+        from app.config import get_review_discovery_config
+        with _mock_config({"review_discovery": {"enabled": True}}):
+            assert get_review_discovery_config() == {"enabled": True}
+
+    def test_garbled_fail_open_off(self):
+        from app.config import get_review_discovery_config
+        with _mock_config({"review_discovery": {"enabled": "??"}}):
+            assert get_review_discovery_config()["enabled"] is False

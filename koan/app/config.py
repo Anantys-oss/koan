@@ -2519,6 +2519,28 @@ def get_review_consistency_config(project_name: str = "") -> dict:
     }
 
 
+def get_review_discovery_config(project_name: str = "") -> dict:
+    """Opt-in comprehensive multi-perspective discovery (spec 010, US3).
+
+    When enabled, the review prompt gains guidance to review from a fixed set of
+    focused perspectives (correctness, security, architecture, silent-failure,
+    test-coverage) and merge/dedup the findings into one set — catching more in a
+    single pass so later reviews have less to add. Costs more tokens/time, so it
+    is **OFF by default**: with it off the review prompt and behaviour are
+    byte-identical to the pre-010 single-pass review (SC-008). Whole-mode toggle.
+
+    Config key: review_discovery
+      - enabled (bool): include the comprehensive-discovery guidance. Default: False.
+
+    Returns:
+        Dict with key: enabled (bool).
+    """
+    defaults = {"enabled": False}
+    merged = _get_config_with_overrides(
+        "review_discovery", defaults, project_name)
+    return {"enabled": _safe_bool(merged.get("enabled"), defaults["enabled"])}
+
+
 def get_review_dispositions_config(project_name: str = "") -> dict:
     """Honor human PR-comment dispositions of findings (spec 010, US7).
 

@@ -7958,3 +7958,35 @@ class TestDispositionsPromptInjection:
                 pr_context, skill_dir=real_review_skill_dir)
         assert "Human Dispositions" not in prompt
         assert "{DISPOSITIONS}" not in prompt  # placeholder still resolved (to "")
+
+
+class TestDiscoveryPromptInjection:
+    """Comprehensive discovery is opt-in in the built prompt (spec 010, US3)."""
+
+    @pytest.fixture
+    def real_review_skill_dir(self):
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    def test_absent_by_default(self, pr_context, real_review_skill_dir):
+        # SC-008: with discovery OFF (default), the prompt carries no discovery content.
+        prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "Comprehensive Discovery" not in prompt
+        assert "{COMPREHENSIVE_DISCOVERY}" not in prompt  # placeholder resolved to ""
+
+    def test_present_when_enabled(self, pr_context, real_review_skill_dir):
+        with patch("app.config.get_review_discovery_config",
+                   return_value={"enabled": True}):
+            prompt, _ = build_review_prompt(
+                pr_context, skill_dir=real_review_skill_dir)
+        assert "Comprehensive Discovery" in prompt
+        assert "correctness" in prompt.lower()
+
+
+class TestDiscoverySignature:
+    """discovery_enabled participates in the reuse request signature (FR-016)."""
+
+    def test_signature_differs_by_discovery(self):
+        from app.review_reuse import request_signature
+        off = request_signature([], False)
+        on = request_signature([], True)
+        assert off != on

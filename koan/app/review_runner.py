@@ -691,6 +691,24 @@ def _build_repo_conventions_block(
         return ""
 
 
+def _build_discovery_block(project_name: str = "") -> str:
+    """Assemble the ``{COMPREHENSIVE_DISCOVERY}`` block, or "" when disabled.
+
+    Injects the opt-in multi-perspective discovery guidance (spec 010, US3) into
+    the review prompt when ``review_discovery.enabled`` is set. OFF by default, so
+    the block is "" and the prompt is byte-identical to the single-pass review
+    (SC-008). Never raises — degrades to "".
+    """
+    try:
+        from app.config import get_review_discovery_config
+        if not get_review_discovery_config(project_name or "")["enabled"]:
+            return ""
+        return "\n\n" + load_prompt("review-comprehensive-discovery") + "\n"
+    except Exception as e:
+        log("review", f"comprehensive-discovery injection skipped: {e}")
+        return ""
+
+
 def _build_dispositions_block(project_name: str = "") -> str:
     """Assemble the ``{DISPOSITIONS}`` block, or "" when disabled.
 
@@ -848,6 +866,7 @@ def build_review_prompt(
         ISSUE_CONTEXT=issue_context or "",
         REPO_CONVENTIONS=repo_conventions,
         DISPOSITIONS=_build_dispositions_block(project_name),
+        COMPREHENSIVE_DISCOVERY=_build_discovery_block(project_name),
     )
 
     if plan_body:
@@ -3892,8 +3911,11 @@ def run_review(
             ("comments", comments), ("plan", bool(plan_url)), ("ultra", ultra),
         ) if on
     ]
-    # discovery_enabled is wired in US3; single-pass reviews are always False here.
-    _request_signature = request_signature(_focus_flags, False)
+    # discovery_enabled is part of the request signature (FR-016) so a single-pass
+    # review is never reused as a comprehensive one (or vice versa).
+    from app.config import get_review_discovery_config as _get_disc_cfg
+    _discovery_enabled = _get_disc_cfg(project_name or "")["enabled"]
+    _request_signature = request_signature(_focus_flags, _discovery_enabled)
     _consistency_cfg = _get_cc_cfg(project_name or "")
     _base_sha = ""
     if _consistency_cfg["reuse_enabled"] and _head_sha:
