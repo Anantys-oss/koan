@@ -4,7 +4,7 @@ title: "Skill Spec — fix"
 description: "Specifies the `/fix` skill, which fixes a tracker issue end-to-end (or batch-queues fixes for a repo) and redirects PR URLs to `/rebase --fix`, with eval coverage on its diagnostic output."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-21
+updated: 2026-07-22
 ---
 
 # Skill Spec — `fix`
@@ -34,9 +34,10 @@ See `docs/users/skills.md` for the end-user `/fix` reference and
 ## Outputs / side effects
 
 - Queues fix mission(s) (`model_key: mission`); agent opens a draft PR per issue.
-- On a PR URL, `/fix` **redirects to `/rebase --fix`** (same intent: address PR
-  concerns) — it injects `--fix` because a bare `/rebase` now only rebases —
-  preserving `--now` + trailing context.
+- On a PR URL, `/fix` **canonicalizes to `/rebase --fix`** (same intent: address
+  PR concerns) before a GitHub mission is queued. It injects `--fix` because a
+  bare `/rebase` only rebases, and preserves `--now` + trailing context as an
+  explicit feedback request.
 
 ## Error cases
 
@@ -80,9 +81,6 @@ prompt MUST be reflected in the golden cases / baseline.
 
 - The issue-vs-PR branch is URL-shape-driven; `github_url_parser` is the single
   classifier — don't reimplement URL detection in the handler.
-- The PR-URL → `/rebase --fix` redirect must be enforced on **both** dispatch
-  paths: the in-process bridge handler (`handler.py`) *and* the queued-mission
-  chokepoint (`skill_dispatch._build_fix_cmd`). GitHub `@mention` `/fix`
-  missions are queued as raw `/fix <url>` and reach the agent loop through the
-  latter, never through `handler.py` — enforcing the redirect in only one place
-  reopens issue #2458 (a new PR is created instead of force-pushing the branch).
+- GitHub PR mentions canonicalize at ingress to `/rebase --fix`; the
+  queued-mission chokepoint (`skill_dispatch._build_fix_cmd`) retains the same
+  redirect as defense in depth for raw/API/scheduled `/fix <pr-url>` missions.

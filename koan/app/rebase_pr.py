@@ -647,6 +647,7 @@ def run_rebase(
     skill_dir: Optional[Path] = None,
     min_severity: Optional[str] = None,
     fix: bool = False,
+    feedback_context: str = "",
 ) -> Tuple[bool, str]:
     """Run the rebase pipeline and emit a single outcome line.
 
@@ -663,7 +664,7 @@ def run_rebase(
     success, summary = _run_rebase_impl(
         owner, repo, pr_number, project_path,
         notify_fn=notify_fn, skill_dir=skill_dir, min_severity=min_severity,
-        fix=fix, outcome_meta=outcome_meta,
+        fix=fix, feedback_context=feedback_context, outcome_meta=outcome_meta,
     )
 
     from app.messaging_level import notify_outcome
@@ -698,6 +699,7 @@ def _run_rebase_impl(
     skill_dir: Optional[Path] = None,
     min_severity: Optional[str] = None,
     fix: bool = False,
+    feedback_context: str = "",
     outcome_meta: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str]:
     """Execute the rebase pipeline for a pull request.
@@ -885,7 +887,11 @@ def _run_rebase_impl(
     change_summary = ""
     feedback_status = ""
     feedback_reason = ""
-    if apply_feedback and _has_review_feedback(context):
+    # Run the feedback leg when there is reviewer feedback to address OR the
+    # human supplied an explicit request. The invariant in specs/skills/rebase.md
+    # requires the post-URL context to thread into the feedback prompt, so an
+    # explicit request must not be dropped just because the PR has no comments.
+    if apply_feedback and (_has_review_feedback(context) or feedback_context.strip()):
         severity_hint = ""
         if min_severity and min_severity != "suggestion":
             included = severity_at_or_above(min_severity)
@@ -898,6 +904,7 @@ def _run_rebase_impl(
             skill_dir=skill_dir,
             commit_conventions=commit_conventions,
             min_severity=min_severity,
+            feedback_context=feedback_context,
             result_meta=feedback_meta,
         )
         feedback_status = feedback_meta.get("status", "")
@@ -970,6 +977,13 @@ def _run_rebase_impl(
             feedback_reason = "the feedback step errored"
             if outcome_meta is not None:
                 outcome_meta["feedback_unapplied"] = "step errored"
+        if feedback_status == "feedback_no_disposition":
+            _safe_checkout(original_branch, project_path)
+            return False, (
+                "[feedback_no_disposition] Review feedback made no changes and "
+                "did not provide the required explanation. The rebased branch was "
+                "not pushed; retry /rebase --fix after reviewing the feedback."
+            )
 
         # Claude may switch branches during feedback — ensure we're still
         # on the expected branch before pushing.
@@ -1990,6 +2004,7 @@ def _build_rebase_prompt(
     commit_conventions: str = "",
     min_severity: Optional[str] = None,
     project_path: str = "",
+    feedback_context: str = "",
 ) -> str:
     """Build a prompt for Claude to analyze and apply review feedback."""
     prompt = _build_pr_prompt(
@@ -1997,6 +2012,18 @@ def _build_rebase_prompt(
         commit_conventions=commit_conventions,
         project_path=project_path,
     )
+
+    if feedback_context.strip():
+        from app.prompt_guard import fence_external_data
+
+        prompt += (
+            "\n\n## Explicit User Request\n\n"
+            "The user explicitly requested this outcome. Implement it when it is "
+            "valid, or give a concrete SKIPPED reason tied to the current code.\n"
+            + fence_external_data(
+                feedback_context.strip()[:1000], "GitHub command context",
+            )
+        )
 
     if min_severity and min_severity != "suggestion":
         included = severity_at_or_above(min_severity)
@@ -2029,6 +2056,7 @@ def _apply_review_feedback(
     skill_dir: Optional[Path] = None,
     commit_conventions: str = "",
     min_severity: Optional[str] = None,
+    feedback_context: str = "",
     result_meta: Optional[dict] = None,
 ) -> str:
     """Analyze review comments via Claude and apply requested changes.
@@ -2048,6 +2076,7 @@ def _apply_review_feedback(
         commit_conventions=commit_conventions,
         min_severity=min_severity,
         project_path=project_path,
+        feedback_context=feedback_context,
     )
 
     try:
@@ -2109,10 +2138,23 @@ def _apply_review_feedback(
         elif error_text:
             status = "feedback_failed"
             actions_log.append("Review feedback failed (continuing with rebase)")
+        else:
+            no_change_summary = step.output.strip()
+            if commit_conventions:
+                from app.commit_conventions import strip_commit_subject_line
+                no_change_summary = strip_commit_subject_line(no_change_summary)
+            if _has_skipped_disposition(no_change_summary):
+                status = "evaluated_no_changes"
+                actions_log.append("Review feedback evaluated; no changes required")
+                if result_meta is not None:
+                    result_meta["summary"] = no_change_summary[:1500]
+            else:
+                status = "feedback_no_disposition"
+                actions_log.append("Review feedback returned no changes or explanation")
         if result_meta is not None:
             result_meta["status"] = status
             result_meta["error"] = error_text
-        return ""
+        return result_meta.get("summary", "") if result_meta is not None else ""
     if result_meta is not None:
         result_meta["status"] = "committed"
         result_meta["error"] = ""
@@ -2130,6 +2172,11 @@ def _apply_review_feedback(
         change_summary = change_summary[:1500].rstrip()
 
     return change_summary
+
+
+def _has_skipped_disposition(summary: str) -> bool:
+    """Return whether a no-change feedback response explains its decision."""
+    return bool(re.search(r"(?m)^SKIPPED:\s*\n\s*-\s+\S", summary))
 
 
 def _is_feedback_timeout_error(error_text: str) -> bool:
@@ -2564,6 +2611,11 @@ def main(argv=None):
             "a bare rebase only rebases onto the target branch."
         ),
     )
+    parser.add_argument(
+        "--feedback-context",
+        default="",
+        help="Human request to prioritize while applying review feedback.",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -2579,6 +2631,7 @@ def main(argv=None):
         skill_dir=skills_base / "rebase",
         min_severity=cli_args.min_severity,
         fix=cli_args.fix,
+        feedback_context=cli_args.feedback_context,
     )
 
     if not success and _is_conflict_failure(summary):

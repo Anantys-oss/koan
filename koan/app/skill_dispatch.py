@@ -782,6 +782,20 @@ def _build_rebase_cmd(
         if canonical:
             cmd.extend(["--min-severity", canonical])
 
+    # Preserve the human's free-text focus as a first-class feedback
+    # instruction. It used to imply --fix but was then discarded before
+    # rebase_pr built its prompt. Strip both the --fix flag and any severity
+    # keyword first: a severity token is a filter, not focus text, and a
+    # dash-led one (e.g. "--critical") would otherwise be threaded verbatim.
+    focus = re.sub(r"(?:^|\s)--fix(?:\s|$)", " ", remainder)
+    if sev_match:
+        focus = focus.replace(sev_match.group(0), " ", 1)
+    feedback_context = focus.strip()
+    if feedback_context:
+        # Use the "=" form so any value that begins with a dash is passed to
+        # rebase_pr as data, never misparsed by argparse as a stray option.
+        cmd.append(f"--feedback-context={feedback_context}")
+
     return cmd
 
 

@@ -551,7 +551,7 @@ Before attempting a fix, `/fix` runs a lightweight read-only diagnostic phase us
 
 After a draft PR is created, `/fix` also runs the private review gate when it is enabled (opt-in; disabled by default during the testing phase). Findings and fix attempts stay backend-only: no review comment, verdict, or issue comment is posted by the gate.
 
-If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebase --fix` — addressing review concerns on an existing PR is exactly what `/rebase --fix` does. It injects `--fix` (because a bare `/rebase` now only rebases), and the `--now` flag and any trailing context are preserved through the redirect.
+If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebase --fix` — addressing review concerns on an existing PR is exactly what `/rebase --fix` does. GitHub `@koan-bot fix` on a PR is canonicalized to that same command before it is queued; bare `@koan-bot rebase` remains rebase-only. It injects `--fix` (because a bare `/rebase` now only rebases), and the `--now` flag and any trailing context are preserved as explicit feedback focus.
 
 <details>
 <summary>Use cases</summary>
