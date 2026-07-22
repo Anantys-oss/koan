@@ -2596,6 +2596,35 @@ class TestKoanMdSection:
         from app.prompt_builder import _get_koan_md_section
         assert _get_koan_md_section(str(tmp_path)) == ""
 
+    def test_koan_md_section_logs_load(self, tmp_path, capsys):
+        from app.prompt_builder import _get_koan_md_section
+        (tmp_path / "KOAN.md").write_text("Always run make lint before pushing.")
+        _get_koan_md_section(str(tmp_path))
+        err = capsys.readouterr().err
+        assert "Detected KOAN.md" in err and "tokens" in err
+
+
+class TestClaudeMdDetection:
+    """_log_claude_md_detected surfaces CLAUDE.md in make logs (detection-only)."""
+
+    def test_logs_when_present(self, tmp_path, capsys):
+        from app.prompt_builder import _log_claude_md_detected
+        (tmp_path / "CLAUDE.md").write_text("Project rules here.")
+        _log_claude_md_detected(str(tmp_path))
+        err = capsys.readouterr().err
+        assert "Detected CLAUDE.md" in err
+        assert "auto-loaded by CLI" in err
+
+    def test_silent_when_absent(self, tmp_path, capsys):
+        from app.prompt_builder import _log_claude_md_detected
+        _log_claude_md_detected(str(tmp_path))
+        assert "CLAUDE.md" not in capsys.readouterr().err
+
+    def test_silent_when_empty_path(self, capsys):
+        from app.prompt_builder import _log_claude_md_detected
+        _log_claude_md_detected("")
+        assert capsys.readouterr().err == ""
+
 
 class TestKoanMdWiring:
     """Tests that KOAN.md content reaches the mission system prompt."""

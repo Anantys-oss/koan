@@ -4,7 +4,7 @@ title: "KOAN.md — koan-only project instructions"
 description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md plus per-skill .koan/skills/<skill>/*.md hooks): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
 tags: [users]
 created: 2026-07-09
-updated: 2026-07-16
+updated: 2026-07-22
 ---
 
 # KOAN.md — koan-only project instructions
@@ -65,14 +65,34 @@ the `/pr` handler drives its feedback, refactor, and quality-review sub-passes
 under a single `pr` skill, so steer all three via `.koan/skills/pr/` (there is
 no separate `.koan/skills/refactor/`).
 
-Everything is opt-in by file existence and a no-op when absent. Prompt-only
-skills do not read `.koan/skills/`; steer those with general `KOAN.md`.
+Runner skills pass `project_path` into `load_skill_prompt` /
+`load_prompt_or_skill`, so they receive **both** `.koan/skills/<skill>/*`
+(per-skill steering) **and** the general `KOAN.md` (root + `.koan/KOAN.md`),
+appended in that order — the same always-on guidance the agent loop gets. Core
+runners that honor it include `review`, `plan`, `pr`, `fix`, `implement`, and
+`rebase` (and their sub-passes). A runner that never passes `project_path`
+receives neither until wired.
 
-Runner skills must pass `project_path` into `load_skill_prompt` /
-`load_prompt_or_skill` for the append to fire. Core runners that honor it
-include `review`, `plan`, `pr`, `fix`, `implement`, and `rebase` (and their
-sub-passes). Skills that never pass `project_path` ignore
-`.koan/skills/<name>/` until wired.
+Everything is opt-in by file existence and a no-op when absent. Prompt-only
+skills (no loader) run without a resolved project in scope, so they receive
+neither `.koan/skills/` nor general `KOAN.md` — steer those via `CLAUDE.md` or
+the mission text instead.
+
+### Seeing what got loaded (`make logs`)
+
+Every steering file koan folds into a prompt is announced on the run log, so you
+can confirm the context is actually in play. Watch `make logs` for lines like:
+
+```
+[context] Detected KOAN.md, loaded 1240 chars (~ 354 tokens)
+[context] Detected .koan/skills/plan, loaded 380 chars (~ 108 tokens)
+[context] Detected CLAUDE.md (auto-loaded by CLI), loaded 8900 chars (~ 2542 tokens)
+```
+
+`KOAN.md` and `.koan/skills/<skill>` lines mean koan injected that content;
+the `CLAUDE.md` line is **detection-only** — Claude Code loads `CLAUDE.md` from
+the working directory itself, koan just reports its size so you can see the full
+steering context at a glance. Token counts are a `chars/3.5` estimate.
 
 ## Example: this repository (dogfood)
 

@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-07-22
 ---
 
 # Component Spec — Skills System
@@ -186,10 +186,37 @@ subdirs, and caps the concatenation at `_MAX_KOAN_SKILL_CHARS` (16k).
 `prompts._maybe_append_project_skill_instructions(prompt, skill_dir, project_path)` frames
 the content via the `koan-skill` template and appends it — **only** when `skill_dir` has a
 `SKILL.md` and `project_path` is set (default `None` ⇒ byte-identical no-op). Scope:
-runner/loader-based skills that thread `project_path` (`review`, `refactor`, `plan`, …);
-prompt-only skills (`_execute_prompt` returns raw `prompt_body`, no loader) are out of
-scope and rely on general `KOAN.md`. Precedence: mission instruction > `.koan/skills/<skill>/*`
-> `KOAN.md`/`.koan/KOAN.md` > skill built-in prompt > `CLAUDE.md`/defaults.
+runner/loader-based skills that thread `project_path` (`review`, `refactor`, `plan`, …)
+honor both `.koan/skills/<skill>/*` and general `KOAN.md` (see "General KOAN.md in skill
+prompts" below); prompt-only skills (`_execute_prompt` returns raw `prompt_body`, no
+loader) receive neither, as they run without a resolved project in scope. Precedence:
+mission instruction > `.koan/skills/<skill>/*` > `KOAN.md`/`.koan/KOAN.md` > skill built-in
+prompt > `CLAUDE.md`/defaults.
+
+### General KOAN.md in skill prompts
+
+`prompts.load_skill_prompt` also injects the project's **general** `KOAN.md`
+(root `KOAN.md` + `.koan/KOAN.md`, read via `project_koan.read_general_koan_md`,
+combined cap `_MAX_KOAN_MD_CHARS` 16k) for every runner/loader-based skill that
+threads `project_path`. `prompts._maybe_append_general_koan_md(prompt, skill_dir,
+project_path)` frames it via the shared `koan-md` template (the same framing the
+agent loop uses in `prompt_builder._get_koan_md_section`) and appends it **after**
+the `.koan/skills/<skill>/*` block, so a single skill prompt carries both — ordered
+`.koan/skills/<skill>/* > KOAN.md`. Gated identically to the per-skill append: a
+no-op unless `skill_dir` has a `SKILL.md` **and** `project_path` is set (default
+`project_path=None` ⇒ byte-identical). This makes the precedence chain above real
+for skills, not only for the agent loop. The two blocks keep independent 16k caps
+(no combined ceiling — worst case 32k on one prompt, only when a project ships both
+a large root `KOAN.md` and large per-skill instructions). Prompt-only skills
+(`_execute_prompt` returns raw `prompt_body`) run without a resolved project in
+scope, so they receive no project-scoped injection — by design, not a gap.
+
+Every actual injection is announced on **stderr** (so it lands in `logs/run.log`
+and is visible via `make logs`) through `project_koan.log_context_load(label,
+content)`, which emits `Detected <label>, loaded N chars (~ M tokens)` — `label`
+is `KOAN.md` for the general block and `.koan/skills/<skill>` for the per-skill
+block. `logging.getLogger` output alone is invisible in the run loop (no
+stream handler wired), so the load line is a direct `print`, not `logger.info`.
 
 ### `add_project` workspace resolution (contract)
 

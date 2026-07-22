@@ -932,3 +932,109 @@ class TestMaybeAppendProjectSkillInstructions:
         (d / "extra-rules.md").write_text("   \n")
         out = load_skill_prompt(sd, "review", project_path=str(proj))
         assert ".koan/skills/review" not in out
+
+    def test_logs_fragment_load_for_make_logs(self, tmp_path, capsys):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        d = proj / ".koan" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "extra-rules.md").write_text("REPO EXTRA RULE")
+        load_skill_prompt(sd, "review", project_path=str(proj))
+        # Surfaced on stderr so `make logs` (logs/run.log) shows the load.
+        err = capsys.readouterr().err
+        assert "Detected .koan/skills/review" in err
+        assert "chars" in err and "tokens" in err
+
+
+class TestMaybeAppendGeneralKoanMd:
+    """Gating/ordering of general KOAN.md injection via load_skill_prompt."""
+
+    @staticmethod
+    def _make_skill(tmp_path):
+        sd = tmp_path / "skills" / "core" / "plan"
+        (sd / "prompts").mkdir(parents=True)
+        (sd / "SKILL.md").write_text("name: plan\n")
+        (sd / "prompts" / "plan.md").write_text("BUILT-IN PLAN PROMPT")
+        return sd
+
+    def test_injects_general_koan_md(self, tmp_path):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "KOAN.md").write_text("Always use the widget tool.")
+
+        out = load_skill_prompt(sd, "plan", project_path=str(proj))
+
+        assert "BUILT-IN PLAN PROMPT" in out
+        assert "Always use the widget tool." in out
+        assert "BEGIN KOAN.md" in out  # framed via the koan-md template
+
+    def test_no_project_path_omits_koan_md(self, tmp_path):
+        sd = self._make_skill(tmp_path)
+        # A KOAN.md exists nearby but no project_path is passed -> must not appear.
+        (tmp_path / "KOAN.md").write_text("SHOULD NOT LEAK")
+
+        out = load_skill_prompt(sd, "plan")  # project_path defaults to None
+
+        assert "BUILT-IN PLAN PROMPT" in out
+        assert "BEGIN KOAN.md" not in out
+        assert "SHOULD NOT LEAK" not in out
+
+    def test_no_skill_md_omits_koan_md(self, tmp_path):
+        # A bare directory without SKILL.md must not inject (legacy-caller gate).
+        sd = tmp_path / "skills" / "core" / "plan"
+        (sd / "prompts").mkdir(parents=True)
+        (sd / "prompts" / "plan.md").write_text("BUILT-IN PLAN PROMPT")
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "KOAN.md").write_text("SHOULD NOT LEAK")
+
+        out = load_skill_prompt(sd, "plan", project_path=str(proj))
+
+        assert "BUILT-IN PLAN PROMPT" in out
+        assert "SHOULD NOT LEAK" not in out
+
+    def test_koan_md_appended_after_skill_instructions(self, tmp_path):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        steer = proj / ".koan" / "skills" / "plan"
+        steer.mkdir(parents=True)
+        (steer / "extra.md").write_text("PER-SKILL STEER")
+        (proj / "KOAN.md").write_text("GENERAL STEER")
+
+        out = load_skill_prompt(sd, "plan", project_path=str(proj))
+
+        assert "PER-SKILL STEER" in out and "GENERAL STEER" in out
+        assert out.index("PER-SKILL STEER") < out.index("GENERAL STEER")
+
+    def test_injection_failure_is_swallowed(self, tmp_path, monkeypatch):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "KOAN.md").write_text("Always use the widget tool.")
+
+        import app.project_koan as pk
+
+        def _boom(_):
+            raise RuntimeError("read blew up")
+
+        monkeypatch.setattr(pk, "read_general_koan_md", _boom)
+
+        out = load_skill_prompt(sd, "plan", project_path=str(proj))
+
+        # Best-effort: the built-in prompt still loads, injection skipped silently.
+        assert "BUILT-IN PLAN PROMPT" in out
+        assert "BEGIN KOAN.md" not in out
+
+    def test_logs_koan_md_load_for_make_logs(self, tmp_path, capsys):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "KOAN.md").write_text("Always use the widget tool.")
+
+        load_skill_prompt(sd, "plan", project_path=str(proj))
+
+        # Surfaced on stderr so `make logs` (logs/run.log) shows the load.
+        err = capsys.readouterr().err
+        assert "Detected KOAN.md" in err
+        assert "chars" in err and "tokens" in err
