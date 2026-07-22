@@ -75,14 +75,17 @@ def _cli_label(role: str = "mission") -> str:
     *role*, so the logs stay accurate when the configured CLI is not Claude —
     instead of a hardcoded "Claude" the user sees e.g. ``codex (gpt-5-codex)``.
     ``role`` falls back to the ``mission`` model when unset (matches the
-    already-solved check's ``review``→``mission`` fallback).
+    already-solved check's ``review``→``mission`` fallback). When the model is
+    empty (default config = "use provider default"), the parenthetical is
+    omitted so the line reads ``claude`` instead of a dangling ``claude ()``.
     """
     from app.config import get_model_config
     from app.provider import get_provider_display
 
     models = get_model_config()
     model = models.get(role) or models["mission"]
-    return f"{get_provider_display()} ({model})"
+    disp = get_provider_display()
+    return f"{disp} ({model})" if model else disp
 
 
 def _resolve_own_login() -> str:

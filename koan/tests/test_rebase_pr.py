@@ -61,14 +61,23 @@ class TestCliLabel:
 
     @patch("app.provider.get_provider_display", return_value="claude")
     @patch("app.config.get_model_config",
-           return_value={"mission": "opus", "fallback": "f", "review": "sonnet"})
-    def test_review_role_uses_review_model(self, _mc, _disp):
-        assert _cli_label("review") == "claude (sonnet)"
+           return_value={"mission": "opus", "fallback": "f", "custom": "sonnet"})
+    def test_present_role_key_uses_that_model(self, _mc, _disp):
+        # A role key that exists in the config selects that model. (In real
+        # config `review` is never emitted, so it falls back — see below.)
+        assert _cli_label("custom") == "claude (sonnet)"
 
     @patch("app.provider.get_provider_display", return_value="claude")
     @patch("app.config.get_model_config", return_value={"mission": "opus", "fallback": "f"})
     def test_missing_role_falls_back_to_mission_model(self, _mc, _disp):
+        # Real config emits no `review` key, so review→mission fallback applies.
         assert _cli_label("review") == "claude (opus)"
+
+    @patch("app.provider.get_provider_display", return_value="claude")
+    @patch("app.config.get_model_config", return_value={"mission": "", "fallback": "f"})
+    def test_empty_model_omits_parenthetical(self, _mc, _disp):
+        # Default config ships an empty mission model — no dangling "claude ()".
+        assert _cli_label() == "claude"
 
 
 # ---------------------------------------------------------------------------
