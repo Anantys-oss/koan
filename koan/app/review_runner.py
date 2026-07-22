@@ -944,6 +944,8 @@ def _write_review_findings_sidecar(
     *,
     base_ref: str,
     head_sha: str,
+    base_sha: str = "",
+    request_signature: Optional[dict] = None,
     project_name: str = "",
     review_summary: Optional[dict] = None,
     review_comment: Optional[dict] = None,
@@ -955,6 +957,11 @@ def _write_review_findings_sidecar(
     file_comments, review_summary, and review_comment). review_summary and
     review_comment are additive; review_comment carries the posted comment's
     {id, html_url} (or None when no ref was captured).
+
+    ``base_sha`` (the base/merge-base commit SHA) and ``request_signature`` (the
+    focus-flags + discovery-enabled equivalence signature) are persisted for the
+    spec-010 reuse decision (:func:`app.review_reuse.should_reuse`); both are
+    additive and default to empty so pre-010 readers are unaffected.
     """
     try:
         import time as _time
@@ -977,6 +984,8 @@ def _write_review_findings_sidecar(
             "project_name": project_name,
             "base_ref": base_ref,
             "head_sha": head_sha,
+            "base_sha": base_sha or "",
+            "request_signature": request_signature or {},
             "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
             "file_comments": stamped_comments,
             "review_summary": review_summary or {},
@@ -1426,6 +1435,32 @@ def _read_prior_findings_sidecar(
         return [], ""
 
 
+def _read_prior_review_record(
+    instance_dir: str, owner: str, repo: str, pr_number: str,
+) -> Optional[dict]:
+    """Return the full prior-review sidecar record (or ``None``), fail-open.
+
+    Unlike :func:`_read_prior_findings_sidecar` (which returns just the findings
+    and head SHA for reconciliation), this exposes the whole record — including
+    ``base_sha``, ``request_signature``, ``review_summary`` and ``review_comment``
+    — needed for the spec-010 reuse decision (:func:`app.review_reuse.should_reuse`).
+    Any missing/corrupt file yields ``None`` so the caller falls back to a fresh
+    review (FR-007).
+    """
+    try:
+        sidecar_path = (
+            Path(instance_dir) / ".review-findings"
+            / f"{owner}_{repo}_{pr_number}.json"
+        )
+        if not sidecar_path.is_file():
+            return None
+        data = json.loads(sidecar_path.read_text())
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError, TypeError) as exc:
+        log("review", f"could not read prior review record: {exc}")
+        return None
+
+
 def _line_ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
     """True when two 1-based inclusive line ranges overlap."""
     a_end = a_end or a_start
@@ -1529,26 +1564,49 @@ def _apply_review_accuracy_gate(
     if not isinstance(review_data, dict) or not sha:
         return
     from app.config import (
+        get_review_consistency_config,
         get_review_reconcile_config,
         get_review_snippet_validation_config,
     )
+    # Read the prior review's findings + head once; both reconcile and the
+    # spec-010 freeze use them.
+    prior_findings, prior_head = _read_prior_findings_sidecar(
+        str(KOAN_ROOT / "instance"), owner, repo, pr_number,
+    )
     rc_cfg = get_review_reconcile_config(project_name or "")
-    if rc_cfg["enabled"]:
-        prior_findings, _ = _read_prior_findings_sidecar(
-            str(KOAN_ROOT / "instance"), owner, repo, pr_number,
+    if rc_cfg["enabled"] and prior_findings:
+        resolved = _reconcile_prior_findings(
+            review_data, prior_findings, owner, repo, sha, project_path,
         )
-        if prior_findings:
-            resolved = _reconcile_prior_findings(
-                review_data, prior_findings, owner, repo, sha, project_path,
-            )
-            if resolved and rc_cfg["show_resolved"]:
-                review_data["_resolved_prior"] = resolved
+        if resolved and rc_cfg["show_resolved"]:
+            review_data["_resolved_prior"] = resolved
     sv_cfg = get_review_snippet_validation_config(project_name or "")
     if sv_cfg["enabled"]:
         _validate_finding_snippets(
             review_data, owner, repo, sha, project_path,
             on_mismatch=sv_cfg["on_mismatch"],
         )
+    # Spec 010 (US1, FR-003): re-review freeze. On a re-review (head moved),
+    # suppress first-time non-critical findings on files unchanged since the
+    # prior review — the "review whiplash" case — keeping a critical (labelled
+    # pre-existing). Fail-open: no prior head / undetermined changeset -> no-op.
+    cc_cfg = get_review_consistency_config(project_name or "")
+    if cc_cfg["freeze_enabled"] and prior_head and prior_head != sha:
+        from app.review_reconcile import compute_freeze
+        changed_files = _compare_changed_files(owner, repo, prior_head, sha)
+        drop_indices, freeze_summary = compute_freeze(
+            review_data, prior_findings, changed_files, prior_head=prior_head,
+        )
+        if drop_indices:
+            _remap_findings_after_drop(review_data, drop_indices)
+        if freeze_summary["suppressed"] or freeze_summary["kept_pre_existing_critical"]:
+            review_data["_freeze_summary"] = freeze_summary
+            log(
+                "review",
+                f"freeze: suppressed {freeze_summary['suppressed']} first-time "
+                f"finding(s) on unchanged code, kept "
+                f"{freeze_summary['kept_pre_existing_critical']} pre-existing critical",
+            )
 
 
 _ERROR_PATTERN_RE = re.compile(
@@ -3015,6 +3073,54 @@ def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
         return ""
 
 
+def _compare_changed_files(
+    owner: str, repo: str, base: str, head: str,
+) -> Optional[set]:
+    """Return the set of files changed between ``base`` and ``head`` (or None).
+
+    Used by the spec-010 re-review freeze to determine which files the commits
+    touched since the prior review. Best-effort and fail-open: any error — or a
+    missing base/head — yields ``None`` so the caller *skips* the freeze rather
+    than freezing against an unknown changeset (FR-003 fail-open, D3).
+    """
+    if not base or not head or base == head:
+        return None
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/compare/{base}...{head}",
+            "--jq", r"[.files[].filename]",
+        )
+        if not raw.strip():
+            return set()
+        parsed = json.loads(raw)
+        return {str(f) for f in parsed if f} if isinstance(parsed, list) else None
+    except (RuntimeError, OSError, ValueError, TypeError) as exc:
+        log("review", f"changed-files compare failed ({base}...{head}): {exc}")
+        return None
+
+
+def _merge_base_sha(owner: str, repo: str, base_ref: str, head_sha: str) -> str:
+    """Return the merge-base commit SHA of ``base_ref`` and ``head_sha`` (or "").
+
+    Part of the spec-010 reuse key (FR-001, D2): base-branch movement changes the
+    merge base even when the PR head is unchanged, which must defeat reuse.
+    Best-effort — any failure yields "" so reuse simply does not fire (safe).
+    """
+    if not base_ref or not head_sha:
+        return ""
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/compare/{base_ref}...{head_sha}",
+            "--jq", ".merge_base_commit.sha",
+        )
+        return raw.strip()
+    except (RuntimeError, OSError, ValueError, TypeError) as exc:
+        log("review", f"merge-base lookup failed ({base_ref}...{head_sha}): {exc}")
+        return ""
+
+
 def _fetch_pr_state_and_labels(
     owner: str, repo: str, pr_number: str,
 ) -> tuple[str, list[str]]:
@@ -3730,6 +3836,42 @@ def run_review(
             None,
         )
 
+    # Step 1g: spec-010 reuse short-circuit (US1, FR-001). On the re-analyze path
+    # (new commits or an explicit re-request), if the PR head AND base
+    # (merge-base) SHA are unchanged since the prior review and the request is
+    # equivalent, reproduce the prior review instead of re-deriving it —
+    # eliminating run-to-run drift on unchanged code. The signature is also
+    # persisted (below) so a future review can make this decision. Fail-open: any
+    # unknown SHA or missing prior record falls through to a fresh review (FR-007).
+    from app.config import get_review_consistency_config as _get_cc_cfg
+    from app.review_reuse import request_signature, should_reuse
+    _head_sha = current_shas[-1] if current_shas else ""
+    _focus_flags = [
+        name for name, on in (
+            ("architecture", architecture), ("errors", errors),
+            ("comments", comments), ("plan", bool(plan_url)), ("ultra", ultra),
+        ) if on
+    ]
+    # discovery_enabled is wired in US3; single-pass reviews are always False here.
+    _request_signature = request_signature(_focus_flags, False)
+    _consistency_cfg = _get_cc_cfg(project_name or "")
+    _base_sha = ""
+    if _consistency_cfg["reuse_enabled"] and _head_sha:
+        _base_sha = _merge_base_sha(owner, repo, context.get("base") or "", _head_sha)
+        if _base_sha:
+            _prior_record = _read_prior_review_record(
+                str(KOAN_ROOT / "instance"), owner, repo, pr_number,
+            )
+            if should_reuse(_prior_record, _head_sha, _base_sha, _request_signature):
+                msg = (
+                    f"PR #{pr_number}: head & base unchanged since the last "
+                    "review and the request is equivalent — the prior review "
+                    "stands (reproduced, no re-analysis)."
+                )
+                log("review", msg)
+                notify_fn(msg)
+                return True, msg, None
+
     # Track review wall-clock time for footer attribution
     _review_start = time.monotonic()
 
@@ -3975,6 +4117,8 @@ def run_review(
                 review_data.get("file_comments", []),
                 base_ref=_sidecar_base,
                 head_sha=_sidecar_head,
+                base_sha=_base_sha,
+                request_signature=_request_signature,
                 project_name=project_name or "",
                 review_summary=review_data.get("review_summary") or {},
                 review_comment=comment_ref,

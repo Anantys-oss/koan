@@ -66,13 +66,12 @@ reconciles (recurring recur, fixed suppressed) with the freeze on unchanged code
 fix one finding + push touching only that area → fixed suppressed, others unchanged, no new
 non-critical finding on unchanged code.
 
-- [ ] T010 [P] [US1] Write tests for reuse + request-signature equivalence in `koan/tests/test_review_reuse.py` (reuse iff head SHA + base SHA + signature all match; base movement / focus-flag change / discovery-toggle → no reuse) — FR-001, research D2
-- [ ] T011 [P] [US1] Write tests for the incremental-diff freeze in `koan/tests/test_review_reconcile.py` (resolved→suppress; matched→recur; first-time on changed region→allow; first-time non-critical on unchanged region→suppress; first-time critical on unchanged region→surface with `[Pre-Existing Issue]`) — FR-003, SC-011, research D3
-- [ ] T012 [US1] Implement `review_reuse.py`: `request_signature(...)`, `should_reuse(prior_record, current_shas, signature) -> bool`, and the reproduction marker text (FR-006, not a silent no-op) (depends on T010) — FR-001
-- [ ] T013 [US1] Implement `review_reconcile.py`: incremental-diff partition + freeze (uses `review_identity`); extract/adapt the existing `_reconcile_review_after_reflection`/`_remap_findings_after_drop` logic out of `review_runner.py` (depends on T005, T011) — FR-003
-- [ ] T014 [US1] Wire reuse short-circuit + reconcile/freeze into `run_review` in `koan/app/review_runner.py` (reuse before provider call; reconcile after reflection; fail-open to fresh review when prior record missing/unreadable) (depends on T009, T012, T013) — FR-001/003/007
-- [ ] T015 [P] [US1] Add golden eval case `koan/skills/core/review/evals/cases/repeat_stability.json` (same fixture reviewed twice → 100% identity-keyed overlap on blocking set) and register in the scorer path — FR-022, SC-001/002
-- [ ] T016 [US1] Update `koan/skills/core/review/evals/baseline.json` for the repeat-stability metric; run offline scorer green (depends on T015)
+- [X] T010 [P] [US1] Tests for reuse + request-signature equivalence in `koan/tests/test_review_reuse.py` (reuse iff head+base SHA + signature match; base movement / focus-flag / discovery toggle → no reuse; fail-safe on missing pieces) — FR-001, D2
+- [X] T011 [P] [US1] Tests for the freeze in `koan/tests/test_review_reconcile.py` (fail-open on no prior head / unknown changeset; first-time non-critical on unchanged file → drop; recurring → survive; changed file → survive; first-time critical → surface with `[Pre-Existing Issue]`) — FR-003, SC-011, D3
+- [X] T012 [US1] Implement `koan/app/review_reuse.py`: `request_signature(...)`, `should_reuse(...)`, `REPRODUCTION_NOTE` (fail-safe by construction) — FR-001/006
+- [X] T013 [US1] Implement `koan/app/review_reconcile.py`: `compute_freeze(...)` (file-level, fail-open; returns drop indices + summary; labels pre-existing criticals) using `review_identity.same_finding`; runner applies existing `_remap_findings_after_drop` — FR-003
+- [X] T014 [US1] Wire into `run_review`: reuse short-circuit after the existing no-new-commits skip (fail-open); freeze in `_apply_review_accuracy_gate`; add fail-open `_compare_changed_files` + `_merge_base_sha`; persist `base_sha` + `request_signature` in the sidecar; `get_review_consistency_config`. Integration tests in `TestReviewFreezeWiring` + `TestReviewSidecarReuseFields`. Full review_runner suite green (491) — FR-001/003/007
+- [~] T015/T016 US1 consistency is *cross-run*; the eval harness scores *single-diff* cases, so it has no run-twice-compare hook. US1 is covered by the deterministic unit tests (identity/reuse/reconcile/wiring). A harness-level repeat-stability metric (FR-022/SC-007) is a genuine extension → moved to Polish (Phase 10, T048-adjacent).
 
 **Checkpoint**: anti-whiplash consistency working and eval-guarded (SC-001/002/003/011). MVP.
 

@@ -7853,3 +7853,83 @@ class TestReviewSidecarIdentity:
         (sidecar_dir / "octo_repo_7.json").write_text("{not valid json")
         comments, head = self._read(str(tmp_path), "octo", "repo", "7")
         assert comments == [] and head == ""
+
+
+class TestReviewFreezeWiring:
+    """Freeze wiring in the accuracy gate (spec 010, US1, FR-003)."""
+
+    def _gate(self, review_data, prior, changed, sha="newsha"):
+        from app import review_runner as rr
+        with patch.object(rr, "_read_prior_findings_sidecar",
+                          return_value=(prior, "oldsha")), \
+             patch.object(rr, "_compare_changed_files", return_value=changed), \
+             patch("app.config.get_review_snippet_validation_config",
+                   return_value={"enabled": False, "on_mismatch": "off"}):
+            rr._apply_review_accuracy_gate(
+                review_data, owner="o", repo="r", sha=sha,
+                project_path="/tmp", project_name="", pr_number="1",
+            )
+
+    def test_first_time_noncritical_on_unchanged_file_frozen(self):
+        rd = {"file_comments": [
+            {"file": "b.py", "line_start": 10, "severity": "warning",
+             "title": "magic number nit", "comment": "style"}],
+            "review_summary": {"checklist": []}}
+        self._gate(rd, prior=[], changed={"a.py"})
+        assert rd["file_comments"] == []
+        assert rd.get("_freeze_summary", {}).get("suppressed") == 1
+
+    def test_finding_on_changed_file_survives(self):
+        rd = {"file_comments": [
+            {"file": "a.py", "line_start": 10, "severity": "warning",
+             "title": "real bug in new code", "comment": ""}],
+            "review_summary": {"checklist": []}}
+        self._gate(rd, prior=[], changed={"a.py"})
+        assert len(rd["file_comments"]) == 1
+
+    def test_no_freeze_when_changed_files_unknown(self):
+        rd = {"file_comments": [
+            {"file": "b.py", "line_start": 10, "severity": "warning",
+             "title": "nit", "comment": ""}],
+            "review_summary": {"checklist": []}}
+        self._gate(rd, prior=[], changed=None)  # compare failed -> fail-open
+        assert len(rd["file_comments"]) == 1
+
+    def test_no_freeze_when_prior_head_equals_current(self):
+        from app import review_runner as rr
+        rd = {"file_comments": [
+            {"file": "b.py", "line_start": 10, "severity": "warning",
+             "title": "nit", "comment": ""}],
+            "review_summary": {"checklist": []}}
+        with patch.object(rr, "_read_prior_findings_sidecar",
+                          return_value=([], "samesha")), \
+             patch.object(rr, "_compare_changed_files") as mock_cmp, \
+             patch("app.config.get_review_snippet_validation_config",
+                   return_value={"enabled": False, "on_mismatch": "off"}):
+            rr._apply_review_accuracy_gate(
+                rd, owner="o", repo="r", sha="samesha",
+                project_path="/tmp", project_name="", pr_number="1")
+        assert len(rd["file_comments"]) == 1
+        mock_cmp.assert_not_called()  # prior_head == sha -> freeze skipped
+
+
+class TestReviewSidecarReuseFields:
+    """Sidecar persists base_sha + request_signature for reuse (spec 010, US1)."""
+
+    def test_write_persists_base_sha_and_signature(self, tmp_path):
+        _write_review_findings_sidecar(
+            str(tmp_path), "octo", "repo", "42",
+            [{"file": "a.py", "line_start": 1, "title": "x", "comment": "y",
+              "severity": "warning"}],
+            base_ref="main", head_sha="head1", base_sha="base1",
+            request_signature={"focus_flags": ["architecture"],
+                               "discovery_enabled": False},
+        )
+        from app.review_runner import _read_prior_review_record
+        rec = _read_prior_review_record(str(tmp_path), "octo", "repo", "42")
+        assert rec["base_sha"] == "base1"
+        assert rec["request_signature"]["focus_flags"] == ["architecture"]
+
+    def test_read_record_missing_is_none(self):
+        from app.review_runner import _read_prior_review_record
+        assert _read_prior_review_record("/nonexistent", "o", "r", "1") is None

@@ -70,7 +70,7 @@ _CATEGORY_RULES: list[tuple[str, re.Pattern]] = [
 _NON_PATH = re.compile(r"^\./+")
 
 
-def _norm_path(file: object) -> str:
+def norm_path(file: object) -> str:
     """Normalize a finding's file path for identity comparison."""
     path = str(file or "").strip()
     path = _NON_PATH.sub("", path)
@@ -116,7 +116,7 @@ def finding_key(finding: dict) -> str:
     must survive arbitrary line drift, use :func:`same_finding` (tolerant by
     ``line_tolerance``) rather than string-equality on this key.
     """
-    file = _norm_path(finding.get("file"))
+    file = norm_path(finding.get("file"))
     bucket = _anchor_line(finding) // REGION_WINDOW
     return f"{file}|{bucket}|{_category(finding)}"
 
@@ -133,7 +133,7 @@ def same_finding(
     file+category alone.
     """
     tol = REGION_WINDOW if line_tolerance is None else max(0, int(line_tolerance))
-    if _norm_path(a.get("file")) != _norm_path(b.get("file")):
+    if norm_path(a.get("file")) != norm_path(b.get("file")):
         return False
     if _category(a) != _category(b):
         return False

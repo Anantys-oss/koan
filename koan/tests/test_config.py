@@ -2739,3 +2739,34 @@ class TestGetVerifyRequeueMax:
 
         with _mock_config({"verification": {"max_requeue": "lots"}}):
             assert get_verify_requeue_max() == 2
+
+
+class TestGetReviewConsistencyConfig:
+    """spec 010 US1 — review_consistency getter (defaults + fail-open)."""
+
+    def test_defaults_on(self):
+        from app.config import get_review_consistency_config
+        with _mock_config({}):
+            cfg = get_review_consistency_config()
+        assert cfg == {"reuse_enabled": True, "freeze_enabled": True}
+
+    def test_explicit_disable(self):
+        from app.config import get_review_consistency_config
+        with _mock_config({"review_consistency": {
+                "reuse_enabled": False, "freeze_enabled": False}}):
+            cfg = get_review_consistency_config()
+        assert cfg == {"reuse_enabled": False, "freeze_enabled": False}
+
+    def test_garbled_values_fail_open_to_defaults(self):
+        from app.config import get_review_consistency_config
+        with _mock_config({"review_consistency": {
+                "reuse_enabled": "nonsense", "freeze_enabled": None}}):
+            cfg = get_review_consistency_config()
+        # _safe_bool coerces recognizable strings and falls back otherwise.
+        assert cfg["freeze_enabled"] is True
+
+    def test_partial_override_keeps_other_default(self):
+        from app.config import get_review_consistency_config
+        with _mock_config({"review_consistency": {"reuse_enabled": False}}):
+            cfg = get_review_consistency_config()
+        assert cfg == {"reuse_enabled": False, "freeze_enabled": True}

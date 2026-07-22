@@ -2491,6 +2491,34 @@ def get_review_reflect_config() -> dict:
     return {"threshold": max(0, min(10, threshold))}
 
 
+def get_review_consistency_config(project_name: str = "") -> dict:
+    """Consistency controls for repeated reviews (spec 010, US1).
+
+    Config key: review_consistency
+      - reuse_enabled (bool): when the PR head AND base (merge-base) SHA are
+        unchanged and the request is equivalent, reproduce the prior review
+        instead of re-deriving it (FR-001). Default: True.
+      - freeze_enabled (bool): on a re-review, suppress first-time non-critical
+        findings on code unchanged since the prior review (the "review whiplash"
+        case); a critical still surfaces, labelled pre-existing (FR-003).
+        Default: True.
+
+    Both default on and fail-open (a stray non-bool degrades to the default).
+
+    Returns:
+        Dict with keys: reuse_enabled (bool), freeze_enabled (bool).
+    """
+    defaults = {"reuse_enabled": True, "freeze_enabled": True}
+    merged = _get_config_with_overrides(
+        "review_consistency", defaults, project_name)
+    return {
+        "reuse_enabled": _safe_bool(
+            merged.get("reuse_enabled"), defaults["reuse_enabled"]),
+        "freeze_enabled": _safe_bool(
+            merged.get("freeze_enabled"), defaults["freeze_enabled"]),
+    }
+
+
 def get_review_snippet_validation_config(project_name: str = "") -> dict:
     """Validate each finding's code_snippet against the file at the reviewed SHA.
 
