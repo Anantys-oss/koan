@@ -3171,15 +3171,25 @@ def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
         return ""
 
 
+# GitHub's compare endpoint returns at most this many entries in ``files`` and
+# does NOT paginate them (unlike commits). A response at the cap is
+# indistinguishable from a truncated one, so we treat it as undetermined.
+# https://docs.github.com/en/rest/commits/commits#compare-two-commits
+_COMPARE_FILES_CAP = 300
+
+
 def _compare_changed_files(
     owner: str, repo: str, base: str, head: str,
 ) -> Optional[set]:
     """Return the set of files changed between ``base`` and ``head`` (or None).
 
     Used by the spec-010 re-review freeze to determine which files the commits
-    touched since the prior review. Best-effort and fail-open: any error — or a
-    missing base/head — yields ``None`` so the caller *skips* the freeze rather
-    than freezing against an unknown changeset (FR-003 fail-open, D3).
+    touched since the prior review. Best-effort and fail-open: any error, a
+    missing base/head, an *undetermined* changeset (empty/blank response), or a
+    *truncated* file list yields ``None`` so the caller *skips* the freeze rather
+    than freezing against an unknown or under-populated changeset (FR-003
+    fail-open, D3). Freezing against too few files would silently suppress
+    first-time findings on genuinely-changed code — the inverse of the intent.
     """
     if not base or not head or base == head:
         return None
@@ -3190,9 +3200,22 @@ def _compare_changed_files(
             "--jq", r"[.files[].filename]",
         )
         if not raw.strip():
-            return set()
+            # A genuine zero-file diff serializes to "[]" (truthy). A blank
+            # response is an ambiguous/error condition — return None (skip the
+            # freeze), never set() (which would read as "nothing changed" and
+            # drop every first-time finding).
+            return None
         parsed = json.loads(raw)
-        return {str(f) for f in parsed if f} if isinstance(parsed, list) else None
+        if not isinstance(parsed, list):
+            return None
+        if len(parsed) >= _COMPARE_FILES_CAP:
+            # File list is at GitHub's non-paginated cap: assume truncated and
+            # skip the freeze rather than freeze against a partial changeset.
+            log("review",
+                f"changed-files compare at cap ({len(parsed)} files, "
+                f"{base}...{head}); skipping freeze")
+            return None
+        return {str(f) for f in parsed if f}
     except (RuntimeError, OSError, ValueError, TypeError) as exc:
         log("review", f"changed-files compare failed ({base}...{head}): {exc}")
         return None

@@ -7859,6 +7859,49 @@ class TestReviewSidecarIdentity:
         assert comments == [] and head == ""
 
 
+class TestCompareChangedFiles:
+    """`_compare_changed_files` must fail *open* (return None -> caller skips the
+    freeze), never fail toward suppression (spec 010, FR-003, D3). An
+    under-populated set would freeze — and silently drop — findings on
+    genuinely-changed code."""
+
+    def _call(self, run_gh_return=None, side_effect=None):
+        from app import review_runner as rr
+        with patch("app.review_runner.run_gh",
+                   return_value=run_gh_return, side_effect=side_effect):
+            return rr._compare_changed_files("o", "r", "oldsha", "newsha")
+
+    def test_normal_diff_returns_file_set(self):
+        assert self._call('["a.py", "b.py"]') == {"a.py", "b.py"}
+
+    def test_zero_file_diff_returns_empty_set(self):
+        # A genuine zero-file diff ("[]") is a definite answer: nothing changed
+        # since the prior head, so the freeze legitimately applies.
+        assert self._call("[]") == set()
+
+    def test_empty_response_returns_none(self):
+        # Ambiguous blank output must NOT be read as "no files changed" (which
+        # would suppress every first-time finding) — skip the freeze instead.
+        assert self._call("") is None
+        assert self._call("   \n  ") is None
+
+    def test_truncation_at_cap_returns_none(self):
+        from app import review_runner as rr
+        files = [f"f{i}.py" for i in range(rr._COMPARE_FILES_CAP)]
+        assert self._call(json.dumps(files)) is None
+
+    def test_below_cap_returns_full_set(self):
+        from app import review_runner as rr
+        files = [f"f{i}.py" for i in range(rr._COMPARE_FILES_CAP - 1)]
+        assert self._call(json.dumps(files)) == set(files)
+
+    def test_gh_error_returns_none(self):
+        assert self._call(side_effect=RuntimeError("boom")) is None
+
+    def test_non_list_payload_returns_none(self):
+        assert self._call('{"files": "oops"}') is None
+
+
 class TestReviewFreezeWiring:
     """Freeze wiring in the accuracy gate (spec 010, US1, FR-003)."""
 
