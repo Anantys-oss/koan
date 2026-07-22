@@ -93,3 +93,22 @@ def test_skill_cap(tmp_path, monkeypatch):
     (d / "a.md").write_text("y" * 50)
     out = pk.read_skill_instructions(str(tmp_path), "review")
     assert "truncated" in out
+
+
+def test_log_context_load_emits_chars_and_tokens(capsys):
+    pk.log_context_load("KOAN.md", "x" * 35)
+    err = capsys.readouterr().err
+    assert "Detected KOAN.md" in err
+    assert "35 chars" in err
+    assert "tokens" in err  # ~ 10 tokens at chars/3.5
+
+
+def test_log_context_load_never_raises(capsys, monkeypatch):
+    # A broken token estimator must not break prompt assembly.
+    import app.diff_compressor as dc
+
+    def _boom(_):
+        raise RuntimeError("estimator down")
+
+    monkeypatch.setattr(dc, "estimate_tokens", _boom)
+    pk.log_context_load("KOAN.md", "content")  # must not raise

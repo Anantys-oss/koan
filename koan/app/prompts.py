@@ -288,10 +288,11 @@ def _maybe_append_project_skill_instructions(
     try:
         if not project_path or not (skill_dir / "SKILL.md").is_file():
             return prompt
-        from app.project_koan import read_skill_instructions  # lazy: avoid cycle
+        from app.project_koan import log_context_load, read_skill_instructions
         content = read_skill_instructions(project_path, skill_dir.name)
         if not content:
             return prompt
+        log_context_load(f".koan/skills/{skill_dir.name}", content)
         block = load_prompt(
             "koan-skill",
             SKILL_NAME=skill_dir.name,
@@ -315,7 +316,9 @@ def _maybe_append_general_koan_md(
     shared ``koan-md`` template — the same framing the agent loop uses in
     ``prompt_builder._get_koan_md_section`` — and appended AFTER the
     ``.koan/skills/<name>/`` block so the precedence reads
-    ``.koan/skills/<skill>/* > KOAN.md``.
+    ``.koan/skills/<skill>/* > KOAN.md``. A successful injection is announced via
+    ``project_koan.log_context_load`` (stderr → ``logs/run.log``) so ``make logs``
+    shows the load.
 
     Failures are swallowed (additive guidance, not a correctness feature); they
     surface via the module logger so silent regressions stay visible in the log.
@@ -323,14 +326,11 @@ def _maybe_append_general_koan_md(
     try:
         if not project_path or not (skill_dir / "SKILL.md").is_file():
             return prompt
-        from app.project_koan import read_general_koan_md  # lazy: avoid cycle
+        from app.project_koan import log_context_load, read_general_koan_md
         content = read_general_koan_md(project_path)
         if not content:
             return prompt
-        logger.info(
-            "general KOAN.md injected into %s prompt (%d chars) from %s",
-            skill_dir.name, len(content), project_path,
-        )
+        log_context_load("KOAN.md", content)
         block = load_prompt("koan-md", KOAN_MD_CONTENT=content)
         return f"{prompt}\n\n{block}"
     except Exception as e:

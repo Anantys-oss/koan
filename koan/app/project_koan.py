@@ -6,12 +6,37 @@ absent/blank/unreadable handling: absent is the normal case (no log); a
 present-but-unreadable file warns and is treated as empty.
 """
 import logging
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _MAX_KOAN_MD_CHARS = 16000
 _MAX_KOAN_SKILL_CHARS = 16000
+
+
+def log_context_load(label: str, content: str) -> None:
+    """Announce a steering file koan just loaded into a prompt, for ``make logs``.
+
+    Emits ``Detected <label>, loaded N chars (~ M tokens)`` on **stderr** so it
+    lands in ``logs/run.log`` (visible via ``make logs``) without ever
+    corrupting the JSON some skill runners write to stdout. The ``logging``
+    module has no stdout/stderr handler wired in the run loop, so ``logger.info``
+    alone would be invisible there — hence the direct ``print``.
+
+    Best-effort: a broken stream (or a missing ``estimate_tokens``) must never
+    break prompt assembly, so every failure is swallowed silently.
+    """
+    try:
+        from app.diff_compressor import estimate_tokens
+        print(
+            f"[context] Detected {label}, loaded {len(content)} chars "
+            f"(~ {estimate_tokens(content)} tokens)",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:
+        pass
 
 
 def _read_or_empty(path: Path) -> str:

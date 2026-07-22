@@ -933,6 +933,18 @@ class TestMaybeAppendProjectSkillInstructions:
         out = load_skill_prompt(sd, "review", project_path=str(proj))
         assert ".koan/skills/review" not in out
 
+    def test_logs_fragment_load_for_make_logs(self, tmp_path, capsys):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        d = proj / ".koan" / "skills" / "review"
+        d.mkdir(parents=True)
+        (d / "extra-rules.md").write_text("REPO EXTRA RULE")
+        load_skill_prompt(sd, "review", project_path=str(proj))
+        # Surfaced on stderr so `make logs` (logs/run.log) shows the load.
+        err = capsys.readouterr().err
+        assert "Detected .koan/skills/review" in err
+        assert "chars" in err and "tokens" in err
+
 
 class TestMaybeAppendGeneralKoanMd:
     """Gating/ordering of general KOAN.md injection via load_skill_prompt."""
@@ -1013,3 +1025,16 @@ class TestMaybeAppendGeneralKoanMd:
         # Best-effort: the built-in prompt still loads, injection skipped silently.
         assert "BUILT-IN PLAN PROMPT" in out
         assert "BEGIN KOAN.md" not in out
+
+    def test_logs_koan_md_load_for_make_logs(self, tmp_path, capsys):
+        sd = self._make_skill(tmp_path)
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / "KOAN.md").write_text("Always use the widget tool.")
+
+        load_skill_prompt(sd, "plan", project_path=str(proj))
+
+        # Surfaced on stderr so `make logs` (logs/run.log) shows the load.
+        err = capsys.readouterr().err
+        assert "Detected KOAN.md" in err
+        assert "chars" in err and "tokens" in err

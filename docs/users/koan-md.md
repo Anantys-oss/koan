@@ -78,6 +78,22 @@ skills (no loader) run without a resolved project in scope, so they receive
 neither `.koan/skills/` nor general `KOAN.md` — steer those via `CLAUDE.md` or
 the mission text instead.
 
+### Seeing what got loaded (`make logs`)
+
+Every steering file koan folds into a prompt is announced on the run log, so you
+can confirm the context is actually in play. Watch `make logs` for lines like:
+
+```
+[context] Detected KOAN.md, loaded 1240 chars (~ 354 tokens)
+[context] Detected .koan/skills/plan, loaded 380 chars (~ 108 tokens)
+[context] Detected CLAUDE.md (auto-loaded by CLI), loaded 8900 chars (~ 2542 tokens)
+```
+
+`KOAN.md` and `.koan/skills/<skill>` lines mean koan injected that content;
+the `CLAUDE.md` line is **detection-only** — Claude Code loads `CLAUDE.md` from
+the working directory itself, koan just reports its size so you can see the full
+steering context at a glance. Token counts are a `chars/3.5` estimate.
+
 ## Example: this repository (dogfood)
 
 The Kōan source tree ships its own steering so autonomous missions on koan

@@ -207,10 +207,16 @@ no-op unless `skill_dir` has a `SKILL.md` **and** `project_path` is set (default
 `project_path=None` ⇒ byte-identical). This makes the precedence chain above real
 for skills, not only for the agent loop. The two blocks keep independent 16k caps
 (no combined ceiling — worst case 32k on one prompt, only when a project ships both
-a large root `KOAN.md` and large per-skill instructions; the injected length is
-logged). Prompt-only skills (`_execute_prompt` returns raw `prompt_body`) run
-without a resolved project in scope, so they receive no project-scoped injection —
-by design, not a gap.
+a large root `KOAN.md` and large per-skill instructions). Prompt-only skills
+(`_execute_prompt` returns raw `prompt_body`) run without a resolved project in
+scope, so they receive no project-scoped injection — by design, not a gap.
+
+Every actual injection is announced on **stderr** (so it lands in `logs/run.log`
+and is visible via `make logs`) through `project_koan.log_context_load(label,
+content)`, which emits `Detected <label>, loaded N chars (~ M tokens)` — `label`
+is `KOAN.md` for the general block and `.koan/skills/<skill>` for the per-skill
+block. `logging.getLogger` output alone is invisible in the run loop (no
+stream handler wired), so the load line is a direct `print`, not `logger.info`.
 
 ### `add_project` workspace resolution (contract)
 

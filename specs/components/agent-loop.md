@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-07-22
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -78,6 +78,15 @@ when `project_path` is the devcontainer workspace. Invariant: both sources
 absent/blank leaves the system prompt unchanged. KOAN.md is koan-only — Claude
 Code auto-loads `CLAUDE.md` but never `KOAN.md`, so interactive sessions never
 see it.
+
+**Steering-context visibility (`make logs`).** Every steering file that shapes a
+mission prompt is announced on stderr (→ `logs/run.log`) as `Detected <label>,
+loaded N chars (~ M tokens)` via `project_koan.log_context_load`. The agent loop
+surfaces `KOAN.md` when `_get_koan_md_section` reads it, and — detection-only —
+`CLAUDE.md (auto-loaded by CLI)` via `_log_claude_md_detected(project_path)`,
+which reads the project-root `CLAUDE.md` solely to report its size (koan never
+injects it; the CLI loads it from `cwd`). Best-effort: any read/stream failure is
+swallowed and never blocks prompt assembly.
 
 ## Invariants
 
