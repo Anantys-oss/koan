@@ -36,6 +36,7 @@ each plan requirement independently against the actual diff.
 ---
 
 {@include review-context}
+{DISPOSITIONS}
 
 ---
 

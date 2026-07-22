@@ -2519,6 +2519,28 @@ def get_review_consistency_config(project_name: str = "") -> dict:
     }
 
 
+def get_review_dispositions_config(project_name: str = "") -> dict:
+    """Honor human PR-comment dispositions of findings (spec 010, US7).
+
+    When enabled, the review prompt is told to honor human dispositions — dismiss
+    ("ignore"/"not a problem") and defer ("fix later") — that reviewers leave as
+    PR comments, so a dismissed finding stops being re-raised as a blocker. The
+    posture ("any non-bot commenter, all severities including critical") is fixed
+    in the prompt; this switch only turns the whole behavior on or off, so a
+    security-conscious operator can disable the open posture.
+
+    Config key: review_dispositions
+      - enabled (bool): include the disposition-honoring guidance. Default: True.
+
+    Returns:
+        Dict with key: enabled (bool).
+    """
+    defaults = {"enabled": True}
+    merged = _get_config_with_overrides(
+        "review_dispositions", defaults, project_name)
+    return {"enabled": _safe_bool(merged.get("enabled"), defaults["enabled"])}
+
+
 def get_review_snippet_validation_config(project_name: str = "") -> dict:
     """Validate each finding's code_snippet against the file at the reviewed SHA.
 

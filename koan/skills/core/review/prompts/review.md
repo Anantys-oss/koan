@@ -23,6 +23,7 @@ actionable, constructive feedback that helps the author improve the code.
 ---
 
 {@include review-context}
+{DISPOSITIONS}
 
 ---
 

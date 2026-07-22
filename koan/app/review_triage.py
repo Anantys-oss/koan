@@ -79,3 +79,35 @@ def enforce_pre_existing(review_data: dict) -> dict:
         if isinstance(rs, dict):
             rs["lgtm"] = derive_lgtm(review_data)
     return summary
+
+
+def enforce_deferred(review_data: dict) -> dict:
+    """Enforce the deferred rule on findings a human asked to defer (US7, FR-034).
+
+    Detection is the reviewer's: a finding whose title carries the ``[Deferred]``
+    prefix (the model applies it when a human said "fix later"). Enforcement is
+    deterministic — any such finding is forced to a non-blocking ``suggestion``,
+    the prefix is normalized to one leading occurrence, and ``lgtm`` is re-derived.
+    Returns ``{"deferred": n}``. Fail-open on malformed input.
+    """
+    summary = {"deferred": 0}
+    comments = review_data.get("file_comments") if isinstance(review_data, dict) else None
+    if not isinstance(comments, list):
+        return summary
+
+    for fc in comments:
+        if not isinstance(fc, dict):
+            continue
+        title = str(fc.get("title") or "")
+        if DEFERRED_PREFIX.lower() not in title.lower():
+            continue
+        fc["title"] = _normalize_prefix(title, DEFERRED_PREFIX)
+        if str(fc.get("severity") or "").lower() != "suggestion":
+            fc["severity"] = "suggestion"
+        summary["deferred"] += 1
+
+    if summary["deferred"]:
+        rs = review_data.get("review_summary")
+        if isinstance(rs, dict):
+            rs["lgtm"] = derive_lgtm(review_data)
+    return summary

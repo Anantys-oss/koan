@@ -79,3 +79,31 @@ class TestEnforcePreExisting:
     def test_fail_open_on_malformed(self):
         assert enforce_pre_existing({}) == {"demoted": 0, "critical_labeled": 0}
         assert enforce_pre_existing(None) == {"demoted": 0, "critical_labeled": 0}
+
+
+class TestEnforceDeferred:
+    def test_deferred_forced_to_suggestion(self):
+        from app.review_triage import DEFERRED_PREFIX, enforce_deferred
+        rd = _rd(_fc(severity="warning", title=f"{DEFERRED_PREFIX} handle later"),
+                 lgtm=False)
+        summary = enforce_deferred(rd)
+        assert summary["deferred"] == 1
+        assert rd["file_comments"][0]["severity"] == "suggestion"
+        assert rd["review_summary"]["lgtm"] is True
+
+    def test_untagged_untouched(self):
+        from app.review_triage import enforce_deferred
+        rd = _rd(_fc(severity="warning", title="normal finding"))
+        assert enforce_deferred(rd) == {"deferred": 0}
+        assert rd["file_comments"][0]["severity"] == "warning"
+
+    def test_deferred_prefix_normalized(self):
+        from app.review_triage import DEFERRED_PREFIX, enforce_deferred
+        rd = _rd(_fc(severity="suggestion",
+                     title=f"{DEFERRED_PREFIX} x {DEFERRED_PREFIX}"))
+        enforce_deferred(rd)
+        assert rd["file_comments"][0]["title"].count(DEFERRED_PREFIX) == 1
+
+    def test_fail_open(self):
+        from app.review_triage import enforce_deferred
+        assert enforce_deferred(None) == {"deferred": 0}

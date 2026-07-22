@@ -2770,3 +2770,22 @@ class TestGetReviewConsistencyConfig:
         with _mock_config({"review_consistency": {"reuse_enabled": False}}):
             cfg = get_review_consistency_config()
         assert cfg == {"reuse_enabled": False, "freeze_enabled": True}
+
+
+class TestGetReviewDispositionsConfig:
+    """spec 010 US7 — review_dispositions getter (enabled kill-switch)."""
+
+    def test_default_enabled(self):
+        from app.config import get_review_dispositions_config
+        with _mock_config({}):
+            assert get_review_dispositions_config() == {"enabled": True}
+
+    def test_explicit_disable(self):
+        from app.config import get_review_dispositions_config
+        with _mock_config({"review_dispositions": {"enabled": False}}):
+            assert get_review_dispositions_config() == {"enabled": False}
+
+    def test_garbled_fail_open_enabled(self):
+        from app.config import get_review_dispositions_config
+        with _mock_config({"review_dispositions": {"enabled": "??"}}):
+            assert get_review_dispositions_config()["enabled"] is True

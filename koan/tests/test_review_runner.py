@@ -7937,3 +7937,24 @@ class TestReviewSidecarReuseFields:
     def test_read_record_missing_is_none(self):
         from app.review_runner import _read_prior_review_record
         assert _read_prior_review_record("/nonexistent", "o", "r", "1") is None
+
+
+class TestDispositionsPromptInjection:
+    """The dispositions guidance is config-gated in the built prompt (spec 010, US7)."""
+
+    @pytest.fixture
+    def real_review_skill_dir(self):
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    def test_included_by_default(self, pr_context, real_review_skill_dir):
+        prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "Human Dispositions" in prompt
+        assert "{DISPOSITIONS}" not in prompt  # placeholder resolved
+
+    def test_absent_when_disabled(self, pr_context, real_review_skill_dir):
+        with patch("app.config.get_review_dispositions_config",
+                   return_value={"enabled": False}):
+            prompt, _ = build_review_prompt(
+                pr_context, skill_dir=real_review_skill_dir)
+        assert "Human Dispositions" not in prompt
+        assert "{DISPOSITIONS}" not in prompt  # placeholder still resolved (to "")

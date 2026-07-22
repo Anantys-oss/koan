@@ -691,6 +691,25 @@ def _build_repo_conventions_block(
         return ""
 
 
+def _build_dispositions_block(project_name: str = "") -> str:
+    """Assemble the ``{DISPOSITIONS}`` block, or "" when disabled.
+
+    Injects the human-disposition guidance (honor dismiss/defer decisions humans
+    leave as PR comments; spec 010, US7) into the review prompt. Config-gated by
+    ``review_dispositions.enabled`` (default on) so a security-conscious operator
+    can turn off the "any commenter can dispose of a finding" posture. Never
+    raises — degrades to "" so the review proceeds normally.
+    """
+    try:
+        from app.config import get_review_dispositions_config
+        if not get_review_dispositions_config(project_name or "")["enabled"]:
+            return ""
+        return "\n\n" + load_prompt("review-dispositions") + "\n"
+    except Exception as e:
+        log("review", f"dispositions guidance injection skipped: {e}")
+        return ""
+
+
 def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
@@ -828,6 +847,7 @@ def build_review_prompt(
         SKIPPED_FILES=coverage_note,   # same value returned below
         ISSUE_CONTEXT=issue_context or "",
         REPO_CONVENTIONS=repo_conventions,
+        DISPOSITIONS=_build_dispositions_block(project_name),
     )
 
     if plan_body:
@@ -1611,7 +1631,7 @@ def _apply_review_accuracy_gate(
     # on findings the reviewer tagged `[Pre-Existing Issue]` — demote non-critical
     # ones to a non-blocking suggestion, keep criticals, and re-derive lgtm. Runs
     # AFTER the freeze so FR-030 "freeze wins" holds. Fail-open.
-    from app.review_triage import enforce_pre_existing
+    from app.review_triage import enforce_deferred, enforce_pre_existing
     pe_summary = enforce_pre_existing(review_data)
     if pe_summary["demoted"] or pe_summary["critical_labeled"]:
         review_data["_pre_existing_summary"] = pe_summary
@@ -1620,6 +1640,13 @@ def _apply_review_accuracy_gate(
             f"pre-existing: demoted {pe_summary['demoted']} to recommendation, "
             f"labelled {pe_summary['critical_labeled']} critical",
         )
+    # Spec 010 (US7, FR-034): human-deferred findings ([Deferred]) are forced to
+    # a non-blocking suggestion. Detection is prompt-driven from live PR comments
+    # (re-read each review, so a disposition is sticky until retracted). Fail-open.
+    df_summary = enforce_deferred(review_data)
+    if df_summary["deferred"]:
+        review_data["_deferred_summary"] = df_summary
+        log("review", f"deferred: {df_summary['deferred']} finding(s) -> recommendation")
 
 
 _ERROR_PATTERN_RE = re.compile(
