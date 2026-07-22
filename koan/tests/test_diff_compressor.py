@@ -7,6 +7,7 @@ from app.diff_compressor import (
     compress_diff,
     estimate_tokens,
     parse_diff_hunks,
+    path_matches_any,
 )
 
 # ---------------------------------------------------------------------------
@@ -310,3 +311,37 @@ class TestCompressDiffModeOnly:
         compressed = compress_diff(DIFF_MODE_ONLY, token_budget=1)
         assert "script.sh" in compressed.diff_text
         assert not any("script.sh" in s for s in compressed.skipped_files)
+
+
+# ---------------------------------------------------------------------------
+# path_matches_any (review.always_check pin matching)
+# ---------------------------------------------------------------------------
+
+
+def test_matches_basename_at_any_depth():
+    assert path_matches_any("plugins/x/SKILL.md", ["SKILL.md"])
+    assert path_matches_any("SKILL.md", ["SKILL.md"])
+
+
+def test_matches_star_spans_path_separator():
+    assert path_matches_any("docs/deep/nested/guide.md", ["*.md"])
+    assert path_matches_any("guide.md", ["*.md"])
+
+
+def test_matches_subtree_glob():
+    assert path_matches_any("docs/api/thing.txt", ["docs/api/*"])
+
+
+def test_non_match_returns_false():
+    assert not path_matches_any("main.go", ["*.md"])
+    assert not path_matches_any("plugins/x/SKILL.md", ["README.md"])
+
+
+def test_empty_patterns_returns_false():
+    assert not path_matches_any("SKILL.md", [])
+    assert not path_matches_any("SKILL.md", None)
+
+
+def test_matching_is_case_sensitive():
+    assert not path_matches_any("skill.md", ["SKILL.md"])
+    assert path_matches_any("skill.md", ["skill.md"])

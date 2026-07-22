@@ -22,8 +22,8 @@ that conforms to them (this whole phase blocks Phase 3).**
 - [X] T004 Contract-first: add an Invariant/Inputs note to `specs/skills/review.md` that a target repo's `.koan/config.yaml` `review.always_check` pins matching files (schema/prompt unchanged ⇒ evals unaffected).
 - [X] T005 [P] Write failing tests for the config reader in `koan/tests/test_project_koan.py`: absent file → `{}` / `[]`; valid `review.always_check` list → returned; unparseable YAML / non-mapping top level / `review` not a mapping / `always_check` not a list / non-str items → fail-safe `[]` (no raise); >100 patterns and >200-char patterns → capped.
 - [X] T006 Implement `read_koan_config(project_path)` and `get_review_always_check(project_path)` (with `_MAX_ALWAYS_CHECK_PATTERNS=100`, `_MAX_PATTERN_LEN=200`) in `koan/app/project_koan.py` using `yaml.safe_load`; make T005 pass.
-- [ ] T007 [P] Write failing tests for `path_matches_any` in `koan/tests/test_diff_compressor.py`: basename match (`plugins/x/SKILL.md` vs `SKILL.md`), path match with `*` spanning `/` (`docs/deep/g.md` vs `*.md`), non-match (`main.go` vs `*.md`), empty patterns → `False`, case-sensitivity.
-- [ ] T008 Implement `path_matches_any(path, patterns)` (using `fnmatch.fnmatchcase` against full path and basename) in `koan/app/diff_compressor.py`; make T007 pass.
+- [X] T007 [P] Write failing tests for `path_matches_any` in `koan/tests/test_diff_compressor.py`: basename match (`plugins/x/SKILL.md` vs `SKILL.md`), path match with `*` spanning `/` (`docs/deep/g.md` vs `*.md`), non-match (`main.go` vs `*.md`), empty patterns → `False`, case-sensitivity.
+- [X] T008 Implement `path_matches_any(path, patterns)` (using `fnmatch.fnmatchcase` against full path and basename) in `koan/app/diff_compressor.py`; make T007 pass.
 
 ## Phase 3: User Story 1 — Pin critical files so a large review never skips them (P1) 🎯 MVP
 

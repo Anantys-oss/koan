@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +102,22 @@ def estimate_tokens(text: str) -> int:
     window by underestimating.
     """
     return int(len(text) / 3.5)
+
+
+def path_matches_any(path: str, patterns: Optional[List[str]]) -> bool:
+    """True iff *path* or its basename matches any glob in *patterns*.
+
+    Uses ``fnmatch.fnmatchcase`` (case-sensitive on every platform) against both
+    the full repo-relative path and the basename, so ``SKILL.md`` matches at any
+    directory depth and ``*.md`` matches any Markdown file (``*`` spans ``/``).
+    Empty/None patterns → ``False``.
+    """
+    if not patterns:
+        return False
+    base = path.rsplit("/", 1)[-1]
+    return any(
+        fnmatchcase(path, pat) or fnmatchcase(base, pat) for pat in patterns
+    )
 
 
 # ---------------------------------------------------------------------------
