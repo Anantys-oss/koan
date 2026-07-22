@@ -1296,7 +1296,10 @@ def _read_file_at_sha(
             if r.returncode == 0:
                 return r.stdout
     # 2) GitHub contents API pinned to the SHA (works without local objects).
-    with contextlib.suppress(Exception):
+    #    Still fail-open (return None), but leave a breadcrumb: a systematic
+    #    failure here (auth, rate limit, decode) otherwise silently disables
+    #    snippet validation and reconciliation for the whole review.
+    try:
         raw = run_gh(
             "api", f"repos/{owner}/{repo}/contents/{quote(path, safe='/')}",
             "-X", "GET", "-f", f"ref={sha}", "--jq", ".content // empty",
@@ -1304,6 +1307,11 @@ def _read_file_at_sha(
         )
         if raw and raw.strip():
             return base64.b64decode(raw).decode("utf-8", errors="replace")
+    except Exception as e:
+        # Broad by design: this is a fail-open boundary (return None on any
+        # error), matching sibling enrichment helpers. Log so a systematic
+        # failure is observable instead of silently degrading the review.
+        log("review", f"contents fetch failed for {path}@{sha[:12]}: {e}")
     return None
 
 

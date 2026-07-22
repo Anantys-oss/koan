@@ -7,22 +7,14 @@ different issues" frustration).
 
 Pure, deterministic helpers only: the runner supplies the current SHAs, the
 request signature, and the persisted prior-review record; this module just
-decides whether reuse is warranted and provides the reader-facing reproduction
-marker. Any missing/mismatched piece -> no reuse (fall back to a fresh review,
-FR-007), so the decision is fail-safe by construction.
+decides whether reuse is warranted. Any missing/mismatched piece -> no reuse
+(fall back to a fresh review, FR-007), so the decision is fail-safe by
+construction.
 """
 
 from __future__ import annotations
 
 from typing import Optional
-
-# Appended to a reproduced review so a reproduction is never mistaken for a fresh
-# re-analysis and is never a silent no-op (FR-006).
-REPRODUCTION_NOTE = (
-    "> [!NOTE]\n"
-    "> Reproduced from the previous review — the PR head and base are unchanged "
-    "since it ran, so the findings are identical by design (review consistency)."
-)
 
 
 def request_signature(focus_flags, discovery_enabled: object) -> dict:

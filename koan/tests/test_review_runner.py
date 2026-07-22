@@ -7859,6 +7859,23 @@ class TestReviewSidecarIdentity:
         assert comments == [] and head == ""
 
 
+class TestReadFileAtShaObservability:
+    """The GitHub-contents fallback in `_read_file_at_sha` must log on failure,
+    not silently disable snippet validation / reconciliation for the review."""
+
+    def test_logs_and_returns_none_on_contents_fetch_error(self):
+        from app import review_runner as rr
+
+        # project_path="" skips the local git path, forcing the API fallback.
+        with patch("app.review_runner.run_gh", side_effect=RuntimeError("api boom")), \
+             patch("app.review_runner.log") as mock_log:
+            result = rr._read_file_at_sha("o", "r", "deadbeef", "a.py", "")
+
+        assert result is None  # still fail-open
+        assert mock_log.called
+        assert mock_log.call_args[0][0] == "review"
+
+
 class TestCompareChangedFiles:
     """`_compare_changed_files` must fail *open* (return None -> caller skips the
     freeze), never fail toward suppression (spec 010, FR-003, D3). An

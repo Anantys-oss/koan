@@ -167,7 +167,9 @@ def read_repo_convention_docs(
                 try:
                     topic_indexes = sorted(
                         docs.glob("*/index.md"), key=lambda p: p.as_posix())
-                except OSError:
+                except OSError as e:
+                    logger.warning(
+                        "topic-index glob failed under %s: %s", docs, e)
                     topic_indexes = []
                 for idx in topic_indexes:
                     rel = f"{okf_docs_dir}/{idx.parent.name}/index.md"

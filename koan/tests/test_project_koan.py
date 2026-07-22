@@ -192,3 +192,19 @@ def test_conventions_block_cap(tmp_path):
     (tmp_path / "CLAUDE.md").write_text("y" * 100)
     out = pk.read_repo_convention_docs(str(tmp_path), max_block_chars=30)
     assert "truncated" in out
+
+
+def test_conventions_topic_index_glob_error_is_logged(tmp_path):
+    """A glob failure while enumerating topic indexes must be observable, not
+    swallowed silently — the root OKF docs are still returned (fail-open)."""
+    from unittest.mock import patch
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("root index")
+    (docs / "SPEC.md").write_text("spec rules")
+    with patch("app.project_koan.logger") as mock_logger, \
+         patch("pathlib.Path.glob", side_effect=OSError("perm denied")):
+        out = pk.read_repo_convention_docs(str(tmp_path))
+    assert "spec rules" in out  # fail-open: other docs still ingested
+    assert mock_logger.warning.called

@@ -2584,8 +2584,10 @@ def get_review_snippet_validation_config(project_name: str = "") -> dict:
         anchor — "resync" (replace the quote with the real current lines,
         default), "drop" (remove the finding), "annotate" (append the current
         source), or "off" (leave the snippet untouched). Invalid values fall
-        back to "resync". Findings whose file/lines no longer exist are always
-        dropped regardless of this setting.
+        back to "resync". A finding whose anchor line is past end-of-file at
+        HEAD is dropped unless on_mismatch is "off"; a file that no longer
+        resolves at HEAD (deleted, or a transient fetch failure) is left in
+        place (fail-open, never a false drop).
 
     Returns:
         Dict with keys: enabled (bool), on_mismatch (str).
