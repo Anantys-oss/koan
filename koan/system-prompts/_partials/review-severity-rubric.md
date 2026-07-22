@@ -30,6 +30,19 @@ just what is wrong. "Missing null check" is incomplete; "Missing null check — 
 throw TypeError when the user has no email, crashing the signup flow" tells the
 author what is at stake.
 
+**Pre-existing issues.** If a finding is about code that **predates this PR's
+changeset** (already present before the diff — not introduced or modified by it),
+do not treat it as the author's blocker:
+
+- If it is **not `critical`**, mark it a `suggestion` and prefix its title with
+  `[Pre-Existing Issue]`.
+- If it **is `critical`** (a real security/data-loss risk), keep `critical` but
+  still prefix the title with `[Pre-Existing Issue]` so the author knows it was
+  not introduced by this change.
+
+Use the `[Pre-Existing Issue]` prefix only for issues that genuinely predate the
+change — never for code the PR adds or modifies.
+
 ### Verdict Contract
 
 Your `lgtm` verdict is the merge decision (it drives the GitHub APPROVE /

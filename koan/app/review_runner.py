@@ -1607,6 +1607,19 @@ def _apply_review_accuracy_gate(
                 f"finding(s) on unchanged code, kept "
                 f"{freeze_summary['kept_pre_existing_critical']} pre-existing critical",
             )
+    # Spec 010 (US6, FR-027/028): deterministically enforce the pre-existing rule
+    # on findings the reviewer tagged `[Pre-Existing Issue]` — demote non-critical
+    # ones to a non-blocking suggestion, keep criticals, and re-derive lgtm. Runs
+    # AFTER the freeze so FR-030 "freeze wins" holds. Fail-open.
+    from app.review_triage import enforce_pre_existing
+    pe_summary = enforce_pre_existing(review_data)
+    if pe_summary["demoted"] or pe_summary["critical_labeled"]:
+        review_data["_pre_existing_summary"] = pe_summary
+        log(
+            "review",
+            f"pre-existing: demoted {pe_summary['demoted']} to recommendation, "
+            f"labelled {pe_summary['critical_labeled']} critical",
+        )
 
 
 _ERROR_PATTERN_RE = re.compile(

@@ -33,7 +33,7 @@ Single Python package: `koan/app/`, `koan/skills/core/review/`, `koan/system-pro
 **Purpose**: scaffolding shared by all stories. No behavior change yet.
 
 - [~] T001 Modules are created in their OWNING phase (not empty stubs) to avoid dead-code commits — `review_identity.py` created in Phase 2; `review_reuse`/`review_reconcile` in US1; `review_triage` in US2; `review_dispositions` in US7
-- [X] T002 [P] Add documented, default-preserving config blocks to `instance.example/config.yaml` for `review_consistency`, `review_severity` (renamed from the plan's "extend review_triage" — `review_triage` is already taken by the trivial-file pre-filter), `review_discovery`, `review_dispositions`
+- [X] T002 [P] `instance.example/config.yaml`: documented `review_consistency` block (wired in US1). **Corrected during US6 review**: dropped the inert `review_severity` block — the yellow bar + `[Pre-Existing Issue]` label are *prompt-fixed* (in `review-severity-rubric.md`), not runtime knobs (the label must match the prompt), so **FR-014's "configurable bar" is intentionally not implemented — the bar is fixed-strict**, a reasonable default; runtime tuning is a future enhancement. `review_discovery`/`review_dispositions` blocks are added in their wiring phases (US3/US7), matching the no-speculative-config discipline used for getters.
 - [~] T003 Eval case files are created in their story phases (see T015/T021/T026/T029/T035/T039) rather than as empty placeholders (empty JSON = dead/invalid data)
 
 **Checkpoint**: module + config + eval scaffolding in place.
@@ -103,11 +103,11 @@ extends the triage post-pass and rubric.)*
 **Independent Test**: pre-existing non-critical → green `[Pre-Existing Issue]` (non-blocking);
 pre-existing critical → keeps critical + prefix; PR-introduced issue → no label, triaged normally.
 
-- [ ] T022 [P] [US6] Write tests in `koan/tests/test_review_triage.py` for pre-existing handling (non-critical predating changeset → forced `suggestion` + `[Pre-Existing Issue]` title prefix; critical → severity kept + prefix; in-changeset issue → no label; label deterministic per identity) — FR-027/028/029, SC-013
-- [ ] T023 [US6] Extend `koan/system-prompts/_partials/review-severity-rubric.md` with the `[Pre-Existing Issue]` rule (semantic "before the changeset" assessment) — contracts/prompt-partials.md
-- [ ] T024 [US6] Extend `review_triage.py` to enforce the `pre_existing` flag → prefix + forced `suggestion` for non-critical, prefix-only for critical; ensure coexist with freeze (FR-030 already applied in `review_reconcile`) (depends on T019, T022) — FR-027–030
-- [ ] T025 [US6] Unify the FR-003 critical-exception label with `[Pre-Existing Issue]` in `koan/app/review_reconcile.py` (surfaced critical-on-unchanged carries the prefix) (depends on T013, T024) — FR-028
-- [ ] T026 [P] [US6] Add golden eval case `koan/skills/core/review/evals/cases/pre_existing_downgrade.json` + baseline update — FR-022, SC-013
+- [X] T022 [P] [US6] Tests in `koan/tests/test_review_triage.py` (non-critical `[Pre-Existing Issue]` → forced `suggestion`; critical → severity kept; untagged → untouched; prefix normalized to one; demotion re-derives lgtm; fail-open) — FR-027/028/029, SC-013
+- [X] T023 [US6] Extend `review-severity-rubric.md` with the `[Pre-Existing Issue]` rule (reviewer's semantic "predates the changeset" assessment; non-critical → suggestion + prefix, critical → keep + prefix) — FR-029
+- [X] T024 [US6] Implement `koan/app/review_triage.py`: `enforce_pre_existing()` (detection is the reviewer's prefix per FR-029; deterministic enforcement of severity + prefix normalization) + `derive_lgtm()`; wired in the accuracy gate AFTER the freeze (FR-030 freeze-wins) — FR-027–030
+- [X] T025 [US6] Already satisfied in US1: `review_reconcile.compute_freeze` labels the surfaced critical-on-unchanged with `[Pre-Existing Issue]` (`PRE_EXISTING_PREFIX`, reused by `review_triage`) — FR-028
+- [X] T026 [P] [US6] Added eval case `koan/skills/core/review/evals/cases/pre_existing_downgrade.json`; dataset-validity green (127). Baseline is a null stub (live `--update-baseline`).
 
 **Checkpoint**: pre-existing issues fair and clearly labeled; never block on someone else's debt.
 

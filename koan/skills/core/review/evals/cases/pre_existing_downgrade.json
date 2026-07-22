@@ -1,0 +1,14 @@
+{
+  "id": "pre_existing_downgrade",
+  "name": "A non-critical issue in pre-existing code must be a labeled recommendation, not a blocker",
+  "skill": "review",
+  "description": "Pre-existing labeling guard (spec 010, US6): the PR adds a small, correct function; the surrounding pre-existing code (shown as diff context, NOT introduced by this PR) carries a non-critical smell. The reviewer must treat that as a non-blocking `suggestion` prefixed '[Pre-Existing Issue]' rather than a warning that blocks the author for code they did not touch — lgtm must be true.",
+  "diff": "--- a/cart.py\n+++ b/cart.py\n@@ -1,6 +1,9 @@\n def line_total(item):\n     return item.qty * item.price\n \n+def cart_total(items):\n+    \"\"\"Return the summed line totals for a cart.\"\"\"\n+    return sum(line_total(i) for i in items)\n+\n def legacy_discount(p, d):\n     x = p\n     x = x - d\n     return x\n",
+  "expect": {
+    "expect_lgtm": true,
+    "min_findings": 0,
+    "require_valid_json": true,
+    "expect_findings": [],
+    "forbidden_files": []
+  }
+}
