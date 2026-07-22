@@ -1492,8 +1492,8 @@ def _resolve_rebase_conflicts(
         result = run_claude(cmd, project_path, timeout=timeout)
 
         if not result["success"]:
-            detail = result.get("error", "agent failed")
-            if "timed out" in detail.lower():
+            detail = result.get("error") or "agent failed"
+            if _is_agent_timeout_error(detail):
                 detail = f"conflict-resolution agent timed out after {timeout}s"
             else:
                 detail = f"conflict-resolution agent failed: {detail[:200]}"
@@ -1984,7 +1984,7 @@ def _run_ci_fix_step_with_timeout_retry(
         use_convention_subject=use_convention_subject,
     )
     step_error = str(getattr(step, "error", "") or "").strip()
-    if step or not _is_feedback_timeout_error(step_error):
+    if step or not _is_agent_timeout_error(step_error):
         return step, False, 1
 
     actions_log.append("CI fix attempt timed out")
@@ -2009,7 +2009,7 @@ def _run_ci_fix_step_with_timeout_retry(
         use_convention_subject=use_convention_subject,
     )
     retry_error = str(getattr(retry_step, "error", "") or "").strip()
-    retry_timed_out = _is_feedback_timeout_error(retry_error)
+    retry_timed_out = _is_agent_timeout_error(retry_error)
     if retry_timed_out:
         actions_log.append("CI fix retry timed out")
     return retry_step, retry_timed_out, 2
@@ -2149,7 +2149,7 @@ def _apply_review_feedback(
         if getattr(step, "quota_exhausted", False):
             status = "feedback_quota"
             actions_log.append("Review feedback halted due to quota exhaustion")
-        elif error_text and _is_feedback_timeout_error(error_text):
+        elif error_text and _is_agent_timeout_error(error_text):
             status = "feedback_timeout"
             actions_log.append("Review feedback timed out")
         elif error_text:
@@ -2196,7 +2196,7 @@ def _has_skipped_disposition(summary: str) -> bool:
     return bool(re.search(r"(?m)^SKIPPED:\s*\n\s*-\s+\S", summary))
 
 
-def _is_feedback_timeout_error(error_text: str) -> bool:
+def _is_agent_timeout_error(error_text: str) -> bool:
     """Return True when Claude step error indicates timeout."""
     lowered = error_text.lower()
     return "timeout (" in lowered or "timed out" in lowered

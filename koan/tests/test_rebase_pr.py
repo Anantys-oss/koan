@@ -2954,10 +2954,12 @@ class TestRebaseWithConflictResolutionCrossFork:
 class TestResolveRebaseConflicts:
     def test_timeout_uses_configured_budget_and_reports_cause(self):
         failure_detail = []
+        # run_claude reports a hard timeout as "Timeout (<n>s)" — the cause
+        # classifier must recognize that exact form, not just "timed out".
         with patch("app.rebase_pr._get_conflicted_files", return_value=["a.py"]), \
              patch("app.cli_provider.build_full_command", return_value=["agent"]), \
              patch("app.rebase_pr.run_claude", return_value={
-                 "success": False, "error": "process timed out",
+                 "success": False, "error": "Timeout (777s)",
              }) as run_agent, \
              patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=777):
             result = _resolve_rebase_conflicts(
@@ -2968,6 +2970,24 @@ class TestResolveRebaseConflicts:
         assert result is False
         assert run_agent.call_args.kwargs["timeout"] == 777
         assert failure_detail == ["conflict-resolution agent timed out after 777s"]
+
+    def test_non_timeout_failure_reports_generic_cause(self):
+        failure_detail = []
+        with patch("app.rebase_pr._get_conflicted_files", return_value=["a.py"]), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={
+                 "success": False, "error": "exit 1: merge tool crashed",
+             }), \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=600):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=1,
+                skill_dir=REBASE_SKILL_DIR, failure_detail=failure_detail,
+            )
+
+        assert result is False
+        assert failure_detail == [
+            "conflict-resolution agent failed: exit 1: merge tool crashed"
+        ]
 
 
 class TestFetchPrContextHeadOwner:
