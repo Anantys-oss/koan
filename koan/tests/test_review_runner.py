@@ -312,10 +312,14 @@ class TestReviewVerdictContract:
     def test_main_prompt_forbids_blocking_on_suggestions(
         self, pr_context, real_review_skill_dir
     ):
-        """review.md carries an explicit Verdict Contract (body-only marker)."""
+        """The built review prompt carries the Verdict Contract's blocking rule.
+
+        The Verdict Contract now lives in the shared review-severity-rubric
+        partial (spec 010, US2), {@include}-d by the JSON review prompts. Assert
+        on the *rendered* prompt so the test tracks what the model actually sees,
+        regardless of which file physically holds the text.
+        """
         prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
-        # This sentence exists only in the review.md Verdict Contract section —
-        # not in any partial — so it is a non-vacuous, single-source marker.
         assert "Never reject a PR" in prompt
 
     def test_shared_lgtm_rule_marks_suggestions_non_blocking(
@@ -7789,3 +7793,300 @@ def test_fire_post_review_inits_registry_when_uninitialized(tmp_path):
     assert hooks.get_registry() is not None
     mod = sys.modules["koan_hook_capture"]
     assert mod.seen == ["42"]
+
+
+class TestReviewSidecarIdentity:
+    """Sidecar stamps finding identity + schema_version (spec 010, FR-002/D6)."""
+
+    def _read(self, instance_dir, owner, repo, pr):
+        from app.review_runner import _read_prior_findings_sidecar
+        return _read_prior_findings_sidecar(instance_dir, owner, repo, pr)
+
+    def test_write_stamps_identity_key_and_schema_version(self, tmp_path):
+        _write_review_findings_sidecar(
+            str(tmp_path), "octo", "repo", "42",
+            [{"file": "a.py", "line_start": 10, "title": "SQL injection risk",
+              "comment": "unsanitized input", "severity": "critical"}],
+            base_ref="main", head_sha="abc123",
+            review_summary={"lgtm": False},
+        )
+        sidecar = tmp_path / ".review-findings" / "octo_repo_42.json"
+        data = json.loads(sidecar.read_text())
+        assert data["schema_version"] == 1
+        fc = data["file_comments"][0]
+        assert "identity_key" in fc and fc["identity_key"]
+        assert "security" in fc["identity_key"]
+
+    def test_write_does_not_mutate_caller_findings(self, tmp_path):
+        findings = [{"file": "a.py", "line_start": 10, "title": "x", "comment": "y"}]
+        _write_review_findings_sidecar(
+            str(tmp_path), "octo", "repo", "42", findings,
+            base_ref="main", head_sha="abc123",
+        )
+        assert "identity_key" not in findings[0]
+
+    def test_read_round_trips_stamped_findings(self, tmp_path):
+        _write_review_findings_sidecar(
+            str(tmp_path), "octo", "repo", "42",
+            [{"file": "a.py", "line_start": 10, "title": "bare except swallows error",
+              "comment": "silent", "severity": "warning"}],
+            base_ref="main", head_sha="deadbeef",
+        )
+        comments, head = self._read(str(tmp_path), "octo", "repo", "42")
+        assert head == "deadbeef"
+        assert comments and "identity_key" in comments[0]
+
+    def test_read_missing_sidecar_fail_open(self, tmp_path):
+        comments, head = self._read(str(tmp_path), "none", "none", "1")
+        assert comments == [] and head == ""
+
+    def test_read_legacy_sidecar_without_identity(self, tmp_path):
+        sidecar_dir = tmp_path / ".review-findings"
+        sidecar_dir.mkdir(parents=True)
+        (sidecar_dir / "octo_repo_9.json").write_text(json.dumps({
+            "head_sha": "legacy1",
+            "file_comments": [{"file": "a.py", "line_start": 5, "title": "old"}],
+        }))
+        comments, head = self._read(str(tmp_path), "octo", "repo", "9")
+        assert head == "legacy1"
+        assert comments and comments[0]["file"] == "a.py"
+
+    def test_read_corrupt_sidecar_fail_open(self, tmp_path):
+        sidecar_dir = tmp_path / ".review-findings"
+        sidecar_dir.mkdir(parents=True)
+        (sidecar_dir / "octo_repo_7.json").write_text("{not valid json")
+        comments, head = self._read(str(tmp_path), "octo", "repo", "7")
+        assert comments == [] and head == ""
+
+
+class TestReadFileAtShaObservability:
+    """The GitHub-contents fallback in `_read_file_at_sha` must log on failure,
+    not silently disable snippet validation / reconciliation for the review."""
+
+    def test_logs_and_returns_none_on_contents_fetch_error(self):
+        from app import review_runner as rr
+
+        # project_path="" skips the local git path, forcing the API fallback.
+        with patch("app.review_runner.run_gh", side_effect=RuntimeError("api boom")), \
+             patch("app.review_runner.log") as mock_log:
+            result = rr._read_file_at_sha("o", "r", "deadbeef", "a.py", "")
+
+        assert result is None  # still fail-open
+        assert mock_log.called
+        assert mock_log.call_args[0][0] == "review"
+
+
+class TestCompareChangedFiles:
+    """`_compare_changed_files` must fail *open* (return None -> caller skips the
+    freeze), never fail toward suppression (spec 010, FR-003, D3). An
+    under-populated set would freeze — and silently drop — findings on
+    genuinely-changed code."""
+
+    def _call(self, run_gh_return=None, side_effect=None):
+        from app import review_runner as rr
+        with patch("app.review_runner.run_gh",
+                   return_value=run_gh_return, side_effect=side_effect):
+            return rr._compare_changed_files("o", "r", "oldsha", "newsha")
+
+    def test_normal_diff_returns_file_set(self):
+        assert self._call('["a.py", "b.py"]') == {"a.py", "b.py"}
+
+    def test_zero_file_diff_returns_empty_set(self):
+        # A genuine zero-file diff ("[]") is a definite answer: nothing changed
+        # since the prior head, so the freeze legitimately applies.
+        assert self._call("[]") == set()
+
+    def test_empty_response_returns_none(self):
+        # Ambiguous blank output must NOT be read as "no files changed" (which
+        # would suppress every first-time finding) — skip the freeze instead.
+        assert self._call("") is None
+        assert self._call("   \n  ") is None
+
+    def test_truncation_at_cap_returns_none(self):
+        from app import review_runner as rr
+        files = [f"f{i}.py" for i in range(rr._COMPARE_FILES_CAP)]
+        assert self._call(json.dumps(files)) is None
+
+    def test_below_cap_returns_full_set(self):
+        from app import review_runner as rr
+        files = [f"f{i}.py" for i in range(rr._COMPARE_FILES_CAP - 1)]
+        assert self._call(json.dumps(files)) == set(files)
+
+    def test_gh_error_returns_none(self):
+        assert self._call(side_effect=RuntimeError("boom")) is None
+
+    def test_non_list_payload_returns_none(self):
+        assert self._call('{"files": "oops"}') is None
+
+
+class TestReviewFreezeWiring:
+    """Freeze wiring in the accuracy gate (spec 010, US1, FR-003)."""
+
+    def _gate(self, review_data, prior, changed, sha="newsha"):
+        from app import review_runner as rr
+        with patch.object(rr, "_read_prior_findings_sidecar",
+                          return_value=(prior, "oldsha")), \
+             patch.object(rr, "_compare_changed_files", return_value=changed), \
+             patch("app.config.get_review_snippet_validation_config",
+                   return_value={"enabled": False, "on_mismatch": "off"}):
+            rr._apply_review_accuracy_gate(
+                review_data, owner="o", repo="r", sha=sha,
+                project_path="/tmp", project_name="", pr_number="1",
+            )
+
+    def test_first_time_noncritical_on_unchanged_file_frozen(self):
+        rd = {"file_comments": [
+            {"file": "b.py", "line_start": 10, "severity": "warning",
+             "title": "magic number nit", "comment": "style"}],
+            "review_summary": {"checklist": []}}
+        self._gate(rd, prior=[], changed={"a.py"})
+        assert rd["file_comments"] == []
+        assert rd.get("_freeze_summary", {}).get("suppressed") == 1
+
+    def test_finding_on_changed_file_survives(self):
+        rd = {"file_comments": [
+            {"file": "a.py", "line_start": 10, "severity": "warning",
+             "title": "real bug in new code", "comment": ""}],
+            "review_summary": {"checklist": []}}
+        self._gate(rd, prior=[], changed={"a.py"})
+        assert len(rd["file_comments"]) == 1
+
+    def test_no_freeze_when_changed_files_unknown(self):
+        rd = {"file_comments": [
+            {"file": "b.py", "line_start": 10, "severity": "warning",
+             "title": "nit", "comment": ""}],
+            "review_summary": {"checklist": []}}
+        self._gate(rd, prior=[], changed=None)  # compare failed -> fail-open
+        assert len(rd["file_comments"]) == 1
+
+    def test_no_freeze_when_prior_head_equals_current(self):
+        from app import review_runner as rr
+        rd = {"file_comments": [
+            {"file": "b.py", "line_start": 10, "severity": "warning",
+             "title": "nit", "comment": ""}],
+            "review_summary": {"checklist": []}}
+        with patch.object(rr, "_read_prior_findings_sidecar",
+                          return_value=([], "samesha")), \
+             patch.object(rr, "_compare_changed_files") as mock_cmp, \
+             patch("app.config.get_review_snippet_validation_config",
+                   return_value={"enabled": False, "on_mismatch": "off"}):
+            rr._apply_review_accuracy_gate(
+                rd, owner="o", repo="r", sha="samesha",
+                project_path="/tmp", project_name="", pr_number="1")
+        assert len(rd["file_comments"]) == 1
+        mock_cmp.assert_not_called()  # prior_head == sha -> freeze skipped
+
+
+class TestReviewSidecarReuseFields:
+    """Sidecar persists base_sha + request_signature for reuse (spec 010, US1)."""
+
+    def test_write_persists_base_sha_and_signature(self, tmp_path):
+        _write_review_findings_sidecar(
+            str(tmp_path), "octo", "repo", "42",
+            [{"file": "a.py", "line_start": 1, "title": "x", "comment": "y",
+              "severity": "warning"}],
+            base_ref="main", head_sha="head1", base_sha="base1",
+            request_signature={"focus_flags": ["architecture"],
+                               "discovery_enabled": False},
+        )
+        from app.review_runner import _read_prior_review_record
+        rec = _read_prior_review_record(str(tmp_path), "octo", "repo", "42")
+        assert rec["base_sha"] == "base1"
+        assert rec["request_signature"]["focus_flags"] == ["architecture"]
+
+    def test_read_record_missing_is_none(self):
+        from app.review_runner import _read_prior_review_record
+        assert _read_prior_review_record("/nonexistent", "o", "r", "1") is None
+
+
+class TestDispositionsPromptInjection:
+    """The dispositions guidance is config-gated in the built prompt (spec 010, US7)."""
+
+    @pytest.fixture
+    def real_review_skill_dir(self):
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    def test_included_by_default(self, pr_context, real_review_skill_dir):
+        prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "Human Dispositions" in prompt
+        assert "{DISPOSITIONS}" not in prompt  # placeholder resolved
+
+    def test_absent_when_disabled(self, pr_context, real_review_skill_dir):
+        with patch("app.config.get_review_dispositions_config",
+                   return_value={"enabled": False}):
+            prompt, _ = build_review_prompt(
+                pr_context, skill_dir=real_review_skill_dir)
+        assert "Human Dispositions" not in prompt
+        assert "{DISPOSITIONS}" not in prompt  # placeholder still resolved (to "")
+
+
+class TestDiscoveryPromptInjection:
+    """Comprehensive discovery is opt-in in the built prompt (spec 010, US3)."""
+
+    @pytest.fixture
+    def real_review_skill_dir(self):
+        return Path(__file__).resolve().parent.parent / "skills" / "core" / "review"
+
+    def test_absent_by_default(self, pr_context, real_review_skill_dir):
+        # SC-008: with discovery OFF (default), the prompt carries no discovery content.
+        prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "Comprehensive Discovery" not in prompt
+        assert "{COMPREHENSIVE_DISCOVERY}" not in prompt  # placeholder resolved to ""
+
+    def test_present_when_enabled(self, pr_context, real_review_skill_dir):
+        with patch("app.config.get_review_discovery_config",
+                   return_value={"enabled": True}):
+            prompt, _ = build_review_prompt(
+                pr_context, skill_dir=real_review_skill_dir)
+        assert "Comprehensive Discovery" in prompt
+        assert "correctness" in prompt.lower()
+
+
+class TestDiscoverySignature:
+    """discovery_enabled participates in the reuse request signature (FR-016)."""
+
+    def test_signature_differs_by_discovery(self):
+        from app.review_reuse import request_signature
+        off = request_signature([], False)
+        on = request_signature([], True)
+        assert off != on
+
+
+class TestTriageAccounting:
+    """Compact demote/drop accounting note (spec 010, US4, FR-024)."""
+
+    def test_absent_when_nothing_filtered(self):
+        from app.review_runner import _format_triage_accounting
+        assert _format_triage_accounting({"file_comments": []}) == ""
+
+    def test_counts_and_collapsed(self):
+        from app.review_runner import _format_triage_accounting
+        rd = {
+            "_freeze_summary": {"suppressed": 2, "kept_pre_existing_critical": 0},
+            "_pre_existing_summary": {"demoted": 3, "critical_labeled": 1},
+            "_deferred_summary": {"deferred": 1},
+        }
+        note = _format_triage_accounting(rd)
+        assert "<details>" in note and "</details>" in note  # collapsed/secondary
+        assert "2 pre-existing finding(s) on unchanged code suppressed" in note
+        assert "3 pre-existing finding(s) demoted" in note
+        assert "1 finding(s) deferred" in note
+
+    def test_partial_only_shows_present(self):
+        from app.review_runner import _format_triage_accounting
+        note = _format_triage_accounting({"_deferred_summary": {"deferred": 2}})
+        assert "2 finding(s) deferred" in note
+        assert "suppressed" not in note
+
+    def test_malformed_input_safe(self):
+        from app.review_runner import _format_triage_accounting
+        assert _format_triage_accounting(None) == ""
+
+    def test_rendered_into_review_body(self):
+        rd = {
+            "file_comments": [],
+            "review_summary": {"lgtm": True, "summary": "ok", "checklist": []},
+            "_freeze_summary": {"suppressed": 1, "kept_pre_existing_critical": 0},
+        }
+        body = _format_review_as_markdown(rd, title="X")
+        assert "Triage summary" in body

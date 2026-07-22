@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "koan/review-findings-sidecar",
+  "title": "Review findings sidecar (extended)",
+  "description": "Per-PR prior-review record at instance/.review-findings/{owner}_{repo}_{pr}.json. Extends the existing sidecar written by _write_review_findings_sidecar. Reader is fail-open: a missing, corrupt, or legacy (no schema_version) file is treated as 'no prior review' (FR-007).",
+  "type": "object",
+  "required": ["head_sha", "file_comments", "review_summary"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "description": "Migration guard. Absent => legacy sidecar (pre-feature): read head_sha + file_comments only, ignore new fields."
+    },
+    "head_sha": {
+      "type": "string",
+      "description": "PR head SHA reviewed (existing field). Part of the reuse key (FR-001)."
+    },
+    "base_sha": {
+      "type": "string",
+      "description": "NEW. Base/merge-base SHA at review time. Part of the reuse key: base movement forces re-derive (FR-001, D2)."
+    },
+    "request_signature": {
+      "type": "object",
+      "description": "NEW. Equivalence signature for reuse (FR-001/FR-016).",
+      "properties": {
+        "focus_flags": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Sorted focus flags present (--architecture/--errors/--comments/--plan-url)."
+        },
+        "discovery_enabled": {
+          "type": "boolean",
+          "description": "Whether comprehensive discovery was on (FR-016)."
+        }
+      }
+    },
+    "file_comments": {
+      "type": "array",
+      "description": "Surfaced findings (existing). Each element conforms to review_schema FILE_COMMENTS_SCHEMA plus derived fields below.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {"type": "string"},
+          "line_start": {"type": "integer"},
+          "line_end": {"type": "integer"},
+          "severity": {"type": "string", "enum": ["critical", "warning", "suggestion"]},
+          "title": {"type": "string", "description": "May carry a [Pre-Existing Issue] or [Deferred] prefix (FR-027/FR-034)."},
+          "comment": {"type": "string"},
+          "code_snippet": {"type": "string"},
+          "identity_key": {"type": "string", "description": "NEW (derived). file + tolerant region + semantic topic (FR-002, D1)."},
+          "pre_existing": {"type": "boolean", "description": "NEW (derived). Issue predates the changeset (FR-027)."}
+        }
+      }
+    },
+    "review_summary": {
+      "type": "object",
+      "description": "Existing: summary text, lgtm verdict, checklist."
+    },
+    "dispositions": {
+      "type": "array",
+      "description": "NEW. Sticky human dispositions of findings (FR-031-038, D7). Persisted so a dismissed/deferred finding stays dispositioned across rounds until retracted (FR-037).",
+      "items": {
+        "type": "object",
+        "required": ["kind", "commenter", "target_key"],
+        "properties": {
+          "kind": {"type": "string", "enum": ["dismiss", "defer", "retract"]},
+          "commenter": {"type": "string", "description": "Non-bot comment author (bot comments excluded)."},
+          "rationale_quote": {"type": "string", "description": "Quoted/linked comment text. Mandatory for attribution (FR-036)."},
+          "target_key": {"type": "string", "description": "identity_key of the finding addressed."},
+          "at": {"type": "string", "description": "Timestamp for retract ordering."}
+        }
+      }
+    }
+  }
+}

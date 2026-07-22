@@ -48,6 +48,7 @@ from app.config import (
     get_rebase_include_bot_feedback,
     get_rebase_ci_idle_timeout,
     get_rebase_ci_max_duration,
+    get_rebase_conflict_timeout,
     get_rebase_max_conflict_rounds,
     get_rebase_review_idle_timeout,
     get_rebase_review_max_duration,
@@ -647,6 +648,7 @@ def run_rebase(
     skill_dir: Optional[Path] = None,
     min_severity: Optional[str] = None,
     fix: bool = False,
+    feedback_context: str = "",
 ) -> Tuple[bool, str]:
     """Run the rebase pipeline and emit a single outcome line.
 
@@ -663,7 +665,7 @@ def run_rebase(
     success, summary = _run_rebase_impl(
         owner, repo, pr_number, project_path,
         notify_fn=notify_fn, skill_dir=skill_dir, min_severity=min_severity,
-        fix=fix, outcome_meta=outcome_meta,
+        fix=fix, feedback_context=feedback_context, outcome_meta=outcome_meta,
     )
 
     from app.messaging_level import notify_outcome
@@ -698,6 +700,7 @@ def _run_rebase_impl(
     skill_dir: Optional[Path] = None,
     min_severity: Optional[str] = None,
     fix: bool = False,
+    feedback_context: str = "",
     outcome_meta: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str]:
     """Execute the rebase pipeline for a pull request.
@@ -860,7 +863,8 @@ def _run_rebase_impl(
             return False, (
                 "[conflict_unresolved] "
                 f"Rebase failed on `{base_remote or '?'}/{base}`. "
-                f"Could not resolve conflicts.\n{guidance}"
+                f"Could not resolve conflicts."
+                f"{' Cause: ' + detail if detail else ''}\n{guidance}"
             )
         return False, (
             f"[{error_code}] Rebase of `{branch}` onto "
@@ -885,7 +889,11 @@ def _run_rebase_impl(
     change_summary = ""
     feedback_status = ""
     feedback_reason = ""
-    if apply_feedback and _has_review_feedback(context):
+    # Run the feedback leg when there is reviewer feedback to address OR the
+    # human supplied an explicit request. The invariant in specs/skills/rebase.md
+    # requires the post-URL context to thread into the feedback prompt, so an
+    # explicit request must not be dropped just because the PR has no comments.
+    if apply_feedback and (_has_review_feedback(context) or feedback_context.strip()):
         severity_hint = ""
         if min_severity and min_severity != "suggestion":
             included = severity_at_or_above(min_severity)
@@ -898,6 +906,7 @@ def _run_rebase_impl(
             skill_dir=skill_dir,
             commit_conventions=commit_conventions,
             min_severity=min_severity,
+            feedback_context=feedback_context,
             result_meta=feedback_meta,
         )
         feedback_status = feedback_meta.get("status", "")
@@ -970,6 +979,13 @@ def _run_rebase_impl(
             feedback_reason = "the feedback step errored"
             if outcome_meta is not None:
                 outcome_meta["feedback_unapplied"] = "step errored"
+        if feedback_status == "feedback_no_disposition":
+            _safe_checkout(original_branch, project_path)
+            return False, (
+                "[feedback_no_disposition] Review feedback made no changes and "
+                "did not provide the required explanation. The rebased branch was "
+                "not pushed; retry /rebase --fix after reviewing the feedback."
+            )
 
         # Claude may switch branches during feedback — ensure we're still
         # on the expected branch before pushing.
@@ -1357,14 +1373,19 @@ def _rebase_with_conflict_resolution(
         (*result_meta*, when given, then carries ``error``/``detail``).
     """
 
+    conflict_failure: List[str] = []
+
     def _on_conflict(proj_path: str) -> bool:
         """Conflict callback: resolve via Claude then continue the rebase."""
-        return _resolve_rebase_conflicts(
+        resolved = _resolve_rebase_conflicts(
             base, "",  # remote not needed — conflicts already in progress
             proj_path, context, actions_log,
             notify_fn=notify_fn, skill_dir=skill_dir,
-            max_rounds=max_conflict_rounds,
+            max_rounds=max_conflict_rounds, failure_detail=conflict_failure,
         )
+        if not resolved and result_meta is not None and conflict_failure:
+            result_meta["detail"] = conflict_failure[-1]
+        return resolved
 
     return _rebase_onto_target(
         base, project_path,
@@ -1418,6 +1439,7 @@ def _resolve_rebase_conflicts(
     notify_fn=None,
     skill_dir: Optional[Path] = None,
     max_rounds: int = 5,
+    failure_detail: Optional[List[str]] = None,
 ) -> bool:
     """Resolve rebase conflicts via Claude, then continue the rebase.
 
@@ -1466,12 +1488,20 @@ def _resolve_rebase_conflicts(
             fallback=models["fallback"],
             max_turns=get_skill_max_turns(),
         )
-        result = run_claude(cmd, project_path, timeout=300)
+        timeout = get_rebase_conflict_timeout()
+        result = run_claude(cmd, project_path, timeout=timeout)
 
         if not result["success"]:
+            detail = result.get("error") or "agent failed"
+            if _is_agent_timeout_error(detail):
+                detail = f"conflict-resolution agent timed out after {timeout}s"
+            else:
+                detail = f"conflict-resolution agent failed: {detail[:200]}"
+            if failure_detail is not None:
+                failure_detail.append(detail)
             print(
                 f"[rebase_pr] Claude conflict resolution failed (round {round_num}): "
-                f"{result['error'][:200]}",
+                f"{detail}",
                 file=sys.stderr,
             )
             return False
@@ -1537,6 +1567,7 @@ def _build_conflict_resolution_prompt(
     return load_prompt_or_skill(
         skill_dir, "conflict_resolution",
         project_path=project_path or None,
+        apply_caveman=False,
         **kwargs,
     )
 
@@ -1953,7 +1984,7 @@ def _run_ci_fix_step_with_timeout_retry(
         use_convention_subject=use_convention_subject,
     )
     step_error = str(getattr(step, "error", "") or "").strip()
-    if step or not _is_feedback_timeout_error(step_error):
+    if step or not _is_agent_timeout_error(step_error):
         return step, False, 1
 
     actions_log.append("CI fix attempt timed out")
@@ -1978,7 +2009,7 @@ def _run_ci_fix_step_with_timeout_retry(
         use_convention_subject=use_convention_subject,
     )
     retry_error = str(getattr(retry_step, "error", "") or "").strip()
-    retry_timed_out = _is_feedback_timeout_error(retry_error)
+    retry_timed_out = _is_agent_timeout_error(retry_error)
     if retry_timed_out:
         actions_log.append("CI fix retry timed out")
     return retry_step, retry_timed_out, 2
@@ -1990,6 +2021,7 @@ def _build_rebase_prompt(
     commit_conventions: str = "",
     min_severity: Optional[str] = None,
     project_path: str = "",
+    feedback_context: str = "",
 ) -> str:
     """Build a prompt for Claude to analyze and apply review feedback."""
     prompt = _build_pr_prompt(
@@ -1997,6 +2029,18 @@ def _build_rebase_prompt(
         commit_conventions=commit_conventions,
         project_path=project_path,
     )
+
+    if feedback_context.strip():
+        from app.prompt_guard import fence_external_data
+
+        prompt += (
+            "\n\n## Explicit User Request\n\n"
+            "The user explicitly requested this outcome. Implement it when it is "
+            "valid, or give a concrete SKIPPED reason tied to the current code.\n"
+            + fence_external_data(
+                feedback_context.strip()[:1000], "GitHub command context",
+            )
+        )
 
     if min_severity and min_severity != "suggestion":
         included = severity_at_or_above(min_severity)
@@ -2029,6 +2073,7 @@ def _apply_review_feedback(
     skill_dir: Optional[Path] = None,
     commit_conventions: str = "",
     min_severity: Optional[str] = None,
+    feedback_context: str = "",
     result_meta: Optional[dict] = None,
 ) -> str:
     """Analyze review comments via Claude and apply requested changes.
@@ -2048,6 +2093,7 @@ def _apply_review_feedback(
         commit_conventions=commit_conventions,
         min_severity=min_severity,
         project_path=project_path,
+        feedback_context=feedback_context,
     )
 
     try:
@@ -2103,16 +2149,29 @@ def _apply_review_feedback(
         if getattr(step, "quota_exhausted", False):
             status = "feedback_quota"
             actions_log.append("Review feedback halted due to quota exhaustion")
-        elif error_text and _is_feedback_timeout_error(error_text):
+        elif error_text and _is_agent_timeout_error(error_text):
             status = "feedback_timeout"
             actions_log.append("Review feedback timed out")
         elif error_text:
             status = "feedback_failed"
             actions_log.append("Review feedback failed (continuing with rebase)")
+        else:
+            no_change_summary = step.output.strip()
+            if commit_conventions:
+                from app.commit_conventions import strip_commit_subject_line
+                no_change_summary = strip_commit_subject_line(no_change_summary)
+            if _has_skipped_disposition(no_change_summary):
+                status = "evaluated_no_changes"
+                actions_log.append("Review feedback evaluated; no changes required")
+                if result_meta is not None:
+                    result_meta["summary"] = no_change_summary[:1500]
+            else:
+                status = "feedback_no_disposition"
+                actions_log.append("Review feedback returned no changes or explanation")
         if result_meta is not None:
             result_meta["status"] = status
             result_meta["error"] = error_text
-        return ""
+        return result_meta.get("summary", "") if result_meta is not None else ""
     if result_meta is not None:
         result_meta["status"] = "committed"
         result_meta["error"] = ""
@@ -2132,7 +2191,12 @@ def _apply_review_feedback(
     return change_summary
 
 
-def _is_feedback_timeout_error(error_text: str) -> bool:
+def _has_skipped_disposition(summary: str) -> bool:
+    """Return whether a no-change feedback response explains its decision."""
+    return bool(re.search(r"(?m)^SKIPPED:\s*\n\s*-\s+\S", summary))
+
+
+def _is_agent_timeout_error(error_text: str) -> bool:
     """Return True when Claude step error indicates timeout."""
     lowered = error_text.lower()
     return "timeout (" in lowered or "timed out" in lowered
@@ -2564,6 +2628,11 @@ def main(argv=None):
             "a bare rebase only rebases onto the target branch."
         ),
     )
+    parser.add_argument(
+        "--feedback-context",
+        default="",
+        help="Human request to prioritize while applying review feedback.",
+    )
     cli_args = parser.parse_args(argv)
 
     try:
@@ -2579,6 +2648,7 @@ def main(argv=None):
         skill_dir=skills_base / "rebase",
         min_severity=cli_args.min_severity,
         fix=cli_args.fix,
+        feedback_context=cli_args.feedback_context,
     )
 
     if not success and _is_conflict_failure(summary):

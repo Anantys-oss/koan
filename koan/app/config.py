@@ -1555,6 +1555,12 @@ def get_rebase_max_conflict_rounds() -> int:
     return max(1, _safe_int(config.get("rebase_max_conflict_rounds", 10), 10))
 
 
+def get_rebase_conflict_timeout() -> int:
+    """Get the per-round conflict-resolution agent timeout (default 600s)."""
+    config = _load_config()
+    return max(1, _safe_int(config.get("rebase_conflict_timeout", 600), 600))
+
+
 def get_contemplative_max_turns() -> int:
     """Get max turns for contemplative reflection sessions.
 
@@ -2489,6 +2495,198 @@ def get_review_reflect_config() -> dict:
     except (TypeError, ValueError):
         threshold = defaults["threshold"]
     return {"threshold": max(0, min(10, threshold))}
+
+
+def get_review_consistency_config(project_name: str = "") -> dict:
+    """Consistency controls for repeated reviews (spec 010, US1).
+
+    Config key: review_consistency
+      - reuse_enabled (bool): when the PR head AND base (merge-base) SHA are
+        unchanged and the request is equivalent, reproduce the prior review
+        instead of re-deriving it (FR-001). Default: True.
+      - freeze_enabled (bool): on a re-review, suppress first-time non-critical
+        findings on code unchanged since the prior review (the "review whiplash"
+        case); a critical still surfaces, labelled pre-existing (FR-003).
+        Default: True.
+
+    Both default on and fail-open (a stray non-bool degrades to the default).
+
+    Returns:
+        Dict with keys: reuse_enabled (bool), freeze_enabled (bool).
+    """
+    defaults = {"reuse_enabled": True, "freeze_enabled": True}
+    merged = _get_config_with_overrides(
+        "review_consistency", defaults, project_name)
+    return {
+        "reuse_enabled": _safe_bool(
+            merged.get("reuse_enabled"), defaults["reuse_enabled"]),
+        "freeze_enabled": _safe_bool(
+            merged.get("freeze_enabled"), defaults["freeze_enabled"]),
+    }
+
+
+def get_review_discovery_config(project_name: str = "") -> dict:
+    """Opt-in comprehensive multi-perspective discovery (spec 010, US3).
+
+    When enabled, the review prompt gains guidance to review from a fixed set of
+    focused perspectives (correctness, security, architecture, silent-failure,
+    test-coverage) and merge/dedup the findings into one set — catching more in a
+    single pass so later reviews have less to add. Costs more tokens/time, so it
+    is **OFF by default**: with it off the review prompt and behaviour are
+    byte-identical to the pre-010 single-pass review (SC-008). Whole-mode toggle.
+
+    Config key: review_discovery
+      - enabled (bool): include the comprehensive-discovery guidance. Default: False.
+
+    Returns:
+        Dict with key: enabled (bool).
+    """
+    defaults = {"enabled": False}
+    merged = _get_config_with_overrides(
+        "review_discovery", defaults, project_name)
+    return {"enabled": _safe_bool(merged.get("enabled"), defaults["enabled"])}
+
+
+def get_review_dispositions_config(project_name: str = "") -> dict:
+    """Honor human PR-comment dispositions of findings (spec 010, US7).
+
+    When enabled, the review prompt is told to honor human dispositions — dismiss
+    ("ignore"/"not a problem") and defer ("fix later") — that reviewers leave as
+    PR comments, so a dismissed finding stops being re-raised as a blocker. The
+    posture ("any non-bot commenter, all severities including critical") is fixed
+    in the prompt; this switch only turns the whole behavior on or off, so a
+    security-conscious operator can disable the open posture.
+
+    Config key: review_dispositions
+      - enabled (bool): include the disposition-honoring guidance. Default: True.
+
+    Returns:
+        Dict with key: enabled (bool).
+    """
+    defaults = {"enabled": True}
+    merged = _get_config_with_overrides(
+        "review_dispositions", defaults, project_name)
+    return {"enabled": _safe_bool(merged.get("enabled"), defaults["enabled"])}
+
+
+def get_review_snippet_validation_config(project_name: str = "") -> dict:
+    """Validate each finding's code_snippet against the file at the reviewed SHA.
+
+    A finding's quoted code block is model-authored and, before this gate, was
+    never checked against the actual source at the reviewed HEAD — so a
+    re-review could quote pre-fix lines under a permalink that points at the
+    already-fixed code. This gate reconciles the quote with authoritative
+    content at the reviewed SHA.
+
+    Config key: review_snippet_validation
+      - enabled (bool): run the gate. Default: True.
+      - on_mismatch (str): action when the snippet no longer matches at the
+        anchor — "resync" (replace the quote with the real current lines,
+        default), "drop" (remove the finding), "annotate" (append the current
+        source), or "off" (leave the snippet untouched). Invalid values fall
+        back to "resync". A finding whose anchor line is past end-of-file at
+        HEAD is dropped unless on_mismatch is "off"; a file that no longer
+        resolves at HEAD (deleted, or a transient fetch failure) is left in
+        place (fail-open, never a false drop).
+
+    Returns:
+        Dict with keys: enabled (bool), on_mismatch (str).
+    """
+    defaults = {"enabled": True, "on_mismatch": "resync"}
+    merged = _get_config_with_overrides(
+        "review_snippet_validation", defaults, project_name)
+    on_mismatch = str(merged.get("on_mismatch") or "resync").strip().lower()
+    if on_mismatch not in ("resync", "drop", "annotate", "off"):
+        on_mismatch = "resync"
+    return {
+        "enabled": _safe_bool(merged.get("enabled"), defaults["enabled"]),
+        "on_mismatch": on_mismatch,
+    }
+
+
+def get_review_reconcile_config(project_name: str = "") -> dict:
+    """Programmatically reconcile prior findings against the reviewed HEAD.
+
+    On a re-review, prior findings that are already fixed must not be raised
+    again. This pass reads the previous run's structured findings (the review
+    sidecar), checks each against authoritative content at the reviewed SHA,
+    suppresses re-raised copies of resolved findings, and can surface a
+    "Resolved since last review" section. Suppression is conservative and
+    fail-open, so on-by-default is safe.
+
+    Config key: review_reconcile
+      - enabled (bool): run the reconciliation pass. Default: True.
+      - show_resolved (bool): render a "Resolved since last review" section.
+        Default: True.
+
+    Returns:
+        Dict with keys: enabled (bool), show_resolved (bool).
+    """
+    defaults = {"enabled": True, "show_resolved": True}
+    merged = _get_config_with_overrides("review_reconcile", defaults, project_name)
+    return {
+        "enabled": _safe_bool(merged.get("enabled"), defaults["enabled"]),
+        "show_resolved": _safe_bool(
+            merged.get("show_resolved"), defaults["show_resolved"]),
+    }
+
+
+def get_review_convention_docs_config(project_name: str = "") -> dict:
+    """Native ingestion of the reviewed repo's own convention/knowledge docs.
+
+    When enabled, /review reads the reviewed repo's convention docs
+    (AGENTS.md/CLAUDE.md/CONTRIBUTING.md + an auto-detected OKF ``docs/`` bundle)
+    and injects them into a dedicated ``{REPO_CONVENTIONS}`` prompt slot, so the
+    reviewer applies repo-specific conventions and stops raising
+    convention-based false positives. Auto-detecting: a repo shipping none of
+    these files yields an empty block, so it is safe to leave enabled.
+
+    Config key: review_convention_docs
+      - enabled (bool): master switch. Default: True.
+      - auto_detect_okf (bool): detect an OKF docs/ bundle via docs/index.md.
+        Default: True.
+      - okf_docs_dir (str): bundle directory. Default: "docs".
+      - include_topic_indexes (bool): include per-topic index.md catalogs
+        (not full topic pages). Default: True.
+      - well_known (list[str]): root convention files, priority order.
+        Default: ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"].
+      - max_chars (int >= 0): cap for the whole injected block. Default: 16000.
+
+    Returns:
+        Fully-populated dict; malformed values fall back to defaults.
+    """
+    defaults = {
+        "enabled": True,
+        "auto_detect_okf": True,
+        "okf_docs_dir": "docs",
+        "include_topic_indexes": True,
+        "well_known": ["AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md"],
+        "max_chars": 16000,
+    }
+    merged = _get_config_with_overrides(
+        "review_convention_docs", defaults, project_name)
+
+    well_known = merged.get("well_known", defaults["well_known"])
+    if not isinstance(well_known, list):
+        well_known = defaults["well_known"]
+    well_known = [str(p) for p in well_known]
+
+    okf_docs_dir = merged.get("okf_docs_dir", defaults["okf_docs_dir"])
+    if not isinstance(okf_docs_dir, str) or not okf_docs_dir.strip():
+        okf_docs_dir = defaults["okf_docs_dir"]
+
+    max_chars = _safe_int(merged.get("max_chars"), defaults["max_chars"])
+
+    return {
+        "enabled": _safe_bool(merged.get("enabled"), defaults["enabled"]),
+        "auto_detect_okf": _safe_bool(
+            merged.get("auto_detect_okf"), defaults["auto_detect_okf"]),
+        "okf_docs_dir": okf_docs_dir,
+        "include_topic_indexes": _safe_bool(
+            merged.get("include_topic_indexes"), defaults["include_topic_indexes"]),
+        "well_known": well_known,
+        "max_chars": max(0, max_chars),
+    }
 
 
 def get_speckit_config() -> dict:

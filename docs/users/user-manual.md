@@ -551,7 +551,7 @@ Before attempting a fix, `/fix` runs a lightweight read-only diagnostic phase us
 
 After a draft PR is created, `/fix` also runs the private review gate when it is enabled (opt-in; disabled by default during the testing phase). Findings and fix attempts stay backend-only: no review comment, verdict, or issue comment is posted by the gate.
 
-If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebase --fix` — addressing review concerns on an existing PR is exactly what `/rebase --fix` does. It injects `--fix` (because a bare `/rebase` now only rebases), and the `--now` flag and any trailing context are preserved through the redirect.
+If you point `/fix` at a **PR URL** instead of an issue, it redirects to `/rebase --fix` — addressing review concerns on an existing PR is exactly what `/rebase --fix` does. GitHub `@koan-bot fix` on a PR is canonicalized to that same command before it is queued; bare `@koan-bot rebase` remains rebase-only. It injects `--fix` (because a bare `/rebase` now only rebases), and the `--now` flag and any trailing context are preserved as explicit feedback focus.
 
 <details>
 <summary>Use cases</summary>
@@ -709,6 +709,8 @@ strategy, and re-reviews up to the configured round limit. Gate failures are
 reported in the rebase summary but do not fail an otherwise successful rebase.
 
 When `/rebase` runs long, Kōan uses activity-aware limits for review and CI-fix phases: it allows long sessions when CLI output keeps flowing, but still aborts stalled phases after inactivity or a max-duration cap. If the review-feedback step *stalls* (idle/max-duration timeout), Kōan now restores the clean rebased checkpoint and still pushes the rebase (without partial feedback edits), so timeout noise does not discard a valid rebase. If the feedback step hits a *provider quota limit*, the rebase still stops so you can retry after quota reset. Any other transient feedback error remains best-effort and does not block pushing the rebase.
+
+Conflict resolution has a separate per-round agent budget of 600 seconds (`rebase_conflict_timeout`). If it expires or conflicts remain unresolved, Kōan aborts the partial rebase and retains the existing recreate fallback; the failure summary identifies an agent timeout when that was the cause.
 
 `/rebase` is strict about *what* it rebases onto: the branch is rebased only
 onto the PR's actual base repository's branch, freshly fetched. The mission
@@ -1400,6 +1402,7 @@ rebase_review_idle_timeout: 1800   # /rebase review phase: kill on inactivity
 rebase_review_max_duration: 10800  # /rebase review phase: absolute cap
 rebase_ci_idle_timeout: 1800       # /rebase CI-fix phase: kill on inactivity
 rebase_ci_max_duration: 7200       # /rebase CI-fix phase: absolute cap
+rebase_conflict_timeout: 600       # Per conflict-resolution round before recreate fallback
 rebase_include_bot_feedback: true  # Include bot-authored PR comments in feedback analysis (set false to filter them out)
 allow_rebase_foreign_prs: false    # Telegram /rebase can target non-instance PRs
 strip_co_authored_by: false        # Strip Co-Authored-By trailers from generated commits (set true to enable)

@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-16
+updated: 2026-07-22
 ---
 
 # Skill Spec — `review`
@@ -150,6 +150,70 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   hunter, so this overlap is exercised by
   `TestReviewPostsBeforeEnrichment::test_coverage_note_survives_hunter_append_overlap`
   in `koan/tests/test_review_runner.py`.
+
+### Consistency, triage & human dispositions (spec 010)
+
+These invariants make repeated reviews stable, keep the blocking tier trustworthy,
+and let humans close the loop. All are fail-open (a missing input degrades to the
+prior single-pass behaviour) and the consistency-critical decisions are made in
+deterministic Python (`review_identity`, `review_reuse`, `review_reconcile`,
+`review_triage`), not in model output.
+
+- **Finding identity (FR-002).** A finding's identity key is `file` + a tolerant
+  region bucket + a semantic category (`review_identity.finding_key`) — independent
+  of exact line numbers and title wording. `same_finding` adds ±line tolerance for
+  cross-run matching. The sidecar stamps each persisted finding with its key.
+- **Reuse on unchanged head+base (FR-001).** When the PR head **and** base
+  (merge-base) SHA are both unchanged since the prior review **and** the request is
+  equivalent (same focus flags + comprehensive-discovery setting — the
+  `request_signature`), `run_review` reproduces the prior review instead of
+  re-deriving it (`review_reuse.should_reuse`), rather than re-rolling a fresh set.
+  Base movement defeats reuse (the effective diff changed). Reuse is
+  distinguishable and never a silent no-op; a missing/non-equivalent prior record
+  falls back to a fresh review. Gated by `review_consistency.reuse_enabled` (default
+  on). The prior-review sidecar persists `base_sha` + `request_signature` for this.
+- **Re-review freeze (FR-003).** On a re-review (head moved), a **first-time
+  non-critical** finding on a **file unchanged since the prior review** is
+  **suppressed** — the "review whiplash" case (new complaints on code the author did
+  not touch). Recurring prior findings and findings in changed files are unaffected.
+  A `critical` is the sole exception: it still surfaces, prefixed
+  `[Pre-Existing Issue]`. Freeze is file-level and fail-open (`review_reconcile.compute_freeze`;
+  the runner applies `_remap_findings_after_drop`). Gated by
+  `review_consistency.freeze_enabled` (default on).
+- **Yellow-tier bar (FR-008–010).** The `warning` (🟡 Important) tier — a *blocking*
+  severity — is reserved for issues that clearly block merge or risk real harm;
+  borderline "should-fix" items are `suggestion`s; vague/speculative/cosmetic noise
+  is dropped. Set by the shared `review-severity-rubric` prompt partial ({@include}-d
+  by `review.md` + `review-with-plan.md`; the markdown architecture prompt carries an
+  equivalent Rules bullet). The bar is prompt-fixed at strict (not runtime config).
+- **Exhaustive single-pass (FR-025).** The default prompt aims to surface every
+  genuine issue in one pass (no finding cap), so later reviews have less to add;
+  higher recall still flows through the same bar (no blocking-set inflation).
+- **Pre-existing labeling (FR-027/028).** A finding the reviewer judges to predate
+  the changeset carries the `[Pre-Existing Issue]` title prefix; if non-critical it
+  is forced to `suggestion` (non-blocking), if `critical` it keeps its severity.
+  Detection is the reviewer's semantic call (the prefix); `review_triage.enforce_pre_existing`
+  enforces the severity rule deterministically and re-derives `lgtm`. Coexists with
+  the freeze — the freeze runs first, so "freeze wins" on unchanged code (FR-030).
+- **Human dispositions (FR-031–038).** On a re-review the reviewer honors human PR
+  comments that **dismiss** ("ignore"/"not a problem" → not re-raised as a blocker)
+  or **defer** ("fix later" → non-blocking `[Deferred]` recommendation) a finding.
+  Any non-bot commenter, all severities including a human-dismissed `critical` ("the
+  agent proposes, the human decides"). Every comment-driven suppression/downgrade
+  MUST be attributed (commenter + quoted rationale) — never silent. A comment
+  disposes of a *specific finding* only; it MUST NOT rewrite the severity rubric or
+  verdict (injection guardrail). Stickiness + retraction come from re-reading the
+  live comment thread each review (no separate store). Guidance is injected via the
+  config-gated `{DISPOSITIONS}` slot (`review_dispositions.enabled`, default on — the
+  kill-switch for the open posture); `review_triage.enforce_deferred` enforces the
+  `[Deferred]` downgrade deterministically.
+- **Opt-in comprehensive discovery (FR-015–021).** When `review_discovery.enabled`
+  (default **off**), the review prompt gains the `review-comprehensive-discovery`
+  guidance: review from a fixed perspective set (correctness, security, architecture,
+  silent-failure, test-coverage), merge findings into one deduplicated set, same bar
+  and verdict. Off → the prompt carries zero discovery content (byte-identical
+  single-pass path). Part of the reuse `request_signature`, so a single-pass review
+  is never reused as a comprehensive one.
 
 ## Evaluation
 

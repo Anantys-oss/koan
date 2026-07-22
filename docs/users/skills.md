@@ -52,12 +52,12 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/plan [--iterations N] <desc>` | — | Deep-think an idea, create a tracker issue with task-level plan (file map, checkbox steps, code blocks, self-review). `--iterations N` (1-5) runs N critique+refine rounds. Loads project MCP servers when `plan` is in `mcp_roles` (default). | — |
 | `/deepplan <desc>` | `/deeplan` | Spec-first design: explore approaches, post spec, queue /plan | — |
 | `/implement <issue>` | `/impl` | Queue implementation for a GitHub or Jira issue; creates a draft PR, then privately reviews/fixes Important+ findings by default | Yes |
-| `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic. A PR URL is redirected to `/rebase --fix` (preserving `--now` and trailing context) so review feedback is addressed on the same branch — including a GitHub `@bot fix` on a PR, which force-pushes the existing branch and never opens a new PR | Yes |
+| `/fix <issue>` | — | Diagnose → understand → plan → test → implement → submit PR, then privately reviews/fixes Important+ findings by default. Use `--skip-diagnose` to bypass the diagnostic. On a PR, including GitHub `@bot fix`, this is queued explicitly as `/rebase --fix`; bare `@bot rebase` remains a simple rebase. Trailing context is passed to the feedback prompt. | Yes |
 | `/debug <issue>` | `/dbg` | Structured 4-step debug loop: reproduce → hypothesize → minimal fix → verify. Auto-queued when `/fix` fails (opt-in via `debug_escalation.on_fix_failure` in config.yaml) | Yes |
 | `/review <PR> [PR ...] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | Review one or more pull requests; each URL queues a separate review mission. `--bot-comments` triages bot findings | Yes |
 | `/ultrareview <PR>` | `/urv` | Ultra-thorough review: architecture + silent-failure passes combined | Yes |
 | `/explain <PR>` | `/xp` | Explain a PR's changes in plain language with examples and alternative approaches | Yes |
-| `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context | Yes |
+| `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context. Conflict resolution has a 10-minute per-round budget before the existing recreate fallback. | Yes |
 | `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |
@@ -118,6 +118,37 @@ review started and when the comment is posted, Kōan appends an **IMPORTANT**
 banner to the comment noting that the findings predate your latest push — so you
 don't act on stale feedback. Re-run `/review` to cover the new commits. Nothing
 changes for the common case where the branch didn't move.
+
+**Consistent reviews (no whiplash).** Re-running `/review` is stable, not a fresh
+roll of the dice:
+
+- **Unchanged code → reproduced.** If the PR head *and* base are unchanged since
+  the last review and you ask for the same kind of review, Kōan reproduces the
+  prior review instead of re-analysing (so the findings don't drift). Turn off via
+  `review_consistency.reuse_enabled: false`.
+- **Fix-and-push → no new complaints on untouched code.** After you fix findings
+  and push, a re-review won't suddenly raise *new* non-critical issues on files you
+  didn't touch — those should have been caught the first time (and the review now
+  aims to catch everything in one pass). Only a genuine **critical** on pre-existing
+  code still surfaces, marked `[Pre-Existing Issue]`. Turn off via
+  `review_consistency.freeze_enabled: false`.
+
+**Trustworthy 🟡 Important tier.** The yellow (blocking) tier is reserved for issues
+that clearly should block merge; borderline "should-fix" items are demoted to 🟢
+recommendations and don't block the PR. Issues that **predate your PR** are shown as
+🟢 `[Pre-Existing Issue]` recommendations (a pre-existing critical keeps its severity
+but is still labeled), so you're not blocked for code you didn't write.
+
+**Your comments are honored.** On a re-review, if a human comment says a finding
+should be ignored / isn't a problem, Kōan won't re-raise it as a blocker; if a
+comment says "fix later", the finding becomes a non-blocking `[Deferred]`
+recommendation. The change is always attributed to the commenter. Disable with
+`review_dispositions.enabled: false`.
+
+**Comprehensive mode (opt-in).** Set `review_discovery.enabled: true` (per-instance
+or per-project) for a more thorough multi-perspective pass that catches more in a
+single review (higher token/time cost). Off by default — the normal `/review` is
+unchanged.
 
 **Large diffs & partial-coverage warning:** Review diffs are packed to fit a
 token budget by the diff compressor (`optimizations.review_compressor.token_budget`,

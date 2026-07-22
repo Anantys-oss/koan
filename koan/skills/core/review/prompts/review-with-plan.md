@@ -14,7 +14,7 @@ structured plan. Your task has two parts:
 ### PR Description
 
 {BODY}
-{PROJECT_MEMORY}
+{PROJECT_MEMORY}{REPO_CONVENTIONS}
 ---
 
 ## Original Plan
@@ -36,10 +36,12 @@ each plan requirement independently against the actual diff.
 ---
 
 {@include review-context}
+{DISPOSITIONS}
 
 ---
 
 ## Your Task
+{COMPREHENSIVE_DISCOVERY}
 
 ### Part 1: Plan Alignment
 
@@ -74,8 +76,9 @@ Analyze the code changes and produce a structured review. Focus on:
 When a finding depends on how surrounding code behaves, verify by reading the
 actual files. Flag unverifiable claims explicitly.
 
-For each finding, explain **why it matters** — the real-world impact, not just
-what's wrong. Lead the summary with specific strengths before listing issues.
+Lead the summary with specific strengths before listing issues.
+
+{@include review-severity-rubric}
 
 {@include review-checklist}
 

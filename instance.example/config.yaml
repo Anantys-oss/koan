@@ -196,6 +196,9 @@ skill_timeout: 7200
 # conflicts may need more than the default.  Set higher for large repos.
 # rebase_max_conflict_rounds: 10
 
+# Per-round timeout for the agent resolving rebase conflicts. Default: 600.
+# rebase_conflict_timeout: 600
+
 # Allow /rebase on PRs not created by this instance.
 # Default false keeps the branch-prefix ownership guard in Telegram /rebase.
 # Set true only when you intentionally want to rebase any writable PR.
@@ -1038,6 +1041,65 @@ page_cache_reclaim:
 # Set threshold: 0 to disable filtering (all findings pass through).
 # review_reflect:
 #   threshold: 5            # Min score to keep a finding (0-10, default: 5)
+
+# Review snippet validation — reconcile each finding's quoted code block against
+# the actual file content at the reviewed commit before posting. The quote is
+# model-authored; without this gate a re-review can show pre-fix source under a
+# permalink that points at the already-fixed code. Fail-open (a transient fetch
+# failure leaves the finding untouched); findings whose file/lines no longer
+# exist are dropped. Applies to /review and the backend private review gate.
+# review_snippet_validation:
+#   enabled: true           # Master switch (default: true)
+#   on_mismatch: resync     # resync (replace quote with real lines, default) |
+#                           # drop | annotate | off
+
+# Review reconciliation — on a re-review, programmatically detect prior findings
+# that are already fixed at the reviewed commit (via the review sidecar), and
+# suppress current findings that merely re-raise them. Conservative + fail-open:
+# a current finding is dropped only when it matches a resolved prior finding AND
+# its own quote no longer matches live source, so still-broken code is never
+# suppressed. Resolved priors are listed in a "Resolved since last review" note.
+# review_reconcile:
+#   enabled: true           # Master switch (default: true)
+#   show_resolved: true     # Render the "Resolved since last review" section
+
+# Review consistency — make repeated reviews stable (spec 010). When the PR head
+# AND base (merge-base) SHA are unchanged and the review request is equivalent,
+# the prior review is reproduced instead of re-derived (reuse). Otherwise the
+# review re-derives and reconciles against the prior finding set, with a
+# "freeze": a first-time non-critical finding on code UNCHANGED since the prior
+# review is suppressed (the "review whiplash" case) — only a critical breaks
+# through, labeled "[Pre-Existing Issue]". Both switches default on; fail-open.
+# review_consistency:
+#   reuse_enabled: true     # Reproduce prior review verbatim on unchanged head+base (default: true)
+#   freeze_enabled: true    # Suppress first-time non-critical findings on unchanged code (default: true)
+
+# NOTE (spec 010): the yellow-tier "Important" bar and the "[Pre-Existing Issue]"
+# label are prompt-fixed (defined in the review-severity-rubric prompt partial),
+# not runtime config — the label must match the prompt, so it is a constant, not
+# a knob. The opt-in comprehensive-discovery switch (review_discovery) and the
+# human-disposition switches (review_dispositions) are documented alongside the
+# code that reads them.
+
+# Review convention docs — NATIVE ingestion of the REVIEWED repo's own
+# convention/knowledge docs into the review prompt, so the reviewer applies
+# repo-specific conventions and stops raising convention-based false positives
+# (e.g. flagging a documented link style as "broken"). Auto-detecting: it reads
+# AGENTS.md/CLAUDE.md/CONTRIBUTING.md at the repo root and, when a docs/index.md
+# OKF bundle is present, the curated index + SPEC.md + SCHEMA.md + per-topic
+# index catalogs. Degrades to a no-op for repos that ship none of these, so it
+# is safe to leave enabled. Unlike .koan/skills/review/*.md (which repos must
+# author explicitly), this needs no per-repo setup.
+# review_convention_docs:
+#   enabled: true                 # Master switch (default: true)
+#   auto_detect_okf: true         # Detect an OKF docs/ bundle via docs/index.md
+#   okf_docs_dir: docs            # Bundle directory (default: docs)
+#   include_topic_indexes: true   # Include per-topic index.md catalogs (not full pages)
+#   well_known:                   # Root convention files, priority order
+#     - AGENTS.md
+#     - CLAUDE.md
+#     - CONTRIBUTING.md
+#   max_chars: 16000              # Cap for the whole injected block (~4.5K tokens)
 
 # Review session memory — opt-in injection of recent typed project memory
 # (decisions, observations) into the review prompt, ranked against the PR

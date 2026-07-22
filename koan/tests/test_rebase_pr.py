@@ -33,6 +33,7 @@ from app.rebase_pr import (
     _find_remote_for_repo,
     _fix_existing_ci_failures,
     _get_conflicted_files,
+    _resolve_rebase_conflicts,
     _truncate_recent,
     _get_current_branch,
     _is_conflict_failure,
@@ -1836,6 +1837,96 @@ class TestRunRebase:
     @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
     @patch("app.rebase_pr._safe_checkout")
     @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr._apply_review_feedback")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_explicit_feedback_context_runs_leg_without_comments(
+        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci,
+    ):
+        """An explicit feedback_context must reach Claude even when the PR has
+        no reviewer comments — otherwise the human's request is silently dropped
+        (contradicts the rebase spec invariant)."""
+        mock_ctx.return_value = {
+            "title": "T", "body": "", "branch": "feat",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "+code", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._push_with_fallback", return_value={
+                 "success": True, "actions": ["Force-pushed"], "error": ""
+             }):
+            success, _ = run_rebase(
+                "o", "r", "1", "/p", fix=True, notify_fn=MagicMock(),
+                feedback_context="fix the release-please commit scopes",
+            )
+        assert success is True
+        mock_apply.assert_called_once()
+        assert (
+            mock_apply.call_args.kwargs["feedback_context"]
+            == "fix the release-please commit scopes"
+        )
+
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr._apply_review_feedback")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_no_comments_and_no_context_skips_feedback_leg(
+        self, mock_ctx, mock_apply, mock_gh, mock_safe, mock_ci_check, mock_fix_ci,
+    ):
+        """A bare --fix on a PR with no feedback and no explicit request stays a
+        pure rebase — the Claude feedback step must not run."""
+        mock_ctx.return_value = {
+            "title": "T", "body": "", "branch": "feat",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "+code", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        with patch("app.rebase_pr._get_current_branch", return_value="feat"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._push_with_fallback", return_value={
+                 "success": True, "actions": ["Force-pushed"], "error": ""
+             }):
+            success, _ = run_rebase("o", "r", "1", "/p", fix=True, notify_fn=MagicMock())
+        assert success is True
+        mock_apply.assert_not_called()
+
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
+    @patch("app.rebase_pr.fetch_pr_context")
+    def test_unexplained_no_change_feedback_does_not_push(
+        self, mock_ctx, mock_gh, mock_safe, mock_ci_check, mock_fix_ci,
+    ):
+        mock_ctx.return_value = {
+            "title": "T", "body": "", "branch": "feat",
+            "base": "main", "state": "", "author": "", "url": "",
+            "diff": "+code", "review_comments": "@reviewer: fix this",
+            "reviews": "", "issue_comments": "",
+        }
+
+        def no_disposition(*args, **kwargs):
+            kwargs["result_meta"]["status"] = "feedback_no_disposition"
+            return ""
+
+        with patch("app.rebase_pr._get_current_branch", return_value="main"), \
+             patch("app.rebase_pr._checkout_pr_branch"), \
+             patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
+             patch("app.rebase_pr._apply_review_feedback", side_effect=no_disposition), \
+             patch("app.rebase_pr._push_with_fallback") as mock_push:
+            success, summary = run_rebase("o", "r", "1", "/p", fix=True)
+
+        assert success is False
+        assert "feedback_no_disposition" in summary
+        mock_push.assert_not_called()
+
+    @patch("app.rebase_pr._fix_existing_ci_failures", return_value=False)
+    @patch("app.rebase_pr._run_ci_check_and_fix", return_value="")
+    @patch("app.rebase_pr._safe_checkout")
+    @patch("app.rebase_pr.run_gh")
     @patch("app.rebase_pr.fetch_pr_context")
     def test_restores_branch_after_success(self, mock_ctx, mock_gh, mock_safe, mock_ci_check, mock_fix_ci):
         mock_ctx.return_value = {
@@ -1984,6 +2075,19 @@ class TestBuildRebasePrompt:
         assert "KOAN_REBASE_EXTRA_RULE" in prompt
         assert "rebase skill" in prompt
 
+    def test_includes_fenced_explicit_feedback_context(self):
+        context = {
+            "title": "T", "body": "", "branch": "br", "base": "main",
+            "diff": "", "review_comments": "", "reviews": "", "issue_comments": "",
+        }
+        prompt = _build_rebase_prompt(
+            context, skill_dir=REBASE_SKILL_DIR,
+            feedback_context="fix the release-please commit scopes",
+        )
+        assert "## Explicit User Request" in prompt
+        assert "fix the release-please commit scopes" in prompt
+        assert "BEGIN EXTERNAL DATA (GitHub command context)" in prompt
+
 
 class TestBuildConflictAndCiFixPrompts:
     def test_conflict_prompt_injects_project_skill(self, tmp_path):
@@ -2001,6 +2105,19 @@ class TestBuildConflictAndCiFixPrompts:
             project_path=str(tmp_path),
         )
         assert "KOAN_CONFLICT_EXTRA" in prompt
+
+    def test_conflict_prompt_uses_correct_rebase_sides_without_caveman(self):
+        from app.rebase_pr import _build_conflict_resolution_prompt
+
+        context = {"title": "T", "body": "B", "branch": "br", "base": "main"}
+        with patch("app.prompts._maybe_append_caveman") as append_caveman:
+            prompt = _build_conflict_resolution_prompt(
+                context, ["a.py"], "main", skill_dir=REBASE_SKILL_DIR,
+            )
+        assert "`HEAD`/`ours` is the target branch's current version" in prompt
+        assert "`theirs` is the\n   PR commit being replayed" in prompt
+        assert "git diff --name-only --diff-filter=U" in prompt
+        append_caveman.assert_not_called()
 
     def test_ci_fix_prompt_injects_project_skill(self, tmp_path):
         d = tmp_path / ".koan" / "skills" / "rebase"
@@ -2100,6 +2217,45 @@ class TestApplyReviewFeedback:
             skill_dir=REBASE_SKILL_DIR,
         )
         assert summary == ""
+
+    @patch("app.rebase_pr.run_claude_step")
+    def test_no_commit_requires_skipped_disposition(self, mock_step):
+        from app.claude_step import StepResult
+
+        mock_step.return_value = StepResult(committed=False, output="No changes needed.")
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR, result_meta=meta,
+        )
+        assert meta["status"] == "feedback_no_disposition"
+        assert "no changes or explanation" in actions[-1].lower()
+
+    @patch("app.rebase_pr.run_claude_step")
+    def test_no_commit_with_skipped_disposition_is_reported(self, mock_step):
+        from app.claude_step import StepResult
+
+        skipped = "SKIPPED:\n- release commits are already split on this branch"
+        mock_step.return_value = StepResult(committed=False, output=skipped)
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        summary = _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR, result_meta=meta,
+        )
+        assert meta["status"] == "evaluated_no_changes"
+        assert summary == skipped
 
     @patch("app.rebase_pr.run_claude_step")
     def test_sets_feedback_timeout_metadata(self, mock_step):
@@ -2793,6 +2949,45 @@ class TestRebaseWithConflictResolutionCrossFork:
 
         assert result is None
         assert meta["error"] == "rebase_failed"
+
+
+class TestResolveRebaseConflicts:
+    def test_timeout_uses_configured_budget_and_reports_cause(self):
+        failure_detail = []
+        # run_claude reports a hard timeout as "Timeout (<n>s)" — the cause
+        # classifier must recognize that exact form, not just "timed out".
+        with patch("app.rebase_pr._get_conflicted_files", return_value=["a.py"]), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={
+                 "success": False, "error": "Timeout (777s)",
+             }) as run_agent, \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=777):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=1,
+                skill_dir=REBASE_SKILL_DIR, failure_detail=failure_detail,
+            )
+
+        assert result is False
+        assert run_agent.call_args.kwargs["timeout"] == 777
+        assert failure_detail == ["conflict-resolution agent timed out after 777s"]
+
+    def test_non_timeout_failure_reports_generic_cause(self):
+        failure_detail = []
+        with patch("app.rebase_pr._get_conflicted_files", return_value=["a.py"]), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={
+                 "success": False, "error": "exit 1: merge tool crashed",
+             }), \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=600):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=1,
+                skill_dir=REBASE_SKILL_DIR, failure_detail=failure_detail,
+            )
+
+        assert result is False
+        assert failure_detail == [
+            "conflict-resolution agent failed: exit 1: merge tool crashed"
+        ]
 
 
 class TestFetchPrContextHeadOwner:

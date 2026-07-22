@@ -4,7 +4,7 @@ title: "Skill Spec — rebase"
 description: "Documents the `/rebase` skill that rebases a PR onto its current base by default and, with `--fix` (or any trailing context), also addresses review feedback, including its already-solved detection JSON scored by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-18
+updated: 2026-07-22
 ---
 
 # Skill Spec — `rebase`
@@ -64,13 +64,22 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 
 ## Invariants
 
-- Post-URL context must thread into the queued mission.
+- Post-URL context must thread into the queued mission and feedback prompt as a
+  fenced explicit user request.
 - Multi-account pushes resolve the remote owner's token; tokens redacted in logs.
 - **Feedback leg is opt-in.** A bare `/rebase` rebases only; the feedback leg
   runs only when `--fix` is present or trailing text follows the URL. Callers
   that rely on feedback (`/fix` on a PR, `/rr`, autoreview) must pass `--fix`.
   The single decision point is `skill_dispatch._build_rebase_cmd`; the runner
   gates step 4 on `apply_feedback = fix or _FEEDBACK_ON_BY_DEFAULT`.
+- A feedback run that makes no commit must return a structured `SKIPPED:`
+  disposition. Otherwise it fails before force-pushing and cannot be reported
+  as a simple rebase.
+- Conflict resolution treats `HEAD`/`ours` as the current target branch and
+  `theirs` as the replayed PR commit. It verifies no unmerged paths remain
+  before continuing. Its per-round agent budget is `rebase_conflict_timeout`
+  (600 seconds by default); exhaustion aborts the rebase and preserves the
+  existing recreate fallback.
 
 ## Transition (temporary)
 

@@ -16,9 +16,12 @@ CLI:
     python3 -m app.review_runner <github-pr-url> --project-path <path>
 """
 
+import base64
+import contextlib
 import html
 import json
 import re
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -649,6 +652,82 @@ def _build_coverage_note(
     return ("\n>\n".join(parts) + "\n\n") if parts else ""
 
 
+def _build_repo_conventions_block(
+    project_path: Optional[str], project_name: str = "",
+) -> str:
+    """Assemble the framed ``{REPO_CONVENTIONS}`` block, or "" when disabled/empty.
+
+    Native, always-available repo steering: reads the reviewed checkout's own
+    convention docs (AGENTS.md/CLAUDE.md/CONTRIBUTING.md + an OKF ``docs/``
+    bundle) and frames them as authoritative-but-fenced repo context, so the
+    reviewer applies repo conventions instead of raising convention-based false
+    positives. Fully additive; degrades to "" when the feature is off or no docs
+    are found. Never raises.
+    """
+    if not project_path:
+        return ""
+    try:
+        from app.config import get_review_convention_docs_config
+        cfg = get_review_convention_docs_config(project_name or "")
+        if not cfg["enabled"]:
+            return ""
+        from app.project_koan import read_repo_convention_docs
+        raw = read_repo_convention_docs(
+            project_path,
+            well_known=tuple(cfg["well_known"]),
+            okf_docs_dir=cfg["okf_docs_dir"],
+            include_topic_indexes=cfg["include_topic_indexes"],
+            auto_detect_okf=cfg["auto_detect_okf"],
+            max_block_chars=cfg["max_chars"],
+        )
+        if not raw:
+            return ""
+        from app.prompt_guard import fence_external_data
+        fenced = fence_external_data(raw, "repo convention docs")
+        block = load_prompt("review-repo-conventions", REPO_CONVENTION_DOCS=fenced)
+        return f"\n\n{block}\n"
+    except Exception as e:
+        log("review", f"repo conventions injection skipped: {e}")
+        return ""
+
+
+def _build_discovery_block(project_name: str = "") -> str:
+    """Assemble the ``{COMPREHENSIVE_DISCOVERY}`` block, or "" when disabled.
+
+    Injects the opt-in multi-perspective discovery guidance (spec 010, US3) into
+    the review prompt when ``review_discovery.enabled`` is set. OFF by default, so
+    the block is "" and the prompt is byte-identical to the single-pass review
+    (SC-008). Never raises — degrades to "".
+    """
+    try:
+        from app.config import get_review_discovery_config
+        if not get_review_discovery_config(project_name or "")["enabled"]:
+            return ""
+        return "\n\n" + load_prompt("review-comprehensive-discovery") + "\n"
+    except Exception as e:
+        log("review", f"comprehensive-discovery injection skipped: {e}")
+        return ""
+
+
+def _build_dispositions_block(project_name: str = "") -> str:
+    """Assemble the ``{DISPOSITIONS}`` block, or "" when disabled.
+
+    Injects the human-disposition guidance (honor dismiss/defer decisions humans
+    leave as PR comments; spec 010, US7) into the review prompt. Config-gated by
+    ``review_dispositions.enabled`` (default on) so a security-conscious operator
+    can turn off the "any commenter can dispose of a finding" posture. Never
+    raises — degrades to "" so the review proceeds normally.
+    """
+    try:
+        from app.config import get_review_dispositions_config
+        if not get_review_dispositions_config(project_name or "")["enabled"]:
+            return ""
+        return "\n\n" + load_prompt("review-dispositions") + "\n"
+    except Exception as e:
+        log("review", f"dispositions guidance injection skipped: {e}")
+        return ""
+
+
 def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
@@ -765,6 +844,11 @@ def build_review_prompt(
     if issue_context is None:
         issue_context = _resolve_issue_context(context, project_name, project_path)
 
+    # Native repo-convention context: the reviewed repo's own AGENTS.md/CLAUDE.md
+    # + OKF docs/ bundle, framed as authoritative-but-fenced conventions so the
+    # reviewer stops raising convention-based false positives. Empty when absent.
+    repo_conventions = _build_repo_conventions_block(project_path, project_name)
+
     kwargs: dict = dict(
         TITLE=context["title"],
         AUTHOR=context["author"],
@@ -780,6 +864,9 @@ def build_review_prompt(
         PROJECT_MEMORY=project_memory,
         SKIPPED_FILES=coverage_note,   # same value returned below
         ISSUE_CONTEXT=issue_context or "",
+        REPO_CONVENTIONS=repo_conventions,
+        DISPOSITIONS=_build_dispositions_block(project_name),
+        COMPREHENSIVE_DISCOVERY=_build_discovery_block(project_name),
     )
 
     if plan_body:
@@ -896,6 +983,8 @@ def _write_review_findings_sidecar(
     *,
     base_ref: str,
     head_sha: str,
+    base_sha: str = "",
+    request_signature: Optional[dict] = None,
     project_name: str = "",
     review_summary: Optional[dict] = None,
     review_comment: Optional[dict] = None,
@@ -907,19 +996,37 @@ def _write_review_findings_sidecar(
     file_comments, review_summary, and review_comment). review_summary and
     review_comment are additive; review_comment carries the posted comment's
     {id, html_url} (or None when no ref was captured).
+
+    ``base_sha`` (the base/merge-base commit SHA) and ``request_signature`` (the
+    focus-flags + discovery-enabled equivalence signature) are persisted for the
+    spec-010 reuse decision (:func:`app.review_reuse.should_reuse`); both are
+    additive and default to empty so pre-010 readers are unaffected.
     """
     try:
         import time as _time
+
+        from app.review_identity import finding_key
         sidecar_dir = Path(instance_dir) / ".review-findings"
         sidecar_dir.mkdir(parents=True, exist_ok=True)
         sidecar_path = sidecar_dir / f"{owner}_{repo}_{pr_number}.json"
+        # Stamp each finding with its stable identity key (spec 010, FR-002) so a
+        # later review can reconcile against these without re-deriving identity.
+        # Copy rather than mutate the caller's dicts.
+        stamped_comments = [
+            {**fc, "identity_key": finding_key(fc)}
+            if isinstance(fc, dict) else fc
+            for fc in (file_comments or [])
+        ]
         data = {
+            "schema_version": 1,
             "pr_key": f"{owner}/{repo}#{pr_number}",
             "project_name": project_name,
             "base_ref": base_ref,
             "head_sha": head_sha,
+            "base_sha": base_sha or "",
+            "request_signature": request_signature or {},
             "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-            "file_comments": file_comments,
+            "file_comments": stamped_comments,
             "review_summary": review_summary or {},
             "review_comment": review_comment or None,
         }
@@ -1160,6 +1267,413 @@ def _reconcile_review_after_reflection(
         )
 
     return review_data
+
+
+def _read_file_at_sha(
+    owner: str, repo: str, sha: str, path: str, project_path: str,
+    timeout: int = 20,
+) -> Optional[str]:
+    """Return the file content at the reviewed SHA, or None if unavailable.
+
+    Read-only and non-mutating. Fast path: ``git show <sha>:<path>`` against the
+    local clone (offline, no fetch, no checkout). If the object is absent
+    locally — the common ``/review`` case, where only the diff was fetched —
+    fall back to the GitHub contents API pinned to the SHA. Returns None on
+    deletion-at-HEAD (404) or any error, so callers treat "unavailable" as
+    fail-open (never a false drop).
+    """
+    if not (sha and path):
+        return None
+    # 1) Local object DB — offline, no network, no working-tree mutation.
+    if project_path:
+        with contextlib.suppress(OSError, ValueError, subprocess.SubprocessError):
+            r = subprocess.run(
+                ["git", "show", f"{sha}:{path}"],
+                cwd=project_path, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=timeout,
+            )
+            if r.returncode == 0:
+                return r.stdout
+    # 2) GitHub contents API pinned to the SHA (works without local objects).
+    #    Still fail-open (return None), but leave a breadcrumb: a systematic
+    #    failure here (auth, rate limit, decode) otherwise silently disables
+    #    snippet validation and reconciliation for the whole review.
+    try:
+        raw = run_gh(
+            "api", f"repos/{owner}/{repo}/contents/{quote(path, safe='/')}",
+            "-X", "GET", "-f", f"ref={sha}", "--jq", ".content // empty",
+            timeout=timeout,
+        )
+        if raw and raw.strip():
+            return base64.b64decode(raw).decode("utf-8", errors="replace")
+    except Exception as e:
+        # Broad by design: this is a fail-open boundary (return None on any
+        # error), matching sibling enrichment helpers. Log so a systematic
+        # failure is observable instead of silently degrading the review.
+        log("review", f"contents fetch failed for {path}@{sha[:12]}: {e}")
+    return None
+
+
+def _is_line_subsequence(needle: list, haystack: list) -> bool:
+    """True when ``needle`` is an ordered subsequence of ``haystack``."""
+    it = iter(haystack)
+    return all(line in it for line in needle)
+
+
+def _snippet_matches_at_anchor(
+    file_text: str, line_start: int, line_end: int, snippet: str,
+    fuzz_lines: int = 3,
+) -> Tuple[bool, str]:
+    """Return ``(matches, authoritative_lines)``.
+
+    Compares the model snippet against the file's actual ``[line_start,
+    line_end]`` window (1-based), tolerating indentation and blank-line drift by
+    normalizing each line (strip + drop blanks) and widening the window by
+    ``fuzz_lines`` on each side before declaring a mismatch. ``authoritative_lines``
+    is the verbatim current text of the anchor window — what callers render so
+    the quote can never diverge from the ``file:line`` permalink.
+    """
+    lines = file_text.splitlines()
+    n = len(lines)
+    ls = max(1, min(line_start, n)) if n else 0
+    le = line_end if (line_end and line_end >= ls) else ls
+    le = min(le, n)
+    authoritative = "\n".join(lines[ls - 1:le]) if n and ls >= 1 else ""
+    if line_start <= 0 or line_start > n:
+        return False, authoritative
+    w_start = max(1, line_start - fuzz_lines)
+    w_end = min(n, le + fuzz_lines)
+    window_norm = [ln.strip() for ln in lines[w_start - 1:w_end] if ln.strip()]
+    snip_norm = [ln.strip() for ln in snippet.splitlines() if ln.strip()]
+    if not snip_norm:
+        return True, authoritative
+    return _is_line_subsequence(snip_norm, window_norm), authoritative
+
+
+def _remap_findings_after_drop(review_data: dict, drop_indices: set) -> None:
+    """Drop findings by index and re-sync checklist refs + the derived verdict.
+
+    Mirrors the index-remap tail of ``_reconcile_review_after_reflection`` so
+    ``checklist.finding_refs`` and the severity-derived ``lgtm`` stay coherent
+    after findings are removed. Mutates ``review_data`` in place.
+    """
+    original = review_data.get("file_comments")
+    if not isinstance(original, list) or not drop_indices:
+        return
+    kept = [i for i in range(len(original)) if i not in drop_indices]
+    old_to_new = {old: new for new, old in enumerate(kept)}
+    review_data["file_comments"] = [original[i] for i in kept]
+
+    summary = review_data.get("review_summary")
+    if isinstance(summary, dict):
+        checklist = summary.get("checklist") or []
+        for entry in checklist:
+            if not isinstance(entry, dict) or not isinstance(entry.get("finding_refs"), list):
+                continue
+            remapped: list = []
+            seen: set = set()
+            for old_index in entry["finding_refs"]:
+                if isinstance(old_index, bool) or not isinstance(old_index, int):
+                    continue
+                new_index = old_to_new.get(old_index)
+                if new_index is not None and new_index not in seen:
+                    seen.add(new_index)
+                    remapped.append(new_index)
+            entry["finding_refs"] = remapped
+        # Severity is the sole source of truth for the formal verdict.
+        summary["lgtm"] = not any(
+            isinstance(f, dict) and f.get("severity") in ("critical", "warning")
+            for f in review_data["file_comments"]
+        )
+
+
+def _validate_finding_snippets(
+    review_data: dict, owner: str, repo: str, sha: str, project_path: str,
+    on_mismatch: str = "resync",
+) -> dict:
+    """Reconcile each finding's ``code_snippet`` with authoritative SHA content.
+
+    The quoted block is model-authored; without this gate it can show pre-fix
+    source under a ``file:line`` permalink that points at the fixed code. For
+    each finding with a file + positive ``line_start`` + non-empty
+    ``code_snippet``:
+
+      - unavailable content (transient error / can't fetch) -> keep (fail-open)
+      - anchor line out of range at HEAD -> drop (location no longer exists)
+      - snippet matches at/near anchor -> keep
+      - else apply ``on_mismatch``: "resync" (replace the quote with the real
+        current lines), "drop", "annotate" (append current source to comment),
+        or "off" (leave untouched).
+
+    Findings with no line range or empty snippet are left untouched
+    (illustrative / whole-file safe). Mutates ``review_data`` in place.
+    """
+    findings = review_data.get("file_comments")
+    if not isinstance(findings, list) or not findings:
+        return review_data
+    cache: dict = {}
+
+    def _fetch(p: str) -> Optional[str]:
+        if p not in cache:
+            cache[p] = _read_file_at_sha(owner, repo, sha, p, project_path)
+        return cache[p]
+
+    drop_indices: set = set()
+    for idx, item in enumerate(findings):
+        if not isinstance(item, dict):
+            continue
+        path = item.get("file")
+        line_start = item.get("line_start") or 0
+        snippet = item.get("code_snippet") or ""
+        if not path or line_start <= 0 or not snippet:
+            continue
+        content = _fetch(path)
+        if content is None:
+            continue  # fail-open: never drop on a transient fetch failure
+        line_count = len(content.splitlines())
+        if line_start > line_count:
+            if on_mismatch != "off":
+                drop_indices.add(idx)
+            continue
+        matches, authoritative = _snippet_matches_at_anchor(
+            content, line_start, item.get("line_end") or 0, snippet,
+        )
+        if matches:
+            continue
+        if on_mismatch == "resync":
+            item["code_snippet"] = authoritative
+        elif on_mismatch == "drop":
+            drop_indices.add(idx)
+        elif on_mismatch == "annotate":
+            extra = "\n".join(f"> {ln}" for ln in authoritative.splitlines()[:20])
+            item["comment"] = (item.get("comment") or "") + (
+                "\n\n> ⓘ Current source at the reviewed commit:\n" + extra
+            )
+        # "off": leave the snippet untouched.
+    if drop_indices:
+        _remap_findings_after_drop(review_data, drop_indices)
+    return review_data
+
+
+def _read_prior_findings_sidecar(
+    instance_dir: str, owner: str, repo: str, pr_number: str,
+) -> Tuple[list, str]:
+    """Return ``(prior_file_comments, prior_head_sha)`` from the review sidecar.
+
+    Reads the file written by :func:`_write_review_findings_sidecar` for the
+    *previous* run of this PR. Best-effort; any read/parse error yields
+    ``([], "")``.
+    """
+    try:
+        sidecar_path = (
+            Path(instance_dir) / ".review-findings"
+            / f"{owner}_{repo}_{pr_number}.json"
+        )
+        if not sidecar_path.is_file():
+            return [], ""
+        data = json.loads(sidecar_path.read_text())
+        file_comments = data.get("file_comments")
+        if not isinstance(file_comments, list):
+            file_comments = []
+        return file_comments, str(data.get("head_sha") or "")
+    except (OSError, ValueError, TypeError) as exc:
+        log("review", f"could not read prior findings sidecar: {exc}")
+        return [], ""
+
+
+def _read_prior_review_record(
+    instance_dir: str, owner: str, repo: str, pr_number: str,
+) -> Optional[dict]:
+    """Return the full prior-review sidecar record (or ``None``), fail-open.
+
+    Unlike :func:`_read_prior_findings_sidecar` (which returns just the findings
+    and head SHA for reconciliation), this exposes the whole record — including
+    ``base_sha``, ``request_signature``, ``review_summary`` and ``review_comment``
+    — needed for the spec-010 reuse decision (:func:`app.review_reuse.should_reuse`).
+    Any missing/corrupt file yields ``None`` so the caller falls back to a fresh
+    review (FR-007).
+    """
+    try:
+        sidecar_path = (
+            Path(instance_dir) / ".review-findings"
+            / f"{owner}_{repo}_{pr_number}.json"
+        )
+        if not sidecar_path.is_file():
+            return None
+        data = json.loads(sidecar_path.read_text())
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError, TypeError) as exc:
+        log("review", f"could not read prior review record: {exc}")
+        return None
+
+
+def _line_ranges_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+    """True when two 1-based inclusive line ranges overlap."""
+    a_end = a_end or a_start
+    b_end = b_end or b_start
+    if a_start <= 0 or b_start <= 0:
+        return False
+    return a_start <= b_end and b_start <= a_end
+
+
+def _reconcile_prior_findings(
+    review_data: dict, prior_findings: list,
+    owner: str, repo: str, sha: str, project_path: str,
+) -> list:
+    """Suppress current findings that re-raise an already-resolved prior finding.
+
+    Uses the SAME pinned source as :func:`_validate_finding_snippets`. A prior
+    finding is "resolved" when its snippet no longer matches at/near its prior
+    anchor at HEAD (or its file/lines are gone). A current finding is dropped
+    only when it is a near-duplicate of a resolved prior finding (same file +
+    overlapping lines or identical title) AND its own snippet also fails its
+    live-source check — so a genuinely-still-broken finding is never suppressed.
+    Fail-open throughout. Returns the list of resolved prior findings (for the
+    "Resolved since last review" note). Must run BEFORE snippet resync, which
+    would otherwise rewrite current snippets to match live source.
+    """
+    resolved: list = []
+    if not isinstance(prior_findings, list) or not prior_findings:
+        return resolved
+    current = review_data.get("file_comments")
+    if not isinstance(current, list):
+        return resolved
+    cache: dict = {}
+
+    def _fetch(p: str) -> Optional[str]:
+        if p not in cache:
+            cache[p] = _read_file_at_sha(owner, repo, sha, p, project_path)
+        return cache[p]
+
+    def _still_present(f: Optional[str], ls: int, le: int, snip: str) -> Optional[bool]:
+        """True/False if present; None when undecidable (fail-open)."""
+        if not f or ls <= 0 or not snip:
+            return None
+        content = _fetch(f)
+        if content is None:
+            return None
+        if ls > len(content.splitlines()):
+            return False
+        matches, _ = _snippet_matches_at_anchor(content, ls, le, snip)
+        return matches
+
+    for pf in prior_findings:
+        if not isinstance(pf, dict):
+            continue
+        present = _still_present(
+            pf.get("file"), pf.get("line_start") or 0,
+            pf.get("line_end") or 0, pf.get("code_snippet") or "",
+        )
+        if present is False:
+            resolved.append(pf)
+    if not resolved:
+        return resolved
+
+    drop: set = set()
+    for idx, cf in enumerate(current):
+        if not isinstance(cf, dict):
+            continue
+        cf_file = cf.get("file")
+        cf_ls = cf.get("line_start") or 0
+        cf_le = cf.get("line_end") or 0
+        cf_title = (cf.get("title") or "").strip().lower()
+        for pf in resolved:
+            if pf.get("file") != cf_file:
+                continue
+            same_title = bool(cf_title) and cf_title == (pf.get("title") or "").strip().lower()
+            if not (_line_ranges_overlap(
+                cf_ls, cf_le, pf.get("line_start") or 0, pf.get("line_end") or 0,
+            ) or same_title):
+                continue
+            present = _still_present(cf_file, cf_ls, cf_le, cf.get("code_snippet") or "")
+            if present is False:
+                drop.add(idx)
+                break
+    if drop:
+        _remap_findings_after_drop(review_data, drop)
+    return resolved
+
+
+def _apply_review_accuracy_gate(
+    review_data: dict, *, owner: str, repo: str, sha: str,
+    project_path: str, project_name: str, pr_number: str,
+) -> None:
+    """Reconcile a parsed review against the reviewed HEAD before it is used.
+
+    Runs prior-finding reconciliation (suppress re-raised, already-fixed
+    findings) THEN snippet validation (resync/drop stale quotes) — the order
+    matters, since resync would otherwise rewrite current snippets to match live
+    source and mask a re-raise. Both passes are config-gated and fail-open.
+    Mutates ``review_data`` in place; stashes resolved priors under
+    ``_resolved_prior`` for rendering.
+    """
+    if not isinstance(review_data, dict) or not sha:
+        return
+    from app.config import (
+        get_review_consistency_config,
+        get_review_reconcile_config,
+        get_review_snippet_validation_config,
+    )
+    # Read the prior review's findings + head once; both reconcile and the
+    # spec-010 freeze use them.
+    prior_findings, prior_head = _read_prior_findings_sidecar(
+        str(KOAN_ROOT / "instance"), owner, repo, pr_number,
+    )
+    rc_cfg = get_review_reconcile_config(project_name or "")
+    if rc_cfg["enabled"] and prior_findings:
+        resolved = _reconcile_prior_findings(
+            review_data, prior_findings, owner, repo, sha, project_path,
+        )
+        if resolved and rc_cfg["show_resolved"]:
+            review_data["_resolved_prior"] = resolved
+    sv_cfg = get_review_snippet_validation_config(project_name or "")
+    if sv_cfg["enabled"]:
+        _validate_finding_snippets(
+            review_data, owner, repo, sha, project_path,
+            on_mismatch=sv_cfg["on_mismatch"],
+        )
+    # Spec 010 (US1, FR-003): re-review freeze. On a re-review (head moved),
+    # suppress first-time non-critical findings on files unchanged since the
+    # prior review — the "review whiplash" case — keeping a critical (labelled
+    # pre-existing). Fail-open: no prior head / undetermined changeset -> no-op.
+    cc_cfg = get_review_consistency_config(project_name or "")
+    if cc_cfg["freeze_enabled"] and prior_head and prior_head != sha:
+        from app.review_reconcile import compute_freeze
+        changed_files = _compare_changed_files(owner, repo, prior_head, sha)
+        drop_indices, freeze_summary = compute_freeze(
+            review_data, prior_findings, changed_files, prior_head=prior_head,
+        )
+        if drop_indices:
+            _remap_findings_after_drop(review_data, drop_indices)
+        if freeze_summary["suppressed"] or freeze_summary["kept_pre_existing_critical"]:
+            review_data["_freeze_summary"] = freeze_summary
+            log(
+                "review",
+                f"freeze: suppressed {freeze_summary['suppressed']} first-time "
+                f"finding(s) on unchanged code, kept "
+                f"{freeze_summary['kept_pre_existing_critical']} pre-existing critical",
+            )
+    # Spec 010 (US6, FR-027/028): deterministically enforce the pre-existing rule
+    # on findings the reviewer tagged `[Pre-Existing Issue]` — demote non-critical
+    # ones to a non-blocking suggestion, keep criticals, and re-derive lgtm. Runs
+    # AFTER the freeze so FR-030 "freeze wins" holds. Fail-open.
+    from app.review_triage import enforce_deferred, enforce_pre_existing
+    pe_summary = enforce_pre_existing(review_data)
+    if pe_summary["demoted"] or pe_summary["critical_labeled"]:
+        review_data["_pre_existing_summary"] = pe_summary
+        log(
+            "review",
+            f"pre-existing: demoted {pe_summary['demoted']} to recommendation, "
+            f"labelled {pe_summary['critical_labeled']} critical",
+        )
+    # Spec 010 (US7, FR-034): human-deferred findings ([Deferred]) are forced to
+    # a non-blocking suggestion. Detection is prompt-driven from live PR comments
+    # (re-read each review, so a disposition is sticky until retracted). Fail-open.
+    df_summary = enforce_deferred(review_data)
+    if df_summary["deferred"]:
+        review_data["_deferred_summary"] = df_summary
+        log("review", f"deferred: {df_summary['deferred']} finding(s) -> recommendation")
 
 
 _ERROR_PATTERN_RE = re.compile(
@@ -1840,6 +2354,40 @@ def _resolve_finding_labels(
     return []
 
 
+def _format_triage_accounting(review_data: dict) -> str:
+    """Compact, collapsed accounting of triage filtering (spec 010, US4, FR-024).
+
+    Summarizes what triage did — findings frozen (suppressed on unchanged code),
+    demoted to recommendation (pre-existing), or downgraded as deferred — so the
+    filtering is auditable without competing with the primary findings (it is a
+    single collapsed line). Returns "" when nothing was filtered, so a review with
+    no filtering is byte-identical to before.
+    """
+    if not isinstance(review_data, dict):
+        return ""
+    freeze = review_data.get("_freeze_summary") or {}
+    pre = review_data.get("_pre_existing_summary") or {}
+    deferred = review_data.get("_deferred_summary") or {}
+    parts: list = []
+    if int(freeze.get("suppressed") or 0):
+        parts.append(
+            f"{int(freeze['suppressed'])} pre-existing finding(s) on unchanged "
+            "code suppressed (freeze)")
+    if int(pre.get("demoted") or 0):
+        parts.append(
+            f"{int(pre['demoted'])} pre-existing finding(s) demoted to recommendation")
+    if int(deferred.get("deferred") or 0):
+        parts.append(
+            f"{int(deferred['deferred'])} finding(s) deferred at a reviewer's request")
+    if not parts:
+        return ""
+    return (
+        "<details><summary>ℹ️ Triage summary</summary>\n\n"
+        + "; ".join(parts)
+        + ".\n</details>"
+    )
+
+
 def _format_review_as_markdown(
     review_data: dict, title: str = "", bot_username: str = "",
     owner: str = "", repo: str = "", head_sha: str = "",
@@ -1893,6 +2441,31 @@ def _format_review_as_markdown(
             lines.append("")
             lines.extend(f"- {item}" for item in out_of_scope)
             lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    # Resolved since last review — prior findings programmatically verified to
+    # no longer exist at the reviewed HEAD. Collapsible and short; suppressed
+    # re-raises live here instead of being re-reported as new findings.
+    resolved_prior = review_data.get("_resolved_prior") or []
+    if resolved_prior:
+        lines.append(f"### ✅ Resolved since last review ({len(resolved_prior)})")
+        lines.append("")
+        lines.append("<details>")
+        lines.append("<summary>Previously-flagged issues verified fixed</summary>")
+        lines.append("")
+        for rf in resolved_prior:
+            if not isinstance(rf, dict):
+                continue
+            rf_file = rf.get("file") or ""
+            rf_line = rf.get("line_start") or 0
+            loc = f"{rf_file}:{rf_line}" if rf_file and rf_line > 0 else rf_file
+            rf_title = (rf.get("title") or "").strip() or "Finding"
+            prefix = f"`{html.escape(loc)}` " if loc else ""
+            lines.append(f"- {prefix}{html.escape(rf_title)}")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
         lines.append("---")
         lines.append("")
 
@@ -2010,6 +2583,11 @@ def _format_review_as_markdown(
                 "_or_ `/rebase --fix <url>` _for all._ "
                 "_(A bare_ `/rebase <url>` _only rebases onto the base branch.)_"
             )
+
+    triage_note = _format_triage_accounting(review_data)
+    if triage_note:
+        lines.append("")
+        lines.append(triage_note)
 
     return "\n".join(lines)
 
@@ -2601,6 +3179,77 @@ def _fetch_pr_head_oid(owner: str, repo: str, pr_number: str) -> str:
         return ""
 
 
+# GitHub's compare endpoint returns at most this many entries in ``files`` and
+# does NOT paginate them (unlike commits). A response at the cap is
+# indistinguishable from a truncated one, so we treat it as undetermined.
+# https://docs.github.com/en/rest/commits/commits#compare-two-commits
+_COMPARE_FILES_CAP = 300
+
+
+def _compare_changed_files(
+    owner: str, repo: str, base: str, head: str,
+) -> Optional[set]:
+    """Return the set of files changed between ``base`` and ``head`` (or None).
+
+    Used by the spec-010 re-review freeze to determine which files the commits
+    touched since the prior review. Best-effort and fail-open: any error, a
+    missing base/head, an *undetermined* changeset (empty/blank response), or a
+    *truncated* file list yields ``None`` so the caller *skips* the freeze rather
+    than freezing against an unknown or under-populated changeset (FR-003
+    fail-open, D3). Freezing against too few files would silently suppress
+    first-time findings on genuinely-changed code — the inverse of the intent.
+    """
+    if not base or not head or base == head:
+        return None
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/compare/{base}...{head}",
+            "--jq", r"[.files[].filename]",
+        )
+        if not raw.strip():
+            # A genuine zero-file diff serializes to "[]" (truthy). A blank
+            # response is an ambiguous/error condition — return None (skip the
+            # freeze), never set() (which would read as "nothing changed" and
+            # drop every first-time finding).
+            return None
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return None
+        if len(parsed) >= _COMPARE_FILES_CAP:
+            # File list is at GitHub's non-paginated cap: assume truncated and
+            # skip the freeze rather than freeze against a partial changeset.
+            log("review",
+                f"changed-files compare at cap ({len(parsed)} files, "
+                f"{base}...{head}); skipping freeze")
+            return None
+        return {str(f) for f in parsed if f}
+    except (RuntimeError, OSError, ValueError, TypeError) as exc:
+        log("review", f"changed-files compare failed ({base}...{head}): {exc}")
+        return None
+
+
+def _merge_base_sha(owner: str, repo: str, base_ref: str, head_sha: str) -> str:
+    """Return the merge-base commit SHA of ``base_ref`` and ``head_sha`` (or "").
+
+    Part of the spec-010 reuse key (FR-001, D2): base-branch movement changes the
+    merge base even when the PR head is unchanged, which must defeat reuse.
+    Best-effort — any failure yields "" so reuse simply does not fire (safe).
+    """
+    if not base_ref or not head_sha:
+        return ""
+    try:
+        raw = run_gh(
+            "api",
+            f"repos/{owner}/{repo}/compare/{base_ref}...{head_sha}",
+            "--jq", ".merge_base_commit.sha",
+        )
+        return raw.strip()
+    except (RuntimeError, OSError, ValueError, TypeError) as exc:
+        log("review", f"merge-base lookup failed ({base_ref}...{head_sha}): {exc}")
+        return ""
+
+
 def _fetch_pr_state_and_labels(
     owner: str, repo: str, pr_number: str,
 ) -> tuple[str, list[str]]:
@@ -3051,6 +3700,16 @@ def run_private_review(
     if review_data is None:
         return False, f"Private review output for PR #{pr_number} was unparseable.", None, context
 
+    # Accuracy gate: reconcile against the reviewed HEAD (same as run_review).
+    # run_private_review has no commit list; read the live head oid directly.
+    _priv_sha = _fetch_pr_head_oid(owner, repo, pr_number)
+    if _priv_sha:
+        _apply_review_accuracy_gate(
+            review_data, owner=owner, repo=repo, sha=_priv_sha,
+            project_path=project_path, project_name=project_name or "",
+            pr_number=pr_number,
+        )
+
     return True, f"Private review completed for PR #{pr_number}.", review_data, context
 
 
@@ -3306,6 +3965,45 @@ def run_review(
             None,
         )
 
+    # Step 1g: spec-010 reuse short-circuit (US1, FR-001). On the re-analyze path
+    # (new commits or an explicit re-request), if the PR head AND base
+    # (merge-base) SHA are unchanged since the prior review and the request is
+    # equivalent, reproduce the prior review instead of re-deriving it —
+    # eliminating run-to-run drift on unchanged code. The signature is also
+    # persisted (below) so a future review can make this decision. Fail-open: any
+    # unknown SHA or missing prior record falls through to a fresh review (FR-007).
+    from app.config import get_review_consistency_config as _get_cc_cfg
+    from app.review_reuse import request_signature, should_reuse
+    _head_sha = current_shas[-1] if current_shas else ""
+    _focus_flags = [
+        name for name, on in (
+            ("architecture", architecture), ("errors", errors),
+            ("comments", comments), ("plan", bool(plan_url)), ("ultra", ultra),
+        ) if on
+    ]
+    # discovery_enabled is part of the request signature (FR-016) so a single-pass
+    # review is never reused as a comprehensive one (or vice versa).
+    from app.config import get_review_discovery_config as _get_disc_cfg
+    _discovery_enabled = _get_disc_cfg(project_name or "")["enabled"]
+    _request_signature = request_signature(_focus_flags, _discovery_enabled)
+    _consistency_cfg = _get_cc_cfg(project_name or "")
+    _base_sha = ""
+    if _consistency_cfg["reuse_enabled"] and _head_sha:
+        _base_sha = _merge_base_sha(owner, repo, context.get("base") or "", _head_sha)
+        if _base_sha:
+            _prior_record = _read_prior_review_record(
+                str(KOAN_ROOT / "instance"), owner, repo, pr_number,
+            )
+            if should_reuse(_prior_record, _head_sha, _base_sha, _request_signature):
+                msg = (
+                    f"PR #{pr_number}: head & base unchanged since the last "
+                    "review and the request is equivalent — the prior review "
+                    "stands (reproduced, no re-analysis)."
+                )
+                log("review", msg)
+                notify_fn(msg)
+                return True, msg, None
+
     # Track review wall-clock time for footer attribution
     _review_start = time.monotonic()
 
@@ -3337,6 +4035,17 @@ def run_review(
     if not raw_output:
         detail = f" ({error})" if error else ""
         return False, f"Provider review failed for PR #{pr_number}{detail}.", None
+
+    # Step 4b: Accuracy gate — reconcile the parsed review against the reviewed
+    # HEAD before rendering (kills pre-fix quotes and re-raised, already-fixed
+    # findings). Runs before _format_review_as_markdown so both the summary and
+    # inline comments render the reconciled findings.
+    if review_data is not None and current_shas:
+        _apply_review_accuracy_gate(
+            review_data, owner=owner, repo=repo, sha=current_shas[-1],
+            project_path=project_path, project_name=project_name or "",
+            pr_number=pr_number,
+        )
 
     # Step 5: Convert to markdown for posting
     if review_data is not None:
@@ -3540,6 +4249,8 @@ def run_review(
                 review_data.get("file_comments", []),
                 base_ref=_sidecar_base,
                 head_sha=_sidecar_head,
+                base_sha=_base_sha,
+                request_signature=_request_signature,
                 project_name=project_name or "",
                 review_summary=review_data.get("review_summary") or {},
                 review_comment=comment_ref,
