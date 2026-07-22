@@ -25,7 +25,8 @@ def log_context_load(label: str, content: str) -> None:
     alone would be invisible there — hence the direct ``print``.
 
     Best-effort: a broken stream (or a missing ``estimate_tokens``) must never
-    break prompt assembly, so every failure is swallowed silently.
+    break prompt assembly, so every failure is swallowed — logged at debug so it
+    stays visible without ever raising.
     """
     try:
         from app.diff_compressor import estimate_tokens
@@ -35,8 +36,8 @@ def log_context_load(label: str, content: str) -> None:
             file=sys.stderr,
             flush=True,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("log_context_load failed for %s: %s", label, e)
 
 
 def _read_or_empty(path: Path) -> str:
