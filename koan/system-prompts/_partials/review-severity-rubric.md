@@ -1,3 +1,13 @@
+### Coverage — find all the issues
+
+Review the whole diff for **every** genuine issue in this single pass — do not stop
+after finding the first few. A later review should have little to add: anything you
+overlook now either resurfaces later as confusing "new" feedback on unchanged code
+or is silently lost. There is no cap on the number of findings; coverage of the diff
+and the severity bar below decide what is reported, not an arbitrary limit. (Then
+apply the calibration below so the extra findings land in the right tier — higher
+recall must not inflate the blocking set.)
+
 ### Severity Calibration
 
 Categorize every finding by its **actual** severity. The three tiers drive the

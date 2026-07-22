@@ -121,9 +121,9 @@ parse (always on; no config gate), without inflating blocking noise.
 **Independent Test**: PR with several independent issues → single default review surfaces all within
 coverage (not just the first few); added findings still pass triage.
 
-- [ ] T027 [US5] Extend `koan/system-prompts/_partials/review-severity-rubric.md` with the exhaustive-discovery instruction (keep searching; aim for all issues in one parse; no self-imposed finding cap) — FR-025, contracts/prompt-partials.md
-- [ ] T028 [US5] Confirm the three review prompts (`review.md`, `review-with-plan.md`, `review-architecture.md`) inherit the exhaustive instruction via the shared include; adjust any wording that implies stopping early (depends on T027) — FR-025
-- [ ] T029 [P] [US5] Add golden eval case `koan/skills/core/review/evals/cases/recall_all.json` (N seeded issues → single pass surfaces all within coverage; precision not regressed) + baseline update — FR-026, SC-012/006
+- [X] T027 [US5] Added a "### Coverage — find all the issues" directive to `review-severity-rubric.md` (keep searching after finding several; aim for all in one pass; no finding cap; extra recall must not inflate the blocking set) — FR-025
+- [X] T028 [US5] `review.md` + `review-with-plan.md` inherit it via the shared include (verified in the rendered prompt); `review-architecture.md` (markdown) got an equivalent "be exhaustive" Rules bullet. No stop-early wording found to remove — FR-025
+- [X] T029 [P] [US5] Added eval case `recall_all.json` (3 independent issues — hardcoded secret, unsanitized SQL, bare except — in one diff → min_findings ≥ 3, lgtm false). Dataset-validity green (127) — FR-026, SC-012/006
 
 **Checkpoint**: default-path recall raised; round-1 completeness underpins the freeze.
 

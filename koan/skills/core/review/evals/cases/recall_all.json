@@ -1,0 +1,30 @@
+{
+  "id": "recall_all",
+  "name": "Multiple independent issues in one diff — a single pass must find them all",
+  "skill": "review",
+  "description": "Exhaustive single-pass recall guard (spec 010, US5): one diff introduces three independent, genuine problems — a hardcoded secret, a bare except that swallows errors, and an unsanitized SQL string. A disciplined review must surface all three in one pass (not stop after the first), so a later review has nothing 'new' to add. Blocks (lgtm false) because real critical/warning issues are present.",
+  "diff": "--- a/service.py\n+++ b/service.py\n@@ -1,2 +1,18 @@\n import sqlite3\n+\n+API_KEY = \"sk_live_abc123hardcodedsecret\"\n+\n+def get_user(conn, user_id):\n+    cur = conn.cursor()\n+    cur.execute(\"SELECT * FROM users WHERE id = '\" + user_id + \"'\")\n+    return cur.fetchone()\n+\n+def load_config(path):\n+    try:\n+        with open(path) as f:\n+            return f.read()\n+    except:\n+        return None\n",
+  "expect": {
+    "expect_lgtm": false,
+    "min_findings": 3,
+    "require_valid_json": true,
+    "expect_findings": [
+      {
+        "file": "service.py",
+        "keywords": ["secret", "api_key", "hardcoded", "credential"],
+        "severity_in": ["critical", "warning"]
+      },
+      {
+        "file": "service.py",
+        "keywords": ["sql", "injection", "sanitize", "parameterized"],
+        "severity_in": ["critical", "warning"]
+      },
+      {
+        "file": "service.py",
+        "keywords": ["except", "swallow", "bare", "error"],
+        "severity_in": ["warning", "critical"]
+      }
+    ],
+    "forbidden_files": []
+  }
+}

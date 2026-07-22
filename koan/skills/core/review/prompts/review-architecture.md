@@ -72,6 +72,8 @@ reporting. Flag unverifiable claims explicitly.
 ### Rules
 
 - Be specific: reference file names and line ranges from the diff.
+- Be exhaustive: surface every genuine architectural issue in this one pass —
+  don't stop after the first few, so a later review has little to add.
 - Prioritize: separate blocking architectural issues from minor suggestions.
 - Raise the bar for **🟡 Important**: reserve it for structural problems that
   clearly should block merge or risk real harm. Demote borderline "would be
