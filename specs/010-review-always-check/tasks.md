@@ -58,7 +58,7 @@ cover schema/semantics/fail-safe/compression relationship.
 ## Phase 5: Polish & cross-cutting
 
 - [ ] T019 Run `make lint` and `make test`; fix any failures introduced by the change.
-- [ ] T020 Run `/brain sync` to refresh frontmatter/`description:` and regenerate stale `index.md` for the touched `docs/`/`specs/` pages; verify `wiki/index.md` entry for `docs/users/koan-md.md` reflects the new content.
+- [X] T020 Run `/brain sync` to refresh frontmatter/`description:` and regenerate stale `index.md` for the touched `docs/`/`specs/` pages; verify `wiki/index.md` entry for `docs/users/koan-md.md` reflects the new content.
 - [ ] T021 Ensure `.specify/feature.json` is NOT staged (`git checkout main -- .specify/feature.json`) and run the private leak-pattern grep before staging.
 
 ## Dependencies & execution order
