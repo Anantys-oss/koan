@@ -958,16 +958,27 @@ def _write_review_findings_sidecar(
     """
     try:
         import time as _time
+
+        from app.review_identity import finding_key
         sidecar_dir = Path(instance_dir) / ".review-findings"
         sidecar_dir.mkdir(parents=True, exist_ok=True)
         sidecar_path = sidecar_dir / f"{owner}_{repo}_{pr_number}.json"
+        # Stamp each finding with its stable identity key (spec 010, FR-002) so a
+        # later review can reconcile against these without re-deriving identity.
+        # Copy rather than mutate the caller's dicts.
+        stamped_comments = [
+            {**fc, "identity_key": finding_key(fc)}
+            if isinstance(fc, dict) else fc
+            for fc in (file_comments or [])
+        ]
         data = {
+            "schema_version": 1,
             "pr_key": f"{owner}/{repo}#{pr_number}",
             "project_name": project_name,
             "base_ref": base_ref,
             "head_sha": head_sha,
             "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-            "file_comments": file_comments,
+            "file_comments": stamped_comments,
             "review_summary": review_summary or {},
             "review_comment": review_comment or None,
         }

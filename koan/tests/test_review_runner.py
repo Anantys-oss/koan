@@ -7789,3 +7789,67 @@ def test_fire_post_review_inits_registry_when_uninitialized(tmp_path):
     assert hooks.get_registry() is not None
     mod = sys.modules["koan_hook_capture"]
     assert mod.seen == ["42"]
+
+
+class TestReviewSidecarIdentity:
+    """Sidecar stamps finding identity + schema_version (spec 010, FR-002/D6)."""
+
+    def _read(self, instance_dir, owner, repo, pr):
+        from app.review_runner import _read_prior_findings_sidecar
+        return _read_prior_findings_sidecar(instance_dir, owner, repo, pr)
+
+    def test_write_stamps_identity_key_and_schema_version(self, tmp_path):
+        _write_review_findings_sidecar(
+            str(tmp_path), "octo", "repo", "42",
+            [{"file": "a.py", "line_start": 10, "title": "SQL injection risk",
+              "comment": "unsanitized input", "severity": "critical"}],
+            base_ref="main", head_sha="abc123",
+            review_summary={"lgtm": False},
+        )
+        sidecar = tmp_path / ".review-findings" / "octo_repo_42.json"
+        data = json.loads(sidecar.read_text())
+        assert data["schema_version"] == 1
+        fc = data["file_comments"][0]
+        assert "identity_key" in fc and fc["identity_key"]
+        assert "security" in fc["identity_key"]
+
+    def test_write_does_not_mutate_caller_findings(self, tmp_path):
+        findings = [{"file": "a.py", "line_start": 10, "title": "x", "comment": "y"}]
+        _write_review_findings_sidecar(
+            str(tmp_path), "octo", "repo", "42", findings,
+            base_ref="main", head_sha="abc123",
+        )
+        assert "identity_key" not in findings[0]
+
+    def test_read_round_trips_stamped_findings(self, tmp_path):
+        _write_review_findings_sidecar(
+            str(tmp_path), "octo", "repo", "42",
+            [{"file": "a.py", "line_start": 10, "title": "bare except swallows error",
+              "comment": "silent", "severity": "warning"}],
+            base_ref="main", head_sha="deadbeef",
+        )
+        comments, head = self._read(str(tmp_path), "octo", "repo", "42")
+        assert head == "deadbeef"
+        assert comments and "identity_key" in comments[0]
+
+    def test_read_missing_sidecar_fail_open(self, tmp_path):
+        comments, head = self._read(str(tmp_path), "none", "none", "1")
+        assert comments == [] and head == ""
+
+    def test_read_legacy_sidecar_without_identity(self, tmp_path):
+        sidecar_dir = tmp_path / ".review-findings"
+        sidecar_dir.mkdir(parents=True)
+        (sidecar_dir / "octo_repo_9.json").write_text(json.dumps({
+            "head_sha": "legacy1",
+            "file_comments": [{"file": "a.py", "line_start": 5, "title": "old"}],
+        }))
+        comments, head = self._read(str(tmp_path), "octo", "repo", "9")
+        assert head == "legacy1"
+        assert comments and comments[0]["file"] == "a.py"
+
+    def test_read_corrupt_sidecar_fail_open(self, tmp_path):
+        sidecar_dir = tmp_path / ".review-findings"
+        sidecar_dir.mkdir(parents=True)
+        (sidecar_dir / "octo_repo_7.json").write_text("{not valid json")
+        comments, head = self._read(str(tmp_path), "octo", "repo", "7")
+        assert comments == [] and head == ""

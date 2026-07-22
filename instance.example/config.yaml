@@ -1060,6 +1060,48 @@ page_cache_reclaim:
 #   enabled: true           # Master switch (default: true)
 #   show_resolved: true     # Render the "Resolved since last review" section
 
+# Review consistency — make repeated reviews stable (spec 010). When the PR head
+# AND base (merge-base) SHA are unchanged and the review request is equivalent,
+# the prior review is reproduced instead of re-derived (reuse). Otherwise the
+# review re-derives and reconciles against the prior finding set, with a
+# "freeze": a first-time non-critical finding on code UNCHANGED since the prior
+# review is suppressed (the "review whiplash" case) — only a critical breaks
+# through, labeled "[Pre-Existing Issue]". Both switches default on; fail-open.
+# review_consistency:
+#   reuse_enabled: true     # Reproduce prior review verbatim on unchanged head+base (default: true)
+#   freeze_enabled: true    # Suppress first-time non-critical findings on unchanged code (default: true)
+
+# Review severity bar — how strict the yellow "Important" tier is (spec 010).
+# "Important" (a blocking severity) is reserved for clear merge-blockers or
+# real-harm-if-unfixed; borderline "should-fix" items are demoted to green
+# recommendations; vague/cosmetic noise is dropped. Non-critical issues that
+# predate the changeset are demoted and prefixed "[Pre-Existing Issue]".
+# review_severity:
+#   important_bar: strict                    # strict|balanced (default: strict)
+#   pre_existing_label: "[Pre-Existing Issue]"  # prefix for issues predating the PR
+#   deferred_label: "[Deferred]"                # prefix for author-deferred issues
+
+# Review comprehensive discovery — OPT-IN (default OFF), spec 010. When on, the
+# review runs a fixed set of focused perspectives (correctness, security,
+# architecture, silent-failure, test-coverage) and merges/dedups the findings
+# into one set, to catch more in a single pass (fewer "new" findings appearing
+# on later reviews). Costs more tokens/time; off by default so the normal
+# /review path is byte-identical. Whole-mode toggle only.
+# review_discovery:
+#   enabled: false          # Master switch (default: false)
+
+# Review dispositions — on a re-review, honor human PR comments that dispose of
+# a finding: "ignore"/"not a problem" (dismiss -> stop re-raising as blocking)
+# and "fix later" (defer -> downgrade to a non-blocking recommendation). Every
+# comment-driven suppression/downgrade is ATTRIBUTED (who + quoted rationale);
+# a comment disposes of a specific finding but cannot rewrite the review rubric.
+# Posture defaults to "the human decides" (spec 010): any non-bot commenter,
+# all severities including critical.
+# review_dispositions:
+#   enabled: true           # Honor human comment dispositions (default: true)
+#   honor_critical: true    # Dismissals apply to critical too (default: true)
+#   min_role: any           # Whose comments count: any|author|write (default: any)
+
 # Review convention docs — NATIVE ingestion of the REVIEWED repo's own
 # convention/knowledge docs into the review prompt, so the reviewer applies
 # repo-specific conventions and stops raising convention-based false positives
