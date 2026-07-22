@@ -85,11 +85,10 @@ verdict re-derived from post-triage severities.
 **Independent Test**: findings spanning blocker/borderline/cosmetic → blocker stays yellow, borderline
 → green, cosmetic dropped; verdict flips merge-ready when no clear blocker remains.
 
-- [ ] T017 [P] [US2] Write tests for the deterministic triage post-pass in `koan/tests/test_review_triage.py` (keep/demote/drop outcomes; stable tiebreak on the yellow/green boundary is deterministic; verdict re-derived from post-triage severities; fail-open to pre-triage set on error) — FR-008/009/010/011/012/013
-- [ ] T018 [US2] Create shared `koan/system-prompts/_partials/review-severity-rubric.md` — the Important bar (keep only clear blocker/real-harm; demote borderline; drop noise) — contracts/prompt-partials.md
-- [ ] T019 [US2] Implement `review_triage.py` yellow-bar post-pass (deterministic tiebreak; reuse existing verdict finalizer to re-derive `lgtm`; fail-open) (depends on T017) — FR-008–013, research D4
-- [ ] T020 [US2] Add `{@include review-severity-rubric}` to `koan/skills/core/review/prompts/review.md`, `review-with-plan.md`, and `review-architecture.md` (keep the three in sync) and wire `review_triage` into `run_review` after reconcile (depends on T018, T019)
-- [ ] T021 [P] [US2] Update eval cases/baseline for yellow-bar calibration in `koan/skills/core/review/evals/` (borderline→green; blocker retained; precision not regressed) — FR-022, SC-004/005/006
+- [~] T017/T019 No `review_triage.py` in US2. The yellow-bar is prompt-driven (the model assigns severity per the sharpened rubric); the deterministic invariants US2 lists (verdict-follows-severity FR-012, noise-drop FR-010) are ALREADY enforced by the existing verdict finalizer + reflection pass. A deterministic Python severity classifier would be low-accuracy and re-introduce nothing US1 doesn't already stabilize. `review_triage.py` is introduced in US6 where deterministic labeling (`[Pre-Existing Issue]`) genuinely needs it.
+- [X] T018 [US2] Create shared `koan/system-prompts/_partials/review-severity-rubric.md` — sharpened Important bar (reserve 🟡 for clear blocker/real-harm; demote borderline to 🟢; drop noise) + Verdict Contract — FR-008/009/010/012
+- [X] T020 [US2] `{@include review-severity-rubric}` added to the JSON-output prompts `review.md` + `review-with-plan.md` (extracted review.md's inline calibration into the shared partial; plan variant previously had NO explicit severity/verdict guidance — now fixed). `review-architecture.md` outputs **markdown** (🔴/🟡/🟢, no `lgtm` JSON), so it gets a markdown-appropriate calibration Rules bullet instead of the JSON verdict rubric. Include resolution verified.
+- [X] T021 [P] [US2] Added eval case `koan/skills/core/review/evals/cases/borderline_not_blocking.json` (borderline improvement → suggestion, lgtm true, not blocking). Dataset-validity + offline eval tests green (127). Baseline metrics are a null stub (populated by live `--update-baseline`), so no offline baseline edit needed.
 
 **Checkpoint**: yellow tier trustworthy; false request-changes reduced (SC-004/005).
 

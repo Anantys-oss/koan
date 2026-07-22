@@ -312,10 +312,14 @@ class TestReviewVerdictContract:
     def test_main_prompt_forbids_blocking_on_suggestions(
         self, pr_context, real_review_skill_dir
     ):
-        """review.md carries an explicit Verdict Contract (body-only marker)."""
+        """The built review prompt carries the Verdict Contract's blocking rule.
+
+        The Verdict Contract now lives in the shared review-severity-rubric
+        partial (spec 010, US2), {@include}-d by the JSON review prompts. Assert
+        on the *rendered* prompt so the test tracks what the model actually sees,
+        regardless of which file physically holds the text.
+        """
         prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
-        # This sentence exists only in the review.md Verdict Contract section —
-        # not in any partial — so it is a non-vacuous, single-source marker.
         assert "Never reject a PR" in prompt
 
     def test_shared_lgtm_rule_marks_suggestions_non_blocking(

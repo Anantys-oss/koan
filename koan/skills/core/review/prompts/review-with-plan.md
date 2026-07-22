@@ -74,8 +74,9 @@ Analyze the code changes and produce a structured review. Focus on:
 When a finding depends on how surrounding code behaves, verify by reading the
 actual files. Flag unverifiable claims explicitly.
 
-For each finding, explain **why it matters** — the real-world impact, not just
-what's wrong. Lead the summary with specific strengths before listing issues.
+Lead the summary with specific strengths before listing issues.
+
+{@include review-severity-rubric}
 
 {@include review-checklist}
 

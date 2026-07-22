@@ -73,6 +73,10 @@ reporting. Flag unverifiable claims explicitly.
 
 - Be specific: reference file names and line ranges from the diff.
 - Prioritize: separate blocking architectural issues from minor suggestions.
+- Raise the bar for **🟡 Important**: reserve it for structural problems that
+  clearly should block merge or risk real harm. Demote borderline "would be
+  cleaner if…" observations to **🟢 Suggestions**; drop vague or speculative
+  ones entirely. When unsure between Important and Suggestion, choose Suggestion.
 - Acknowledge what the PR does well architecturally before listing issues.
   Specific praise builds trust; generic praise wastes space.
 - If the architecture is sound, say so briefly. Don't invent problems.
