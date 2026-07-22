@@ -119,6 +119,37 @@ banner to the comment noting that the findings predate your latest push — so y
 don't act on stale feedback. Re-run `/review` to cover the new commits. Nothing
 changes for the common case where the branch didn't move.
 
+**Consistent reviews (no whiplash).** Re-running `/review` is stable, not a fresh
+roll of the dice:
+
+- **Unchanged code → reproduced.** If the PR head *and* base are unchanged since
+  the last review and you ask for the same kind of review, Kōan reproduces the
+  prior review instead of re-analysing (so the findings don't drift). Turn off via
+  `review_consistency.reuse_enabled: false`.
+- **Fix-and-push → no new complaints on untouched code.** After you fix findings
+  and push, a re-review won't suddenly raise *new* non-critical issues on files you
+  didn't touch — those should have been caught the first time (and the review now
+  aims to catch everything in one pass). Only a genuine **critical** on pre-existing
+  code still surfaces, marked `[Pre-Existing Issue]`. Turn off via
+  `review_consistency.freeze_enabled: false`.
+
+**Trustworthy 🟡 Important tier.** The yellow (blocking) tier is reserved for issues
+that clearly should block merge; borderline "should-fix" items are demoted to 🟢
+recommendations and don't block the PR. Issues that **predate your PR** are shown as
+🟢 `[Pre-Existing Issue]` recommendations (a pre-existing critical keeps its severity
+but is still labeled), so you're not blocked for code you didn't write.
+
+**Your comments are honored.** On a re-review, if a human comment says a finding
+should be ignored / isn't a problem, Kōan won't re-raise it as a blocker; if a
+comment says "fix later", the finding becomes a non-blocking `[Deferred]`
+recommendation. The change is always attributed to the commenter. Disable with
+`review_dispositions.enabled: false`.
+
+**Comprehensive mode (opt-in).** Set `review_discovery.enabled: true` (per-instance
+or per-project) for a more thorough multi-perspective pass that catches more in a
+single review (higher token/time cost). Off by default — the normal `/review` is
+unchanged.
+
 **Large diffs & partial-coverage warning:** Review diffs are packed to fit a
 token budget by the diff compressor (`optimizations.review_compressor.token_budget`,
 default 80,000 tokens — the single knob controlling review diff size). The

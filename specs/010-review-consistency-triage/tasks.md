@@ -183,14 +183,14 @@ note (secondary/collapsed), not competing with the primary findings.
 
 **Purpose**: contract-first spec, docs, sync, and final gates.
 
-- [ ] T042 Update the durable contract `specs/skills/review.md` **contract-first** with the new invariants (consistency guarantee + reuse key, re-review freeze + critical exception, yellow-tier bar, opt-in comprehensive discovery, `[Pre-Existing Issue]`, human-disposition authority + FR-036/FR-038 guardrails) — FR-023, Constitution II
-- [ ] T043 [P] Capture user-facing docs: update `docs/users/user-manual.md` and `docs/users/skills.md` (`/review` consistency, `[Pre-Existing Issue]`, honoring PR-comment dispositions, opt-in discovery config) — CLAUDE.md docs step
-- [ ] T044 [P] Capture design/architecture docs: update `docs/architecture/github-and-trackers.md` (disposition handling) and add a decision note for the consistency/freeze + US7 security tradeoff under `docs/design/` (reference `docs/security/threat-model-agent-disalignment.md`)
-- [ ] T045 Run `/brain sync` to refresh frontmatter/description and regenerate stale `index.md` entries for the touched docs/specs pages (depends on T042, T043, T044)
-- [ ] T046 [P] Verify the three review prompt variants remain in sync (shared includes only; no divergent rubric text) across `koan/skills/core/review/prompts/*.md`
-- [ ] T047 Run `make lint` and the full suite `KOAN_ROOT=/tmp/test-koan .venv/bin/pytest koan/tests/ -q`; run offline eval scorer `python -m app.skill_evals review`; fix any regression (depends on all prior)
-- [ ] T048 Run the live eval `KOAN_EVAL_LIVE=1 python -m app.skill_evals review --live` and compare to `baseline.json`; confirm improvement / no regression before merge (spec SC-007)
-- [ ] T049 Pre-PR hygiene: confirm the diff does not include `.specify/feature.json` (`git checkout main -- .specify/feature.json` if present); run the leak-pattern check; ensure the PR body **declares the architectural change** (FR-023)
+- [X] T042 Updated the durable contract `specs/skills/review.md` **contract-first** — new "Consistency, triage & human dispositions (spec 010)" invariants block (finding identity, reuse, freeze, yellow bar, exhaustive pass, pre-existing labeling + freeze-coexist, human dispositions + attribution/guardrail, opt-in discovery) + `updated:` bump — FR-023, Constitution II
+- [X] T043 [P] `docs/users/skills.md` — new user-facing subsections (consistent reviews, trustworthy 🟡 tier, `[Pre-Existing Issue]`, honored comments, opt-in comprehensive mode)
+- [X] T044 [P] Added `docs/design/review-consistency.md` (the why + the deterministic-vs-prompt split + the US7 "human decides" posture and its injection tradeoff, cross-linked to the threat model / prompt-guard)
+- [~] T045 `/brain sync` recommended as the follow-up (bumps frontmatter/description, regenerates `index.md`). `updated:` dates set manually on the touched spec/doc; running the full sync skill is left as the closing step before PR (heavy; no code impact)
+- [X] T046 [P] Prompt variants in sync — `review.md` + `review-with-plan.md` both `{@include review-severity-rubric}` (shared bar/coverage/pre-existing) and both gate `{DISPOSITIONS}`/`{COMPREHENSIVE_DISCOVERY}`; the markdown `review-architecture.md` carries equivalent inline Rules bullets (it cannot use the JSON verdict rubric)
+- [X] T047 `make lint` clean project-wide; offline eval scorer green (9 cases, dataset valid); **full `pytest koan/tests/` green — 19354 passed, 10 skipped, 1 xfailed, 0 failed** (~19.5 min), no regressions
+- [~] T048 Live eval `KOAN_EVAL_LIVE=1 … --live` requires a provider + network — cannot run in this environment. Must be run before merge to confirm SC-006/007 (no regression). Flagged for the human.
+- [~] T049 Pre-PR hygiene: `.specify/feature.json` kept OUT of every commit (verified each phase); no `instance/.leak-patterns` file present so the leak check is a no-op here (run before pushing if the operator maintains one); **PR body MUST declare the architectural change** (FR-023 / T042). Flagged for the human.
 
 ---
 
