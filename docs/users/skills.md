@@ -162,6 +162,11 @@ compressor packing, or trivial-file triage), the posted review opens with a
 `⚠️ Partial review` block listing every omitted file, so partial coverage is
 never silent.
 
+**Pin files that must always be reviewed:** a target repo can commit a
+`.koan/config.yaml` with `review.always_check: ["SKILL.md", "*.md", …]` to keep
+matching files from ever being dropped by the compressor — useful for repos that
+ship skills or docs. See [KOAN.md & the `.koan/` directory](koan-md.md#the-koanconfigyaml-file).
+
 Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <command>` on a PR or issue. See [GitHub commands](../messaging/github-commands.md).
 
 ## PR Management

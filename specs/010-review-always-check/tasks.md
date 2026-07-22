@@ -51,9 +51,9 @@ and understands the config is an extensible surface.
 sample is valid YAML, demonstrates `always_check`, shows future keys commented out; docs
 cover schema/semantics/fail-safe/compression relationship.
 
-- [ ] T016 [P] [US2] Create the committed sample `docs/reference/koan-config.sample.yaml`: annotated `review.always_check` with generic placeholder patterns + the identified future keys (`never_check`, `pause_label`, `default_focus`, `compressor_token_budget`) as commented-out inert examples. Must `yaml.safe_load` cleanly.
-- [ ] T017 [US2] Document `.koan/config.yaml` in `docs/users/koan-md.md`: purpose, schema, precedence, `fnmatch` path+basename matching semantics, fail-safe behavior, relationship to diff compression / partial coverage, a copy of the annotated sample, and the future-keys list. Cross-link `specs/components/skills.md`.
-- [ ] T018 [P] [US2] Add a short pointer in `README.md` (review section) and/or `docs/users/skills.md` `/review` reference to the new repo-level `.koan/config.yaml` `always_check` control, linking to `docs/users/koan-md.md`.
+- [X] T016 [P] [US2] Create the committed sample `docs/reference/koan-config.sample.yaml`: annotated `review.always_check` with generic placeholder patterns + the identified future keys (`never_check`, `pause_label`, `default_focus`, `compressor_token_budget`) as commented-out inert examples. Must `yaml.safe_load` cleanly.
+- [X] T017 [US2] Document `.koan/config.yaml` in `docs/users/koan-md.md`: purpose, schema, precedence, `fnmatch` path+basename matching semantics, fail-safe behavior, relationship to diff compression / partial coverage, a copy of the annotated sample, and the future-keys list. Cross-link `specs/components/skills.md`.
+- [X] T018 [P] [US2] Add a short pointer in `README.md` (review section) and/or `docs/users/skills.md` `/review` reference to the new repo-level `.koan/config.yaml` `always_check` control, linking to `docs/users/koan-md.md`.
 
 ## Phase 5: Polish & cross-cutting
 
