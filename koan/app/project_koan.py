@@ -9,10 +9,17 @@ import logging
 import sys
 from pathlib import Path
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
 _MAX_KOAN_MD_CHARS = 16000
 _MAX_KOAN_SKILL_CHARS = 16000
+
+# Caps for the review.always_check pin list — bound worst-case (files × patterns)
+# matching work so a pathological repo config cannot degrade review latency.
+_MAX_ALWAYS_CHECK_PATTERNS = 100
+_MAX_PATTERN_LEN = 200
 
 
 def log_context_load(label: str, content: str) -> None:
@@ -178,3 +185,68 @@ def read_repo_convention_docs(
     if not parts:
         return ""
     return _cap("\n\n".join(parts), max_block_chars, "repo convention docs")
+
+
+def read_koan_config(project_path: str) -> dict:
+    """Parse <project_path>/.koan/config.yaml into a dict.
+
+    A generic, extensible per-repo config surface (distinct from the operator's
+    KOAN_ROOT instance/config.yaml). Fail-safe by contract: returns ``{}`` when
+    the file is absent, empty, unreadable, unparseable, or its top level is not a
+    mapping. Never raises — a broken repo config must never abort a review.
+    """
+    if not project_path:
+        return {}
+    path = Path(project_path) / ".koan" / "config.yaml"
+    text = _read_or_empty(path)
+    if not text:
+        return {}
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        logger.warning("unparseable .koan/config.yaml at %s: %s", path, e)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning(".koan/config.yaml top level is not a mapping at %s", path)
+        return {}
+    return data
+
+
+def get_review_always_check(project_path: str) -> list[str]:
+    """Return the honored ``review.always_check`` glob list from .koan/config.yaml.
+
+    Returns ``[]`` unless the value is a list; keeps only non-blank ``str`` items,
+    caps at ``_MAX_ALWAYS_CHECK_PATTERNS`` patterns of ``_MAX_PATTERN_LEN`` chars
+    each (dropping the excess with one diagnostic). Fail-safe; never raises.
+    """
+    review = read_koan_config(project_path).get("review")
+    if not isinstance(review, dict):
+        return []
+    raw = review.get("always_check")
+    if not isinstance(raw, list):
+        return []
+    patterns: list[str] = []
+    dropped_long = False
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        pat = item.strip()
+        if not pat:
+            continue
+        if len(pat) > _MAX_PATTERN_LEN:
+            dropped_long = True
+            continue
+        patterns.append(pat)
+    if dropped_long:
+        logger.warning(
+            "dropped over-long review.always_check pattern(s) (> %d chars)",
+            _MAX_PATTERN_LEN,
+        )
+    if len(patterns) > _MAX_ALWAYS_CHECK_PATTERNS:
+        logger.warning(
+            "review.always_check capped at %d patterns (had %d)",
+            _MAX_ALWAYS_CHECK_PATTERNS,
+            len(patterns),
+        )
+        patterns = patterns[:_MAX_ALWAYS_CHECK_PATTERNS]
+    return patterns
