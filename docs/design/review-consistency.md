@@ -1,4 +1,5 @@
 ---
+type: doc
 title: "Review consistency, triage & human dispositions"
 description: "Why /review is stable across re-runs, how the yellow-tier bar and pre-existing labeling work, and the deliberate 'human decides' posture (and its injection tradeoff) for honoring PR-comment dispositions."
 tags: [design, review, decision]
