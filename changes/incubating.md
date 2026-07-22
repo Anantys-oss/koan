@@ -14,6 +14,8 @@ Do not hand-edit released entries — they are the source for `CHANGES.md`.
 
 ## ${NEXT}
 
+## v0.8.1 — 2026-07-22
+
 ### Merged 2026-07-21 — main @ 376b048a (11 commits)
 
 **Added**
