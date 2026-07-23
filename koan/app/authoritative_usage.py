@@ -284,8 +284,8 @@ def maybe_poll(
         session_resets_at=getattr(usage, "session_resets_at", None),
         weekly_resets_at=getattr(usage, "weekly_resets_at", None),
         polled_at=now,
-        session_tokens_at_poll=_state_int(state, "session_tokens"),
-        weekly_tokens_at_poll=_state_int(state, "weekly_tokens"),
+        session_tokens_at_poll=_counter_or_zero(state, "session_tokens"),
+        weekly_tokens_at_poll=_counter_or_zero(state, "weekly_tokens"),
         last_attempt_at=now,
     )
     _save_anchor(instance_dir, new_anchor)
@@ -315,23 +315,38 @@ def _default_fetch():
     return oauth_usage.fetch_usage()
 
 
-def _state_int(state: dict, key: str) -> int:
-    """Read an integer token counter from state; 0 when absent.
+def _read_counter(state: dict, key: str) -> Optional[int]:
+    """Read an integer token counter from state.
 
-    A *present but unparseable* value is logged at debug (it signals counter
-    corruption, and a silent 0 would under-report usage — the dangerous
-    direction) before falling back to 0.
+    Absent / empty → ``0``. A *present but unparseable* value returns ``None``
+    and logs at WARNING: that signals counter corruption, and callers treat the
+    window as un-interpolatable and fall back to the heuristic rather than
+    silently interpolating from ``0`` (which under-reports usage — the
+    dangerous direction, since the agent would believe it has more headroom
+    than it does).
     """
     try:
         raw = state.get(key, 0)
     except AttributeError:
         return 0
+    if raw is None or raw == "":
+        return 0
     try:
         return int(raw)
     except (TypeError, ValueError):
-        if raw not in (None, 0, ""):
-            logger.debug("unparseable usage counter %s=%r; treating as 0", key, raw)
-        return 0
+        logger.warning("unparseable usage counter %s=%r; falling back to the "
+                       "heuristic for this window", key, raw)
+        return None
+
+
+def _counter_or_zero(state: dict, key: str) -> int:
+    """Counter value with a corrupt/missing reading coerced to 0.
+
+    Used for the anchor *baseline* at poll time, where a later delta against a
+    good counter over-reports (the safe direction) rather than under-reports.
+    """
+    value = _read_counter(state, key)
+    return value if value is not None else 0
 
 
 # --- Resolution -------------------------------------------------------------
@@ -373,12 +388,12 @@ def resolve(
     session_limit, weekly_limit = _limits(config)
     sess_pct, sess_reset, sess_ok = _resolve_window(
         anchor.session_pct, anchor.session_resets_at, anchor.session_tokens_at_poll,
-        _state_int(state, "session_tokens"), session_limit, now,
+        _read_counter(state, "session_tokens"), session_limit, now,
         heuristic_session_pct, session_reset_display,
     )
     week_pct, week_reset, week_ok = _resolve_window(
         anchor.weekly_pct, anchor.weekly_resets_at, anchor.weekly_tokens_at_poll,
-        _state_int(state, "weekly_tokens"), weekly_limit, now,
+        _read_counter(state, "weekly_tokens"), weekly_limit, now,
         heuristic_weekly_pct, weekly_reset_display,
     )
     if not sess_ok and not week_ok:
@@ -396,7 +411,7 @@ def _resolve_window(
     anchor_pct: Optional[float],
     resets_at: Optional[int],
     tokens_at_poll: int,
-    tokens_now: int,
+    tokens_now: Optional[int],
     limit: int,
     now: int,
     heuristic_pct: float,
@@ -408,6 +423,10 @@ def _resolve_window(
     """
     # No authoritative percentage for this window → heuristic.
     if anchor_pct is None:
+        return float(heuristic_pct), heuristic_reset, False
+    # Corrupt local counter → can't interpolate safely; heuristic (which would
+    # otherwise under-report by assuming zero consumption since the anchor).
+    if tokens_now is None:
         return float(heuristic_pct), heuristic_reset, False
     # The window already reset since the poll → the anchor is stale for it.
     if resets_at is not None and now >= resets_at:

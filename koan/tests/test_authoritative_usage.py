@@ -287,6 +287,68 @@ def test_resolve_no_anchor_returns_heuristic(tmp_path):
     assert res.source == "heuristic"
 
 
+@pytest.mark.parametrize("raw,expected", [
+    (12345, 12345),
+    ("500", 500),
+    (0, 0),
+    ("", 0),
+    (None, 0),
+])
+def test_read_counter_valid_and_absent(raw, expected):
+    assert au._read_counter({"session_tokens": raw}, "session_tokens") == expected
+
+
+def test_read_counter_missing_key_is_zero():
+    assert au._read_counter({}, "session_tokens") == 0
+
+
+@pytest.mark.parametrize("raw", ["abc", {"x": 1}, [1, 2]])
+def test_read_counter_corrupt_returns_none(raw):
+    assert au._read_counter({"session_tokens": raw}, "session_tokens") is None
+
+
+def test_counter_or_zero_coerces_corrupt_to_zero():
+    assert au._counter_or_zero({"session_tokens": "abc"}, "session_tokens") == 0
+    assert au._counter_or_zero({"session_tokens": 42}, "session_tokens") == 42
+
+
+def test_resolve_corrupt_session_counter_falls_back_for_that_window(tmp_path):
+    """A corrupt session counter → heuristic session, weekly stays authoritative.
+
+    Guards the dangerous direction: interpolating from 0 would under-report.
+    """
+    anchor = au.Anchor(session_pct=40, weekly_pct=55,
+                       session_resets_at=999999, weekly_resets_at=999999,
+                       polled_at=1000, session_tokens_at_poll=0,
+                       weekly_tokens_at_poll=0)
+    state = {"session_tokens": "corrupt", "weekly_tokens": 0}
+    with patch.object(au, "is_enabled", return_value=True), \
+         patch.object(au, "maybe_poll", return_value=anchor):
+        res = au.resolve(instance_dir=tmp_path, config=_cfg(), state=state,
+                         heuristic_session_pct=88, heuristic_weekly_pct=1,
+                         session_reset_display="hs", weekly_reset_display="hw",
+                         now=1001)
+    assert res.source == "oauth_usage"        # weekly still authoritative
+    assert res.session_pct == 88              # heuristic (counter corrupt)
+    assert res.session_reset_display == "hs"
+    assert res.weekly_pct == pytest.approx(55.0)
+
+
+def test_resolve_both_counters_corrupt_returns_heuristic(tmp_path):
+    anchor = au.Anchor(session_pct=40, weekly_pct=55,
+                       session_resets_at=999999, weekly_resets_at=999999,
+                       polled_at=1000, session_tokens_at_poll=0,
+                       weekly_tokens_at_poll=0)
+    state = {"session_tokens": "x", "weekly_tokens": "y"}
+    with patch.object(au, "is_enabled", return_value=True), \
+         patch.object(au, "maybe_poll", return_value=anchor):
+        res = au.resolve(instance_dir=tmp_path, config=_cfg(), state=state,
+                         heuristic_session_pct=9, heuristic_weekly_pct=10,
+                         session_reset_display="a", weekly_reset_display="b",
+                         now=1001)
+    assert res.source == "heuristic"
+
+
 def test_resolve_interpolation_clamps_at_100(tmp_path):
     anchor = au.Anchor(session_pct=95, weekly_pct=0, session_resets_at=999999,
                        weekly_resets_at=999999, polled_at=1000,
