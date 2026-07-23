@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
@@ -58,7 +58,15 @@ _DEFAULT_WEEKLY_LIMIT = 5_000_000
 
 @dataclass(frozen=True)
 class Anchor:
-    """A successful authoritative poll plus the local counters at that moment."""
+    """A successful authoritative poll plus the local counters at that moment.
+
+    ``polled_at`` is the timestamp of the last *successful* fetch (drives data
+    staleness in :func:`resolve`). ``last_attempt_at`` is the last *attempt* —
+    success or failure — and drives the poll-interval short-circuit in
+    :func:`maybe_poll` so a failing endpoint is negatively cached instead of
+    re-hit on every mission. It defaults to ``polled_at`` for cache files
+    written before this field existed.
+    """
 
     session_pct: Optional[float]
     weekly_pct: Optional[float]
@@ -67,6 +75,16 @@ class Anchor:
     polled_at: int
     session_tokens_at_poll: int
     weekly_tokens_at_poll: int
+    last_attempt_at: Optional[int] = None
+
+    @property
+    def attempt_at(self) -> int:
+        """Last attempt time, falling back to the last-success time."""
+        return self.polled_at if self.last_attempt_at is None else self.last_attempt_at
+
+    def has_data(self) -> bool:
+        """True when this anchor carries usable authoritative percentages."""
+        return self.session_pct is not None or self.weekly_pct is not None
 
     def to_dict(self) -> dict:
         return {
@@ -77,6 +95,7 @@ class Anchor:
             "polled_at": self.polled_at,
             "session_tokens_at_poll": self.session_tokens_at_poll,
             "weekly_tokens_at_poll": self.weekly_tokens_at_poll,
+            "last_attempt_at": self.attempt_at,
         }
 
 
@@ -184,6 +203,7 @@ def _load_anchor(instance_dir: Path) -> Optional[Anchor]:
             polled_at=int(data["polled_at"]),
             session_tokens_at_poll=int(data.get("session_tokens_at_poll", 0)),
             weekly_tokens_at_poll=int(data.get("weekly_tokens_at_poll", 0)),
+            last_attempt_at=_opt_int(data.get("last_attempt_at")),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -228,16 +248,20 @@ def maybe_poll(
 ) -> Optional[Anchor]:
     """Return a usable anchor, polling the endpoint only when the cache is stale.
 
-    The cached anchor is reused without any network call while it is younger
-    than the poll interval. When it is older we attempt one fetch; on failure
-    the previous (stale) anchor is returned unchanged so the staleness ceiling
-    in :func:`resolve` gets the final say.
+    The cached anchor is reused without any network call while its last
+    *attempt* is younger than the poll interval. When it is older we attempt one
+    fetch; on failure we persist the attempt time (negative cache) and keep any
+    previous success data, so the staleness ceiling in :func:`resolve` gets the
+    final say and a down endpoint is not re-hit on every mission.
     """
     if not is_enabled(config):
         return None
     now = int(time.time()) if now is None else now
     anchor = _load_anchor(instance_dir)
-    if anchor is not None and (now - anchor.polled_at) < _poll_seconds(config):
+    # Gate on the last *attempt* (not just last success): a failed/rate-limited
+    # poll is negatively cached for the same interval, so a down endpoint does
+    # not re-trigger the synchronous, blocking fetch on every mission.
+    if anchor is not None and (now - anchor.attempt_at) < _poll_seconds(config):
         return anchor
 
     fetcher = fetch or _default_fetch
@@ -247,7 +271,12 @@ def maybe_poll(
         logger.debug("OAuth usage poll raised: %s", exc)
         usage = None
     if usage is None:
-        return anchor  # keep the previous anchor; resolve() judges freshness
+        # Record the failed attempt so the interval short-circuit re-arms.
+        # Previous success data (if any) is preserved; resolve() still judges
+        # its freshness against polled_at.
+        stale = _mark_attempt(anchor, now)
+        _save_anchor(instance_dir, stale)
+        return stale
 
     new_anchor = Anchor(
         session_pct=getattr(usage, "session_pct", None),
@@ -257,9 +286,27 @@ def maybe_poll(
         polled_at=now,
         session_tokens_at_poll=_state_int(state, "session_tokens"),
         weekly_tokens_at_poll=_state_int(state, "weekly_tokens"),
+        last_attempt_at=now,
     )
     _save_anchor(instance_dir, new_anchor)
     return new_anchor
+
+
+def _mark_attempt(anchor: Optional[Anchor], now: int) -> Anchor:
+    """Return an anchor whose ``last_attempt_at`` is *now*.
+
+    With no prior anchor this is a pure negative-cache marker: no usable data
+    and ``polled_at=0`` so :func:`resolve` treats it as stale (→ heuristic),
+    while :func:`maybe_poll` still honours the poll interval before retrying.
+    """
+    if anchor is None:
+        return Anchor(
+            session_pct=None, weekly_pct=None,
+            session_resets_at=None, weekly_resets_at=None,
+            polled_at=0, session_tokens_at_poll=0, weekly_tokens_at_poll=0,
+            last_attempt_at=now,
+        )
+    return replace(anchor, last_attempt_at=now)
 
 
 def _default_fetch():
@@ -269,9 +316,21 @@ def _default_fetch():
 
 
 def _state_int(state: dict, key: str) -> int:
+    """Read an integer token counter from state; 0 when absent.
+
+    A *present but unparseable* value is logged at debug (it signals counter
+    corruption, and a silent 0 would under-report usage — the dangerous
+    direction) before falling back to 0.
+    """
     try:
-        return int(state.get(key, 0))
-    except (TypeError, ValueError, AttributeError):
+        raw = state.get(key, 0)
+    except AttributeError:
+        return 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        if raw not in (None, 0, ""):
+            logger.debug("unparseable usage counter %s=%r; treating as 0", key, raw)
         return 0
 
 

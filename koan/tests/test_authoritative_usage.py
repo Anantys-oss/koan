@@ -149,6 +149,49 @@ def test_maybe_poll_fetch_raises_keeps_old_anchor(tmp_path):
     assert result.session_pct == 22
 
 
+def test_maybe_poll_failed_poll_is_negatively_cached(tmp_path):
+    """A failed poll advances last_attempt_at so the next call skips the fetch."""
+    old = au.Anchor(session_pct=30, weekly_pct=30, session_resets_at=None,
+                    weekly_resets_at=None, polled_at=1000,
+                    session_tokens_at_poll=0, weekly_tokens_at_poll=0)
+    au._save_anchor(tmp_path, old)
+    fetch = Mock(return_value=None)  # endpoint down
+    with patch.object(au, "is_enabled", return_value=True):
+        # First call: poll interval elapsed → one (failed) fetch.
+        au.maybe_poll(tmp_path, {}, {}, now=1400, fetch=fetch)
+        assert fetch.call_count == 1
+        # Second call soon after: negatively cached, no second fetch.
+        au.maybe_poll(tmp_path, {}, {}, now=1450, fetch=fetch)
+        assert fetch.call_count == 1
+        # After another full interval: retry fires.
+        au.maybe_poll(tmp_path, {}, {}, now=1400 + 301, fetch=fetch)
+        assert fetch.call_count == 2
+
+
+def test_maybe_poll_first_attempt_failure_negatively_cached(tmp_path):
+    """No prior anchor + failed fetch still rate-limits subsequent attempts."""
+    fetch = Mock(return_value=None)
+    with patch.object(au, "is_enabled", return_value=True):
+        first = au.maybe_poll(tmp_path, {}, {}, now=1000, fetch=fetch)
+        assert fetch.call_count == 1
+        assert first.has_data() is False  # negative-cache marker
+        au.maybe_poll(tmp_path, {}, {}, now=1100, fetch=fetch)
+        assert fetch.call_count == 1  # skipped within poll interval
+
+
+def test_negatively_cached_anchor_resolves_to_heuristic(tmp_path):
+    """A negative-cache marker (polled_at=0) is stale → heuristic."""
+    marker = au._mark_attempt(None, now=5000)
+    with patch.object(au, "is_enabled", return_value=True), \
+         patch.object(au, "maybe_poll", return_value=marker):
+        res = au.resolve(instance_dir=tmp_path, config=_cfg(), state={},
+                         heuristic_session_pct=42, heuristic_weekly_pct=43,
+                         session_reset_display="s", weekly_reset_display="w",
+                         now=5000)
+    assert res.source == "heuristic"
+    assert res.session_pct == 42
+
+
 # --- resolve ----------------------------------------------------------------
 
 

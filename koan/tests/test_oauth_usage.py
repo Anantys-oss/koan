@@ -28,6 +28,17 @@ from app.oauth_usage import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_cli_version():
+    """Keep the suite hermetic: never shell out to a real ``claude --version``.
+
+    ``_http_get_usage`` builds the User-Agent from ``_claude_cli_version()``,
+    which would otherwise probe the CLI on PATH as a real subprocess.
+    """
+    with patch.object(oauth_usage, "_claude_cli_version", return_value="1.2.3"):
+        yield
+
+
 # --- Credential reading -----------------------------------------------------
 
 

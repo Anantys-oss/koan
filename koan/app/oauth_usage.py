@@ -343,12 +343,22 @@ def _parse_reset_ts(value: object) -> Optional[int]:
 
 
 def _parse_window(value: object) -> Optional[UsageWindow]:
-    """Parse a single window object into a :class:`UsageWindow`."""
+    """Parse a single window object into a :class:`UsageWindow`.
+
+    The utilization value is treated as an already-scaled percentage (``45`` →
+    45%). The endpoint is undocumented, so the raw value is debug-logged: if it
+    ever turns out to be a 0–1 fraction it would round to 0% in ``usage.md``,
+    and the log makes that scale mismatch diagnosable in the field.
+    """
     if not isinstance(value, dict):
         return None
     pct = _first_number(value, _PCT_KEYS)
     if pct is None:
         return None
+    if pct != 0 and abs(pct) < 1.0:
+        logger.debug("OAuth usage window percent %r is < 1 — if the endpoint "
+                     "reports a 0-1 fraction rather than 0-100, usage is "
+                     "under-reported", pct)
     resets_at = _parse_reset_ts(_first_value(value, _RESET_KEYS))
     return UsageWindow(percent=_clamp_pct(pct), resets_at=resets_at)
 

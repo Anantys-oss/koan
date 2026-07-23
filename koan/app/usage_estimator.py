@@ -14,6 +14,7 @@ Writes usage.md in the same format as manual /usage paste.
 """
 
 import json
+import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,8 @@ from typing import Optional
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.utils import atomic_write, load_config
+
+logger = logging.getLogger(__name__)
 
 
 # Default limits (tokens). User tunes via config.yaml → usage.session_token_limit
@@ -189,8 +192,10 @@ def _resolve_usage_source(state: dict, config: dict, instance_dir: Path,
             weekly_reset_display=weekly_reset,
         )
     except Exception as exc:  # noqa: BLE001 — never let usage.md writes fail
-        print(f"[usage_estimator] authoritative usage resolution failed: {exc}",
-              file=sys.stderr)
+        # Warning (not a silent print): a permanently-broken resolve() must be
+        # distinguishable from normal heuristic fallback in the daemon logs.
+        logger.warning("authoritative usage resolution failed: %s", exc,
+                       exc_info=True)
         return None
 
 
