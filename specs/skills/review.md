@@ -47,6 +47,11 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 - If the PR branch's live HEAD moved between when the review captured its diff and
   when the comment is posted (a push or force-push mid-review), a
   `> [!IMPORTANT]` stale-HEAD alert is appended to the end of the comment.
+- When the incremental-review check finds no new commits since the last review
+  (all current SHAs already reviewed, no re-request), the run posts a short
+  `> [!NOTE]` (blue) comment telling the requester the review was skipped because
+  the code is unchanged — instead of skipping silently. The user asked (via
+  `/review` or an @mention) and gets an answer rather than only the thumbs-up ack.
 - Review prompt is enriched with `{ISSUE_CONTEXT}` from `issue_tracker/enrichment.py`.
 
 ## Error cases
