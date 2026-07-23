@@ -27,6 +27,7 @@ from app.rebase_pr import (
     _build_rebase_recovery_guidance,
     _checkout_pr_branch,
     _check_if_already_solved,
+    _cli_label,
     _enqueue_ci_check,
     _close_pr_as_duplicate,
     _filter_bot_issue_comments,
@@ -47,6 +48,36 @@ from app.rebase_pr import (
     MAX_CI_FIX_ATTEMPTS,
 )
 from app.claude_step import _is_permission_error, check_existing_ci, wait_for_ci
+
+
+class TestCliLabel:
+    """`_cli_label` names the real CLI provider + model, not a hardcoded 'Claude'."""
+
+    @patch("app.provider.get_provider_display", return_value="codex")
+    @patch("app.config.get_model_config",
+           return_value={"mission": "gpt-5-codex", "fallback": "f", "review": "r"})
+    def test_mission_role_names_provider_and_model(self, _mc, _disp):
+        assert _cli_label() == "codex (gpt-5-codex)"
+
+    @patch("app.provider.get_provider_display", return_value="claude")
+    @patch("app.config.get_model_config",
+           return_value={"mission": "opus", "fallback": "f", "custom": "sonnet"})
+    def test_present_role_key_uses_that_model(self, _mc, _disp):
+        # A role key that exists in the config selects that model. (In real
+        # config `review` is never emitted, so it falls back — see below.)
+        assert _cli_label("custom") == "claude (sonnet)"
+
+    @patch("app.provider.get_provider_display", return_value="claude")
+    @patch("app.config.get_model_config", return_value={"mission": "opus", "fallback": "f"})
+    def test_missing_role_falls_back_to_mission_model(self, _mc, _disp):
+        # Real config emits no `review` key, so review→mission fallback applies.
+        assert _cli_label("review") == "claude (opus)"
+
+    @patch("app.provider.get_provider_display", return_value="claude")
+    @patch("app.config.get_model_config", return_value={"mission": "", "fallback": "f"})
+    def test_empty_model_omits_parenthetical(self, _mc, _disp):
+        # Default config ships an empty mission model — no dangling "claude ()".
+        assert _cli_label() == "claude"
 
 
 # ---------------------------------------------------------------------------

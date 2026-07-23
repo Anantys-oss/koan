@@ -66,6 +66,28 @@ from app.utils import (
     truncate_text,
 )
 
+
+def _cli_label(role: str = "mission") -> str:
+    """Return a ``"<provider> (<model>)"`` tag for ``[rebase]`` log lines.
+
+    Names the CLI provider that ``build_full_command`` / ``run_claude_step``
+    will actually invoke (the configured global provider) plus the model for
+    *role*, so the logs stay accurate when the configured CLI is not Claude —
+    instead of a hardcoded "Claude" the user sees e.g. ``codex (gpt-5-codex)``.
+    ``role`` falls back to the ``mission`` model when unset (matches the
+    already-solved check's ``review``→``mission`` fallback). When the model is
+    empty (default config = "use provider default"), the parenthetical is
+    omitted so the line reads ``claude`` instead of a dangling ``claude ()``.
+    """
+    from app.config import get_model_config
+    from app.provider import get_provider_display
+
+    models = get_model_config()
+    model = models.get(role) or models["mission"]
+    disp = get_provider_display()
+    return f"{disp} ({model})" if model else disp
+
+
 def _resolve_own_login() -> str:
     """Resolve our own GitHub login (the configured ``github.nickname``).
 
@@ -769,7 +791,7 @@ def _run_rebase_impl(
     # ── Already-solved check ──────────────────────────────────────────
     # Ask Claude whether HEAD already addresses the intent of this PR.
     # Must run before checkout to avoid unnecessary git state mutations.
-    print("[rebase] Running already-solved check (Claude)", flush=True)
+    print(f"[rebase] Running already-solved check via {_cli_label('review')}", flush=True)
     already_solved, resolved_by = _check_if_already_solved(
         actions_log=actions_log,
         pr_context=context,
@@ -898,7 +920,7 @@ def _run_rebase_impl(
         if min_severity and min_severity != "suggestion":
             included = severity_at_or_above(min_severity)
             severity_hint = f" (severity filter: {', '.join(included)})"
-        print(f"[rebase] Applying review feedback (Claude){severity_hint}", flush=True)
+        print(f"[rebase] Applying review feedback via {_cli_label()}{severity_hint}", flush=True)
         notify_fn(f"Analyzing review comments on `{branch}`{severity_hint}...")
         feedback_meta: Dict[str, str] = {"status": "unknown", "error": ""}
         change_summary = _apply_review_feedback(
@@ -1473,7 +1495,7 @@ def _resolve_rebase_conflicts(
             )
 
         # Build conflict resolution prompt
-        print(f"[rebase] Resolving conflicts via Claude (round {round_num})", flush=True)
+        print(f"[rebase] Resolving conflicts via {_cli_label()} (round {round_num})", flush=True)
         prompt = _build_conflict_resolution_prompt(
             context, conflicted, base, skill_dir=skill_dir,
             project_path=project_path,
@@ -1639,7 +1661,7 @@ def _fix_existing_ci_failures(
             actions_log.append("Pre-push CI check: no CI runs found")
         return False
 
-    print(f"[rebase] CI failed — invoking Claude to fix (run #{run_id})", flush=True)
+    print(f"[rebase] CI failed — invoking {_cli_label()} to fix (run #{run_id})", flush=True)
     notify_fn("Previous CI failed — analyzing logs to fix before push...")
     actions_log.append(f"Pre-push CI check: previous run #{run_id} failed")
 
