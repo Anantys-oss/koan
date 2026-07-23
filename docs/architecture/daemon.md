@@ -120,6 +120,17 @@ pipeline (execution flow, retry guards, lifecycle invariants).
   summary line is rendered as `[cli] rate_limit_ok:` (underscored) so it never
   collides with the loose `rate limit` quota pattern.
 
+Usage percentages that drive mode selection come from `usage_estimator`, which by
+default uses a **local token-count heuristic**. When available, an **optional
+authoritative anchor** (`oauth_usage.py` + `authoritative_usage.py`, issue #2455)
+reads real session/weekly utilization from Anthropic's *undocumented* OAuth usage
+endpoint and anchors the heuristic — the local counter still interpolates between
+periodic polls. It degrades to the heuristic for API-key users, non-Claude
+providers, or any endpoint failure, and never changes `decide_mode`, `burn_rate`,
+or `quota_handler` (the reactive safety net stays authoritative on real
+exhaustion). Configured via `usage.authoritative_source: auto | oauth_usage | off`.
+See `specs/components/agent-loop.md` § "Usage source selection".
+
 Idle actions use the same interruptible sleep path even when `auto_pause` is
 disabled. If `interval_seconds` is set to `0`, the runner waits until the next
 configured GitHub/Jira notification poll is due, or a small minimum breath when

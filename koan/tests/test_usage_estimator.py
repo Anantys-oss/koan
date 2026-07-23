@@ -943,3 +943,68 @@ class TestCmdSetUsed:
         state = json.loads(state_file.read_text())
         # 30% of 1M = 300k
         assert state["session_tokens"] == 300_000
+
+
+class TestAuthoritativeSourceShim:
+    """_write_usage_md prefers an authoritative resolution when available."""
+
+    def test_authoritative_values_win(self, tmp_path):
+        """When resolve() returns source=oauth_usage, its %/reset are written."""
+        from app import authoritative_usage
+        from app.usage_estimator import _write_usage_md
+
+        usage_md = tmp_path / "usage.md"
+        state = _fresh_state()
+        state["session_tokens"] = 100_000  # heuristic would say ~20%
+        state["weekly_tokens"] = 100_000
+
+        resolution = authoritative_usage.UsageResolution(
+            session_pct=73.4, weekly_pct=61.0,
+            session_reset_display="2h30m", weekly_reset_display="3d4h",
+            source="oauth_usage",
+        )
+        with patch("app.authoritative_usage.resolve", return_value=resolution):
+            _write_usage_md(state, usage_md, {})
+
+        content = usage_md.read_text()
+        # Rounded to int, tracker-parseable.
+        assert "Session (5hr) : ~73% (reset in 2h30m)" in content
+        assert "Weekly (7 day) : ~61% (Resets in 3d4h)" in content
+        assert "<!-- Usage source: oauth_usage -->" in content
+
+    def test_heuristic_used_when_resolution_heuristic(self, tmp_path):
+        """A heuristic resolution leaves the local-counter percentages intact."""
+        from app import authoritative_usage
+        from app.usage_estimator import _write_usage_md
+
+        usage_md = tmp_path / "usage.md"
+        state = _fresh_state()
+        state["session_tokens"] = 100_000  # 20% of 500k default
+
+        resolution = authoritative_usage.UsageResolution(
+            session_pct=99.0, weekly_pct=99.0,
+            session_reset_display="x", weekly_reset_display="y",
+            source="heuristic",
+        )
+        with patch("app.authoritative_usage.resolve", return_value=resolution):
+            _write_usage_md(state, usage_md, {})
+
+        content = usage_md.read_text()
+        assert "Session (5hr) : ~20%" in content
+        assert "<!-- Usage source: heuristic -->" in content
+
+    def test_resolution_failure_falls_back_to_heuristic(self, tmp_path):
+        """If resolve() raises, usage.md is still written with heuristic values."""
+        from app.usage_estimator import _write_usage_md
+
+        usage_md = tmp_path / "usage.md"
+        state = _fresh_state()
+        state["session_tokens"] = 100_000
+
+        with patch("app.authoritative_usage.resolve",
+                   side_effect=RuntimeError("boom")):
+            _write_usage_md(state, usage_md, {})
+
+        content = usage_md.read_text()
+        assert "Session (5hr) : ~20%" in content
+        assert "<!-- Usage source: heuristic -->" in content
