@@ -906,6 +906,21 @@ def is_session_resume_enabled() -> bool:
     return bool(config.get("session_resume_enabled", True))
 
 
+def is_internal_refactor_pass_enabled() -> bool:
+    """Check if the internal refactor pass runs before the review gate.
+
+    When True, ``/implement``, ``/rebase`` and ``/fix`` run a refactor pass on
+    the freshly produced code (an extra commit, pushed, no PR comment) right
+    before the private review gate. Default: True (opt-out via
+    ``refactor_pass: { enabled: false }`` to avoid the extra per-mission cost).
+    """
+    config = _load_config()
+    refactor_cfg = config.get("refactor_pass", {})
+    if isinstance(refactor_cfg, dict):
+        return bool(refactor_cfg.get("enabled", True))
+    return True
+
+
 def is_dashboard_enabled() -> bool:
     """Check if dashboard is enabled for managed startup.
 

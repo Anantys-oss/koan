@@ -767,6 +767,14 @@ usage:
 #   dedup: true            # Skip re-reviewing the same clean PR head (default: true)
 #   tracker_max_age_days: 30  # Dedup tracker entry retention (default: 30)
 
+# Internal refactor pass — before the private review gate, /implement, /rebase
+# and /fix run a refactor pass on the freshly produced code (an extra commit,
+# pushed, no PR comment) so the gate reviews cleaner code. Set enabled: false to
+# skip it and avoid the extra per-mission cost. The standalone /refactor command
+# is unaffected.
+# refactor_pass:
+#   enabled: true          # Master switch (default: true)
+
 # Prompt injection guard — scans incoming missions for suspicious patterns
 # Detects instruction overrides, role confusion, secret extraction, shell injection.
 # Complements outbox_scanner (output defense) with input-side defense.

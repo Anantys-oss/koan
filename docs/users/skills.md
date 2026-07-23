@@ -60,7 +60,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context. Conflict resolution has a 10-minute per-round budget before the existing recreate fallback. | Yes |
 | `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
-| `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |
+| `/refactor <PR> [focus]` | `/rf` | Refactor a PR's changed code for clarity/simplicity (preserves behavior); one clean commit, push, and a summary comment. Trailing text is extra focus (e.g. "focus on the tests") | Yes |
 | `/check <url>` | `/inspect` | Run project health checks on a PR or issue (rebase, review, plan) | — |
 | `/check_need <url>` | `/need`, `/needs` | Analyze if a PR or issue is still needed vs. current main | — |
 | `/ci_check <PR>\|--enable\|--disable` | — | Check and fix CI failures on a PR (non-blocking, bounded, one attempt per mission); toggle CI system | — |
@@ -84,6 +84,15 @@ ones are folded into the plan's *Open Questions* section so you can resolve them
 the issue. When `/implement` runs, the same audit's findings are injected into the
 implementation context as "verify before coding" guidance — the mission always
 proceeds. Toggle with `plan_review.assumptions_check` in `config.yaml` (default on).
+
+`/fix`, `/implement`, and `/rebase` run an internal refactor pass right before
+the review gate: the same engine as `/refactor` cleans up the freshly produced
+code, makes one extra commit, runs the tests, and pushes — silently (no PR
+comment, since it is part of the larger workflow). If the tests stay red after a
+single fix attempt, the commit is kept local and **not** pushed. This makes
+large implement missions land cleaner code before review. It is on by default;
+disable it with `refactor_pass: { enabled: false }` in `config.yaml` to avoid
+the extra per-mission cost.
 
 The private post-PR review gate for `/fix`, `/implement`, and `/rebase` is
 backend-only: it reuses `/review` analysis, fixes Blocking/Important findings

@@ -31,6 +31,7 @@ from app.pr_submit import (
 from app.prompts import load_prompt_or_skill
 from app.github_url_parser import parse_pr_url
 from app.private_review_gate import format_gate_note, run_gate_for_skill
+from app.refactor_step import run_internal_refactor_pass
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,17 @@ def run_fix(
 
     # Build notification and summary
     branch = get_current_branch(project_path)
+
+    # Internal refactor pass before the review gate (extra commit, pushed).
+    # Best-effort, no PR comment. Only when work landed on a feature branch.
+    if branch not in (effective_base_branch, "main", "master"):
+        run_internal_refactor_pass(
+            project_path,
+            project_name=project_name,
+            instance_dir=instance_dir,
+            base_branch=effective_base_branch,
+            notify_fn=notify_fn,
+        )
 
     # In-place fix: the PR already exists, just report the branch.
     if existing_branch:

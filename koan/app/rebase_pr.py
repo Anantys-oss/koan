@@ -58,6 +58,7 @@ from app.config import (
 from app.git_utils import ordered_remotes as _ordered_remotes
 from app.github import run_gh, sanitize_github_comment
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt  # noqa: F401 — safety import
+from app.refactor_step import run_internal_refactor_pass
 from app.retry import retry_with_backoff
 from app.utils import (
     _GITHUB_REMOTE_RE,
@@ -1028,6 +1029,14 @@ def _run_rebase_impl(
             f"Actions completed:\n" +
             "\n".join(f"- {a}" for a in actions_log)
         )
+
+    # ── Step 6b: Internal refactor pass before the review gate ─────────
+    # Extra commit, pushed; best-effort, no PR comment (internal workflow).
+    run_internal_refactor_pass(
+        project_path,
+        base_branch=base,
+        notify_fn=notify_fn,
+    )
 
     # ── Step 7: Private review gate ────────────────────────────────────
     gate_result = _run_rebase_private_review_gate(
