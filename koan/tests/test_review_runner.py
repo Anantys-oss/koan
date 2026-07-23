@@ -140,8 +140,8 @@ class TestBuildReviewPrompt:
         from app.diff_compressor import compress_diff as real_compress
         call_args = {}
 
-        def spy_compress(diff, token_budget=80_000):
-            result = real_compress(diff, token_budget)
+        def spy_compress(diff, token_budget=80_000, pinned_patterns=None):
+            result = real_compress(diff, token_budget, pinned_patterns)
             call_args["called"] = True
             call_args["result"] = result
             return result
@@ -155,6 +155,85 @@ class TestBuildReviewPrompt:
         """No skipped-files note when diff fits within budget."""
         prompt, _ = build_review_prompt(pr_context, skill_dir=review_skill_dir)
         assert "Partial review" not in prompt
+
+    def _pin_pr_context(self, pr_context):
+        """A large diff where an unpinned .go file dwarfs a small SKILL.md."""
+        big_go = (
+            "diff --git a/main.go b/main.go\nindex a..b 100644\n"
+            "--- a/main.go\n+++ b/main.go\n@@ -1,50 +1,60 @@\n" + "+x := 1\n" * 400
+        )
+        skill = (
+            "diff --git a/plugins/x/SKILL.md b/plugins/x/SKILL.md\nindex c..d 100644\n"
+            "--- a/plugins/x/SKILL.md\n+++ b/plugins/x/SKILL.md\n"
+            "@@ -1,2 +1,3 @@\n title\n+new line\n body\n"
+        )
+        return dict(pr_context, diff=big_go + skill)
+
+    def test_always_check_pins_file_over_budget(
+        self, pr_context, review_skill_dir, tmp_path
+    ):
+        """A configured always_check file survives compression and is not in the note."""
+        repo = tmp_path / "repo"
+        (repo / ".koan").mkdir(parents=True)
+        (repo / ".koan" / "config.yaml").write_text(
+            "review:\n  always_check:\n    - 'SKILL.md'\n"
+        )
+        pr_context = self._pin_pr_context(pr_context)
+
+        from app.diff_compressor import parse_diff_hunks
+        skill_fd = next(
+            fd for fd in parse_diff_hunks(pr_context["diff"])
+            if fd.path.endswith("SKILL.md")
+        )
+        budget = skill_fd.token_estimate() + 1  # fits SKILL.md, not main.go
+
+        with patch(
+            "app.review_runner.get_review_compressor_token_budget",
+            return_value=budget,
+        ):
+            prompt, coverage_note = build_review_prompt(
+                pr_context, skill_dir=review_skill_dir,
+                project_path=str(repo), issue_context="",
+            )
+        assert "plugins/x/SKILL.md" in prompt
+        assert "SKILL.md" not in coverage_note
+        assert "main.go" in coverage_note  # the unpinned file is omitted
+
+    def test_no_config_leaves_pinned_path_silent(
+        self, pr_context, review_skill_dir, tmp_path
+    ):
+        """With no .koan/config.yaml, no 'Pinned' log line is emitted."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        pr_context = self._pin_pr_context(pr_context)
+        with patch("app.review_runner.log") as mock_log:
+            build_review_prompt(
+                pr_context, skill_dir=review_skill_dir,
+                project_path=str(repo), issue_context="",
+            )
+        assert not any(
+            "Pinned" in str(c.args) for c in mock_log.call_args_list
+        )
+
+    def test_pin_emits_log_line(
+        self, pr_context, review_skill_dir, tmp_path
+    ):
+        """When a file is pinned, one 'Pinned ...' log line is emitted."""
+        repo = tmp_path / "repo"
+        (repo / ".koan").mkdir(parents=True)
+        (repo / ".koan" / "config.yaml").write_text(
+            "review:\n  always_check:\n    - 'SKILL.md'\n"
+        )
+        pr_context = self._pin_pr_context(pr_context)
+        with patch("app.review_runner.log") as mock_log:
+            build_review_prompt(
+                pr_context, skill_dir=review_skill_dir,
+                project_path=str(repo), issue_context="",
+            )
+        assert any(
+            "Pinned" in str(c.args) and "SKILL.md" in str(c.args)
+            for c in mock_log.call_args_list
+        )
 
     def test_build_coverage_note_merges_all_sources(self):
         from types import SimpleNamespace

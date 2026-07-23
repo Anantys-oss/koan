@@ -175,6 +175,25 @@ runner in, pass `config.mcp_configs_for_role("<role>", project_name)` — never
   returned note — the two can never diverge. `_post_review_comment(..., coverage_note=)`
   prepends the note (a `⚠️ Partial review` block) above the review body, before the
   60 K GitHub-length truncation, so partial coverage is never silent.
+- **Repo-owner pin set (`.koan/config.yaml` → `review.always_check`).** A target repo
+  may pin files so diff-size reduction never silently drops them. `build_review_prompt`
+  reads `project_koan.get_review_always_check(project_path)` (a list of file globs) and
+  threads it as `pinned_patterns=` into **both** skip paths — `diff_compressor.compress_diff`
+  (on-path) and `utils.truncate_diff_with_skips` (compressor-off / char backstop). A
+  changed file whose repo-relative path **or** basename matches any pattern
+  (`fnmatch.fnmatchcase`, case-sensitive; via `diff_compressor.path_matches_any`) sorts
+  ahead of non-pinned files, so it consumes budget first and is never *fully* skipped
+  while budget remains. Pinning reorders inclusion **only** — it never raises the token/
+  char budget (the budget stays the single source of truth for size), so an enormous
+  pinned file still degrades to partial hunks like any oversized file. The `pinned_patterns`
+  parameter is **optional with a no-pin default**, so every non-review caller
+  (rebase/squash/recreate/ci_queue) and an absent/empty/malformed config are byte-identical.
+  Because a pinned-and-included file never enters the compressor/backstop skip list, it is
+  **absent from the `⚠️ Partial review` coverage note** — the note keeps listing only
+  genuinely-omitted files, preserving the one-value "prompt and posted body never diverge"
+  invariant above. When ≥1 file is actually pinned, `build_review_prompt` logs one
+  `review` line; no pins ⇒ no line. The review output **schema and prompt templates are
+  unchanged**, so the eval golden dataset/baseline are unaffected.
 
 ### Project-local skill instructions (.koan/skills/<name>/)
 
@@ -217,6 +236,29 @@ content)`, which emits `Detected <label>, loaded N chars (~ M tokens)` — `labe
 is `KOAN.md` for the general block and `.koan/skills/<skill>` for the per-skill
 block. `logging.getLogger` output alone is invisible in the run loop (no
 stream handler wired), so the load line is a direct `print`, not `logger.info`.
+
+### Repo config file (`.koan/config.yaml`)
+
+`project_koan.read_koan_config(project_path)` reads an optional structured
+`<project>/.koan/config.yaml` — a **second, YAML** surface alongside the markdown
+`.koan/KOAN.md` / `.koan/skills/` steering files, scoped to the *target repo* (distinct
+from the operator's KOAN_ROOT `instance/config.yaml`). It is a generic, extensible
+per-repo config designed to gain keys over time; this phase ships exactly one key,
+`review.always_check` (see the diff-size contract above), consumed via the typed accessor
+`get_review_always_check(project_path) -> list[str]`.
+
+**Fail-safe contract (untrusted-input hardening).** Every malformed shape converges to the
+absent-config no-op — the reader NEVER raises and NEVER aborts a review:
+
+- `read_koan_config` does `yaml.safe_load` (never `load`) and returns `{}` on a missing
+  file, unparseable YAML, unreadable file, or a non-mapping top-level value (at most one
+  diagnostic logged). Unknown top-level and unknown `review.*` keys are ignored
+  (forward-compatible).
+- `get_review_always_check` returns `[]` unless `review.always_check` is a list; it keeps
+  only non-blank `str` items, and caps at `_MAX_ALWAYS_CHECK_PATTERNS` (100) patterns of
+  `_MAX_PATTERN_LEN` (200) chars each, dropping the excess with one diagnostic.
+
+Absent `.koan/config.yaml` (the common case) ⇒ `[]` ⇒ byte-identical review output.
 
 ### `add_project` workspace resolution (contract)
 

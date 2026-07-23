@@ -60,6 +60,7 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
 | `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, `post_review`, each error-isolated. |
 | `prompt_builder._get_koan_md_section()` | Delegates reading to `project_koan.read_general_koan_md()` (root `KOAN.md` + `.koan/KOAN.md`, combined cap `_MAX_KOAN_MD_CHARS` 16k), frames via the `koan-md` template. Returns `""` for absent/blank/unreadable. |
+| `project_koan.read_koan_config()` / `get_review_always_check()` | Reads the target repo's optional structured `.koan/config.yaml` (a YAML surface alongside the markdown `.koan/` steering files). Fail-safe: returns `{}` / `[]` on absent/unparseable/malformed config, never raises. The `review.always_check` glob list feeds `/review` diff-size pinning — see `specs/components/skills.md` → "Repo config file (`.koan/config.yaml`)" and the `review` diff-size contract. |
 
 ### KOAN.md injection
 

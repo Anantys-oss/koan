@@ -1,7 +1,7 @@
 ---
 type: doc
 title: "KOAN.md — koan-only project instructions"
-description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md plus per-skill .koan/skills/<skill>/*.md hooks): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
+description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
 tags: [users]
 created: 2026-07-09
 updated: 2026-07-22
@@ -93,6 +93,75 @@ can confirm the context is actually in play. Watch `make logs` for lines like:
 the `CLAUDE.md` line is **detection-only** — Claude Code loads `CLAUDE.md` from
 the working directory itself, koan just reports its size so you can see the full
 steering context at a glance. Token counts are a `chars/3.5` estimate.
+
+## The `.koan/config.yaml` file
+
+Alongside the markdown steering files, `.koan/` can hold a structured
+`config.yaml` — a per-repository configuration surface for koan's behavior on
+*your* code. It is distinct from the operator's KOAN_ROOT `instance/config.yaml`
+(which configures the koan daemon itself); this file lives in the target repo
+and is committed like any other project file.
+
+Everything in it is optional, and the surface is designed to grow more keys over
+time. This section documents the one key that ships today.
+
+### `review.always_check` — never skip these files
+
+On a large PR, koan compresses the diff to fit the review budget and may drop
+lower-priority files (Markdown, text, config), surfacing them as a
+`⚠️ Partial review — N file(s) omitted` note. On a repo that ships skills, docs,
+or config-as-code, those are often exactly the files you most want reviewed.
+
+List file globs under `review.always_check` and any changed file whose **path or
+basename** matches is *pinned*: included in the reviewed diff ahead of budgeted
+files, and never silently dropped while budget remains (so it also won't appear
+in the Partial-review note).
+
+```yaml
+# <your-repo>/.koan/config.yaml
+review:
+  always_check:
+    - "SKILL.md"      # matches at any depth (basename match)
+    - "*.md"          # matches any Markdown file (`*` spans `/`)
+    - "docs/api/*"    # matches files under a directory
+```
+
+- **Matching** is `fnmatch`-style and **case-sensitive** (`*`, `?`, `[seq]`).
+  `*` spans `/`, so `*.md` matches Markdown at any depth; a bare `SKILL.md`
+  matches the basename at any depth.
+- **Pinning reorders inclusion only** — it does *not* raise the diff-size budget.
+  A pinned file larger than the whole budget is still included as far as it fits
+  (its first hunks), consistent with how any oversized file is handled.
+- **Fail-safe:** an absent, empty, or malformed `.koan/config.yaml` is a no-op —
+  the review runs exactly as it would with no file, and a bad config never aborts
+  a review. Malformed values for `always_check` are ignored.
+- **Precedence & scope:** this only affects files already in the PR diff (it
+  protects them from being skipped; it can't add unrelated files). It changes
+  neither the review's findings schema nor its prompt wording.
+
+When at least one file is pinned, koan logs a line you can watch on `make logs`:
+
+```
+[review] Pinned 3 file(s) via .koan review.always_check: plugins/x/SKILL.md, README.md, docs/api/spec.md
+```
+
+### Sample config & future keys
+
+A full annotated sample lives at
+[`docs/reference/koan-config.sample.yaml`](../reference/koan-config.sample.yaml).
+Copy it into your repo's `.koan/` directory and keep only what you need. It also
+shows, as commented-out examples, repo-level review knobs planned for the
+extensible config surface (not yet implemented):
+
+- **`review.never_check`** — the inverse of `always_check`: globs whose matching
+  files are intentionally skipped (generated code, vendored deps, lockfiles).
+- **`review.pause_label`** — a per-repo override of the review pause label.
+- **`review.default_focus`** — focus passes that always run for this repo.
+- **`review.compressor_token_budget`** — a per-repo diff-size budget override.
+
+The contract for this behavior is documented in
+`specs/components/skills.md` ("`review` diff-size & partial-coverage contract"
+and "Repo config file (`.koan/config.yaml`)").
 
 ## Example: this repository (dogfood)
 

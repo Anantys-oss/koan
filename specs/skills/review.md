@@ -38,6 +38,7 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 | `--plan-url <issue-url>` | flag | no | check PR against its plan |
 | `--force` | flag | no | review even if closed/merged or pause-label is present |
 | trailing context | command arg | no | extra reviewer guidance |
+| `.koan/config.yaml` `review.always_check` | target repo file | no | file globs pinned into the reviewed diff (see Invariants) |
 
 ## Outputs / side effects
 
@@ -73,6 +74,16 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
+- **Repo-level `always_check` pinning.** A target repo's optional
+  `.koan/config.yaml` may set `review.always_check` to a list of file globs; any
+  changed file whose path or basename matches is **pinned** so diff-size reduction
+  includes it ahead of budgeted files and never silently drops it, and it does not
+  appear in the `⚠️ Partial review` coverage note when included. Absent/empty/malformed
+  config is a byte-identical no-op. Pinning reorders inclusion only (never raises the
+  budget) and changes **neither the review schema nor the prompt templates**, so the
+  eval golden dataset/baseline are unaffected. Contract:
+  `specs/components/skills.md` → "`review` diff-size & partial-coverage contract" and
+  "Repo config file (`.koan/config.yaml`)". User docs: `docs/users/koan-md.md`.
 - **Pause label:** When `get_review_pause_label()` is non-empty and the PR
   carries that exact label, `run_review` returns success-with-skip **before**
   `fetch_pr_context`, prompt build, or any provider invocation. `force=True`
