@@ -8,13 +8,15 @@ Multi-step pipeline for /pr command:
 3. Run Claude Code to address review feedback
 4. Run refactor pass (if skill available)
 5. Run quality review pass (if skill available)
-6. Confirm tests pass
-7. Force-push and comment on PR
+6. Run simplify pass (if refactor skill available — readability-only)
+7. Confirm tests pass
+8. Force-push and comment on PR
 """
 
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -62,6 +64,30 @@ def build_refactor_prompt(project_path: str, skill_name: str = "", skill_dir: Pa
             f"Invoke the `{skill_name}` skill using the Skill tool before "
             f"doing any manual refactoring:\n"
             f'`skill: "{skill_name}"`'
+        )
+    return prompt
+
+
+def build_simplify_prompt(
+    project_path: str,
+    skill_name: str = "",
+    skill_dir: Path = None,
+    base: str = "main",
+) -> str:
+    """Build a prompt for the post-review simplify pass (readability-only).
+
+    *base* is the PR's target branch; it is templated into the diff range so the
+    pass inspects only this branch's work against the correct upstream target.
+    """
+    prompt = load_prompt_or_skill(
+        skill_dir, "pr-simplify",
+        project_path=project_path, PROJECT_PATH=project_path, BASE=base,
+    )
+    if skill_name:
+        prompt += (
+            f"\n\n## Skill Invocation\n\n"
+            f"Invoke the `{skill_name}` skill in simplify mode using the Skill tool:\n"
+            f'`skill: "{skill_name}" --simplify`'
         )
     return prompt
 
@@ -185,9 +211,10 @@ def run_pr_review(
         3. Run Claude Code to address review feedback (commit changes)
         4. Run refactor skill if available (separate commit)
         5. Run review skill if available (separate commit)
-        6. Run tests — fix if broken
-        7. Force-push the branch
-        8. Comment on PR with summary of all actions
+        6. Run simplify pass if refactor skill available (readability-only)
+        7. Run tests — fix if broken
+        8. Force-push the branch
+        9. Comment on PR with summary of all actions
 
     Args:
         owner: GitHub owner
@@ -300,7 +327,35 @@ def run_pr_review(
             use_skill=True,
         )
 
-    # ── Step 6: Run tests ─────────────────────────────────────────────
+    # ── Step 6: Simplify pass (post-review, readability-only) ─────────
+    if refactor_skill:
+        notify_fn(f"Running simplify pass ({refactor_skill} --simplify)...")
+        # Amend into HEAD when the branch is a single commit; otherwise land the
+        # readability changes as their own refactor commit. On any git failure,
+        # fall back to a new commit — safer than risking a bad amend.
+        try:
+            rev_count = subprocess.run(
+                ["git", "rev-list", "--count", f"{base}..HEAD"],
+                capture_output=True, text=True, cwd=project_path, timeout=30,
+            )
+            single_commit = rev_count.stdout.strip() == "1"
+        except subprocess.SubprocessError as e:
+            notify_fn(f"Commit count check failed ({e}); landing simplify as a new commit")
+            single_commit = False
+        _run_claude_step(
+            prompt=build_simplify_prompt(
+                project_path, refactor_skill, skill_dir=skill_dir, base=base,
+            ),
+            project_path=project_path,
+            commit_msg=f"refactor: simplify readability on #{pr_number}",
+            success_label=f"Applied simplify pass via `{refactor_skill} --simplify`",
+            failure_label="Simplify step skipped",
+            actions_log=actions_log,
+            use_skill=True,
+            amend=single_commit,
+        )
+
+    # ── Step 7: Run tests ─────────────────────────────────────────────
     test_cmd = detect_test_command(project_path)
     if test_cmd:
         notify_fn("Running tests...")
@@ -338,7 +393,7 @@ def run_pr_review(
                     f"Tests still failing: {retest.get('details', 'unknown')}"
                 )
 
-    # ── Step 7: Force-push ────────────────────────────────────────────
+    # ── Step 8: Force-push ────────────────────────────────────────────
     notify_fn(f"Pushing `{branch}`...")
     try:
         _force_push("origin", branch, project_path)
@@ -348,7 +403,7 @@ def run_pr_review(
             f"- {a}" for a in actions_log
         )
 
-    # ── Step 8: Comment on PR ─────────────────────────────────────────
+    # ── Step 9: Comment on PR ─────────────────────────────────────────
     comment_body = _build_pr_comment(
         pr_number, branch, base, actions_log, context
     )

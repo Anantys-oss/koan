@@ -831,11 +831,16 @@ def commit_if_changes(
     project_path: str,
     message: str,
     *,
+    amend: bool = False,
     bypass_hook_failures: bool = False,
 ) -> bool:
     """Stage all changes and commit if there are any.
 
-    Returns True if a commit was created.
+    Args:
+        amend: If True, fold the changes into the previous commit
+            (``--amend --no-edit``) instead of creating a new one.
+
+    Returns True if a commit was created (or amended).
     """
     status = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -846,8 +851,9 @@ def commit_if_changes(
         return False
 
     _run_git(["git", "add", "-A"], cwd=project_path)
+    commit_args = ["--amend", "--no-edit"] if amend else ["-m", message]
     _commit_with_hook_fallback(
-        ["-m", message],
+        commit_args,
         project_path,
         _run_git,
         bypass_hook_failures=bypass_hook_failures,
@@ -869,6 +875,7 @@ def run_claude_step(
     use_skill: bool = False,
     use_convention_subject: bool = False,
     bypass_hook_failures: bool = False,
+    amend: bool = False,
 ) -> StepResult:
     """Run a Claude Code step: invoke CLI, commit changes, log result.
 
@@ -878,6 +885,8 @@ def run_claude_step(
         use_convention_subject: If True, parse COMMIT_SUBJECT from Claude's
                    output and use it instead of *commit_msg*. Falls back to
                    *commit_msg* if no valid subject is found.
+        amend: If True, fold the step's changes into the previous commit
+                   instead of creating a new one.
 
     Returns:
         A :class:`StepResult` — truthy when a commit was created (backward
@@ -964,6 +973,7 @@ def run_claude_step(
         committed = commit_if_changes(
             project_path,
             effective_msg,
+            amend=amend,
             bypass_hook_failures=bypass_hook_failures,
         )
         if committed and success_label:
