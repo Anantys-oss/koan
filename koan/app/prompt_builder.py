@@ -596,6 +596,36 @@ def _get_mission_type_section(mission_title: str) -> str:
     return ""
 
 
+def _get_stagnation_retry_section(instance: str, mission_title: str) -> str:
+    """Return stagnation retry coaching when the mission has been re-queued.
+
+    Reads the retry tracker (``get_retry_info``) so a mission that stagnated
+    and got requeued tells the next session what pattern to avoid repeating.
+    Returns empty string for first-run missions and autonomous mode.
+    """
+    if not mission_title:
+        return ""
+
+    try:
+        from app.stagnation_monitor import get_retry_info
+
+        info = get_retry_info(instance, mission_title)
+    except Exception:
+        return ""
+
+    if info.get("count", 0) < 1:
+        return ""
+
+    from app.prompts import load_prompt
+
+    return load_prompt(
+        "stagnation-retry-context",
+        RETRY_COUNT=str(info["count"]),
+        PATTERN_TYPE=info.get("pattern_type") or "unknown",
+        SAMPLE_LINES=info.get("sample_lines") or "(no output captured)",
+    )
+
+
 def _get_verification_gate_section(mission_title: str) -> str:
     """Return the verification gate section for mission-driven runs.
 
@@ -853,6 +883,9 @@ def build_agent_prompt(
     # Append mission type guidance (mission-driven runs only)
     prompt += _get_mission_type_section(mission_title)
 
+    # Append stagnation retry coaching (requeued missions only)
+    prompt += _get_stagnation_retry_section(instance, mission_title)
+
     # Append task-aware filtered learnings (issue #1306)
     prompt += _get_learnings_section(
         instance, project_name, mission_title, focus_area,
@@ -974,6 +1007,9 @@ def build_agent_prompt_parts(
 
     # Append mission type guidance (mission-driven runs only)
     user_prompt += _get_mission_type_section(mission_title)
+
+    # Append stagnation retry coaching (requeued missions only)
+    user_prompt += _get_stagnation_retry_section(instance, mission_title)
 
     # Append task-aware filtered learnings (issue #1306).
     # Lives in the user prompt because its content varies with each mission
