@@ -85,6 +85,9 @@ def test_notify_outcome_always_logs_and_sends(monkeypatch):
     logged, sent = [], []
     monkeypatch.setattr(ml, "_log", lambda cat, msg: logged.append((cat, msg)))
     monkeypatch.setattr(ml, "is_debug", lambda: False)  # even under normal
+    # Isolate from agent-loop env: KOAN_SUPPRESS_RUNNER_OUTCOME=1 would
+    # suppress the send and make this assertion order/env dependent.
+    monkeypatch.delenv("KOAN_SUPPRESS_RUNNER_OUTCOME", raising=False)
     ml.notify_outcome("✅ Reviewed https://github.com/o/r/pull/1", lambda m: sent.append(m))
     assert sent == ["✅ Reviewed https://github.com/o/r/pull/1"]
     assert logged and logged[0][1].startswith("✅ Reviewed")

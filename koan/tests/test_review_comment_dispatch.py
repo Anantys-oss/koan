@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -186,7 +187,18 @@ class TestFetchUnresolvedReviewComments:
     def test_handles_failure(self, _):
         from app.review_comment_dispatch import fetch_unresolved_review_comments
 
-        assert fetch_unresolved_review_comments("owner/repo", 1) == []
+        # None signals fetch failure (distinct from authoritative empty []).
+        assert fetch_unresolved_review_comments("owner/repo", 1) is None
+
+    @patch(
+        "app.review_comment_dispatch.run_gh",
+        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15),
+    )
+    def test_handles_timeout(self, _):
+        """Timeout must not propagate — hot path signals failure via None."""
+        from app.review_comment_dispatch import fetch_unresolved_review_comments
+
+        assert fetch_unresolved_review_comments("owner/repo", 1) is None
 
     @patch("app.review_comment_dispatch.run_gh", return_value="")
     def test_gh_api_invocation_has_no_invalid_limit_flag(self, mock_gh):
@@ -205,6 +217,23 @@ class TestFetchUnresolvedReviewComments:
         endpoint = args[1]
         assert endpoint.startswith("repos/owner/repo/pulls/1/comments")
         assert "per_page=100" in endpoint
+
+    @patch("app.review_comment_dispatch.run_gh", return_value="")
+    def test_no_paginate_and_no_timeout_retry_amplification(self, mock_gh):
+        """Issue #1670: paginated gh + timeout retries stalled the notify loop.
+
+        Cap at one page (per_page=100, no --paginate) and max_attempts=1 so a
+        slow response fails fast instead of burning ~45s of retries per call.
+        """
+        from app.review_comment_dispatch import fetch_unresolved_review_comments
+
+        fetch_unresolved_review_comments("owner/repo", 42)
+        args = mock_gh.call_args.args
+        kwargs = mock_gh.call_args.kwargs
+        assert "--paginate" not in args
+        assert "per_page=100" in args[1]
+        assert kwargs.get("timeout") == 15
+        assert kwargs.get("max_attempts") == 1
 
 
 class TestFetchReviewBodyComments:
@@ -250,6 +279,29 @@ class TestFetchReviewBodyComments:
         endpoint = args[1]
         assert endpoint.startswith("repos/owner/repo/pulls/1/reviews")
         assert "per_page=100" in endpoint
+
+    @patch(
+        "app.review_comment_dispatch.run_gh",
+        side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=15),
+    )
+    def test_handles_timeout(self, _):
+        """Timeout must not propagate — hot path signals failure via None."""
+        from app.review_comment_dispatch import fetch_review_body_comments
+
+        assert fetch_review_body_comments("owner/repo", 1) is None
+
+    @patch("app.review_comment_dispatch.run_gh", return_value="")
+    def test_no_paginate_and_no_timeout_retry_amplification(self, mock_gh):
+        """Issue #1670: same single-page / no-retry contract as inline comments."""
+        from app.review_comment_dispatch import fetch_review_body_comments
+
+        fetch_review_body_comments("owner/repo", 42)
+        args = mock_gh.call_args.args
+        kwargs = mock_gh.call_args.kwargs
+        assert "--paginate" not in args
+        assert "per_page=100" in args[1]
+        assert kwargs.get("timeout") == 15
+        assert kwargs.get("max_attempts") == 1
 
 
 class TestReviewDispatchConfigHelpers:
@@ -519,6 +571,95 @@ class TestCheckAndDispatch:
         check_and_dispatch_review_comments(instance_dir, "/koan")
         tracker = _load_tracker(instance_dir)
         assert "owner/myproject#42" not in tracker
+
+    @patch("app.review_comment_dispatch._get_review_dispatch_config")
+    @patch("app.projects_config.load_projects_config")
+    @patch("app.projects_config.get_projects_from_config")
+    @patch("app.review_comment_dispatch._resolve_full_repo")
+    @patch("app.review_comment_dispatch.fetch_koan_open_prs")
+    @patch("app.review_comment_dispatch.fetch_unresolved_review_comments")
+    @patch("app.review_comment_dispatch.fetch_review_body_comments")
+    @patch("app.review_comment_dispatch._get_bot_username", return_value="koan-bot")
+    def test_fetch_timeout_preserves_tracker_fingerprint(
+        self, _, mock_review_body, mock_inline, mock_prs, mock_repo,
+        mock_projects, mock_projects_config, mock_config, instance_dir,
+    ):
+        """Timeout/failure must not erase the dedup fingerprint (PR #2446 review).
+
+        Returning [] on fetch failure made the dispatch loop treat the PR as
+        "all comments resolved" and delete the stored fingerprint. On the next
+        successful poll, unresolved comments re-dispatched as a duplicate
+        mission. Failure must skip the PR without mutating its tracker entry.
+        """
+        from app.review_comment_dispatch import (
+            check_and_dispatch_review_comments,
+            _save_tracker,
+            _load_tracker,
+        )
+        import time as _time
+
+        stored = {"fingerprint": "abc123deadbeef00", "ts": _time.time()}
+        mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
+        mock_projects_config.return_value = {}
+        mock_projects.return_value = [("myproject", instance_dir)]
+        mock_repo.return_value = "owner/myproject"
+        mock_prs.return_value = [
+            {"number": 42, "title": "feat: add widget", "headRefName": "koan/add-widget", "updatedAt": "2026-01-01"},
+        ]
+        # Inline fetch times out → None; body returns empty list.
+        mock_inline.return_value = None
+        mock_review_body.return_value = []
+
+        _save_tracker(instance_dir, {"owner/myproject#42": stored})
+
+        result = check_and_dispatch_review_comments(instance_dir, "/koan")
+        assert result == 0
+
+        tracker = _load_tracker(instance_dir)
+        assert tracker["owner/myproject#42"] == stored
+
+        missions_text = (Path(instance_dir) / "missions.md").read_text()
+        assert "Address review comments" not in missions_text
+
+    @patch("app.review_comment_dispatch._get_review_dispatch_config")
+    @patch("app.projects_config.load_projects_config")
+    @patch("app.projects_config.get_projects_from_config")
+    @patch("app.review_comment_dispatch._resolve_full_repo")
+    @patch("app.review_comment_dispatch.fetch_koan_open_prs")
+    @patch("app.review_comment_dispatch.fetch_unresolved_review_comments")
+    @patch("app.review_comment_dispatch.fetch_review_body_comments")
+    @patch("app.review_comment_dispatch._get_bot_username", return_value="koan-bot")
+    def test_body_fetch_failure_also_preserves_tracker(
+        self, _, mock_review_body, mock_inline, mock_prs, mock_repo,
+        mock_projects, mock_projects_config, mock_config, instance_dir,
+    ):
+        """Either fetcher failing must skip the PR without clearing the fingerprint."""
+        from app.review_comment_dispatch import (
+            check_and_dispatch_review_comments,
+            _save_tracker,
+            _load_tracker,
+        )
+        import time as _time
+
+        stored = {"fingerprint": "feedface00c0ffee", "ts": _time.time()}
+        mock_config.return_value = {"enabled": True, "cooldown_minutes": 0}
+        mock_projects_config.return_value = {}
+        mock_projects.return_value = [("myproject", instance_dir)]
+        mock_repo.return_value = "owner/myproject"
+        mock_prs.return_value = [
+            {"number": 7, "title": "fix", "headRefName": "koan/fix", "updatedAt": "2026-01-01"},
+        ]
+        mock_inline.return_value = [
+            {"id": 1, "user": "alice", "body": "fix me", "path": "a.py"},
+        ]
+        mock_review_body.return_value = None
+
+        _save_tracker(instance_dir, {"owner/myproject#7": stored})
+
+        result = check_and_dispatch_review_comments(instance_dir, "/koan")
+        assert result == 0
+        tracker = _load_tracker(instance_dir)
+        assert tracker["owner/myproject#7"] == stored
 
     @patch("app.review_comment_dispatch._get_review_dispatch_config")
     @patch("app.projects_config.load_projects_config")

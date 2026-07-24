@@ -73,7 +73,9 @@ def _is_sso_error(stderr: str) -> bool:
 _cached_gh_username = None
 
 
-def run_gh(*args, cwd=None, timeout=30, stdin_data=None, idempotent=True):
+def run_gh(
+    *args, cwd=None, timeout=30, stdin_data=None, idempotent=True, max_attempts=None,
+):
     """Run a ``gh`` CLI command and return stripped stdout.
 
     Args:
@@ -84,12 +86,17 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None, idempotent=True):
         idempotent: Deprecated — secondary rate limits are now never
             retried (they indicate abuse and retrying escalates GitHub's
             response).  Kept for backward compatibility.
+        max_attempts: Override retry budget (default 3).  Use 1 for
+            best-effort polling paths where timeout retries would stall
+            a hot loop (e.g. review-comment dispatch).
 
     Returns:
         Stripped stdout string.
 
     Raises:
         RuntimeError: If the ``gh`` command exits with a non-zero code.
+        subprocess.TimeoutExpired: If the subprocess exceeds ``timeout``
+            after exhausting retries.
     """
     cmd = ["gh", *args]
     stdin_kwarg = {"input": stdin_data} if stdin_data is not None else {"stdin": subprocess.DEVNULL}
@@ -110,14 +117,20 @@ def run_gh(*args, cwd=None, timeout=30, stdin_data=None, idempotent=True):
 
     from app.security_audit import GIT_OPERATION, _redact_list, log_event
 
+    retry_kwargs = {
+        "retryable": (RuntimeError, OSError, subprocess.TimeoutExpired),
+        "is_transient": is_gh_transient,
+        "non_retryable": is_gh_secondary_rate_limit,
+        "get_retry_delay": parse_retry_after,
+        "label": f"gh {' '.join(args[:2])}",
+    }
+    if max_attempts is not None:
+        retry_kwargs["max_attempts"] = max_attempts
+
     try:
         result = retry_with_backoff(
             _invoke,
-            retryable=(RuntimeError, OSError, subprocess.TimeoutExpired),
-            is_transient=is_gh_transient,
-            non_retryable=is_gh_secondary_rate_limit,
-            get_retry_delay=parse_retry_after,
-            label=f"gh {' '.join(args[:2])}",
+            **retry_kwargs,
         )
         log_event(GIT_OPERATION, details={
             "cmd": _redact_list(cmd),
