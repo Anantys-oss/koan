@@ -694,6 +694,17 @@ usage:
   session_token_limit: 500000   # Tokens per 5h session window
   weekly_token_limit: 5000000   # Tokens per 7-day window
   budget_mode: session_only     # full | session_only | disabled
+  # Authoritative quota source (issue #2455). When available, Koan anchors its
+  # session/weekly percentages to Anthropic's OAuth usage endpoint instead of
+  # the pure token-count heuristic, then interpolates with the local counter
+  # between polls. UNDOCUMENTED endpoint — treated as best-effort; any failure
+  # (API-key user, non-Claude provider, HTTP error) degrades to the heuristic.
+  #   auto        (default) use it when a Claude provider + OAuth token exist
+  #   oauth_usage explicit opt-in (same availability gating as auto)
+  #   off         never use it; always the local heuristic
+  authoritative_source: auto
+  # authoritative_poll_seconds: 300            # How often to hit the endpoint
+  # authoritative_max_staleness_seconds: 900   # Drop the anchor once this old
   # unlimited_quota: true       # Set to true when your CLI provider has no quota limit.
                                 # Disables all proactive quota gating (mode downgrades,
                                 # burn-rate warnings, preflight probes). Reactive detection
