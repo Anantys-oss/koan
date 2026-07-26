@@ -1,0 +1,51 @@
+# .koan/config.yaml — optional, per-repository Kōan configuration.
+#
+# Commit this at the ROOT of a project Kōan reviews (i.e. <your-repo>/.koan/config.yaml).
+# It is distinct from the operator's KOAN_ROOT instance/config.yaml — this file is
+# read from the *target repo* and lets repo owners steer Kōan's behavior on their code.
+#
+# Everything here is optional. An absent, empty, or malformed file is a no-op:
+# Kōan falls back to its defaults and never fails a review because of this file.
+# The surface is intentionally extensible — more keys will be added over time.
+
+review:
+  # always_check — file globs that must NEVER be silently dropped from a review.
+  #
+  # On a large PR, Kōan compresses the diff to fit its review budget and may skip
+  # lower-priority files (Markdown, text, config), noting them as "⚠️ Partial review".
+  # On a repo that ships skills, docs, or config-as-code that is exactly the wrong
+  # thing to skip. List globs here and any changed file whose PATH or BASENAME matches
+  # is pinned: included ahead of budgeted files and never fully skipped while budget
+  # remains (so it also won't appear in the Partial-review note).
+  #
+  # Matching is fnmatch-style and case-sensitive: `*`, `?`, `[seq]`. `*` spans `/`,
+  # so `*.md` matches Markdown at any depth; a bare `SKILL.md` matches the basename
+  # at any depth. Pinning reorders inclusion only — it does not raise the size budget,
+  # so an enormous pinned file may still be truncated to its first hunks.
+  always_check:
+    - "SKILL.md"      # skill manifests, wherever they live
+    - "*.md"          # all Markdown (docs, references, rules)
+    - "docs/api/*"    # everything under a specific directory
+
+  # ---------------------------------------------------------------------------
+  # Planned keys (NOT yet implemented — shown here to illustrate the surface).
+  # Uncommenting them today has no effect.
+  # ---------------------------------------------------------------------------
+
+  # never_check — inverse of always_check: globs whose matching files are
+  # intentionally skipped (generated code, vendored deps, lockfiles), to cut noise.
+  # never_check:
+  #   - "*.lock"
+  #   - "dist/*"
+  #   - "**/*.pb.go"
+
+  # pause_label — per-repo override of the review pause label (default: PauseReview).
+  # pause_label: "SkipKoanReview"
+
+  # default_focus — focus passes always run for this repo without per-command flags.
+  # default_focus:
+  #   - errors        # silent-failure hunter
+  #   - architecture  # SOLID / layering pass
+
+  # compressor_token_budget — per-repo override of the review diff-size budget.
+  # compressor_token_budget: 120000

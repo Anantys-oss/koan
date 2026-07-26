@@ -1202,6 +1202,29 @@ class TestTruncateDiffWithSkips:
         from app.utils import truncate_diff_with_skips
         assert truncate_diff_with_skips("", 100) == ("", [])
 
+    def test_pinned_block_survives_over_budget(self):
+        from app.utils import truncate_diff_with_skips
+        big_go = self._make_file_block("main.go", lines=200)
+        skill = self._make_file_block("plugins/x/SKILL.md", lines=3)
+        diff = big_go + skill  # .md comes last; without a pin it would be dropped
+        budget = len(skill) + 120
+        text, skipped = truncate_diff_with_skips(
+            diff, budget, pinned_patterns=["*.md"]
+        )
+        assert "plugins/x/SKILL.md" in text
+        assert not any("SKILL.md" in s for s in skipped)
+        assert "main.go" in skipped
+
+    def test_none_pins_byte_identical(self):
+        from app.utils import truncate_diff_with_skips
+        block_a = self._make_file_block("a.py", lines=3)
+        block_b = self._make_file_block("b.md", lines=50)
+        diff = block_a + block_b
+        budget = len(block_a) + 120
+        base = truncate_diff_with_skips(diff, budget)
+        assert truncate_diff_with_skips(diff, budget, pinned_patterns=None) == base
+        assert truncate_diff_with_skips(diff, budget, pinned_patterns=[]) == base
+
 
 class TestIsKnownProject:
     """Tests for is_known_project() shared utility."""

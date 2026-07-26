@@ -35,6 +35,7 @@ from app.run_log import log
 from app.diff_compressor import compress_diff
 from app.github import run_gh, sanitize_github_comment, find_bot_comment
 from app.github_url_parser import ISSUE_URL_PATTERN
+from app.project_koan import get_review_always_check
 from app.prompts import load_prompt, load_prompt_or_skill, load_skill_prompt
 from app.github_alerts import build_alert
 from app.rebase_pr import fetch_pr_context
@@ -728,6 +729,19 @@ def _build_dispositions_block(project_name: str = "") -> str:
         return ""
 
 
+def _pinned_files_in_diff(raw_diff: str, patterns: list) -> list:
+    """Repo-relative paths in *raw_diff* matching a ``review.always_check`` glob.
+
+    Used only to log which files the repo pinned; returns [] when *patterns* is
+    empty so an absent config produces no log line.
+    """
+    if not patterns:
+        return []
+    from app.diff_compressor import path_matches_any
+    names = re.findall(r'^diff --git a/\S+ b/(\S+)', raw_diff, flags=re.MULTILINE)
+    return [n for n in names if path_matches_any(n, patterns)]
+
+
 def build_review_prompt(
     context: dict,
     skill_dir: Optional[Path] = None,
@@ -804,11 +818,24 @@ def build_review_prompt(
         project_memory += _build_review_session_memory(project_name, task_text)
 
     raw_diff = context["diff"]
+    # Repo-owner pin set (.koan/config.yaml review.always_check): files matching
+    # a glob are kept ahead of budgeted files so diff-size reduction never
+    # silently drops them. Empty/absent config ⇒ [] ⇒ byte-identical no-op.
+    pinned_patterns = get_review_always_check(project_path) if project_path else []
+    pinned_now = _pinned_files_in_diff(raw_diff, pinned_patterns)
+    if pinned_now:
+        log(
+            "review",
+            f"Pinned {len(pinned_now)} file(s) via .koan review.always_check: "
+            + ", ".join(pinned_now),
+        )
     # Files skipped to fit the token budget — either packed out by the
     # compressor (on-path) or cut by the token-safe backstop (off-path).
     budget_skipped: list = []
     if is_review_compressor_enabled():
-        compressed = compress_diff(raw_diff, get_review_compressor_token_budget())
+        compressed = compress_diff(
+            raw_diff, get_review_compressor_token_budget(), pinned_patterns
+        )
         raw_diff = compressed.diff_text
         budget_skipped = compressed.skipped_files
         if budget_skipped:
@@ -823,7 +850,7 @@ def build_review_prompt(
         # cap) could overflow the model context and hard-fail the review. Skips
         # flow into the same coverage note as compressor skips.
         raw_diff, budget_skipped = truncate_diff_with_skips(
-            raw_diff, get_review_uncompressed_max_diff_chars()
+            raw_diff, get_review_uncompressed_max_diff_chars(), pinned_patterns
         )
         if budget_skipped:
             log(
