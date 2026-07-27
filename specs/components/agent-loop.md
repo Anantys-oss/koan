@@ -61,7 +61,8 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
 | `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, `post_review`, each error-isolated. |
 | `prompt_builder._get_koan_md_section()` | Delegates reading to `project_koan.read_general_koan_md()` (root `KOAN.md` + `.koan/KOAN.md`, combined cap `_MAX_KOAN_MD_CHARS` 16k), frames via the `koan-md` template. Returns `""` for absent/blank/unreadable. |
-| `project_koan.read_koan_config()` / `get_review_always_check()` | Reads the target repo's optional structured `.koan/config.yaml` (a YAML surface alongside the markdown `.koan/` steering files). Fail-safe: returns `{}` / `[]` on absent/unparseable/malformed config, never raises. The `review.always_check` glob list feeds `/review` diff-size pinning — see `specs/components/skills.md` → "Repo config file (`.koan/config.yaml`)" and the `review` diff-size contract. |
+| `project_koan.read_koan_config()` / `get_review_always_check()` / `get_mission_hooks()` | Reads the target repo's optional structured `.koan/config.yaml` (a YAML surface alongside the markdown `.koan/` steering files). Fail-safe: returns `{}` / `[]` on absent/unparseable/malformed config, never raises. `review.always_check` feeds `/review` diff-size pinning; `get_mission_hooks(path, type, phase)` resolves the `pre_hooks`/`post_hooks` list executed by `mission_hooks` — see `specs/components/skills.md` → "Repo config file (`.koan/config.yaml`)". |
+| `mission_hooks.hooks_enabled()` / `run_pre_hooks()` / `run_post_hooks()` | Gated executor for repo-config-driven shell hooks around a mission (default off; see "Mission hooks" below). Error-isolated, never raises. |
 
 ### KOAN.md injection
 
@@ -89,6 +90,42 @@ surfaces `KOAN.md` when `_get_koan_md_section` reads it, and — detection-only 
 which reads the project-root `CLAUDE.md` solely to report its size (koan never
 injects it; the CLI loads it from `cwd`). Best-effort: any read/stream failure is
 swallowed and never blocks prompt assembly.
+
+### Mission hooks (`mission_hooks`) — repo-config-driven shell around missions
+
+`mission_hooks.py` executes the repo-owner shell commands declared in a target
+repo's `.koan/config.yaml` under `pre_hooks`/`post_hooks` (resolver + schema:
+`specs/components/skills.md` → "Mission hooks"). This is **distinct from `hooks.py`**:
+`hooks.py` runs operator-authored Python from the trusted `instance/` tree; this runs
+shell from a **repo-controlled** file, so it is a gated, separately-audited surface.
+
+**Operator opt-in gate (default off).** Nothing runs unless the operator opts in.
+`mission_hooks.hooks_enabled(project_name)` = per-project override
+(`projects_config.get_project_mission_hooks` — the `mission_hooks:` bool in
+`projects.yaml`) if set, else the global `config.is_mission_hooks_enabled()`
+(`mission_hooks.enabled` in `instance/config.yaml`, **default `False`**). Mirrors the
+`review_dispatch`/`ci_dispatch` opt-in pattern. When disabled, `run_pre_hooks` /
+`run_post_hooks` no-op and log one "skipped (not enabled)" diagnostic.
+
+**Executor.** `run_pre_hooks(project_path, project_name, mission_type)` and
+`run_post_hooks(project_path, project_name, mission_type, success)` gate-check, then
+run each resolved command with `subprocess.run(cmd, shell=True, cwd=project_path,
+env={**os.environ, KOAN_MISSION_TYPE, [KOAN_MISSION_STATUS]}, capture_output=True,
+text=True, timeout=MISSION_HOOK_TIMEOUT)`. Post-hooks set `KOAN_MISSION_STATUS` =
+`success`/`failure`. Best-effort: each command is error-isolated (a non-zero exit,
+`TimeoutExpired`, or launch error is logged with bounded output and never aborts the
+mission, blocks later commands, or raises). `mission_type =
+skill_dispatch.mission_command_name(mission_title)`.
+
+**Call sites (three; no double-fire).** Skill-dispatched missions return from
+`_handle_skill_dispatch` before the agent-loop `pre_mission` fire, and never reach
+`mission_runner`'s post-mission pipeline — so the skill and agent-loop sites are
+mutually exclusive:
+
+| Path | Pre | Post |
+|---|---|---|
+| Skill dispatch | `mission_executor._handle_skill_dispatch`, before the `_run_skill_mission` `try` | same function's `finally`, `success = exit_code == 0` (fires on success, failure, early-return, `KeyboardInterrupt`) |
+| Agent loop | `mission_executor._run_iteration`, at the `pre_mission` fire site | `mission_runner._fire_post_mission_hook`, `success = exit_code == 0` |
 
 ### Usage source selection (authoritative OAuth anchor)
 
