@@ -4,7 +4,7 @@ title: "Threat Model: Agent Disalignment Risk"
 description: "A threat-model analysis of the blast radius if Koan's autonomous agent becomes disaligned, covering attack surface, exfiltration vectors, protections, and recommended mitigations."
 tags: [security]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-07-26
 ---
 
 # Threat Model: Agent Disalignment Risk
