@@ -397,7 +397,12 @@ def get_project_mission_hooks(project_name: str) -> Optional[bool]:
         # Accept a nested {enabled: bool} form for symmetry with instance config.
         if isinstance(val, dict) and isinstance(val.get("enabled"), bool):
             return val["enabled"]
-    except Exception:
+    except Exception as e:
+        print(
+            f"[projects_config] get_project_mission_hooks({project_name!r}) "
+            f"failed, falling back to global: {e}",
+            file=sys.stderr,
+        )
         return None
     return None
 
