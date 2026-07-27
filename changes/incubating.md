@@ -2,17 +2,73 @@
 
 Running journal of what has landed on `incubating` since the last stable release.
 
-Each entry is appended by `/koan.incubate` under the `## ${NEXT}` heading when
-`main` is merged into `incubating`. When a release is dispatched, `release.yml`
-replaces `${NEXT}` with the version + date, writes the result to `CHANGES.md`,
-and resets this file to an empty `## ${NEXT}` section on top of the released
-history.
+Each merge of `main` into `incubating` is folded by `/koan.incubate` into the
+category groups under the `## ${NEXT}` heading — one set of Added/Changed/Fixed
+lists per upcoming version, not one block per merge. When a release is
+dispatched, `release.yml` replaces `${NEXT}` with the version + date, writes the
+result to `CHANGES.md`, and resets this file to an empty `## ${NEXT}` section on
+top of the released history.
 
 Do not hand-edit released entries — they are the source for `CHANGES.md`.
 
 ---
 
 ## ${NEXT}
+
+**Added**
+
+- Repositories can now steer how Kōan reviews them with an optional
+  `.koan/config.yaml` at their root. Its first setting, `review.always_check`,
+  pins file globs that must never be dropped when a large pull request is
+  compressed to fit the review budget — so your skill manifests, docs, or
+  config-as-code stay reviewed instead of landing in the "Partial review" note.
+  The file is entirely optional and an absent one changes nothing; see
+  `docs/reference/koan-config.sample.yaml` for the annotated template. (#2466)
+- Quota tracking can now be anchored to Anthropic's own usage figures instead of
+  Kōan's local token estimate, so session and weekly percentages match what you
+  see on your account. Controlled by `usage.authoritative_source` in
+  `instance/config.yaml`, which defaults to `auto` — it switches itself on when
+  you run a Claude provider with an OAuth login and silently falls back to the
+  local estimate otherwise, so no action is needed. Set it to `off` to always use
+  the local estimate. Poll interval and staleness are tunable via
+  `usage.authoritative_poll_seconds` and
+  `usage.authoritative_max_staleness_seconds`; all three are documented in
+  `instance.example/config.yaml`. (#2455)
+- Reviews are now consistent across re-runs. Asking for a review again on an
+  unchanged pull request reproduces the previous one instead of re-deriving it,
+  and when code has genuinely changed the new review is reconciled against the
+  old: issues you already fixed are listed as resolved rather than silently
+  dropped, and a new non-critical complaint about code that has not changed since
+  the last review is suppressed — no more review whiplash. Critical findings
+  always come through, labelled `[Pre-Existing Issue]`. Enabled by default and
+  tunable through `review_consistency`, `review_reconcile` and
+  `review_snippet_validation` in `instance/config.yaml`; see
+  `docs/design/review-consistency.md` for the full behavior. (#2465)
+- The reviewer now reads the reviewed repository's own convention documents
+  (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, and a `docs/` knowledge bundle
+  when present) before commenting, so it applies your house style instead of
+  flagging it as a defect. On by default, a no-op for repos that ship none of
+  these, and adjustable via `review_convention_docs` in `instance/config.yaml`.
+- Quoted code in a review finding is now checked against the real file before the
+  comment is posted, so a review can no longer show stale, pre-fix source under a
+  permalink pointing at already-fixed code. (#2465)
+- You are now notified when a review request is skipped because the pull request
+  has no new commits, instead of the request appearing to vanish. (#2457)
+
+**Changed**
+
+- Project-level `KOAN.md` guidance now also reaches skills that run through the
+  agent runner, so per-project instructions apply consistently across skills
+  rather than only in some of them. See `docs/users/koan-md.md`. (#2464)
+- The time allowed for each round of automatic rebase conflict resolution is now
+  configurable via `rebase_conflict_timeout` (default 600 seconds) in
+  `instance/config.yaml` — raise it for large repositories where a round runs
+  long.
+
+**Fixed**
+
+- Rebase progress messages now report the CLI provider and model actually in use
+  instead of always saying "Claude". (#2467)
 
 ## v0.8.1 — 2026-07-22
 
