@@ -1525,6 +1525,21 @@ def _fire_post_mission_hook(
         except Exception as e:
             _log_runner("error", f"post_mission hook stdout read failed: {e}")
 
+    # Repo-config-driven post-mission shell hooks (agent-loop path; default off).
+    # Skill-dispatched missions fire theirs in _handle_skill_dispatch and never
+    # reach this post-mission pipeline, so there is no double-fire. Best-effort.
+    try:
+        from app.mission_hooks import run_post_hooks
+        from app.skill_dispatch import mission_command_name
+        run_post_hooks(
+            project_path,
+            project_name,
+            mission_command_name(mission_title or ""),
+            exit_code == 0,
+        )
+    except Exception as e:
+        _log_runner("error", f"[mission_hooks] post_hooks error (ignored): {e}")
+
     try:
         from app.hooks import fire_hook
         return fire_hook(
