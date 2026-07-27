@@ -1,4 +1,4 @@
-Merge `main` into the Kōan `incubating` branch, but only after a review phase where you summarize the incoming diff and get an explicit go/no-go. On merge, append a dated entry under the `## ${NEXT}` section of the `changes/incubating.md` journal — the curated changelog the release workflow later finalizes.
+Merge `main` into the Kōan `incubating` branch, but only after a review phase where you summarize the incoming diff and get an explicit go/no-go. On merge, **fold** what landed into the category groups under the `## ${NEXT}` section of the `changes/incubating.md` journal — the curated changelog the release workflow later finalizes.
 
 This is the **only** skill in the release pipeline: it preps `incubating` (merge + changelog); it never tags, never publishes. Releasing is done exclusively by dispatching `release.yml` on the `incubating` ref (Actions UI, or `gh workflow run release.yml --ref incubating -f version=vX.Y.Z`), which replaces `${NEXT}` with the version in `CHANGES.md`, tags, fast-forwards the `stable` branch, moves the `latest` tag, and publishes the GitHub release + Docker images.
 
@@ -55,35 +55,72 @@ Arguments:
 
 ## Update the journal
 
-9. Append a new entry under the top `## ${NEXT}` heading in `changes/incubating.md` (create the file/section if missing — the token is literal, one `$`, exactly `## ${NEXT}`; the release workflow matches it verbatim and replaces it with the version).
+9. **Fold** what landed into the category groups under the top `## ${NEXT}` heading
+   in `changes/incubating.md` (create the file/section if missing — the token is
+   literal, one `$`, exactly `## ${NEXT}`; the release workflow matches it verbatim
+   and replaces it with the version).
 
-   **Write this entry for USERS, not developers.** `release.yml` copies the
-   `## ${NEXT}` body **verbatim** into `CHANGES.md` and into the published
-   GitHub release notes — so this is what your users read, not a diff summary.
-   Do NOT reuse the step-5 review text. Instead:
-   - **Group by user impact**, Keep-a-Changelog style: `**Added**` /
-     `**Changed**` / `**Fixed**` / `**Removed**` / `**Deprecated**` (omit empty
-     groups). Do NOT group by commit type (`feat`/`refactor`/`test`/`ci`).
-   - **Describe behavior and benefit** — what a user can now do, what changed
-     for them, what was broken and is now fixed. Lead with the capability, not
-     the mechanism.
-   - **Drop internal noise**: no file names, test names, LoC counts, module
-     paths, or refactor churn. Pure-internal work (refactors, test-only,
-     CI-only, internal docs) is **omitted** unless it changes observable
-     behavior. PR/issue numbers are fine as trailing references (e.g. `(#2439)`).
+   **There is ONE set of groups per `${NEXT}` section — never a per-merge
+   sub-heading.** Do NOT add `### Merged <date> — main @ <sha>` (or any other
+   per-incubation heading, date line, commit count, or SHA). Successive
+   incubations accumulate into the SAME `**Added**` / `**Changed**` / `**Fixed**`
+   lists, so the section always reads as one coherent set of release notes for
+   the upcoming version rather than a stack of merge reports. Concretely:
+   - If a group already exists, **append your bullets to it**.
+   - If a new bullet supersedes or refines one already there (same feature landed
+     in two merges), **rewrite the existing bullet** instead of adding a second.
+   - Only create a group heading that isn't there yet.
+   - Keep group order: `**Added**`, `**Changed**`, `**Fixed**`, `**Removed**`,
+     `**Deprecated**` (omit empty groups).
+
+   **Write for USERS, not developers.** `release.yml` copies the `## ${NEXT}` body
+   **verbatim** into `CHANGES.md` and into the published GitHub release notes — so
+   this is what your users read, not a diff summary. Do NOT reuse the step-5 review
+   text. Instead:
+   - **Group by user impact**, Keep-a-Changelog style. Do NOT group by commit type
+     (`feat`/`refactor`/`test`/`ci`).
+   - **Describe behavior and benefit** — what a user can now do, what changed for
+     them, what was broken and is now fixed. Lead with the capability, not the
+     mechanism.
+   - **Drop internal noise**: no file names, test names, LoC counts, module paths,
+     or refactor churn. Pure-internal work (refactors, test-only, CI-only, internal
+     docs) is **omitted** unless it changes observable behavior. PR/issue numbers
+     are fine as trailing references (e.g. `(#2439)`).
    - **Plain, present-tense, user language.** "Chat stays responsive while a
      mission runs" — not "add chat priority lane to bridge dispatch loop".
 
-   Shape:
-   ```markdown
-   ### Merged <YYYY-MM-DD> — <source> @ <short-sha> (<N> commits)
-
-   **Added** — new user-facing capabilities …
-   **Changed** — behavior changes users will notice …
-   **Fixed** — bugs resolved, described by symptom …
-   **Removed** / **Deprecated** — as applicable …
+   **Configuration changes MUST be surfaced.** Before writing, diff the config
+   surfaces the merge touched:
+   ```bash
+   git diff <prev-incubating-sha>..origin/<source> -- instance.example/config.yaml docs/reference/*.yaml
    ```
-   Get the values with `date -u +%Y-%m-%d` and `git rev-parse --short origin/<source>`.
+   Any **new, renamed, removed, or default-changed** key in the operator's
+   `instance/config.yaml` — or in a repo-level `.koan/config.yaml` — gets its own
+   bullet naming the key and **pointing at the documentation** that explains it
+   (`docs/...` page, or the annotated block in `instance.example/config.yaml`).
+   State whether action is required: a key that defaults on needs no edit, and
+   saying so is part of the note. Never let a config key ship unmentioned — users
+   cannot adopt or opt out of what the release notes never told them about.
+
+   Shape (one set of groups, accumulated across every incubation of this version):
+   ```markdown
+   ## ${NEXT}
+
+   **Added**
+
+   - <capability, benefit first> (#1234)
+   - New `review.always_check` setting in a repo-level `.koan/config.yaml` pins
+     files that must never be dropped from a large review — see
+     `docs/reference/koan-config.sample.yaml`. Optional; absent file = no change.
+
+   **Changed**
+
+   - <behavior users will notice> (#1235)
+
+   **Fixed**
+
+   - <bug by symptom> (#1236)
+   ```
 10. Stage and commit the journal:
     ```bash
     git add changes/incubating.md
@@ -98,7 +135,9 @@ Arguments:
 
 - **Always run the review phase** and wait for go/no-go unless `--yes`.
 - **main wins** on substantive conflicts; never silently drop incubating-only work — flag it instead.
-- **Never edit released entries** in `changes/incubating.md` (only append under `## ${NEXT}`).
+- **Never edit released entries** in `changes/incubating.md` (only the `## ${NEXT}` section is writable).
+- **One set of groups per `${NEXT}`, no per-merge headings** — never add `### Merged <date> — main @ <sha>`, a commit count, or a SHA. Successive incubations fold into the same Added/Changed/Fixed lists, refining existing bullets rather than stacking merge reports.
+- **Every config change is surfaced** — any new/renamed/removed/default-changed key in `instance/config.yaml` or a repo-level `.koan/config.yaml` gets a bullet naming the key, pointing to its documentation, and saying whether the user must act.
 - **Journal entries are user-facing release notes** (published verbatim by `release.yml`) — group by user impact (Added/Changed/Fixed), describe behavior and benefit, and omit internal-only churn and file/test/LoC detail. The step-5 review summary is separate and developer-facing.
 - **`CHANGES.md` is the released changelog** (finalized by `release.yml`); `changes/incubating.md` is only the staging journal. There is no `changes/stable.md` — do not create or reference one.
 - **Never tag, never release** — this skill preps `incubating` only; the release itself belongs to the `release.yml` workflow dispatch.
