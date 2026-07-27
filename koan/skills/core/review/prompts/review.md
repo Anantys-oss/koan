@@ -11,7 +11,7 @@ actionable, constructive feedback that helps the author improve the code.
 ### PR Description
 
 {BODY}
-{PROJECT_MEMORY}{ISSUE_CONTEXT}
+{PROJECT_MEMORY}{ISSUE_CONTEXT}{REPO_CONVENTIONS}
 ---
 
 ## Current Diff
@@ -23,10 +23,12 @@ actionable, constructive feedback that helps the author improve the code.
 ---
 
 {@include review-context}
+{DISPOSITIONS}
 
 ---
 
 ## Your Task
+{COMPREHENSIVE_DISCOVERY}
 
 Analyze the code changes and produce a structured review. Focus on:
 
@@ -52,33 +54,7 @@ Check whether the diff delivers what the PR description promises. Flag:
 - Significant changes not mentioned in the description
 - Scope creep — changes unrelated to the stated purpose
 
-### Severity Calibration
-
-Categorize issues by actual severity. Not everything is critical.
-- **critical**: Would break production, cause data loss, or open a security hole.
-  Must be fixed before merge. Be sparing — a misplaced critical drowns real blockers.
-- **warning**: Should be fixed but won't cause immediate harm. Design issues,
-  missing edge cases, inadequate error handling.
-- **suggestion**: Nice to have. Style, minor simplifications, alternative approaches.
-
-For each finding, explain **why it matters** — the real-world impact, not just
-what's wrong. "Missing null check" is incomplete; "Missing null check — will throw
-TypeError when user has no email, crashing the signup flow" tells the author what's at stake.
-
-### Verdict Contract
-
-Your `lgtm` verdict is the merge decision (it drives the GitHub APPROVE /
-request-changes), so it must follow the severities you assigned — not a vague
-sense of "could be better":
-
-- **`lgtm: true`** when every finding is a `suggestion` (or there are no findings
-  at all). "Merge with nits noted" is a successful review.
-- **`lgtm: false`** only when at least one finding is `critical` or `warning`.
-
-Never reject a PR (set `lgtm: false`) on `suggestion`-only findings — that blocks
-an otherwise merge-ready PR for trivia. If a concern genuinely blocks merge, it is
-not a `suggestion`: promote it to `warning` (or `critical`) with a concrete
-justification of the real-world impact, *then* set `lgtm: false`.
+{@include review-severity-rubric}
 
 ### Summary Tone
 

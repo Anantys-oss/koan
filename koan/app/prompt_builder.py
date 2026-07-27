@@ -328,17 +328,37 @@ def _get_koan_md_section(project_path: str) -> str:
     """
     if not project_path:
         return ""
-    from app.project_koan import read_general_koan_md
+    from app.project_koan import log_context_load, read_general_koan_md
     content = read_general_koan_md(project_path)
     if not content:
         return ""
 
-    logger.info(
-        "KOAN.md (root + .koan/) read (%d chars) from %s", len(content), project_path
-    )
+    log_context_load("KOAN.md", content)
 
     from app.prompts import load_prompt
     return load_prompt("koan-md", KOAN_MD_CONTENT=content)
+
+
+def _log_claude_md_detected(project_path: str) -> None:
+    """Surface the project's root ``CLAUDE.md`` in ``make logs`` when present.
+
+    Unlike ``KOAN.md``, koan never injects ``CLAUDE.md`` — the CLI auto-loads it
+    from ``cwd``. This is detection-only: it reads the file solely to report its
+    size so operators can see (via ``make logs``) exactly which steering context
+    is in play. Best-effort; any failure is swallowed.
+    """
+    if not project_path:
+        return
+    try:
+        from pathlib import Path
+        claude_md = Path(project_path) / "CLAUDE.md"
+        if not claude_md.is_file():
+            return
+        content = claude_md.read_text(errors="replace")
+        from app.project_koan import log_context_load
+        log_context_load("CLAUDE.md (auto-loaded by CLI)", content)
+    except Exception as e:
+        logger.debug("CLAUDE.md detection failed for %s: %s", project_path, e)
 
 
 def _get_staleness_section(instance: str, project_name: str) -> str:
@@ -855,6 +875,10 @@ def build_agent_prompt(
 
     # Append submit-pull-request section
     prompt += _get_submit_pr_section(project_path, project_name)
+
+    # Surface the project's CLAUDE.md for `make logs`. koan does NOT inject it
+    # (the CLI auto-loads CLAUDE.md via cwd) — this only makes the load visible.
+    _log_claude_md_detected(host_project_path or project_path)
 
     # Append project-local koan-only instructions (KOAN.md), host-path aware.
     koan_md = _get_koan_md_section(host_project_path or project_path)

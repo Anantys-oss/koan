@@ -173,7 +173,11 @@ def load_prompt(name: str, **kwargs: str) -> str:
 
 
 def load_skill_prompt(
-    skill_dir: Path, name: str, project_path: Optional[str] = None, **kwargs: str
+    skill_dir: Path,
+    name: str,
+    project_path: Optional[str] = None,
+    apply_caveman: bool = True,
+    **kwargs: str,
 ) -> str:
     """Load a prompt from a skill's prompts/ directory.
 
@@ -194,6 +198,9 @@ def load_skill_prompt(
         name: Prompt file name without .md extension.
         project_path: Target project checkout; enables ``.koan/skills/`` reads.
             Default ``None`` keeps every existing caller byte-identical.
+        apply_caveman: Whether to append the skill's Caveman directive. Defaults
+            to ``True``; callers with correctness-sensitive sub-prompts may
+            explicitly opt out.
         **kwargs: Placeholder values to substitute. Keys map to {KEY} in the template.
 
     Returns:
@@ -207,13 +214,19 @@ def load_skill_prompt(
         template = _read_prompt_with_git_fallback(get_prompt_path(name))
     template = _resolve_includes(template, skill_dir=skill_dir)
     prompt = _substitute(template, kwargs)
-    prompt = _maybe_append_caveman(prompt, skill_dir)
-    return _maybe_append_project_skill_instructions(prompt, skill_dir, project_path)
+    if apply_caveman:
+        prompt = _maybe_append_caveman(prompt, skill_dir)
+    prompt = _maybe_append_project_skill_instructions(prompt, skill_dir, project_path)
+    # General KOAN.md rides BELOW the per-skill block: precedence is
+    # `.koan/skills/<skill>/* > KOAN.md` (see specs/components/skills.md).
+    return _maybe_append_general_koan_md(prompt, skill_dir, project_path)
 
 
 def load_prompt_or_skill(
     skill_dir: Optional[Path], name: str,
-    project_path: Optional[str] = None, **kwargs: str,
+    project_path: Optional[str] = None,
+    apply_caveman: bool = True,
+    **kwargs: str,
 ) -> str:
     """Load a prompt, preferring the skill directory when available.
 
@@ -235,13 +248,21 @@ def load_prompt_or_skill(
         project_path: Target project checkout; threaded to
             :func:`load_skill_prompt` for ``.koan/skills/`` reads. Default
             ``None`` is a no-op.
+        apply_caveman: Whether to append the skill's Caveman directive when a
+            skill directory is supplied. Defaults to ``True``.
         **kwargs: Placeholder values to substitute.
 
     Returns:
         The prompt string with placeholders replaced.
     """
     if skill_dir is not None:
-        return load_skill_prompt(skill_dir, name, project_path=project_path, **kwargs)
+        return load_skill_prompt(
+            skill_dir,
+            name,
+            project_path=project_path,
+            apply_caveman=apply_caveman,
+            **kwargs,
+        )
     return load_prompt(name, **kwargs)
 
 
@@ -285,10 +306,11 @@ def _maybe_append_project_skill_instructions(
     try:
         if not project_path or not (skill_dir / "SKILL.md").is_file():
             return prompt
-        from app.project_koan import read_skill_instructions  # lazy: avoid cycle
+        from app.project_koan import log_context_load, read_skill_instructions
         content = read_skill_instructions(project_path, skill_dir.name)
         if not content:
             return prompt
+        log_context_load(f".koan/skills/{skill_dir.name}", content)
         block = load_prompt(
             "koan-skill",
             SKILL_NAME=skill_dir.name,
@@ -297,4 +319,38 @@ def _maybe_append_project_skill_instructions(
         return f"{prompt}\n\n{block}"
     except Exception as e:
         logger.warning(".koan skill injection failed for %s: %s", skill_dir, e)
+        return prompt
+
+
+def _maybe_append_general_koan_md(
+    prompt: str, skill_dir: Path, project_path: Optional[str],
+) -> str:
+    """Append the project's general ``KOAN.md`` (root + ``.koan/KOAN.md``), when present.
+
+    Mirrors :func:`_maybe_append_project_skill_instructions`' gating: a no-op unless
+    ``skill_dir`` has a ``SKILL.md`` AND ``project_path`` is set, so arbitrary
+    directory paths (tests, legacy callers) stay untouched and the default
+    ``project_path=None`` keeps every existing call byte-identical. Framed via the
+    shared ``koan-md`` template — the same framing the agent loop uses in
+    ``prompt_builder._get_koan_md_section`` — and appended AFTER the
+    ``.koan/skills/<name>/`` block so the precedence reads
+    ``.koan/skills/<skill>/* > KOAN.md``. A successful injection is announced via
+    ``project_koan.log_context_load`` (stderr → ``logs/run.log``) so ``make logs``
+    shows the load.
+
+    Failures are swallowed (additive guidance, not a correctness feature); they
+    surface via the module logger so silent regressions stay visible in the log.
+    """
+    try:
+        if not project_path or not (skill_dir / "SKILL.md").is_file():
+            return prompt
+        from app.project_koan import log_context_load, read_general_koan_md
+        content = read_general_koan_md(project_path)
+        if not content:
+            return prompt
+        log_context_load("KOAN.md", content)
+        block = load_prompt("koan-md", KOAN_MD_CONTENT=content)
+        return f"{prompt}\n\n{block}"
+    except Exception as e:
+        logger.warning("general KOAN.md injection failed for %s: %s", skill_dir, e)
         return prompt

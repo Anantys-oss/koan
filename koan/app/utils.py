@@ -756,13 +756,22 @@ def truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars] + "\n...(truncated)"
 
 
-def truncate_diff_with_skips(diff: str, max_chars: int) -> tuple[str, list[str]]:
+def truncate_diff_with_skips(
+    diff: str, max_chars: int, pinned_patterns: list[str] | None = None
+) -> tuple[str, list[str]]:
     """Truncate a unified diff preserving whole file blocks, returning the
     truncated text AND the list of omitted file paths.
 
     Same packing logic as :func:`truncate_diff`; the omitted-file list is
     surfaced so callers can report partial coverage instead of relying on
     the in-body footer alone.
+
+    *pinned_patterns* (a repo's ``.koan/config.yaml`` ``review.always_check``
+    globs) move matching ``diff --git`` blocks to the front — preserving each
+    group's original order — so they are offered budget first and are not
+    silently dropped. Mirrors :func:`app.diff_compressor.compress_diff`'s pin
+    behavior for the compressor-off / char-backstop path. A falsy
+    *pinned_patterns* is byte-identical to the unpinned behavior.
     """
     if not diff or len(diff) <= max_chars:
         return diff, []
@@ -781,6 +790,15 @@ def truncate_diff_with_skips(diff: str, max_chars: int) -> tuple[str, list[str]]
     for block in blocks:
         m = re.match(r'diff --git a/\S+ b/(\S+)', block)
         filenames.append(m.group(1) if m else "(unknown file)")
+
+    if pinned_patterns:
+        # Stably partition: pinned blocks first (offered budget first), rest after.
+        from app.diff_compressor import path_matches_any
+        paired = list(zip(blocks, filenames, strict=True))
+        pinned = [p for p in paired if path_matches_any(p[1], pinned_patterns)]
+        rest = [p for p in paired if not path_matches_any(p[1], pinned_patterns)]
+        blocks = [b for b, _ in pinned + rest]
+        filenames = [f for _, f in pinned + rest]
 
     # Greedy first pass: keep blocks that fit without any footer.
     kept: list[tuple[str, str]] = []

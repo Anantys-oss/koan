@@ -297,7 +297,8 @@ def _rebase_onto_target(
             resolved = on_conflict(project_path)
         if not resolved:
             _abort_rebase_safely(project_path)
-            _set_rebase_error(result_meta, "rebase_failed", str(e))
+            detail = (result_meta or {}).get("detail") or str(e)
+            _set_rebase_error(result_meta, "rebase_failed", detail)
             return None
 
     if baseline is not None:

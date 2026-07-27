@@ -7,6 +7,7 @@ from app.diff_compressor import (
     compress_diff,
     estimate_tokens,
     parse_diff_hunks,
+    path_matches_any,
 )
 
 # ---------------------------------------------------------------------------
@@ -310,3 +311,95 @@ class TestCompressDiffModeOnly:
         compressed = compress_diff(DIFF_MODE_ONLY, token_budget=1)
         assert "script.sh" in compressed.diff_text
         assert not any("script.sh" in s for s in compressed.skipped_files)
+
+
+# ---------------------------------------------------------------------------
+# path_matches_any (review.always_check pin matching)
+# ---------------------------------------------------------------------------
+
+
+def test_matches_basename_at_any_depth():
+    assert path_matches_any("plugins/x/SKILL.md", ["SKILL.md"])
+    assert path_matches_any("SKILL.md", ["SKILL.md"])
+
+
+def test_matches_star_spans_path_separator():
+    assert path_matches_any("docs/deep/nested/guide.md", ["*.md"])
+    assert path_matches_any("guide.md", ["*.md"])
+
+
+def test_matches_subtree_glob():
+    assert path_matches_any("docs/api/thing.txt", ["docs/api/*"])
+
+
+def test_non_match_returns_false():
+    assert not path_matches_any("main.go", ["*.md"])
+    assert not path_matches_any("plugins/x/SKILL.md", ["README.md"])
+
+
+def test_empty_patterns_returns_false():
+    assert not path_matches_any("SKILL.md", [])
+    assert not path_matches_any("SKILL.md", None)
+
+
+def test_matching_is_case_sensitive():
+    assert not path_matches_any("skill.md", ["SKILL.md"])
+    assert path_matches_any("skill.md", ["skill.md"])
+
+
+# ---------------------------------------------------------------------------
+# compress_diff — pinned_patterns (review.always_check)
+# ---------------------------------------------------------------------------
+
+
+def _pin_test_diff():
+    """A small .md file plus a large low-priority-losing .go file."""
+    md = (
+        "diff --git a/plugins/x/SKILL.md b/plugins/x/SKILL.md\n"
+        "index aaa..bbb 100644\n"
+        "--- a/plugins/x/SKILL.md\n"
+        "+++ b/plugins/x/SKILL.md\n"
+        "@@ -1,2 +1,3 @@\n"
+        " title\n+new line\n body\n"
+    )
+    big = (
+        "diff --git a/main.go b/main.go\n"
+        "index ccc..ddd 100644\n"
+        "--- a/main.go\n"
+        "+++ b/main.go\n"
+        "@@ -1,50 +1,60 @@\n" + "+x := 1\n" * 200
+    )
+    return md, big, md + big
+
+
+class TestCompressDiffPinned:
+    def test_pinned_small_file_survives_tight_budget(self):
+        md, big, diff = _pin_test_diff()
+        # Budget large enough for the .md file but not the big .go file.
+        from app.diff_compressor import parse_diff_hunks
+        md_fd = next(fd for fd in parse_diff_hunks(diff) if fd.path.endswith("SKILL.md"))
+        budget = md_fd.token_estimate() + 1
+
+        res = compress_diff(diff, token_budget=budget, pinned_patterns=["SKILL.md"])
+        assert "plugins/x/SKILL.md" in res.diff_text
+        assert not any("SKILL.md" in s for s in res.skipped_files)
+        # The unpinned large file is skipped (fully or partially).
+        assert any("main.go" in s for s in res.skipped_files)
+
+    def test_pin_reorders_ahead_of_higher_priority_language(self):
+        md, big, diff = _pin_test_diff()
+        res = compress_diff(diff, token_budget=100_000, pinned_patterns=["*.md"])
+        md_pos = res.diff_text.find("SKILL.md")
+        go_pos = res.diff_text.find("main.go")
+        assert md_pos != -1 and go_pos != -1
+        assert md_pos < go_pos  # pinned .md sorts before the .go despite priority
+
+    def test_none_pins_is_byte_identical(self):
+        _, _, diff = _pin_test_diff()
+        base = compress_diff(diff, token_budget=200)
+        none_pins = compress_diff(diff, token_budget=200, pinned_patterns=None)
+        empty_pins = compress_diff(diff, token_budget=200, pinned_patterns=[])
+        assert none_pins.diff_text == base.diff_text
+        assert none_pins.skipped_files == base.skipped_files
+        assert empty_pins.diff_text == base.diff_text
+        assert empty_pins.skipped_files == base.skipped_files

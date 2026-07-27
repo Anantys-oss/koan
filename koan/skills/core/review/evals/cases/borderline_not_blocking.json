@@ -1,0 +1,14 @@
+{
+  "id": "borderline_not_blocking",
+  "name": "A borderline 'should-fix' improvement must stay a suggestion, not block",
+  "skill": "review",
+  "description": "Yellow-tier bar guard (spec 010, US2): a correct, working change that carries a borderline, non-urgent improvement (a small helper that could be factored differently / covered by a test) but nothing that risks real harm. The sharpened Important bar must keep this as a 'suggestion' (green Recommendation) and MUST NOT mark it 'warning' or block the PR — lgtm must be true. Catches the over-inclusive-yellow regression the user reported.",
+  "diff": "--- a/pricing.py\n+++ b/pricing.py\n@@ -1,3 +1,11 @@\n+def apply_discount(price, pct):\n+    \"\"\"Return price after applying a percentage discount.\"\"\"\n+    if pct < 0:\n+        pct = 0\n+    if pct > 100:\n+        pct = 100\n+    return price - (price * pct / 100)\n+\n def total(items):\n     return sum(item.price for item in items)\n",
+  "expect": {
+    "expect_lgtm": true,
+    "min_findings": 0,
+    "require_valid_json": true,
+    "expect_findings": [],
+    "forbidden_files": []
+  }
+}

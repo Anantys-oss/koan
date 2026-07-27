@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-07-22
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -12,7 +12,8 @@ updated: 2026-07-17
 **Modules:** `run.py`, `iteration_manager.py`, `mission_executor.py`,
 `mission_runner.py`, `loop_manager.py`, `contemplative_runner.py`, `quota_handler.py`,
 `prompt_builder.py`, `event_scheduler.py`, `stagnation_monitor.py`, `hooks.py`,
-`devcontainer.py`
+`devcontainer.py`, `usage_estimator.py`, `usage_tracker.py`, `burn_rate.py`,
+`oauth_usage.py`, `authoritative_usage.py`
 
 ## Purpose
 
@@ -60,6 +61,7 @@ mission_runner (post-processing)   # usage tracking, pending.md archival, reflec
 | `quota_handler` | Parses quota exhaustion from CLI output, writes pause state + journal entry. `extract_reset_info` is **bounded** — it stops at JSON/structural delimiters so a single-line CLI result object can't leak its JSON tail into `reset_display`. `quota_debug_snippet` returns a capped, reset-centered window of the raw output for chat debug blocks. |
 | `hooks.py` | Lifecycle events: `session_start`, `session_end`, `pre_mission`, `post_mission`, `post_review`, each error-isolated. |
 | `prompt_builder._get_koan_md_section()` | Delegates reading to `project_koan.read_general_koan_md()` (root `KOAN.md` + `.koan/KOAN.md`, combined cap `_MAX_KOAN_MD_CHARS` 16k), frames via the `koan-md` template. Returns `""` for absent/blank/unreadable. |
+| `project_koan.read_koan_config()` / `get_review_always_check()` | Reads the target repo's optional structured `.koan/config.yaml` (a YAML surface alongside the markdown `.koan/` steering files). Fail-safe: returns `{}` / `[]` on absent/unparseable/malformed config, never raises. The `review.always_check` glob list feeds `/review` diff-size pinning — see `specs/components/skills.md` → "Repo config file (`.koan/config.yaml`)" and the `review` diff-size contract. |
 
 ### KOAN.md injection
 
@@ -78,6 +80,59 @@ when `project_path` is the devcontainer workspace. Invariant: both sources
 absent/blank leaves the system prompt unchanged. KOAN.md is koan-only — Claude
 Code auto-loads `CLAUDE.md` but never `KOAN.md`, so interactive sessions never
 see it.
+
+**Steering-context visibility (`make logs`).** Every steering file that shapes a
+mission prompt is announced on stderr (→ `logs/run.log`) as `Detected <label>,
+loaded N chars (~ M tokens)` via `project_koan.log_context_load`. The agent loop
+surfaces `KOAN.md` when `_get_koan_md_section` reads it, and — detection-only —
+`CLAUDE.md (auto-loaded by CLI)` via `_log_claude_md_detected(project_path)`,
+which reads the project-root `CLAUDE.md` solely to report its size (koan never
+injects it; the CLI loads it from `cwd`). Best-effort: any read/stream failure is
+swallowed and never blocks prompt assembly.
+
+### Usage source selection (authoritative OAuth anchor)
+
+`usage.md` — the session/weekly percentages `usage_tracker` parses to pick a mode
+— is produced by `usage_estimator._write_usage_md`. By default those percentages
+come from the **local heuristic**: an accumulated token counter divided by
+configured `session_token_limit` / `weekly_token_limit`, with wall-clock reset
+windows. Issue #2455 adds an **optional authoritative anchor** in front of that
+heuristic:
+
+- `oauth_usage.py` reads the Claude Code CLI's OAuth **access** token (from
+  `~/.claude/.credentials.json`, then the macOS keychain service
+  `Claude Code-credentials`; field `claudeAiOauth.accessToken`) and GETs the
+  **undocumented** endpoint `https://api.anthropic.com/api/oauth/usage` with the
+  **unstable** `anthropic-beta: oauth-2025-04-20` header. It maps `five_hour` →
+  session and `seven_day` → weekly (per-model buckets are preserved but unused by
+  the shim), honours 429 `Retry-After`/backoff, and on 401 re-reads the
+  (CLI-rotated) access token **once** — it never spends or rotates the refresh
+  token.
+- `authoritative_usage.py` is the source-selection shim. When a poll succeeds it
+  stores an **anchor** (`instance/.oauth-usage.json`): the account-wide
+  percentages + real reset timestamps + the local token-counter values at poll
+  time. Between polls the **local token counter interpolates** on top of the
+  anchor (`anchor_pct + Δtokens/limit·100`), so per-run attribution and burn-rate
+  stay on the local counter (the OAuth figures are account-wide). Polling is
+  periodic (`authoritative_poll_seconds`, default 300s), not per-run.
+
+**Invariants this feature MUST uphold:**
+
+- **Augment, never replace.** `decide_mode`, `burn_rate`, and `quota_handler` are
+  unchanged. `quota_handler` remains the last-resort reactive safety net. The
+  anchor only changes the *percentages/resets written into `usage.md`*, which the
+  unchanged tracker then reads.
+- **Mandatory graceful degradation.** Any of: `authoritative_source: off`, a
+  non-Claude provider or one with `has_api_quota()` false (Codex/Copilot/Ollama),
+  an API-key user with no OAuth token, an HTTP error, or an anchor older than
+  `authoritative_max_staleness_seconds` (default 900s) / past its window's reset
+  → fall back to the heuristic. Session and weekly windows degrade independently.
+- **Percentages stay integers** in `usage.md` (the tracker parser matches
+  `(\d+)%`); the shim rounds before writing and records the chosen source in an
+  HTML comment (`<!-- Usage source: oauth_usage|heuristic -->`).
+- **Config flag** `usage.authoritative_source`: `auto` (default) | `oauth_usage`
+  | `off`. `auto` and `oauth_usage` share the same provider/token availability
+  gating; `off` disables entirely.
 
 ## Invariants
 

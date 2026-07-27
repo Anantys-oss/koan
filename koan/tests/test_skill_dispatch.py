@@ -2102,12 +2102,52 @@ class TestBuildRebaseCmdFix:
             self.BASE_CMD, f"{self.URL} address the security concern", "/project",
         )
         assert "--fix" in cmd
+        # Passed in the "=" form so a dash-led value can never be misparsed.
+        assert "--feedback-context=address the security concern" in cmd
+
+    def test_explicit_fix_without_context_does_not_add_feedback_context(self):
+        cmd = _build_rebase_cmd(self.BASE_CMD, f"--fix {self.URL}", "/project")
+        assert "--fix" in cmd
+        assert not any(c.startswith("--feedback-context") for c in cmd)
 
     def test_severity_keyword_implies_fix(self):
         cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} critical", "/project")
         assert "--fix" in cmd
         idx = cmd.index("--min-severity")
         assert cmd[idx + 1] == "critical"
+        # A severity keyword is a filter, not free-text focus — it must not be
+        # echoed into --feedback-context.
+        assert not any(c.startswith("--feedback-context") for c in cmd)
+
+    def test_dashed_severity_does_not_break_cli_parse(self):
+        """A dashed severity keyword (`--critical`, `-important`) must not leak
+        into --feedback-context. argparse rejects a dash-led option value, which
+        would abort the rebase subprocess (exit 2) for a documented form."""
+        from unittest.mock import patch
+
+        import app.rebase_pr as rebase_pr
+
+        for extra, expected in [("--critical", "critical"), ("-important", "warning")]:
+            cmd = _build_rebase_cmd(self.BASE_CMD, f"{self.URL} {extra}", "/project")
+            argv = cmd[len(self.BASE_CMD):]
+            with patch.object(rebase_pr, "run_rebase", return_value=(True, "ok")) as m:
+                rebase_pr.main(argv)  # must parse without SystemExit
+            assert m.call_args.kwargs["min_severity"] == expected
+            assert m.call_args.kwargs["feedback_context"] == ""
+
+    def test_free_text_feedback_survives_cli_parse(self):
+        """Free-text focus threads through to run_rebase intact via the CLI."""
+        from unittest.mock import patch
+
+        import app.rebase_pr as rebase_pr
+
+        cmd = _build_rebase_cmd(
+            self.BASE_CMD, f"{self.URL} fix the release scopes", "/project",
+        )
+        argv = cmd[len(self.BASE_CMD):]
+        with patch.object(rebase_pr, "run_rebase", return_value=(True, "ok")) as m:
+            rebase_pr.main(argv)
+        assert m.call_args.kwargs["feedback_context"] == "fix the release scopes"
 
     @pytest.mark.parametrize("metadata", ["[complexity:medium]", "[r:2]", "🎫"])
     def test_requeued_system_metadata_does_not_imply_fix(self, metadata):

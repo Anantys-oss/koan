@@ -93,3 +93,199 @@ def test_skill_cap(tmp_path, monkeypatch):
     (d / "a.md").write_text("y" * 50)
     out = pk.read_skill_instructions(str(tmp_path), "review")
     assert "truncated" in out
+
+
+def test_log_context_load_emits_chars_and_tokens(capsys):
+    pk.log_context_load("KOAN.md", "x" * 35)
+    err = capsys.readouterr().err
+    assert "Detected KOAN.md" in err
+    assert "35 chars" in err
+    assert "tokens" in err  # ~ 10 tokens at chars/3.5
+
+
+def test_log_context_load_never_raises(capsys, monkeypatch):
+    # A broken token estimator must not break prompt assembly.
+    import app.diff_compressor as dc
+
+    def _boom(_):
+        raise RuntimeError("estimator down")
+
+    monkeypatch.setattr(dc, "estimate_tokens", _boom)
+    pk.log_context_load("KOAN.md", "content")  # must not raise
+
+
+# --- read_repo_convention_docs ---
+
+
+def test_conventions_absent_returns_empty(tmp_path):
+    assert pk.read_repo_convention_docs(str(tmp_path)) == ""
+
+
+def test_conventions_empty_project_path():
+    assert pk.read_repo_convention_docs("") == ""
+
+
+def test_conventions_well_known_priority(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("agents guide")
+    (tmp_path / "CONTRIBUTING.md").write_text("contrib guide")
+    out = pk.read_repo_convention_docs(str(tmp_path))
+    assert "# AGENTS.md" in out and "# CONTRIBUTING.md" in out
+    assert out.index("# AGENTS.md") < out.index("# CONTRIBUTING.md")
+
+
+def test_conventions_symlink_dedupe(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("shared body ZZZ")
+    try:
+        (tmp_path / "AGENTS.md").symlink_to(tmp_path / "CLAUDE.md")
+    except (OSError, NotImplementedError):
+        import pytest
+        pytest.skip("symlinks unsupported on this platform")
+    out = pk.read_repo_convention_docs(str(tmp_path))
+    # AGENTS.md and CLAUDE.md resolve to the same file — read exactly once.
+    assert out.count("shared body ZZZ") == 1
+
+
+def test_conventions_okf_bundle_detected(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("bundle index")
+    (docs / "SPEC.md").write_text("spec rules")
+    (docs / "SCHEMA.md").write_text("schema rules")
+    out = pk.read_repo_convention_docs(str(tmp_path))
+    assert "docs/index.md" in out
+    assert "spec rules" in out and "schema rules" in out
+
+
+def test_conventions_okf_not_detected_without_index(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "SPEC.md").write_text("spec rules")
+    # No docs/index.md -> not an OKF bundle -> SPEC.md not injected.
+    assert pk.read_repo_convention_docs(str(tmp_path)) == ""
+
+
+def test_conventions_topic_indexes_included_pages_excluded(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("root index")
+    arch = docs / "architecture"
+    arch.mkdir()
+    (arch / "index.md").write_text("arch catalog")
+    (arch / "overview.md").write_text("FULL PAGE BODY")
+    out = pk.read_repo_convention_docs(str(tmp_path))
+    assert "docs/architecture/index.md" in out and "arch catalog" in out
+    assert "FULL PAGE BODY" not in out
+
+
+def test_conventions_topic_indexes_toggle(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("root index")
+    arch = docs / "architecture"
+    arch.mkdir()
+    (arch / "index.md").write_text("arch catalog")
+    out = pk.read_repo_convention_docs(str(tmp_path), include_topic_indexes=False)
+    assert "arch catalog" not in out
+
+
+def test_conventions_block_cap(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("y" * 100)
+    out = pk.read_repo_convention_docs(str(tmp_path), max_block_chars=30)
+    assert "truncated" in out
+
+
+def test_conventions_topic_index_glob_error_is_logged(tmp_path):
+    """A glob failure while enumerating topic indexes must be observable, not
+    swallowed silently — the root OKF docs are still returned (fail-open)."""
+    from unittest.mock import patch
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "index.md").write_text("root index")
+    (docs / "SPEC.md").write_text("spec rules")
+    with patch("app.project_koan.logger") as mock_logger, \
+         patch("pathlib.Path.glob", side_effect=OSError("perm denied")):
+        out = pk.read_repo_convention_docs(str(tmp_path))
+    assert "spec rules" in out  # fail-open: other docs still ingested
+    assert mock_logger.warning.called
+
+
+# --- .koan/config.yaml reader (review.always_check) ---
+
+
+def _write_config(tmp_path, text):
+    koan_dir = tmp_path / ".koan"
+    koan_dir.mkdir(exist_ok=True)
+    (koan_dir / "config.yaml").write_text(text)
+
+
+def test_read_config_absent_returns_empty_dict(tmp_path):
+    assert pk.read_koan_config(str(tmp_path)) == {}
+
+
+def test_read_config_empty_project_path(tmp_path):
+    assert pk.read_koan_config("") == {}
+
+
+def test_read_config_valid_mapping(tmp_path):
+    _write_config(tmp_path, "review:\n  always_check:\n    - '*.md'\n")
+    cfg = pk.read_koan_config(str(tmp_path))
+    assert cfg == {"review": {"always_check": ["*.md"]}}
+
+
+def test_read_config_unparseable_yaml_is_empty(tmp_path):
+    _write_config(tmp_path, "review: [unterminated\n  : : :\n")
+    assert pk.read_koan_config(str(tmp_path)) == {}
+
+
+def test_read_config_non_mapping_top_level_is_empty(tmp_path):
+    _write_config(tmp_path, "- just\n- a\n- list\n")
+    assert pk.read_koan_config(str(tmp_path)) == {}
+
+
+def test_always_check_absent_returns_empty_list(tmp_path):
+    assert pk.get_review_always_check(str(tmp_path)) == []
+
+
+def test_always_check_valid_list(tmp_path):
+    _write_config(tmp_path, "review:\n  always_check:\n    - 'SKILL.md'\n    - '*.md'\n")
+    assert pk.get_review_always_check(str(tmp_path)) == ["SKILL.md", "*.md"]
+
+
+def test_always_check_review_not_a_mapping(tmp_path):
+    _write_config(tmp_path, "review: 'oops'\n")
+    assert pk.get_review_always_check(str(tmp_path)) == []
+
+
+def test_always_check_not_a_list(tmp_path):
+    _write_config(tmp_path, "review:\n  always_check: 'SKILL.md'\n")
+    assert pk.get_review_always_check(str(tmp_path)) == []
+
+
+def test_always_check_drops_non_str_and_blank_items(tmp_path):
+    _write_config(
+        tmp_path,
+        "review:\n  always_check:\n    - 'SKILL.md'\n    - 123\n    - '   '\n    - '*.md'\n",
+    )
+    assert pk.get_review_always_check(str(tmp_path)) == ["SKILL.md", "*.md"]
+
+
+def test_always_check_caps_pattern_count(tmp_path):
+    patterns = "\n".join(f"    - 'p{i}'" for i in range(150))
+    _write_config(tmp_path, "review:\n  always_check:\n" + patterns + "\n")
+    out = pk.get_review_always_check(str(tmp_path))
+    assert len(out) == pk._MAX_ALWAYS_CHECK_PATTERNS == 100
+
+
+def test_always_check_drops_overlong_pattern(tmp_path):
+    long = "a" * (pk._MAX_PATTERN_LEN + 1)
+    _write_config(
+        tmp_path,
+        f"review:\n  always_check:\n    - 'ok.md'\n    - '{long}'\n",
+    )
+    assert pk.get_review_always_check(str(tmp_path)) == ["ok.md"]
+
+
+def test_always_check_malformed_config_is_safe(tmp_path):
+    _write_config(tmp_path, "::: not yaml :::\n")
+    assert pk.get_review_always_check(str(tmp_path)) == []

@@ -589,8 +589,15 @@ def build_mission_from_command(
         if resolved:
             project_name = resolved
 
-    # Build mission text
-    parts = [f"/{command_name}"]
+    # A PR-targeted /fix is a review-feedback rebase, never the issue-fix
+    # workflow. Canonicalize it at the GitHub ingress so the persisted mission
+    # makes the requested behavior explicit and remains correct if it is later
+    # inspected, retried, or handled by another dispatcher.
+    is_pr_target = bool(re.search(r"/pull/\d+$", web_url))
+    if command_name == "fix" and is_pr_target:
+        parts = ["/rebase", "--fix"]
+    else:
+        parts = [f"/{command_name}"]
     if web_url:
         parts.append(web_url)
     if context and skill.github_context_aware:

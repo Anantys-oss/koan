@@ -375,6 +375,27 @@ class TestBuildMissionFromCommand:
         assert "phase 1 only" in mission
         assert "/implement" in mission
 
+    def test_fix_on_pr_is_canonical_rebase_fix(self, mock_context_skill, sample_notification):
+        mission = build_mission_from_command(
+            mock_context_skill, "fix", "address the release concern",
+            sample_notification, "koan",
+        )
+        assert mission == (
+            "- [project:koan] /rebase --fix "
+            "https://github.com/sukria/koan/pull/42 "
+            "address the release concern 📬"
+        )
+
+    def test_fix_on_issue_remains_fix(self, mock_context_skill):
+        notification = {
+            "subject": {"url": "https://api.github.com/repos/sukria/koan/issues/42"},
+        }
+        mission = build_mission_from_command(
+            mock_context_skill, "fix", "address the login issue", notification, "koan",
+        )
+        assert mission.startswith("- [project:koan] /fix ")
+        assert "/rebase --fix" not in mission
+
     def test_context_ignored_when_not_aware(self, mock_skill, sample_notification):
         mission = build_mission_from_command(
             mock_skill, "rebase", "extra context", sample_notification, "koan"
