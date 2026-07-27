@@ -145,6 +145,67 @@ When at least one file is pinned, koan logs a line you can watch on `make logs`:
 [review] Pinned 3 file(s) via .koan review.always_check: plugins/x/SKILL.md, README.md, docs/api/spec.md
 ```
 
+### Mission hooks — run shell before/after a mission
+
+`pre_hooks` and `post_hooks` let your repo run shell commands **around** any
+mission Kōan performs on it — install dependencies, start a service, warm a
+cache before; stop the service or report status after. They are keyed by
+mission type, with a `default` fallback:
+
+```yaml
+# <your-repo>/.koan/config.yaml
+default:
+  pre_hooks:
+    - "echo setting up"        # runs before every mission type…
+  post_hooks:
+    - "echo done"              # …unless that type overrides the phase
+
+review:
+  pre_hooks:
+    - "docker compose up -d db"
+    - "./scripts/wait-for-db.sh"
+  post_hooks:
+    - 'echo "review finished: $KOAN_MISSION_STATUS"'
+
+fix:      { pre_hooks: ["npm ci"] }   # applies to fix on both PRs and issues
+implement:{ pre_hooks: ["make deps"], post_hooks: ["make clean"] }
+```
+
+Well-known mission types: `review`, `fix`, `plan`, `rebase`, `refactor`,
+`implement` (also `recreate`, `squash`, and any other Kōan command name).
+
+**How they run:**
+
+- **Order.** Commands in a list run top-to-bottom, one after another, in your
+  repo's working directory.
+- **Precedence — replace, per phase.** If a mission-type section defines a list
+  for a phase, that list is used *instead of* `default` for that phase (they are
+  not merged). `pre` and `post` are resolved independently — a type can override
+  `pre_hooks` while still inheriting `default.post_hooks`.
+- **post_hooks always run** — on success *and* failure. The command environment
+  carries `KOAN_MISSION_STATUS` (`success` / `failure`) and `KOAN_MISSION_TYPE`
+  (e.g. `review`), so one post-hook can branch on the outcome. (`pre_hooks` see
+  `KOAN_MISSION_TYPE` but no status yet.)
+- **Best-effort.** A hook that fails, cannot start, or exceeds its timeout is
+  logged (`make logs`) and skipped — it never aborts the mission or crashes koan.
+- **Bounded.** Each command has a wall-clock timeout; the number of commands per
+  list and each command's length are capped.
+
+> **⚠️ Security — disabled by default.** Because these commands come from a file
+> **inside the target repo**, running them is arbitrary code execution on the
+> operator's host. Kōan therefore **ignores `pre_hooks`/`post_hooks` unless the
+> operator has explicitly opted in.** The operator enables them in their
+> `KOAN_ROOT` `instance/config.yaml`:
+>
+> ```yaml
+> mission_hooks:
+>   enabled: true       # default false
+> ```
+>
+> and may override per project in `projects.yaml` (`mission_hooks: true|false`).
+> When disabled, any hooks in a repo config are skipped with a one-line log
+> note. See [Mission hooks security](../security/mission-hooks.md).
+
 ### Sample config & future keys
 
 A full annotated sample lives at
