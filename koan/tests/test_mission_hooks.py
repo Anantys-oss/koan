@@ -98,3 +98,72 @@ class TestGateOff:
              patch.object(mh.subprocess, "run") as run:
             mh.run_pre_hooks(str(tmp_path), "proj", "review")
         run.assert_not_called()
+
+
+# --- US1: executor behavior against real shell (gate on) ---------------------
+
+
+class TestExecutor:
+    def test_commands_run_in_order(self, tmp_path):
+        out = tmp_path / "order.txt"
+        _write_config(
+            tmp_path,
+            "review:\n  pre_hooks:\n"
+            f"    - 'echo one >> {out}'\n"
+            f"    - 'echo two >> {out}'\n",
+        )
+        with patch.object(mh, "hooks_enabled", return_value=True):
+            mh.run_pre_hooks(str(tmp_path), "proj", "review")
+        assert out.read_text().split() == ["one", "two"]
+
+    def test_nonzero_command_does_not_abort_remaining(self, tmp_path):
+        flag = tmp_path / "after.flag"
+        _write_config(
+            tmp_path,
+            "review:\n  pre_hooks:\n"
+            "    - 'false'\n"
+            f"    - 'touch {flag}'\n",
+        )
+        with patch.object(mh, "hooks_enabled", return_value=True):
+            mh.run_pre_hooks(str(tmp_path), "proj", "review")
+        assert flag.exists()  # second command ran despite the first failing
+
+    def test_timeout_is_logged_and_swallowed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(mh, "MISSION_HOOK_TIMEOUT", 1)
+        _write_config(tmp_path, "review:\n  pre_hooks:\n    - 'sleep 5'\n")
+        with patch.object(mh, "hooks_enabled", return_value=True), \
+             patch.object(mh, "_log") as log:
+            mh.run_pre_hooks(str(tmp_path), "proj", "review")  # must not raise
+        assert any("timed out" in str(c) for c in log.call_args_list)
+
+    def test_post_hook_sees_status_and_type_env(self, tmp_path):
+        out = tmp_path / "env.txt"
+        _write_config(
+            tmp_path,
+            "review:\n  post_hooks:\n"
+            f'    - \'echo "$KOAN_MISSION_STATUS $KOAN_MISSION_TYPE" > {out}\'\n',
+        )
+        with patch.object(mh, "hooks_enabled", return_value=True):
+            mh.run_post_hooks(str(tmp_path), "proj", "review", success=False)
+        assert out.read_text().strip() == "failure review"
+
+    def test_pre_hook_has_no_status_env(self, tmp_path):
+        out = tmp_path / "env.txt"
+        _write_config(
+            tmp_path,
+            "review:\n  pre_hooks:\n"
+            f'    - \'echo "[${{KOAN_MISSION_STATUS:-unset}}]" > {out}\'\n',
+        )
+        with patch.object(mh, "hooks_enabled", return_value=True):
+            mh.run_pre_hooks(str(tmp_path), "proj", "review")
+        assert out.read_text().strip() == "[unset]"
+
+    def test_runs_in_project_cwd(self, tmp_path):
+        out = tmp_path / "cwd.txt"
+        _write_config(
+            tmp_path, f"review:\n  pre_hooks:\n    - 'pwd > {out}'\n")
+        with patch.object(mh, "hooks_enabled", return_value=True):
+            mh.run_pre_hooks(str(tmp_path), "proj", "review")
+        # realpath to tolerate /tmp -> /private/tmp symlinking on macOS.
+        import os
+        assert os.path.realpath(out.read_text().strip()) == os.path.realpath(str(tmp_path))
