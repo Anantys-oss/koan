@@ -1121,6 +1121,28 @@ def is_ci_check_enabled() -> bool:
     return True
 
 
+def is_mission_hooks_enabled() -> bool:
+    """Whether repo-config-driven mission hooks may run (operator opt-in).
+
+    Mission hooks execute shell commands declared in a *target repo's*
+    ``.koan/config.yaml`` (``pre_hooks``/``post_hooks``). Because that is a
+    repo-controlled file, running it is a remote-code-execution surface on the
+    operator's host, so it is **disabled by default** and must be explicitly
+    enabled by the operator here. A per-project override may further narrow this
+    (see ``projects_config.get_project_mission_hooks``).
+
+    Config key: mission_hooks.enabled (default: False). Fail-safe: any
+    unexpected shape defaults to disabled.
+    """
+    config = _load_config()
+    cfg = config.get("mission_hooks", {})
+    if isinstance(cfg, dict):
+        return bool(cfg.get("enabled", False))
+    if isinstance(cfg, bool):
+        return cfg
+    return False
+
+
 def get_running_indicator_config() -> dict:
     """Resolve the GitHub "Running" indicator config.
 
