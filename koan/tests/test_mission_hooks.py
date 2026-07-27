@@ -167,3 +167,43 @@ class TestExecutor:
         # realpath to tolerate /tmp -> /private/tmp symlinking on macOS.
         import os
         assert os.path.realpath(out.read_text().strip()) == os.path.realpath(str(tmp_path))
+
+
+# --- US2: precedence at the execution layer ----------------------------------
+
+
+class TestPrecedenceExecution:
+    def _run(self, tmp_path, config, mtype, phase, success=True):
+        out = tmp_path / "ran.txt"
+        out.unlink(missing_ok=True)  # isolate each invocation
+        # Rewrite each hook command to append its own tag to a shared file, so
+        # we can assert exactly which resolved list executed.
+        _write_config(tmp_path, config.replace("OUT", str(out)))
+        with patch.object(mh, "hooks_enabled", return_value=True):
+            if phase == "pre":
+                mh.run_pre_hooks(str(tmp_path), "proj", mtype)
+            else:
+                mh.run_post_hooks(str(tmp_path), "proj", mtype, success)
+        return out.read_text().split() if out.exists() else []
+
+    def test_unlisted_type_inherits_default(self, tmp_path):
+        cfg = "default:\n  pre_hooks:\n    - 'echo D >> OUT'\n"
+        assert self._run(tmp_path, cfg, "plan", "pre") == ["D"]
+
+    def test_type_replaces_default_no_duplication(self, tmp_path):
+        cfg = (
+            "default:\n  pre_hooks:\n    - 'echo D >> OUT'\n"
+            "review:\n  pre_hooks:\n    - 'echo R >> OUT'\n"
+        )
+        # Only the review list runs — default is NOT also appended.
+        assert self._run(tmp_path, cfg, "review", "pre") == ["R"]
+
+    def test_per_phase_independent_precedence(self, tmp_path):
+        cfg = (
+            "default:\n  pre_hooks:\n    - 'echo DP >> OUT'\n"
+            "  post_hooks:\n    - 'echo DPOST >> OUT'\n"
+            "review:\n  pre_hooks:\n    - 'echo RP >> OUT'\n"
+        )
+        # pre overridden by review; post falls back to default.
+        assert self._run(tmp_path, cfg, "review", "pre") == ["RP"]
+        assert self._run(tmp_path, cfg, "review", "post") == ["DPOST"]
