@@ -100,10 +100,11 @@ def _handle_skill_dispatch(
         # target review/fix/plan/rebase/… or `default`. Best-effort — the
         # executor never raises — but wrap defensively so a hook-subsystem bug
         # can never disturb skill dispatch or finalization.
-        from app.skill_dispatch import mission_command_name
-        _hook_type = mission_command_name(mission_title)
+        _hook_type = ""  # resolved below; referenced again in the finally
         try:
             from app.mission_hooks import run_pre_hooks
+            from app.skill_dispatch import mission_command_name
+            _hook_type = mission_command_name(mission_title)
             run_pre_hooks(project_path, project_name, _hook_type)
         except Exception as e:
             log("error", f"[mission_hooks] pre_hooks error (ignored): {e}")
