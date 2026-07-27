@@ -260,6 +260,37 @@ absent-config no-op — the reader NEVER raises and NEVER aborts a review:
 
 Absent `.koan/config.yaml` (the common case) ⇒ `[]` ⇒ byte-identical review output.
 
+#### Mission hooks (`pre_hooks` / `post_hooks`)
+
+The same `.koan/config.yaml` surface carries optional **mission hooks** — ordered
+lists of shell commands the repo owner wants run **before** (`pre_hooks`) and
+**after** (`post_hooks`) a mission Kōan runs on the repo. They live under a
+mission-type section and a `default` fallback:
+
+```yaml
+default:  { pre_hooks: [...], post_hooks: [...] }   # any mission type
+review:   { pre_hooks: [...], post_hooks: [...] }   # a specific type; also fix/plan/
+                                                    # rebase/refactor/implement/…
+```
+
+- **Resolver.** `project_koan.get_mission_hooks(project_path, mission_type, phase)
+  -> list[str]` returns the resolved list. `phase ∈ {"pre","post"}`;
+  `mission_type` is the canonical command name (`skill_dispatch.mission_command_name`),
+  `""` for a non-skill mission. It reads through the same `read_koan_config` fail-safe
+  path.
+- **Precedence — replace, per phase.** If `<mission_type>.<phase>_hooks` is a
+  present, non-empty list it is used and the `default.<phase>_hooks` list is **not**
+  also run (replace, not merge); otherwise `default.<phase>_hooks`; otherwise `[]`.
+  `pre` and `post` resolve independently. `mission_type == ""` ⇒ only `default`.
+- **Validation / caps.** Non-list ⇒ `[]`; non-string and blank entries dropped;
+  entries over `_MAX_HOOK_CMD_LEN` dropped; list capped at `_MAX_HOOKS_PER_LIST`;
+  one diagnostic on any drop/cap. Never raises. Absent config ⇒ `[]` ⇒ no-op.
+- **Ordering.** Commands within a resolved list run top-to-bottom, sequentially.
+
+Execution, the operator opt-in gate, and the call sites are an **agent-loop
+contract** — see `specs/components/agent-loop.md` → `mission_hooks`. The resolver
+here is a pure reader; it never executes anything.
+
 ### `add_project` workspace resolution (contract)
 
 The clone target and project discovery MUST resolve the workspace directory
