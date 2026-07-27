@@ -1506,6 +1506,7 @@ def _fire_post_mission_hook(
     duration_minutes: int,
     result: dict,
     stdout_file: Optional[str] = None,
+    is_skill_dispatch: bool = False,
 ) -> Dict[str, str]:
     """Fire post_mission hooks with full context.
 
@@ -1525,20 +1526,24 @@ def _fire_post_mission_hook(
         except Exception as e:
             _log_runner("error", f"post_mission hook stdout read failed: {e}")
 
-    # Repo-config-driven post-mission shell hooks (agent-loop path; default off).
-    # Skill-dispatched missions fire theirs in _handle_skill_dispatch and never
-    # reach this post-mission pipeline, so there is no double-fire. Best-effort.
-    try:
-        from app.mission_hooks import run_post_hooks
-        from app.skill_dispatch import mission_command_name
-        run_post_hooks(
-            project_path,
-            project_name,
-            mission_command_name(mission_title or ""),
-            exit_code == 0,
-        )
-    except Exception as e:
-        _log_runner("error", f"[mission_hooks] post_hooks error (ignored): {e}")
+    # Repo-config-driven post-mission shell hooks (agent-loop path only; default
+    # off). Skill-dispatched missions ALSO flow through this pipeline (via
+    # run.py::_run_skill_mission → run_post_mission), so firing here for them
+    # would double-run their hooks — those are fired once in
+    # mission_executor._handle_skill_dispatch's finally, which additionally
+    # covers skill exit paths that never reach this function. Gate accordingly.
+    if not is_skill_dispatch:
+        try:
+            from app.mission_hooks import run_post_hooks
+            from app.skill_dispatch import mission_command_name
+            run_post_hooks(
+                project_path,
+                project_name,
+                mission_command_name(mission_title or ""),
+                exit_code == 0,
+            )
+        except Exception as e:
+            _log_runner("error", f"[mission_hooks] post_hooks error (ignored): {e}")
 
     try:
         from app.hooks import fire_hook
@@ -1966,6 +1971,7 @@ def run_post_mission(
                     instance_dir, project_name, project_path,
                     exit_code, mission_title, duration_minutes, result,
                     stdout_file=stdout_file,
+                    is_skill_dispatch=is_skill_dispatch,
                 )
                 result["pipeline_steps"] = tracker.to_dict()
                 _write_pipeline_summary(
@@ -2200,6 +2206,7 @@ def run_post_mission(
                 instance_dir, project_name, project_path,
                 exit_code, mission_title, duration_minutes, result,
                 stdout_file=stdout_file,
+                is_skill_dispatch=is_skill_dispatch,
             )
             if hook_failures:
                 failed_names = ", ".join(sorted(hook_failures))

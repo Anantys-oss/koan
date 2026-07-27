@@ -117,15 +117,21 @@ text=True, timeout=MISSION_HOOK_TIMEOUT)`. Post-hooks set `KOAN_MISSION_STATUS` 
 mission, blocks later commands, or raises). `mission_type =
 skill_dispatch.mission_command_name(mission_title)`.
 
-**Call sites (three; no double-fire).** Skill-dispatched missions return from
-`_handle_skill_dispatch` before the agent-loop `pre_mission` fire, and never reach
-`mission_runner`'s post-mission pipeline — so the skill and agent-loop sites are
-mutually exclusive:
+**Call sites (no double-fire).** Skill-dispatched missions return from
+`_handle_skill_dispatch` before the agent-loop `pre_mission` fire, so the **pre**
+sites are mutually exclusive. For **post**, note that skill dispatch *does* flow
+through `mission_runner.run_post_mission` (`run._run_skill_mission` calls it with
+`is_skill_dispatch=True`) and therefore reaches `_fire_post_mission_hook` — so that
+function fires the repo post-hooks **only for the agent-loop path** (guarded on
+`not is_skill_dispatch`); skill-dispatch post-hooks fire in
+`_handle_skill_dispatch`'s `finally` (which also covers skill exit paths that never
+reach `run_post_mission`, e.g. a runner exception). Exactly one post-fire per
+mission on either path:
 
 | Path | Pre | Post |
 |---|---|---|
-| Skill dispatch | `mission_executor._handle_skill_dispatch`, before the `_run_skill_mission` `try` | same function's `finally`, `success = exit_code == 0` (fires on success, failure, early-return, `KeyboardInterrupt`) |
-| Agent loop | `mission_executor._run_iteration`, at the `pre_mission` fire site | `mission_runner._fire_post_mission_hook`, `success = exit_code == 0` |
+| Skill dispatch | `mission_executor._handle_skill_dispatch`, before the `_run_skill_mission` `try` | same function's `finally`, `success = exit_code == 0` (fires on success, failure, early-return, `KeyboardInterrupt`). `_fire_post_mission_hook` suppresses the repo post-hook here via `is_skill_dispatch`. |
+| Agent loop | `mission_executor._run_iteration`, at the `pre_mission` fire site | `mission_runner._fire_post_mission_hook` (`is_skill_dispatch=False`), `success = exit_code == 0` |
 
 ### Usage source selection (authoritative OAuth anchor)
 

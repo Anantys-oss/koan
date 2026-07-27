@@ -4214,3 +4214,24 @@ class TestFirePostMissionHookMissionHooks:
         # The Python post_mission hook still fires and the function returns cleanly.
         fire.assert_called_once()
         assert failures == {}
+
+    def test_skill_dispatch_does_not_fire_post_hooks_here(self):
+        # Regression: skill-dispatched missions also flow through this pipeline
+        # (run.py::_run_skill_mission → run_post_mission), but their repo
+        # post_hooks fire once in _handle_skill_dispatch's finally. Firing them
+        # here too would double-run them, so is_skill_dispatch must suppress it.
+        from app.mission_runner import _fire_post_mission_hook
+        with patch("app.mission_hooks.run_post_hooks") as post, \
+             patch("app.hooks.fire_hook", return_value={}) as fire:
+            _fire_post_mission_hook(
+                instance_dir="/tmp/koan/instance",
+                project_name="koan",
+                project_path="/tmp/proj",
+                exit_code=0,
+                mission_title="/review https://x/pull/1",
+                duration_minutes=1,
+                result={},
+                is_skill_dispatch=True,
+            )
+        post.assert_not_called()          # repo post_hooks suppressed here
+        fire.assert_called_once()         # Python post_mission hook still fires
