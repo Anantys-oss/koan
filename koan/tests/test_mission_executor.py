@@ -522,3 +522,86 @@ class TestEscalateDuplicate:
             )
         assert result is False
         assert any("duplicate" in str(c).lower() for c in mock_log.call_args_list)
+
+
+# ---------------------------------------------------------------------------
+# _handle_skill_dispatch — repo-config mission hooks wiring (011, US1)
+# ---------------------------------------------------------------------------
+
+class TestSkillDispatchMissionHooks:
+
+    def _call(self, instance):
+        from app.mission_executor import _handle_skill_dispatch
+        return _handle_skill_dispatch(
+            mission_title="/review https://x/pull/1",
+            project_name="koan",
+            project_path="/tmp/proj",
+            koan_root="/tmp/koan",
+            instance=instance,
+            run_num=1,
+            max_runs=10,
+            autonomous_mode="implement",
+            interval=60,
+        )
+
+    def _common_patches(self, stack, skill_result):
+        stack.enter_context(patch(
+            "app.skill_dispatch.dispatch_skill_mission",
+            return_value=["claude", "/review"]))
+        stack.enter_context(patch("app.skill_dispatch.cleanup_skill_temp_files"))
+        stack.enter_context(patch("app.loop_manager.create_pending_file"))
+        stack.enter_context(patch("app.core_files.snapshot_core_files", return_value=set()))
+        stack.enter_context(patch("app.core_files.check_core_files", return_value=[]))
+        stack.enter_context(patch("app.run._provider_identity", return_value=("claude", "Claude")))
+        stack.enter_context(patch("app.run._classify_and_handle_cli_error", return_value=False))
+        stack.enter_context(patch("app.run._probe_exit0_quota", return_value=False))
+        stack.enter_context(patch("app.run._notify_mission_end"))
+        stack.enter_context(patch("app.run._finalize_mission"))
+        stack.enter_context(patch("app.run._commit_instance"))
+        stack.enter_context(patch("app.run._sleep_between_runs"))
+        stack.enter_context(patch("app.run.set_status"))
+        stack.enter_context(patch("app.run._notify"))
+        stack.enter_context(patch("app.run.log"))
+        stack.enter_context(patch("app.mission_executor._maybe_escalate_to_debug"))
+
+    def test_pre_and_post_hooks_fire_on_success(self, tmp_path):
+        skill_result = {"exit_code": 0, "stdout": "done", "stderr": "",
+                        "quota_exhausted": False, "quota_info": None}
+        with contextlib.ExitStack() as stack:
+            self._common_patches(stack, skill_result)
+            stack.enter_context(patch("app.run._run_skill_mission", return_value=skill_result))
+            pre = stack.enter_context(patch("app.mission_hooks.run_pre_hooks"))
+            post = stack.enter_context(patch("app.mission_hooks.run_post_hooks"))
+            handled, _ = self._call(str(tmp_path))
+
+        assert handled is True
+        pre.assert_called_once_with("/tmp/proj", "koan", "review")
+        post.assert_called_once_with("/tmp/proj", "koan", "review", True)
+
+    def test_post_hook_fires_failure_when_runner_raises(self, tmp_path):
+        with contextlib.ExitStack() as stack:
+            self._common_patches(stack, None)
+            stack.enter_context(patch(
+                "app.run._run_skill_mission", side_effect=RuntimeError("kaboom")))
+            pre = stack.enter_context(patch("app.mission_hooks.run_pre_hooks"))
+            post = stack.enter_context(patch("app.mission_hooks.run_post_hooks"))
+            handled, _ = self._call(str(tmp_path))
+
+        assert handled is True
+        pre.assert_called_once_with("/tmp/proj", "koan", "review")
+        # Runner blew up → exit_code stays 1 → success=False, but post still fires.
+        post.assert_called_once_with("/tmp/proj", "koan", "review", False)
+
+    def test_hook_subsystem_error_does_not_break_dispatch(self, tmp_path):
+        skill_result = {"exit_code": 0, "stdout": "done", "stderr": "",
+                        "quota_exhausted": False, "quota_info": None}
+        with contextlib.ExitStack() as stack:
+            self._common_patches(stack, skill_result)
+            stack.enter_context(patch("app.run._run_skill_mission", return_value=skill_result))
+            stack.enter_context(patch(
+                "app.mission_hooks.run_pre_hooks", side_effect=RuntimeError("hook boom")))
+            stack.enter_context(patch(
+                "app.mission_hooks.run_post_hooks", side_effect=RuntimeError("hook boom")))
+            handled, _ = self._call(str(tmp_path))
+
+        assert handled is True  # dispatch survives a hook-subsystem failure
