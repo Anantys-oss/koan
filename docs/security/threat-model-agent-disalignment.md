@@ -75,6 +75,15 @@ The agent can reach the network through multiple channels:
 | **MCP servers** | Via configured MCP connections | Bidirectional |
 | **Git remotes** | Via `git push` (Bash tool) | Outbound |
 
+### 2.4 Repo-config mission hooks (opt-in)
+
+A target repo's `.koan/config.yaml` can declare `pre_hooks`/`post_hooks` shell
+commands that Kōan runs around a mission — a repo-controlled RCE surface. It is
+**disabled by default** and runs only behind an explicit operator opt-in
+(`mission_hooks.enabled`, plus an optional per-project override), with per-command
+timeouts and full run-log auditing. See
+[mission-hooks.md](./mission-hooks.md) for the dedicated threat model.
+
 ---
 
 ## 3. Exfiltration Vectors (Ranked by Risk)
