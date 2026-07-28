@@ -100,7 +100,12 @@ def _load_tracker(instance_dir: str) -> dict:
     try:
         import json
         return json.loads(path.read_text())
-    except (ValueError, OSError):
+    except ValueError:
+        return {}  # corrupt JSON — safe to ignore, treated as "no prior check"
+    except OSError as e:
+        # A persistent read failure (e.g. permission denied) silently defeats
+        # the daily throttle, so surface it rather than hammering the network.
+        log("error", f"[codex-update] tracker read failed: {e}")
         return {}
 
 
@@ -161,6 +166,11 @@ def _check_update_available(binary: str) -> Optional[bool]:
         return False
     if _UPDATE_AVAIL_RE.search(text):
         return True
+    # Inconclusive output. A non-zero exit here is a genuine runtime error, not
+    # the benign "unsupported flag" case — log it before escalating to a full
+    # `codex update` on the caller's inconclusive path.
+    if result.returncode != 0:
+        log("error", f"[codex-update] `update --check` exited {result.returncode}: {text}")
     return None
 
 
@@ -188,7 +198,8 @@ def check_codex_update(
     Throttled to once per day unless ``force`` is set. Returns True when an
     update was actually applied.
     """
-    if not _load_config()["enabled"] or not _codex_is_active():
+    cfg = _load_config()
+    if not cfg["enabled"] or not _codex_is_active():
         return False
     if not force and not _due_for_check(instance_dir):
         return False
@@ -210,9 +221,15 @@ def check_codex_update(
     # and confirm via a version delta so we only notify on a real change.
     log("update", "[codex-update] Running `codex update`...")
     try:
-        _run_codex(binary, ["update"], _UPDATE_TIMEOUT)
+        result = _run_codex(binary, ["update"], _UPDATE_TIMEOUT)
     except Exception as e:
         log("error", f"[codex-update] `codex update` failed: {e}")
+        return False
+    if result.returncode != 0:
+        # Non-zero exit (network error, permission denied writing the binary).
+        # Log stderr distinctly instead of misreporting it as "No version change".
+        stderr = (result.stderr or "").strip()
+        log("error", f"[codex-update] `codex update` exited {result.returncode}: {stderr}")
         return False
 
     new = _codex_version(binary)
@@ -222,6 +239,6 @@ def check_codex_update(
 
     _record_check(instance_dir, new)
     log("update", f"[codex-update] Updated Codex {current or '?'} → {new}")
-    if _load_config()["notify"]:
+    if cfg["notify"]:
         _notify_update(instance_dir, current, new)
     return True
