@@ -128,6 +128,28 @@ def isolate_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_steering_context_log():
+    """Clear the module-global steering-summary batch between tests.
+
+    ``project_koan`` accumulates loaded steering files per prompt build and
+    suppresses a summary identical to the previous one. Without a reset, a
+    leftover batch or dedup signature from a prior test silently changes what a
+    later test sees on stderr.
+    """
+    try:
+        import app.project_koan as pk
+        pk.reset_context_load_log()
+    except Exception:
+        pass
+    yield
+    try:
+        import app.project_koan as pk
+        pk.reset_context_load_log()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _reset_reply_breaker():
     """Clear per-thread reply circuit-breaker state between tests.
 

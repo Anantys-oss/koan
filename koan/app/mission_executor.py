@@ -701,6 +701,11 @@ def _run_iteration(
 
     run_num = count + 1
 
+    # Fresh steering-summary scope per mission: a new mission re-announces its
+    # loaded .md context even when byte-identical to the previous mission's.
+    from app.project_koan import reset_context_load_log
+    reset_context_load_log()
+
     # --- Parallel session reap (Phase 1) ---
     # Poll any active parallel sessions and process completions before planning
     # the next iteration.  Skipped when max_parallel_sessions == 1 (default) so

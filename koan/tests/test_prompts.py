@@ -951,7 +951,8 @@ class TestMaybeAppendProjectSkillInstructions:
         load_skill_prompt(sd, "review", project_path=str(proj))
         # Surfaced on stderr so `make logs` (logs/run.log) shows the load.
         err = capsys.readouterr().err
-        assert "Detected .koan/skills/review" in err
+        assert "Steering loaded before Claude" in err
+        assert ".koan/skills/review:" in err
         assert "chars" in err and "tokens" in err
 
 
@@ -1045,5 +1046,6 @@ class TestMaybeAppendGeneralKoanMd:
 
         # Surfaced on stderr so `make logs` (logs/run.log) shows the load.
         err = capsys.readouterr().err
-        assert "Detected KOAN.md" in err
+        assert "Steering loaded before Claude" in err
+        assert "KOAN.md:" in err
         assert "chars" in err and "tokens" in err
