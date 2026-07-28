@@ -32,29 +32,87 @@ _MAX_HOOK_CMD_LEN = 1000
 _HOOK_PHASES = {"pre": "pre_hooks", "post": "post_hooks"}
 
 
-def log_context_load(label: str, content: str) -> None:
-    """Announce a steering file koan just loaded into a prompt, for ``make logs``.
+# --- Steering-context load accumulation (per prompt build) -------------------
+# Each prompt build records the steering files it folds in via
+# record_context_load(); flush_context_summary() emits ONE consolidated block and
+# clears the batch. A summary identical to the previous one is suppressed, so a
+# multi-CLI-call skill (plan builds 3 prompts per mission) announces its steering
+# context once, not once per CLI call. reset_context_load_log() clears the dedup
+# memory per mission so a fresh mission re-announces byte-identical context.
+_pending_loads: list = []   # [(label, chars, tokens), ...] for the current build
+_last_summary_sig = None    # signature of the last-emitted summary
 
-    Emits ``Detected <label>, loaded N chars (~ M tokens)`` on **stderr** so it
-    lands in ``logs/run.log`` (visible via ``make logs``) without ever
-    corrupting the JSON some skill runners write to stdout. The ``logging``
-    module has no stdout/stderr handler wired in the run loop, so ``logger.info``
-    alone would be invisible there — hence the direct ``print``.
 
-    Best-effort: a broken stream (or a missing ``estimate_tokens``) must never
-    break prompt assembly, so every failure is swallowed — logged at debug so it
-    stays visible without ever raising.
-    """
+def _estimate_tokens(content: str) -> int:
     try:
         from app.diff_compressor import estimate_tokens
-        print(
-            f"[context] Detected {label}, loaded {len(content)} chars "
-            f"(~ {estimate_tokens(content)} tokens)",
-            file=sys.stderr,
-            flush=True,
-        )
+        return estimate_tokens(content)
+    except Exception:
+        return 0
+
+
+def record_context_load(label: str, content: str) -> None:
+    """Silently record a steering file folded into the prompt about to be sent.
+
+    Accumulates ``(label, chars, tokens)`` into the current build's batch, deduped
+    by ``label`` (a re-read of the same file updates in place). The consolidated
+    line is emitted later by :func:`flush_context_summary`. Best-effort: never
+    raises — a broken estimator must not break prompt assembly.
+    """
+    try:
+        entry = (label, len(content), _estimate_tokens(content))
+        for i, (lbl, _chars, _tokens) in enumerate(_pending_loads):
+            if lbl == label:
+                _pending_loads[i] = entry
+                return
+        _pending_loads.append(entry)
     except Exception as e:
-        logger.debug("log_context_load failed for %s: %s", label, e)
+        logger.debug("record_context_load failed for %s: %s", label, e)
+
+
+def flush_context_summary() -> None:
+    """Emit one consolidated steering-context summary for the current build.
+
+    Prints on **stderr** (→ ``logs/run.log``, visible via ``make logs``) a block
+    listing every steering file recorded since the last flush, with per-file and
+    total token estimates, then clears the batch. stderr keeps the block away from
+    the JSON some skill runners write to stdout; ``logging`` has no handler wired
+    in the run loop, so a direct ``print`` is the only thing operators would see.
+    Suppresses a summary identical to the previous one (same files + sizes) so
+    repeated prompt builds within a single mission announce once. No-op on an
+    empty batch. Best-effort: never raises.
+    """
+    global _last_summary_sig
+    try:
+        if not _pending_loads:
+            return
+        sig = tuple(_pending_loads)
+        batch = _pending_loads.copy()
+        _pending_loads.clear()
+        if sig == _last_summary_sig:
+            return
+        _last_summary_sig = sig
+        total = sum(tokens for _lbl, _chars, tokens in batch)
+        lines = [
+            f"[context] Steering loaded before Claude "
+            f"({len(batch)} file(s), ~ {total} tokens total):"
+        ]
+        for lbl, chars, tokens in batch:
+            lines.append(f"[context]   • {lbl}: {chars} chars (~ {tokens} tokens)")
+        print("\n".join(lines), file=sys.stderr, flush=True)
+    except Exception as e:
+        logger.debug("flush_context_summary failed: %s", e)
+
+
+def reset_context_load_log() -> None:
+    """Reset per-mission steering-summary state.
+
+    Called once per mission iteration so each mission re-emits its steering
+    summary even when the files are byte-identical to the previous mission's.
+    """
+    global _last_summary_sig
+    _pending_loads.clear()
+    _last_summary_sig = None
 
 
 def _read_or_empty(path: Path) -> str:
