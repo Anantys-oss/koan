@@ -93,6 +93,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "email": _NESTED,
     "messaging": _NESTED,
     "auto_update": _NESTED,
+    "codex_update": _NESTED,
     "dashboard": _NESTED,
     "notifications": _NESTED,
     "notification_polling": _NESTED,
@@ -214,6 +215,10 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     "auto_update": {
         "enabled": "bool",
         "check_interval": "int",
+        "notify": "bool",
+    },
+    "codex_update": {
+        "enabled": "bool",
         "notify": "bool",
     },
     "dashboard": {
