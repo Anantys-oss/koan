@@ -1686,6 +1686,14 @@ def _run_iteration(
     except Exception as e:
         log("error", f"Periodic auto-update check failed: {e}")
 
+    # Periodic Codex CLI self-update (throttled to once/day inside; no-op
+    # unless Codex is the active provider)
+    try:
+        from app.codex_update import check_codex_update
+        check_codex_update(koan_root, instance)
+    except Exception as e:
+        log("error", f"Periodic Codex CLI update check failed: {e}")
+
     # Max runs check
     if count + 1 >= max_runs:
         from app.config import get_auto_pause

@@ -690,6 +690,12 @@ def track_koan_commits(koan_root: str, instance: str):
         _notify_raw(instance, message)
 
 
+def check_codex_cli_update(koan_root: str, instance: str) -> None:
+    """Auto-update the Codex CLI when it's the active provider (once/day)."""
+    from app.codex_update import check_codex_update
+    check_codex_update(koan_root, instance)
+
+
 def run_morning_ritual(instance: str) -> bool:
     """Execute the morning ritual. Returns True on success, False otherwise."""
     log("init", "Running morning ritual...")
@@ -875,6 +881,9 @@ def run_startup(koan_root: str, instance: str, projects: list):
 
     # Track Kōan's own commits (after sync so HEAD is current)
     _safe_run("Commit tracker", track_koan_commits, koan_root, instance)
+
+    # Codex CLI self-update (only when Codex is the active provider)
+    _safe_run("Codex CLI update", check_codex_cli_update, koan_root, instance)
 
     # Auto-update check (before daily report / morning ritual)
     updated = _safe_run("Auto-update check", check_auto_update, koan_root, instance)
