@@ -18,7 +18,9 @@ Security posture:
     - Best-effort: a failing/timing-out/unlaunchable command is logged and
       swallowed — it never aborts the mission, blocks later commands, or raises.
 """
+import contextlib
 import os
+import signal
 import subprocess
 from typing import List, Optional
 
@@ -82,27 +84,57 @@ def _run_commands(
     phase = "post" if status is not None else "pre"
     for idx, command in enumerate(commands, start=1):
         label = f"[mission_hooks] {phase} {mission_type or '-'} {idx}/{total}"
+        proc = None
         try:
-            result = subprocess.run(
+            # start_new_session=True puts the shell (and every child it spawns)
+            # in its own process group, so a timeout can reap the whole tree via
+            # killpg — otherwise subprocess.run's timeout kills only the shell
+            # and leaves orphaned children running past the "bounded" window.
+            proc = subprocess.Popen(
                 command,
                 shell=True,
                 cwd=project_path or None,
                 env=env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=MISSION_HOOK_TIMEOUT,
+                start_new_session=True,
             )
-            out = _truncate((result.stdout or "") + (result.stderr or ""))
-            _log("mission", f"{label} exit={result.returncode}: {command}")
+            stdout, stderr = proc.communicate(timeout=MISSION_HOOK_TIMEOUT)
+            out = _truncate((stdout or "") + (stderr or ""))
+            _log("mission", f"{label} exit={proc.returncode}: {command}")
             if out:
                 _log("mission", f"{label} output:\n{out}")
         except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
             _log(
                 "error",
-                f"{label} timed out after {MISSION_HOOK_TIMEOUT}s: {command}",
+                f"{label} timed out after {MISSION_HOOK_TIMEOUT}s "
+                f"(process group killed): {command}",
             )
         except Exception as e:  # launch failure, bad cwd, etc.
+            _kill_process_group(proc)
             _log("error", f"{label} failed to run ({e}): {command}")
+
+
+def _kill_process_group(proc: "Optional[subprocess.Popen]") -> None:
+    """Best-effort SIGKILL of a timed-out/failed hook's whole process group.
+
+    The hook shell was launched with ``start_new_session=True``, so its pid is
+    also its process-group id; killing the group reaps any children it spawned.
+    Reaps the shell afterwards so no zombie lingers. Never raises.
+    """
+    if proc is None or proc.pid is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        # Group already gone, or platform without killpg — fall back to the
+        # direct child so we at least don't leak the shell itself.
+        with contextlib.suppress(Exception):
+            proc.kill()
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=5)
 
 
 def run_pre_hooks(project_path: str, project_name: str, mission_type: str) -> None:

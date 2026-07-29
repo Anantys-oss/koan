@@ -136,6 +136,33 @@ class TestExecutor:
             mh.run_pre_hooks(str(tmp_path), "proj", "review")  # must not raise
         assert any("timed out" in str(c) for c in log.call_args_list)
 
+    def test_timeout_kills_child_process_group(self, tmp_path, monkeypatch):
+        # A hook that backgrounds a long-lived child must not leave that child
+        # orphaned when the hook times out — the whole process group is killed.
+        import os
+        import time
+
+        monkeypatch.setattr(mh, "MISSION_HOOK_TIMEOUT", 1)
+        pidfile = tmp_path / "child.pid"
+        _write_config(
+            tmp_path,
+            "review:\n  pre_hooks:\n"
+            f"    - 'sleep 30 & echo $! > {pidfile}; wait'\n",
+        )
+        with patch.object(mh, "hooks_enabled", return_value=True):
+            mh.run_pre_hooks(str(tmp_path), "proj", "review")  # must not raise
+
+        child_pid = int(pidfile.read_text().strip())
+        # Give the SIGKILL a beat to propagate through the group.
+        for _ in range(50):
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)  # child is gone, not orphaned
+
     def test_post_hook_sees_status_and_type_env(self, tmp_path):
         out = tmp_path / "env.txt"
         _write_config(

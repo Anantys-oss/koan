@@ -100,11 +100,21 @@ def _handle_skill_dispatch(
         # target review/fix/plan/rebase/… or `default`. Best-effort — the
         # executor never raises — but wrap defensively so a hook-subsystem bug
         # can never disturb skill dispatch or finalization.
-        _hook_type = ""  # resolved below; referenced again in the finally
+        # Resolve the type key first, in its own narrow guard, so a failure here
+        # is distinguishable from a run_pre_hooks failure and is logged loudly —
+        # otherwise _hook_type would silently stay "" and post_hooks (in the
+        # finally below) would resolve against `default` instead of the mission's
+        # type-specific hooks with no diagnostic.
+        _hook_type = ""  # referenced again in the finally
         try:
-            from app.mission_hooks import run_pre_hooks
             from app.skill_dispatch import mission_command_name
             _hook_type = mission_command_name(mission_title)
+        except Exception as e:
+            log("error",
+                f"[mission_hooks] could not resolve mission type from "
+                f"{mission_title!r}; hooks will resolve against 'default': {e}")
+        try:
+            from app.mission_hooks import run_pre_hooks
             run_pre_hooks(project_path, project_name, _hook_type)
         except Exception as e:
             log("error", f"[mission_hooks] pre_hooks error (ignored): {e}")

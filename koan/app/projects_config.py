@@ -380,6 +380,12 @@ def get_project_mission_hooks(project_name: str) -> Optional[bool]:
     the caller falls back to the global setting. Self-loads the projects config
     from ``KOAN_ROOT`` and is safe when that is unset or the config is missing
     (returns None). Never raises.
+
+    **Fail closed on error.** Because this override is how an operator *disables*
+    the RCE-capable mission-hooks feature for an untrusted project, a read/parse
+    error must not silently defer to the global gate (which could re-enable
+    shell execution for that repo). On any exception this returns ``False``
+    (hooks off for this project), never ``None``.
     """
     import os
 
@@ -400,10 +406,10 @@ def get_project_mission_hooks(project_name: str) -> Optional[bool]:
     except Exception as e:
         print(
             f"[projects_config] get_project_mission_hooks({project_name!r}) "
-            f"failed, falling back to global: {e}",
+            f"failed, failing closed (hooks disabled for this project): {e}",
             file=sys.stderr,
         )
-        return None
+        return False
     return None
 
 

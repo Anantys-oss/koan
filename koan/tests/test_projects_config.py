@@ -2238,3 +2238,17 @@ class TestGetProjectMissionHooks:
         _minimal_config(koan_root, extra="    mission_hooks: true\n")
         monkeypatch.setenv("KOAN_ROOT", koan_root)
         assert get_project_mission_hooks("nonexistent") is None
+
+    def test_load_error_fails_closed(self, koan_root, monkeypatch):
+        # A read/parse error on projects.yaml must NOT defer to the global gate
+        # (which could re-enable the RCE-capable hooks for this repo). Fail
+        # closed: return False, not None.
+        import app.projects_config as pc
+
+        monkeypatch.setenv("KOAN_ROOT", koan_root)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("corrupt projects.yaml")
+
+        monkeypatch.setattr(pc, "load_projects_config", _boom)
+        assert pc.get_project_mission_hooks("myapp") is False
