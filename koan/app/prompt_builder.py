@@ -601,7 +601,8 @@ def _get_stagnation_retry_section(instance: str, mission_title: str) -> str:
 
     Reads the retry tracker (``get_retry_info``) so a mission that stagnated
     and got requeued tells the next session what pattern to avoid repeating.
-    Returns empty string for first-run missions and autonomous mode.
+    Returns empty string when there is no mission title (first-run missions
+    and autonomous mode, which pass an empty title).
     """
     if not mission_title:
         return ""
@@ -610,7 +611,8 @@ def _get_stagnation_retry_section(instance: str, mission_title: str) -> str:
         from app.stagnation_monitor import get_retry_info
 
         info = get_retry_info(instance, mission_title)
-    except Exception:
+    except Exception as e:
+        print(f"[prompt_builder] Stagnation retry lookup failed: {e}", file=sys.stderr)
         return ""
 
     if info.get("count", 0) < 1:
