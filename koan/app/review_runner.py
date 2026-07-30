@@ -1200,98 +1200,106 @@ def _reconcile_review_after_reflection(
     reflected_findings: list,
     retained_indices: list,
 ) -> dict:
-    """Finalize one coherent review after reflection filters findings.
+    """Finalize a coherent review after authoritative reflection filtering.
 
-    Reflection historically replaced only ``file_comments``. The summary,
-    checklist references, and model-supplied ``lgtm`` stayed tied to the
-    original array, which could produce a blocking review with no categorized
-    findings. Reconcile all index-bearing state here before any consumer sees
-    the result.
-
-    Failed checklist items represent findings the primary review explicitly
-    treated as unresolved, so their referenced findings are restored if the
-    reflection pass filtered them. If reflection otherwise removes every
-    blocker from a primary blocking review, all original blockers are restored.
-    This is the fail-safe policy: the primary blocker wins over a contradictory
-    reflection result.
+    A valid reflection result determines the final findings. Malformed or
+    inconsistent reflection metadata preserves the primary review unchanged.
     """
-    original_findings = review_data.get("file_comments") or []
-    if not isinstance(original_findings, list):
+    original_findings = review_data.get("file_comments")
+    summary = review_data.get("review_summary")
+    if not isinstance(original_findings, list) or not isinstance(summary, dict):
         return review_data
 
-    valid_retained = [
-        index for index in retained_indices
-        if isinstance(index, int)
-        and not isinstance(index, bool)
-        and 0 <= index < len(original_findings)
-    ]
-    if len(valid_retained) != len(reflected_findings):
+    if not isinstance(reflected_findings, list) or not isinstance(
+        retained_indices, list
+    ):
         log(
             "review",
-            "Reflection result/index mismatch; preserving original findings",
+            "Invalid reflection metadata types; preserving primary review",
         )
-        valid_retained = list(range(len(original_findings)))
+        return review_data
 
-    final_indices = set(valid_retained)
-    summary = review_data.get("review_summary") or {}
-    checklist = summary.get("checklist") or [] if isinstance(summary, dict) else []
+    if len(reflected_findings) != len(retained_indices):
+        log(
+            "review",
+            "Reflection result/index length mismatch; preserving primary review",
+        )
+        return review_data
 
-    # A failed check with an explicit finding reference is a known unresolved
-    # issue. Preserve that issue rather than leaving a dangling checklist item.
+    if any(
+        isinstance(index, bool)
+        or not isinstance(index, int)
+        or index < 0
+        or index >= len(original_findings)
+        for index in retained_indices
+    ):
+        log(
+            "review",
+            "Invalid retained finding index; preserving primary review",
+        )
+        return review_data
+
+    if len(set(retained_indices)) != len(retained_indices):
+        log(
+            "review",
+            "Duplicate retained finding index; preserving primary review",
+        )
+        return review_data
+
+    expected_findings = [
+        original_findings[index] for index in retained_indices
+    ]
+    if reflected_findings != expected_findings:
+        log(
+            "review",
+            "Reflection finding/index mismatch; preserving primary review",
+        )
+        return review_data
+
+    checklist = summary.get("checklist")
+    if not isinstance(checklist, list):
+        return review_data
+
     for entry in checklist:
-        if not isinstance(entry, dict) or entry.get("passed") is not False:
-            continue
-        refs = entry.get("finding_refs")
+        if not isinstance(entry, dict):
+            return review_data
+        refs = entry.get("finding_refs", [])
         if not isinstance(refs, list):
-            continue
-        final_indices.update(
-            ref for ref in refs
-            if isinstance(ref, int)
-            and not isinstance(ref, bool)
-            and 0 <= ref < len(original_findings)
-        )
+            return review_data
 
-    def _is_blocker(index: int) -> bool:
-        finding = original_findings[index]
-        return (
-            isinstance(finding, dict)
-            and finding.get("severity") in ("critical", "warning")
-        )
+    old_to_new = {
+        old_index: new_index
+        for new_index, old_index in enumerate(retained_indices)
+    }
+    reconciled_checklist = []
 
-    original_lgtm = summary.get("lgtm") if isinstance(summary, dict) else None
-    if original_lgtm is False and not any(_is_blocker(i) for i in final_indices):
-        final_indices.update(
-            i for i in range(len(original_findings)) if _is_blocker(i)
-        )
-
-    ordered_indices = sorted(final_indices)
-    old_to_new = {old: new for new, old in enumerate(ordered_indices)}
-    review_data["file_comments"] = [original_findings[i] for i in ordered_indices]
-
-    # Checklist references are defined against the original finding array.
-    # Rewrite them to the final array, dropping filtered/invalid references and
-    # preserving order without duplicates.
     for entry in checklist:
-        if not isinstance(entry, dict) or not isinstance(entry.get("finding_refs"), list):
-            continue
-        remapped: list = []
-        seen: set = set()
-        for old_index in entry["finding_refs"]:
+        refs = entry.get("finding_refs", [])
+        remapped_refs = []
+        seen = set()
+        for old_index in refs:
             if isinstance(old_index, bool) or not isinstance(old_index, int):
                 continue
             new_index = old_to_new.get(old_index)
             if new_index is not None and new_index not in seen:
                 seen.add(new_index)
-                remapped.append(new_index)
-        entry["finding_refs"] = remapped
+                remapped_refs.append(new_index)
 
-    # Severity is the sole source of truth for the formal verdict.
-    if isinstance(summary, dict):
-        summary["lgtm"] = not any(
-            isinstance(finding, dict)
-            and finding.get("severity") in ("critical", "warning")
-            for finding in review_data["file_comments"]
-        )
+        if entry.get("passed") is False and refs and not remapped_refs:
+            continue
+
+        reconciled_entry = dict(entry)
+        if "finding_refs" in entry:
+            reconciled_entry["finding_refs"] = remapped_refs
+        reconciled_checklist.append(reconciled_entry)
+
+    review_data["file_comments"] = expected_findings
+    summary["checklist"] = reconciled_checklist
+    summary["lgtm"] = not any(
+        isinstance(finding, dict)
+        and finding.get("severity") in ("critical", "warning")
+        for finding in expected_findings
+    )
 
     return review_data
 

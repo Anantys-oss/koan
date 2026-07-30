@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-18
+updated: 2026-07-30
 ---
 
 # Kōan User Manual
@@ -594,7 +594,15 @@ The debug loop enforces four steps:
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
   - `--comments` — Comment quality review (factual accuracy, completeness, stale TODOs, misleading language)
   - `--bot-comments` — Triage inline comments from code-review bots (CodeRabbit, Copilot Review, Sourcery) and post replies to actionable findings
-- **Output:** Findings are grouped into severity buckets (🔴 Blocking / 🟡 Important / 🟢 Suggestions), each folded into a collapsible section. Every finding's location is shown on its own line inside the summary as a **clickable link** that jumps straight to the exact file and lines on GitHub, pinned to the reviewed commit (so the link stays accurate even after the PR gets new commits). The request-changes verdict and its red/yellow alert are derived from this same final list, so a blocking verdict always names at least one categorized Blocking or Important finding.
+- **Output:** Findings are grouped into severity buckets (🔴 Blocking /
+  🟡 Important / 🟢 Suggestions), each folded into a collapsible section.
+  Every finding's location is shown as a clickable link pinned to the reviewed
+  commit. A valid second-pass reflection filters the final list authoritatively:
+  rejected findings are not restored by their original checklist references or
+  verdict, and failed checklist entries supported only by rejected findings are
+  removed. The request-changes verdict and its red/yellow alert are derived from
+  the retained findings. Malformed reflection metadata fails open to the complete
+  primary review.
 - **Project memory:** Reviews automatically inject the project's filtered learnings plus human-curated `context.md`/`priorities.md`, ranked against the PR's title, body, and diff via the SQLite FTS5 memory index. Set `review_memory.enabled: true` in `config.yaml` to *also* include recent typed project memory (decisions, observations) for extra reviewer context. Both apply to `/review` and the backend private review gate.
 - **Prior review context:** On a re-review, the bot's own most recent structured review is surfaced in a dedicated, head-preserving prompt slot so the new review builds on it (confirming whether prior findings are resolved) instead of losing it to the recency-truncated conversation thread. That prior review comment is also collapsed to a short "superseded" pointer so it doesn't echo or crowd out human feedback — set `review_history.preserve_previous: true` to keep it intact instead. Tune the prompt slot via `review_context` in `config.yaml` (`include_bot_feedback`, `prior_review_max_chars`).
 
