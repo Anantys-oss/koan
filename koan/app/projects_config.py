@@ -372,6 +372,47 @@ def get_project_auto_merge(config: dict, project_name: str) -> dict:
     }
 
 
+def get_project_mission_hooks(project_name: str) -> Optional[bool]:
+    """Per-project override for the mission-hooks opt-in, or None if unset.
+
+    Reads the project's ``mission_hooks:`` bool from projects.yaml. When set it
+    overrides the global ``config.is_mission_hooks_enabled()``; when unset (None)
+    the caller falls back to the global setting. Self-loads the projects config
+    from ``KOAN_ROOT`` and is safe when that is unset or the config is missing
+    (returns None). Never raises.
+
+    **Fail closed on error.** Because this override is how an operator *disables*
+    the RCE-capable mission-hooks feature for an untrusted project, a read/parse
+    error must not silently defer to the global gate (which could re-enable
+    shell execution for that repo). On any exception this returns ``False``
+    (hooks off for this project), never ``None``.
+    """
+    import os
+
+    try:
+        koan_root = os.environ.get("KOAN_ROOT", "")
+        if not koan_root:
+            return None
+        config = load_projects_config(koan_root)
+        if not config:
+            return None
+        project_cfg = get_project_config(config, project_name)
+        val = project_cfg.get("mission_hooks")
+        if isinstance(val, bool):
+            return val
+        # Accept a nested {enabled: bool} form for symmetry with instance config.
+        if isinstance(val, dict) and isinstance(val.get("enabled"), bool):
+            return val["enabled"]
+    except Exception as e:
+        print(
+            f"[projects_config] get_project_mission_hooks({project_name!r}) "
+            f"failed, failing closed (hooks disabled for this project): {e}",
+            file=sys.stderr,
+        )
+        return False
+    return None
+
+
 def get_project_running_indicator(config: dict, project_name: str) -> dict:
     """Per-project override for the GitHub "Running" indicator.
 

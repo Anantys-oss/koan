@@ -289,3 +289,111 @@ def test_always_check_drops_overlong_pattern(tmp_path):
 def test_always_check_malformed_config_is_safe(tmp_path):
     _write_config(tmp_path, "::: not yaml :::\n")
     assert pk.get_review_always_check(str(tmp_path)) == []
+
+
+# --- get_mission_hooks (pre_hooks / post_hooks resolver) ---------------------
+
+def test_mission_hooks_absent_config(tmp_path):
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == []
+
+
+def test_mission_hooks_empty_project_path():
+    assert pk.get_mission_hooks("", "review", "pre") == []
+
+
+def test_mission_hooks_bad_phase(tmp_path):
+    _write_config(tmp_path, "review:\n  pre_hooks:\n    - 'echo hi'\n")
+    assert pk.get_mission_hooks(str(tmp_path), "review", "sideways") == []
+
+
+def test_mission_hooks_type_pre_and_post(tmp_path):
+    _write_config(
+        tmp_path,
+        "review:\n  pre_hooks:\n    - 'a'\n    - 'b'\n  post_hooks:\n    - 'c'\n",
+    )
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == ["a", "b"]
+    assert pk.get_mission_hooks(str(tmp_path), "review", "post") == ["c"]
+
+
+def test_mission_hooks_default_fallback_for_unlisted_type(tmp_path):
+    _write_config(tmp_path, "default:\n  pre_hooks:\n    - 'd'\n")
+    assert pk.get_mission_hooks(str(tmp_path), "plan", "pre") == ["d"]
+
+
+def test_mission_hooks_type_replaces_default_not_merges(tmp_path):
+    _write_config(
+        tmp_path,
+        "default:\n  pre_hooks:\n    - 'd'\n"
+        "review:\n  pre_hooks:\n    - 'r'\n",
+    )
+    # review overrides default for pre (replace, not merge) -> only 'r'
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == ["r"]
+
+
+def test_mission_hooks_per_phase_independent_precedence(tmp_path):
+    # review overrides pre but not post; post falls back to default.
+    _write_config(
+        tmp_path,
+        "default:\n  pre_hooks:\n    - 'dpre'\n  post_hooks:\n    - 'dpost'\n"
+        "review:\n  pre_hooks:\n    - 'rpre'\n",
+    )
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == ["rpre"]
+    assert pk.get_mission_hooks(str(tmp_path), "review", "post") == ["dpost"]
+
+
+def test_mission_hooks_empty_type_uses_default_only(tmp_path):
+    _write_config(
+        tmp_path,
+        "default:\n  pre_hooks:\n    - 'd'\n"
+        "review:\n  pre_hooks:\n    - 'r'\n",
+    )
+    assert pk.get_mission_hooks(str(tmp_path), "", "pre") == ["d"]
+
+
+def test_mission_hooks_empty_type_list_falls_through_to_default(tmp_path):
+    # An empty type list is not "present and non-empty" -> default wins.
+    _write_config(
+        tmp_path,
+        "default:\n  pre_hooks:\n    - 'd'\n"
+        "review:\n  pre_hooks: []\n",
+    )
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == ["d"]
+
+
+def test_mission_hooks_not_a_list(tmp_path):
+    _write_config(tmp_path, "review:\n  pre_hooks: 'echo hi'\n")
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == []
+
+
+def test_mission_hooks_section_not_a_mapping(tmp_path):
+    _write_config(tmp_path, "review: 'oops'\n")
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == []
+
+
+def test_mission_hooks_drops_non_str_and_blank(tmp_path):
+    _write_config(
+        tmp_path,
+        "review:\n  pre_hooks:\n    - 'a'\n    - 123\n    - '   '\n    - 'b'\n",
+    )
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == ["a", "b"]
+
+
+def test_mission_hooks_caps_command_count(tmp_path):
+    cmds = "\n".join(f"    - 'c{i}'" for i in range(50))
+    _write_config(tmp_path, "review:\n  pre_hooks:\n" + cmds + "\n")
+    out = pk.get_mission_hooks(str(tmp_path), "review", "pre")
+    assert len(out) == pk._MAX_HOOKS_PER_LIST == 20
+
+
+def test_mission_hooks_drops_overlong_command(tmp_path):
+    long = "a" * (pk._MAX_HOOK_CMD_LEN + 1)
+    _write_config(
+        tmp_path,
+        f"review:\n  pre_hooks:\n    - 'ok'\n    - '{long}'\n",
+    )
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == ["ok"]
+
+
+def test_mission_hooks_malformed_config_is_safe(tmp_path):
+    _write_config(tmp_path, "::: not yaml :::\n")
+    assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == []

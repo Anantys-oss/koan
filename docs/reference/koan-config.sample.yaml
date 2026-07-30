@@ -27,6 +27,15 @@ review:
     - "*.md"          # all Markdown (docs, references, rules)
     - "docs/api/*"    # everything under a specific directory
 
+  # pre_hooks / post_hooks — shell to run before/after a REVIEW mission
+  # specifically (see the top-level "Mission hooks" section below for the full
+  # contract and the required operator opt-in). Uncomment to use:
+  # pre_hooks:
+  #   - "docker compose up -d db"
+  #   - "./scripts/wait-for-db.sh"
+  # post_hooks:
+  #   - 'echo "review done: $KOAN_MISSION_STATUS"'
+
   # ---------------------------------------------------------------------------
   # Planned keys (NOT yet implemented — shown here to illustrate the surface).
   # Uncommenting them today has no effect.
@@ -49,3 +58,36 @@ review:
 
   # compressor_token_budget — per-repo override of the review diff-size budget.
   # compressor_token_budget: 120000
+
+# ===========================================================================
+# Mission hooks — shell commands run before/after ANY mission (TOP LEVEL).
+#
+# ⚠️ SECURITY: these execute arbitrary shell from THIS repo file on the
+# operator's host. They are IGNORED unless the operator opts in via
+#   mission_hooks: { enabled: true }
+# in their KOAN_ROOT instance/config.yaml (optionally per-project in
+# projects.yaml: `mission_hooks: true|false`). Disabled by default.
+#
+# - Keyed by mission type (review/fix/plan/rebase/refactor/implement/…) plus a
+#   `default` fallback.
+# - A type's list REPLACES `default` for that phase (not merged); `pre` and
+#   `post` resolve independently.
+# - Commands in a list run in order, in the repo's working directory.
+# - post_hooks run on success AND failure with KOAN_MISSION_STATUS
+#   (success|failure) and KOAN_MISSION_TYPE exported to the command.
+# - Best-effort: a failing/timed-out hook is logged, never aborts the mission.
+# ===========================================================================
+
+# default:
+#   pre_hooks:
+#     - "echo setting up"       # before every mission type (unless overridden)
+#   post_hooks:
+#     - "echo done"
+
+# fix:                          # applies to fix on BOTH PRs and issues
+#   pre_hooks:
+#     - "npm ci"
+
+# implement:
+#   pre_hooks: ["make deps"]
+#   post_hooks: ["make clean"]

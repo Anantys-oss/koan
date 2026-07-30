@@ -21,6 +21,16 @@ _MAX_KOAN_SKILL_CHARS = 16000
 _MAX_ALWAYS_CHECK_PATTERNS = 100
 _MAX_PATTERN_LEN = 200
 
+# Caps for mission hooks (pre_hooks/post_hooks) — bound how many commands a repo
+# config can queue and how long each command string may be, so a pathological or
+# hostile config cannot flood execution/logging. Execution is separately gated by
+# an operator opt-in (see app.mission_hooks); these caps are the parse-time guard.
+_MAX_HOOKS_PER_LIST = 20
+_MAX_HOOK_CMD_LEN = 1000
+
+# The two hook phases and the config sub-key each maps to.
+_HOOK_PHASES = {"pre": "pre_hooks", "post": "post_hooks"}
+
 
 def log_context_load(label: str, content: str) -> None:
     """Announce a steering file koan just loaded into a prompt, for ``make logs``.
@@ -250,3 +260,69 @@ def get_review_always_check(project_path: str) -> list[str]:
         )
         patterns = patterns[:_MAX_ALWAYS_CHECK_PATTERNS]
     return patterns
+
+
+def _normalize_hook_commands(raw: object) -> list[str]:
+    """Validate a raw ``pre_hooks``/``post_hooks`` value into a command list.
+
+    Keeps only non-blank ``str`` items, drops entries longer than
+    ``_MAX_HOOK_CMD_LEN``, and caps the list at ``_MAX_HOOKS_PER_LIST`` — logging
+    one diagnostic per kind of drop. Any non-list value yields ``[]``. Never raises.
+    """
+    if not isinstance(raw, list):
+        return []
+    commands: list[str] = []
+    dropped_long = False
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        cmd = item.strip()
+        if not cmd:
+            continue
+        if len(cmd) > _MAX_HOOK_CMD_LEN:
+            dropped_long = True
+            continue
+        commands.append(cmd)
+    if dropped_long:
+        logger.warning(
+            "dropped over-long mission hook command(s) (> %d chars)",
+            _MAX_HOOK_CMD_LEN,
+        )
+    if len(commands) > _MAX_HOOKS_PER_LIST:
+        logger.warning(
+            "mission hook list capped at %d commands (had %d)",
+            _MAX_HOOKS_PER_LIST,
+            len(commands),
+        )
+        commands = commands[:_MAX_HOOKS_PER_LIST]
+    return commands
+
+
+def get_mission_hooks(project_path: str, mission_type: str, phase: str) -> list[str]:
+    """Resolve the ``pre_hooks``/``post_hooks`` command list from .koan/config.yaml.
+
+    ``phase`` is ``"pre"`` or ``"post"``; ``mission_type`` is the canonical mission
+    command name (e.g. ``"review"``), or ``""`` for a non-skill mission.
+
+    Precedence is **replace, per phase**: if the ``<mission_type>`` section defines a
+    non-empty list for this phase it is returned and the ``default`` list is NOT also
+    included; otherwise the ``default`` list for this phase; otherwise ``[]``. An empty
+    ``mission_type`` matches no type section, so only ``default`` applies. Pure and
+    fail-safe — reads via :func:`read_koan_config` and never raises.
+    """
+    key = _HOOK_PHASES.get(phase)
+    if not key:
+        return []
+    config = read_koan_config(project_path)
+
+    def _section_list(section_name: str) -> list[str]:
+        section = config.get(section_name)
+        if not isinstance(section, dict):
+            return []
+        return _normalize_hook_commands(section.get(key))
+
+    if mission_type:
+        typed = _section_list(mission_type)
+        if typed:
+            return typed
+    return _section_list("default")

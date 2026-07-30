@@ -95,6 +95,30 @@ def _handle_skill_dispatch(
         from app.core_files import snapshot_core_files, check_core_files, log_integrity_warnings
         skill_core_snapshot = snapshot_core_files(koan_root, project_path)
 
+        # Repo-config-driven pre/post shell hooks (default off; operator opt-in).
+        # The type key is the mission's canonical command name so a repo can
+        # target review/fix/plan/rebase/… or `default`. Best-effort — the
+        # executor never raises — but wrap defensively so a hook-subsystem bug
+        # can never disturb skill dispatch or finalization.
+        # Resolve the type key first, in its own narrow guard, so a failure here
+        # is distinguishable from a run_pre_hooks failure and is logged loudly —
+        # otherwise _hook_type would silently stay "" and post_hooks (in the
+        # finally below) would resolve against `default` instead of the mission's
+        # type-specific hooks with no diagnostic.
+        _hook_type = ""  # referenced again in the finally
+        try:
+            from app.skill_dispatch import mission_command_name
+            _hook_type = mission_command_name(mission_title)
+        except Exception as e:
+            log("error",
+                f"[mission_hooks] could not resolve mission type from "
+                f"{mission_title!r}; hooks will resolve against 'default': {e}")
+        try:
+            from app.mission_hooks import run_pre_hooks
+            run_pre_hooks(project_path, project_name, _hook_type)
+        except Exception as e:
+            log("error", f"[mission_hooks] pre_hooks error (ignored): {e}")
+
         try:
             with _run.protected_phase(f"Skill: {mission_title[:50]}"):
                 skill_result = _run._run_skill_mission(
@@ -131,6 +155,16 @@ def _handle_skill_dispatch(
         except Exception as e:
             log("error", f"Skill dispatch exception: {e}\n{traceback.format_exc()}")
         finally:
+            # Post-mission shell hooks fire on every exit path (success,
+            # failure, quota early-return, KeyboardInterrupt) with
+            # KOAN_MISSION_STATUS reflecting the resolved exit_code.
+            try:
+                from app.mission_hooks import run_post_hooks
+                run_post_hooks(
+                    project_path, project_name, _hook_type, exit_code == 0,
+                )
+            except Exception as e:
+                log("error", f"[mission_hooks] post_hooks error (ignored): {e}")
             # Clean up temp files created by skill command builders
             from app.skill_dispatch import cleanup_skill_temp_files
             cleanup_skill_temp_files(skill_cmd)
@@ -1163,6 +1197,19 @@ def _run_iteration(
         )
     except Exception as e:
         print(f"[hooks] pre_mission hook error: {e}", file=sys.stderr)
+
+    # --- Fire repo-config-driven pre-mission shell hooks (agent-loop path) ---
+    # Skill-dispatched missions ran their hooks in _handle_skill_dispatch and
+    # returned before this point, so this fires only for agent-loop missions
+    # (e.g. /refactor, free-form, autonomous). Default off; best-effort.
+    try:
+        from app.mission_hooks import run_pre_hooks
+        from app.skill_dispatch import mission_command_name
+        run_pre_hooks(
+            project_path, project_name, mission_command_name(mission_title or ""),
+        )
+    except Exception as e:
+        print(f"[mission_hooks] pre_hooks error (ignored): {e}", file=sys.stderr)
 
     # --- Generate mission spec for complex missions ---
     spec_content = ""

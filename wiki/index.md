@@ -77,6 +77,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`providers/zai.md`](docs/providers/zai.md) — Documents the `bin/zai-claude` wrapper that points the real Claude CLI at Z.ai's Anthropic-compatible endpoint and maps Anthropic model tiers to GLM models.
 
 ### Security
+- [`security/mission-hooks.md`](docs/security/mission-hooks.md) — Threat model and safe-use guidance for repo-config-driven pre/post shell hooks (`.koan/config.yaml` `pre_hooks`/`post_hooks`): the RCE surface, the default-off operator opt-in gate and per-project override that contain it, and the timeout/isolation/audit defense-in-depth.
 - [`security/prompt-guard.md`](docs/security/prompt-guard.md) — Documents `prompt_guard.py`'s input-side defenses against prompt injection in missions and its configuration/complementary defenses (outbox scanner, data fencing, memory scanning).
 - [`security/security-review.md`](docs/security/security-review.md) — Documents the automated post-mission security review that scans diffs for dangerous patterns, scores risk, optionally blocks auto-merge, and logs an audit trail.
 - [`security/threat-model-agent-disalignment.md`](docs/security/threat-model-agent-disalignment.md) — A threat-model analysis of the blast radius if Koan's autonomous agent becomes disaligned, covering attack surface, exfiltration vectors, MCP per-role exclusions, protections, and recommended mitigations.

@@ -2822,3 +2822,33 @@ class TestGetReviewDiscoveryConfig:
         from app.config import get_review_discovery_config
         with _mock_config({"review_discovery": {"enabled": "??"}}):
             assert get_review_discovery_config()["enabled"] is False
+
+
+# --- is_mission_hooks_enabled (operator opt-in for repo shell hooks) ---
+
+
+class TestIsMissionHooksEnabled:
+    def test_default_disabled(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({}):
+            assert is_mission_hooks_enabled() is False
+
+    def test_enabled_when_true(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({"mission_hooks": {"enabled": True}}):
+            assert is_mission_hooks_enabled() is True
+
+    def test_disabled_when_explicit_false(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({"mission_hooks": {"enabled": False}}):
+            assert is_mission_hooks_enabled() is False
+
+    def test_bool_shorthand(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({"mission_hooks": True}):
+            assert is_mission_hooks_enabled() is True
+
+    def test_malformed_type_defaults_disabled(self):
+        from app.config import is_mission_hooks_enabled
+        with _mock_config({"mission_hooks": "yes please"}):
+            assert is_mission_hooks_enabled() is False
