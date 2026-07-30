@@ -33,6 +33,11 @@ GIT_RETRY_MAX_DELAY = 0.5
 # Default worktree directory name (relative to project root)
 WORKTREE_DIR = ".worktrees"
 
+# How long a worktree registered outside the project must sit untouched before
+# reap_foreign_worktrees() will remove it. Two days is comfortably longer than any single
+# review run, so a live job is never stripped of its working tree.
+FOREIGN_WORKTREE_MAX_AGE_DAYS = 2.0
+
 
 @dataclass
 class WorktreeInfo:
@@ -43,6 +48,9 @@ class WorktreeInfo:
     project_path: str
     commit: str = ""
     is_main: bool = False
+    # True when git reports the worktree as `locked` — someone else's live workspace
+    # (e.g. a Claude Code agent worktree). Never reap these.
+    locked: bool = False
 
 
 def _get_branch_prefix() -> str:
@@ -309,6 +317,8 @@ def list_worktrees(project_path: str) -> List[WorktreeInfo]:
             current["branch"] = line[7:]
         elif line == "bare":
             current["bare"] = True
+        elif line == "locked" or line.startswith("locked "):
+            current["locked"] = True
         elif line == "":
             if current:
                 worktrees.append(_parse_worktree_entry(current, project_path))
@@ -352,6 +362,219 @@ def cleanup_stale_worktrees(project_path: str, active_session_ids: Optional[List
 
     # Final prune
     prune_worktrees(project_path)
+
+
+def reap_foreign_worktrees(
+    project_path: str,
+    max_age_days: float = FOREIGN_WORKTREE_MAX_AGE_DAYS,
+    dry_run: bool = False,
+) -> List[str]:
+    """Remove stale worktrees registered in this project but living outside it.
+
+    Agents with a shell tool check revisions out ad hoc — `git worktree add
+    /tmp/review-<sha> <sha>` — because that is what the review skill instructs, and the
+    skill has no teardown step. Those worktrees are registered in the project's repo but
+    sit outside `<project>/.worktrees/`, so `cleanup_stale_worktrees()` (which only walks
+    `.worktrees/`) never sees them, and `prune_worktrees()` only drops registrations whose
+    directory is *already* gone. Nothing reclaims a leaked worktree whose directory still
+    exists.
+
+    On a large checkout each one costs hundreds of megabytes. On 2026-07-30 this filled a
+    50G root filesystem on the `koan` host: 14 leaked ~410M cPanel review worktrees plus 5
+    phantom registrations.
+
+    Guards, in order — each one exists because skipping it would destroy work:
+      * only worktrees *outside* project_path — anything inside is owned by
+        cleanup_stale_worktrees() or by another harness (e.g. `.claude/worktrees/`)
+      * never the main worktree
+      * never a `locked` worktree — that is someone's live workspace
+      * never one with tracked or untracked file activity within max_age_days — a review
+        that started minutes ago is still running, and removing its tree kills the job
+      * never one holding commits absent from its upstream or from every durable ref
+
+    Returns the list of paths removed (or, with dry_run, the paths that would be).
+    """
+    project_real = os.path.realpath(project_path)
+    removed: List[str] = []
+    cutoff = time.time() - (max_age_days * 86400)
+
+    # Drop registrations whose directory is already gone before looking at what remains.
+    # These accumulate whenever something deletes a worktree without telling git — the 10d
+    # systemd-tmpfiles sweep of /tmp does exactly that — and nothing else clears them. A
+    # fleet survey on 2026-07-30 found ~20 across six hosts, including 10 on one repo.
+    if not dry_run:
+        prune_worktrees(project_path)
+
+    for wt in list_worktrees(project_path):
+        if wt.is_main or not wt.path:
+            continue
+
+        # Only foreign worktrees. Anything under the project belongs to another owner.
+        wt_real = os.path.realpath(wt.path)
+        if wt_real == project_real or wt_real.startswith(project_real + os.sep):
+            continue
+
+        if wt.locked:
+            print(f"[worktree_manager] skip (locked) {wt.path}", file=sys.stderr)
+            continue
+
+        if not os.path.isdir(wt_real):
+            continue  # already gone — prune_worktrees() drops the registration
+
+        if _has_recent_worktree_activity(wt_real, cutoff):
+            continue  # possibly a live review, or activity could not be verified
+
+        if _has_unpushed_commits(wt_real):
+            print(
+                f"[worktree_manager] skip (unpushed commits) {wt.path}",
+                file=sys.stderr,
+            )
+            continue
+
+        if dry_run:
+            removed.append(wt.path)
+            continue
+
+        try:
+            # force=True: reviews routinely leave incidental edits behind (a regenerated
+            # lockfile, a touched test file), which would otherwise block removal.
+            remove_worktree(project_path, worktree_path=wt.path, force=True)
+            removed.append(wt.path)
+            print(f"[worktree_manager] reaped foreign worktree {wt.path}", file=sys.stderr)
+        except Exception as e:
+            print(
+                f"[worktree_manager] foreign worktree reap failed for {wt.path}: {e}",
+                file=sys.stderr,
+            )
+
+    return removed
+
+
+def _has_recent_worktree_activity(worktree_path: str, cutoff: float) -> bool:
+    """Return True when non-ignored worktree content changed after ``cutoff``.
+
+    Root directory mtime alone misses edits to existing files. Ask git for tracked and
+    non-ignored untracked files, then inspect those files and their parent directories
+    (the latter catches recent deletions). Ignored dependency trees stay outside the scan.
+    Any inspection failure keeps the worktree.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-co", "--exclude-standard", "-z"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if result.returncode != 0:
+        return True
+
+    root = os.path.realpath(worktree_path)
+    directories = {root}
+    for relative_path in result.stdout.split("\0"):
+        if not relative_path:
+            continue
+        path = os.path.join(root, relative_path)
+        try:
+            if os.lstat(path).st_mtime > cutoff:
+                return True
+        except FileNotFoundError:
+            pass  # A tracked deletion updates its parent directory mtime.
+        except OSError:
+            return True
+
+        parent = os.path.dirname(path)
+        while parent != root:
+            directories.add(parent)
+            parent = os.path.dirname(parent)
+
+    try:
+        return any(os.lstat(path).st_mtime > cutoff for path in directories)
+    except OSError:
+        return True
+
+
+def _has_unpushed_commits(worktree_path: str) -> bool:
+    """Return True when removing the worktree could make commits unreachable.
+
+    Tracking branches are unsafe when HEAD exceeds their upstream. A detached HEAD
+    without an upstream is safe only when another durable branch, remote, or tag reaches
+    it. Local branches without upstreams remain durable after path-based removal. Any git
+    or verification failure keeps the worktree.
+    """
+    try:
+        branch = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+    if branch.returncode == 0:
+        branch_name = branch.stdout.strip()
+        try:
+            remote = subprocess.run(
+                ["git", "config", "--get", f"branch.{branch_name}.remote"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+            )
+            merge = subprocess.run(
+                ["git", "config", "--get", f"branch.{branch_name}.merge"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return True
+
+        if remote.returncode == 1 and merge.returncode == 1:
+            return False  # The local branch itself keeps HEAD reachable.
+        if remote.returncode != 0 or merge.returncode != 0:
+            return True
+
+        try:
+            result = subprocess.run(
+                ["git", "rev-list", "--count", "@{u}..HEAD"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return True
+        if result.returncode != 0:
+            return True
+        try:
+            return int(result.stdout.strip()) > 0
+        except ValueError:
+            return True
+
+    if branch.returncode != 1:
+        return True
+
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "for-each-ref",
+                "--contains=HEAD",
+                "--format=%(refname)",
+                "refs/heads",
+                "refs/remotes",
+                "refs/tags",
+            ],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if result.returncode != 0:
+        return True
+    return not bool(result.stdout.strip())
 
 
 def prune_worktrees(project_path: str):
@@ -475,4 +698,5 @@ def _parse_worktree_entry(entry: dict, project_path: str) -> WorktreeInfo:
         project_path=project_path,
         commit=commit,
         is_main=is_main,
+        locked=bool(entry.get("locked", False)),
     )

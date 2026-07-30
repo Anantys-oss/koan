@@ -30,6 +30,7 @@ from app.worktree_manager import (
     create_worktree,
     inject_worktree_claude_md,
     prune_worktrees,
+    reap_foreign_worktrees,
     remove_worktree,
     setup_shared_deps,
 )
@@ -502,6 +503,24 @@ def recover_stale_sessions(registry: SessionRegistry):
         if session.project_path and session.project_path not in pruned_projects:
             pruned_projects.add(session.project_path)
             prune_worktrees(session.project_path)
+            # Also reclaim worktrees an agent checked out ad hoc outside the project
+            # (typically under /tmp during a PR review) and never removed. These are
+            # invisible to prune_worktrees() while their directory still exists, and on a
+            # large checkout they are hundreds of megabytes each.
+            try:
+                reaped = reap_foreign_worktrees(session.project_path)
+                if reaped:
+                    print(
+                        f"[session_manager] reclaimed {len(reaped)} leaked worktree(s) "
+                        f"for {session.project_path}",
+                        file=sys.stderr,
+                    )
+            except Exception as e:
+                print(
+                    f"[session_manager] foreign worktree reap error for "
+                    f"{session.project_path}: {e}",
+                    file=sys.stderr,
+                )
 
     for session in registry.get_active():
         if session.pid <= 0:
