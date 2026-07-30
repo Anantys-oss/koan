@@ -5542,37 +5542,55 @@ class TestReconcileReviewAfterReflection:
             "code_snippet": "",
         }
 
-    def test_restores_filtered_findings_referenced_by_failed_checks(self):
-        """A blocking verdict must never render with an empty blocker list."""
+    def test_rejected_compile_finding_is_not_restored_by_failed_check(self):
         data = {
             "file_comments": [
-                self._finding("warning", "Preserve provisioning metadata"),
-                self._finding("warning", "Add regression coverage"),
+                self._finding("warning", "Remove unused storage import"),
             ],
             "review_summary": {
                 "lgtm": False,
-                "summary": "Two issues must be fixed.",
+                "summary": "The package does not compile.",
                 "checklist": [
-                    {"item": "Metadata preserved", "passed": False,
-                     "finding_refs": [0]},
-                    {"item": "Covered by tests", "passed": False,
-                     "finding_refs": [1]},
+                    {
+                        "item": "Package compiles",
+                        "passed": False,
+                        "finding_refs": [0],
+                    },
                 ],
             },
         }
 
         result = _reconcile_review_after_reflection(data, [], [])
 
-        assert [f["title"] for f in result["file_comments"]] == [
-            "Preserve provisioning metadata", "Add regression coverage",
-        ]
-        assert result["review_summary"]["lgtm"] is False
-        md = _format_review_as_markdown(result)
-        assert "### 🟡 Important" in md
-        assert "Preserve provisioning metadata" in md
-        assert "Add regression coverage" in md
+        assert result["file_comments"] == []
+        assert result["review_summary"]["checklist"] == []
+        assert result["review_summary"]["lgtm"] is True
 
-    def test_remaps_checklist_references_after_partial_filtering(self):
+    def test_does_not_restore_original_blocker_when_reflection_removes_it(self):
+        data = {
+            "file_comments": [
+                self._finding("critical", "Rejected blocker"),
+                self._finding("suggestion", "Retained cleanup"),
+            ],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
+            },
+        }
+
+        result = _reconcile_review_after_reflection(
+            data,
+            [data["file_comments"][1]],
+            [1],
+        )
+
+        assert [finding["title"] for finding in result["file_comments"]] == [
+            "Retained cleanup",
+        ]
+        assert result["review_summary"]["lgtm"] is True
+
+    def test_remaps_refs_and_keeps_failed_check_with_retained_evidence(self):
         data = {
             "file_comments": [
                 self._finding("suggestion", "Filtered nit"),
@@ -5583,10 +5601,16 @@ class TestReconcileReviewAfterReflection:
                 "lgtm": False,
                 "summary": "One blocker.",
                 "checklist": [
-                    {"item": "Blocker fixed", "passed": False,
-                     "finding_refs": [1]},
-                    {"item": "Optional cleanup", "passed": True,
-                     "finding_refs": [0, 2]},
+                    {
+                        "item": "Blocker fixed",
+                        "passed": False,
+                        "finding_refs": [0, 1],
+                    },
+                    {
+                        "item": "Optional cleanup",
+                        "passed": True,
+                        "finding_refs": [0, 2],
+                    },
                 ],
             },
         }
@@ -5600,26 +5624,101 @@ class TestReconcileReviewAfterReflection:
         ]
         assert result["review_summary"]["checklist"][0]["finding_refs"] == [0]
         assert result["review_summary"]["checklist"][1]["finding_refs"] == [1]
+        assert result["review_summary"]["lgtm"] is False
 
-    def test_restores_original_blockers_when_reflection_removes_them_all(self):
+    @pytest.mark.parametrize(
+        "bad_reflected_findings",
+        [None, True, {}, "finding", ()],
+    )
+    def test_non_list_reflected_metadata_preserves_primary_review(
+        self, bad_reflected_findings,
+    ):
         data = {
-            "file_comments": [
-                self._finding("critical", "Original blocker"),
-                self._finding("suggestion", "Optional cleanup"),
-            ],
+            "file_comments": [self._finding("warning", "Primary blocker")],
             "review_summary": {
-                "lgtm": False, "summary": "Blocked.", "checklist": [],
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
             },
         }
+        original = copy.deepcopy(data)
 
         result = _reconcile_review_after_reflection(
-            data, [data["file_comments"][1]], [1],
+            data, bad_reflected_findings, [0],
         )
 
-        assert [f["title"] for f in result["file_comments"]] == [
-            "Original blocker", "Optional cleanup",
-        ]
-        assert result["review_summary"]["lgtm"] is False
+        assert result == original
+        assert data == original
+
+    @pytest.mark.parametrize(
+        "bad_retained_indices",
+        [
+            None,
+            True,
+            (0,),
+            {"index": 0},
+            [True],
+            ["0"],
+            [0.0],
+            [-1],
+            [1],
+            [0, 0],
+        ],
+    )
+    def test_invalid_retained_metadata_preserves_primary_review(
+        self, bad_retained_indices,
+    ):
+        data = {
+            "file_comments": [self._finding("warning", "Primary blocker")],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
+            },
+        }
+        original = copy.deepcopy(data)
+
+        result = _reconcile_review_after_reflection(
+            data,
+            [data["file_comments"][0]],
+            bad_retained_indices,
+        )
+
+        assert result == original
+        assert data == original
+
+    def test_mismatched_reflection_metadata_lengths_preserve_primary_review(self):
+        data = {
+            "file_comments": [self._finding("warning", "Primary blocker")],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
+            },
+        }
+        original = copy.deepcopy(data)
+
+        result = _reconcile_review_after_reflection(data, [], [0])
+
+        assert result == original
+        assert data == original
+
+    def test_mismatched_reflection_finding_preserves_primary_review(self):
+        data = {
+            "file_comments": [self._finding("warning", "Primary blocker")],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Blocked.",
+                "checklist": [],
+            },
+        }
+        original = copy.deepcopy(data)
+        inconsistent = [self._finding("warning", "Different finding")]
+
+        result = _reconcile_review_after_reflection(data, inconsistent, [0])
+
+        assert result == original
+        assert data == original
 
 
 # ---------------------------------------------------------------------------

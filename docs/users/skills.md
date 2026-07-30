@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-22
+updated: 2026-07-30
 ---
 
 # Skills Reference
@@ -105,11 +105,13 @@ detail, so reviewers can react or resolve in place. Cap the volume with
 idempotent (already-anchored findings are skipped); multi-line findings anchor
 to their full range; if all posts fail, you are notified. Disabled by default.
 
-**Verdict consistency:** The formal APPROVE / REQUEST_CHANGES state and its
-green/red/yellow alert are derived from the final bucketed findings. Reflection
-cannot leave a failed checklist item pointing at a hidden finding, and Kōan will
-not submit REQUEST_CHANGES unless the summary lists at least one 🔴 Blocking or
-🟡 Important finding.
+**Verdict consistency:** A valid reflection pass is authoritative for the final
+finding list. Findings rejected below the configured threshold stay hidden;
+checklist references are remapped, and a failed checklist entry is removed when
+all of its referenced findings were rejected. The formal APPROVE /
+REQUEST_CHANGES state and its green/red/yellow alert are then derived from the
+retained findings. If reflection returns malformed or inconsistent metadata,
+Kōan preserves the primary review unchanged.
 
 **Stale-HEAD alert:** the review comment's footer shows the commit it was run
 against (`HEAD=<short-sha>`). A review can take minutes, and you may push (or

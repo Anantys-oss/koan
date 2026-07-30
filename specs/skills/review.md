@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-22
+updated: 2026-07-30
 ---
 
 # Skill Spec — `review`
@@ -98,19 +98,24 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   `suggestion`; promote it before blocking. Schema validation rejects a supplied
   verdict that contradicts the finding severities, and post-reflection
   finalization derives the verdict from the reconciled finding list again.
-- **Reflection preserves review consistency.** The reflection pass carries the
-  retained original finding indices into a final reconciliation step. Findings
-  referenced by failed checklist items are restored; if reflection would remove
-  every blocker from a primary blocking review, the original blockers are
-  restored. Checklist references are then remapped to the final finding array,
-  and `lgtm` is derived again from those final severities. Schema validation
-  rejects a contradictory verdict (REQUEST_CHANGES with no 🔴 Blocking / 🟡
-  Important finding, or APPROVE despite one) before anything is posted. As a
-  defensive backstop, the verdict body builder (`_build_verdict_body`) — which
-  runs *after* the review comment is already posted — never raises on such an
-  inconsistency: it logs and submits the verdict with an empty body, so a
-  broken invariant can never abort the run post-side-effect (and never renders
-  a blocker-less "issues found" alert).
+- **Valid reflection filtering is authoritative.** The reflection pass carries
+  retained original finding indices into final reconciliation. When both the
+  reflected finding array and retained-index array are valid and internally
+  consistent, reconciliation retains exactly those findings. It remaps checklist
+  references to the retained array, removes a failed checklist entry when all of
+  its referenced evidence was filtered, and derives `lgtm` from the retained
+  severities. It does not restore a rejected finding merely because the primary
+  checklist referenced it or because filtering changes a primary blocking verdict
+  to merge-ready.
+
+  Reconciliation remains fail-open when reflection metadata is malformed or
+  inconsistent. Both metadata values must be lists; every retained index must be
+  a unique, non-boolean integer in range; the arrays must have equal lengths; and
+  each reflected finding must match the original finding at its retained index.
+  If any check fails, the primary review is returned unchanged. Schema validation
+  continues to reject a contradictory verdict before anything is posted. As a
+  defensive backstop, `_build_verdict_body` logs an inconsistency and submits an
+  empty verdict body rather than failing after the review comment was posted.
 - **Verdict presentation is severity-graded, not the summary paragraph.** The
   formal APPROVE / request-changes verdict body (`_build_verdict_body`) is wrapped
   in a native GitHub alert whose color grades the outcome: `> [!TIP]` (green) when
