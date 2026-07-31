@@ -816,6 +816,49 @@ def _bridge_should_restart(monitor) -> bool:
     return _workers_idle()
 
 
+# How often to sweep for leaked agent-created worktrees. Hourly: a stray worktree costs
+# disk, not correctness, and reap_foreign_worktrees() ignores anything touched in the last
+# two days anyway, so sweeping more often would find nothing new.
+WORKTREE_REAP_INTERVAL = 3600
+
+
+def _maybe_reap_worktrees(last_reap: float, interval: int = WORKTREE_REAP_INTERVAL) -> float:
+    """Reclaim leaked review worktrees across known projects, every ``interval`` seconds.
+
+    Agents check revisions out ad hoc during PR review (`git worktree add /tmp/review-<sha>`)
+    and never remove them. On a large checkout each is hundreds of megabytes, so they fill
+    the disk; on 2026-07-30 this took the `koan` host's root filesystem to 100% and
+    crash-looped this service. reap_foreign_worktrees() only touches worktrees registered
+    outside the project, unlocked, untouched for days, and free of unpushed commits.
+
+    Returns the (possibly updated) last-reap timestamp.
+    """
+    if not interval:
+        return last_reap
+    now = time.time()
+    if (now - last_reap) < interval:
+        return last_reap
+    try:
+        from app.project_explorer import get_projects
+        from app.worktree_manager import reap_foreign_worktrees
+
+        projects = get_projects()
+    except Exception as e:
+        log("error", f"periodic worktree reap failed: {e}")
+        return now
+
+    # Per-project isolation: one unreadable repo must not stop the others being swept.
+    for _name, path in projects:
+        try:
+            reaped = reap_foreign_worktrees(path)
+        except Exception as e:
+            log("error", f"worktree reap failed for {path}: {e}")
+            continue
+        if reaped:
+            log("health", f"Reclaimed {len(reaped)} leaked worktree(s) in {path}")
+    return now
+
+
 def _maybe_periodic_compact(last_compact: float, interval: int) -> float:
     """Run compact_history if ``interval`` seconds elapsed since last_compact.
 
@@ -1113,6 +1156,9 @@ def _bridge_loop():
     bridge_monitor = _build_bridge_memory_monitor()
     compact_interval = get_conversation_compact_interval()
     last_compact = startup_time
+    # Reap on the first cycle rather than after a full interval, so a restart triggered by
+    # a full disk reclaims space immediately instead of an hour later.
+    last_worktree_reap = 0.0
 
     # Purge stale heartbeat so health_check doesn't report STALE on restart
     heartbeat_file = KOAN_ROOT / HEARTBEAT_FILE
@@ -1304,6 +1350,9 @@ def _bridge_loop():
 
             # --- Periodic conversation-history compaction (#2354) ---
             last_compact = _maybe_periodic_compact(last_compact, compact_interval)
+
+            # --- Reclaim leaked agent-created review worktrees ---
+            last_worktree_reap = _maybe_reap_worktrees(last_worktree_reap)
 
             # --- Bridge memory watchdog (#2354) ---
             # Sample once per cycle; restart only when idle so an in-flight

@@ -4,7 +4,7 @@ title: "Troubleshooting"
 description: "Catalogs common operational issues (agent loop, git/worktrees, memory, bridge, GitHub, CLI provider, parallel sessions, config) and their fixes."
 tags: [operations]
 created: 2026-06-04
-updated: 2026-07-17
+updated: 2026-07-30
 ---
 
 # Troubleshooting
@@ -68,6 +68,11 @@ git worktree prune         # Remove stale references
 ```
 
 Kōan cleans up worktrees on startup during crash recovery. If you see stale worktrees, restarting the agent loop should clear them.
+
+The bridge also sweeps hourly for leaked worktrees registered outside the project, such
+as temporary review checkouts. It keeps locked worktrees, worktrees with recent
+non-ignored file activity, tracking branches with commits missing upstream, and
+detached commits missing every durable branch, remote, or tag.
 
 ### Branch conflicts (can't checkout, can't push)
 
