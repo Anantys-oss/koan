@@ -1616,6 +1616,16 @@ class TestBuildAgentPromptParts:
         assert "Mission Spec" in user_prompt
         assert "Do the thing" in user_prompt
 
+    def test_steering_summary_lists_claude_md_then_koan_md(self, prompt_env, capsys):
+        """The split builder surfaces CLAUDE.md (detection-only) and KOAN.md."""
+        project = Path(prompt_env["project_path"])
+        (project / "CLAUDE.md").write_text("Project rules here.")
+        (project / "KOAN.md").write_text("Always run make lint before pushing.")
+        self._build(prompt_env)
+        err = capsys.readouterr().err
+        assert "Steering loaded before Claude" in err
+        assert err.index("CLAUDE.md (auto-loaded by CLI):") < err.index("KOAN.md:")
+
     def test_language_preference_in_system_prompt(self, prompt_env):
         """Language preference appears in system prompt when set."""
         with patch(

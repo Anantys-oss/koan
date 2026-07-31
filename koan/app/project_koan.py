@@ -39,15 +39,23 @@ _HOOK_PHASES = {"pre": "pre_hooks", "post": "post_hooks"}
 # multi-CLI-call skill (plan builds 3 prompts per mission) announces its steering
 # context once, not once per CLI call. reset_context_load_log() clears the dedup
 # memory per mission so a fresh mission re-announces byte-identical context.
+#
+# NOT thread-safe: both globals assume a single builder at a time (default
+# max_parallel_sessions == 1). With concurrent prompt builds, one build's flush
+# can emit another build's records or empty its batch. Only the log line is
+# affected — never what Claude receives. Move to threading.local() if parallel
+# sessions become the default.
 _pending_loads: list = []   # [(label, chars, tokens), ...] for the current build
 _last_summary_sig = None    # signature of the last-emitted summary
 
 
 def _estimate_tokens(content: str) -> int:
+    """Best-effort token estimate; 0 (with a debug trace) when unavailable."""
     try:
         from app.diff_compressor import estimate_tokens
         return estimate_tokens(content)
-    except Exception:
+    except Exception as e:
+        logger.debug("estimate_tokens failed (reporting 0 tokens): %s", e)
         return 0
 
 
