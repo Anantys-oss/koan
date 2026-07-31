@@ -1258,13 +1258,25 @@ def _reconcile_review_after_reflection(
 
     checklist = summary.get("checklist")
     if not isinstance(checklist, list):
+        log(
+            "review",
+            "Malformed checklist metadata; preserving primary review",
+        )
         return review_data
 
     for entry in checklist:
         if not isinstance(entry, dict):
+            log(
+                "review",
+                "Malformed checklist entry; preserving primary review",
+            )
             return review_data
         refs = entry.get("finding_refs", [])
         if not isinstance(refs, list):
+            log(
+                "review",
+                "Malformed checklist finding_refs; preserving primary review",
+            )
             return review_data
 
     old_to_new = {
