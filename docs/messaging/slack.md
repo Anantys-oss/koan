@@ -4,7 +4,7 @@ title: "Slack Setup Guide"
 description: "Step-by-step guide to configuring Kōan with Slack (Socket Mode app setup, scopes, env vars) plus Slack-specific behavior like threading, reactions, and the assistant \"thinking\" status."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-06-25
+updated: 2026-08-07
 ---
 
 # Slack Setup Guide
@@ -175,10 +175,10 @@ You should see in the logs:
   is not set — setting only the `KOAN_SLACK_*` tokens is not enough.
 - **You must @mention the bot.** Kōan ignores un-addressed channel chatter by
   design. Ping `@Koan ...` to start; after that you can keep replying in the
-  thread without re-mentioning. (Messages beginning with `/` followed by a
-  letter — e.g. `/help` — are an exception: they are treated as commands and
-  answered without a mention. A leading slash before a non-letter, like a
-  `//` comment or a `/.bashrc` dotfile path, stays ignored — but a
+  thread without re-mentioning. (Messages beginning with `/` or `!` followed by
+  a letter — e.g. `/help` or `!help` — are an exception: they are treated as
+  commands and answered without a mention. A leading prefix before a non-letter,
+  like a `//` comment, `!!` punctuation, or a `/.bashrc` dotfile path, stays ignored — but a
   letter-initial path such as `/Users/foo/log.txt` looks like a command and
   is answered.)
 
@@ -199,10 +199,12 @@ You should see in the logs:
 - **Mention to start**: In the configured channel, Kōan stays quiet until you
   @mention it (or it receives an `app_mention`). Ordinary channel chatter is
   ignored, so the bot is safe to drop into a shared channel.
-- **Commands need no mention**: A message beginning with `/` followed by a
-  letter (e.g. `/help`, `/status`) is treated as a command addressed to Kōan —
-  exactly like `@Koan /help`. It replies in a thread under the command, no
-  @mention required. A leading slash before a non-letter (`//` comments,
+- **Commands need no mention**: A message beginning with `/` or `!` followed by
+  a letter (e.g. `/help`, `!status`) is treated as a command addressed to Kōan —
+  exactly like `@Koan /help`. Slack normalizes `!command` to `/command` before
+  handing it to the shared bridge, avoiding conflicts with Slack slash commands.
+  It replies in a thread under the command, no @mention required. A leading
+  prefix before a non-letter (`//` comments, `!!` punctuation,
   dotfile paths like `/.bashrc`, numeric/symbol prefixes) is ignored. This
   heuristic cannot tell a command from a letter-initial path, so a pasted
   path like `/Users/foo/log.txt` at the start of a message *is* treated as a
@@ -223,7 +225,7 @@ You should see in the logs:
 
 ## Queued-mission acknowledgement
 
-When a slash command (`/fix`, `/rebase`, `/plan`, `/review`, …) or a plain
+When a command (`/fix`, `!rebase`, `/plan`, `!review`, …) or a plain
 mission is queued, Kōan acknowledges it with a ✅ **reaction** on the original
 message on platforms that support reactions. A brief "Queuing…" status is shown
 while the acknowledgement settles.

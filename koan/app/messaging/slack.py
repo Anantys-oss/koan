@@ -381,11 +381,12 @@ class SlackProvider(MessagingProvider):
     def _is_addressed_to_bot(self, event: dict) -> bool:
         """Return True for app_mentions, direct @mentions, commands, or engaged threads.
 
-        A message whose text begins with ``/`` followed by a letter (e.g.
-        ``/help``) is treated as a command addressed to the bot, just like an
-        explicit ``@bot /help`` — no mention required. A leading slash followed
-        by a non-letter (``//`` comments, dotfile paths like ``/.bashrc``,
-        numeric/symbol prefixes) is ignored. Note that this heuristic cannot
+        A message whose text begins with ``/`` or ``!`` followed by a letter
+        (e.g. ``/help`` or ``!help``) is treated as a command addressed to the
+        bot, just like an explicit ``@bot /help`` — no mention required. A
+        leading prefix followed by a non-letter (``//`` comments, ``!!``
+        punctuation, dotfile paths like ``/.bashrc``, numeric/symbol prefixes)
+        is ignored. Note that this heuristic cannot
         distinguish a command from a letter-initial path: a pasted path like
         ``/Users/foo/log.txt`` at message start *is* treated as a command and
         falls through to an (unrecognized-command) help reply.
@@ -395,7 +396,7 @@ class SlackProvider(MessagingProvider):
         """
         text = event.get("text", "")
         mentioned = bool(self._bot_user_id) and f"<@{self._bot_user_id}>" in text
-        is_command = bool(re.match(r"/[a-zA-Z]", text.lstrip()))
+        is_command = bool(re.match(r"[!/][a-zA-Z]", text.lstrip()))
         # For a channel-root message Slack omits thread_ts; the message's own ts
         # is the root of the thread the bot will reply into.
         thread_root = event.get("thread_ts") or event.get("ts", "")
@@ -457,9 +458,13 @@ class SlackProvider(MessagingProvider):
         if not text:
             return ""
 
-        # Strip @bot mentions from text
+        # Strip @bot mentions from text.
         if self._bot_user_id:
-            text = re.sub(rf"<@{re.escape(self._bot_user_id)}>\s*", "", text).strip()
+            text = re.sub(rf"<@{re.escape(self._bot_user_id)}>\s*", "", text)
+
+        text = text.strip()
+        if re.match(r"![a-zA-Z]", text):
+            text = "/" + text[1:]
 
         return text
 

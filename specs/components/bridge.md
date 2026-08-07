@@ -78,6 +78,10 @@ awake.py (loop, ~3s poll)
   *how* the agent behaves.
 - **Command parsing is hyphen-hostile.** Skill names/aliases use underscores; Telegram
   treats `-` as a word boundary and truncates the command.
+- **Slack accepts bang-prefixed commands.** Slack recognizes `!command` and
+  `/command` without a bot mention. Its provider normalizes the bang form to
+  `/command` before the shared bridge dispatches it, keeping command handlers
+  provider-agnostic and avoiding Slack slash-command conflicts.
 - **The chat ID is normalized at read time.** All reads of `KOAN_TELEGRAM_CHAT_ID` go
   through `utils.get_telegram_chat_id()`, which `.strip()`s stray whitespace/newlines
   (Railway/copy-paste inject a trailing newline that makes Telegram answer

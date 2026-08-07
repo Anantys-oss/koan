@@ -188,6 +188,18 @@ class TestHandleSocketEvent:
         update = provider._message_queue.get_nowait()
         assert update.message.text == "/help"
 
+    def test_bang_command_without_mention_normalized(self, provider):
+        req = self._make_request("message", "C123", "!help")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "/help"
+
+    def test_bang_command_with_arguments_normalized(self, provider):
+        req = self._make_request("message", "C123", "  !review changes")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == "/review changes"
+
     def test_slash_command_with_leading_whitespace_processed(self, provider):
         req = self._make_request("message", "C123", "  /status")
         provider._handle_socket_event(MagicMock(), req)
@@ -218,6 +230,12 @@ class TestHandleSocketEvent:
         # ignored. Note: letter-initial paths like /etc/hosts DO match /[a-zA-Z]
         # and are treated as commands, so they are not valid examples here.
         for text in ("//deploy note: ship it", "/.config/app.toml is the culprit"):
+            req = self._make_request("message", "C123", text)
+            provider._handle_socket_event(MagicMock(), req)
+            assert provider._message_queue.empty()
+
+    def test_leading_bang_non_letter_not_command(self, provider):
+        for text in ("!! deploy note", "!42 is surprising"):
             req = self._make_request("message", "C123", text)
             provider._handle_socket_event(MagicMock(), req)
             assert provider._message_queue.empty()
