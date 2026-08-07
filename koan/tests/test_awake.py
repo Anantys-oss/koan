@@ -4212,9 +4212,14 @@ def test_worktree_reap_survives_errors():
 
 
 def test_worktree_reap_continues_across_projects():
-    """One project's failure must not stop the others being swept."""
+    """One project's failure must not stop the others being swept.
+
+    time.time() is pinned because the sweep rotates its project order by the hour, so an
+    unpinned clock makes the expected order flip every hour. 7200.0 gives rotation 0.
+    """
     with patch("app.project_explorer.get_projects",
                return_value=[("a", "/srv/a"), ("b", "/srv/b")]), \
+         patch("app.awake.time.time", return_value=7200.0), \
          patch("app.worktree_manager.reap_foreign_worktrees",
                side_effect=[RuntimeError("bad repo"), ["/tmp/review-b"]]) as mock_reap:
         awake._reap_worktrees()
