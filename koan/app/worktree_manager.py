@@ -598,11 +598,14 @@ def _has_unpushed_commits(
 ) -> bool:
     """Return True when removing the worktree could make commits unreachable.
 
-    Tracking branches are unsafe when HEAD exceeds their upstream. A detached HEAD is
-    safe only when the remote default branch reaches it. This deliberately avoids an
-    all-ref containment scan, which is prohibitively expensive in repositories with many
-    refs. Local branches without upstreams remain durable after path-based removal. Any
-    git or verification failure keeps the worktree.
+    Tracking branches are unsafe when HEAD exceeds their upstream. A detached HEAD is safe
+    only when some durable ref — a local branch, a tag, or a remote-tracking ref — already
+    reaches it, since those survive removing the worktree's path. Testing reachability from
+    the default branch alone would be wrong, not merely stricter: review worktrees sit at
+    pull-request head commits, which live on their remote branch but are never ancestors of
+    the default branch, so every one of them would be retained forever. Local branches
+    without upstreams remain durable after path-based removal. Any git or verification
+    failure keeps the worktree.
     """
     try:
         branch = subprocess.run(
@@ -660,26 +663,12 @@ def _has_unpushed_commits(
     if branch.returncode != 1:
         return True
 
-    try:
-        default_branch = subprocess.run(
-            ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-            **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return True
-    if default_branch.returncode != 0:
-        return True
-
-    default_ref = default_branch.stdout.strip()
-    if not default_ref:
-        return True
-
+    # One revision walk, negated by every durable ref, instead of a containment scan per
+    # ref. --max-count=1 stops at the first commit that no ref reaches, so the cost is the
+    # divergence rather than the ref count.
     try:
         result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", "HEAD", default_ref],
+            ["git", "rev-list", "--max-count=1", "HEAD", "--not", "--branches", "--tags", "--remotes"],
             cwd=worktree_path,
             capture_output=True,
             text=True,
@@ -687,7 +676,9 @@ def _has_unpushed_commits(
         )
     except (OSError, subprocess.SubprocessError):
         return True
-    return result.returncode != 0
+    if result.returncode != 0:
+        return True
+    return bool(result.stdout.strip())
 
 
 def prune_worktrees(project_path: str, timeout: Optional[float] = None):

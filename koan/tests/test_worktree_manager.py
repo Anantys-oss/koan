@@ -401,10 +401,10 @@ class TestReapForeignWorktrees:
     """
 
     @staticmethod
-    def _add_foreign(repo, path, age_days=0.0):
+    def _add_foreign(repo, path, age_days=0.0, ref="HEAD"):
         """Register a worktree outside the project, optionally backdated."""
         subprocess.run(
-            ["git", "worktree", "add", "--detach", str(path), "HEAD"],
+            ["git", "worktree", "add", "--detach", str(path), ref],
             cwd=repo, capture_output=True, check=True,
         )
         if age_days:
@@ -425,7 +425,10 @@ class TestReapForeignWorktrees:
         assert reaped == [foreign]
         assert not Path(foreign).exists()
         commands = [call.args[0] for call in run.call_args_list]
-        assert ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"] in commands
+        assert [
+            "git", "rev-list", "--max-count=1", "HEAD",
+            "--not", "--branches", "--tags", "--remotes",
+        ] in commands
         assert not any(command[:2] == ["git", "for-each-ref"] for command in commands)
         # The registration must be gone too, not just the directory — leaving it behind is
         # exactly the phantom state that accumulated on the real host.
@@ -486,16 +489,64 @@ class TestReapForeignWorktrees:
         assert reap_foreign_worktrees(git_repo) == []
         assert Path(foreign).is_dir()
 
-    def test_spares_detached_worktree_without_remote_default_branch(self, git_repo, tmp_path):
-        """An unresolved default branch makes detached worktree cleanup fail closed."""
+    @staticmethod
+    def _commit_on_remote_only_branch(repo):
+        """Return a SHA reachable *only* from refs/remotes/origin/side.
+
+        This is the shape of a real review checkout: `git worktree add /tmp/review-<sha>
+        <sha>` at a pull-request head. The commit is durable on its remote branch but is
+        not an ancestor of the default branch, and no local branch or tag holds it.
+        """
+        subprocess.run(
+            ["git", "checkout", "-b", "side"],
+            cwd=repo, capture_output=True, check=True,
+        )
+        (Path(repo) / "pr.txt").write_text("pull request head\n")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "pr head"],
+            cwd=repo, capture_output=True, check=True,
+        )
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/side", sha],
+            cwd=repo, capture_output=True, check=True,
+        )
+        subprocess.run(["git", "checkout", "main"], cwd=repo, capture_output=True, check=True)
+        subprocess.run(["git", "branch", "-D", "side"], cwd=repo, capture_output=True, check=True)
+        return sha
+
+    def test_reaps_detached_worktree_at_unmerged_pull_request_head(self, git_repo, tmp_path):
+        """The population the reaper exists for: a review checkout at an open PR's head.
+
+        The commit is durable on origin/side, so removing the worktree loses nothing — but
+        it is not an ancestor of the default branch. Testing reachability from the default
+        branch alone would retain every review worktree forever.
+        """
+        sha = self._commit_on_remote_only_branch(git_repo)
+        foreign = self._add_foreign(git_repo, tmp_path / "review-pr", age_days=5, ref=sha)
+
+        assert reap_foreign_worktrees(git_repo) == [foreign]
+        assert not Path(foreign).exists()
+
+    def test_reaps_detached_worktree_without_remote_default_branch(self, git_repo, tmp_path):
+        """Cleanup must not depend on refs/remotes/origin/HEAD, which is often unset.
+
+        A plain `git clone` leaves it unset whenever the remote's HEAD is unresolvable, and
+        `git init` + `remote add` + `fetch` never sets it at all. Making it a precondition
+        turned the whole sweep into a no-op on those hosts.
+        """
         foreign = self._add_foreign(git_repo, tmp_path / "review-no-default", age_days=5)
         subprocess.run(
             ["git", "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
             cwd=git_repo, capture_output=True, check=True,
         )
 
-        assert reap_foreign_worktrees(git_repo) == []
-        assert Path(foreign).is_dir()
+        assert reap_foreign_worktrees(git_repo) == [foreign]
+        assert not Path(foreign).exists()
 
     def test_ignores_project_owned_worktrees(self, git_repo):
         """`.worktrees/` belongs to cleanup_stale_worktrees(); don't poach it."""

@@ -73,10 +73,10 @@ The bridge also starts an hourly background sweep for leaked worktrees registere
 the project, such as temporary review checkouts. The sweep does not block messaging. It
 keeps locked worktrees, worktrees with recent
 non-ignored file activity, tracking branches with commits missing upstream, and
-detached commits not reachable from the repository's `origin/HEAD` default branch. This
-avoids an expensive all-ref scan; if the default branch cannot be resolved, the worktree
-is retained. Each sweep is capped at two minutes, with a 15-second limit per Git command;
-deferred worktrees are retried in a later hourly sweep.
+detached commits that no local branch, tag, or remote-tracking ref reaches. That last
+check is a single revision walk rather than a per-ref scan, so it stays fast in
+repositories with many refs. Each sweep is capped at two minutes, with a 15-second limit
+per Git command; deferred worktrees are retried in a later hourly sweep.
 
 ### Branch conflicts (can't checkout, can't push)
 
