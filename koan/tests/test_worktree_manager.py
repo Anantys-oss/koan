@@ -54,6 +54,14 @@ def git_repo(tmp_path):
         ["git", "branch", "-M", "main"],
         cwd=str(repo), capture_output=True, text=True,
     )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "main"],
+        cwd=str(repo), capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=str(repo), capture_output=True, check=True,
+    )
     return str(repo)
 
 
@@ -411,10 +419,14 @@ class TestReapForeignWorktrees:
         foreign = self._add_foreign(git_repo, tmp_path / "review-abc", age_days=5)
         assert Path(foreign).is_dir()
 
-        reaped = reap_foreign_worktrees(git_repo)
+        with patch.object(worktree_manager.subprocess, "run", wraps=subprocess.run) as run:
+            reaped = reap_foreign_worktrees(git_repo)
 
         assert reaped == [foreign]
         assert not Path(foreign).exists()
+        commands = [call.args[0] for call in run.call_args_list]
+        assert ["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"] in commands
+        assert not any(command[:2] == ["git", "for-each-ref"] for command in commands)
         # The registration must be gone too, not just the directory — leaving it behind is
         # exactly the phantom state that accumulated on the real host.
         paths = [w.path for w in list_worktrees(git_repo)]
@@ -470,6 +482,17 @@ class TestReapForeignWorktrees:
         old = time.time() - (5 * 86400)
         os.utime(Path(foreign) / "detached.txt", (old, old))
         os.utime(foreign, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert Path(foreign).is_dir()
+
+    def test_spares_detached_worktree_without_remote_default_branch(self, git_repo, tmp_path):
+        """An unresolved default branch makes detached worktree cleanup fail closed."""
+        foreign = self._add_foreign(git_repo, tmp_path / "review-no-default", age_days=5)
+        subprocess.run(
+            ["git", "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
 
         assert reap_foreign_worktrees(git_repo) == []
         assert Path(foreign).is_dir()

@@ -598,10 +598,11 @@ def _has_unpushed_commits(
 ) -> bool:
     """Return True when removing the worktree could make commits unreachable.
 
-    Tracking branches are unsafe when HEAD exceeds their upstream. A detached HEAD
-    without an upstream is safe only when another durable branch, remote, or tag reaches
-    it. Local branches without upstreams remain durable after path-based removal. Any git
-    or verification failure keeps the worktree.
+    Tracking branches are unsafe when HEAD exceeds their upstream. A detached HEAD is
+    safe only when the remote default branch reaches it. This deliberately avoids an
+    all-ref containment scan, which is prohibitively expensive in repositories with many
+    refs. Local branches without upstreams remain durable after path-based removal. Any
+    git or verification failure keeps the worktree.
     """
     try:
         branch = subprocess.run(
@@ -660,16 +661,8 @@ def _has_unpushed_commits(
         return True
 
     try:
-        result = subprocess.run(
-            [
-                "git",
-                "for-each-ref",
-                "--contains=HEAD",
-                "--format=%(refname)",
-                "refs/heads",
-                "refs/remotes",
-                "refs/tags",
-            ],
+        default_branch = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
             cwd=worktree_path,
             capture_output=True,
             text=True,
@@ -677,9 +670,24 @@ def _has_unpushed_commits(
         )
     except (OSError, subprocess.SubprocessError):
         return True
-    if result.returncode != 0:
+    if default_branch.returncode != 0:
         return True
-    return not bool(result.stdout.strip())
+
+    default_ref = default_branch.stdout.strip()
+    if not default_ref:
+        return True
+
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", "HEAD", default_ref],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return result.returncode != 0
 
 
 def prune_worktrees(project_path: str, timeout: Optional[float] = None):

@@ -57,6 +57,9 @@ awake.py (loop, ~3s poll)
 - **Bounded maintenance.** A foreign-worktree sweep has a fixed two-minute total
   deadline and a 15-second Git-command cap. Expired or timed-out safety checks
   retain worktrees and defer them to a later rotating sweep.
+- **Detached worktree safety.** A detached foreign worktree is removed only when its
+  HEAD is an ancestor of `origin/HEAD`. The check MUST use bounded ancestry verification,
+  not an all-ref containment scan; an unavailable default-branch pointer retains it.
 - **Chat is resilient to API contention (#1084).** While a mission runs, the agent loop
   and the bridge invoke the AI CLI concurrently against the same account (the default
   provider takes no cross-invocation lock), so a chat call can return an empty response or
