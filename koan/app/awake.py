@@ -710,33 +710,34 @@ def _format_outbox_message(raw_content: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Worker lanes — chat replies and background tasks run independently so a
-# long background task never blocks an interactive reply, and neither ever
-# blocks the Telegram poll loop.  One in-flight task per lane (back-pressure).
+# Worker lanes — chat replies, user-triggered background tasks, and maintenance
+# run independently, so none can block the Telegram poll loop. One in-flight
+# task per lane provides back-pressure.
 # ---------------------------------------------------------------------------
 
-_WORKER_LANES = ("chat", "bg")
+_WORKER_LANES = ("chat", "bg", "maintenance")
 _worker_threads: Dict[str, Optional[threading.Thread]] = {
     lane: None for lane in _WORKER_LANES
 }
 _worker_lock = threading.Lock()
 
-# The chat lane tells the user when it is busy; the bg lane stays silent so
-# background work (worker skills like /review, /rebase) never spams the channel.
+# The chat lane tells the user when it is busy; background and maintenance work
+# stay silent so internal work never spams the channel.
 _LANE_BUSY_MSG: Dict[str, Optional[str]] = {
     "chat": "⏳ Busy with a previous message. Try again in a moment.",
     "bg": None,
+    "maintenance": None,
 }
 
 
 def _run_in_worker(fn, *args, lane: str = "chat") -> bool:
     """Run fn(*args) in a background thread on a named lane.
 
-    Two lanes exist: ``"chat"`` (interactive replies) and ``"bg"``
-    (background tasks such as worker skills typed in chat — ``/review``,
-    ``/rebase``, etc.).  Each lane allows one worker at a time, but the lanes run
-    concurrently, so a background task never blocks a chat reply and vice
-    versa.  The Telegram poll loop is never blocked by either.
+    The ``"chat"`` lane handles interactive replies, ``"bg"`` runs worker
+    skills typed in chat (for example ``/review``), and ``"maintenance"`` runs
+    internal housekeeping. Each lane allows one worker at a time, but the lanes
+    run concurrently, so internal work never blocks an interactive reply or the
+    Telegram poll loop.
 
     Captures the current reply context so that send_telegram() calls inside
     the worker thread reply to the correct message in groups.
@@ -844,8 +845,8 @@ def _bridge_should_restart(monitor) -> bool:
 WORKTREE_REAP_INTERVAL = 3600
 
 
-def _maybe_reap_worktrees(last_reap: float, interval: int = WORKTREE_REAP_INTERVAL) -> float:
-    """Reclaim leaked review worktrees across known projects, every ``interval`` seconds.
+def _reap_worktrees() -> None:
+    """Reclaim leaked review worktrees across known projects off the poll loop.
 
     Agents check revisions out ad hoc during PR review (`git worktree add /tmp/review-<sha>`)
     and never remove them. On a large checkout each is hundreds of megabytes, so they fill
@@ -853,13 +854,10 @@ def _maybe_reap_worktrees(last_reap: float, interval: int = WORKTREE_REAP_INTERV
     crash-looped this service. reap_foreign_worktrees() only touches worktrees registered
     outside the project, unlocked, untouched for days, and free of unpushed commits.
 
-    Returns the (possibly updated) last-reap timestamp.
     """
-    if not interval:
-        return last_reap
-    now = time.time()
-    if (now - last_reap) < interval:
-        return last_reap
+    started = time.monotonic()
+    reaped_count = 0
+    log("health", "Starting periodic foreign-worktree reap")
     try:
         from app.project_explorer import get_projects
         from app.worktree_manager import reap_foreign_worktrees
@@ -867,7 +865,7 @@ def _maybe_reap_worktrees(last_reap: float, interval: int = WORKTREE_REAP_INTERV
         projects = get_projects()
     except Exception as e:
         log("error", f"periodic worktree reap failed: {e}")
-        return now
+        return
 
     # Per-project isolation: one unreadable repo must not stop the others being swept.
     for _name, path in projects:
@@ -877,8 +875,28 @@ def _maybe_reap_worktrees(last_reap: float, interval: int = WORKTREE_REAP_INTERV
             log("error", f"worktree reap failed for {path}: {e}")
             continue
         if reaped:
-            log("health", f"Reclaimed {len(reaped)} leaked worktree(s) in {path}")
-    return now
+            count = len(reaped)
+            reaped_count += count
+            log("health", f"Reclaimed {count} leaked worktree(s) in {path}")
+    elapsed = time.monotonic() - started
+    log("health", f"Finished periodic foreign-worktree reap: {reaped_count} reclaimed in {elapsed:.1f}s")
+
+
+def _maybe_reap_worktrees(last_reap: float, interval: int = WORKTREE_REAP_INTERVAL) -> float:
+    """Start a due worktree reap without blocking bridge message processing.
+
+    The full sweep runs on the single-flight maintenance lane. If a previous
+    sweep is still active, retain ``last_reap`` so the next poll starts one as
+    soon as the lane becomes available instead of delaying cleanup for an hour.
+    """
+    if not interval:
+        return last_reap
+    now = time.time()
+    if (now - last_reap) < interval:
+        return last_reap
+    if _run_in_worker(_reap_worktrees, lane="maintenance"):
+        return now
+    return last_reap
 
 
 def _maybe_periodic_compact(last_compact: float, interval: int) -> float:

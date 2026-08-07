@@ -30,6 +30,7 @@ awake.py (loop, ~3s poll)
   │                    mission → queue to missions.md
   ├─ command_handlers.py: /help /stop /pause /resume /skill ... + skill dispatch
   ├─ flush outbox.md → Telegram (atomic staging via outbox-sending.md)
+  └─ maintenance worker: long-running housekeeping outside the poll loop
   └─ bridge_state.py: shared config/paths/registries (avoids circular imports)
 ```
 
@@ -50,6 +51,9 @@ awake.py (loop, ~3s poll)
 
 - **Two-process isolation.** The bridge and the agent loop share *only* files in
   `instance/` (atomic writes). The bridge must never call agent-loop internals directly.
+- **Inbound responsiveness.** Repository maintenance, including foreign-worktree
+  reaping, MUST run on the bridge's maintenance worker lane rather than its poll
+  loop, so it cannot delay inbound commands or outbox flushing.
 - **Chat is resilient to API contention (#1084).** While a mission runs, the agent loop
   and the bridge invoke the AI CLI concurrently against the same account (the default
   provider takes no cross-invocation lock), so a chat call can return an empty response or

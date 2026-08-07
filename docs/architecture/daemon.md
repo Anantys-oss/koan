@@ -4,7 +4,7 @@ title: "Daemon Runtime"
 description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-08-07
 ---
 
 # Daemon Runtime
@@ -44,9 +44,9 @@ See `specs/components/bridge.md` for the design contract behind this process
 Bridge state that would otherwise create circular imports lives in
 `bridge_state.py`. Bridge logging lives in `bridge_log.py`.
 
-### Worker lanes (chat vs background)
+### Worker lanes
 
-The bridge runs heavy work off the messaging poll loop in two independent
+The bridge runs heavy work off the messaging poll loop in independent
 daemon-thread lanes (`awake._run_in_worker(fn, lane=...)`):
 
 - **chat** — interactive replies (`handle_chat`). When busy, a second chat
@@ -59,6 +59,10 @@ daemon-thread lanes (`awake._run_in_worker(fn, lane=...)`):
   (a `/review`, `/implement`, etc. typed in chat) dispatch on the bg lane
   but surface a "⏳ Busy with a previous task" reply when the lane was full,
   so a typed command never vanishes without feedback.
+- **maintenance** — internal housekeeping such as the hourly foreign-worktree
+  sweep. It is single-flight and silent when busy; its work never runs on the
+  poll loop, so a large repository cannot delay Slack, Telegram, or other
+  inbound commands.
 
 Because the lanes run concurrently, a long-running background task never
 blocks an interactive chat reply, and neither blocks the poll loop. One

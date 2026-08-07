@@ -4165,39 +4165,41 @@ def test_periodic_compaction_disabled_when_interval_zero():
 
 
 def test_worktree_reap_fires_on_interval():
-    with patch("app.project_explorer.get_projects",
-               return_value=[("proj", "/srv/proj")]), \
-         patch("app.worktree_manager.reap_foreign_worktrees",
-               return_value=["/tmp/review-abc"]) as mock_reap, \
+    with patch("app.awake._run_in_worker", return_value=True) as mock_worker, \
          patch("app.awake.time.time", return_value=10_000.0):
         new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
-        mock_reap.assert_called_once_with("/srv/proj")
+        mock_worker.assert_called_once_with(awake._reap_worktrees, lane="maintenance")
         assert new_ts == 10_000.0
 
 
 def test_worktree_reap_skips_before_interval():
-    with patch("app.worktree_manager.reap_foreign_worktrees") as mock_reap, \
+    with patch("app.awake._run_in_worker") as mock_worker, \
          patch("app.awake.time.time", return_value=100.0):
         new_ts = awake._maybe_reap_worktrees(last_reap=90.0, interval=3600)
-        mock_reap.assert_not_called()
+        mock_worker.assert_not_called()
         assert new_ts == 90.0
 
 
 def test_worktree_reap_disabled_when_interval_zero():
-    with patch("app.worktree_manager.reap_foreign_worktrees") as mock_reap:
+    with patch("app.awake._run_in_worker") as mock_worker:
         new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=0)
-        mock_reap.assert_not_called()
+        mock_worker.assert_not_called()
+        assert new_ts == 0.0
+
+
+def test_worktree_reap_retries_when_maintenance_lane_is_busy():
+    with patch("app.awake._run_in_worker", return_value=False) as mock_worker, \
+         patch("app.awake.time.time", return_value=10_000.0):
+        new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
+        mock_worker.assert_called_once_with(awake._reap_worktrees, lane="maintenance")
         assert new_ts == 0.0
 
 
 def test_worktree_reap_survives_errors():
     """A reap failure must never take the poll loop down."""
     with patch("app.project_explorer.get_projects",
-               side_effect=RuntimeError("config gone")), \
-         patch("app.awake.time.time", return_value=10_000.0):
-        new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
-        # Timestamp still advances, so a persistent failure doesn't retry every cycle.
-        assert new_ts == 10_000.0
+               side_effect=RuntimeError("config gone")):
+        awake._reap_worktrees()
 
 
 def test_worktree_reap_continues_across_projects():
@@ -4205,11 +4207,9 @@ def test_worktree_reap_continues_across_projects():
     with patch("app.project_explorer.get_projects",
                return_value=[("a", "/srv/a"), ("b", "/srv/b")]), \
          patch("app.worktree_manager.reap_foreign_worktrees",
-               side_effect=[RuntimeError("bad repo"), ["/tmp/review-b"]]) as mock_reap, \
-         patch("app.awake.time.time", return_value=10_000.0):
-        new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
+               side_effect=[RuntimeError("bad repo"), ["/tmp/review-b"]]) as mock_reap:
+        awake._reap_worktrees()
         assert [c.args[0] for c in mock_reap.call_args_list] == ["/srv/a", "/srv/b"]
-        assert new_ts == 10_000.0
 
 
 def test_read_sections_cached_serves_within_ttl():
