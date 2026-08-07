@@ -854,21 +854,30 @@ def _reap_worktrees() -> None:
     crash-looped this service. reap_foreign_worktrees() only touches worktrees registered
     outside the project, unlocked, untouched for days, and free of unpushed commits.
 
+    This runs detached on the maintenance lane, where nothing catches an escaping
+    exception: threading's excepthook would print to stderr and leave no koan log entry at
+    all, making a permanently broken sweep look exactly like an idle one. Hence the blanket
+    guard around the whole sweep rather than around its parts.
     """
-    from app.worktree_manager import FOREIGN_WORKTREE_REAP_BUDGET_SECONDS
+    try:
+        _sweep_foreign_worktrees()
+    except Exception as e:
+        log("error", f"periodic worktree reap failed: {e}")
+
+
+def _sweep_foreign_worktrees() -> None:
+    """Sweep every known project for leaked foreign worktrees within one time budget."""
+    from app.project_explorer import get_projects
+    from app.worktree_manager import (
+        FOREIGN_WORKTREE_REAP_BUDGET_SECONDS,
+        reap_foreign_worktrees,
+    )
 
     started = time.monotonic()
     deadline = started + FOREIGN_WORKTREE_REAP_BUDGET_SECONDS
     reaped_count = 0
     log("health", f"Starting periodic foreign-worktree reap (budget {FOREIGN_WORKTREE_REAP_BUDGET_SECONDS:.0f}s)")
-    try:
-        from app.project_explorer import get_projects
-        from app.worktree_manager import reap_foreign_worktrees
-
-        projects = sorted(get_projects())
-    except Exception as e:
-        log("error", f"periodic worktree reap failed: {e}")
-        return
+    projects = sorted(get_projects())
 
     # Rotate projects hourly so a large first project cannot starve the rest.
     if projects:

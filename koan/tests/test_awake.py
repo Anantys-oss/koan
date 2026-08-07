@@ -4196,10 +4196,19 @@ def test_worktree_reap_retries_when_maintenance_lane_is_busy():
 
 
 def test_worktree_reap_survives_errors():
-    """A reap failure must never take the poll loop down."""
+    """A failed sweep must be logged, not lost to the worker thread's excepthook.
+
+    The sweep runs detached on the maintenance lane, so an escaping exception would reach
+    threading.excepthook and produce no koan log entry — a reaper that has been broken for
+    weeks would be indistinguishable from one with nothing to do.
+    """
     with patch("app.project_explorer.get_projects",
-               side_effect=RuntimeError("config gone")):
+               side_effect=RuntimeError("config gone")), \
+         patch("app.awake.log") as mock_log:
         awake._reap_worktrees()
+
+    errors = [c.args[1] for c in mock_log.call_args_list if c.args[0] == "error"]
+    assert any("config gone" in message for message in errors)
 
 
 def test_worktree_reap_continues_across_projects():
