@@ -54,6 +54,9 @@ awake.py (loop, ~3s poll)
 - **Inbound responsiveness.** Repository maintenance, including foreign-worktree
   reaping, MUST run on the bridge's maintenance worker lane rather than its poll
   loop, so it cannot delay inbound commands or outbox flushing.
+- **Bounded maintenance.** A foreign-worktree sweep has a fixed two-minute total
+  deadline and a 15-second Git-command cap. Expired or timed-out safety checks
+  retain worktrees and defer them to a later rotating sweep.
 - **Chat is resilient to API contention (#1084).** While a mission runs, the agent loop
   and the bridge invoke the AI CLI concurrently against the same account (the default
   provider takes no cross-invocation lock), so a chat call can return an empty response or

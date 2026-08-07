@@ -4212,6 +4212,18 @@ def test_worktree_reap_continues_across_projects():
         assert [c.args[0] for c in mock_reap.call_args_list] == ["/srv/a", "/srv/b"]
 
 
+def test_worktree_reap_stops_after_shared_budget():
+    with patch("app.project_explorer.get_projects",
+               return_value=[("a", "/srv/a"), ("b", "/srv/b")]), \
+         patch("app.worktree_manager.reap_foreign_worktrees") as mock_reap, \
+         patch("app.awake.time.time", return_value=7200.0), \
+         patch("app.awake.time.monotonic", side_effect=[0.0, 0.0, 121.0, 121.0]):
+        awake._reap_worktrees()
+
+    mock_reap.assert_called_once()
+    assert mock_reap.call_args.kwargs["deadline"] == 120.0
+
+
 def test_read_sections_cached_serves_within_ttl():
     awake._sections_cache["ts"] = 0.0
     awake._sections_cache["value"] = None

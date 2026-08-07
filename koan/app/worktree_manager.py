@@ -37,6 +37,11 @@ WORKTREE_DIR = ".worktrees"
 # reap_foreign_worktrees() will remove it. Two days is comfortably longer than any single
 # review run, so a live job is never stripped of its working tree.
 FOREIGN_WORKTREE_MAX_AGE_DAYS = 2.0
+# Foreign worktree cleanup is best-effort maintenance. It must never consume an
+# unbounded amount of time on a large repository or delay other daemon work.
+FOREIGN_WORKTREE_REAP_BUDGET_SECONDS = 120.0
+FOREIGN_WORKTREE_GIT_TIMEOUT_SECONDS = 15.0
+_ACTIVITY_BUDGET_CHECK_EVERY = 128
 
 
 @dataclass
@@ -210,6 +215,8 @@ def remove_worktree(
     session_id: str = "",
     worktree_path: str = "",
     force: bool = False,
+    timeout: Optional[float] = None,
+    fallback_remove: bool = True,
 ):
     """Remove a git worktree and clean up associated state.
 
@@ -218,6 +225,8 @@ def remove_worktree(
         session_id: Session identifier (used to derive worktree path).
         worktree_path: Direct path to the worktree (alternative to session_id).
         force: If True, use --force flag for stubborn worktrees.
+        timeout: Optional subprocess timeout in seconds.
+        fallback_remove: Remove the directory directly if Git removal fails.
 
     Either session_id or worktree_path must be provided.
     """
@@ -241,24 +250,30 @@ def remove_worktree(
             capture_output=True,
             text=True,
             check=True,
+            **({"timeout": timeout} if timeout is not None else {}),
         )
+    except subprocess.TimeoutExpired:
+        print(f"[worktree_manager] git worktree remove timed out for {wt}", file=sys.stderr)
+        return
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").strip()
         print(
             f"[worktree_manager] git worktree remove failed for {wt}: {stderr}",
             file=sys.stderr,
         )
-        # If git worktree remove fails, try manual cleanup
-        if wt.exists():
+        # Maintenance reaping disables this fallback: shutil.rmtree() has no
+        # interruptible deadline and could violate the sweep's hard budget.
+        if fallback_remove and wt.exists():
             shutil.rmtree(str(wt), ignore_errors=True)
 
     # Prune any stale worktree references
-    with contextlib.suppress(subprocess.CalledProcessError):
+    with contextlib.suppress(subprocess.CalledProcessError, subprocess.TimeoutExpired):
         subprocess.run(
             ["git", "worktree", "prune"],
             cwd=project_path,
             capture_output=True,
             text=True,
+            **({"timeout": timeout} if timeout is not None else {}),
         )
 
     # Delete the branch if it still exists
@@ -272,6 +287,7 @@ def remove_worktree(
                 cwd=project_path,
                 capture_output=True,
                 text=True,
+                **({"timeout": timeout} if timeout is not None else {}),
             )
             if result.returncode != 0:
                 stderr = (result.stderr or "").strip()
@@ -279,6 +295,8 @@ def remove_worktree(
                     f"[worktree_manager] git branch -D failed for {branch}: {stderr}",
                     file=sys.stderr,
                 )
+        except subprocess.TimeoutExpired:
+            print(f"[worktree_manager] git branch -D timed out for {branch}", file=sys.stderr)
         except subprocess.CalledProcessError as e:
             stderr = (e.stderr or "").strip()
             print(
@@ -287,7 +305,7 @@ def remove_worktree(
             )
 
 
-def list_worktrees(project_path: str) -> List[WorktreeInfo]:
+def list_worktrees(project_path: str, timeout: Optional[float] = None) -> List[WorktreeInfo]:
     """List all git worktrees for a project.
 
     Returns a list of WorktreeInfo, including the main worktree.
@@ -299,8 +317,9 @@ def list_worktrees(project_path: str) -> List[WorktreeInfo]:
             capture_output=True,
             text=True,
             check=True,
+            **({"timeout": timeout} if timeout is not None else {}),
         )
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return []
 
     worktrees = []
@@ -368,6 +387,8 @@ def reap_foreign_worktrees(
     project_path: str,
     max_age_days: float = FOREIGN_WORKTREE_MAX_AGE_DAYS,
     dry_run: bool = False,
+    deadline: Optional[float] = None,
+    start_index: int = 0,
 ) -> List[str]:
     """Remove stale worktrees registered in this project but living outside it.
 
@@ -392,20 +413,40 @@ def reap_foreign_worktrees(
         that started minutes ago is still running, and removing its tree kills the job
       * never one holding commits absent from its upstream or from every durable ref
 
+    ``deadline`` is a monotonic deadline shared by callers that sweep several
+    projects. When omitted, the fixed maintenance budget applies. A timed-out
+    safety check retains the worktree. ``start_index`` rotates candidates so a
+    large early worktree cannot starve every later one across capped sweeps.
+
     Returns the list of paths removed (or, with dry_run, the paths that would be).
     """
     project_real = os.path.realpath(project_path)
     removed: List[str] = []
     cutoff = time.time() - (max_age_days * 86400)
+    if deadline is None:
+        deadline = time.monotonic() + FOREIGN_WORKTREE_REAP_BUDGET_SECONDS
 
     # Drop registrations whose directory is already gone before looking at what remains.
     # These accumulate whenever something deletes a worktree without telling git — the 10d
     # systemd-tmpfiles sweep of /tmp does exactly that — and nothing else clears them. A
     # fleet survey on 2026-07-30 found ~20 across six hosts, including 10 on one repo.
     if not dry_run:
-        prune_worktrees(project_path)
+        try:
+            prune_worktrees(project_path, timeout=_reap_timeout(deadline))
+        except subprocess.TimeoutExpired:
+            _log_reap_deadline(project_path)
+            return removed
+    if _reap_expired(deadline):
+        _log_reap_deadline(project_path)
+        return removed
 
-    for wt in list_worktrees(project_path):
+    candidates = []
+    try:
+        list_timeout = _reap_timeout(deadline)
+    except subprocess.TimeoutExpired:
+        _log_reap_deadline(project_path)
+        return removed
+    for wt in list_worktrees(project_path, timeout=list_timeout):
         if wt.is_main or not wt.path:
             continue
 
@@ -413,7 +454,17 @@ def reap_foreign_worktrees(
         wt_real = os.path.realpath(wt.path)
         if wt_real == project_real or wt_real.startswith(project_real + os.sep):
             continue
+        candidates.append((wt, wt_real))
 
+    candidates.sort(key=lambda item: item[0].path)
+    if candidates:
+        offset = start_index % len(candidates)
+        candidates = candidates[offset:] + candidates[:offset]
+
+    for wt, wt_real in candidates:
+        if _reap_expired(deadline):
+            _log_reap_deadline(project_path)
+            break
         if wt.locked:
             print(f"[worktree_manager] skip (locked) {wt.path}", file=sys.stderr)
             continue
@@ -421,10 +472,10 @@ def reap_foreign_worktrees(
         if not os.path.isdir(wt_real):
             continue  # already gone — prune_worktrees() drops the registration
 
-        if _has_recent_worktree_activity(wt_real, cutoff):
+        if _has_recent_worktree_activity(wt_real, cutoff, deadline=deadline):
             continue  # possibly a live review, or activity could not be verified
 
-        if _has_unpushed_commits(wt_real):
+        if _has_unpushed_commits(wt_real, deadline=deadline):
             print(
                 f"[worktree_manager] skip (unpushed commits) {wt.path}",
                 file=sys.stderr,
@@ -438,7 +489,19 @@ def reap_foreign_worktrees(
         try:
             # force=True: reviews routinely leave incidental edits behind (a regenerated
             # lockfile, a touched test file), which would otherwise block removal.
-            remove_worktree(project_path, worktree_path=wt.path, force=True)
+            remove_worktree(
+                project_path,
+                worktree_path=wt.path,
+                force=True,
+                timeout=_reap_timeout(deadline),
+                fallback_remove=False,
+            )
+            if os.path.exists(wt.path):
+                print(
+                    f"[worktree_manager] foreign worktree reap incomplete for {wt.path}",
+                    file=sys.stderr,
+                )
+                continue
             removed.append(wt.path)
             print(f"[worktree_manager] reaped foreign worktree {wt.path}", file=sys.stderr)
         except Exception as e:
@@ -450,7 +513,31 @@ def reap_foreign_worktrees(
     return removed
 
 
-def _has_recent_worktree_activity(worktree_path: str, cutoff: float) -> bool:
+def _reap_expired(deadline: float) -> bool:
+    return time.monotonic() >= deadline
+
+
+def _reap_timeout(deadline: float) -> float:
+    """Return a bounded Git timeout or raise when no sweep time remains."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired("foreign-worktree-reap", 0)
+    return min(FOREIGN_WORKTREE_GIT_TIMEOUT_SECONDS, remaining)
+
+
+def _log_reap_deadline(project_path: str) -> None:
+    print(
+        f"[worktree_manager] foreign worktree reap budget reached in {project_path}; "
+        "remaining worktrees will be retried next sweep",
+        file=sys.stderr,
+    )
+
+
+def _has_recent_worktree_activity(
+    worktree_path: str,
+    cutoff: float,
+    deadline: Optional[float] = None,
+) -> bool:
     """Return True when non-ignored worktree content changed after ``cutoff``.
 
     Root directory mtime alone misses edits to existing files. Ask git for tracked and
@@ -464,6 +551,7 @@ def _has_recent_worktree_activity(worktree_path: str, cutoff: float) -> bool:
             cwd=worktree_path,
             capture_output=True,
             text=True,
+            **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
         )
     except (OSError, subprocess.SubprocessError):
         return True
@@ -472,7 +560,10 @@ def _has_recent_worktree_activity(worktree_path: str, cutoff: float) -> bool:
 
     root = os.path.realpath(worktree_path)
     directories = {root}
-    for relative_path in result.stdout.split("\0"):
+    for index, relative_path in enumerate(result.stdout.split("\0")):
+        if deadline is not None and index % _ACTIVITY_BUDGET_CHECK_EVERY == 0:
+            if _reap_expired(deadline):
+                return True
         if not relative_path:
             continue
         path = os.path.join(root, relative_path)
@@ -490,12 +581,21 @@ def _has_recent_worktree_activity(worktree_path: str, cutoff: float) -> bool:
             parent = os.path.dirname(parent)
 
     try:
-        return any(os.lstat(path).st_mtime > cutoff for path in directories)
+        for index, path in enumerate(directories):
+            if deadline is not None and index % _ACTIVITY_BUDGET_CHECK_EVERY == 0:
+                if _reap_expired(deadline):
+                    return True
+            if os.lstat(path).st_mtime > cutoff:
+                return True
+        return False
     except OSError:
         return True
 
 
-def _has_unpushed_commits(worktree_path: str) -> bool:
+def _has_unpushed_commits(
+    worktree_path: str,
+    deadline: Optional[float] = None,
+) -> bool:
     """Return True when removing the worktree could make commits unreachable.
 
     Tracking branches are unsafe when HEAD exceeds their upstream. A detached HEAD
@@ -509,6 +609,7 @@ def _has_unpushed_commits(worktree_path: str) -> bool:
             cwd=worktree_path,
             capture_output=True,
             text=True,
+            **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
         )
     except (OSError, subprocess.SubprocessError):
         return True
@@ -521,12 +622,14 @@ def _has_unpushed_commits(worktree_path: str) -> bool:
                 cwd=worktree_path,
                 capture_output=True,
                 text=True,
+                **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
             )
             merge = subprocess.run(
                 ["git", "config", "--get", f"branch.{branch_name}.merge"],
                 cwd=worktree_path,
                 capture_output=True,
                 text=True,
+                **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
             )
         except (OSError, subprocess.SubprocessError):
             return True
@@ -542,6 +645,7 @@ def _has_unpushed_commits(worktree_path: str) -> bool:
                 cwd=worktree_path,
                 capture_output=True,
                 text=True,
+                **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
             )
         except (OSError, subprocess.SubprocessError):
             return True
@@ -569,6 +673,7 @@ def _has_unpushed_commits(worktree_path: str) -> bool:
             cwd=worktree_path,
             capture_output=True,
             text=True,
+            **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
         )
     except (OSError, subprocess.SubprocessError):
         return True
@@ -577,7 +682,7 @@ def _has_unpushed_commits(worktree_path: str) -> bool:
     return not bool(result.stdout.strip())
 
 
-def prune_worktrees(project_path: str):
+def prune_worktrees(project_path: str, timeout: Optional[float] = None):
     """Run git worktree prune to clear stale worktree references.
 
     Intended to be called on startup to clean up leftover refs from
@@ -589,6 +694,7 @@ def prune_worktrees(project_path: str):
             cwd=project_path,
             capture_output=True,
             text=True,
+            **({"timeout": timeout} if timeout is not None else {}),
         )
         output = (result.stdout or "").strip()
         if output:
@@ -596,6 +702,8 @@ def prune_worktrees(project_path: str):
     except subprocess.CalledProcessError as e:
         stderr = (e.stderr or "").strip()
         print(f"[worktree_manager] git worktree prune failed: {stderr}", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print(f"[worktree_manager] git worktree prune timed out for {project_path}", file=sys.stderr)
     except FileNotFoundError:
         pass  # git not available
 

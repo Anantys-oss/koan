@@ -11,6 +11,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+import app.worktree_manager as worktree_manager
+
 from app.worktree_manager import (
     WorktreeInfo,
     create_worktree,
@@ -537,6 +539,49 @@ class TestReapForeignWorktrees:
 
         assert reap_foreign_worktrees(git_repo, max_age_days=2) == []
         assert reap_foreign_worktrees(git_repo, max_age_days=0.5) == [foreign]
+
+    def test_expired_budget_keeps_foreign_worktree(self, git_repo, tmp_path):
+        foreign = self._add_foreign(git_repo, tmp_path / "review-expired", age_days=5)
+
+        assert reap_foreign_worktrees(
+            git_repo,
+            deadline=time.monotonic() - 1,
+        ) == []
+        assert Path(foreign).is_dir()
+
+    def test_timed_out_activity_check_keeps_foreign_worktree(self, git_repo, tmp_path):
+        foreign = self._add_foreign(git_repo, tmp_path / "review-timeout", age_days=5)
+
+        with patch.object(
+            worktree_manager.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired("git", 15),
+        ):
+            assert worktree_manager._has_recent_worktree_activity(
+                foreign,
+                time.time() - 86400,
+                deadline=time.monotonic() + 60,
+            ) is True
+        assert Path(foreign).is_dir()
+
+    def test_incomplete_removal_is_not_reported_as_reaped(self, git_repo, tmp_path):
+        foreign = self._add_foreign(git_repo, tmp_path / "review-remove-timeout", age_days=5)
+
+        with patch.object(worktree_manager, "remove_worktree"):
+            assert reap_foreign_worktrees(git_repo) == []
+        assert Path(foreign).is_dir()
+
+    def test_rotates_foreign_candidates_in_dry_run(self, git_repo, tmp_path):
+        first = self._add_foreign(git_repo, tmp_path / "review-a", age_days=5)
+        second = self._add_foreign(git_repo, tmp_path / "review-b", age_days=5)
+
+        reaped = reap_foreign_worktrees(
+            git_repo,
+            dry_run=True,
+            start_index=1,
+        )
+
+        assert reaped == [second, first]
 
 
 class TestWorktreeLockedParsing:

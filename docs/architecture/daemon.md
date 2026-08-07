@@ -62,7 +62,8 @@ daemon-thread lanes (`awake._run_in_worker(fn, lane=...)`):
 - **maintenance** — internal housekeeping such as the hourly foreign-worktree
   sweep. It is single-flight and silent when busy; its work never runs on the
   poll loop, so a large repository cannot delay Slack, Telegram, or other
-  inbound commands.
+  inbound commands. Each sweep has a fixed two-minute deadline and a 15-second
+  cap per Git command; incomplete checks retain worktrees for a later sweep.
 
 Because the lanes run concurrently, a long-running background task never
 blocks an interactive chat reply, and neither blocks the poll loop. One

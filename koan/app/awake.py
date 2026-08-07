@@ -855,22 +855,37 @@ def _reap_worktrees() -> None:
     outside the project, unlocked, untouched for days, and free of unpushed commits.
 
     """
+    from app.worktree_manager import FOREIGN_WORKTREE_REAP_BUDGET_SECONDS
+
     started = time.monotonic()
+    deadline = started + FOREIGN_WORKTREE_REAP_BUDGET_SECONDS
     reaped_count = 0
-    log("health", "Starting periodic foreign-worktree reap")
+    log("health", f"Starting periodic foreign-worktree reap (budget {FOREIGN_WORKTREE_REAP_BUDGET_SECONDS:.0f}s)")
     try:
         from app.project_explorer import get_projects
         from app.worktree_manager import reap_foreign_worktrees
 
-        projects = get_projects()
+        projects = sorted(get_projects())
     except Exception as e:
         log("error", f"periodic worktree reap failed: {e}")
         return
 
+    # Rotate projects hourly so a large first project cannot starve the rest.
+    if projects:
+        rotation = int(time.time() // WORKTREE_REAP_INTERVAL) % len(projects)
+        projects = projects[rotation:] + projects[:rotation]
+
     # Per-project isolation: one unreadable repo must not stop the others being swept.
-    for _name, path in projects:
+    for projects_checked, (_name, path) in enumerate(projects, start=1):
+        if time.monotonic() >= deadline:
+            log("health", f"Foreign-worktree reap budget reached after {projects_checked - 1} project(s)")
+            break
         try:
-            reaped = reap_foreign_worktrees(path)
+            reaped = reap_foreign_worktrees(
+                path,
+                deadline=deadline,
+                start_index=int(time.time() // WORKTREE_REAP_INTERVAL),
+            )
         except Exception as e:
             log("error", f"worktree reap failed for {path}: {e}")
             continue
