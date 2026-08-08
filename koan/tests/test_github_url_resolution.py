@@ -66,6 +66,28 @@ class TestGetGithubRemote:
         with patch("app.utils.subprocess.run", return_value=result):
             assert get_github_remote(str(tmp_path)) == "garu/clone"
 
+    def test_dotted_repo_name(self, tmp_path):
+        """Parses repo names containing dots (e.g. esphome/esphome.io)."""
+        from app.utils import get_github_remote
+
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="https://github.com/esphome/esphome.io\n"
+        )
+        with patch("app.utils.subprocess.run", return_value=result):
+            assert get_github_remote(str(tmp_path)) == "esphome/esphome.io"
+
+    def test_dotted_repo_name_with_git_suffix(self, tmp_path):
+        """Strips only the .git suffix from a dotted repo name."""
+        from app.utils import get_github_remote
+
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="git@github.com:esphome/esphome.io.git\n"
+        )
+        with patch("app.utils.subprocess.run", return_value=result):
+            assert get_github_remote(str(tmp_path)) == "esphome/esphome.io"
+
     def test_non_github_remote(self, tmp_path):
         """Returns None for non-GitHub remotes."""
         from app.utils import get_github_remote

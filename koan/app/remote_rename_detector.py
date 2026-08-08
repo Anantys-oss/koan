@@ -10,14 +10,12 @@ compares the canonical full_name against the local URL, and updates
 both .git/config and projects.yaml when a rename is detected.
 """
 
-import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from app.git_utils import run_git
+from app.github_url_parser import GITHUB_REMOTE_RE as _GITHUB_REMOTE_RE
 from app.run_log import log
-
-_GITHUB_REMOTE_RE = re.compile(r'github\.com[:/]([^/]+)/([^/\s.]+?)(?:\.git)?$')
 
 
 def _extract_slug(url: str) -> Optional[str]:

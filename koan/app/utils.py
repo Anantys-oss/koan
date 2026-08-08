@@ -282,8 +282,9 @@ def detect_project_from_text(text: str) -> Tuple[Optional[str], str]:
     return None, text
 
 
-# Pre-compiled regex for GitHub remote URL parsing (SSH and HTTPS)
-_GITHUB_REMOTE_RE = re.compile(r'github\.com[:/]([^/]+)/([^/\s.]+?)(?:\.git)?$')
+# Canonical GitHub remote URL regex — re-exported under the historical name
+# for existing importers (rebase_pr) and test patch targets.
+from app.github_url_parser import GITHUB_REMOTE_RE as _GITHUB_REMOTE_RE  # noqa: E402
 
 
 def get_github_remote(project_path: str) -> Optional[str]:
