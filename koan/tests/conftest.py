@@ -107,6 +107,30 @@ def _mock_fetch_pr_state():
 
 
 @pytest.fixture(autouse=True)
+def _no_live_oauth_usage(monkeypatch):
+    """Keep the suite off the live OAuth usage endpoint.
+
+    ``app.oauth_usage.fetch_usage()`` reads the operator's real Claude CLI
+    access token and performs an authenticated GET against the Anthropic
+    usage API, honoring Retry-After sleeps on 429 — so any test that reaches
+    a usage refresh (usage_estimator, quota, status, audit paths) silently
+    burns real rate limit and 10-90s of wall clock per test. With no token,
+    ``fetch_usage()`` is a documented graceful no-op, degrading to the local
+    heuristic these tests were written against.
+
+    test_oauth_usage.py is unaffected: its token-reading tests call their own
+    imported binding of ``read_access_token`` (not this patched attribute),
+    and its ``fetch_usage`` tests patch ``oauth_usage.read_access_token``
+    explicitly, overriding this default within their scope.
+    """
+    try:
+        import app.oauth_usage as oauth_usage
+        monkeypatch.setattr(oauth_usage, "read_access_token", lambda: None)
+    except ImportError:
+        pass
+
+
+@pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
     """Ensure tests don't touch real instance/ or send real Telegram messages."""
     monkeypatch.setenv("KOAN_TELEGRAM_TOKEN", "fake-token")
