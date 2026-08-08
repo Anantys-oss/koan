@@ -218,6 +218,20 @@ AUDIT_SKILL_DIR = (
 
 
 class TestRunAuditJournalOnly:
+    @pytest.fixture(autouse=True)
+    def _no_learning_extraction(self):
+        """Keep run_audit's Step 7 off the real Claude CLI.
+
+        extract_security_learnings() invokes the CLI via run_cli_with_retry;
+        unmocked it burns ~7-17s and real quota per test on any machine with
+        an authenticated claude binary.
+        """
+        with patch(
+            "skills.core.audit.security_learnings.extract_security_learnings",
+            return_value=[],
+        ):
+            yield
+
     @patch("skills.core.audit.audit_runner._run_claude_audit")
     @patch("skills.core.audit.audit_runner.create_issues")
     def test_skips_create_issues(self, mock_create, mock_claude, tmp_path):
