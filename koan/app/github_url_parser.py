@@ -15,6 +15,12 @@ PR_OR_ISSUE_PATTERN = r'https?://[^/]*github[^/]*/([^/]+)/([^/]+)/(pull|issues)/
 # Jira URL pattern: https://org.atlassian.net/browse/PROJ-123
 JIRA_ISSUE_URL_PATTERN = r'https?://[^/]+\.atlassian\.net/browse/([A-Z][A-Z0-9]+-\d+)'
 
+# GitHub remote URL pattern (SSH and HTTPS), e.g. git@github.com:owner/repo.git
+# or https://github.com/owner/repo. The repo group must allow dots — repo names
+# can be domain-like (e.g. esphome/esphome.io) — while still stripping a
+# trailing .git suffix (GitHub forbids repo names ending in .git).
+GITHUB_REMOTE_RE = re.compile(r'github\.com[:/]([^/]+)/([^/\s]+?)(?:\.git)?$')
+
 
 def _clean_url(url: str) -> str:
     """Clean a URL by removing fragments and whitespace.
