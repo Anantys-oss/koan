@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-30
+updated: 2026-08-12
 ---
 
 # Skill Spec — `review`
@@ -74,6 +74,11 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
+- **Finding IDs span the complete review.** Displayed IDs start at 1 and
+  increment through rendered severity order (Blocking, Important, Suggestions),
+  then continue through Silent Failure Analysis findings. IDs never restart at
+  a section boundary. Checklist references use these global IDs, letting a
+  requester identify any specific finding without also naming its section.
 - **Repo-level `always_check` pinning.** A target repo's optional
   `.koan/config.yaml` may set `review.always_check` to a list of file globs; any
   changed file whose path or basename matches is **pinned** so diff-size reduction

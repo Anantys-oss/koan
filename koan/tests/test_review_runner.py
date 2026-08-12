@@ -1297,6 +1297,44 @@ class TestFormatReviewAsMarkdown:
         assert "### 🟢 Suggestions" in md
         assert "b.py:10-15" in md  # multi-line range
 
+    def test_finding_ids_increment_across_severity_sections(self):
+        """Finding IDs stay unique across every core-review severity bucket."""
+        data = {
+            "file_comments": [
+                {"file": "a.py", "line_start": 1, "line_end": 1,
+                 "severity": "warning", "title": "Warning", "comment": "x",
+                 "code_snippet": ""},
+                {"file": "b.py", "line_start": 2, "line_end": 2,
+                 "severity": "suggestion", "title": "Suggestion", "comment": "x",
+                 "code_snippet": ""},
+                {"file": "c.py", "line_start": 3, "line_end": 3,
+                 "severity": "critical", "title": "Critical", "comment": "x",
+                 "code_snippet": ""},
+                {"file": "d.py", "line_start": 4, "line_end": 4,
+                 "severity": "warning", "title": "Another warning", "comment": "x",
+                 "code_snippet": ""},
+            ],
+            "review_summary": {
+                "lgtm": False,
+                "summary": "Issues found.",
+                "checklist": [
+                    {"item": "Critical check", "passed": False, "finding_refs": [2]},
+                    {"item": "Warning check", "passed": False, "finding_refs": [0, 3]},
+                    {"item": "Suggestion check", "passed": False, "finding_refs": [1]},
+                ],
+            },
+        }
+
+        md = _format_review_as_markdown(data)
+
+        assert "<b>1. Critical</b>" in md
+        assert "<b>2. Warning</b>" in md
+        assert "<b>3. Another warning</b>" in md
+        assert "<b>4. Suggestion</b>" in md
+        assert "Critical check — critical ＃1" in md
+        assert "Warning check — warning ＃2, warning ＃3" in md
+        assert "Suggestion check — suggestion ＃4" in md
+
     def test_checklist_rendering(self):
         data = {
             "file_comments": [
@@ -1970,7 +2008,7 @@ class TestReviewPostsBeforeEnrichment:
     ):
         """The hunter's section goes through the append path, not the first post."""
         mock_fetch.return_value = pr_context
-        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+        mock_claude.return_value = (json.dumps(VALID_REVIEW_JSON), "")
 
         success, _summary, _rd = run_review(
             "owner", "repo", "42", "/tmp/project",
@@ -1983,6 +2021,8 @@ class TestReviewPostsBeforeEnrichment:
         # The section is routed to the append helper, carrying the hunter output.
         mock_append.assert_called_once()
         assert "swallowed exception at x" in mock_append.call_args.kwargs["error_section"]
+        # Core finding #1 already exists, so hunter IDs begin at #2.
+        assert _mock_hunter.call_args.kwargs["start_id"] == 2
         # And it is NOT baked into the initial posted comment body.
         posted = " ".join(str(c) for c in mock_gh.call_args_list)
         assert "swallowed exception at x" not in posted
@@ -6478,6 +6518,21 @@ class TestFormatErrorHunterFindings:
         high_pos = result.index("high issue")
         med_pos = result.index("medium issue")
         assert crit_pos < high_pos < med_pos
+
+    def test_ids_continue_after_core_review_findings(self):
+        from app.review_runner import _format_error_hunter_findings
+
+        findings = [
+            {"severity": "MEDIUM", "pattern": "medium issue", "file": "a.py"},
+            {"severity": "CRITICAL", "pattern": "critical issue", "file": "b.py"},
+            {"severity": "HIGH", "pattern": "high issue", "file": "c.py"},
+        ]
+
+        result = _format_error_hunter_findings(findings, start_id=5)
+
+        assert "**5. CRITICAL** — critical issue" in result
+        assert "**6. HIGH** — high issue" in result
+        assert "**7. MEDIUM** — medium issue" in result
 
     def test_emoji_per_severity(self):
         from app.review_runner import _format_error_hunter_findings

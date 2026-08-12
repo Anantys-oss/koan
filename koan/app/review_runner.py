@@ -1740,7 +1740,7 @@ def _should_run_error_hunter(diff: str) -> bool:
 def _run_error_hunter(
     diff: str, project_path: str, skill_dir: Optional[Path],
     owner: str = "", repo: str = "", head_sha: str = "",
-    project_name: str = "",
+    project_name: str = "", start_id: int = 1,
 ) -> str:
     """Run the silent-failure-hunter pass and return formatted markdown section.
 
@@ -1768,7 +1768,7 @@ def _run_error_hunter(
         return ""
 
     return _format_error_hunter_findings(
-        findings, owner=owner, repo=repo, head_sha=head_sha,
+        findings, owner=owner, repo=repo, head_sha=head_sha, start_id=start_id,
     )
 
 
@@ -1810,13 +1810,14 @@ _ERROR_HUNTER_SEVERITY_EMOJI = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "�
 
 def _format_error_hunter_findings(
     findings: list, owner: str = "", repo: str = "", head_sha: str = "",
+    start_id: int = 1,
 ) -> str:
     """Format error-hunter findings as a markdown section with collapsible details."""
     severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2}
     findings = sorted(findings, key=lambda f: severity_order.get(f.get("severity", "MEDIUM"), 2))
 
     lines = ["## Silent Failure Analysis", ""]
-    for f in findings:
+    for finding_id, f in enumerate(findings, start_id):
         severity = f.get("severity", "?")
         emoji = _ERROR_HUNTER_SEVERITY_EMOJI.get(severity, "⚪")
         pattern = f.get("pattern", "unknown pattern")
@@ -1827,7 +1828,7 @@ def _format_error_hunter_findings(
         explanation = f.get("explanation", "")
         suggestion = f.get("suggestion", "")
 
-        title = f"{emoji} **{severity}** — {pattern}"
+        title = f"{emoji} **{finding_id}. {severity}** — {pattern}"
         # Link the location on its own line when line_hint is numeric and a
         # head-SHA permalink can be built; else keep the plain-text suffix.
         loc_line = ""
@@ -2518,24 +2519,24 @@ def _format_review_as_markdown(
 
     # Group comments by severity
     by_severity: dict = {"critical": [], "warning": [], "suggestion": []}
-    for c in comments:
+    for idx, c in enumerate(comments):
         sev = c.get("severity", "suggestion")
-        by_severity.setdefault(sev, []).append(c)
+        by_severity.setdefault(sev, []).append((idx, c))
 
     # Map each file_comments index to the label the renderer assigns it
-    # (e.g. "warning #2"). Numbering is per-severity, 1-based, in array order —
-    # identical to the section emission below — so checklist cross-references
-    # derived from these labels always match the rendered finding numbers.
+    # (e.g. "warning #3"). IDs are global across severity sections, 1-based,
+    # and follow rendered order so every finding in one review can be named
+    # unambiguously. Checklist cross-references use those same IDs.
     # Indices for severities that aren't rendered (anything outside the three
     # known levels) are intentionally omitted, so references to them get dropped.
     index_to_label: dict = {}
-    _sev_counters: dict = {"critical": 0, "warning": 0, "suggestion": 0}
-    for idx, c in enumerate(comments):
-        sev = c.get("severity", "suggestion")
-        if sev not in _sev_counters:
-            continue
-        _sev_counters[sev] += 1
-        index_to_label[idx] = f"{sev} #{_sev_counters[sev]}"
+    finding_id_by_index: dict = {}
+    next_finding_id = 1
+    for sev in ("critical", "warning", "suggestion"):
+        for idx, _item in by_severity.get(sev, []):
+            finding_id_by_index[idx] = next_finding_id
+            index_to_label[idx] = f"{sev} #{next_finding_id}"
+            next_finding_id += 1
 
     # Emit severity sections (skip empty ones)
     for sev in ("critical", "warning", "suggestion"):
@@ -2546,8 +2547,8 @@ def _format_review_as_markdown(
         heading = _SEVERITY_HEADING[sev]
         lines.append(f"### {emoji} {heading}")
         lines.append("")
-        for i, item in enumerate(items, 1):
-            title_line = f"<b>{i}. {item['title']}</b>"
+        for idx, item in items:
+            title_line = f"<b>{finding_id_by_index[idx]}. {item['title']}</b>"
             line_start = item.get("line_start") or 0
             line_end = item.get("line_end") or 0
             lines.append("<details>")
@@ -4263,6 +4264,11 @@ def run_review(
                 owner=owner, repo=repo,
                 head_sha=(current_shas[-1] if current_shas else ""),
                 project_name=project_name or "",
+                start_id=(
+                    len(review_data.get("file_comments", [])) + 1
+                    if isinstance(review_data, dict)
+                    else 1
+                ),
             )
             if error_section and posted:
                 _append_error_section_to_review(

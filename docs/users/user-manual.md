@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-30
+updated: 2026-08-12
 ---
 
 # Kōan User Manual
@@ -596,6 +596,8 @@ The debug loop enforces four steps:
   - `--bot-comments` — Triage inline comments from code-review bots (CodeRabbit, Copilot Review, Sourcery) and post replies to actionable findings
 - **Output:** Findings are grouped into severity buckets (🔴 Blocking /
   🟡 Important / 🟢 Suggestions), each folded into a collapsible section.
+  Finding IDs increment across all buckets and continue into Silent Failure
+  Analysis, so an ID uniquely identifies one finding within the review.
   Every finding's location is shown as a clickable link pinned to the reviewed
   commit. A valid second-pass reflection filters the final list authoritatively:
   rejected findings are not restored by their original checklist references or
