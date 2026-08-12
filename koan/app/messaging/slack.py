@@ -34,6 +34,12 @@ _MAX_ENGAGED_THREADS = 1000  # thread_ts the bot is participating in
 _MAX_SEEN_TS = 2000          # event ts already processed (dedup)
 _MAX_TS_TOKENS = 1000        # int token -> message ts, for reactions
 
+# Slack wraps links in mrkdwn as <url> or <url|label>. The second alternative
+# also accepts event text truncated immediately after the URL or separator.
+_SLACK_LINK_RE = re.compile(
+    r"<(https?://[^|>\s]+)(?:(?:\|[^>]*)?>|\|?(?=\s|$))"
+)
+
 # Unicode emoji -> Slack shortname (reactions.add wants a name, not the glyph).
 _SLACK_EMOJI_NAMES = {
     "✅": "white_check_mark",
@@ -461,6 +467,8 @@ class SlackProvider(MessagingProvider):
         # Strip @bot mentions from text.
         if self._bot_user_id:
             text = re.sub(rf"<@{re.escape(self._bot_user_id)}>\s*", "", text)
+
+        text = _SLACK_LINK_RE.sub(r"\1", text)
 
         text = text.strip()
         if re.match(r"![a-zA-Z]", text):

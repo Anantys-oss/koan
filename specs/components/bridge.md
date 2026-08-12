@@ -4,7 +4,7 @@ title: "Component Spec — Telegram Bridge"
 description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-08-12
 ---
 
 # Component Spec — Telegram Bridge
@@ -82,6 +82,10 @@ awake.py (loop, ~3s poll)
   `/command` without a bot mention. Its provider normalizes the bang form to
   `/command` before the shared bridge dispatches it, keeping command handlers
   provider-agnostic and avoiding Slack slash-command conflicts.
+- **Slack URLs reach shared dispatch as plain URLs.** Slack's provider removes
+  mrkdwn link wrappers (`<url>` and `<url|label>`) before queueing inbound text.
+  It also repairs a wrapper truncated immediately after the URL or separator so
+  URL-driven skills receive clean targets while preserving trailing context.
 - **The chat ID is normalized at read time.** All reads of `KOAN_TELEGRAM_CHAT_ID` go
   through `utils.get_telegram_chat_id()`, which `.strip()`s stray whitespace/newlines
   (Railway/copy-paste inject a trailing newline that makes Telegram answer
