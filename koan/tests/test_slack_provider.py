@@ -200,6 +200,28 @@ class TestHandleSocketEvent:
         update = provider._message_queue.get_nowait()
         assert update.message.text == "/review changes"
 
+    @pytest.mark.parametrize("command", ["plan", "review", "fix", "rebase", "squash"])
+    def test_command_normalizes_slack_url_markup(self, provider, command):
+        url = "https://github.com/example/project/issues/19"
+        req = self._make_request(
+            "message",
+            "C123",
+            f"/{command} <{url}|github.com/example/project/issues/19> extra context",
+        )
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == f"/{command} {url} extra context"
+
+    @pytest.mark.parametrize("suffix", [">", "|", ""])
+    def test_command_normalizes_unlabelled_or_truncated_slack_url_markup(
+        self, provider, suffix,
+    ):
+        url = "https://github.com/example/project/pull/19"
+        req = self._make_request("message", "C123", f"/review <{url}{suffix}")
+        provider._handle_socket_event(MagicMock(), req)
+        update = provider._message_queue.get_nowait()
+        assert update.message.text == f"/review {url}"
+
     def test_slash_command_with_leading_whitespace_processed(self, provider):
         req = self._make_request("message", "C123", "  /status")
         provider._handle_socket_event(MagicMock(), req)

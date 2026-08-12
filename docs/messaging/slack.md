@@ -4,7 +4,7 @@ title: "Slack Setup Guide"
 description: "Step-by-step guide to configuring Kōan with Slack (Socket Mode app setup, scopes, env vars) plus Slack-specific behavior like threading, reactions, and the assistant \"thinking\" status."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-08-07
+updated: 2026-08-12
 ---
 
 # Slack Setup Guide
@@ -203,6 +203,8 @@ You should see in the logs:
   a letter (e.g. `/help`, `!status`) is treated as a command addressed to Kōan —
   exactly like `@Koan /help`. Slack normalizes `!command` to `/command` before
   handing it to the shared bridge, avoiding conflicts with Slack slash commands.
+  Slack's `<url>` and `<url|label>` link markup is also converted back to a
+  plain URL, so URL-based commands keep any context written after the link.
   It replies in a thread under the command, no @mention required. A leading
   prefix before a non-letter (`//` comments, `!!` punctuation,
   dotfile paths like `/.bashrc`, numeric/symbol prefixes) is ignored. This
