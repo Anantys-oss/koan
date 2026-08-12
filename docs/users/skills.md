@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-07-30
+updated: 2026-08-12
 ---
 
 # Skills Reference
@@ -104,6 +104,10 @@ detail, so reviewers can react or resolve in place. Cap the volume with
 `review_inline_comments.max_comments` (default 25). Re-running `/review` is
 idempotent (already-anchored findings are skipped); multi-line findings anchor
 to their full range; if all posts fail, you are notified. Disabled by default.
+
+Summary findings receive one sequence of IDs across Blocking, Important,
+Suggestions, and Silent Failure Analysis sections. Numbering never restarts at
+a section boundary, so follow-up requests can identify any finding by ID alone.
 
 **Verdict consistency:** A valid reflection pass is authoritative for the final
 finding list. Findings rejected below the configured threshold stay hidden;
