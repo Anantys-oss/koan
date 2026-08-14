@@ -7,6 +7,7 @@ import pytest
 
 from app.force_push_guard import (
     PushGuardFindings,
+    _added_lines,
     _classify_missing_commits,
     build_push_warning,
     observe_remote_head,
@@ -296,6 +297,26 @@ class TestVerifyContentPreserved:
         # The resolution really is gone from what was pushed.
         assert "RESOLUTION" in _git_out(work, "show", f"{pre}:a.txt")
         assert "RESOLUTION" not in _git_out(work, "show", f"{pushed}:a.txt")
+
+    def test_octopus_merge_resolution_is_parsed(self, pr_setup):
+        """A 3-parent merge's own content carries three '+' markers — the same
+        shape as a diff's '+++' file header. The parser must tell them apart."""
+        work = pr_setup.work
+        for name in ("side1", "side2"):
+            _git(work, "checkout", "-b", name, "origin/main")
+            _commit_file(work, f"{name}.txt", name, f"{name} work")
+        _git(work, "checkout", "feature")
+        _git(work, "merge", "--no-ff", "-m", "Octopus merge", "side1", "side2")
+        (work / "a.txt").write_text("one\nOCTOPUS RESOLUTION\n")
+        _git(work, "add", "a.txt")
+        _git(work, "commit", "--amend", "--no-edit")
+        pre = _git_out(work, "rev-parse", "HEAD")
+
+        added = _added_lines(str(work), pre, merge=True)
+        assert "OCTOPUS RESOLUTION" in added
+        # The "+++ b/a.txt" file header keeps three markers whatever the parent
+        # count, so it must not be mistaken for content.
+        assert not any(line.endswith("a.txt") for line in added)
 
     def test_routine_merge_without_own_content_does_not_warn(self, pr_setup):
         """Merging the base into the PR resolves nothing of its own; dropping
