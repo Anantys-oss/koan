@@ -478,6 +478,42 @@ class TestVerifyContentPreserved:
         assert findings is not None
         assert findings.clobbered_commits == []
 
+    def test_failed_observation_is_reported_as_unverified(self, pr_setup):
+        """A clobber check that never ran must not read as 'nothing clobbered'."""
+        work = pr_setup.work
+        _git(work, "rebase", "origin/main")
+        _git(work, "push", "origin", "feature", "--force")
+
+        findings = verify_content_preserved(
+            pr_setup.pre_rebase_head, "origin/main", str(work),
+            pre_push_remote_heads=[],
+            push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
+            observation_failed=True,
+        )
+        assert findings.has_findings and not findings.is_critical
+        assert any("before the push" in c for c in findings.unverified_checks)
+
+        warning = build_push_warning(findings, "feature")
+        assert warning.startswith("> [!WARNING]")
+        assert "not** confirmed clean" in warning
+
+    def test_failed_race_check_is_reported_as_unverified(self, pr_setup):
+        """A post-push ls-remote outage must not render as 'no race'."""
+        work = pr_setup.work
+        _git(work, "rebase", "origin/main")
+        _git(work, "push", "origin", "feature", "--force")
+
+        findings = verify_content_preserved(
+            pr_setup.pre_rebase_head, "origin/main", str(work),
+            pre_push_remote_heads=[pr_setup.pre_rebase_head],
+            push_remote="unreachable-remote", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
+        )
+        assert findings.has_findings and not findings.is_critical
+        assert findings.remote_head_now == ""
+        assert any("after the push" in c for c in findings.unverified_checks)
+
     def test_unconfirmed_pushed_sha_skips_the_guard(self, pr_setup):
         """Without a confirmed pushed SHA there is nothing trustworthy to
         compare against — local HEAD may hold commits that never reached the
@@ -501,8 +537,10 @@ class TestObserveRemoteHead:
         sha = observe_remote_head("origin", "feature", str(pr_setup.work))
         assert sha == pr_setup.pre_rebase_head
 
-    def test_unreachable_remote_returns_empty(self, pr_setup):
-        assert observe_remote_head("nope", "feature", str(pr_setup.work)) == ""
+    def test_unreachable_remote_reports_the_failure(self, pr_setup):
+        """None, not "" — "could not look" must stay distinguishable from
+        "nothing was there", so the guard can flag the check as unverified."""
+        assert observe_remote_head("nope", "feature", str(pr_setup.work)) is None
 
     def test_missing_branch_returns_empty(self, pr_setup):
         assert observe_remote_head("origin", "ghost", str(pr_setup.work)) == ""
@@ -549,12 +587,13 @@ class TestBuildPushWarning:
             dropped_files=["x.txt"],
             clobbered_commits=["9990000 human push"],
             remote_head_now="c" * 40,
+            unverified_checks=["the remote tip before the push"],
         )
         warning = build_push_warning(findings, "feature")
         assert warning.count("[!") == 1  # parsimony: exactly one alert block
         assert warning.startswith("> [!CAUTION]")
         for token in ("lost work", "reshaped work", "x.txt", "human push",
-                      "c" * 12, "a" * 40):
+                      "c" * 12, "a" * 40, "the remote tip before the push"):
             assert token in warning
 
     def test_long_lists_are_truncated(self):

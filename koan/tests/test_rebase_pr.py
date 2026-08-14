@@ -4671,6 +4671,43 @@ class TestPushWithFallbackGuardKeys:
             )
         assert result["pre_push_remote_heads"] == ["cafe" * 10]
 
+    def test_observations_of_a_failed_remote_are_not_reported(self):
+        """A tip seen on a remote whose push then failed was never overwritten;
+        reporting it would raise a false 'concurrent push clobbered' alarm."""
+        def mock_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "push"] and "origin" in cmd:
+                raise RuntimeError("permission denied")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 side_effect=["cafe" * 10, "cafe" * 10, "dead" * 10],
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["remote"] == "upstream"
+        assert result["pre_push_remote_heads"] == ["dead" * 10]
+
+    def test_unobservable_remote_is_flagged_not_assumed_clean(self):
+        """`ls-remote` failing is 'could not look', not 'nothing was there'."""
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("app.claude_step.subprocess.run", return_value=mock_result), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 return_value=None,
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["pre_push_remote_heads"] == []
+        assert result["observation_failed"] is True
+
     def test_failed_push_reports_no_pushed_head(self):
         """A SHA that never reached the remote must not be reported as pushed."""
         def mock_run(cmd, **kwargs):
@@ -4792,6 +4829,50 @@ class TestRunForcePushGuard:
         assert any("could not run" in a for a in log)
         assert notified == []
 
+    def test_unexpected_guard_exception_does_not_fail_the_rebase(self):
+        """The branch is already pushed by the time the guard runs: an
+        unexpected failure must not turn a completed rebase into a failed
+        mission or skip the PR comment that follows."""
+        log = []
+        with patch(
+            "app.rebase_pr.force_push_guard.verify_content_preserved",
+            side_effect=AttributeError("boom"),
+        ):
+            result = _run_force_push_guard(
+                pre_rebase_head="a" * 40,
+                target_ref="origin/main",
+                project_path="/project",
+                push_state={"remote": "origin", "pushed_head": "c" * 40},
+                branch="koan/fix",
+                pr_number="42",
+                actions_log=log,
+                notify_fn=lambda m: None,
+            )
+        assert result == ""
+        assert any("unexpected guard failure" in a for a in log)
+
+    def test_unexpected_render_exception_does_not_fail_the_rebase(self):
+        log = []
+        with patch(
+            "app.rebase_pr.force_push_guard.verify_content_preserved",
+            return_value="findings",
+        ), patch(
+            "app.rebase_pr.force_push_guard.build_push_warning",
+            side_effect=TypeError("boom"),
+        ):
+            result = _run_force_push_guard(
+                pre_rebase_head="a" * 40,
+                target_ref="origin/main",
+                project_path="/project",
+                push_state={"remote": "origin", "pushed_head": "c" * 40},
+                branch="koan/fix",
+                pr_number="42",
+                actions_log=log,
+                notify_fn=lambda m: None,
+            )
+        assert result == ""
+        assert any("unexpected guard failure" in a for a in log)
+
     def test_missing_baseline_skips(self):
         log = []
         result = _run_force_push_guard(
@@ -4824,9 +4905,9 @@ class TestGatePushStatePropagation:
 
         with patch("app.rebase_pr._push_with_fallback", return_value={
             "success": True,
-            "actions": ["Force-pushed `koan/fix` to upstream"],
+            "actions": ["Force-pushed `koan/fix` to origin"],
             "error": "",
-            "remote": "upstream",
+            "remote": "origin",
             "pre_push_remote_heads": ["obs1" * 10],
             "pushed_head": "new1" * 10,
         }), patch("app.private_review_gate.run_private_review_gate",
@@ -4841,9 +4922,48 @@ class TestGatePushStatePropagation:
                 push_state=push_state,
             )
 
-        assert push_state["remote"] == "upstream"
+        assert push_state["remote"] == "origin"
         assert push_state["pushed_head"] == "new1" * 10
         assert push_state["observations"] == ["pre0" * 10, "obs1" * 10]
+
+    def test_gate_push_to_another_remote_drops_stale_observations(self):
+        """Observations only describe the remote they were taken on. If the
+        gate lands somewhere else, the earlier tips belong to a branch this
+        pipeline never overwrote — keeping them would be a false clobber."""
+        push_state = {
+            "remote": "origin",
+            "pushed_head": "old0" * 10,
+            "observations": ["pre0" * 10],
+            "observation_failed": True,
+        }
+
+        def fake_gate(**kwargs):
+            kwargs["push_fn"]()
+            return SimpleNamespace(ran=True, summary="ok", skipped_reason="")
+
+        with patch("app.rebase_pr._push_with_fallback", return_value={
+            "success": True,
+            "actions": [],
+            "error": "",
+            "remote": "upstream",
+            "pre_push_remote_heads": ["obs1" * 10],
+            "observation_failed": False,
+            "pushed_head": "new1" * 10,
+        }), patch("app.private_review_gate.run_private_review_gate",
+                  side_effect=fake_gate), \
+             patch("app.utils.project_name_for_path", return_value="proj"):
+            from app.rebase_pr import _run_rebase_private_review_gate
+            _run_rebase_private_review_gate(
+                owner="o", repo="r", pr_number="42", branch="koan/fix",
+                base="main", full_repo="o/r", context={"url": ""},
+                project_path="/tmp", head_remote=None,
+                notify_fn=lambda m: None, skill_dir=None, actions_log=[],
+                push_state=push_state,
+            )
+
+        assert push_state["remote"] == "upstream"
+        assert push_state["observations"] == ["obs1" * 10]
+        assert push_state["observation_failed"] is False
 
     def test_gate_push_without_confirmed_sha_clears_pushed_head(self):
         """If the gate pushed but its SHA capture failed, the step-6 SHA is

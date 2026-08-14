@@ -48,11 +48,18 @@ Checks performed by :func:`verify_content_preserved`:
    the pre-rebase head nor part of the pushed history, someone pushed
    mid-pipeline and the force-push erased their commits; they are listed by
    SHA and subject.
+   Only observations of the remote actually pushed to are considered: a tip
+   seen on a remote whose push then failed was never overwritten.
 4. **Post-push race** — a final `ls-remote` after the push; if the remote no
    longer points at the last SHA Kōan actually pushed, someone force-pushed
    right after us and Kōan's own rebase may have been overwritten. The
    comparison uses the recorded pushed SHA, not local HEAD, so a local commit
    that failed to push is never misreported as a race.
+
+A check that could not run (either `ls-remote`, an unreadable commit) is
+listed as *unverified* in the alert, never folded into the clean case: the
+guard's job is to say what it knows, and "could not look" is not "nothing
+there".
 """
 
 import contextlib
@@ -93,6 +100,10 @@ class PushGuardFindings:
     clobbered_commits: List[str] = field(default_factory=list)
     remote_head_now: str = ""  # set only when the remote moved after our push
     analysis_truncated: int = 0  # patch-id misses beyond the analysis cap
+    # Checks the guard could not perform. A check that did not run must never
+    # read as a check that passed, so these are surfaced (amber) rather than
+    # collapsed into the clean case.
+    unverified_checks: List[str] = field(default_factory=list)
 
     @property
     def has_findings(self) -> bool:
@@ -103,6 +114,7 @@ class PushGuardFindings:
             or self.clobbered_commits
             or self.remote_head_now
             or self.analysis_truncated
+            or self.unverified_checks
         )
 
     @property
@@ -117,16 +129,24 @@ def _git(project_path: str, *args: str, timeout: int = 60) -> str:
     return run_git_strict(*args, cwd=project_path, timeout=timeout)
 
 
-def observe_remote_head(remote: str, branch: str, project_path: str) -> str:
+def observe_remote_head(
+    remote: str, branch: str, project_path: str,
+) -> Optional[str]:
     """Snapshot the remote branch tip immediately before a force-push.
 
-    Returns the SHA the remote currently serves for *branch* ("" when the
-    observation fails — the guard then simply skips the clobber check).
+    Returns the SHA the remote currently serves for *branch*, ``""`` when the
+    remote has no such branch (nothing to clobber), or **None** when the
+    observation itself failed — the caller must surface that as an unverified
+    check, because "could not look" is not "nothing was there".
+
     On success the branch is also fetched so the commits are available
     locally for post-push analysis (at observation time they are still
     reachable; after the force-push they may not be). The fetch also
     refreshes ``refs/remotes/<remote>/<branch>``, so a subsequent
-    ``--force-with-lease`` compares against this freshest observation.
+    ``--force-with-lease`` compares against this freshest observation. A
+    failed fetch is logged and left non-fatal: the tip SHA is still known, and
+    the clobber check names it explicitly when its objects turn out to be
+    unavailable locally.
     """
     try:
         out = _git(
@@ -134,13 +154,19 @@ def observe_remote_head(remote: str, branch: str, project_path: str) -> str:
         )
     except _GIT_ERRORS as e:
         print(f"[force_push_guard] pre-push ls-remote failed: {e}", file=sys.stderr)
-        return ""
+        return None
     sha = out.split()[0] if out.split() else ""
     if sha:
-        with contextlib.suppress(_GIT_ERRORS):
+        try:
             _git(
                 project_path, "fetch", remote,
                 f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}",
+            )
+        except _GIT_ERRORS as e:
+            print(
+                f"[force_push_guard] observation fetch of {sha[:12]} failed "
+                f"(clobber analysis will name the tip without its commits): {e}",
+                file=sys.stderr,
             )
     return sha
 
@@ -381,10 +407,15 @@ def _clobbered_commits(
 
 def _remote_moved_after_push(
     project_path: str, push_remote: str, branch: str, pushed_head: str,
-) -> str:
-    """Final post-push check: does the remote still point at what we pushed?"""
+) -> Optional[str]:
+    """Final post-push check: does the remote still point at what we pushed?
+
+    Returns the remote's SHA when it moved, ``""`` when it still matches, and
+    **None** when the check could not run — an outage of the race check must
+    not render as "no race".
+    """
     if not push_remote or not branch:
-        return ""
+        return None
     try:
         out = _git(
             project_path, "ls-remote", push_remote, f"refs/heads/{branch}",
@@ -392,9 +423,11 @@ def _remote_moved_after_push(
         )
     except _GIT_ERRORS as e:
         print(f"[force_push_guard] post-push ls-remote failed: {e}", file=sys.stderr)
-        return ""
+        return None
     sha = out.split()[0] if out.split() else ""
-    return sha if sha and sha != pushed_head else ""
+    if not sha:
+        return None  # the branch we just pushed is not there — unverifiable
+    return sha if sha != pushed_head else ""
 
 
 def verify_content_preserved(
@@ -406,6 +439,7 @@ def verify_content_preserved(
     push_remote: str = "",
     branch: str = "",
     pushed_head: str = "",
+    observation_failed: bool = False,
 ) -> Optional[PushGuardFindings]:
     """Run the full post-push content-preservation check.
 
@@ -415,6 +449,13 @@ def verify_content_preserved(
     confirmed pushed SHA there is nothing trustworthy to compare against —
     local HEAD may carry commits that never reached the remote — so the guard
     reports itself skipped (None) rather than analyzing the wrong tree.
+
+    *pre_push_remote_heads* must contain only observations of the remote that
+    was actually pushed to; a tip observed on a remote whose push then failed
+    was never overwritten and would be a false clobber report.
+    *observation_failed* says an observation of that remote could not be made,
+    which is surfaced as an unverified check rather than passing silently.
+
     Returns findings (possibly empty — check ran clean), or None when the
     guard itself could not run. Never raises.
     """
@@ -450,6 +491,21 @@ def verify_content_preserved(
             project_path, candidates[:_MAX_ANALYZED], new_files,
             pre_rebase_head, pushed_head,
         )
+        unverified: List[str] = []
+        if observation_failed:
+            unverified.append(
+                "the remote tip before the push — a commit someone else pushed "
+                "mid-rebase would not show up here"
+            )
+        race = _remote_moved_after_push(
+            project_path, push_remote, branch, pushed_head,
+        )
+        if race is None:
+            race = ""
+            unverified.append(
+                "the remote state after the push — a force-push racing in right "
+                "after ours would not show up here"
+            )
         return PushGuardFindings(
             pre_rebase_head=pre_rebase_head,
             pushed_head=pushed_head,
@@ -460,10 +516,9 @@ def verify_content_preserved(
                 project_path, pre_push_remote_heads or [],
                 pre_rebase_head, pushed_head,
             ),
-            remote_head_now=_remote_moved_after_push(
-                project_path, push_remote, branch, pushed_head,
-            ),
+            remote_head_now=race,
             analysis_truncated=truncated,
+            unverified_checks=unverified,
         )
     except _GIT_ERRORS as e:
         print(
@@ -568,6 +623,12 @@ def build_push_warning(
             f"`{findings.remote_head_now[:12]}`) — this rebase may itself have "
             f"been overwritten; reconcile before pushing again."
         )
+    if findings.unverified_checks:
+        lines.append(
+            "Some safety checks could not run — this rewrite is **not** "
+            "confirmed clean; verify manually:"
+        )
+        lines.extend(f"  - {check}" for check in findings.unverified_checks)
     if findings.analysis_truncated:
         lines.append(
             f"Patch analysis was capped: {findings.analysis_truncated} further "

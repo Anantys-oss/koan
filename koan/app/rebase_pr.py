@@ -1072,6 +1072,7 @@ def _run_rebase_impl(
         "remote": push_result.get("remote", ""),
         "pushed_head": push_result.get("pushed_head", ""),
         "observations": [h for h in push_result.get("pre_push_remote_heads", []) if h],
+        "observation_failed": bool(push_result.get("observation_failed")),
     }
 
     # ── Step 7: Private review gate ────────────────────────────────────
@@ -1204,8 +1205,14 @@ def _run_rebase_private_review_gate(
         # Feed the guard: this push's fresh observation and pushed SHA, so a
         # human push landing between the main push and this one is detected.
         if push_state is not None:
-            if push_result.get("remote"):
-                push_state["remote"] = push_result["remote"]
+            gate_remote = push_result.get("remote", "")
+            # Observations only mean something for the remote they were taken
+            # on: if the gate landed somewhere else, the earlier ones describe
+            # a branch this pipeline never overwrote.
+            if gate_remote and gate_remote != push_state.get("remote"):
+                push_state["remote"] = gate_remote
+                push_state["observations"] = []
+                push_state["observation_failed"] = False
             # Always overwrite, including with "": once the gate has pushed,
             # the step-6 SHA is stale and comparing against it would fake a
             # race. No confirmed SHA means the guard skips, which is correct.
@@ -1214,6 +1221,8 @@ def _run_rebase_private_review_gate(
             for observed in push_result.get("pre_push_remote_heads", []):
                 if observed and observed not in observations:
                     observations.append(observed)
+            if push_result.get("observation_failed"):
+                push_state["observation_failed"] = True
 
     try:
         from app.private_review_gate import run_private_review_gate
@@ -2333,37 +2342,37 @@ def _run_force_push_guard(
 
     *push_state* carries the accumulated push telemetry: the remote actually
     pushed to, the last successfully pushed SHA, and every pre-push remote
-    observation (main push + gate re-pushes). Best-effort by contract
-    (specs/components/git-github.md): a guard that cannot run logs the fact
-    and returns "" — it never fails the rebase.
+    observation of that remote (main push + gate re-pushes). Best-effort by
+    contract (specs/components/git-github.md): a guard that cannot run logs
+    the fact and returns "" — it never fails the rebase.
+
+    The branch is already force-pushed by the time this runs, so the whole
+    body is inside the best-effort boundary: an unexpected failure here must
+    not turn a completed rebase into a failed mission, nor skip the PR comment
+    and CI enqueue that follow.
     """
     if not pre_rebase_head:
         actions_log.append(
             "Force-push guard skipped: pre-rebase head was not captured"
         )
         return ""
-    findings = force_push_guard.verify_content_preserved(
-        pre_rebase_head,
-        target_ref,
-        project_path,
-        pre_push_remote_heads=push_state.get("observations", []),
-        push_remote=push_state.get("remote", ""),
-        branch=branch,
-        pushed_head=push_state.get("pushed_head", ""),
-    )
-    if findings is None:
+    try:
+        section = _build_push_guard_section(
+            pre_rebase_head=pre_rebase_head,
+            target_ref=target_ref,
+            project_path=project_path,
+            push_state=push_state,
+            branch=branch,
+            actions_log=actions_log,
+        )
+    except Exception as e:
+        print(f"[rebase_pr] force-push guard failed: {e}", file=sys.stderr)
         actions_log.append(
-            "Force-push guard skipped: no confirmed pushed SHA, or the content "
-            "check could not run (non-fatal)"
+            f"Force-push guard skipped: unexpected guard failure ({e}) — "
+            f"the rebase itself is unaffected"
         )
         return ""
-    section = force_push_guard.build_push_warning(
-        findings, branch, remote=push_state.get("remote") or "origin",
-    )
     if not section:
-        actions_log.append(
-            "Force-push guard: all original PR content verified preserved"
-        )
         return ""
     actions_log.append(
         "Force-push guard: original PR content was dropped, modified, or "
@@ -2385,6 +2394,42 @@ def _run_force_push_guard(
         print(
             f"[rebase_pr] force-push guard alert delivery failed: {e}",
             file=sys.stderr,
+        )
+    return section
+
+
+def _build_push_guard_section(
+    *,
+    pre_rebase_head: str,
+    target_ref: str,
+    project_path: str,
+    push_state: dict,
+    branch: str,
+    actions_log: List[str],
+) -> str:
+    """Run the check and render it; "" when there is nothing to report."""
+    findings = force_push_guard.verify_content_preserved(
+        pre_rebase_head,
+        target_ref,
+        project_path,
+        pre_push_remote_heads=push_state.get("observations", []),
+        push_remote=push_state.get("remote", ""),
+        branch=branch,
+        pushed_head=push_state.get("pushed_head", ""),
+        observation_failed=bool(push_state.get("observation_failed")),
+    )
+    if findings is None:
+        actions_log.append(
+            "Force-push guard skipped: no confirmed pushed SHA, or the content "
+            "check could not run (non-fatal)"
+        )
+        return ""
+    section = force_push_guard.build_push_warning(
+        findings, branch, remote=push_state.get("remote") or "origin",
+    )
+    if not section:
+        actions_log.append(
+            "Force-push guard: all original PR content verified preserved"
         )
     return section
 
@@ -2467,6 +2512,51 @@ def _checkout_pr_branch(
     return fetch_remote
 
 
+def _push_to_remote(branch: str, project_path: str, remote: str) -> dict:
+    """Force-push *branch* to one remote, collecting the guard's telemetry.
+
+    Returns the observations belonging to **this** attempt only — a tip seen
+    on a remote whose push then fails was never overwritten, and reporting it
+    as clobbered would send the human chasing commits that are still there.
+    Raises whatever the push raises.
+    """
+    observations: List[str] = []
+    failures: List[str] = []
+
+    def observe() -> None:
+        """Snapshot the remote tip (and fetch its objects) before overwriting it.
+
+        Feeds the content-preservation guard so commits pushed by others
+        mid-rebase can be detected and named after this push erases them.
+        """
+        sha = force_push_guard.observe_remote_head(remote, branch, project_path)
+        if sha is None:
+            failures.append(remote)  # could not look — not "nothing there"
+        elif sha and sha not in observations:
+            observations.append(sha)
+
+    observe()
+    # The SHA we are about to publish. Captured before the push and only
+    # reported on success, so a commit that never reached the remote can
+    # neither skew the guard's comparison nor fake a post-push race.
+    head_to_push = ""
+    try:
+        head_to_push = _run_git(
+            ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=30,
+        ).strip()
+    except Exception as e:
+        print(f"[rebase_pr] pushed-head capture failed: {e}", file=sys.stderr)
+    # A rejected --force-with-lease means the remote moved since the
+    # observation above; re-observe before the plain --force clobbers it.
+    _force_push(remote, branch, project_path, on_lease_failure=observe)
+    return {
+        "remote": remote,
+        "pre_push_remote_heads": observations,
+        "observation_failed": bool(failures),
+        "pushed_head": head_to_push,
+    }
+
+
 def _push_with_fallback(
     branch: str,
     base: str,
@@ -2486,49 +2576,16 @@ def _push_with_fallback(
     actions: List[str] = []
     remotes = _ordered_remotes(head_remote, cwd=project_path)
     last_error = ""
-    observations: List[str] = []
-
-    def observe(remote: str) -> None:
-        """Snapshot the remote tip (and fetch its objects) before overwriting it.
-
-        Feeds the content-preservation guard so commits pushed by others
-        mid-rebase can be detected and named after this push erases them.
-        """
-        sha = force_push_guard.observe_remote_head(remote, branch, project_path)
-        if sha and sha not in observations:
-            observations.append(sha)
 
     for remote in remotes:
-        observe(remote)
-        # The SHA we are about to publish. Captured before the push and only
-        # reported on success, so a commit that never reached the remote can
-        # neither skew the guard's comparison nor fake a post-push race.
-        head_to_push = ""
         try:
-            head_to_push = _run_git(
-                ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=30,
-            ).strip()
-        except Exception as e:
-            print(f"[rebase_pr] pushed-head capture failed: {e}", file=sys.stderr)
-        try:
-            # A rejected --force-with-lease means the remote moved since the
-            # observation above; re-observe before the plain --force clobbers it.
-            _force_push(
-                remote, branch, project_path,
-                on_lease_failure=lambda r=remote: observe(r),
-            )
-            actions.append(f"Force-pushed `{branch}` to {remote}")
-            return {
-                "success": True,
-                "actions": actions,
-                "error": "",
-                "remote": remote,
-                "pre_push_remote_heads": list(observations),
-                "pushed_head": head_to_push,
-            }
+            pushed = _push_to_remote(branch, project_path, remote)
         except Exception as e:
             print(f"[rebase_pr] push to {remote} failed: {e}", file=sys.stderr)
             last_error = str(e)
+            continue
+        actions.append(f"Force-pushed `{branch}` to {remote}")
+        return {"success": True, "actions": actions, "error": "", **pushed}
 
     return {
         "success": False,

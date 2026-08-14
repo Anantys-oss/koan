@@ -88,16 +88,20 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 - **Force pushes are guarded, not gated.** The content-preservation guard runs
   after the pipeline's last push (private-gate re-pushes included — the gate
   feeds its own pre-push observations and pushed SHA back into the guard's
-  `push_state`), is best-effort (its own failure never fails the rebase), and
+  `push_state`), is best-effort — the whole call site is wrapped, so not even
+  an unexpected guard bug can fail a rebase whose push already landed — and
   reports via the PR comment + the un-gated outcome channel (`notify_outcome`,
   so the finding is not swallowed by normal messaging mode) — it never blocks
   or reverts a push. Detection scope: dropped/modified original PR content
   (patch-id screening plus a separate merge-commit pass, refined by
   content-level survival checks, so upstream squash-merges and context-line
   drift never warn), clobbered mid-pipeline pushes by others (including a tip
-  that only surfaces when `--force-with-lease` is rejected), and a post-push
-  remote mismatch against the recorded pushed SHA (race). Without a confirmed
-  pushed SHA the guard skips rather than comparing against local HEAD. The
+  that only surfaces when `--force-with-lease` is rejected; observations of a
+  remote whose push then failed are discarded, since that branch was never
+  overwritten), and a post-push remote mismatch against the recorded pushed
+  SHA (race). Without a confirmed pushed SHA the guard skips rather than
+  comparing against local HEAD, and any check that could not run is listed as
+  unverified instead of passing silently. The
   warning always includes the full pre-rebase head SHA and a shell-quoted
   recovery command targeting the actual push remote.
 
