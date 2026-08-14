@@ -1409,11 +1409,22 @@ def _owner_token_push(remote: str, branch: str, project_path: str) -> bool:
     return False
 
 
-def _force_push(remote: str, branch: str, project_path: str) -> None:
+def _force_push(
+    remote: str,
+    branch: str,
+    project_path: str,
+    on_lease_failure: Optional[Callable[[], None]] = None,
+) -> None:
     """Force-push branch, trying --force-with-lease first then --force.
 
     On a permission failure (e.g. the PR branch lives on another logged-in gh
     account's fork) it retries once with that account's token before giving up.
+
+    *on_lease_failure* is invoked between the two attempts. A rejected lease
+    usually means the remote moved since the last fetch, and the plain
+    ``--force`` fallback is about to overwrite whatever moved it — this is the
+    hook the content-preservation guard uses to observe (and so be able to
+    name) that tip before it is gone.
 
     Raises on total failure.
     """
@@ -1425,6 +1436,11 @@ def _force_push(remote: str, branch: str, project_path: str) -> None:
         return
     except Exception as e:
         print(f"[claude_step] --force-with-lease failed, falling back to --force: {e}", file=sys.stderr)
+    if on_lease_failure is not None:
+        try:
+            on_lease_failure()
+        except Exception as e:
+            print(f"[claude_step] lease-failure hook failed: {e}", file=sys.stderr)
     try:
         _run_git(
             ["git", "push", remote, branch, "--force"],

@@ -35,7 +35,7 @@ workflows.
 | `claude_step.py::run_ci_fix_loop()` | Shared CI-fix loop; `use_polling` toggles polling vs single-shot recheck; caller supplies `prompt_builder`. |
 | `claude_step.py::_rebase_onto_target()` | Strict PR rebase: target is **only** `{base_remote}/{base}` (the remote matching the PR's base repo, resolved by `rebase_pr._find_remote_for_repo`); fails closed when no remote matches or the target fetch fails; always a plain `git rebase` (never `--onto`); post-rebase sanity gate before any push. Structured failure codes via `result_meta` (`no_base_remote` / `fetch_failed` / `rebase_failed` / `sanity_check_failed`). |
 | `claude_step.py::_verify_rebase_result()` | Post-rebase gate: branch must sit on the target's current tip and its unique-commit count (`rev-list --count target..HEAD`) must not grow vs the pre-rebase baseline. On violation the branch is hard-reset to its pre-rebase commit and the rebase reported failed — nothing is pushed. |
-| `force_push_guard.py` | Post-force-push content-preservation harness for the rebase pipeline. `observe_remote_head()` snapshots the remote branch tip (and fetches its objects) immediately before **every** pipeline push (main push and private-gate re-pushes — the gate feeds its observations back via `push_state`); `verify_content_preserved()` compares the pre-rebase PR head against the **last successfully pushed SHA** (never bare local HEAD): `git cherry` patch-id screening refined by content-level cross-checks (byte-identical files at both heads, verbatim survival of added lines — so upstream squash-merges and context-line drift count as preserved), a file-level dropped-changes check, clobbered mid-pipeline pushes, and a post-push `ls-remote` race check. Per-commit analysis is capped (`_MAX_ANALYZED`) with the cap reported, never silent. `build_push_warning()` renders the findings as one amber/red `build_alert()` callout with the recoverable pre-rebase SHA (full SHA, actual push remote). Best-effort by contract: any internal failure degrades to "no findings" and never blocks a push or fails the mission. |
+| `force_push_guard.py` | Post-force-push content-preservation harness for the rebase pipeline. `observe_remote_head()` snapshots the remote branch tip (and fetches its objects) immediately before **every** pipeline push (main push and private-gate re-pushes — the gate feeds its observations back via `push_state`) and again on a `--force-with-lease` rejection, so the tip the plain `--force` fallback clobbers is still nameable; `verify_content_preserved()` compares the pre-rebase PR head against the **required last successfully pushed SHA** (never bare local HEAD; absent ⇒ guard skipped): `git cherry` patch-id screening plus a separate `rev-list --merges` pass for merge commits (invisible to `cherry`, dropped by a plain rebase — screened through their `--cc` combined diff), each refined by content-level cross-checks (byte-identical files at both heads, or an old→pushed diff that removes none of the commit's added lines — so upstream squash-merges and context-line drift count as preserved, while identical text elsewhere in a file cannot mask a revert), a file-level dropped-changes check, clobbered mid-pipeline pushes, and a post-push `ls-remote` race check. Anything unverifiable (git failure, deletion-only commit) is reported, never cleared. Per-commit analysis is capped (`_MAX_ANALYZED`) with the cap reported, never silent. `build_push_warning()` renders the findings as one amber/red `build_alert()` callout with the recoverable pre-rebase SHA (full SHA, actual push remote) and a shell-quoted, SHA-derived recovery command carrying no PR-controlled text. Best-effort by contract: any internal failure degrades to "no findings" and never blocks a push or fails the mission. |
 | `head_tracker.py` | Detects remote HEAD change (master→main), throttled 12h, state in `.head-tracker.json`. |
 | `github_url_parser.py` | Single PR/issue URL parsing path. |
 | `git_prep.py::prepare_project_branch()` | Pre-mission: fetch → **self-heal interrupted merge/rebase** → stash → checkout base → ff-only/reset to `<remote>/<base>`. Non-fatal; returns `PrepResult`. |
@@ -65,17 +65,40 @@ workflows.
   change present on the pre-rebase PR head survived. "Survived" is judged at the
   content level, not by patch-id alone: a commit with no patch-id equivalent still
   counts as preserved when its files are byte-identical at both heads (upstream
-  squash-merge) or every line it added exists verbatim at the pushed head
-  (context-line drift on a clean rebase) — patch-id misses that fail both checks
-  are what gets reported. The guard also verifies that no commits pushed by others
-  mid-pipeline were clobbered (each push is preceded by an `ls-remote` + fetch
-  observation, including the private gate's re-pushes), and that the remote still
-  points at the last SHA Kōan actually pushed (post-push `ls-remote` final check
-  against the recorded pushed SHA, never bare local HEAD — the race window Kōan
-  cannot close, only detect). Any finding is surfaced as a single amber/red
+  squash-merge) or when the old→pushed diff does not *remove* any line it added
+  (context-line drift on a clean rebase). The comparison is against the removed
+  side of that diff, never a "does this text exist somewhere at the pushed head"
+  lookup — identical text elsewhere in the same file must never mask a reverted
+  change. **Merge commits are screened separately**: `git cherry` never emits
+  them and a plain rebase replays only first-parent commits, so any
+  conflict-resolution content unique to a merge would vanish unseen; each merge
+  of the pre-rebase range is checked through its combined diff (`--cc`), which by
+  construction holds exactly the lines that differ from every parent (a trivial
+  merge yields nothing and is skipped). **The guard never converts its own blind
+  spot into a clean bill of health**: an unreadable file list, an unverifiable
+  commit (deletion-only, binary), or any git failure is reported as unverified
+  content, not silently cleared. The guard also verifies that no commits pushed by
+  others mid-pipeline were clobbered (each push is preceded by an `ls-remote` +
+  fetch observation, including the private gate's re-pushes, **and repeated when
+  `--force-with-lease` is rejected** — the rejection means the remote moved and
+  the plain `--force` fallback is about to overwrite whatever moved it), and that
+  the remote still points at the last SHA Kōan actually pushed (post-push
+  `ls-remote` final check against the recorded pushed SHA, never bare local HEAD —
+  the race window Kōan cannot close, only detect). That pushed SHA is **required**:
+  it is captured before the push and retained only on success, and without it the
+  guard reports itself skipped rather than comparing against a local HEAD that may
+  carry commits the remote never received. Any finding is surfaced as a single amber/red
   `build_alert()` callout at the top of the rebase PR comment, always naming the
   full pre-rebase head SHA and the actual push remote so the previous state is
-  recoverable with the printed command. The guard **detects and warns; it never
+  recoverable with the printed command. That command is **pasted into a human's
+  shell**, so nothing PR-controlled may reach it: ref names legally contain
+  `$()`, backticks, `;` and `&`, so every argument is shell-quoted and the backup
+  branch is derived from the validated SHA, never from the branch name; every
+  attacker-influenced string in the callout (subjects, paths, branch) renders
+  inside a code span it cannot escape. The alert reaches chat through the
+  **un-gated outcome channel** (`notify_outcome`), not the progress notifier — a
+  safety finding must not be invisible in normal messaging mode — and a delivery
+  failure is logged, never swallowed. The guard **detects and warns; it never
   blocks**: it runs best-effort after the push, degrades silently on its own
   errors, and never fails the mission (design agreed with the humans on incident
   review: recoverability + loud detection, not a new hard gate). Origin: confirmed

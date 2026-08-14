@@ -69,23 +69,42 @@ followed by a detection harness (`koan/app/force_push_guard.py`; contract in
   tip is snapshotted (`git ls-remote`) and fetched, so a concurrent human push
   is known — and recoverable — before it gets overwritten. The fetch also
   refreshes the tracking ref, making the subsequent `--force-with-lease`
-  compare against the freshest observation.
+  compare against the freshest observation. If that lease is *rejected*, the
+  remote moved since the snapshot and the plain `--force` fallback is about to
+  overwrite whatever moved it — so the tip is observed again first, otherwise
+  the clobbered commits could never be named.
 - **After the pipeline's last push** the guard compares the pre-rebase PR head
-  against the last SHA actually pushed (never bare local HEAD, so an unpushed
-  gate commit can't skew the result): `git cherry` patch-id screening refined
-  by content-level survival checks — a commit whose files are byte-identical
-  at both heads (upstream squash-merge) or whose added lines all exist
-  verbatim at the pushed head (context-line drift) counts as preserved — plus
-  a file-level cross-check for changes that vanished from the PR diff
-  entirely, the list of clobbered concurrent commits, and a final `ls-remote`
-  to detect a push that raced in right after ours — the window that cannot be
-  closed client-side, only detected. Per-commit analysis is capped and the cap
-  is reported, never silent.
+  against the last SHA actually pushed. That SHA is captured before the push
+  and kept only on success; with no confirmed value the guard skips rather
+  than falling back to local HEAD, which may hold commits the remote never
+  received. The comparison is `git cherry` patch-id screening — plus a
+  separate pass over the PR's **merge commits**, which `git cherry` never
+  reports and a plain rebase replays away, so a conflict resolution living
+  only inside a merge would otherwise vanish unseen (their combined `--cc`
+  diff is exactly the content unique to the merge) — refined by content-level
+  survival checks: a commit whose files are byte-identical at both heads
+  (upstream squash-merge) or whose added lines are not *removed* by the
+  old→pushed diff (context-line drift) counts as preserved. Checking the
+  removed side, rather than looking each added line up anywhere in the file,
+  is what stops an identical line elsewhere in the same file from masking a
+  reverted change. Anything the guard cannot evaluate — an unreadable file
+  list, a deletion-only commit, any git failure — is reported as unverified
+  rather than cleared. On top of that come a file-level cross-check for
+  changes that vanished from the PR diff entirely, the list of clobbered
+  concurrent commits, and a
+  final `ls-remote` to detect a push that raced in right after ours — the
+  window that cannot be closed client-side, only detected. Per-commit analysis
+  is capped and the cap is reported, never silent.
 - **Findings render as one alert** (`build_alert`) at the top of the rebase PR
   comment — CAUTION (red) when content was lost or a concurrent push was
   overwritten, WARNING (amber) when patches were only reshaped in-flight or
-  the remote raced us — plus a Telegram/Slack notification. The alert always
-  names the pre-rebase head SHA with a copy-pasteable recovery command.
+  the remote raced us — plus a Telegram/Slack notification sent through the
+  un-gated outcome channel, so a safety finding still reaches you in normal
+  messaging mode. The alert always names the pre-rebase head SHA with a
+  copy-pasteable recovery command. Because that command is meant to be pasted
+  into a shell and git ref names may legally contain `$()`, backticks, `;` and
+  `&`, every argument is shell-quoted and the backup branch is derived from the
+  SHA — no branch-controlled text ever reaches it.
 
 The guard **detects and warns; it never blocks or reverts**. It is best-effort
 by contract: any internal failure logs, appends a "guard skipped" action, and
