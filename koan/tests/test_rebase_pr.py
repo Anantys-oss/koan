@@ -4610,9 +4610,10 @@ class TestPushGuardComment:
 
 
 class TestPushWithFallbackGuardKeys:
-    def test_success_reports_remote_and_observed_head(self):
+    def test_success_reports_remote_observed_and_pushed_heads(self):
         mock_result = MagicMock(returncode=0, stdout="", stderr="")
         with patch("app.claude_step.subprocess.run", return_value=mock_result), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
              patch(
                  "app.rebase_pr.force_push_guard.observe_remote_head",
                  return_value="cafe" * 10,
@@ -4624,6 +4625,7 @@ class TestPushWithFallbackGuardKeys:
         assert result["success"] is True
         assert result["remote"] == "origin"
         assert result["pre_push_remote_head"] == "cafe" * 10
+        assert result["pushed_head"] == "beef" * 10
         observe.assert_called_once_with("origin", "koan/fix", "/project")
 
 
@@ -4643,7 +4645,11 @@ class TestRunForcePushGuard:
                 pre_rebase_head=pre_rebase_head,
                 target_ref="origin/main",
                 project_path="/project",
-                push_result={"remote": "origin", "pre_push_remote_head": "b" * 40},
+                push_state={
+                    "remote": "origin",
+                    "pushed_head": "c" * 40,
+                    "observations": ["b" * 40],
+                },
                 branch="koan/fix",
                 pr_number="42",
                 actions_log=actions_log,
@@ -4677,7 +4683,7 @@ class TestRunForcePushGuard:
             pre_rebase_head="",
             target_ref="origin/main",
             project_path="/project",
-            push_result={},
+            push_state={},
             branch="koan/fix",
             pr_number="42",
             actions_log=log,
@@ -4685,3 +4691,41 @@ class TestRunForcePushGuard:
         )
         assert result == ""
         assert any("pre-rebase head was not captured" in a for a in log)
+
+
+class TestGatePushStatePropagation:
+    def test_gate_push_feeds_observation_into_push_state(self):
+        """push_gate_fix must surface its own fresh observation + pushed SHA
+        so the guard also covers the gate-push window (review finding #3)."""
+        push_state = {
+            "remote": "origin",
+            "pushed_head": "old0" * 10,
+            "observations": ["pre0" * 10],
+        }
+
+        def fake_gate(**kwargs):
+            kwargs["push_fn"]()  # the gate pushes a fix
+            return SimpleNamespace(ran=True, summary="ok", skipped_reason="")
+
+        with patch("app.rebase_pr._push_with_fallback", return_value={
+            "success": True,
+            "actions": ["Force-pushed `koan/fix` to upstream"],
+            "error": "",
+            "remote": "upstream",
+            "pre_push_remote_head": "obs1" * 10,
+            "pushed_head": "new1" * 10,
+        }), patch("app.private_review_gate.run_private_review_gate",
+                  side_effect=fake_gate), \
+             patch("app.utils.project_name_for_path", return_value="proj"):
+            from app.rebase_pr import _run_rebase_private_review_gate
+            _run_rebase_private_review_gate(
+                owner="o", repo="r", pr_number="42", branch="koan/fix",
+                base="main", full_repo="o/r", context={"url": ""},
+                project_path="/tmp", head_remote=None,
+                notify_fn=lambda m: None, skill_dir=None, actions_log=[],
+                push_state=push_state,
+            )
+
+        assert push_state["remote"] == "upstream"
+        assert push_state["pushed_head"] == "new1" * 10
+        assert push_state["observations"] == ["pre0" * 10, "obs1" * 10]

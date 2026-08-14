@@ -1065,6 +1065,17 @@ def _run_rebase_impl(
             "\n".join(f"- {a}" for a in actions_log)
         )
 
+    # Push observations for the content-preservation guard. The private gate
+    # may push again; its push_gate_fix updates this state with its own fresh
+    # pre-push observation and pushed SHA so no pipeline push is a blind spot.
+    push_state = {
+        "remote": push_result.get("remote", ""),
+        "pushed_head": push_result.get("pushed_head", ""),
+        "observations": [
+            h for h in [push_result.get("pre_push_remote_head", "")] if h
+        ],
+    }
+
     # ── Step 7: Private review gate ────────────────────────────────────
     gate_result = _run_rebase_private_review_gate(
         owner=owner,
@@ -1079,6 +1090,7 @@ def _run_rebase_impl(
         notify_fn=notify_fn,
         skill_dir=skill_dir,
         actions_log=actions_log,
+        push_state=push_state,
     )
     gate_action = _format_rebase_private_gate_action(gate_result)
     if gate_action:
@@ -1093,7 +1105,7 @@ def _run_rebase_impl(
         pre_rebase_head=pre_rebase_head,
         target_ref=f"{rebase_remote}/{base}",
         project_path=project_path,
-        push_result=push_result,
+        push_state=push_state,
         branch=branch,
         pr_number=pr_number,
         actions_log=actions_log,
@@ -1160,6 +1172,7 @@ def _run_rebase_private_review_gate(
     notify_fn,
     skill_dir: Optional[Path],
     actions_log: List[str],
+    push_state: Optional[dict] = None,
 ):
     """Run the shared private review gate using /rebase push semantics."""
     if not Path(project_path).is_dir():
@@ -1190,6 +1203,17 @@ def _run_rebase_private_review_gate(
         actions_log.extend(push_result.get("actions", []))
         if not push_result.get("success"):
             raise RuntimeError(push_result.get("error", "unknown push failure"))
+        # Feed the guard: this push's fresh observation and pushed SHA, so a
+        # human push landing between the main push and this one is detected.
+        if push_state is not None:
+            if push_result.get("remote"):
+                push_state["remote"] = push_result["remote"]
+            if push_result.get("pushed_head"):
+                push_state["pushed_head"] = push_result["pushed_head"]
+            if push_result.get("pre_push_remote_head"):
+                push_state.setdefault("observations", []).append(
+                    push_result["pre_push_remote_head"]
+                )
 
     try:
         from app.private_review_gate import run_private_review_gate
@@ -2299,7 +2323,7 @@ def _run_force_push_guard(
     pre_rebase_head: str,
     target_ref: str,
     project_path: str,
-    push_result: dict,
+    push_state: dict,
     branch: str,
     pr_number: str,
     actions_log: List[str],
@@ -2307,8 +2331,11 @@ def _run_force_push_guard(
 ) -> str:
     """Post-push content-preservation check; returns the PR-comment alert.
 
-    Best-effort by contract (specs/components/git-github.md): a guard that
-    cannot run logs the fact and returns "" — it never fails the rebase.
+    *push_state* carries the accumulated push telemetry: the remote actually
+    pushed to, the last successfully pushed SHA, and every pre-push remote
+    observation (main push + gate re-pushes). Best-effort by contract
+    (specs/components/git-github.md): a guard that cannot run logs the fact
+    and returns "" — it never fails the rebase.
     """
     if not pre_rebase_head:
         actions_log.append(
@@ -2319,16 +2346,19 @@ def _run_force_push_guard(
         pre_rebase_head,
         target_ref,
         project_path,
-        pre_push_remote_head=push_result.get("pre_push_remote_head", ""),
-        push_remote=push_result.get("remote", ""),
+        pre_push_remote_heads=push_state.get("observations", []),
+        push_remote=push_state.get("remote", ""),
         branch=branch,
+        pushed_head=push_state.get("pushed_head", ""),
     )
     if findings is None:
         actions_log.append(
             "Force-push guard skipped: content check could not run (non-fatal)"
         )
         return ""
-    section = force_push_guard.build_push_warning(findings, branch)
+    section = force_push_guard.build_push_warning(
+        findings, branch, remote=push_state.get("remote") or "origin",
+    )
     if not section:
         actions_log.append(
             "Force-push guard: all original PR content verified preserved"
@@ -2453,12 +2483,22 @@ def _push_with_fallback(
         try:
             _force_push(remote, branch, project_path)
             actions.append(f"Force-pushed `{branch}` to {remote}")
+            # Record what was actually pushed: the guard compares against this
+            # SHA (not local HEAD) so a later unpushed commit can't fake a race.
+            pushed_head = ""
+            try:
+                pushed_head = _run_git(
+                    ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=30,
+                ).strip()
+            except Exception as e:
+                print(f"[rebase_pr] pushed-head capture failed: {e}", file=sys.stderr)
             return {
                 "success": True,
                 "actions": actions,
                 "error": "",
                 "remote": remote,
                 "pre_push_remote_head": observed_head,
+                "pushed_head": pushed_head,
             }
         except Exception as e:
             print(f"[rebase_pr] push to {remote} failed: {e}", file=sys.stderr)
