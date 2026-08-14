@@ -1071,9 +1071,7 @@ def _run_rebase_impl(
     push_state = {
         "remote": push_result.get("remote", ""),
         "pushed_head": push_result.get("pushed_head", ""),
-        "observations": [
-            h for h in [push_result.get("pre_push_remote_head", "")] if h
-        ],
+        "observations": [h for h in push_result.get("pre_push_remote_heads", []) if h],
     }
 
     # ── Step 7: Private review gate ────────────────────────────────────
@@ -1208,12 +1206,14 @@ def _run_rebase_private_review_gate(
         if push_state is not None:
             if push_result.get("remote"):
                 push_state["remote"] = push_result["remote"]
-            if push_result.get("pushed_head"):
-                push_state["pushed_head"] = push_result["pushed_head"]
-            if push_result.get("pre_push_remote_head"):
-                push_state.setdefault("observations", []).append(
-                    push_result["pre_push_remote_head"]
-                )
+            # Always overwrite, including with "": once the gate has pushed,
+            # the step-6 SHA is stale and comparing against it would fake a
+            # race. No confirmed SHA means the guard skips, which is correct.
+            push_state["pushed_head"] = push_result.get("pushed_head", "")
+            observations = push_state.setdefault("observations", [])
+            for observed in push_result.get("pre_push_remote_heads", []):
+                if observed and observed not in observations:
+                    observations.append(observed)
 
     try:
         from app.private_review_gate import run_private_review_gate
@@ -2353,7 +2353,8 @@ def _run_force_push_guard(
     )
     if findings is None:
         actions_log.append(
-            "Force-push guard skipped: content check could not run (non-fatal)"
+            "Force-push guard skipped: no confirmed pushed SHA, or the content "
+            "check could not run (non-fatal)"
         )
         return ""
     section = force_push_guard.build_push_warning(
@@ -2368,10 +2369,22 @@ def _run_force_push_guard(
         "Force-push guard: original PR content was dropped, modified, or "
         "raced — see the warning at the top of this comment"
     )
-    with contextlib.suppress(Exception):
-        notify_fn(
+    # A safety finding is an outcome, not progress: notify_outcome() delivers it
+    # through the un-gated sink so it reaches the human in normal mode too, and a
+    # delivery failure is logged rather than swallowed (the PR comment still
+    # carries the full detail either way).
+    try:
+        from app.messaging_level import notify_outcome
+
+        notify_outcome(
             f"⚠️ Force-push guard: PR #{pr_number} (`{branch}`) — the rewrite "
-            f"needs attention; details in the PR comment."
+            f"needs attention; details in the PR comment.",
+            notify_fn,
+        )
+    except Exception as e:
+        print(
+            f"[rebase_pr] force-push guard alert delivery failed: {e}",
+            file=sys.stderr,
         )
     return section
 
@@ -2473,32 +2486,45 @@ def _push_with_fallback(
     actions: List[str] = []
     remotes = _ordered_remotes(head_remote, cwd=project_path)
     last_error = ""
+    observations: List[str] = []
+
+    def observe(remote: str) -> None:
+        """Snapshot the remote tip (and fetch its objects) before overwriting it.
+
+        Feeds the content-preservation guard so commits pushed by others
+        mid-rebase can be detected and named after this push erases them.
+        """
+        sha = force_push_guard.observe_remote_head(remote, branch, project_path)
+        if sha and sha not in observations:
+            observations.append(sha)
+
     for remote in remotes:
-        # Snapshot the remote tip (and fetch its objects) right before the
-        # force-push so the content-preservation guard can detect and name
-        # commits pushed by others mid-rebase that this push overwrites.
-        observed_head = force_push_guard.observe_remote_head(
-            remote, branch, project_path,
-        )
+        observe(remote)
+        # The SHA we are about to publish. Captured before the push and only
+        # reported on success, so a commit that never reached the remote can
+        # neither skew the guard's comparison nor fake a post-push race.
+        head_to_push = ""
         try:
-            _force_push(remote, branch, project_path)
+            head_to_push = _run_git(
+                ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=30,
+            ).strip()
+        except Exception as e:
+            print(f"[rebase_pr] pushed-head capture failed: {e}", file=sys.stderr)
+        try:
+            # A rejected --force-with-lease means the remote moved since the
+            # observation above; re-observe before the plain --force clobbers it.
+            _force_push(
+                remote, branch, project_path,
+                on_lease_failure=lambda r=remote: observe(r),
+            )
             actions.append(f"Force-pushed `{branch}` to {remote}")
-            # Record what was actually pushed: the guard compares against this
-            # SHA (not local HEAD) so a later unpushed commit can't fake a race.
-            pushed_head = ""
-            try:
-                pushed_head = _run_git(
-                    ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=30,
-                ).strip()
-            except Exception as e:
-                print(f"[rebase_pr] pushed-head capture failed: {e}", file=sys.stderr)
             return {
                 "success": True,
                 "actions": actions,
                 "error": "",
                 "remote": remote,
-                "pre_push_remote_head": observed_head,
-                "pushed_head": pushed_head,
+                "pre_push_remote_heads": list(observations),
+                "pushed_head": head_to_push,
             }
         except Exception as e:
             print(f"[rebase_pr] push to {remote} failed: {e}", file=sys.stderr)
