@@ -5041,3 +5041,112 @@ class TestGatePushStatePropagation:
             )
 
         assert push_state["pushed_head"] == ""
+
+
+def _git_cmd(cwd, *args):
+    """Run git in *cwd* with a deterministic identity, raising on failure."""
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", *args],
+        cwd=str(cwd), check=True, capture_output=True, text=True,
+    )
+
+
+def _commit_file(repo, name, content, message):
+    (repo / name).write_text(content)
+    _git_cmd(repo, "add", name)
+    _git_cmd(repo, "commit", "-m", message)
+
+
+class TestConcurrentPushDuringPrePushCiFix:
+    """Step 5 (pre-push CI fix) is inside the guard's observation window.
+
+    ``_fix_existing_ci_failures`` amends the local commit and never pushes —
+    the pipeline's first force-push is Step 6, whose pre-push observation is
+    taken *after* Step 5 returns. A commit someone else lands while the CI fix
+    is running is therefore still observed, and named in the PR comment after
+    the force-push erases it.
+    """
+
+    @pytest.fixture
+    def repos(self, tmp_path):
+        """Bare remote + seed clone (the human) + work clone (the pipeline)."""
+        bare = tmp_path / "remote.git"
+        bare.mkdir()
+        _git_cmd(bare, "init", "--bare", "-b", "main", ".")
+
+        seed = tmp_path / "seed"
+        _git_cmd(tmp_path, "clone", str(bare), "seed")
+        _commit_file(seed, "a.txt", "one", "c1")
+        _git_cmd(seed, "push", "origin", "main")
+        _git_cmd(seed, "checkout", "-b", "feature")
+        _commit_file(seed, "f1.txt", "f1", "feature work")
+        _git_cmd(seed, "push", "origin", "feature")
+        _git_cmd(seed, "checkout", "main")
+        _commit_file(seed, "b.txt", "two", "c2")
+        _git_cmd(seed, "push", "origin", "main")
+
+        work = tmp_path / "work"
+        _git_cmd(tmp_path, "clone", str(bare), "work")
+        return SimpleNamespace(bare=bare, seed=seed, work=work)
+
+    def _context(self):
+        return {
+            "title": "Fix auth",
+            "body": "",
+            "branch": "feature",
+            "base": "main",
+            "state": "OPEN",
+            "author": "",
+            "url": "https://github.com/o/r/pull/1",
+            "diff": "",
+            "review_comments": "",
+            "reviews": "",
+            "issue_comments": "",
+            "head_owner": "o",
+        }
+
+    def test_commit_landing_during_ci_fix_is_named_in_pr_comment(self, repos):
+        posted: list = []
+
+        def fake_gh(*args, **_kwargs):
+            posted.append(args)
+            return ""
+
+        def human_pushes_during_ci_fix(**_kwargs):
+            """The Step 5 CI fix runs while a human lands a commit on the PR."""
+            _git_cmd(repos.seed, "fetch", "origin")
+            _git_cmd(repos.seed, "checkout", "feature")
+            _commit_file(
+                repos.seed, "hotfix.txt", "urgent", "human hotfix mid-rebase",
+            )
+            _git_cmd(repos.seed, "push", "origin", "feature")
+            return False
+
+        gate_skipped = SimpleNamespace(
+            ran=False, summary="", skipped_reason="not a backend project",
+        )
+
+        with patch("app.rebase_pr.resolve_pr_location", return_value=("o", "r")), \
+             patch("app.rebase_pr.fetch_pr_context", return_value=self._context()), \
+             patch("app.rebase_pr._check_if_already_solved", return_value=(False, None)), \
+             patch("app.commit_conventions.get_project_commit_guidance", return_value=""), \
+             patch("app.rebase_pr._find_remote_for_repo", return_value="origin"), \
+             patch("app.rebase_pr._fix_existing_ci_failures",
+                   side_effect=human_pushes_during_ci_fix), \
+             patch("app.rebase_pr._enqueue_ci_check", return_value=""), \
+             patch("app.rebase_pr._get_diffstat", return_value=""), \
+             patch("app.rebase_pr.run_gh", side_effect=fake_gh), \
+             patch("app.private_review_gate.run_private_review_gate",
+                   return_value=gate_skipped):
+            success, summary = run_rebase(
+                "o", "r", "1", str(repos.work), notify_fn=MagicMock(),
+            )
+
+        assert success is True
+        comments = [a for a in posted if a[:2] == ("pr", "comment")]
+        assert comments, "the pipeline must comment on the PR"
+        body = comments[-1][-1]
+        assert "human hotfix mid-rebase" in body
+        assert "force-push" in body.lower()
+        assert "guard" in summary.lower()
