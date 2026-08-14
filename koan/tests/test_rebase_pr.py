@@ -5058,6 +5058,20 @@ def _commit_file(repo, name, content, message):
     _git_cmd(repo, "commit", "-m", message)
 
 
+def _make_repo_hermetic(repo):
+    """Pin identity/signing/hooks in *repo* so git works without a global config.
+
+    The rebase pipeline shells out to plain ``git``, so it inherits none of
+    ``_git_cmd``'s ``-c`` flags. On a CI runner there is no global identity and
+    the auto-detected one is rejected (``user@host.(none)``), which would fail
+    the replayed commits rather than the behaviour under test.
+    """
+    _git_cmd(repo, "config", "user.email", "t@t")
+    _git_cmd(repo, "config", "user.name", "t")
+    _git_cmd(repo, "config", "commit.gpgsign", "false")
+    _git_cmd(repo, "config", "core.hooksPath", str(repo / ".no-hooks"))
+
+
 class TestConcurrentPushDuringPrePushCiFix:
     """Step 5 (pre-push CI fix) is inside the guard's observation window.
 
@@ -5077,6 +5091,10 @@ class TestConcurrentPushDuringPrePushCiFix:
 
         seed = tmp_path / "seed"
         _git_cmd(tmp_path, "clone", str(bare), "seed")
+        _make_repo_hermetic(seed)
+        # An empty clone takes its branch name from init.defaultBranch on older
+        # git, so name it explicitly rather than inheriting the runner's setting.
+        _git_cmd(seed, "symbolic-ref", "HEAD", "refs/heads/main")
         _commit_file(seed, "a.txt", "one", "c1")
         _git_cmd(seed, "push", "origin", "main")
         _git_cmd(seed, "checkout", "-b", "feature")
@@ -5088,6 +5106,7 @@ class TestConcurrentPushDuringPrePushCiFix:
 
         work = tmp_path / "work"
         _git_cmd(tmp_path, "clone", str(bare), "work")
+        _make_repo_hermetic(work)
         return SimpleNamespace(bare=bare, seed=seed, work=work)
 
     def _context(self):
@@ -5143,7 +5162,7 @@ class TestConcurrentPushDuringPrePushCiFix:
                 "o", "r", "1", str(repos.work), notify_fn=MagicMock(),
             )
 
-        assert success is True
+        assert success is True, f"rebase pipeline failed: {summary}"
         comments = [a for a in posted if a[:2] == ("pr", "comment")]
         assert comments, "the pipeline must comment on the PR"
         body = comments[-1][-1]
