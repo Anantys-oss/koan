@@ -222,13 +222,20 @@ def _added_lines(project_path: str, sha: str, *, merge: bool = False) -> Set[str
         columns = 1
         out = _git(project_path, "show", "--format=", "--unified=0", sha)
     marker = "+" * columns
-    return {
-        line[columns:].strip()
-        for line in out.splitlines()
-        if line.startswith(marker)
-        and not line.startswith("+++")
-        and line[columns:].strip()
-    }
+    added: Set[str] = set()
+    previous = ""
+    for line in out.splitlines():
+        # The "--- a/x" / "+++ b/x" header pair keeps three markers whatever the
+        # column count, so it is matched as a pair rather than by prefix length
+        # (an octopus merge's own content lines start with "+++" too).
+        is_header = line.startswith("+++ ") and previous.startswith("--- ")
+        previous = line
+        if is_header or not line.startswith(marker):
+            continue
+        content = line[columns:].strip()
+        if content:
+            added.add(content)
+    return added
 
 
 def _content_preserved(
