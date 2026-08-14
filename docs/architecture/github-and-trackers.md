@@ -64,17 +64,23 @@ After confirmed incidents of both, every rebase-pipeline force-push is now
 followed by a detection harness (`koan/app/force_push_guard.py`; contract in
 `specs/components/git-github.md`):
 
-- **Before the push** the remote branch tip is snapshotted (`git ls-remote`)
-  and fetched, so a concurrent human push is known — and recoverable — before
-  it gets overwritten. The fetch also refreshes the tracking ref, making the
-  subsequent `--force-with-lease` compare against the freshest observation.
-- **After the pipeline's last push** (private-gate fixes included) the guard
-  compares the pre-rebase PR head against what was pushed: `git cherry`
-  patch-id equivalence (changes that landed upstream count as preserved), a
-  file-level cross-check for changes that vanished from the PR diff entirely,
-  the list of clobbered concurrent commits, and a final `ls-remote` to detect
-  a push that raced in right after ours — the window that cannot be closed
-  client-side, only detected.
+- **Before every pipeline push** (the main push *and* any private-gate
+  re-push, whose observations are fed back via `push_state`) the remote branch
+  tip is snapshotted (`git ls-remote`) and fetched, so a concurrent human push
+  is known — and recoverable — before it gets overwritten. The fetch also
+  refreshes the tracking ref, making the subsequent `--force-with-lease`
+  compare against the freshest observation.
+- **After the pipeline's last push** the guard compares the pre-rebase PR head
+  against the last SHA actually pushed (never bare local HEAD, so an unpushed
+  gate commit can't skew the result): `git cherry` patch-id screening refined
+  by content-level survival checks — a commit whose files are byte-identical
+  at both heads (upstream squash-merge) or whose added lines all exist
+  verbatim at the pushed head (context-line drift) counts as preserved — plus
+  a file-level cross-check for changes that vanished from the PR diff
+  entirely, the list of clobbered concurrent commits, and a final `ls-remote`
+  to detect a push that raced in right after ours — the window that cannot be
+  closed client-side, only detected. Per-commit analysis is capped and the cap
+  is reported, never silent.
 - **Findings render as one alert** (`build_alert`) at the top of the rebase PR
   comment — CAUTION (red) when content was lost or a concurrent push was
   overwritten, WARNING (amber) when patches were only reshaped in-flight or

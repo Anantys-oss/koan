@@ -86,12 +86,16 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
   (600 seconds by default); exhaustion aborts the rebase and preserves the
   existing recreate fallback.
 - **Force pushes are guarded, not gated.** The content-preservation guard runs
-  after every successful rebase push, is best-effort (its own failure never
-  fails the rebase), and reports via the PR comment + `notify_fn` — it never
-  blocks or reverts a push. Detection scope: dropped/modified original PR
-  content (patch-id + file-level), clobbered mid-rebase pushes by others, and
-  a post-push remote mismatch (race). The warning always includes the
-  pre-rebase head SHA for recovery.
+  after the pipeline's last push (private-gate re-pushes included — the gate
+  feeds its own pre-push observations and pushed SHA back into the guard's
+  `push_state`), is best-effort (its own failure never fails the rebase), and
+  reports via the PR comment + `notify_fn` — it never blocks or reverts a
+  push. Detection scope: dropped/modified original PR content (patch-id
+  screening refined by content-level survival checks, so upstream
+  squash-merges and context-line drift never warn), clobbered mid-pipeline
+  pushes by others, and a post-push remote mismatch against the recorded
+  pushed SHA (race). The warning always includes the full pre-rebase head SHA
+  and a recovery command targeting the actual push remote.
 
 ## Transition (temporary)
 
