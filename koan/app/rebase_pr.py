@@ -2528,8 +2528,23 @@ def _push_to_remote(branch: str, project_path: str, remote: str) -> dict:
 
         Feeds the content-preservation guard so commits pushed by others
         mid-rebase can be detected and named after this push erases them.
+
+        Never raises: this runs on the live push path (before the push, and
+        again from the lease-failure hook), and the guard detects and warns —
+        it must not gate the force-push. Anything unexpected is logged and
+        recorded as a failed observation, so the guard reports the clobber
+        check as unverified instead of the push not happening at all.
         """
-        sha = force_push_guard.observe_remote_head(remote, branch, project_path)
+        try:
+            sha = force_push_guard.observe_remote_head(
+                remote, branch, project_path,
+            )
+        except Exception as e:
+            print(
+                f"[rebase_pr] pre-push observation of {remote} failed: {e}",
+                file=sys.stderr,
+            )
+            sha = None
         if sha is None:
             failures.append(remote)  # could not look — not "nothing there"
         elif sha and sha not in observations:
