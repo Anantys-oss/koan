@@ -88,8 +88,10 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 - **Force pushes are guarded, not gated.** The content-preservation guard runs
   after the pipeline's last push (private-gate re-pushes included — the gate
   feeds its own pre-push observations and pushed SHA back into the guard's
-  `push_state`), is best-effort — the whole call site is wrapped, so not even
-  an unexpected guard bug can fail a rebase whose push already landed — and
+  `push_state`), is best-effort — both the whole post-push call site and the
+  pre-push observations are wrapped, so not even an unexpected guard bug can
+  fail a rebase whose push already landed, nor stop or divert the push it only
+  observes — and
   reports via the PR comment + the un-gated outcome channel (`notify_outcome`,
   so the finding is not swallowed by normal messaging mode) — it never blocks
   or reverts a push. Detection scope: dropped/modified original PR content

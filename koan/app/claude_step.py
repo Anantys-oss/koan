@@ -1424,7 +1424,9 @@ def _force_push(
     usually means the remote moved since the last fetch, and the plain
     ``--force`` fallback is about to overwrite whatever moved it — this is the
     hook the content-preservation guard uses to observe (and so be able to
-    name) that tip before it is gone.
+    name) that tip before it is gone. The hook owns its own error handling and
+    telemetry (see ``rebase_pr._push_to_remote``); the ``except`` below is only
+    a backstop so a hook can never break a push it merely observes.
 
     Raises on total failure.
     """

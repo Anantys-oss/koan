@@ -119,7 +119,10 @@ by contract: any internal failure logs, appends a "guard skipped" action, and
 lets the rebase finish normally. That boundary covers the whole call site, not
 just the git operations — by the time the guard runs the branch has already
 been rewritten, so an unexpected bug inside it must never turn a completed
-rebase into a failed mission or skip the PR comment that follows.
+rebase into a failed mission or skip the PR comment that follows. It also
+covers the part of the guard that runs *on* the push path: a failed pre-push
+observation degrades to "clobber check unverified", never to a push that
+silently does not happen or lands on a fallback remote instead.
 
 ## Mission status indicators (`koan/mission`)
 

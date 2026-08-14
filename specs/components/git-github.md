@@ -112,7 +112,11 @@ workflows.
   boundary — `rebase_pr._run_force_push_guard()` catches every exception, logs
   it, appends a "guard skipped" action and returns "", so an unexpected guard
   bug can never report a completed rebase as a failed mission or skip the PR
-  comment and CI enqueue that follow it. Origin: confirmed
+  comment and CI enqueue that follow it. The same holds for the guard code that
+  runs on the **live push path** (the pre-push observation, and the
+  re-observation the lease-failure hook triggers): it is wrapped where it is
+  called, so a guard failure degrades to `observation_failed` — never to a push
+  that does not happen, or one diverted to a fallback remote. Origin: confirmed
   incidents where a bot rebase force-push dropped content from the original PR
   (cpanel-plugins PR #2771 discussion).
 - **Self-heal precedes stash.** An interrupted merge/rebase/cherry-pick/revert

@@ -4708,6 +4708,48 @@ class TestPushWithFallbackGuardKeys:
         assert result["pre_push_remote_heads"] == []
         assert result["observation_failed"] is True
 
+    def test_observation_crash_does_not_block_the_push(self):
+        """The observation runs on the live push path. The guard detects and
+        warns — an unexpected failure inside it must not gate the push, divert
+        it to another remote, or fail the rebase."""
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("app.claude_step.subprocess.run", return_value=mock_result), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 side_effect=AttributeError("guard bug"),
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["success"] is True
+        assert result["remote"] == "origin"  # not diverted to the fallback
+        assert result["pushed_head"] == "beef" * 10
+        assert result["observation_failed"] is True
+
+    def test_lease_hook_crash_still_pushes_and_reports_unverified(self):
+        """Same on the lease-failure re-observation, which runs between the
+        rejected --force-with-lease and the plain --force."""
+        def mock_run(cmd, **kwargs):
+            if "--force-with-lease" in cmd:
+                raise RuntimeError("stale info")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.claude_step.subprocess.run", side_effect=mock_run), \
+             patch("app.rebase_pr._run_git", return_value="beef" * 10 + "\n"), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 side_effect=["cafe" * 10, RuntimeError("guard bug")],
+             ):
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": ""}, "/project",
+            )
+        assert result["success"] is True
+        assert result["pre_push_remote_heads"] == ["cafe" * 10]
+        assert result["observation_failed"] is True
+
     def test_failed_push_reports_no_pushed_head(self):
         """A SHA that never reached the remote must not be reported as pushed."""
         def mock_run(cmd, **kwargs):
