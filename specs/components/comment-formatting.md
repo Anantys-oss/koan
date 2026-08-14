@@ -4,7 +4,7 @@ title: "Component Spec — Comment Formatting (GitHub alert callouts)"
 description: "Design contract for build_alert(), the single constructor for GitHub alert callouts, plus the type→situation mapping and the parsimony rule every skill must follow."
 tags: [git-github, skills]
 created: 2026-07-10
-updated: 2026-07-17
+updated: 2026-08-14
 ---
 
 # Component Spec — Comment Formatting (GitHub alert callouts)
@@ -60,6 +60,9 @@ the single most important thing the reader must not miss.
 ## Consumers
 
 - `koan/app/rebase_pr.py` — WARNING when review feedback was dropped.
+- `koan/app/force_push_guard.py` — one CAUTION (content dropped / concurrent push
+  clobbered) or WARNING (content modified in-flight / post-push race) per rebase
+  comment, at the top; never more than one alert from the guard.
 - `koan/app/review_runner.py` — IMPORTANT when the branch moved mid-review.
 - `koan/app/review_runner.py` — IMPORTANT on `comment_replies` whose `action` is
   `needs_clarification` (rendering only; the JSON schema is unchanged). Other
