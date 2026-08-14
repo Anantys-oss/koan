@@ -43,6 +43,7 @@ from app.claude_step import (
     run_claude_step,
     wait_for_ci,
 )
+from app import force_push_guard
 from app.github_alerts import build_alert
 from app.config import (
     get_rebase_include_bot_feedback,
@@ -859,6 +860,19 @@ def _run_rebase_impl(
     except Exception as e:
         return False, f"Failed to checkout branch `{branch}`: {e}"
 
+    # The PR head everything downstream is based on — the reference point for
+    # the post-push content-preservation check (force_push_guard).
+    pre_rebase_head = ""
+    try:
+        pre_rebase_head = _run_git(
+            ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=30,
+        ).strip()
+    except Exception as e:
+        print(
+            f"[rebase_pr] could not capture pre-rebase head: {e}",
+            file=sys.stderr,
+        )
+
     # Use API-discovered head_remote, fall back to checkout's fetch_remote
     effective_head_remote = head_remote or fetch_remote
 
@@ -1070,6 +1084,22 @@ def _run_rebase_impl(
     if gate_action:
         actions_log.append(gate_action)
 
+    # ── Step 7.5: Force-push content-preservation check ────────────────
+    # Runs after the pipeline's last push (gate fixes included) while the PR
+    # branch is still checked out. Detects dropped/modified original content,
+    # clobbered concurrent pushes, and a post-push remote race. Best-effort:
+    # never blocks or reverts — it warns loudly on the PR instead.
+    push_guard_section = _run_force_push_guard(
+        pre_rebase_head=pre_rebase_head,
+        target_ref=f"{rebase_remote}/{base}",
+        project_path=project_path,
+        push_result=push_result,
+        branch=branch,
+        pr_number=pr_number,
+        actions_log=actions_log,
+        notify_fn=notify_fn,
+    )
+
     # ── Step 8: Collect final diffstat ─────────────────────────────────
     diffstat = _get_diffstat(f"{rebase_remote}/{base}", project_path)
 
@@ -1093,6 +1123,7 @@ def _run_rebase_impl(
         feedback_failed=feedback_status in ("feedback_timeout", "feedback_failed"),
         feedback_reason=feedback_reason,
         show_transition_notice=show_transition_notice,
+        push_guard_section=push_guard_section,
     )
 
     try:
@@ -2263,6 +2294,58 @@ def _build_rebase_recovery_guidance(project_path: str) -> str:
 
 
 
+def _run_force_push_guard(
+    *,
+    pre_rebase_head: str,
+    target_ref: str,
+    project_path: str,
+    push_result: dict,
+    branch: str,
+    pr_number: str,
+    actions_log: List[str],
+    notify_fn,
+) -> str:
+    """Post-push content-preservation check; returns the PR-comment alert.
+
+    Best-effort by contract (specs/components/git-github.md): a guard that
+    cannot run logs the fact and returns "" — it never fails the rebase.
+    """
+    if not pre_rebase_head:
+        actions_log.append(
+            "Force-push guard skipped: pre-rebase head was not captured"
+        )
+        return ""
+    findings = force_push_guard.verify_content_preserved(
+        pre_rebase_head,
+        target_ref,
+        project_path,
+        pre_push_remote_head=push_result.get("pre_push_remote_head", ""),
+        push_remote=push_result.get("remote", ""),
+        branch=branch,
+    )
+    if findings is None:
+        actions_log.append(
+            "Force-push guard skipped: content check could not run (non-fatal)"
+        )
+        return ""
+    section = force_push_guard.build_push_warning(findings, branch)
+    if not section:
+        actions_log.append(
+            "Force-push guard: all original PR content verified preserved"
+        )
+        return ""
+    actions_log.append(
+        "Force-push guard: original PR content was dropped, modified, or "
+        "raced — see the warning at the top of this comment"
+    )
+    with contextlib.suppress(Exception):
+        notify_fn(
+            f"⚠️ Force-push guard: PR #{pr_number} (`{branch}`) — the rewrite "
+            f"needs attention; details in the PR comment."
+        )
+    return section
+
+
 def _checkout_pr_branch(
     branch: str,
     project_path: str,
@@ -2361,10 +2444,22 @@ def _push_with_fallback(
     remotes = _ordered_remotes(head_remote, cwd=project_path)
     last_error = ""
     for remote in remotes:
+        # Snapshot the remote tip (and fetch its objects) right before the
+        # force-push so the content-preservation guard can detect and name
+        # commits pushed by others mid-rebase that this push overwrites.
+        observed_head = force_push_guard.observe_remote_head(
+            remote, branch, project_path,
+        )
         try:
             _force_push(remote, branch, project_path)
             actions.append(f"Force-pushed `{branch}` to {remote}")
-            return {"success": True, "actions": actions, "error": ""}
+            return {
+                "success": True,
+                "actions": actions,
+                "error": "",
+                "remote": remote,
+                "pre_push_remote_head": observed_head,
+            }
         except Exception as e:
             print(f"[rebase_pr] push to {remote} failed: {e}", file=sys.stderr)
             last_error = str(e)
@@ -2429,6 +2524,7 @@ def _build_rebase_comment(
     feedback_failed: bool = False,
     feedback_reason: str = "",
     show_transition_notice: bool = False,
+    push_guard_section: str = "",
 ) -> str:
     """Build a structured markdown comment summarizing the rebase.
 
@@ -2500,6 +2596,11 @@ def _build_rebase_comment(
 
     parts = [f"## {rebase_type}\n"]
     parts.append(f"{summary_line}\n")
+
+    # Force-push content-preservation warning first — when present it is the
+    # single most important thing on the comment (specs/skills/rebase.md).
+    if push_guard_section:
+        parts.append(push_guard_section + "\n")
 
     # Transient notice announcing the /rebase default change (bare rebase no
     # longer applies review feedback). Only on the bare-rebase path, and only

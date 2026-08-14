@@ -4,7 +4,7 @@ title: "Component Spec — Git & GitHub"
 description: "Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows."
 tags: [git-github]
 created: 2026-06-27
-updated: 2026-07-16
+updated: 2026-08-14
 ---
 
 # Component Spec — Git & GitHub
@@ -12,7 +12,8 @@ updated: 2026-07-16
 **Modules:** `git_sync.py`, `git_auto_merge.py`, `github.py`, `github_url_parser.py`,
 `github_skill_helpers.py`, `github_config.py`, `github_notifications.py`,
 `github_command_handler.py`, `github_webhook.py`, `rebase_pr.py`, `recreate_pr.py`,
-`claude_step.py`, `remote_rename_detector.py`, `head_tracker.py`, `git_prep.py`
+`claude_step.py`, `remote_rename_detector.py`, `head_tracker.py`, `git_prep.py`,
+`force_push_guard.py`
 
 ## Purpose
 
@@ -34,6 +35,7 @@ workflows.
 | `claude_step.py::run_ci_fix_loop()` | Shared CI-fix loop; `use_polling` toggles polling vs single-shot recheck; caller supplies `prompt_builder`. |
 | `claude_step.py::_rebase_onto_target()` | Strict PR rebase: target is **only** `{base_remote}/{base}` (the remote matching the PR's base repo, resolved by `rebase_pr._find_remote_for_repo`); fails closed when no remote matches or the target fetch fails; always a plain `git rebase` (never `--onto`); post-rebase sanity gate before any push. Structured failure codes via `result_meta` (`no_base_remote` / `fetch_failed` / `rebase_failed` / `sanity_check_failed`). |
 | `claude_step.py::_verify_rebase_result()` | Post-rebase gate: branch must sit on the target's current tip and its unique-commit count (`rev-list --count target..HEAD`) must not grow vs the pre-rebase baseline. On violation the branch is hard-reset to its pre-rebase commit and the rebase reported failed — nothing is pushed. |
+| `force_push_guard.py` | Post-force-push content-preservation harness for the rebase pipeline. `observe_remote_head()` snapshots the remote branch tip (and fetches its objects) immediately before a force-push; `verify_content_preserved()` compares the pre-rebase PR head against the final pushed head (patch-id equivalence via `git cherry`, file-level cross-check, clobbered mid-rebase pushes, post-push `ls-remote` race check); `build_push_warning()` renders the findings as one amber/red `build_alert()` callout with the recoverable pre-rebase SHA. Best-effort by contract: any internal failure degrades to "no findings" and never blocks a push or fails the mission. |
 | `head_tracker.py` | Detects remote HEAD change (master→main), throttled 12h, state in `.head-tracker.json`. |
 | `github_url_parser.py` | Single PR/issue URL parsing path. |
 | `git_prep.py::prepare_project_branch()` | Pre-mission: fetch → **self-heal interrupted merge/rebase** → stash → checkout base → ff-only/reset to `<remote>/<base>`. Non-fatal; returns `PrepResult`. |
@@ -57,6 +59,20 @@ workflows.
   mission is recoverable; a polluted force-push is not (incident: PR #2309 — a rebase
   onto a 4-days-stale ref with the fork's 1,889-commits-behind `main` as cut point
   resurrected 33 already-merged commits and force-pushed them unchecked).
+- **Every rebase-pipeline force-push is followed by a content-preservation check.**
+  A force-push rewrites the PR branch; the guard (`force_push_guard.py`) verifies —
+  *after* the final push of the pipeline — that every change present on the
+  pre-rebase PR head survived (patch-id equivalent in the new history or already
+  merged on the base), that no commits pushed by others mid-rebase were clobbered,
+  and that the remote still points at what Kōan pushed (post-push `ls-remote` final
+  check — the race window Kōan cannot close, only detect). Any finding is surfaced
+  as a single amber/red `build_alert()` callout at the top of the rebase PR comment,
+  always naming the pre-rebase head SHA so the previous state is recoverable. The
+  guard **detects and warns; it never blocks**: it runs best-effort after the push,
+  degrades silently on its own errors, and never fails the mission (design agreed
+  with the humans on incident review: recoverability + loud detection, not a new
+  hard gate). Origin: confirmed incidents where a bot rebase force-push dropped
+  content from the original PR (cpanel-plugins PR #2771 discussion).
 - **Self-heal precedes stash.** An interrupted merge/rebase/cherry-pick/revert
   (or bare unmerged paths / stale `index.lock`) is auto-aborted before stashing,
   because git cannot stash a conflicted tree and the next step resets to the

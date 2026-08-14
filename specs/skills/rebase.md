@@ -4,7 +4,7 @@ title: "Skill Spec — rebase"
 description: "Documents the `/rebase` skill that rebases a PR onto its current base by default and, with `--fix` (or any trailing context), also addresses review feedback, including its already-solved detection JSON scored by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-07-22
+updated: 2026-08-14
 ---
 
 # Skill Spec — `rebase`
@@ -45,6 +45,11 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 
 - Queues a rebase mission (`model_key: mission`); runs via `rebase_pr.py`.
 - Updates the PR branch (force-push with multi-account token resolution if needed).
+- After the pipeline's final push, the force-push content-preservation guard
+  (`force_push_guard.py`, see `specs/components/git-github.md`) compares the
+  pre-rebase PR head against what was pushed; if original PR content was dropped
+  or modified, or a concurrent push was clobbered/raced, the PR comment opens
+  with one CAUTION/WARNING callout naming the recoverable pre-rebase SHA.
 - Commit messages shaped by `commit_conventions.py`.
 
 ## Error cases
@@ -80,6 +85,13 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
   before continuing. Its per-round agent budget is `rebase_conflict_timeout`
   (600 seconds by default); exhaustion aborts the rebase and preserves the
   existing recreate fallback.
+- **Force pushes are guarded, not gated.** The content-preservation guard runs
+  after every successful rebase push, is best-effort (its own failure never
+  fails the rebase), and reports via the PR comment + `notify_fn` — it never
+  blocks or reverts a push. Detection scope: dropped/modified original PR
+  content (patch-id + file-level), clobbered mid-rebase pushes by others, and
+  a post-push remote mismatch (race). The warning always includes the
+  pre-rebase head SHA for recovery.
 
 ## Transition (temporary)
 

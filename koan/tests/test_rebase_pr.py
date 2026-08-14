@@ -40,6 +40,7 @@ from app.rebase_pr import (
     _is_conflict_failure,
     _push_with_fallback,
     _rebase_with_conflict_resolution,
+    _run_force_push_guard,
     check_pr_state,
     _run_ci_check_and_fix,
     _run_ci_fix_step_with_timeout_retry,
@@ -2576,7 +2577,11 @@ class TestRunRebaseClaude:
              patch("app.rebase_pr._get_current_branch", return_value="main"), \
              patch("app.rebase_pr._checkout_pr_branch"), \
              patch("app.rebase_pr._rebase_with_conflict_resolution", return_value="origin"), \
-             patch("app.rebase_pr._run_git", side_effect=["abc123\n", ""]), \
+             patch(
+                 "app.rebase_pr._run_git",
+                 # pre-rebase head capture, rebase checkpoint, timeout-recovery reset
+                 side_effect=["def456\n", "abc123\n", ""],
+             ), \
              patch("app.rebase_pr._fix_existing_ci_failures", return_value=False), \
              patch("app.rebase_pr._enqueue_ci_check", return_value="CI queued"), \
              patch("app.rebase_pr._push_with_fallback", return_value={
@@ -4574,3 +4579,109 @@ class TestRebaseOutcomeGating:
         rp.run_rebase("o", "r", "7", "/tmp/x")
         assert not any("..." in m for m in sent)  # progress gated
         assert sent == ["✅ Rebased https://github.com/o/r/pull/7"]
+
+
+# ---------------------------------------------------------------------------
+# Force-push content-preservation guard integration
+# ---------------------------------------------------------------------------
+
+class TestPushGuardComment:
+    def test_section_rendered_at_top(self):
+        section = "> [!CAUTION]\n> content was dropped"
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main", "Force-pushed `koan/fix` to origin"],
+            {"title": "Fix bug"},
+            diffstat="1 file changed",
+            push_guard_section=section,
+        )
+        assert section in result
+        # The guard alert comes before every other section of the comment.
+        assert result.index("[!CAUTION]") < result.index("### Stats")
+        assert result.index("[!CAUTION]") < result.index("<details>")
+
+    def test_no_section_by_default(self):
+        result = _build_rebase_comment(
+            "42", "koan/fix", "main",
+            ["Rebased onto origin/main"],
+            {"title": "Fix bug"},
+        )
+        assert "[!CAUTION]" not in result
+
+
+class TestPushWithFallbackGuardKeys:
+    def test_success_reports_remote_and_observed_head(self):
+        mock_result = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("app.claude_step.subprocess.run", return_value=mock_result), \
+             patch(
+                 "app.rebase_pr.force_push_guard.observe_remote_head",
+                 return_value="cafe" * 10,
+             ) as observe:
+            result = _push_with_fallback(
+                "koan/fix", "main", "sukria/koan", "42",
+                {"title": "Fix", "url": "https://..."}, "/project",
+            )
+        assert result["success"] is True
+        assert result["remote"] == "origin"
+        assert result["pre_push_remote_head"] == "cafe" * 10
+        observe.assert_called_once_with("origin", "koan/fix", "/project")
+
+
+class TestRunForcePushGuard:
+    def _run(self, *, pre_rebase_head="a" * 40, findings="unused",
+             section="", actions_log=None, notify_calls=None):
+        actions_log = actions_log if actions_log is not None else []
+        notify_calls = notify_calls if notify_calls is not None else []
+        with patch(
+            "app.rebase_pr.force_push_guard.verify_content_preserved",
+            return_value=findings,
+        ), patch(
+            "app.rebase_pr.force_push_guard.build_push_warning",
+            return_value=section,
+        ):
+            result = _run_force_push_guard(
+                pre_rebase_head=pre_rebase_head,
+                target_ref="origin/main",
+                project_path="/project",
+                push_result={"remote": "origin", "pre_push_remote_head": "b" * 40},
+                branch="koan/fix",
+                pr_number="42",
+                actions_log=actions_log,
+                notify_fn=notify_calls.append,
+            )
+        return result, actions_log, notify_calls
+
+    def test_findings_produce_section_action_and_notification(self):
+        section = "> [!CAUTION]\n> boom"
+        result, log, notified = self._run(section=section)
+        assert result == section
+        assert any("Force-push guard" in a and "see the warning" in a for a in log)
+        assert len(notified) == 1
+        assert "PR #42" in notified[0]
+
+    def test_clean_check_logs_preserved(self):
+        result, log, notified = self._run(section="")
+        assert result == ""
+        assert any("verified preserved" in a for a in log)
+        assert notified == []
+
+    def test_guard_failure_is_non_fatal(self):
+        result, log, notified = self._run(findings=None, section="")
+        assert result == ""
+        assert any("could not run" in a for a in log)
+        assert notified == []
+
+    def test_missing_baseline_skips(self):
+        log = []
+        result = _run_force_push_guard(
+            pre_rebase_head="",
+            target_ref="origin/main",
+            project_path="/project",
+            push_result={},
+            branch="koan/fix",
+            pr_number="42",
+            actions_log=log,
+            notify_fn=lambda m: None,
+        )
+        assert result == ""
+        assert any("pre-rebase head was not captured" in a for a in log)

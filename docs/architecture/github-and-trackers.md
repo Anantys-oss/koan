@@ -4,7 +4,7 @@ title: "GitHub And Trackers"
 description: "Covers GitHub/Jira notification flow, PR workflows (footer, receiving-code-review protocol), review issue-tracker enrichment, and the instance/ tracker files used to dedupe work."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-19
+updated: 2026-08-14
 ---
 
 # GitHub And Trackers
@@ -54,6 +54,36 @@ request is incorrect — while complying when the human insists. Trivial/mechani
 feedback takes a fast-path. The review-learning extraction additionally records
 pushback outcomes (validated vs. overridden) so the agent learns which pushbacks to
 trust.
+
+### Force-push content-preservation guard
+
+A `/rebase` ends in a force-push, and a force-push can silently lose work: a
+bad rebase can drop or reshape commits the PR previously carried, and a commit
+someone pushes to the branch *while* the rebase is running gets erased outright.
+After confirmed incidents of both, every rebase-pipeline force-push is now
+followed by a detection harness (`koan/app/force_push_guard.py`; contract in
+`specs/components/git-github.md`):
+
+- **Before the push** the remote branch tip is snapshotted (`git ls-remote`)
+  and fetched, so a concurrent human push is known — and recoverable — before
+  it gets overwritten. The fetch also refreshes the tracking ref, making the
+  subsequent `--force-with-lease` compare against the freshest observation.
+- **After the pipeline's last push** (private-gate fixes included) the guard
+  compares the pre-rebase PR head against what was pushed: `git cherry`
+  patch-id equivalence (changes that landed upstream count as preserved), a
+  file-level cross-check for changes that vanished from the PR diff entirely,
+  the list of clobbered concurrent commits, and a final `ls-remote` to detect
+  a push that raced in right after ours — the window that cannot be closed
+  client-side, only detected.
+- **Findings render as one alert** (`build_alert`) at the top of the rebase PR
+  comment — CAUTION (red) when content was lost or a concurrent push was
+  overwritten, WARNING (amber) when patches were only reshaped in-flight or
+  the remote raced us — plus a Telegram/Slack notification. The alert always
+  names the pre-rebase head SHA with a copy-pasteable recovery command.
+
+The guard **detects and warns; it never blocks or reverts**. It is best-effort
+by contract: any internal failure logs, appends a "guard skipped" action, and
+lets the rebase finish normally.
 
 ## Mission status indicators (`koan/mission`)
 
