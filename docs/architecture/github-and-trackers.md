@@ -72,7 +72,10 @@ followed by a detection harness (`koan/app/force_push_guard.py`; contract in
   compare against the freshest observation. If that lease is *rejected*, the
   remote moved since the snapshot and the plain `--force` fallback is about to
   overwrite whatever moved it — so the tip is observed again first, otherwise
-  the clobbered commits could never be named.
+  the clobbered commits could never be named. Observations belong to the remote
+  they were taken on: the push tries several remotes in turn, and tips seen on
+  one whose push then failed are dropped, since that branch was never
+  overwritten and reporting it would be a false alarm.
 - **After the pipeline's last push** the guard compares the pre-rebase PR head
   against the last SHA actually pushed. That SHA is captured before the push
   and kept only on success; with no confirmed value the guard skips rather
@@ -106,9 +109,17 @@ followed by a detection harness (`koan/app/force_push_guard.py`; contract in
   `&`, every argument is shell-quoted and the backup branch is derived from the
   SHA — no branch-controlled text ever reaches it.
 
+A check that could not run at all — an `ls-remote` outage before or after the
+push — is listed in the alert as an explicitly **unverified** check. "Could
+not look" is not "nothing was there", and a safety check that silently did not
+happen is worse than one that says so.
+
 The guard **detects and warns; it never blocks or reverts**. It is best-effort
 by contract: any internal failure logs, appends a "guard skipped" action, and
-lets the rebase finish normally.
+lets the rebase finish normally. That boundary covers the whole call site, not
+just the git operations — by the time the guard runs the branch has already
+been rewritten, so an unexpected bug inside it must never turn a completed
+rebase into a failed mission or skip the PR comment that follows.
 
 ## Mission status indicators (`koan/mission`)
 
