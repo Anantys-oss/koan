@@ -402,3 +402,39 @@ class TestFormatMessageCaching:
             format_message("raw", "soul", "prefs")
 
         assert mock_run.call_count == 2
+
+
+class TestOutboxHonoursCliRole:
+    """Outbox formatting builds its command from the `lightweight` role.
+
+    It already asked for the lightweight MODEL while taking the global
+    provider's binary; the two now agree.
+    """
+
+    @patch("app.cli_exec.run_cli")
+    def test_uses_the_lightweight_role_binary(self, mock_run):
+        from app.provider import ClaudeProvider
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="formatted", stderr="")
+        with patch(
+            "app.provider.get_provider_for_role",
+            return_value=ClaudeProvider(binary_path="/opt/bin/wrap-claude"),
+        ) as mock_role:
+            format_message("raw content", "soul", "prefs")
+
+        mock_role.assert_called_once_with("lightweight")
+        assert mock_run.call_args[0][0][0] == "/opt/bin/wrap-claude"
+
+    @patch("app.cli_exec.run_cli")
+    def test_still_requests_the_lightweight_model(self, mock_run):
+        """Routing the provider must not change which model is used."""
+        from app.config import get_model_config
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="formatted", stderr="")
+        # Unique text per test: format_message short-circuits on a response cache.
+        format_message("outbox-model-parity-probe", "soul", "prefs")
+
+        argv = mock_run.call_args[0][0]
+        expected = get_model_config()["lightweight"]
+        assert "--model" in argv
+        assert argv[argv.index("--model") + 1] == expected

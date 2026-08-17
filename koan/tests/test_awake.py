@@ -4194,3 +4194,75 @@ def test_read_sections_cached_expires_after_ttl():
     assert first == {"pending": ["a"]}
     assert second == {"pending": ["b"]}  # TTL expired → re-read
     assert mock_read.call_count == 2
+
+
+class TestHandleChatHonoursCliRole:
+    """Chat builds its command from the `chat` role's provider.
+
+    It already asked for the chat MODEL while taking the global provider's
+    binary, so a `cli.default.chat` override never reached the spawn — the
+    symptom that surfaced as a 401 auth error delivered as a chat reply.
+    """
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.awake.subprocess.run")
+    def test_uses_the_chat_role_binary(self, mock_run, mock_send, mock_tools,
+                                       mock_tools_desc, mock_fmt, mock_hist,
+                                       mock_save, tmp_path):
+        from app.provider import ClaudeProvider
+
+        mock_run.return_value = MagicMock(stdout="Hello back!", returncode=0)
+        (tmp_path / "journal" / "2026-02-01").mkdir(parents=True)
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", "test summary"), \
+             patch("app.provider.get_provider_for_role",
+                   return_value=ClaudeProvider(binary_path="/opt/bin/wrap-claude")) as mock_role:
+            handle_chat("hello")
+
+        mock_role.assert_called_once_with("chat")
+        assert mock_run.call_args[0][0][0] == "/opt/bin/wrap-claude"
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.awake.subprocess.run")
+    def test_routing_changes_only_the_binary(self, mock_run, mock_send, mock_tools,
+                                             mock_tools_desc, mock_fmt, mock_hist,
+                                             mock_save, tmp_path):
+        """Routing the provider must not disturb any other argument — same
+        model, tools and flags, only argv[0] moves."""
+        from app.provider import ClaudeProvider
+
+        mock_run.return_value = MagicMock(stdout="Hello back!", returncode=0)
+        (tmp_path / "journal" / "2026-02-01").mkdir(parents=True)
+        patches = [
+            patch("app.awake.INSTANCE_DIR", tmp_path),
+            patch("app.awake.KOAN_ROOT", tmp_path),
+            patch("app.awake.PROJECT_PATH", ""),
+            patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"),
+            patch("app.awake.SOUL", "test soul"),
+            patch("app.awake.SUMMARY", "test summary"),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+            handle_chat("hello")
+            baseline = list(mock_run.call_args[0][0])
+            with patch("app.provider.get_provider_for_role",
+                       return_value=ClaudeProvider(binary_path="/opt/bin/wrap-claude")):
+                handle_chat("hello")
+            routed = list(mock_run.call_args[0][0])
+
+        assert routed[0] == "/opt/bin/wrap-claude"
+        assert baseline[0] == "claude"
+        assert routed[1:] == baseline[1:]
