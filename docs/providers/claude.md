@@ -204,6 +204,14 @@ same as `models:`: `mission`, `chat`, `lightweight`, `review_mode`, `reflect`.
 role selects `claude` without an explicit path, and `cli_provider` /
 `KOAN_CLI_PROVIDER` remain the global default provider.
 
+`cli_provider` additionally accepts the same `flavor:path` grammar as `cli:`, so
+`cli_provider: "claude:/root/.local/bin/lmpanel-claude"` makes **every**
+un-overridden role spawn that wrapper instead of bare `claude` — including the
+paths that do not resolve a role (chat, rituals, outbox formatting). A path here
+wins over `KOAN_CLAUDE_CLI_PATH`, matching how a per-role `claude:path` behaves.
+`KOAN_CLI_PROVIDER` stays flavor-only; use `KOAN_CLAUDE_CLI_PATH` to pin a binary
+from the environment.
+
 > Tip: the ready-made wrappers in `bin/` (`zai-claude`, `oc-claude`,
 > `ollama-claude`) make good `claude:path` targets when you want a role to run a
 > Claude-compatible backend.

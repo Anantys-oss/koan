@@ -458,7 +458,14 @@ tools:
 # Options: "claude" (default), "codex" (OpenAI Codex CLI), "copilot" (GitHub Copilot CLI),
 #          "haze", "grok" (xAI Grok Build CLI), "ollama-launch" (Ollama-managed Claude CLI)
 #          ("local" was removed — use ollama-launch)
-# Can also be set via KOAN_CLI_PROVIDER env var (overrides this)
+# Accepts "flavor" OR "flavor:path" — the same grammar as the per-role `cli:`
+# section below. A path pins the binary for the GLOBAL provider, e.g.
+#   cli_provider: "claude:/root/.local/bin/lmpanel-claude"
+# (absolute as-is; bare name resolved on PATH; relative rooted at KOAN_ROOT).
+# Every role that does not override it under `cli:` inherits that binary.
+# Can also be set via KOAN_CLI_PROVIDER env var (overrides this). The env var
+# is flavor-only — use KOAN_CLAUDE_CLI_PATH to pin a binary from the
+# environment.
 cli_provider: "claude"
 
 # Skip permission prompts/sandboxing for CLI providers.
