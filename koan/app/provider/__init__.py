@@ -137,16 +137,28 @@ _PROVIDERS = {
 # it here would break that CI fixer.
 READ_ONLY_ROLES = frozenset({"review_mode"})
 
-# Cached provider instance (reset with reset_provider() in tests)
+# Cached provider instance (reset with reset_provider() in tests). The path is
+# part of the key: `cli_provider: claude:/a` and `claude:/b` are the same flavor
+# but must not share an instance.
 _cached_provider: Optional[CLIProvider] = None
 _cached_provider_name: str = ""
+_cached_provider_path: str = ""
+
+# True once an unparseable global cli_provider has been reported. get_provider()
+# runs on every command build, so without this a stale value (e.g. the removed
+# "local" flavor, which config_validator still special-cases) would log once per
+# CLI invocation for the life of the process.
+_warned_global_cli: bool = False
 
 
 def reset_provider():
-    """Reset the cached provider (for testing)."""
-    global _cached_provider, _cached_provider_name
+    """Reset the cached provider and warn-once state (for testing)."""
+    global _cached_provider, _cached_provider_name, _cached_provider_path
+    global _warned_global_cli
     _cached_provider = None
     _cached_provider_name = ""
+    _cached_provider_path = ""
+    _warned_global_cli = False
 
 
 def is_known_provider(name: str) -> bool:
@@ -154,45 +166,70 @@ def is_known_provider(name: str) -> bool:
     return str(name or "").strip().lower() in _PROVIDERS
 
 
-def get_provider_name() -> str:
-    """Determine which CLI provider to use.
+def _global_cli_spec() -> Tuple[str, str]:
+    """Resolve the global provider as ``(flavor, binary_path)``.
 
     Resolution order:
-    1. KOAN_CLI_PROVIDER env var (with CLI_PROVIDER fallback; highest priority)
-    2. config.yaml cli_provider key
-    3. Default: "claude"
+    1. KOAN_CLI_PROVIDER env var (with CLI_PROVIDER fallback; highest priority).
+       Flavor only — ``KOAN_CLAUDE_CLI_PATH`` is the env channel for a custom
+       binary, so this one deliberately carries no path.
+    2. config.yaml ``cli_provider`` key — ``flavor`` or ``flavor:path``, the same
+       grammar the per-role ``cli:`` entries use.
+    3. Default: ``("claude", "")``
+
+    An unparseable value warns once per distinct value rather than once per
+    call: this runs on every command build via :func:`get_provider`.
     """
     # Lazy import to avoid circular dependency
-    from app.utils import get_cli_provider_env, load_config
+    from app.utils import get_cli_provider_env
 
     env_val = get_cli_provider_env()
     if env_val and env_val in _PROVIDERS:
-        return env_val
+        return (env_val, "")
 
     try:
-        config = load_config()
-        config_val = str(config.get("cli_provider", "")).strip().lower()
-        if config_val and config_val in _PROVIDERS:
-            return config_val
+        from app.config import get_global_cli_spec
+
+        global _warned_global_cli
+        flavor, path = get_global_cli_spec(warn=not _warned_global_cli)
+        if not flavor:
+            _warned_global_cli = True
+        if flavor:
+            return (flavor, path)
     except Exception as e:
         print(f"[provider] Config loading failed: {e}", file=sys.stderr)
 
-    return "claude"
+    return ("claude", "")
+
+
+def get_provider_name() -> str:
+    """Determine which CLI provider to use.
+
+    Returns the bare flavor name; a ``cli_provider: flavor:path`` value resolves
+    to its flavor here and the path is applied by :func:`get_provider`.
+    """
+    return _global_cli_spec()[0]
 
 
 def get_provider() -> CLIProvider:
     """Get the configured CLI provider instance (cached singleton)."""
-    global _cached_provider, _cached_provider_name
+    global _cached_provider, _cached_provider_name, _cached_provider_path
+    # The flavor still comes from get_provider_name() so tests that patch it keep
+    # steering resolution. The configured path applies only when the resolved
+    # flavor is still the one it was configured for — an override must not
+    # inherit another flavor's binary.
+    spec_flavor, spec_path = _global_cli_spec()
     name = get_provider_name()
-    if _cached_provider is None or name != _cached_provider_name:
-        _cached_provider = _PROVIDERS[name]()
+    path = spec_path if name == spec_flavor else ""
+    if (
+        _cached_provider is None
+        or name != _cached_provider_name
+        or path != _cached_provider_path
+    ):
+        _cached_provider = _PROVIDERS[name](binary_path=path)
         _cached_provider_name = name
+        _cached_provider_path = path
     return _cached_provider
-
-
-def is_known_provider(name: str) -> bool:
-    """True when ``name`` resolves to a registered CLI provider."""
-    return str(name or "").strip().lower() in _PROVIDERS
 
 
 def known_providers() -> list:

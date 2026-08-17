@@ -55,7 +55,12 @@ def gather_startup_info(koan_root: Path) -> dict:
 
 
 def _get_provider(koan_root: Path) -> str:
-    """Detect the CLI provider from env or config."""
+    """Detect the CLI provider FLAVOR from env or config.
+
+    ``cli_provider`` accepts ``flavor:path``, so the raw value is not a display
+    name — strip any binary path rather than printing
+    ``claude:/root/.local/bin/wrap`` as the provider.
+    """
     try:
         from app.utils import get_cli_provider_env
         provider = get_cli_provider_env()
@@ -63,7 +68,7 @@ def _get_provider(koan_root: Path) -> str:
         provider = ""
     if not provider:
         provider = _get_config_value("cli_provider", "claude")
-    return provider
+    return str(provider or "").partition(":")[0].strip().lower() or "claude"
 
 
 def _get_projects_summary(koan_root: Path) -> str:
