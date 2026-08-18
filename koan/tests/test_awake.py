@@ -4266,3 +4266,43 @@ class TestHandleChatHonoursCliRole:
         assert routed[0] == "/opt/bin/wrap-claude"
         assert baseline[0] == "claude"
         assert routed[1:] == baseline[1:]
+
+    @patch("app.awake.save_conversation_message")
+    @patch("app.awake.load_recent_history", return_value=[])
+    @patch("app.awake.format_conversation_history", return_value="")
+    @patch("app.awake.get_tools_description", return_value="")
+    @patch("app.awake.get_chat_tools", return_value="")
+    @patch("app.awake.send_telegram", return_value=True)
+    @patch("app.awake.subprocess.run")
+    def test_cross_flavor_role_uses_the_role_providers_model(
+        self, mock_run, mock_send, mock_tools, mock_tools_desc, mock_fmt,
+        mock_hist, mock_save, tmp_path
+    ):
+        """A cross-flavor `cli.default.chat` override (chat→codex under a claude
+        global) must resolve the chat model against codex's section, not
+        claude's — else codex is spawned with claude's model and rejects it."""
+        from app.provider import CodexProvider
+
+        mock_run.return_value = MagicMock(stdout="Hello back!", returncode=0)
+        (tmp_path / "journal" / "2026-02-01").mkdir(parents=True)
+        config = {
+            "cli_provider": "claude",
+            "models": {
+                "default": {"chat": "sonnet"},
+                "codex": {"chat": "gpt-5-codex"},
+            },
+        }
+        with patch("app.awake.INSTANCE_DIR", tmp_path), \
+             patch("app.awake.KOAN_ROOT", tmp_path), \
+             patch("app.awake.PROJECT_PATH", ""), \
+             patch("app.awake.CONVERSATION_HISTORY_FILE", tmp_path / "history.jsonl"), \
+             patch("app.awake.SOUL", "test soul"), \
+             patch("app.awake.SUMMARY", "test summary"), \
+             patch("app.config._load_config", return_value=config), \
+             patch("app.provider.get_provider_for_role",
+                   return_value=CodexProvider(binary_path="/opt/bin/codex")):
+            handle_chat("hello")
+
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "/opt/bin/codex"
+        assert argv[argv.index("--model") + 1] == "gpt-5-codex"
