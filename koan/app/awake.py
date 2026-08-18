@@ -527,11 +527,16 @@ def handle_chat(text: str):
             quarantine_mission(text, guard_result.reason, source="telegram-chat")
 
     chat_tools_list = get_chat_tools().split(",")
-    models = get_model_config()
-    # Chat already runs on the `chat` MODEL; take the `chat` CLI too so a
-    # `cli:` binary override applies. Resolved once here rather than per retry.
+    # Take the `chat` CLI so a `cli:` binary override applies (resolved once
+    # here, not per retry), and resolve the model against THAT provider's
+    # section so a cross-flavor role override (e.g. chat→codex) gets codex's
+    # model, not the global provider's — a provider spawned with a foreign
+    # model fails.
     from app.provider import get_provider_for_role
     chat_provider = get_provider_for_role("chat")
+    models = get_model_config(
+        role_providers={"chat": chat_provider.name, "fallback": chat_provider.name},
+    )
 
     # Run chat from KOAN_ROOT so paths line up with the rest of the system
     # (reflection, agent loop). Chat only needs to read state under

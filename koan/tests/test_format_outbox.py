@@ -438,3 +438,28 @@ class TestOutboxHonoursCliRole:
         expected = get_model_config()["lightweight"]
         assert "--model" in argv
         assert argv[argv.index("--model") + 1] == expected
+
+    @patch("app.cli_exec.run_cli")
+    def test_cross_flavor_role_uses_the_role_providers_model(self, mock_run):
+        """A cross-flavor `cli:` override (lightweight→codex under a claude
+        global) must resolve the model against codex's section, not claude's —
+        else codex is spawned with claude's model and rejects it."""
+        from app.provider import CodexProvider
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="formatted", stderr="")
+        config = {
+            "cli_provider": "claude",
+            "models": {
+                "default": {"lightweight": "haiku"},
+                "codex": {"lightweight": "gpt-5-codex"},
+            },
+        }
+        with patch("app.config._load_config", return_value=config), patch(
+            "app.provider.get_provider_for_role",
+            return_value=CodexProvider(binary_path="/opt/bin/codex"),
+        ):
+            format_message("cross-flavor-outbox-probe", "soul", "prefs")
+
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "/opt/bin/codex"
+        assert argv[argv.index("--model") + 1] == "gpt-5-codex"
