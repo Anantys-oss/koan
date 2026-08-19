@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-26
+updated: 2026-07-28
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -84,12 +84,23 @@ Code auto-loads `CLAUDE.md` but never `KOAN.md`, so interactive sessions never
 see it.
 
 **Steering-context visibility (`make logs`).** Every steering file that shapes a
-mission prompt is announced on stderr (→ `logs/run.log`) as `Detected <label>,
-loaded N chars (~ M tokens)` via `project_koan.log_context_load`. The agent loop
-surfaces `KOAN.md` when `_get_koan_md_section` reads it, and — detection-only —
-`CLAUDE.md (auto-loaded by CLI)` via `_log_claude_md_detected(project_path)`,
-which reads the project-root `CLAUDE.md` solely to report its size (koan never
-injects it; the CLI loads it from `cwd`). Best-effort: any read/stream failure is
+mission prompt is folded in silently via `project_koan.record_context_load(label,
+content)` and then announced **once per prompt build** as a single consolidated
+block on stderr (→ `logs/run.log`) by `project_koan.flush_context_summary()`,
+called at the end of each prompt builder (`build_agent_prompt`,
+`build_agent_prompt_parts`, and `prompts.load_skill_prompt`). The block reads
+`Steering loaded before Claude (N file(s), ~ T tokens total):` followed by one
+`• <label>: C chars (~ M tokens)` line per file. The agent loop records `KOAN.md`
+(`_get_koan_md_section`) and — detection-only — `CLAUDE.md (auto-loaded by CLI)`
+(`_log_claude_md_detected`, wired into both `build_agent_prompt` and the split
+`build_agent_prompt_parts`), which reads the project-root `CLAUDE.md` solely to
+report its size (koan never injects it; the CLI loads it from `cwd`). A summary
+identical to the previous one (same files and sizes) is suppressed, so a skill
+that rebuilds the prompt several times per mission (e.g. `plan`) announces its
+steering context once, not once per CLI call.
+`mission_executor._run_iteration` calls `reset_context_load_log()` at the top of
+each iteration so a new mission re-announces even when the files are
+byte-identical to the previous mission's. Best-effort: any read/stream failure is
 swallowed and never blocks prompt assembly.
 
 ### Mission hooks (`mission_hooks`) — repo-config-driven shell around missions
