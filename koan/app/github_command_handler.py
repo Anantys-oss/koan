@@ -603,6 +603,13 @@ def build_mission_from_command(
     if context and skill.github_context_aware:
         parts.append(context)
 
+    # An explicit @mention asking for a review is a deliberate human request:
+    # carry --force so the runner bypasses its incremental "no new commits"
+    # skip and always produces a fresh review. Implicit review_requested
+    # notifications don't go through this builder, so they keep the dedup.
+    if command_name in ("review", "ultrareview") and "--force" not in parts:
+        parts.append("--force")
+
     mission_text = " ".join(parts)
     # Trailing 📬 marks missions originating from GitHub @mentions.
     # The /list handler repositions it as a leading visual hint.

@@ -3899,7 +3899,9 @@ def run_review(
             (errors) pass. Equivalent to passing architecture=True and
             errors=True; provided as a single semantic switch for the
             /ultrareview skill.
-        force: If True, review even if the PR is closed/merged.
+        force: If True, review even if the PR is closed/merged, and
+            re-review even when no new commits were pushed (bypasses the
+            incremental SHA skip and the prior-review reuse short-circuit).
         bot_comments: If True, run an additional pass to triage inline
             comments from code-review bots and post replies to actionable
             findings.
@@ -4106,12 +4108,13 @@ def _run_review_body(
     )
 
     # If all current commits were already reviewed AND this is not an
-    # explicit re-request, skip.
+    # explicit re-request (Reviewers-panel re-request or --force), skip.
     if (
         current_shas
         and prior_shas
         and set(current_shas) == set(prior_shas)
         and not review_was_requested
+        and not force
     ):
         bot_triage_cfg = get_review_bot_triage_config()
         bot_triage_enabled = bot_comments or bot_triage_cfg["enabled"]
@@ -4171,7 +4174,7 @@ def _run_review_body(
     _request_signature = request_signature(_focus_flags, _discovery_enabled)
     _consistency_cfg = _get_cc_cfg(project_name or "")
     _base_sha = ""
-    if _consistency_cfg["reuse_enabled"] and _head_sha:
+    if _consistency_cfg["reuse_enabled"] and _head_sha and not force:
         _base_sha = _merge_base_sha(owner, repo, context.get("base") or "", _head_sha)
         if _base_sha:
             _prior_record = _read_prior_review_record(
@@ -4626,7 +4629,8 @@ def main(argv=None):
     )
     parser.add_argument(
         "--force", action="store_true",
-        help="Review even if the PR is closed or merged.",
+        help="Review even if the PR is closed or merged, and re-review even "
+             "when no new commits were pushed since the last review.",
     )
     parser.add_argument(
         "--bot-comments", action="store_true",
