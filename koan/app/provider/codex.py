@@ -94,7 +94,15 @@ class CodexProvider(CLIProvider):
     def is_available(self) -> bool:
         return shutil.which(self.binary()) is not None
 
-    def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
+    def supports_read_only_sandbox(self) -> bool:
+        # Codex ignores per-tool allow/disallow flags (see build_tool_args), so
+        # ``--sandbox read-only`` -- emitted by build_permission_args below -- is
+        # the mechanism that holds a read-only role here.
+        return True
+
+    def build_permission_args(
+        self, skip_permissions: bool = False, read_only: bool = False,
+    ) -> List[str]:
         # Codex equivalent: bypass approvals and sandbox entirely.
         #
         # When skip_permissions=False we use --sandbox workspace-write
@@ -102,9 +110,14 @@ class CodexProvider(CLIProvider):
         # (codex exec) where interactive approval prompts would block
         # forever.  workspace-write is the least-privilege sandbox mode
         # that still works unattended.
-        #
-        # TODO: for read-only contexts (chat, review mode) a future
-        # enhancement could pass --sandbox read-only instead.
+        if read_only:
+            # Codex ignores per-tool allow/disallow arguments entirely
+            # (build_tool_args returns [] and build_command never calls it), so
+            # the sandbox is the ONLY lever that can make a read-only role
+            # read-only. It therefore wins over skip_permissions: honoring the
+            # bypass here would silently hand a review write access to the live
+            # project clone.
+            return ["--sandbox", "read-only"]
         if skip_permissions:
             return ["--dangerously-bypass-approvals-and-sandbox"]
         return ["--sandbox", "workspace-write"]
@@ -340,6 +353,7 @@ class CodexProvider(CLIProvider):
         effort: str = "",
         resume_session_id: str = "",
         project_context: bool = True,
+        read_only: bool = False,
     ) -> List[str]:
         """Build a complete Codex CLI command.
 
@@ -366,7 +380,7 @@ class CodexProvider(CLIProvider):
         cmd = [self.binary(), "exec"]
 
         # Exec-level flags (permission, model) come after 'exec'
-        cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_permission_args(skip_permissions, read_only=read_only))
         cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(self.build_model_args(model, fallback))
         cmd.extend(self.build_output_args(output_format))

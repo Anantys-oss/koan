@@ -4,7 +4,7 @@ title: "OpenAI Codex CLI Provider"
 description: "Setup and behavior guide for using OpenAI's Codex CLI as Kōan's provider, including quota/usage handling and troubleshooting."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-07-28
+updated: 2026-08-18
 ---
 
 # OpenAI Codex CLI Provider
@@ -117,6 +117,14 @@ than a generic failure.
 |-----------------------|------------------|---------------------------------|
 | `skip_permissions: false` | `--sandbox workspace-write` | Workspace writes, but `.git` may be read-only |
 | `skip_permissions: true`  | `--dangerously-bypass-approvals-and-sandbox` | No approvals, no sandbox |
+| read-only role (`review_mode`) | `--sandbox read-only` | No writes at all. **Overrides `skip_permissions`** |
+
+Because Codex has no per-tool allow/disallow flags, the sandbox is the only lever
+that can make a role read-only. Roles in `app.provider.READ_ONLY_ROLES`
+(currently `review_mode` — every `/review` pass) are pinned to
+`--sandbox read-only`, and that pin deliberately **wins over
+`skip_permissions: true`**: honoring the bypass there would silently hand a code
+review write access to the live project clone it runs in.
 
 ### Feature Mapping
 

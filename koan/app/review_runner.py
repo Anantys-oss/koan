@@ -951,6 +951,15 @@ def _run_claude_review(
 ) -> Tuple[str, str]:
     """Run provider CLI with read-only tools and return the output text.
 
+    The ``review_mode`` role is in :data:`app.provider.READ_ONLY_ROLES`, so the
+    provider layer additionally *denies* the side-effecting tools rather than
+    merely leaving them off ``allowed_tools`` — an allowlist alone does not
+    withhold anything (see :data:`app.provider.base.SIDE_EFFECT_TOOLS`). The
+    boundary fails closed: if the resolved ``review_mode`` provider can enforce
+    neither a per-tool denial nor a read-only sandbox, the provider layer raises
+    :class:`~app.provider.base.ReadOnlyUnenforceable` (a ``RuntimeError``) and
+    the review is reported as failed rather than run with write access.
+
     Args:
         prompt: The review prompt.
         project_path: Path to the project for codebase context.

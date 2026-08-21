@@ -335,7 +335,13 @@ def build_mission_command(
     from app.provider import build_full_command_managed, get_provider_for_role
 
     # Get mission tools (comma-separated list)
-    # REVIEW mode: enforce read-only at tool level (no Bash/Write/Edit)
+    # REVIEW mode: narrow the tool allowlist. NOTE: this is NOT enforcement --
+    # ``--allowedTools`` only pre-approves; it does not withhold Bash/Write/Edit.
+    # This path builds via build_full_command_managed(), which takes no
+    # ``read_only`` argument, so the READ_ONLY_ROLES machinery does not reach it.
+    # Deliberate and documented -- see specs/components/providers.md ("the
+    # enforcement reaches read_only invocations, NOT every READ_ONLY_ROLES
+    # consumer"). Do not read this list as a security boundary.
     if autonomous_mode == "review":
         tools_list = ["Read", "Glob", "Grep"]
     else:

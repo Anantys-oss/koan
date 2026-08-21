@@ -984,8 +984,14 @@ def _run_claude_plan(prompt, project_path, project_name: str = ""):
 
     Loads project MCP servers when the ``plan`` role is opted in via
     ``mcp_roles`` (default includes plan). Secondary planning sub-agents
-    (critic/improve/review/assumptions) use ``run_command`` directly and
-    intentionally stay local-read-only — they do not go through this helper.
+    (critic/improve/review/assumptions) use ``run_command`` directly and get no
+    MCP — they do not go through this helper.
+
+    They are *intended* to be read-only, but note that passing a narrow
+    ``allowed_tools`` list does not by itself make them so: ``--allowedTools``
+    pre-approves, it does not withhold. Enforcement only applies when the role
+    resolves into :data:`app.provider.READ_ONLY_ROLES`, and these sub-agents run
+    as ``lightweight`` or ``mission`` — so the allowlist withholds nothing.
     """
     from app.cli_provider import run_command_streaming
     from app.config import (

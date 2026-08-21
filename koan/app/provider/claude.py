@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.provider.base import CLIProvider
 
 _ROOT_SKIP_PERMISSIONS_WARNED = False  # Module-level guard to warn once per process
+_READ_ONLY_SKIP_PERMISSIONS_WARNED = False  # Same, for the read-only override
 
 
 class ClaudeProvider(CLIProvider):
@@ -48,7 +49,31 @@ class ClaudeProvider(CLIProvider):
     def supports_stream_json(self) -> bool:
         return True
 
-    def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
+    def supports_tool_denial(self) -> bool:
+        # --disallowedTools removes a tool from the model's context entirely.
+        # Verified on CLI 2.1.234: a Bash call under --disallowedTools Bash is
+        # blocked, whereas --allowedTools Read,Glob,Grep leaves Bash working.
+        return True
+
+    def build_permission_args(
+        self, skip_permissions: bool = False, read_only: bool = False,
+    ) -> List[str]:
+        if read_only:
+            # --dangerously-skip-permissions bypasses ALL permission checks,
+            # which would defeat the --disallowedTools denial that makes a
+            # read-only role read-only. A read-only invocation therefore never
+            # honors skip_permissions, regardless of global config.
+            if skip_permissions:
+                global _READ_ONLY_SKIP_PERMISSIONS_WARNED
+                if not _READ_ONLY_SKIP_PERMISSIONS_WARNED:
+                    _READ_ONLY_SKIP_PERMISSIONS_WARNED = True
+                    print(
+                        f"[{self.name}] skip_permissions: true is not honored for "
+                        "read-only roles (it would bypass the tool denial that "
+                        "keeps reviews read-only); continuing without the flag.",
+                        file=sys.stderr,
+                    )
+            return []
         if not skip_permissions:
             return []
         # The Claude CLI refuses --dangerously-skip-permissions under

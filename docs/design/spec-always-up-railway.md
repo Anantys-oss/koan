@@ -4,7 +4,7 @@ title: "Kōan \"Always Up\" — Docker + Railway Deployment Spec"
 description: "A deployment proposal for running Kōan as an always-on Docker service on Railway, covering CLI auth, persistent state via git, and security hardening."
 tags: [design]
 created: 2026-05-28
-updated: 2026-05-28
+updated: 2026-08-18
 ---
 
 # Kōan "Always Up" — Docker + Railway Deployment Spec
@@ -168,7 +168,11 @@ claude -p "..." --dangerously-skip-permissions --allowedTools Bash,Read,Write,Gl
 
 Since the container IS the sandbox, `--dangerously-skip-permissions` is acceptable — the container's filesystem isolation IS the permission boundary. This actually **improves** security vs. running on the laptop where Claude has access to the entire home directory.
 
-**Important**: The `--allowedTools` flag already restricts available tools. Combined with container isolation, this is defense-in-depth.
+**Important**: `--allowedTools` does **not** restrict which tools are available — it only
+pre-approves them, so an unlisted tool is still callable (see
+`specs/components/providers.md`, "a read-only execution role is enforced by tool
+DENIAL, not by omission"). The container's filesystem isolation is therefore the only
+boundary here, not one of two. To withhold a tool, deny it by name.
 
 ---
 

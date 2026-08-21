@@ -231,6 +231,7 @@ class HazeProvider(CLIProvider):
         effort: str = "",
         resume_session_id: str = "",
         project_context: bool = True,
+        read_only: bool = False,
     ) -> List[str]:
         """Build ``haze [-m <sel>] [--output <fmt>] -p <prompt>``.
 

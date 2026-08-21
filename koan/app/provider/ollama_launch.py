@@ -106,6 +106,7 @@ class OllamaLaunchProvider(ClaudeProvider):
         effort: str = "",
         resume_session_id: str = "",
         project_context: bool = True,
+        read_only: bool = False,
     ) -> List[str]:
         """Build: ollama launch claude --model X -- <claude-flags>.
 
@@ -127,7 +128,7 @@ class OllamaLaunchProvider(ClaudeProvider):
         # Claude Code part — same ordering as base CLIProvider.build_command()
         if resume_session_id and self.supports_session_resume():
             cmd.extend(self.build_resume_args(resume_session_id))
-        cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_permission_args(skip_permissions, read_only=read_only))
         cmd.extend(self.build_project_context_args(project_context))
 
         # System prompt: file mode takes precedence over inline content.

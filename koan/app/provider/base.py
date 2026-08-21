@@ -12,6 +12,16 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # Claude Code tool names (canonical, used throughout koan codebase)
 CLAUDE_TOOLS = {"Bash", "Read", "Write", "Glob", "Grep", "Edit", "Skill"}
 
+# Tools that can cause side effects, and so must be actively BLOCKED for a
+# read-only invocation. Passing only ``Read``/``Glob``/``Grep`` to
+# ``--allowedTools`` does NOT withhold the rest: that flag pre-approves
+# invocations, it does not restrict which tools exist (the CLI's own reference
+# says "To restrict which tools are available, use --tools instead"). Verified
+# against Claude CLI 2.1.234 -- with ``--allowedTools Read,Glob,Grep`` a Bash
+# call still succeeds, while ``--disallowedTools Bash`` blocks it. Read-only
+# roles therefore have to name these explicitly.
+SIDE_EFFECT_TOOLS = ("Bash", "Write", "Edit", "NotebookEdit")
+
 # Mapping from Kōan canonical tool names to OpenAI-style function names.
 # Used by Copilot provider (--allow-tool) and local LLM runner (function calling).
 TOOL_NAME_MAP = {
@@ -33,6 +43,21 @@ PROVIDER_ERROR_EVENT_TYPES = {
     "response.failed",
     "task.failed",
 }
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+class ReadOnlyUnenforceable(RuntimeError):
+    """Raised when a read-only invocation is asked of a provider that cannot hold it.
+
+    A read-only role is a security boundary, not a hint. A provider that can
+    express neither a per-tool denial (:meth:`CLIProvider.supports_tool_denial`)
+    nor a read-only sandbox (:meth:`CLIProvider.supports_read_only_sandbox`)
+    would run the invocation with full write access to the live project clone,
+    so the invocation is refused rather than silently downgraded to advisory.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -233,9 +258,40 @@ class CLIProvider:
 
         Args:
             allowed_tools: Explicit list of allowed tools (Claude names).
+                Pre-approval only — listing a subset does not withhold the
+                others. Use *disallowed_tools* to actually deny a tool.
             disallowed_tools: Tools to block (Claude names).
         """
         raise NotImplementedError
+
+    def supports_tool_denial(self) -> bool:
+        """Return True if the CLI can be told to deny specific tools.
+
+        When False, a read-only invocation cannot be enforced through tool
+        arguments and the provider must express the restriction some other way
+        (Codex's ``--sandbox read-only``) or not at all.
+        """
+        return False
+
+    def supports_read_only_sandbox(self) -> bool:
+        """Return True if the CLI can be pinned to an OS-level read-only sandbox.
+
+        The second of the two mechanisms that can hold a read-only role. Codex
+        ignores per-tool arguments entirely and instead accepts
+        ``--sandbox read-only``; providers with that shape override this and
+        emit the flag from :meth:`build_permission_args`.
+        """
+        return False
+
+    def enforces_read_only(self) -> bool:
+        """Return True if a ``read_only=True`` invocation is actually enforceable.
+
+        The fail-closed predicate: a provider that can neither deny tools by
+        name nor run in a read-only sandbox cannot uphold the boundary, and
+        :func:`app.provider.build_full_command` refuses the invocation rather
+        than letting ``read_only`` degrade into a prompt-level suggestion.
+        """
+        return self.supports_tool_denial() or self.supports_read_only_sandbox()
 
     def build_model_args(
         self,
@@ -346,10 +402,19 @@ class CLIProvider:
         """
         return []
 
-    def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
+    def build_permission_args(
+        self, skip_permissions: bool = False, read_only: bool = False,
+    ) -> List[str]:
         """Build args for permission skipping.
 
-        Base implementation returns empty — only Claude provider supports this.
+        Args:
+            skip_permissions: Operator opted out of permission prompting.
+            read_only: This invocation must not be able to write. Providers that
+                can express a read-only posture (Codex's ``--sandbox read-only``)
+                emit it here, and it **overrides** *skip_permissions* — a review
+                must not inherit a blanket bypass from global config.
+
+        Base implementation returns empty — providers override as needed.
         """
         return []
 
@@ -370,11 +435,16 @@ class CLIProvider:
         effort: str = "",
         resume_session_id: str = "",
         project_context: bool = True,
+        read_only: bool = False,
     ) -> List[str]:
         """Build a complete CLI command from generic parameters.
 
         Args:
             prompt: User prompt text.
+            read_only: When True this invocation must not be able to write.
+                Forwarded to :meth:`build_permission_args`; the side-effecting
+                tools are added to *disallowed_tools* upstream in
+                :func:`app.provider.build_full_command`.
             system_prompt: Optional system prompt text. When provided and the
                 provider supports it, sent via a dedicated flag (e.g.,
                 ``--append-system-prompt``). Otherwise prepended to *prompt*.
@@ -410,7 +480,7 @@ class CLIProvider:
         cmd = [self.binary()]
         if resume_session_id and self.supports_session_resume():
             cmd.extend(self.build_resume_args(resume_session_id))
-        cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_permission_args(skip_permissions, read_only=read_only))
         cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(sys_args)
         cmd.extend(self.build_prompt_args(prompt))
