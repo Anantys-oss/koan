@@ -152,6 +152,7 @@ class CodexProvider(CLIProvider):
         self,
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
+        restrict_tools: Optional[Sequence[str]] = None,
     ) -> List[str]:
         # Codex CLI does not support per-tool allow/disallow flags.
         # Tool access is controlled via sandbox policies (--sandbox flag)

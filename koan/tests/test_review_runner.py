@@ -48,6 +48,27 @@ from app.review_runner import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _no_pinned_worktree():
+    """Neutralize the PR-head worktree pin for tests that are not about it.
+
+    `run_review` pins a disposable checkout of the PR head by default, which
+    needs network and a real git remote. These tests exercise the review logic
+    around it, so the pin yields the path they already pass. The pin's own
+    behaviour -- SHA verification, cleanup, and the deliberate refusal to fall
+    back to project_path -- is covered in test_review_worktree.py and by
+    TestPinnedWorktreeInRunReview below.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _passthrough(owner, repo, pr_number, project_path, **kwargs):
+        yield project_path, "deadbee" * 6
+
+    with patch("app.review_worktree.pinned_review_worktree", _passthrough):
+        yield
+
+
 @pytest.fixture
 def pr_context():
     """Minimal PR context dict matching fetch_pr_context output."""
@@ -2700,11 +2721,15 @@ class TestRunClaudeReview:
         output, error = _run_claude_review("prompt", "/tmp/project")
         assert output == "review text"
         assert error == ""
-        # Read-only: no shell in the request. The provider layer additionally
-        # DENIES the side-effecting tools, because an allowlist alone does not
-        # withhold them (see app.provider.base.SIDE_EFFECT_TOOLS).
-        assert mock_run.call_args.kwargs["allowed_tools"] == ["Read", "Glob", "Grep"]
-        assert mock_run.call_args.kwargs["model_key"] == "review_mode"
+        kwargs = mock_run.call_args.kwargs
+        # Bash is absent on purpose. It is GRANTED by READ_ONLY_TOOLS at the
+        # provider layer and adjudicated per-command by the review_bash_guard
+        # hook; pre-approving it here would defeat that gate.
+        assert kwargs["allowed_tools"] == ["Read", "Glob", "Grep"]
+        assert kwargs["model_key"] == "review_mode"
+        # The reviewed tree is untrusted: its .claude/settings.json can define
+        # hooks, which is code execution on this host.
+        assert kwargs["project_context"] is False
 
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})
@@ -8376,3 +8401,108 @@ class TestTriageAccounting:
         }
         body = _format_review_as_markdown(rd, title="X")
         assert "Triage summary" in body
+
+class TestPinnedWorktreeInRunReview:
+    """The pin is a correctness gate, not a convenience."""
+
+    def _patch_gates(self):
+        return patch(
+            "app.review_runner._fetch_pr_state_and_labels",
+            return_value=("OPEN", []),
+        )
+
+    def test_body_receives_the_worktree_not_the_project_path(self):
+        from contextlib import contextmanager
+
+        from app.review_runner import run_review
+
+        @contextmanager
+        def _pin(owner, repo, pr_number, project_path, **kwargs):
+            yield "/pinned/worktree", "abc123"
+
+        with self._patch_gates(), \
+                patch("app.review_worktree.pinned_review_worktree", _pin), \
+                patch("app.review_runner._run_review_body",
+                      return_value=(True, "ok", None)) as body:
+            run_review("o", "r", "7", "/operator/checkout")
+
+        assert body.call_args.args[3] == "/pinned/worktree"
+
+    def test_pin_failure_fails_the_review_and_never_runs_it(self):
+        """No fallback to project_path -- that is the defect being removed.
+
+        Reviewing the base branch and reporting the findings as fact is worse
+        than not reviewing: a failed review is visible and retriable.
+        """
+        from contextlib import contextmanager
+
+        from app.review_runner import run_review
+
+        @contextmanager
+        def _boom(*a, **kw):
+            raise RuntimeError("fetched PR HEAD does not match GitHub")
+            yield  # pragma: no cover
+
+        with self._patch_gates(), \
+                patch("app.review_worktree.pinned_review_worktree", _boom), \
+                patch("app.review_runner._run_review_body") as body:
+            ok, msg, data = run_review("o", "r", "7", "/operator/checkout")
+
+        assert ok is False
+        assert "clean checkout" in msg
+        assert data is None
+        body.assert_not_called()
+
+    def test_pin_succeeded_body_exception_is_NOT_misreported_as_checkout_failure(
+        self,
+    ):
+        """Only the pin is guarded; a body bug must propagate, not become #N.
+
+        A genuine bug in the review body (e.g. a new uncaught RuntimeError
+        during analysis) is indistinguishable from a git remote failure if it is
+        swallowed by the pin's except clause. The operator would see a misleading
+        "Could not prepare a clean checkout of PR #N" and retry instead of a
+        stack trace pointing at the real defect.
+        """
+        import pytest
+        from contextlib import contextmanager
+
+        from app.review_runner import run_review
+
+        @contextmanager
+        def _pin(*a, **kw):
+            yield "/pinned/worktree", "abc123"
+
+        def _body(*a, **kw):
+            raise RuntimeError("boom inside the review body")
+
+        with self._patch_gates(), \
+                patch("app.review_worktree.pinned_review_worktree", _pin), \
+                patch("app.review_runner._run_review_body", _body):
+            with pytest.raises(RuntimeError, match="boom inside the review body"):
+                run_review("o", "r", "7", "/operator/checkout")
+
+    def test_opt_out_uses_the_supplied_path(self):
+        """review_guard pins its own worktree and must not double-fetch."""
+        from app.review_runner import run_review
+
+        with self._patch_gates(), \
+                patch("app.review_worktree.pinned_review_worktree") as pin, \
+                patch("app.review_runner._run_review_body",
+                      return_value=(True, "ok", None)) as body:
+            run_review("o", "r", "7", "/already/pinned", pinned_worktree=False)
+
+        pin.assert_not_called()
+        assert body.call_args.args[3] == "/already/pinned"
+
+    def test_skipped_pr_never_pays_for_a_checkout(self):
+        from app.review_runner import run_review
+
+        with patch("app.review_runner._fetch_pr_state_and_labels",
+                   return_value=("MERGED", [])), \
+                patch("app.review_worktree.pinned_review_worktree") as pin:
+            ok, msg, _ = run_review("o", "r", "7", "/operator/checkout")
+
+        assert ok is True
+        assert "merged" in msg
+        pin.assert_not_called()

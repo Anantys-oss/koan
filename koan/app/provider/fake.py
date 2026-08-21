@@ -21,7 +21,7 @@ output is empty. Smart routing lands in a follow-up issue.
 """
 
 import os
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from app.provider.base import CLIProvider
 
@@ -147,6 +147,7 @@ class FakeProvider(CLIProvider):
         self,
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
+        restrict_tools: Optional[Sequence[str]] = None,
     ) -> List[str]:
         return []
 

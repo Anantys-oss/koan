@@ -2399,7 +2399,7 @@ class TestReadOnlyRoleEnforcement:
 
     def test_read_only_denies_side_effect_tools(self):
         from app.provider import build_full_command
-        from app.provider.base import SIDE_EFFECT_TOOLS
+        from app.provider.base import READ_ONLY_TOOLS, SIDE_EFFECT_TOOLS
         from app.provider.claude import ClaudeProvider
 
         with patch("app.config.get_skip_permissions", return_value=False):
@@ -2410,7 +2410,16 @@ class TestReadOnlyRoleEnforcement:
                 read_only=True,
             )
         denied = cmd[cmd.index("--disallowedTools") + 1].split(",")
+        # Bash is excluded from the denial ON PURPOSE: --disallowedTools removes
+        # a tool from the model's context, so denying it here would cancel the
+        # gated shell that --tools grants. Everything else still gets denied.
         for tool in SIDE_EFFECT_TOOLS:
+            if tool in READ_ONLY_TOOLS:
+                assert tool not in denied, (
+                    f"{tool} is granted by READ_ONLY_TOOLS; denying it would "
+                    "cancel the grant"
+                )
+                continue
             assert tool in denied, f"{tool} must be denied for a read-only role"
 
     def test_non_read_only_adds_no_denial(self):
@@ -2425,6 +2434,142 @@ class TestReadOnlyRoleEnforcement:
                 provider=ClaudeProvider(),
             )
         assert "--disallowedTools" not in cmd
+        assert "--tools" not in cmd
+        assert "--strict-mcp-config" not in cmd
+
+    def test_read_only_restricts_tools_to_the_allowlist(self):
+        """The positive allowlist is the primary mechanism."""
+        from app.provider import build_full_command
+        from app.provider.base import READ_ONLY_TOOLS
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        assert cmd[cmd.index("--tools") + 1].split(",") == list(READ_ONLY_TOOLS)
+
+    def test_read_only_excludes_subagent_spawning_tools(self):
+        """Task/Skill/MultiEdit must be withheld WITHOUT being enumerated.
+
+        This is the whole reason the allowlist replaced the denial as primary:
+        `SIDE_EFFECT_TOOLS` never named these, so a "read-only" review could
+        spawn a write-capable subagent via Task. Nothing enumerates them now
+        either -- they are absent because they were never named as allowed.
+        """
+        from app.provider import build_full_command
+        from app.provider.base import SIDE_EFFECT_TOOLS
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p", provider=ClaudeProvider(), read_only=True,
+            )
+        granted = cmd[cmd.index("--tools") + 1].split(",")
+        for tool in ("Task", "Skill", "MultiEdit", "Write", "Edit"):
+            assert tool not in granted, f"{tool} must not be in the allowlist"
+        # ...and none of them had to be listed as a denial to achieve that.
+        for tool in ("Task", "Skill", "MultiEdit"):
+            assert tool not in SIDE_EFFECT_TOOLS
+
+    def test_bash_is_granted_but_never_pre_approved(self):
+        """The whole fail-closed property of the review shell.
+
+        `Bash` is in READ_ONLY_TOOLS so the tool exists, but nothing
+        pre-approves it -- the PreToolUse hook returning "allow" is the only
+        thing that lets a command run. If the hook fails to load, Bash is
+        un-pre-approved and headless mode denies it, so the gate fails to
+        "no shell" rather than to an unguarded one. Putting Bash into
+        --allowedTools here would silently destroy that.
+        """
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        assert "Bash" in cmd[cmd.index("--tools") + 1].split(",")
+        pre_approved = cmd[cmd.index("--allowedTools") + 1].split(",")
+        assert not any(t == "Bash" or t.startswith("Bash(") for t in pre_approved), (
+            f"Bash must never be pre-approved; got {pre_approved}"
+        )
+
+    def test_read_only_installs_the_shell_gate(self):
+        import json
+
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p", provider=ClaudeProvider(), read_only=True,
+            )
+        settings_path = cmd[cmd.index("--settings") + 1]
+        with open(settings_path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        entry = cfg["hooks"]["PreToolUse"][0]
+        assert entry["matcher"] == "Bash"
+        assert "review_bash_guard.py" in entry["hooks"][0]["command"]
+
+    def test_non_read_only_installs_no_gate(self):
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(prompt="p", provider=ClaudeProvider())
+        assert "--settings" not in cmd
+
+    def test_read_only_isolates_ambient_mcp_servers(self):
+        """--tools covers built-ins only; MCP needs its own isolation.
+
+        Measured on CLI 2.1.235: under `--tools "Read,Glob,Grep"` every
+        user-level MCP tool was still present, including write-capable ones.
+        """
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p", provider=ClaudeProvider(), read_only=True,
+            )
+        assert "--strict-mcp-config" in cmd
+        assert "--mcp-config" not in cmd
+
+    def test_empty_restriction_is_distinct_from_no_restriction(self):
+        """`None` means unrestricted; `[]` means no built-in tools at all.
+
+        Collapsing the two is how a positive allowlist quietly becomes a
+        fail-open, so both must stay expressible.
+        """
+        from app.provider.claude import ClaudeProvider
+
+        p = ClaudeProvider()
+        assert p.build_tool_args(restrict_tools=None) == []
+        assert p.build_tool_args(restrict_tools=[]) == ["--tools", ""]
+        assert p.build_tool_args(restrict_tools=["Read"]) == ["--tools", "Read"]
+
+    def test_claude_and_ollama_launch_declare_restriction(self):
+        from app.provider.claude import ClaudeProvider
+        from app.provider.ollama_launch import OllamaLaunchProvider
+
+        for cls in (ClaudeProvider, OllamaLaunchProvider):
+            assert cls().supports_tool_restriction() is True, cls.__name__
+
+    def test_ollama_launch_forwards_restriction_and_isolation(self):
+        """It re-implements build_command, so it can silently fail open."""
+        from app.provider.base import READ_ONLY_TOOLS
+        from app.provider.ollama_launch import OllamaLaunchProvider
+
+        cmd = OllamaLaunchProvider().build_command(prompt="p", read_only=True)
+        assert cmd[cmd.index("--tools") + 1].split(",") == list(READ_ONLY_TOOLS)
+        assert "--strict-mcp-config" in cmd
 
     def test_read_only_preserves_caller_supplied_denials(self):
         from app.provider import build_full_command
@@ -2439,8 +2584,8 @@ class TestReadOnlyRoleEnforcement:
                 read_only=True,
             )
         denied = cmd[cmd.index("--disallowedTools") + 1].split(",")
-        assert "WebFetch" in denied
-        assert "Bash" in denied
+        assert "WebFetch" in denied, "caller-supplied denials must survive"
+        assert "Write" in denied
 
     def test_read_only_suppresses_permission_bypass_end_to_end(self):
         """skip_permissions must not survive into a read-only command."""
@@ -2490,6 +2635,11 @@ class TestReadOnlyRoleEnforcement:
                 f"provider {name!r}: enforces_read_only() disagrees with the "
                 "documented unenforceable set"
             )
+            if provider.supports_tool_restriction():
+                assert provider.enforces_read_only(), (
+                    f"provider {name!r}: a positive tool allowlist must imply "
+                    "enforces_read_only()"
+                )
             with patch("app.config.get_skip_permissions", return_value=False):
                 if name in unenforceable:
                     with pytest.raises(ReadOnlyUnenforceable):
@@ -2507,12 +2657,20 @@ class TestReadOnlyRoleEnforcement:
                     provider=provider,
                     read_only=True,
                 )
-            joined = " ".join(cmd)
-            enforced = (
-                ("--disallowedTools" in cmd and "Bash" in joined)
-                or "read-only" in cmd
-            )
-            assert enforced, (
+            # Inspect each flag's OWN value, never the joined string. Once
+            # `--tools Read,Glob,Grep` is also present, a substring check for
+            # "Bash" would pass for the wrong reason and the assertion would
+            # silently stop testing what it claims.
+            def _flag_value(flag):
+                return cmd[cmd.index(flag) + 1] if flag in cmd else ""
+
+            # A positive allowlist enforces when it exists at all: whatever it
+            # omits is withheld. Bash may legitimately be IN it (gated by the
+            # PreToolUse hook), so its presence says nothing either way.
+            restricted = "--tools" in cmd
+            denied = "Write" in _flag_value("--disallowedTools").split(",")
+            sandboxed = "read-only" in cmd
+            assert restricted or denied or sandboxed, (
                 f"provider {name!r} claims enforces_read_only() but produced no "
                 "read-only enforcement in the built command"
             )

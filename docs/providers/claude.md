@@ -4,7 +4,7 @@ title: "Claude Code CLI Provider"
 description: "Setup and configuration guide for Kōan's default Claude Code CLI provider, including models, tools, per-role CLI config, MCP, and devcontainer mode."
 tags: [providers]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-08-19
 ---
 
 # Claude Code CLI Provider
@@ -330,8 +330,27 @@ stay isolated.
 - **Excluded by default**: `chat` and `github_reply` handle untrusted input and
   are opt-in only — add them to `mcp_roles` to enable.
 
-Secondary planning sub-agents (critic/improve/review/assumptions) stay
-local-read-only by design; only primary plan generation loads MCP.
+Secondary planning sub-agents (critic/improve/review/assumptions) get no MCP by
+design; only primary plan generation loads it. Note they are *intended* to be
+read-only but are not enforced as such unless the role resolves into
+`READ_ONLY_ROLES` — passing a narrow `tools:` list pre-approves, it does not
+withhold. See `specs/components/providers.md`.
+
+### Read-only roles
+
+A role in `READ_ONLY_ROLES` (currently `review_mode`, used by `/review`) is
+built with:
+
+| Flag | Purpose |
+| --- | --- |
+| `--tools Read,Glob,Grep,Bash` | Positive allowlist. Everything unnamed — `Write`, `Edit`, `MultiEdit`, `Task`, `Skill` — is withheld by construction. |
+| `--disallowedTools Write,Edit,NotebookEdit` | Second layer, for a pinned older binary that ignores `--tools`. `Bash` is excluded here because the allowlist grants it deliberately. |
+| `--strict-mcp-config` | `--tools` covers built-ins only; without this the role inherits the operator's user-level MCP servers. |
+| `--settings <path>` | Installs the `PreToolUse` gate from `app.review_bash_guard`. `Bash` is never added to `--allowedTools`, so if the gate fails to load there is simply no shell. |
+| `--setting-sources user` | The reviewed repository's `.claude/` and `CLAUDE.md` are untrusted and are not loaded. |
+
+`--dangerously-skip-permissions` is never emitted for these roles, regardless of
+`skip_permissions`, because it would bypass all of the above.
 
 ### Max Turns
 

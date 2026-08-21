@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-08-12
+updated: 2026-08-19
 ---
 
 # Skill Spec — `review`
@@ -74,9 +74,10 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
-- **Read-only is enforced by denial, not by omission.** `review_mode` is a member
-  of `app.provider.READ_ONLY_ROLES`, so every review pass additionally *denies*
-  `SIDE_EFFECT_TOOLS` (`Bash`, `Write`, `Edit`, `NotebookEdit`). Passing only
+- **Read-only is enforced by a positive allowlist, not by omission.**
+  `review_mode` is a member of `app.provider.READ_ONLY_ROLES`, so every review
+  pass is restricted to `READ_ONLY_TOOLS` via `--tools` and *additionally* denies
+  `SIDE_EFFECT_TOOLS`. Passing only
   `["Read","Glob","Grep"]` to `allowed_tools` does **not** withhold the rest:
   `--allowedTools` pre-approves invocations, it does not restrict which tools
   exist — the CLI's own reference says *"To restrict which tools are available,
@@ -94,6 +95,39 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   also refuses to honour `skip_permissions`, because
   `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`
   would bypass the very denial that makes the role read-only.
+- **A review runs against a disposable checkout of the PR head, never the
+  operator's working tree.** Missions are dispatched after
+  `git_prep.prepare_project_branch`, which checks out the *base* branch and
+  hard-resets it to `<remote>/<base>` — so the reviewed code was historically
+  never on disk, while the prompts told the model to verify against "the
+  checked-out code". `/review` therefore creates a detached worktree pinned to
+  GitHub's live `headRefOid`, verifies the SHA twice (after fetch, and after
+  checkout), asserts the tree is clean, and removes it afterwards.
+- **A failed pin FAILS the review; it never falls back to `project_path`.**
+  Reviewing the wrong tree and reporting the findings as fact is the defect this
+  invariant exists to remove — a silent fallback reproduces it with a warning
+  nobody reads. A failed review is visible and retriable; a wrong review is
+  neither.
+- **Prompts and skills come from the running Kōan, never from the reviewed
+  tree.** `skill_dir` resolves from the installed module, so a pull request
+  cannot rewrite the prompt that judges it.
+- **The review shell is gated, and the gate fails to "no shell".** `Bash` is in
+  `READ_ONLY_TOOLS` but is *never* placed in `--allowedTools`; each command is
+  adjudicated by a `PreToolUse` hook supplied per-invocation via `--settings`.
+  If that hook does not load for any reason, `Bash` is un-pre-approved and
+  headless mode denies it. The failure mode is therefore losing the shell, not
+  gaining an unguarded one — measured on Claude CLI 2.1.235, where a hook
+  returning `allow` let a command run with no `Bash` entry in `--allowedTools`,
+  and one returning `deny` blocked it with the reason surfaced and no side
+  effect.
+- **The shell is read-only by policy, one command per call.** Shell operators —
+  redirection, pipes, chaining, command substitution — are rejected on the raw
+  string before parsing, because `shlex` is a word splitter and not a shell
+  parser: it happily returns `['git','log','>','x']`, which a token-level check
+  would pass and Bash would then execute as a redirect. Pipelines are rejected
+  in v1 by decision, not oversight: every stage would need validating and a
+  `tee`/`sh`/`dd` in stage two defeats stage one. `koan/app/review_bash_guard.py`
+  is the enumeration; this spec governs the policy.
 - **An unenforceable review provider is REFUSED, not downgraded.** If the
   resolved `review_mode` provider (or the `cli.fallback` it swapped to) can
   enforce neither mechanism, `build_full_command` raises

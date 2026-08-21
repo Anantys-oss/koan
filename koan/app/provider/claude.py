@@ -2,12 +2,47 @@
 
 import os
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.provider.base import CLIProvider
 
 _ROOT_SKIP_PERMISSIONS_WARNED = False  # Module-level guard to warn once per process
 _READ_ONLY_SKIP_PERMISSIONS_WARNED = False  # Same, for the read-only override
+
+# Filename of the generated agent-settings payload that installs the read-only
+# shell gate. Content is deterministic, so the file is written once per uid and
+# reused rather than being a per-invocation temp file.
+_REVIEW_SHELL_SETTINGS_NAME = "review-shell-guard.settings.json"
+
+
+def _ensure_review_shell_settings() -> str:
+    """Write (idempotently) the ``--settings`` payload and return its path.
+
+    Rewritten whenever the content differs so an upgraded Kōan -- new
+    interpreter path, relocated checkout -- does not keep pointing a stale hook
+    at a script that has moved.
+    """
+    import json
+
+    from app.review_bash_guard import hook_settings
+    from app.utils import koan_tmp_dir
+
+    payload = json.dumps(hook_settings(), indent=2, sort_keys=True)
+    path = os.path.join(koan_tmp_dir(), _REVIEW_SHELL_SETTINGS_NAME)
+    try:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                if fh.read() == payload:
+                    return path
+    except OSError:
+        pass  # unreadable -> fall through and rewrite
+
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return path
 
 
 class ClaudeProvider(CLIProvider):
@@ -115,12 +150,26 @@ class ClaudeProvider(CLIProvider):
     def build_prompt_args(self, prompt: str) -> List[str]:
         return ["-p", prompt]
 
+    def supports_tool_restriction(self) -> bool:
+        # --tools is a POSITIVE allowlist: "Specify the list of available tools
+        # from the built-in set." Measured on CLI 2.1.235 -- under
+        # --tools "Read,Glob,Grep" a Bash call and a Write call both leave no
+        # filesystem trace. Checked against the filesystem rather than the
+        # model's self-report, which disagreed with itself across runs.
+        return True
+
     def build_tool_args(
         self,
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
+        restrict_tools: Optional[Sequence[str]] = None,
     ) -> List[str]:
         flags: List[str] = []
+        if restrict_tools is not None:
+            # `None` means "no restriction"; an empty sequence means "no built-in
+            # tools at all" and must stay expressible -- collapsing the two is
+            # exactly how a positive allowlist turns back into a fail-open.
+            flags.extend(["--tools", ",".join(restrict_tools)])
         if allowed_tools:
             flags.extend(["--allowedTools", ",".join(allowed_tools)])
         if disallowed_tools:
@@ -185,6 +234,46 @@ class ClaudeProvider(CLIProvider):
         flags = ["--mcp-config"]
         flags.extend(configs)
         return flags
+
+    def build_agent_settings_args(self, read_only: bool = False) -> List[str]:
+        """Install the read-only shell gate via ``--settings``.
+
+        ``READ_ONLY_TOOLS`` grants ``Bash``, but ``Bash`` is never added to
+        ``--allowedTools``; this hook returning ``allow`` is the only thing that
+        permits a command. If the file cannot be written we return no flag,
+        which leaves Bash un-pre-approved and therefore denied -- the gate fails
+        to "no shell", never to an unguarded one.
+
+        The payload is deterministic (an interpreter path and this repo's guard
+        script), so it is written once to a stable path under ``koan_tmp_dir()``
+        rather than a per-invocation temp file with a cleanup lifecycle to get
+        wrong. It is never written to ``~/.claude/settings.json``: Kōan does not
+        mutate the operator's global agent configuration.
+        """
+        if not read_only:
+            return []
+        try:
+            path = _ensure_review_shell_settings()
+        except OSError as exc:
+            print(
+                f"[{self.name}] could not install the read-only shell gate "
+                f"({exc}); continuing without a shell.",
+                file=sys.stderr,
+            )
+            return []
+        return ["--settings", path]
+
+    def build_mcp_isolation_args(self, read_only: bool = False) -> List[str]:
+        """Emit ``--strict-mcp-config`` for a read-only invocation.
+
+        ``--tools`` restricts the BUILT-IN set only. Measured on CLI 2.1.235:
+        under ``--tools "Read,Glob,Grep"`` every MCP tool from the operator's
+        user-level configuration was still present -- including write-capable
+        ones -- so the positive allowlist is not total without this. With
+        ``--strict-mcp-config`` and no ``--mcp-config`` the exposed MCP tool
+        count drops to zero.
+        """
+        return ["--strict-mcp-config"] if read_only else []
 
     def detect_quota_exhaustion(
         self,

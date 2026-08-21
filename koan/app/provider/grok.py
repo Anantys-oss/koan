@@ -255,6 +255,7 @@ class GrokProvider(CLIProvider):
         self,
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
+        restrict_tools: Optional[Sequence[str]] = None,
     ) -> List[str]:
         # NOTE: these flags exist, but ``supports_tool_denial()`` is deliberately
         # left False -- do not flip it just because ``--disallowed-tools`` is

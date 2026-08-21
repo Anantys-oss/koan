@@ -152,7 +152,8 @@ class StubProvider(CLIProvider):
     def build_prompt_args(self, prompt):
         return ["-p", prompt]
 
-    def build_tool_args(self, allowed_tools=None, disallowed_tools=None):
+    def build_tool_args(self, allowed_tools=None, disallowed_tools=None,
+                        restrict_tools=None):
         flags = []
         if allowed_tools:
             flags.extend(["--allow", ",".join(allowed_tools)])
