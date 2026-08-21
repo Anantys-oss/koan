@@ -11,8 +11,9 @@ head". Reviews were reading the wrong tree and reporting the findings as fact.
 uuid-namespaced ref, verify it matches GitHub's live ``headRefOid``, add a
 detached worktree, verify again, assert it is clean, and remove it afterwards.
 
-The implementation originated in the opt-in ``review_guard`` skill; it lives
-here so the core path gets it by default, and the skill delegates.
+It lives in ``app/`` rather than inside the review skill so the core `/review`
+path gets a pinned checkout by default, and so any other caller that needs one
+can reuse it.
 """
 
 import contextlib

@@ -132,6 +132,21 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   and can never start a second command, so it is allowed.
   `koan/app/review_bash_guard.py` is the enumeration; this spec governs the
   policy.
+- **No allowlisted program may execute another, or read the process
+  environment.** The allowlist adjudicates the *invoked* program, so a flag that
+  makes an allowed program run a second one launders any binary past the
+  dangerous-command check — `git grep -O<prog>` / `--open-files-in-pager=<prog>`
+  executes `<prog>` with the matched files (taken from the PR head under review)
+  as its arguments, and is denied for that reason rather than as a write. Note
+  `-o` (writes a file) and `-O` (executes) are different flags and the match is
+  case-sensitive. Separately, operand containment keeps reads inside the review
+  worktree, but the **process environment** is not a path: the review CLI
+  inherits Kōan's own environ, so `jq`'s `env` builtin and `$ENV` variable are
+  denied — otherwise a hostile PR's injected prompt could read the operator's API
+  keys and tokens and post them in the review body. `$ENV` inside single quotes
+  is inert to Bash, so the expansion check does not see it; jq's own accessors
+  must be denied directly. A field merely *named* `env` (`jq .env config.json`)
+  is an ordinary read and stays allowed.
 - **An unenforceable review provider is REFUSED, not downgraded.** If the
   resolved `review_mode` provider (or the `cli.fallback` it swapped to) can
   enforce neither mechanism, `build_full_command` raises
