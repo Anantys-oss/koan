@@ -46,15 +46,19 @@ MAX_COMMAND_LEN = 4096
 # the whole ballgame: a single ``>`` turns any reader into a writer, and a single
 # ``;`` turns a validated command into an arbitrary one.
 #
-# Pipelines are rejected in v1 by DECISION, not oversight. Validating a pipeline
-# means validating every stage, and one ``tee`` / ``sh`` / ``dd`` in stage two
-# defeats stage one entirely. ``rg -m``, ``head -n`` and ``git log -n`` cover the
-# common uses natively. The additive extension, if ever wanted, is: split on
-# ``|``, validate each stage against this same allowlist, reject any writer.
+# The pipe ``|`` is NOT in this list: it is handled by the quote-aware
+# ``_has_unquoted_pipe`` below. Pipelines are rejected by DECISION, not
+# oversight -- validating a pipeline means validating every stage, and one
+# ``tee`` / ``sh`` / ``dd`` in stage two defeats stage one entirely -- but a
+# ``|`` *inside a quoted argument* is a literal regex alternation (e.g.
+# ``git grep -n 'a\|b' src``): Bash consumes the quoting and passes it to the
+# program, so it can never start a second command and is safe to allow.
+# ``rg -m``, ``head -n`` and ``git log -n`` cover the common uses natively. The
+# additive extension, if ever wanted, is: split on ``|``, validate each stage
+# against this same allowlist, reject any writer.
 _STRUCTURAL_REJECTS: Sequence[Tuple[str, str]] = (
     (">", "output redirection"),
     ("<", "input redirection"),
-    ("|", "pipes"),
     (";", "command chaining"),
     ("&", "backgrounding or chaining"),
     ("`", "command substitution"),
@@ -167,6 +171,45 @@ def _has_expandable_dollar(command: str) -> bool:
         elif ch == '"':
             in_double = True
         elif ch == "$":
+            return True
+        elif ch == "\\":
+            escaped = True
+    return False
+
+
+def _has_unquoted_pipe(command: str) -> bool:
+    """True if ``command`` contains a ``|`` Bash would treat as a pipeline.
+
+    A ``|`` inside single or double quotes (or backslash-escaped) is a literal
+    pattern/reference character: Bash consumes the quoting and passes it to the
+    program, so ``git grep 'a|b'`` searches for the alternation ``a|b`` and can
+    never start a second command. Only an *unquoted* ``|`` joins two stages, and
+    that is what the read-only shell must keep denying. Mirrors the
+    quote-awareness of :func:`_has_expandable_dollar`.
+    """
+    in_single = False
+    in_double = False
+    escaped = False
+    for ch in command:
+        if escaped:
+            escaped = False
+            continue
+        if in_single:
+            if ch == "'":
+                in_single = False
+            continue
+        if in_double:
+            if ch == '"':
+                in_double = False
+            elif ch == "\\":
+                escaped = True
+            continue
+        # Not inside any quote.
+        if ch == "'":
+            in_single = True
+        elif ch == '"':
+            in_double = True
+        elif ch == "|":
             return True
         elif ch == "\\":
             escaped = True
@@ -358,6 +401,21 @@ def is_allowed(command: str) -> Tuple[bool, str]:
         return _reject(
             "environment/parameter expansion is not allowed in a review shell. "
             "The Read tool resolves paths for you; pass literal paths."
+        )
+
+    # The pipe operator is quote-aware (see _has_unquoted_pipe): only an
+    # *unquoted* ``|`` joins two commands and must be denied; a ``|`` inside a
+    # quoted regex pattern (e.g. ``git grep -n 'a|b' src``) is a literal
+    # argument Bash passes to the program and is safe. ``|`` is therefore not
+    # in _STRUCTURAL_REJECTS -- the raw quote-aware scan below is the single
+    # authority for pipes, so the post-split token scan does not falsely
+    # re-reject a now-allowed quoted alternation.
+    if _has_unquoted_pipe(command):
+        return _reject(
+            "pipes are not allowed in a review shell (found an unquoted '|'). "
+            "Run one simple command per call. A '|' inside a quoted regex "
+            "pattern (e.g. git grep 'a|b') is fine; reach for the Grep tool "
+            "for anything more complex."
         )
 
     try:

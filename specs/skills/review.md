@@ -121,13 +121,17 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   and one returning `deny` blocked it with the reason surfaced and no side
   effect.
 - **The shell is read-only by policy, one command per call.** Shell operators —
-  redirection, pipes, chaining, command substitution — are rejected on the raw
-  string before parsing, because `shlex` is a word splitter and not a shell
-  parser: it happily returns `['git','log','>','x']`, which a token-level check
-  would pass and Bash would then execute as a redirect. Pipelines are rejected
-  in v1 by decision, not oversight: every stage would need validating and a
-  `tee`/`sh`/`dd` in stage two defeats stage one. `koan/app/review_bash_guard.py`
-  is the enumeration; this spec governs the policy.
+  redirection, chaining, command substitution — are rejected on the raw string
+  before parsing, because `shlex` is a word splitter and not a shell parser: it
+  happily returns `['git','log','>','x']`, which a token-level check would pass
+  and Bash would then execute as a redirect. The pipe operator is *quote-aware*:
+  an **unquoted** `|` is a genuine pipeline and is rejected (every stage would
+  need validating, and a `tee`/`sh`/`dd` in stage two defeats stage one), while
+  a `|` inside a quoted argument — a regex alternation such as
+  `git grep -n 'a\|b' src` — is a literal character Bash passes to the program
+  and can never start a second command, so it is allowed.
+  `koan/app/review_bash_guard.py` is the enumeration; this spec governs the
+  policy.
 - **An unenforceable review provider is REFUSED, not downgraded.** If the
   resolved `review_mode` provider (or the `cli.fallback` it swapped to) can
   enforce neither mechanism, `build_full_command` raises
