@@ -37,6 +37,7 @@ from app.provider.base import (  # noqa: F401
     CLAUDE_TOOLS,
     PROVIDER_ERROR_EVENT_TYPES,
     ReadOnlyUnenforceable,
+    READ_ONLY_TOOLS,
     SIDE_EFFECT_TOOLS,
     TOOL_NAME_MAP,
 )
@@ -556,12 +557,28 @@ def build_full_command(
                 f"to {resolved.name!r}."
             )
         if resolved.supports_tool_denial():
-            # An allowlist does not withhold anything -- ``--allowedTools`` only
-            # pre-approves. Denying the side-effecting tools by name is what
-            # actually keeps a read-only role read-only. Merge rather than replace
-            # so an explicit caller-supplied denial is preserved.
+            # The secondary denial layer. An allowlist does not withhold
+            # anything -- ``--allowedTools`` only pre-approves -- so denying the
+            # side-effecting tools by name is what holds the boundary on a CLI
+            # that ignores an unknown ``--tools``. Merge rather than replace so
+            # an explicit caller-supplied denial is preserved.
+            #
+            # Subtract whatever READ_ONLY_TOOLS deliberately grants, but ONLY
+            # when the provider can actually restrict: ``--disallowedTools``
+            # removes a tool from the model's context, so denying ``Bash`` here
+            # would cancel the gated shell that ``--tools`` just granted. When
+            # the provider cannot restrict it also cannot install the PreToolUse
+            # gate, so it gets no shell at all and the full denial applies --
+            # still fail-closed, just without the capability.
+            granted = (
+                set(READ_ONLY_TOOLS) if resolved.supports_tool_restriction()
+                else set()
+            )
             merged = list(disallowed_tools or [])
-            merged += [t for t in SIDE_EFFECT_TOOLS if t not in merged]
+            merged += [
+                t for t in SIDE_EFFECT_TOOLS
+                if t not in merged and t not in granted
+            ]
             disallowed_tools = merged
 
     return resolved.build_command(
@@ -1432,6 +1449,7 @@ def run_command_streaming(
     max_turns_source: Optional[str] = "skill_max_turns",
     project_name: str = "",
     mcp_configs: Optional[List[str]] = None,
+    project_context: bool = True,
 ) -> str:
     """Build and run a CLI command, streaming progress to stdout in real time.
 
@@ -1456,6 +1474,11 @@ def run_command_streaming(
     ``config.mcp_configs_for_role(role, project_name)`` so the per-role
     allowlist and kill switch apply.
 
+    ``project_context=False`` suppresses project-scope settings, ``CLAUDE.md``
+    and skills loaded from ``project_path``. Pass it whenever *project_path* is
+    untrusted — a reviewed branch can carry a ``.claude/settings.json`` that
+    defines hooks, which is code execution on this host.
+
     Raises:
         RuntimeError: If the command exits with non-zero code (except
             max-turns, which returns partial output).
@@ -1475,6 +1498,7 @@ def run_command_streaming(
         mcp_configs=mcp_configs,
         provider=provider,
         read_only=model_key in READ_ONLY_ROLES,
+        project_context=project_context,
     )
     last_message_path: Optional[str] = None
     if provider.supports_last_message_file():

@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-08-18
+updated: 2026-08-19
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -200,21 +200,41 @@ tools — MCP tools must still be allowlisted via qualified names
   one shared helper (`log_fmt._tool_error_reason`) so `make logs` and the
   dashboard timeline cannot drift. Successful `tool_result` lines stay
   suppressed on the display side; error lines are never suppressed.
-- **A read-only execution role is enforced by tool DENIAL, not by omission.**
-  `allowed_tools` is a pre-approval list — `--allowedTools Read,Glob,Grep`
-  leaves `Bash` fully usable (verified on Claude CLI 2.1.234; the CLI's own
-  reference says *"To restrict which tools are available, use `--tools`
-  instead"*). Roles in `READ_ONLY_ROLES` therefore have `SIDE_EFFECT_TOOLS`
-  added to `disallowed_tools` by `build_full_command`, and `read_only` is
-  forwarded to `build_permission_args` so a provider with a sandbox can express
-  the posture directly. `read_only` **overrides** `skip_permissions`, because
-  `--dangerously-skip-permissions` /
-  `--dangerously-bypass-approvals-and-sandbox` would bypass the denial.
-  Capability is declared per provider by two predicates —
-  `supports_tool_denial()` (deny by name) and `supports_read_only_sandbox()`
-  (OS-level sandbox) — combined by `enforces_read_only()`. Claude and
-  ollama-launch deny by name; Codex ignores tool arguments entirely and is
-  instead pinned to `--sandbox read-only`. Every other adapter declares neither
+- **A read-only execution role is enforced by a POSITIVE tool allowlist, with
+  denial as a second layer.** `allowed_tools` is a pre-approval list —
+  `--allowedTools Read,Glob,Grep` leaves `Bash` fully usable (verified on Claude
+  CLI 2.1.234; the CLI's own reference says *"To restrict which tools are
+  available, use `--tools` instead"*). Roles in `READ_ONLY_ROLES` are therefore
+  restricted to `READ_ONLY_TOOLS` via `--tools` when the provider declares
+  `supports_tool_restriction()`, **and** have `SIDE_EFFECT_TOOLS` added to
+  `disallowed_tools`. `read_only` is also forwarded to `build_permission_args`
+  so a provider with a sandbox can express the posture directly. `read_only`
+  **overrides** `skip_permissions`, because `--dangerously-skip-permissions` /
+  `--dangerously-bypass-approvals-and-sandbox` would bypass both.
+
+  The allowlist is the primary mechanism because it is **total by
+  construction**: anything not named — `MultiEdit`, `Task` and `Skill` (either
+  of which can spawn a write-capable subagent), and every built-in tool a future
+  CLI release adds — is withheld without anyone having to enumerate it.
+  Enumerated denial is a treadmill that fails open on each new tool.
+  `SIDE_EFFECT_TOOLS` is retained anyway, deliberately: an operator may pin an
+  older binary via `cli.review_mode: claude:/path` that ignores an unknown
+  `--tools`, and two independent mechanisms that each fail closed are the right
+  posture for a security boundary. **Do not "simplify" by removing either.**
+
+  Measured on Claude CLI 2.1.235 — under `--tools "Read,Glob,Grep"` the model
+  reports only those three, and both a `Bash` and a `Write` call produce no
+  filesystem effect. Note the measurement was made against the *filesystem*: two
+  separate runs asked the model to enumerate its own tools and disagreed with
+  each other, one of them hallucinating `Write`. A self-report is a claim; only
+  the side effect is evidence.
+
+  Capability is declared per provider by three predicates —
+  `supports_tool_restriction()` (positive allowlist), `supports_tool_denial()`
+  (deny by name) and `supports_read_only_sandbox()` (OS-level sandbox) —
+  combined by `enforces_read_only()`. Claude and ollama-launch restrict and
+  deny; Codex ignores tool arguments entirely and is instead pinned to
+  `--sandbox read-only`. Every other adapter declares none of the three
   and is therefore refused — **but the reason differs per provider, and the
   predicate is a claim about Kōan's adapter, not about the vendor CLI**:
   - `cline` and `haze` genuinely cannot: `build_tool_args` returns `[]` and
@@ -234,6 +254,37 @@ tools — MCP tools must still be allowlisted via qualified names
 
   Do not flip a `supports_*` predicate because a flag exists. Flip it because
   the behaviour was measured, and record the measurement.
+- **A read-only role never inherits ambient MCP servers.** `--tools` restricts
+  the *built-in* set only. Measured on Claude CLI 2.1.235: under
+  `--tools "Read,Glob,Grep"` every MCP tool from the operator's user-level
+  configuration was still present, including write-capable ones. A read-only
+  invocation therefore also passes `--strict-mcp-config` and no `--mcp-config`,
+  which reduces the exposed MCP tool count to zero. Without this the positive
+  allowlist is not total and the boundary is only as narrow as whatever the
+  operator happens to have installed.
+- **A read-only role does not load the target repo's agent configuration — on
+  providers with a real isolation mechanism.** The review path passes
+  `project_context=False`, which suppresses `<cwd>/.claude/settings.json`,
+  `<cwd>/CLAUDE.md` and `<cwd>/.claude/skills/`. This matters because a reviewed
+  branch is untrusted input: a `.claude/settings.json` in a hostile PR can define
+  `SessionStart` / `PreToolUse` hooks, which is arbitrary code execution on the
+  review host triggered by opening a pull request. Measured on 2.1.235: with a
+  planted `SessionStart` hook in the working directory, `--setting-sources user`
+  suppressed it while a hook supplied via `--settings` still fired.
+
+  **This suppression is Claude-specific and is NOT delivered on every provider
+  the docs endorse for `/review`.** The mechanism is ``--setting-sources user``,
+  emitted only by `ClaudeProvider.build_project_context_args` (and, by
+  inheritance, `ollama-launch`). `CodexProvider.build_command` accepts
+  `project_context` "for API parity" but emits nothing, so a review run on codex
+  **still loads the reviewed branch's `AGENTS.md`** from the untrusted worktree —
+  the "a pull request must not configure the agent that judges it" boundary is
+  not held there until a first-class codex flag exists (see
+  `docs/providers/codex.md` § Project-context isolation). Until then, either
+  treat the codex review path as failing open for this one property, or scope
+  codex reviews behind a provider that suppresses repo configs. Repo conventions
+  still reach the model — `review_runner` injects them into the prompt
+  explicitly, fenced as untrusted.
 - **A read-only role that cannot be enforced FAILS CLOSED.** When `read_only` is
   True and the resolved provider reports `enforces_read_only() is False`,
   `build_full_command` raises `ReadOnlyUnenforceable` (a `RuntimeError`) naming

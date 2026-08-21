@@ -993,12 +993,21 @@ def _run_claude_review(
         output = run_command_streaming(
             prompt=prompt,
             project_path=project_path,
+            # Bash is deliberately absent: it is granted by READ_ONLY_TOOLS and
+            # adjudicated per-command by the review_bash_guard hook. Listing it
+            # here would pre-approve it and defeat the gate.
             allowed_tools=["Read", "Glob", "Grep"],
             model_key="review_mode",
             model=model,
             max_turns=get_skill_max_turns(),
             timeout=timeout,
             project_name=project_name,
+            # The reviewed tree is untrusted input. Without this the session
+            # loads <project_path>/.claude/settings.json, which can define
+            # SessionStart/PreToolUse hooks -- code execution on the review host
+            # triggered by opening a pull request. Repo conventions still reach
+            # the model via the fenced {REPO_CONVENTIONS} prompt block.
+            project_context=False,
         )
         return output, ""
     except RuntimeError as e:
@@ -3865,6 +3874,7 @@ def run_review(
     ultra: bool = False,
     force: bool = False,
     bot_comments: bool = False,
+    pinned_worktree: bool = True,
 ) -> Tuple[bool, str, Optional[dict]]:
     """Execute a read-only code review on a PR.
 
@@ -3938,6 +3948,86 @@ def run_review(
             notify_fn(msg)
             return True, msg, None
 
+    # ── Step 0b: pin a disposable checkout of the PR head ───────────────
+    #
+    # Missions are dispatched after git_prep.prepare_project_branch, which
+    # checks out the BASE branch and hard-resets it to <remote>/<base>. Without
+    # this, `cwd` is the base tip and the reviewed code is not on disk at all --
+    # while the prompts tell the model to verify against "the checked-out code".
+    #
+    # Placed after the closed/merged and pause-label gates so a skipped PR never
+    # pays for a checkout.
+    if not pinned_worktree:
+        # Opt-out for a caller that has ALREADY pinned a checkout of this PR head
+        # and passes it as ``project_path``. Pinning again would double-fetch and,
+        # worse, could resolve a different SHA than the one the caller recorded.
+        return _run_review_body(
+            owner, repo, pr_number, project_path, notify_fn, skill_dir,
+            architecture, plan_url, project_name, errors, comments, ultra,
+            force, bot_comments,
+        )
+
+    from app.review_worktree import pinned_review_worktree
+
+    # ``_run_review_body`` runs INSIDE the worktree context, so it is exposed to
+    # the same except clause as the pin -- unless we distinguish them. A bug in
+    # the review body itself (e.g. a new uncaught RuntimeError during analysis)
+    # must propagate as a stack trace pointing at the real defect, never be
+    # swallowed and reported as a checkout failure; masking it makes the
+    # operator retry instead of fixing. ``entered`` separates the two: it flips
+    # only once ``pinned_review_worktree.__enter__`` has succeeded, so an
+    # exception raised before that is a pin failure, and anything after (the
+    # body, or teardown of a successful pin) propagates unchanged.
+    entered = False
+    try:
+        with pinned_review_worktree(
+            owner, repo, pr_number, project_path,
+        ) as (review_path, _pinned_head):
+            entered = True
+            return _run_review_body(
+                owner, repo, pr_number, review_path, notify_fn, skill_dir,
+                architecture, plan_url, project_name, errors, comments, ultra,
+                force, bot_comments,
+            )
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        if entered:
+            # The pin succeeded; this exception came from the review body or the
+            # teardown of a worktree we successfully entered. Do NOT mask it as
+            # a checkout failure -- see the comment above.
+            raise
+        # The pin itself failed. Deliberately NO fallback to project_path:
+        # reviewing the wrong tree and reporting the findings as fact is the
+        # defect this exists to remove; a silent fallback reproduces it behind a
+        # warning nobody reads. A failed review is visible and retriable, a
+        # wrong review is neither.
+        msg = f"Could not prepare a clean checkout of PR #{pr_number}: {exc}"
+        log("error", msg)
+        notify_fn(f"❌ {msg}")
+        return False, msg, None
+
+
+def _run_review_body(
+    owner: str,
+    repo: str,
+    pr_number: str,
+    project_path: str,
+    notify_fn,
+    skill_dir: Optional[Path],
+    architecture: bool,
+    plan_url: Optional[str],
+    project_name: Optional[str],
+    errors: bool,
+    comments: bool,
+    ultra: bool,
+    force: bool,
+    bot_comments: bool,
+) -> Tuple[bool, str, Optional[dict]]:
+    """Fetch context, run the review passes and post. See :func:`run_review`.
+
+    Split out so ``run_review`` can hold the pinned worktree open around the
+    whole thing; ``project_path`` here is the WORKTREE, not the operator's
+    checkout.
+    """
     from app.config import get_review_concurrency_config
     concurrency_cfg = get_review_concurrency_config()
     github_workers = concurrency_cfg["github_workers"]

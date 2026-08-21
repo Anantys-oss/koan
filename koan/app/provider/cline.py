@@ -3,7 +3,7 @@
 import re
 import shutil
 import subprocess
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from app.provider.base import CLIProvider
 from app.run_log import log_safe
@@ -93,6 +93,7 @@ class ClineProvider(CLIProvider):
         self,
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
+        restrict_tools: Optional[Sequence[str]] = None,
     ):
         # Cline CLI does not support per-tool allow/disallow flags.
         # Tool access is controlled via CLINE_COMMAND_PERMISSIONS environment variable.

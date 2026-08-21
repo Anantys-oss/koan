@@ -142,11 +142,19 @@ class OllamaLaunchProvider(ClaudeProvider):
                 prompt = system_prompt + "\n\n" + prompt
 
         cmd.extend(self.build_prompt_args(prompt))
-        cmd.extend(self.build_tool_args(allowed_tools, disallowed_tools))
+        # Same derivation as CLIProvider.build_command -- this override
+        # re-implements assembly, so it must forward the restriction too or a
+        # read-only role would fail open here while holding elsewhere.
+        cmd.extend(self.build_tool_args(
+            allowed_tools, disallowed_tools,
+            restrict_tools=self._read_only_tool_restriction(read_only),
+        ))
         cmd.extend(self.build_model_args(model, fallback))
         cmd.extend(self.build_output_args(output_format))
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
+        cmd.extend(self.build_mcp_isolation_args(read_only))
+        cmd.extend(self.build_agent_settings_args(read_only))
         cmd.extend(self.build_plugin_args(plugin_dirs))
         cmd.extend(self.build_effort_args(effort))
         return cmd

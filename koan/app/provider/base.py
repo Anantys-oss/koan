@@ -12,15 +12,46 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # Claude Code tool names (canonical, used throughout koan codebase)
 CLAUDE_TOOLS = {"Bash", "Read", "Write", "Glob", "Grep", "Edit", "Skill"}
 
-# Tools that can cause side effects, and so must be actively BLOCKED for a
-# read-only invocation. Passing only ``Read``/``Glob``/``Grep`` to
-# ``--allowedTools`` does NOT withhold the rest: that flag pre-approves
-# invocations, it does not restrict which tools exist (the CLI's own reference
-# says "To restrict which tools are available, use --tools instead"). Verified
-# against Claude CLI 2.1.234 -- with ``--allowedTools Read,Glob,Grep`` a Bash
-# call still succeeds, while ``--disallowedTools Bash`` blocks it. Read-only
-# roles therefore have to name these explicitly.
+# Tools that can cause side effects. This is the SECONDARY denial layer for a
+# read-only invocation -- the primary mechanism is the READ_ONLY_TOOLS positive
+# allowlist below.
+#
+# Passing only ``Read``/``Glob``/``Grep`` to ``--allowedTools`` does NOT withhold
+# the rest: that flag pre-approves invocations, it does not restrict which tools
+# exist (the CLI's own reference says "To restrict which tools are available, use
+# --tools instead"). Verified against Claude CLI 2.1.234 -- with
+# ``--allowedTools Read,Glob,Grep`` a Bash call still succeeds, while
+# ``--disallowedTools Bash`` blocks it.
+#
+# Deliberately NOT maintained as an exhaustive inventory of side-effecting tools
+# (it omits MultiEdit, Task and Skill by design). Growing it re-establishes the
+# false impression that the list is complete; use READ_ONLY_TOOLS for totality.
+# It is kept because an operator may pin an older binary that ignores an unknown
+# ``--tools`` flag, and two independent fail-closed mechanisms beat one.
 SIDE_EFFECT_TOOLS = ("Bash", "Write", "Edit", "NotebookEdit")
+
+# The complete set of built-in tools a read-only role may use -- a POSITIVE
+# allowlist emitted via Claude's ``--tools``. Anything not named here is withheld
+# by construction: ``MultiEdit``, ``Task`` and ``Skill`` (either of which can
+# spawn a write-capable subagent), and every tool a future CLI release adds. That
+# totality is the point, and it is why SIDE_EFFECT_TOOLS above is not grown into
+# an exhaustive list -- enumeration fails open on each new tool, this fails
+# closed.
+#
+# Measured on Claude CLI 2.1.235: under ``--tools "Read,Glob,Grep"`` a Bash call
+# and a Write call both produce no filesystem effect. Verified against the
+# FILESYSTEM, not the model's self-report -- two runs asked it to enumerate its
+# own tools and disagreed with each other, one hallucinating ``Write``.
+#
+# ``Bash`` is a member on purpose -- the read-only shell is the point of the
+# role. It is gated per-command by the PreToolUse hook in
+# ``app.review_bash_guard`` and is deliberately NEVER placed in
+# ``--allowedTools``, so a hook that fails to load leaves Bash un-pre-approved
+# and headless mode denies it. The gate fails to "no shell", never to an
+# unguarded one.
+#
+# Grows only by deliberate edit plus a spec change.
+READ_ONLY_TOOLS = ("Read", "Glob", "Grep", "Bash")
 
 # Mapping from Kōan canonical tool names to OpenAI-style function names.
 # Used by Copilot provider (--allow-tool) and local LLM runner (function calling).
@@ -253,6 +284,7 @@ class CLIProvider:
         self,
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
+        restrict_tools: Optional[Sequence[str]] = None,
     ) -> List[str]:
         """Build args for tool access control.
 
@@ -261,8 +293,39 @@ class CLIProvider:
                 Pre-approval only — listing a subset does not withhold the
                 others. Use *disallowed_tools* to actually deny a tool.
             disallowed_tools: Tools to block (Claude names).
+            restrict_tools: POSITIVE allowlist of the only built-in tools that
+                may exist (Claude ``--tools``). ``None`` means "no restriction"
+                and is the default so every existing caller is unchanged; an
+                empty sequence means "no built-in tools at all" and is a
+                distinct, meaningful value. Only consulted when
+                :meth:`supports_tool_restriction` is True.
         """
         raise NotImplementedError
+
+    def _read_only_tool_restriction(
+        self, read_only: bool,
+    ) -> Optional[Sequence[str]]:
+        """Return the positive tool allowlist for this invocation, or None.
+
+        Derived from *read_only* here rather than threaded through
+        :meth:`build_command` so that adding the mechanism does not require a
+        signature change in every provider subclass -- a subclass that forgot to
+        forward it would fail OPEN, which is the one failure mode this mechanism
+        exists to remove.
+        """
+        if read_only and self.supports_tool_restriction():
+            return list(READ_ONLY_TOOLS)
+        return None
+
+    def supports_tool_restriction(self) -> bool:
+        """Return True if the CLI accepts a POSITIVE built-in tool allowlist.
+
+        Strictly stronger than :meth:`supports_tool_denial`: denial requires
+        enumerating every dangerous tool and silently fails open for anything a
+        future CLI release adds, whereas an allowlist withholds by construction.
+        Claude's ``--tools`` is this mechanism.
+        """
+        return False
 
     def supports_tool_denial(self) -> bool:
         """Return True if the CLI can be told to deny specific tools.
@@ -286,12 +349,16 @@ class CLIProvider:
     def enforces_read_only(self) -> bool:
         """Return True if a ``read_only=True`` invocation is actually enforceable.
 
-        The fail-closed predicate: a provider that can neither deny tools by
-        name nor run in a read-only sandbox cannot uphold the boundary, and
+        The fail-closed predicate: a provider that can express none of the three
+        mechanisms cannot uphold the boundary, and
         :func:`app.provider.build_full_command` refuses the invocation rather
         than letting ``read_only`` degrade into a prompt-level suggestion.
         """
-        return self.supports_tool_denial() or self.supports_read_only_sandbox()
+        return (
+            self.supports_tool_restriction()
+            or self.supports_tool_denial()
+            or self.supports_read_only_sandbox()
+        )
 
     def build_model_args(
         self,
@@ -308,6 +375,26 @@ class CLIProvider:
     def build_max_turns_args(self, max_turns: int = 0) -> List[str]:
         """Build args for conversation turn limit."""
         raise NotImplementedError
+
+    def build_agent_settings_args(self, read_only: bool = False) -> List[str]:
+        """Args installing per-invocation agent settings (e.g. a PreToolUse hook).
+
+        Providers that can gate individual tool calls override this. Base is a
+        no-op, so a provider without the mechanism simply never gets a shell --
+        ``READ_ONLY_TOOLS`` grants ``Bash`` but nothing pre-approves it, and an
+        un-pre-approved tool is denied in headless mode.
+        """
+        return []
+
+    def build_mcp_isolation_args(self, read_only: bool = False) -> List[str]:
+        """Args that suppress ambient (non-``--mcp-config``) MCP servers.
+
+        A positive built-in tool allowlist says nothing about MCP tools, so a
+        read-only role that inherits the operator's user-level MCP servers is
+        only as narrow as whatever they happen to have installed. Providers that
+        can isolate override this. Base is a no-op.
+        """
+        return []
 
     def build_mcp_args(self, configs: Optional[List[str]] = None) -> List[str]:
         """Build args for MCP server configuration."""
@@ -484,11 +571,16 @@ class CLIProvider:
         cmd.extend(self.build_project_context_args(project_context))
         cmd.extend(sys_args)
         cmd.extend(self.build_prompt_args(prompt))
-        cmd.extend(self.build_tool_args(allowed_tools, disallowed_tools))
+        cmd.extend(self.build_tool_args(
+            allowed_tools, disallowed_tools,
+            restrict_tools=self._read_only_tool_restriction(read_only),
+        ))
         cmd.extend(self.build_model_args(model, fallback))
         cmd.extend(self.build_output_args(output_format))
         cmd.extend(self.build_max_turns_args(max_turns))
         cmd.extend(self.build_mcp_args(mcp_configs))
+        cmd.extend(self.build_mcp_isolation_args(read_only))
+        cmd.extend(self.build_agent_settings_args(read_only))
         cmd.extend(self.build_plugin_args(plugin_dirs))
         cmd.extend(self.build_effort_args(effort))
         return cmd
