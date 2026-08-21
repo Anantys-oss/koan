@@ -14,6 +14,68 @@ Do not hand-edit released entries — they are the source for `CHANGES.md`.
 
 ## ${NEXT}
 
+### Merged 2026-07-21 — main @ 376b048a (11 commits)
+
+**Added**
+
+- Brainstorming now creates rich, properly formatted Jira issues with native
+  links between them, so a brainstorm lands as a readable, connected set of
+  tickets instead of flat text. (#2443)
+- Config changes now take effect on the running agent without a restart —
+  edit settings in the dashboard and the daemon picks them up live. (#2208)
+- A new post-review hook lets you run your own automation once a review
+  finishes, and the agent captures lessons from each review it performs. (#2440)
+
+**Changed**
+
+- The agent reclaims leftover working directories from finished missions,
+  noticeably reducing disk usage (and hosting cost) on long-running
+  instances. (#2454)
+- Transition notices now point you to `/fix` instead of the older
+  `/rebase --fix`. (#2452)
+- Published Docker images no longer ship Kōan's own development tooling,
+  making them smaller and cleaner. (#2442)
+
+**Fixed**
+
+- Sending `/fix` with a pull-request URL no longer stalls in the queue — it is
+  routed to the right handler automatically. (#2459)
+- Replies default to English when no language preference is set, instead of
+  falling back unpredictably. (#2456)
+
+## v0.8.0 — 2026-07-18
+
+**Added**
+
+- **Chat stays responsive during missions** — your chat messages now get a priority lane, so the bot answers you even while it is busy running a mission (#1084).
+- **Split `/rebase`** — a bare `/rebase <pr>` now only rebases the PR onto its base branch. Use `/rebase --fix` (implied when you add a focus area or severity after the URL) to also apply review feedback (#2439).
+- **More CLI providers** — added the Grok Build and Haze providers, so you can run missions on additional backends. `/models` slots can now be annotated with a per-role CLI, and MCP tools can be enabled per execution role (#2422).
+- **Plain-English GitHub mentions** — mentioning the bot in natural language now routes to the right skill instead of requiring an exact command (#2402).
+- **Authoritative mission store** — missions now live in a SQLite store (`missions.md` becomes a read-only export). New `/list <state>` shows done/failed history, and `make missions` is a break-glass CLI when the bridge is down.
+- **Live mission timeline** — the dashboard `/progress` view now shows a structured, live timeline; you can edit a project's GitHub URL and auto-merge settings from the dashboard and via `PATCH /v1/projects/<name>`.
+- **GitHub "Running" indicator** — a label and commit status now mark a PR while a mission is working on it (#2365).
+- **`/claudemd <project>`** keeps a managed learnings block in `CLAUDE.md`; added the `/rereview` alias and a configurable label to pause automatic PR reviews.
+- **Review upgrades** — severity-graded verdict alerts, stale-HEAD warnings on posted reviews, and per-mission token usage/cost reported over the REST API.
+- **`.koan/` steering tree** — koan-only `KOAN.md` and per-skill instructions that apply to the autonomous agent without affecting interactive sessions (#2293).
+- **Cloud deploy** — hydrate `instance/` from a repo on cold boot, with an opt-in periodic pull.
+- **Non-blocking CI checks** — CI-fix missions no longer stall the queue behind other work.
+- Prettier `make logs` output (set `raw=1` to bypass), and per-mission-type reasoning-effort configuration.
+
+**Changed**
+
+- **Large review diffs are no longer silently truncated** — the old 32k-character cap is now a configurable budget, and a review that couldn't cover the whole diff says so with a partial-coverage warning (#2292).
+- **The bot stays up when the CLI binary is missing** at startup, entering a degraded no-mission mode instead of failing outright.
+- **Unified release pipeline** — releases are now cut from the `incubating` branch through the release workflow, and `CHANGES.md` is the published changelog.
+
+**Fixed**
+
+- No more duplicate command output when Telegram re-delivers an update, and no more double-resume when pausing/resuming in quick succession (#2437).
+- Missions no longer wrongly resurrect after removal, and a mission is re-queued when verification fails (#2210).
+- Grok: credit/spending-limit exhaustion is now correctly treated as quota, false burn-rate alerts and pauses are gone, and headless tool calls are approved so `/implement` can commit.
+- The Telegram bridge no longer grows its memory footprint over long uptime (#2360), and long `/report` messages now deliver reliably.
+- Slack: the bot no longer replies in threads addressed to someone else.
+- Security: closed a shell-injection path in CI dispatch-tag validation.
+
 ## v0.79 — 2026-07-08
 
 ### Merged 2026-07-08 — main @ 78eb231e (1 commit)
