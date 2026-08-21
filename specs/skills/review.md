@@ -74,6 +74,39 @@ See `docs/users/skills.md` for the end-user `/review` reference and
 
 - Multi-URL queues preserve order via a single atomic locked insert.
 - Findings are advisory comments — `/review` never merges or pushes code.
+- **Read-only is enforced by denial, not by omission.** `review_mode` is a member
+  of `app.provider.READ_ONLY_ROLES`, so every review pass additionally *denies*
+  `SIDE_EFFECT_TOOLS` (`Bash`, `Write`, `Edit`, `NotebookEdit`). Passing only
+  `["Read","Glob","Grep"]` to `allowed_tools` does **not** withhold the rest:
+  `--allowedTools` pre-approves invocations, it does not restrict which tools
+  exist — the CLI's own reference says *"To restrict which tools are available,
+  use `--tools` instead"*. Verified on Claude CLI 2.1.234: under
+  `--allowedTools Read,Glob,Grep` a `Bash` call still succeeds, while under
+  `--disallowedTools Bash` it is blocked. Enforcement strength is
+  provider-dependent: Claude and ollama-launch deny by name; Codex ignores tool
+  arguments entirely and is instead pinned to `--sandbox read-only`. Every other
+  adapter declares neither and is refused — for reasons that differ per provider
+  (`cline`/`haze` cannot express a restriction at all; `copilot`'s adapter does
+  not wire up the CLI's `--deny-tool`; `grok` emits tool flags but Kōan has not
+  measured that they withhold, and it auto-approves unconditionally). See
+  `specs/components/providers.md` for the per-provider detail — the predicate is
+  a claim about Kōan's adapter, not about the vendor CLI. A read-only role
+  also refuses to honour `skip_permissions`, because
+  `--dangerously-skip-permissions` / `--dangerously-bypass-approvals-and-sandbox`
+  would bypass the very denial that makes the role read-only.
+- **An unenforceable review provider is REFUSED, not downgraded.** If the
+  resolved `review_mode` provider (or the `cli.fallback` it swapped to) can
+  enforce neither mechanism, `build_full_command` raises
+  `ReadOnlyUnenforceable` and the review fails with an actionable configuration
+  error naming the provider and `cli.review_mode`. `/review` never executes
+  against an unenforceable provider — a review that could write to the live
+  project clone is worse than no review, and the user-facing docs promise the
+  boundary unconditionally. Operators on `cline`/`haze`/`copilot`/`grok` must pin
+  `cli.review_mode` to `claude`, `codex`, or `ollama-launch`; the refused
+  providers stay available for every other role. This covers the `/review` skill, which runs
+  through `run_command_streaming`. It does **not** cover the separate
+  `autonomous_mode == "review"` mission path in
+  `mission_runner.build_mission_command` — see `specs/components/providers.md`.
 - **Finding IDs span the complete review.** Displayed IDs start at 1 and
   increment through rendered severity order (Blocking, Important, Suggestions),
   then continue through Silent Failure Analysis findings. IDs never restart at

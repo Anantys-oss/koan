@@ -228,7 +228,9 @@ class GrokProvider(CLIProvider):
             return ["--output-format", "plain"]
         return []
 
-    def build_permission_args(self, skip_permissions: bool = False) -> List[str]:
+    def build_permission_args(
+        self, skip_permissions: bool = False, read_only: bool = False,
+    ) -> List[str]:
         # Grok headless cannot answer interactive permission prompts. The CLI
         # ``--permission-mode acceptEdits`` flag is a documented no-op (only
         # ``bypassPermissions`` / ``default`` apply via the flag); headless
@@ -242,6 +244,11 @@ class GrokProvider(CLIProvider):
                 "to silence this notice (recommended for autonomous Grok).",
                 level="info",
             )
+        # read_only is accepted for API parity and deliberately NOT honoured: an
+        # unconditional --always-approve is why GrokProvider declares no
+        # read-only capability, so build_full_command refuses the invocation
+        # before it can reach here. Making this conditional is a prerequisite for
+        # enabling grok on read-only roles, not an independent change.
         return ["--always-approve"]
 
     def build_tool_args(
@@ -249,6 +256,18 @@ class GrokProvider(CLIProvider):
         allowed_tools: Optional[List[str]] = None,
         disallowed_tools: Optional[List[str]] = None,
     ) -> List[str]:
+        # NOTE: these flags exist, but ``supports_tool_denial()`` is deliberately
+        # left False -- do not flip it just because ``--disallowed-tools`` is
+        # emitted here. Two blockers, in order:
+        #   1. Nobody has measured that Grok's flags WITHHOLD a tool rather than
+        #      merely pre-approve it. Claude's ``--allowedTools`` looked like a
+        #      restriction for exactly this reason and was not; that discovery is
+        #      why READ_ONLY_ROLES exists. Assuming here repeats the bug.
+        #   2. build_permission_args() below returns ``--always-approve``
+        #      unconditionally, ignoring read_only -- a blanket auto-approve of
+        #      the kind a read-only role refuses to honour on Claude and Codex.
+        # Fix (2) and measure (1) before declaring the capability. See
+        # specs/components/providers.md.
         flags: List[str] = []
         if allowed_tools:
             mapped = self._map_tool_names(allowed_tools, side="allowed")
@@ -364,6 +383,7 @@ class GrokProvider(CLIProvider):
         effort: str = "",
         resume_session_id: str = "",
         project_context: bool = True,
+        read_only: bool = False,
     ) -> List[str]:
         """Build ``grok [flags] -p <prompt>``.
 
@@ -395,7 +415,7 @@ class GrokProvider(CLIProvider):
         if resume_session_id and self.supports_session_resume():
             cmd.extend(self.build_resume_args(resume_session_id))
         cmd.extend(self.build_project_context_args(project_context))
-        cmd.extend(self.build_permission_args(skip_permissions))
+        cmd.extend(self.build_permission_args(skip_permissions, read_only=read_only))
         cmd.extend(sys_args)
         cmd.extend(self.build_tool_args(allowed_tools, disallowed_tools))
         cmd.extend(self.build_model_args(model, fallback))

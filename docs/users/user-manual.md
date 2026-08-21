@@ -594,6 +594,7 @@ The debug loop enforces four steps:
   - `--errors` — Run an additional **silent-failure-hunter** pass that scans for swallowed exceptions, silent null returns, unhandled promises, and other silent error paths. Also auto-triggered when the diff contains error-handling patterns (`try/except`, `catch`, etc.)
   - `--comments` — Comment quality review (factual accuracy, completeness, stale TODOs, misleading language)
   - `--bot-comments` — Triage inline comments from code-review bots (CodeRabbit, Copilot Review, Sourcery) and post replies to actionable findings
+- **Tool boundary:** A review is advisory — it reads, and it never commits, pushes, or merges. The session gets `Read`, `Glob`, and `Grep`, and the shell, write, and edit tools are **denied** at the CLI rather than merely left unrequested (an allowlist pre-approves tools; it does not withhold the rest). On Codex the same posture is enforced by an OS-level read-only sandbox. `skip_permissions: true` is deliberately ignored for reviews, since it would bypass the denial. The boundary **fails closed**: on any provider Kōan cannot *prove* enforces it (`cline`, `haze`, `copilot`, `grok`), the review is refused with a configuration error rather than run unrestricted — pin `cli.review_mode` to `claude`, `codex`, or `ollama-launch`. Those providers remain available for every other role.
 - **Output:** Findings are grouped into severity buckets (🔴 Blocking /
   🟡 Important / 🟢 Suggestions), each folded into a collapsible section.
   Finding IDs increment across all buckets and continue into Silent Failure

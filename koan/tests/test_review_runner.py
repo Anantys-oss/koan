@@ -401,6 +401,21 @@ class TestReviewVerdictContract:
         prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
         assert "Never reject a PR" in prompt
 
+    def test_main_prompt_does_not_advertise_shell_access(
+        self, pr_context, real_review_skill_dir
+    ):
+        """Reviews are read-only, so the prompt must not offer a shell.
+
+        Guards against re-introducing prompt text that grants ``Bash`` while the
+        provider layer denies it: the model would burn turns on calls the CLI
+        rejects, and the prompt would be lying about its own capabilities. The
+        boundary belongs in tool arguments, not prose — see
+        ``app.provider.READ_ONLY_ROLES``.
+        """
+        prompt, _ = build_review_prompt(pr_context, skill_dir=real_review_skill_dir)
+        assert "You may use `Bash`" not in prompt
+        assert "inspection-only review" not in prompt
+
     def test_shared_lgtm_rule_marks_suggestions_non_blocking(
         self, pr_context, real_review_skill_dir
     ):
@@ -2685,6 +2700,11 @@ class TestRunClaudeReview:
         output, error = _run_claude_review("prompt", "/tmp/project")
         assert output == "review text"
         assert error == ""
+        # Read-only: no shell in the request. The provider layer additionally
+        # DENIES the side-effecting tools, because an allowlist alone does not
+        # withhold them (see app.provider.base.SIDE_EFFECT_TOOLS).
+        assert mock_run.call_args.kwargs["allowed_tools"] == ["Read", "Glob", "Grep"]
+        assert mock_run.call_args.kwargs["model_key"] == "review_mode"
 
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "review-model", "mission": "mission-model"})

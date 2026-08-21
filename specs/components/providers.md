@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-08-18
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -189,6 +189,78 @@ tools — MCP tools must still be allowlisted via qualified names
   `", "` part delimiter — `_summarize_stream_event()` collapses it to a bare
   comma (`_drop_part_sep`) so the display splitter (`log_fmt._PART_SEP`) can
   never mis-split a preview into a spurious part.
+- **`tool_result` summary grammar carries an optional failure reason.**
+  `_summarize_stream_event()` renders a failed tool result as
+  `[cli] tool_result <id> (error)[: <reason>]`. The optional `: <reason>` suffix
+  is a bounded first-line excerpt of the result content (`_tool_result_preview`,
+  120 chars) emitted only when the provider supplies one, so consumers keying
+  off `tool_result` or `(error)` (substring) are unaffected. Like the `tool_use`
+  preview it is `_drop_part_sep`-cleaned, so it can never carry the `", "` part
+  delimiter. Both display surfaces split the reason off the first `": "` through
+  one shared helper (`log_fmt._tool_error_reason`) so `make logs` and the
+  dashboard timeline cannot drift. Successful `tool_result` lines stay
+  suppressed on the display side; error lines are never suppressed.
+- **A read-only execution role is enforced by tool DENIAL, not by omission.**
+  `allowed_tools` is a pre-approval list — `--allowedTools Read,Glob,Grep`
+  leaves `Bash` fully usable (verified on Claude CLI 2.1.234; the CLI's own
+  reference says *"To restrict which tools are available, use `--tools`
+  instead"*). Roles in `READ_ONLY_ROLES` therefore have `SIDE_EFFECT_TOOLS`
+  added to `disallowed_tools` by `build_full_command`, and `read_only` is
+  forwarded to `build_permission_args` so a provider with a sandbox can express
+  the posture directly. `read_only` **overrides** `skip_permissions`, because
+  `--dangerously-skip-permissions` /
+  `--dangerously-bypass-approvals-and-sandbox` would bypass the denial.
+  Capability is declared per provider by two predicates —
+  `supports_tool_denial()` (deny by name) and `supports_read_only_sandbox()`
+  (OS-level sandbox) — combined by `enforces_read_only()`. Claude and
+  ollama-launch deny by name; Codex ignores tool arguments entirely and is
+  instead pinned to `--sandbox read-only`. Every other adapter declares neither
+  and is therefore refused — **but the reason differs per provider, and the
+  predicate is a claim about Kōan's adapter, not about the vendor CLI**:
+  - `cline` and `haze` genuinely cannot: `build_tool_args` returns `[]` and
+    haze's docstring states headless runs with full tool access.
+  - `copilot`'s adapter emits no deny flag. The Copilot CLI itself does have
+    `--deny-tool`; wiring it up is unclaimed work, not an upstream limitation.
+  - `grok` **does** emit `--tools` / `--disallowed-tools`, so the flags exist —
+    but two things block the claim. Kōan has never verified that they *withhold*
+    rather than merely pre-approve, which is precisely the assumption this whole
+    invariant exists to disprove (the Claude behaviour above is asserted only
+    because it was measured). And `GrokProvider.build_permission_args` returns
+    `--always-approve` **unconditionally**, ignoring `read_only` — a blanket
+    auto-approve of exactly the kind a read-only role refuses to honour on
+    Claude and Codex. Enabling grok requires measuring the flags AND making
+    `--always-approve` conditional, in that order.
+  - `fake` is test-only and refuses instantiation outright.
+
+  Do not flip a `supports_*` predicate because a flag exists. Flip it because
+  the behaviour was measured, and record the measurement.
+- **A read-only role that cannot be enforced FAILS CLOSED.** When `read_only` is
+  True and the resolved provider reports `enforces_read_only() is False`,
+  `build_full_command` raises `ReadOnlyUnenforceable` (a `RuntimeError`) naming
+  the provider and the config key to change. It never builds the command. There
+  is no advisory middle ground: a read-only role is a security boundary, and
+  degrading it to a prompt-level suggestion would hand a review write access to
+  the live project clone. The check runs **after** provider resolution, so a
+  `cli.fallback` swap into an unenforceable provider is refused too. Providers
+  that can enforce nothing remain fully usable for every non-read-only role —
+  the refusal is scoped to the invocation, not the provider.
+- **The enforcement reaches `read_only` invocations, NOT every `READ_ONLY_ROLES`
+  consumer.** Both mechanisms above are driven by the `read_only` argument to
+  `build_full_command`, which only the `run_command` / `run_command_streaming`
+  helpers set (from `model_key in READ_ONLY_ROLES`). `build_full_command_managed`
+  takes no `read_only` argument, so the mission path
+  (`mission_runner.build_mission_command`, which resolves the `review_mode` role
+  for `autonomous_mode == "review"`) is **not** covered: it passes a
+  `Read`/`Glob`/`Grep` allowlist only, which does not withhold anything. Closing
+  that gap is a separate decision about the autonomous mission path — it is a
+  known, deliberate limitation of this contract, not an oversight, and must not
+  be read as enforced.
+- **A new `READ_ONLY_ROLES` caller inherits the refusal.** `/review` is the only
+  `read_only` caller today. Any future call site that adopts a role listed in
+  `READ_ONLY_ROLES` gets the fail-closed check for free — and must catch
+  `ReadOnlyUnenforceable` explicitly and surface the configuration message,
+  rather than letting it surface as a generic failure that sends the operator
+  debugging the wrong thing.
 - **Shared stream parsers extend by event SHAPE, never by provider name.** The
   central summarizer/text/usage extractors in `provider/__init__.py` (and the
   mission-stdout path in `token_parser.py`) branch on field presence

@@ -88,6 +88,8 @@ def test_tool_use_preview_with_colon_in_command():
 
 def test_errored_tool_result_gets_error_glyph_and_never_collapses():
     assert r("tool_result toolu_015i88 (error)") == "❌ tool error"
+    assert r("tool_result toolu_015i88 (error): permission_denied") == \
+        "❌ tool error: permission_denied"
     assert is_tick("tool_result toolu_015i88 (error)") is False
 
 
@@ -209,6 +211,23 @@ def test_classify_successful_tool_result_suppressed():
 def test_classify_tool_result_error():
     rows = classify_cli("tool_result toolu_015i88 (error)")
     assert rows[0]["kind"] == "tool_error"
+    # No provider detail — fall back to the raw body rather than blanking it.
+    assert rows[0]["preview"] == "tool_result toolu_015i88 (error)"
+
+
+def test_classify_tool_result_error_preview_is_the_reason():
+    """The dashboard row shows the reason, not the tool-use id.
+
+    docs/operations/log-formatting.md requires classify_cli and render_cli to
+    stay in sync; both route through _tool_error_reason so they cannot drift.
+    """
+    rows = classify_cli("tool_result toolu_015i88 (error): permission_denied")
+    assert rows[0]["kind"] == "tool_error"
+    assert rows[0]["preview"] == "permission_denied"
+    # The same reason reaches the make-logs surface.
+    assert r("tool_result toolu_015i88 (error): permission_denied") == (
+        "❌ tool error: permission_denied"
+    )
 
 
 def test_classify_result_and_warning():

@@ -61,6 +61,21 @@ class TestPackageStructure:
         from app.provider.copilot import CopilotProvider
         assert CopilotProvider.name == "copilot"
 
+    def test_facade_reexports_read_only_unenforceable(self):
+        """The security refusal must stay catchable from the compat facade.
+
+        `app.cli_provider` re-exports under ``# noqa: F401``, so ruff cannot
+        catch the import being dropped, and no production code imports this name
+        from the facade yet. Without this test the re-export can silently
+        regress and a caller wanting to distinguish the read-only refusal from a
+        generic CLI failure would have to reach past the facade.
+        """
+        from app.cli_provider import ReadOnlyUnenforceable as ViaFacade
+        from app.provider.base import ReadOnlyUnenforceable as ViaBase
+
+        assert ViaFacade is ViaBase
+        assert issubclass(ViaFacade, RuntimeError)
+
     def test_local_module_removed(self):
         with pytest.raises(ImportError):
             from app.provider.local import LocalLLMProvider  # noqa: F401

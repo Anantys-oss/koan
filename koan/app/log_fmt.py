@@ -84,6 +84,18 @@ class _Palette:
         return self._wrap("32", s)
 
 
+def _tool_error_reason(body: str) -> str:
+    """Return the failure reason from a ``tool_result … (error)`` line body.
+
+    Empty when the provider supplied no detail (the suffix is optional — see
+    ``_summarize_stream_event``). Shared by :func:`render_cli` and
+    :func:`classify_cli` so the ``make logs`` and dashboard-timeline surfaces
+    cannot drift, as ``docs/operations/log-formatting.md`` requires.
+    """
+    _prefix, sep, detail = body.partition(": ")
+    return detail if sep and detail else ""
+
+
 def classify_cli(body: str) -> list[dict]:
     """Return structured display rows for one ``[cli]`` line body.
 
@@ -151,8 +163,12 @@ def classify_cli(body: str) -> list[dict]:
 
     if body.startswith("tool_result"):
         if "(error)" in body:
+            # Prefer the bounded reason over the raw body so the timeline row
+            # shows the diagnostic rather than the tool-use id; fall back to the
+            # body when the provider supplied no detail.
             return [_row(
-                "tool_error", label="tool error", icon="❌", preview=body,
+                "tool_error", label="tool error", icon="❌",
+                preview=_tool_error_reason(body) or body,
             )]
         return []
 
@@ -217,7 +233,11 @@ def render_cli(body: str, pal: "_Palette") -> Tuple[Optional[str], bool]:
     if body.startswith("tool_result"):
         if "(error)" in body:
             # Tool failures are high-signal: never collapse them.
-            return pal.red("❌ tool error"), False
+            detail = _tool_error_reason(body)
+            label = "❌ tool error"
+            if detail:
+                label += ": " + detail
+            return pal.red(label), False
         # Success adds no signal on its own — drop the line entirely.
         return None, True
 

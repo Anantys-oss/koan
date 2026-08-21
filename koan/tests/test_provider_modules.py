@@ -44,6 +44,31 @@ class TestConstants:
             assert isinstance(v, str)
             assert v  # not empty
 
+    def test_side_effect_tools_cover_every_write_capable_tool(self):
+        """Read-only roles deny these by name, so the set must stay complete.
+
+        Anything that can mutate state or shell out belongs here; otherwise a
+        read-only role silently keeps a write path.
+        """
+        from app.provider.base import SIDE_EFFECT_TOOLS
+
+        assert set(SIDE_EFFECT_TOOLS) >= {"Bash", "Write", "Edit"}
+        # The read tools must NOT be denied — reviews still need them.
+        assert not ({"Read", "Glob", "Grep"} & set(SIDE_EFFECT_TOOLS))
+
+    def test_read_only_roles_is_review_only(self):
+        """Only review_mode is read-only.
+
+        Deliberately NOT "chat": scripts/wiki_sync_ci.py drives a *write* job
+        (Edit/Write plus a git-log Bash rule) on the chat role, so adding it
+        here would break that CI fixer.
+        """
+        from app.provider import READ_ONLY_ROLES
+
+        assert READ_ONLY_ROLES == frozenset({"review_mode"})
+        assert "chat" not in READ_ONLY_ROLES
+        assert "mission" not in READ_ONLY_ROLES
+
 
 # ---------------------------------------------------------------------------
 # Base class
@@ -220,6 +245,20 @@ class TestClaudeProvider:
         p = ClaudeProvider()
         assert p.build_permission_args(False) == []
         assert p.build_permission_args(True) == ["--dangerously-skip-permissions"]
+
+    def test_read_only_suppresses_skip_permissions(self):
+        """A read-only role never gets --dangerously-skip-permissions.
+
+        That flag bypasses ALL permission checks, which would defeat the
+        --disallowedTools denial that makes the role read-only in the first
+        place. read_only therefore wins over skip_permissions.
+        """
+        p = ClaudeProvider()
+        assert p.build_permission_args(False, read_only=True) == []
+        assert p.build_permission_args(True, read_only=True) == []
+
+    def test_supports_tool_denial(self):
+        assert ClaudeProvider().supports_tool_denial() is True
 
     def test_system_prompt_args(self):
         p = ClaudeProvider()
@@ -1726,6 +1765,32 @@ class TestCodexProvider:
             and "exec" in cmd
         )
 
+    def test_read_only_pins_sandbox_and_beats_skip_permissions(self):
+        """Codex ignores tool arguments, so the sandbox is the only lever.
+
+        build_tool_args() returns [] AND build_command never calls it, so a
+        read-only Codex review can only be enforced via --sandbox read-only.
+        That must therefore override skip_permissions — honoring the bypass
+        would hand the review write access to the live project clone.
+        """
+        from app.provider.codex import CodexProvider
+        p = CodexProvider()
+        assert p.build_permission_args(False, read_only=True) == [
+            "--sandbox", "read-only",
+        ]
+        assert p.build_permission_args(True, read_only=True) == [
+            "--sandbox", "read-only",
+        ]
+
+    def test_read_only_build_command_has_no_write_sandbox(self):
+        from app.provider.codex import CodexProvider
+        cmd = CodexProvider().build_command(
+            prompt="hi", skip_permissions=True, read_only=True,
+        )
+        assert "read-only" in cmd
+        assert "workspace-write" not in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
+
     def test_build_command_prepends_system_prompt(self):
         from app.provider.codex import CodexProvider
         cmd = CodexProvider().build_command(prompt="up", system_prompt="sys")
@@ -2260,11 +2325,17 @@ class TestSummarizeStreamEventEdgeCases:
         line = _summarize_stream_event({
             "type": "user",
             "message": {"content": [
-                {"type": "tool_result", "tool_use_id": "tu_abc123xyz", "is_error": True},
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_abc123xyz",
+                    "is_error": True,
+                    "content": "permission_denied\nadditional detail",
+                },
             ]},
         })
         assert "tool_result" in line
         assert "(error)" in line
+        assert line.endswith(": permission_denied")
 
     def test_user_turn_without_tool_result(self):
         from app.provider import _summarize_stream_event
@@ -2308,3 +2379,266 @@ class TestSummarizeStreamEventEdgeCases:
         })
         # Empty text should render as just "text" without preview
         assert "text" in line
+
+
+# ---------------------------------------------------------------------------
+# Read-only role enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestReadOnlyRoleEnforcement:
+    """A read-only role must be enforced by the CLI, not by the prompt.
+
+    The premise these tests defend, verified against Claude CLI 2.1.234:
+    ``--allowedTools`` only *pre-approves* invocations, it does not restrict
+    which tools exist. Under ``--allowedTools Read,Glob,Grep`` a ``Bash`` call
+    still succeeds; under ``--disallowedTools Bash`` it is blocked. So passing a
+    read-only ``allowed_tools`` list is NOT sufficient — the side-effecting
+    tools have to be denied by name.
+    """
+
+    def test_read_only_denies_side_effect_tools(self):
+        from app.provider import build_full_command
+        from app.provider.base import SIDE_EFFECT_TOOLS
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        denied = cmd[cmd.index("--disallowedTools") + 1].split(",")
+        for tool in SIDE_EFFECT_TOOLS:
+            assert tool in denied, f"{tool} must be denied for a read-only role"
+
+    def test_non_read_only_adds_no_denial(self):
+        """The default path must stay byte-identical to before this change."""
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+            )
+        assert "--disallowedTools" not in cmd
+
+    def test_read_only_preserves_caller_supplied_denials(self):
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read"],
+                disallowed_tools=["WebFetch"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        denied = cmd[cmd.index("--disallowedTools") + 1].split(",")
+        assert "WebFetch" in denied
+        assert "Bash" in denied
+
+    def test_read_only_suppresses_permission_bypass_end_to_end(self):
+        """skip_permissions must not survive into a read-only command."""
+        from app.provider import build_full_command
+        from app.provider.claude import ClaudeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=True):
+            cmd = build_full_command(
+                prompt="p",
+                allowed_tools=["Read", "Glob", "Grep"],
+                provider=ClaudeProvider(),
+                read_only=True,
+            )
+        assert "--dangerously-skip-permissions" not in cmd
+
+    def test_every_provider_fails_closed_for_read_only(self):
+        """Fail-closed across the whole registry.
+
+        Each provider either enforces the boundary -- denying the side-effecting
+        tools by name, or expressing a read-only posture some other way (Codex's
+        sandbox) -- or the invocation is REFUSED. There is no third outcome: a
+        provider that can do neither must never run a "read-only" review with
+        full write access to the live project clone, so adding a new provider
+        cannot silently produce an unenforced review either way.
+        """
+        from app.provider import (
+            ReadOnlyUnenforceable,
+            build_full_command,
+            known_providers,
+            _PROVIDERS,
+        )
+
+        # Providers that can express NEITHER a per-tool denial nor a read-only
+        # sandbox. Documented in specs/skills/review.md: read-only invocations on
+        # these are rejected. "fake" is test-only and refuses instantiation
+        # without KOAN_ALLOW_FAKE_PROVIDER=1.
+        unenforceable = {"cline", "haze", "copilot", "grok", "fake"}
+        assert unenforceable <= set(known_providers())
+
+        enforced_count = 0
+        refused_count = 0
+        for name in known_providers():
+            if name == "fake":
+                continue
+            provider = _PROVIDERS[name]()
+            assert provider.enforces_read_only() is (name not in unenforceable), (
+                f"provider {name!r}: enforces_read_only() disagrees with the "
+                "documented unenforceable set"
+            )
+            with patch("app.config.get_skip_permissions", return_value=False):
+                if name in unenforceable:
+                    with pytest.raises(ReadOnlyUnenforceable):
+                        build_full_command(
+                            prompt="p",
+                            allowed_tools=["Read", "Glob", "Grep"],
+                            provider=provider,
+                            read_only=True,
+                        )
+                    refused_count += 1
+                    continue
+                cmd = build_full_command(
+                    prompt="p",
+                    allowed_tools=["Read", "Glob", "Grep"],
+                    provider=provider,
+                    read_only=True,
+                )
+            joined = " ".join(cmd)
+            enforced = (
+                ("--disallowedTools" in cmd and "Bash" in joined)
+                or "read-only" in cmd
+            )
+            assert enforced, (
+                f"provider {name!r} claims enforces_read_only() but produced no "
+                "read-only enforcement in the built command"
+            )
+            enforced_count += 1
+        assert enforced_count, "no enforceable provider was exercised"
+        assert refused_count, "no unenforceable provider was exercised"
+
+    def test_unenforceable_provider_is_refused_with_actionable_error(self):
+        """The refusal must name the provider and point at the fix."""
+        from app.provider import ReadOnlyUnenforceable, build_full_command
+        from app.provider.haze import HazeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            with pytest.raises(ReadOnlyUnenforceable) as exc:
+                build_full_command(
+                    prompt="p",
+                    allowed_tools=["Read", "Glob", "Grep"],
+                    provider=HazeProvider(),
+                    read_only=True,
+                )
+        msg = str(exc.value)
+        assert "haze" in msg
+        assert "cli.review_mode" in msg
+
+    def test_unenforceable_provider_still_runs_when_not_read_only(self):
+        """The refusal is scoped to read-only roles, not the provider itself."""
+        from app.provider import build_full_command
+        from app.provider.haze import HazeProvider
+
+        with patch("app.config.get_skip_permissions", return_value=False):
+            cmd = build_full_command(prompt="p", provider=HazeProvider())
+        assert cmd, "a non-read-only haze invocation must still build"
+
+    def test_fallback_swap_into_unenforceable_provider_is_refused(self):
+        """The check must run AFTER provider resolution, including cli.fallback.
+
+        `resolve_role_provider` swaps to `cli.fallback` when the role's binary is
+        missing, so a fallback into an unenforceable provider must be refused
+        exactly like a directly-configured one. Nothing else pins this ordering:
+        moving the predicate up into `resolve_role_provider` or
+        `get_provider_for_role` would silently break the documented contract in
+        specs/components/providers.md.
+        """
+        import app.provider as provider_mod
+        from app.provider import ReadOnlyUnenforceable, run_command_streaming
+        from app.provider.haze import HazeProvider
+
+        with patch.object(
+            provider_mod, "resolve_role_provider", return_value=HazeProvider(),
+        ), patch("app.config.get_skip_permissions", return_value=False), \
+                patch("app.config.get_model_config", return_value={}):
+            with pytest.raises(ReadOnlyUnenforceable):
+                run_command_streaming(
+                    prompt="p",
+                    project_path=".",
+                    allowed_tools=["Read", "Glob", "Grep"],
+                    model_key="review_mode",
+                )
+
+    def test_grok_emits_tool_flags_but_still_declares_no_capability(self):
+        """Grok is refused for a measured reason, not for lacking flags.
+
+        `GrokProvider.build_tool_args` DOES emit `--tools` / `--disallowed-tools`,
+        so "grok has no deny flag" is false and must not be the justification.
+        It stays unenforceable because (1) nobody has measured that those flags
+        withhold rather than pre-approve -- the exact assumption that made
+        `--allowedTools` look like a restriction when it was not -- and (2)
+        `build_permission_args` returns `--always-approve` unconditionally,
+        ignoring read_only. This test fails if someone flips the predicate
+        without first making the permission args conditional.
+        """
+        from app.provider.base import SIDE_EFFECT_TOOLS
+        from app.provider.grok import GrokProvider
+
+        p = GrokProvider()
+        flags = p.build_tool_args(["Read", "Glob", "Grep"], list(SIDE_EFFECT_TOOLS))
+        assert "--disallowed-tools" in flags, (
+            "premise changed: grok no longer emits a denial flag"
+        )
+        assert p.enforces_read_only() is False
+
+        # Blocker (2): the blanket auto-approve is emitted even for read_only.
+        assert p.build_permission_args(False, read_only=True) == ["--always-approve"]
+
+    def test_codex_declares_read_only_sandbox_support(self):
+        from app.provider.codex import CodexProvider
+
+        p = CodexProvider()
+        assert p.supports_tool_denial() is False
+        assert p.supports_read_only_sandbox() is True
+        assert p.enforces_read_only() is True
+
+    def test_managed_build_unlinks_prompt_file_when_build_raises(self):
+        """A failed build must not leave the 0600 system-prompt file behind.
+
+        ``cleanup_paths`` only reaches the caller on success, so a raise out of
+        ``build_full_command`` would otherwise leak a file containing the system
+        prompt with nobody holding its path.
+        """
+        import os
+
+        import app.provider as provider_mod
+        from app.provider import build_full_command_managed
+        from app.provider.claude import ClaudeProvider
+
+        captured = {}
+        real = provider_mod._write_system_prompt_file
+
+        def spy(content, host_dir=None, container_dir=None):
+            host_path, cmd_path = real(content, host_dir, container_dir)
+            captured["path"] = host_path
+            return host_path, cmd_path
+
+        with patch.object(provider_mod, "_write_system_prompt_file", spy), \
+                patch("app.config.get_skip_permissions", return_value=False), \
+                patch.object(
+                    ClaudeProvider, "build_command", side_effect=RuntimeError("boom"),
+                ):
+            with pytest.raises(RuntimeError, match="boom"):
+                build_full_command_managed(
+                    prompt="p",
+                    system_prompt="a system prompt",
+                    provider=ClaudeProvider(),
+                )
+
+        assert captured.get("path"), "the spy never saw a temp file"
+        assert not os.path.exists(captured["path"]), (
+            "system-prompt temp file leaked when the build raised"
+        )

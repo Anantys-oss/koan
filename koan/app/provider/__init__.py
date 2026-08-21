@@ -36,6 +36,8 @@ from app.provider.base import (  # noqa: F401
     CLIProvider,
     CLAUDE_TOOLS,
     PROVIDER_ERROR_EVENT_TYPES,
+    ReadOnlyUnenforceable,
+    SIDE_EFFECT_TOOLS,
     TOOL_NAME_MAP,
 )
 
@@ -124,6 +126,15 @@ _PROVIDERS = {
     "grok": GrokProvider,
     "ollama-launch": OllamaLaunchProvider,
 }
+
+# Execution roles that must never be able to write. Keyed by ``model_key``, the
+# role name callers already pass to run_command/run_command_streaming, so the
+# posture is derived rather than opt-in and no call site can forget it.
+#
+# ``review_mode`` only. Deliberately NOT "chat": scripts/wiki_sync_ci.py drives a
+# *write* job (Edit/Write plus a git-log Bash rule) on the chat role, and adding
+# it here would break that CI fixer.
+READ_ONLY_ROLES = frozenset({"review_mode"})
 
 # Cached provider instance (reset with reset_provider() in tests)
 _cached_provider: Optional[CLIProvider] = None
@@ -483,6 +494,7 @@ def build_full_command(
     resume_session_id: str = "",
     project_context: bool = True,
     provider: Optional[CLIProvider] = None,
+    read_only: bool = False,
 ) -> List[str]:
     """Build a complete CLI command for the configured provider.
 
@@ -507,13 +519,52 @@ def build_full_command(
             uses the global :func:`get_provider`. Pass a per-role instance
             (from :func:`get_provider_for_role`) to build a command for a
             specific mission role's CLI / custom binary.
+        read_only: When True this invocation must not be able to write. The
+            side-effecting tools are added to *disallowed_tools* for providers
+            that can deny tools, and the flag is forwarded so providers with a
+            sandbox (Codex) can express the posture directly. Derived from the
+            role by :func:`run_command` / :func:`run_command_streaming` — see
+            :data:`READ_ONLY_ROLES`. Fails closed: a provider that can express
+            neither mechanism raises
+            :class:`~app.provider.base.ReadOnlyUnenforceable` instead of running
+            with full write access.
+
+    Raises:
+        ReadOnlyUnenforceable: *read_only* is True and the resolved provider
+            (including a ``cli.fallback`` swap) reports
+            ``enforces_read_only() is False``.
 
     Automatically reads ``skip_permissions`` from config.yaml so all
     callers get the flag without needing changes.
     """
     from app.config import get_skip_permissions
 
-    return (provider or get_provider()).build_command(
+    resolved = provider or get_provider()
+    if read_only:
+        if not resolved.enforces_read_only():
+            # Fail closed. A provider that can neither deny tools by name nor
+            # run in a read-only sandbox would execute this invocation with full
+            # write access to the live project clone, which is exactly what the
+            # role forbids. Refuse rather than downgrade the boundary to advice.
+            raise ReadOnlyUnenforceable(
+                f"CLI provider {resolved.name!r} cannot enforce a read-only "
+                "invocation: it supports neither per-tool denial nor a read-only "
+                "sandbox, so the session could write to the live project clone. "
+                "Pin a provider that can (claude, codex, ollama-launch) on this "
+                "role's `cli:` entry in instance/config.yaml (for reviews: "
+                "`cli.review_mode`), or clear the `cli.fallback` that resolved "
+                f"to {resolved.name!r}."
+            )
+        if resolved.supports_tool_denial():
+            # An allowlist does not withhold anything -- ``--allowedTools`` only
+            # pre-approves. Denying the side-effecting tools by name is what
+            # actually keeps a read-only role read-only. Merge rather than replace
+            # so an explicit caller-supplied denial is preserved.
+            merged = list(disallowed_tools or [])
+            merged += [t for t in SIDE_EFFECT_TOOLS if t not in merged]
+            disallowed_tools = merged
+
+    return resolved.build_command(
         prompt=prompt,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
@@ -529,6 +580,7 @@ def build_full_command(
         effort=effort,
         resume_session_id=resume_session_id,
         project_context=project_context,
+        read_only=read_only,
     )
 
 
@@ -598,7 +650,11 @@ def build_full_command_managed(
 ) -> Tuple[List[str], List[str]]:
     """Build a CLI command, routing large system prompts through a temp file.
 
-    Same parameters as :func:`build_full_command`, but when ``system_prompt``
+    Same parameters as :func:`build_full_command` — minus ``read_only``, which
+    this path deliberately does not accept (see
+    ``specs/components/providers.md``: the fail-closed enforcement covers
+    ``read_only`` invocations, and the mission path through here is explicitly
+    out of scope). But when ``system_prompt``
     is non-empty AND the configured provider supports
     ``--append-system-prompt-file`` (or its equivalent), the prompt is
     written to a 0600 temp file and the file path is passed instead of the
@@ -608,7 +664,9 @@ def build_full_command_managed(
     Returns:
         ``(cmd, cleanup_paths)`` — the caller MUST unlink each path in
         ``cleanup_paths`` after the subprocess exits, typically from a
-        ``finally`` block alongside its other temp-file cleanup.
+        ``finally`` block alongside its other temp-file cleanup. If the build
+        itself raises, the temp file is unlinked here before the exception
+        propagates, so the caller never has to clean up a path it never got.
     """
     cleanup_paths: List[str] = []
 
@@ -637,7 +695,14 @@ def build_full_command_managed(
         kwargs.update(system_prompt="", system_prompt_file=cmd_path)
     else:
         kwargs["system_prompt"] = system_prompt
-    return build_full_command(**kwargs), cleanup_paths
+    try:
+        return build_full_command(**kwargs), cleanup_paths
+    except BaseException:
+        # The temp file is already on disk but ``cleanup_paths`` only reaches the
+        # caller on success, so anything raised out of the build would leak a
+        # 0600 file containing the system prompt. Unlink here and re-raise.
+        cleanup_managed_paths(cleanup_paths)
+        raise
 
 
 def cleanup_managed_paths(paths: List[str]) -> None:
@@ -725,6 +790,7 @@ def run_command(
         max_turns=max_turns,
         mcp_configs=mcp_configs,
         provider=provider,
+        read_only=model_key in READ_ONLY_ROLES,
     )
 
     from app.cli_exec import run_cli_with_retry
@@ -835,6 +901,27 @@ def _tool_input_preview(inp: Any, limit: int = 60) -> str:
     return ""
 
 
+def _tool_result_preview(content: Any, limit: int = 120) -> str:
+    """Return a bounded, single-line diagnostic from a failed tool result."""
+    values: List[str] = []
+    if isinstance(content, str):
+        values.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                values.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    values.append(text)
+
+    for value in values:
+        preview = _first_line(value, limit=limit)
+        if preview:
+            return _drop_part_sep(preview)
+    return ""
+
+
 def _drop_part_sep(text: str) -> str:
     """Neutralize the ``", "`` part delimiter inside a free-text preview.
 
@@ -899,7 +986,9 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
             if isinstance(block, dict) and block.get("type") == "tool_result":
                 tid = str(block.get("tool_use_id") or "")[:12]
                 err = " (error)" if block.get("is_error") else ""
-                return f"[cli] tool_result {tid}{err}"
+                detail = _tool_result_preview(block.get("content")) if err else ""
+                suffix = f": {detail}" if detail else ""
+                return f"[cli] tool_result {tid}{err}{suffix}"
         return "[cli] user turn"
 
     if etype == "result":
@@ -1385,6 +1474,7 @@ def run_command_streaming(
         output_format="stream-json" if use_stream_json else "",
         mcp_configs=mcp_configs,
         provider=provider,
+        read_only=model_key in READ_ONLY_ROLES,
     )
     last_message_path: Optional[str] = None
     if provider.supports_last_message_file():

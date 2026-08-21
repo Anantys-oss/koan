@@ -470,6 +470,9 @@ cli_provider: "claude"
 # cli_provider: grok so autonomous missions (/implement, etc.) are not cancelled
 # on shell tools. See docs/providers/grok.md.
 # For MCP tools, use provider-specific allowlists/settings instead.
+# NOTE: this setting is deliberately IGNORED for read-only roles (/review). It
+# would bypass the tool denial / read-only sandbox that keeps a code review from
+# writing to the live project clone. See specs/skills/review.md.
 # See docs/provider-claude.md and docs/provider-codex.md for details.
 # skip_permissions: false
 
