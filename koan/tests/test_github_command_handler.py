@@ -367,6 +367,36 @@ class TestBuildMissionFromCommand:
         )
         assert mission == "- [project:koan] /rebase https://github.com/sukria/koan/pull/42 📬"
 
+    def test_review_mention_carries_force(self, mock_skill, sample_notification):
+        """An explicit @mention review always forces a fresh review."""
+        mission = build_mission_from_command(
+            mock_skill, "review", "", sample_notification, "koan"
+        )
+        assert mission == (
+            "- [project:koan] /review "
+            "https://github.com/sukria/koan/pull/42 --force 📬"
+        )
+
+    def test_ultrareview_mention_carries_force(self, mock_skill, sample_notification):
+        mission = build_mission_from_command(
+            mock_skill, "ultrareview", "", sample_notification, "koan"
+        )
+        assert "--force 📬" in mission
+
+    def test_review_mention_does_not_duplicate_force(
+        self, mock_context_skill, sample_notification
+    ):
+        mission = build_mission_from_command(
+            mock_context_skill, "review", "--force", sample_notification, "koan"
+        )
+        assert mission.count("--force") == 1
+
+    def test_non_review_mention_has_no_force(self, mock_skill, sample_notification):
+        mission = build_mission_from_command(
+            mock_skill, "rebase", "", sample_notification, "koan"
+        )
+        assert "--force" not in mission
+
     def test_context_aware_with_context(self, mock_context_skill, sample_notification):
         mission = build_mission_from_command(
             mock_context_skill, "implement", "phase 1 only",
@@ -2153,8 +2183,8 @@ class TestProcessNotificationEdgeCases:
         assert error is None
         inserted = [args[0][1] for args in mock_insert.call_args_list]
         assert inserted == [
-            "- [project:koan] /review https://github.com/sukria/koan/pull/76 📬",
-            "- [project:koan] /review https://github.com/sukria/koan/pull/77 📬",
+            "- [project:koan] /review https://github.com/sukria/koan/pull/76 --force 📬",
+            "- [project:koan] /review https://github.com/sukria/koan/pull/77 --force 📬",
         ]
 
     @patch("app.github_command_handler.mark_notification_read")
@@ -4479,7 +4509,7 @@ class TestRecentMentionScan:
 
         assert queued == 1
         content = (instance_dir / "missions.md").read_text()
-        assert "[project:koan] /review https://github.com/sukria/koan/pull/42 📬" in content
+        assert "[project:koan] /review https://github.com/sukria/koan/pull/42 --force 📬" in content
         mock_react.assert_called_once()
 
         from app.github_notification_tracker import is_comment_tracked

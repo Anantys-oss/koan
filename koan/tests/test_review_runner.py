@@ -4671,6 +4671,38 @@ class TestIncrementalReview:
         # Claude should NOT have been called — review was skipped
         mock_claude.assert_not_called()
 
+    @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def"])
+
+    @patch("app.review_runner.find_bot_comment")
+    @patch("app.review_runner.fetch_repliable_comments", return_value=[])
+    @patch("app.review_runner.run_gh")
+    @patch("app.review_runner._run_claude_review")
+    @patch("app.review_runner.fetch_pr_context")
+    def test_force_bypasses_no_new_commits_skip(
+        self, mock_fetch, mock_claude, mock_gh, mock_repliable,
+        mock_find_bot, _mock_shas, pr_context, review_skill_dir,
+    ):
+        """force=True re-reviews even when all SHAs were already reviewed."""
+        from app.review_markers import SUMMARY_TAG, COMMIT_IDS_START, COMMIT_IDS_END
+
+        mock_fetch.return_value = pr_context
+        sha_block = f"{COMMIT_IDS_START}\nabc\ndef\n{COMMIT_IDS_END}"
+        prior_comment = {"id": 42, "body": f"{SUMMARY_TAG}\n{sha_block}", "user": "koan-bot"}
+        updated_comment = {"id": 42, "body": f"{SUMMARY_TAG}\n## Review\n\nLGTM", "user": "koan-bot"}
+        mock_find_bot.side_effect = [prior_comment, updated_comment]
+        mock_claude.return_value = (json.dumps(LGTM_REVIEW_JSON), "")
+
+        success, summary, _ = run_review(
+            "owner", "repo", "42", "/tmp/project",
+            notify_fn=MagicMock(),
+            skill_dir=review_skill_dir,
+            force=True,
+        )
+
+        assert success is True
+        assert "no new commits" not in summary.lower()
+        mock_claude.assert_called_once()
+
     @patch("app.review_runner._fetch_pr_commit_shas", return_value=["abc", "def", "ghi"])
 
     @patch("app.review_runner.find_bot_comment")
