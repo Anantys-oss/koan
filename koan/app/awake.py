@@ -527,7 +527,16 @@ def handle_chat(text: str):
             quarantine_mission(text, guard_result.reason, source="telegram-chat")
 
     chat_tools_list = get_chat_tools().split(",")
-    models = get_model_config()
+    # Take the `chat` CLI so a `cli:` binary override applies (resolved once
+    # here, not per retry), and resolve the model against THAT provider's
+    # section so a cross-flavor role override (e.g. chat→codex) gets codex's
+    # model, not the global provider's — a provider spawned with a foreign
+    # model fails.
+    from app.provider import get_provider_for_role
+    chat_provider = get_provider_for_role("chat")
+    models = get_model_config(
+        role_providers={"chat": chat_provider.name, "fallback": chat_provider.name},
+    )
 
     # Run chat from KOAN_ROOT so paths line up with the rest of the system
     # (reflection, agent loop). Chat only needs to read state under
@@ -575,6 +584,7 @@ def handle_chat(text: str):
                 fallback=models["fallback"],
                 max_turns=5,
                 project_context=False,
+                provider=chat_provider,
             )
 
             try:
@@ -585,6 +595,7 @@ def handle_chat(text: str):
                         cmd,
                         capture_output=True, text=True, timeout=timeout,
                         cwd=chat_cwd,
+                        provider=chat_provider,
                     )
             except subprocess.TimeoutExpired:
                 # Timeout is a retryable contention symptom.

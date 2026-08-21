@@ -383,7 +383,7 @@ def get_model_config(
 _CLI_ROLES = ("mission", "chat", "lightweight", "review_mode", "reflect")
 
 
-def _parse_cli_value(raw: str) -> Tuple[str, str]:
+def _parse_cli_value(raw: str, warn: bool = True) -> Tuple[str, str]:
     """Parse a ``cli:`` value (``flavor`` or ``flavor:path``) into ``(flavor, path)``.
 
     Splits on the FIRST colon so absolute paths containing extra colons survive.
@@ -392,6 +392,10 @@ def _parse_cli_value(raw: str) -> Tuple[str, str]:
     global provider (a typo must never crash the agent loop). The path is
     returned RAW — the provider resolves it (absolute / KOAN_ROOT-relative /
     bare) in ``binary()`` via the shared ``_resolve_binary_path`` helper.
+
+    Set ``warn=False`` when a caller re-parses a value it has already reported
+    on, so a bad setting is logged once per resolution instead of once per
+    lookup.
     """
     raw = str(raw or "").strip()
     if not raw:
@@ -402,13 +406,36 @@ def _parse_cli_value(raw: str) -> Tuple[str, str]:
     from app.provider import is_known_provider
 
     if not is_known_provider(flavor):
-        print(
-            f"[config] cli: unknown provider flavor {flavor!r} (value {raw!r}); "
-            "ignoring and using the global provider",
-            file=sys.stderr,
-        )
+        if warn:
+            print(
+                f"[config] cli: unknown provider flavor {flavor!r} (value {raw!r}); "
+                "ignoring and using the global provider",
+                file=sys.stderr,
+            )
         return ("", "")
     return (flavor, path)
+
+
+def get_global_cli_spec(warn: bool = True) -> Tuple[str, str]:
+    """Resolve the global ``cli_provider`` key into ``(flavor, path)``.
+
+    ``cli_provider`` accepts the same ``flavor`` / ``flavor:path`` grammar as the
+    per-role ``cli:`` entries, so a deployment that routes Claude Code through a
+    wrapper binary can set it once globally instead of repeating the path for
+    every role. Parsing goes through :func:`_parse_cli_value`, so an unknown
+    flavor warns and yields ``("", "")`` — the caller then falls back to the
+    built-in default rather than crashing.
+
+    Returns ``("", "")`` when unset or unparseable. The env var
+    (``KOAN_CLI_PROVIDER``) is deliberately NOT handled here: it stays
+    flavor-only, because ``KOAN_CLAUDE_CLI_PATH`` already covers "custom binary
+    from the environment" and a second spelling would only invite drift.
+
+    A config-loading failure PROPAGATES — ``provider.get_provider_name`` owns
+    that error path and logs it, so catching it here would only swallow the
+    diagnostic and duplicate the handler.
+    """
+    return _parse_cli_value(_load_config().get("cli_provider", ""), warn=warn)
 
 
 def get_cli_config(project_name: str = "") -> Dict[str, Tuple[str, str]]:
