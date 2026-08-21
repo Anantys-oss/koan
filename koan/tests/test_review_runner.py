@@ -8483,7 +8483,7 @@ class TestPinnedWorktreeInRunReview:
                 run_review("o", "r", "7", "/operator/checkout")
 
     def test_opt_out_uses_the_supplied_path(self):
-        """review_guard pins its own worktree and must not double-fetch."""
+        """A caller that already pinned a checkout must not double-fetch."""
         from app.review_runner import run_review
 
         with self._patch_gates(), \

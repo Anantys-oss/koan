@@ -90,6 +90,15 @@ _GIT_GLOBAL_FLAG_REJECTS = ("-C", "-c", "--git-dir", "--work-tree", "--exec-path
 # Verified against git on this host: `git diff --output=/tmp/x HEAD~1` creates it.
 _GIT_WRITE_FLAG_REJECTS = ("--output", "-o")
 
+# `git grep -O<program>` / `--open-files-in-pager=<program>` EXECUTES <program>,
+# with the matched files as its arguments. That launders any binary past the
+# `_KNOWN_DANGEROUS` check, because the program being adjudicated is `git`:
+# `git grep -Osh needle` runs `sh` on files taken from the PR head under review.
+# Verified against git 2.50.1 -- `git grep -O"sh -c 'echo x > PWN'" needle`
+# creates PWN. Case matters: `-o` (write) and `-O` (execute) are different
+# flags, and `_flag_matches` is case-sensitive, so `-o` above does not cover it.
+_GIT_EXEC_FLAG_REJECTS = ("-O", "--open-files-in-pager")
+
 # Commands allowed with no per-command flag restrictions.
 _PLAIN_READ_COMMANDS = frozenset({
     "basename", "cat", "comm", "cut", "diff", "dirname", "echo", "file", "grep",
@@ -131,6 +140,19 @@ _KNOWN_DANGEROUS = frozenset({
 # so ``sed`` is allowed ONLY in the one shape a reviewer actually needs: print a
 # line range. Anything else is refused and pointed at Read/Grep.
 _SED_SAFE_SCRIPT = re.compile(r"^\$?\d*(,\$?\d*)?p$")
+
+# jq's two accessors for the PROCESS ENVIRONMENT: the ``env`` builtin and the
+# ``$ENV`` predefined variable. jq cannot write files or execute programs, so it
+# is otherwise a safe reader -- but the environment is the one thing the Read,
+# Glob and Grep tools cannot reach, and the review CLI inherits Kōan's own
+# environ (API keys, Telegram and GitHub tokens). ``jq -n env`` would hand a
+# hostile PR's injected prompt exactly the exfiltration channel _check_operands
+# exists to close, and single-quoted ``$ENV`` is inert to Bash so
+# _has_expandable_dollar never sees it. Match ``env`` only as a standalone
+# identifier: ``.env`` and ``.environment`` are ordinary field reads and stay
+# allowed. A quoted ``"env"`` string is matched too -- fail closed; the Read
+# tool covers that case.
+_JQ_ENV_ACCESS = re.compile(r"(?:^|[^.\w$])env(?!\w)|\$ENV\b")
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -247,6 +269,18 @@ def _check_sed(argv: Sequence[str]) -> Tuple[bool, str]:
     return True, ""
 
 
+def _check_jq(argv: Sequence[str]) -> Tuple[bool, str]:
+    """Deny jq programs that read the process environment -- see _JQ_ENV_ACCESS."""
+    for token in argv[1:]:
+        if _JQ_ENV_ACCESS.search(token):
+            return _reject(
+                "`jq` may not read the process environment (`env` / `$ENV`) in a "
+                "review shell -- it holds the operator's API keys and tokens. "
+                "Query the JSON file itself."
+            )
+    return True, ""
+
+
 def _flag_matches(token: str, flag: str) -> bool:
     """Does ``token`` carry ``flag`` in any spelling git accepts?
 
@@ -345,6 +379,11 @@ def _check_git(argv: Sequence[str]) -> Tuple[bool, str]:
         for bad in _GIT_WRITE_FLAG_REJECTS:
             if _flag_matches(token, bad):
                 return _reject(f"`git {bad}` writes to a file")
+        for bad in _GIT_EXEC_FLAG_REJECTS:
+            if _flag_matches(token, bad):
+                return _reject(
+                    f"`git {bad}` runs an external program on the matched files"
+                )
     subcommand = ""
     for token in argv[1:]:
         if not token.startswith("-"):
@@ -450,6 +489,9 @@ def is_allowed(command: str) -> Tuple[bool, str]:
 
     if program == "sed":
         return _check_sed(argv)
+
+    if program == "jq":
+        return _check_jq(argv)
 
     if program in _PLAIN_READ_COMMANDS or program in _FLAG_REJECTS:
         denied, why = _flag_denied(program, argv)
