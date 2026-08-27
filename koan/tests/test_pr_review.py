@@ -706,6 +706,13 @@ class TestBuildSimplifyPrompt:
         assert "origin/develop...HEAD" in prompt
         assert "origin/main...HEAD" not in prompt
 
+    def test_custom_base_remote_templated_into_diff_range(self):
+        prompt = build_simplify_prompt(
+            "/tmp/project", skill_dir=PR_SKILL_DIR, base_remote="upstream"
+        )
+        assert "upstream/main...HEAD" in prompt
+        assert "origin/main...HEAD" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # run_pr_review (integration-level with mocks)
@@ -795,7 +802,7 @@ class TestRunPrReview:
         mock_subprocess
     ):
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
-        mock_subprocess.run.return_value = MagicMock(stdout="1\n")
+        mock_subprocess.run.return_value = MagicMock(stdout="1\n", returncode=0)
 
         mock_rebase_gh.side_effect = [
             self._mock_pr_context(), "0", "diff", "comment", "review", "thread",
@@ -904,7 +911,7 @@ class TestRunPrReview:
     ):
         """Simplify pass (--simplify) runs after refactor when refactor skill exists."""
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
-        mock_subprocess.run.return_value = MagicMock(stdout="1\n")
+        mock_subprocess.run.return_value = MagicMock(stdout="1\n", returncode=0)
         mock_rebase_gh.side_effect = [
             self._mock_pr_context(), "0", "diff", "reviewer comment", "review", "thread",
         ]
@@ -945,7 +952,7 @@ class TestRunPrReview:
     ):
         """Multi-commit branch → simplify lands as a new commit (amend=False)."""
         mock_models.return_value = {"mission": "", "fallback": "sonnet"}
-        mock_subprocess.run.return_value = MagicMock(stdout="2\n")
+        mock_subprocess.run.return_value = MagicMock(stdout="2\n", returncode=0)
         mock_rebase_gh.side_effect = [
             self._mock_pr_context(), "0", "diff", "reviewer comment", "review", "thread",
         ]
@@ -998,6 +1005,49 @@ class TestRunPrReview:
         ]
         assert simplify_commit
         assert simplify_commit[0].kwargs.get("amend") is False
+
+    @patch("app.pr_review.subprocess")
+    @patch("app.pr_review.detect_skills", return_value=("team.refactor", None))
+    @patch("app.pr_review.detect_test_command", return_value=None)
+    @patch("app.pr_review.run_gh")
+    @patch("app.pr_review._run_git")
+    @patch("app.claude_step.run_claude")
+    @patch("app.claude_step.commit_if_changes")
+    @patch("app.claude_step._run_git")
+    @patch("app.claude_step.get_model_config")
+    @patch("app.claude_step.build_full_command", return_value=["claude", "-p", "test"])
+    @patch("app.rebase_pr.run_gh")
+    def test_simplify_rev_list_nonzero_exit_falls_back_and_notifies(
+        self, mock_rebase_gh, mock_flags, mock_models, mock_cs_git, mock_commit,
+        mock_claude, mock_git, mock_gh, mock_test_cmd, mock_skills,
+        mock_subprocess
+    ):
+        """Non-zero git rev-list exit → new commit + a surfaced notification."""
+        import subprocess as _sp
+        mock_models.return_value = {"mission": "", "fallback": "sonnet"}
+        mock_subprocess.SubprocessError = _sp.SubprocessError
+        # Exit non-zero with empty stdout (missing local base ref) — not raised.
+        mock_subprocess.run.return_value = MagicMock(stdout="", returncode=128)
+        mock_rebase_gh.side_effect = [
+            self._mock_pr_context(), "0", "diff", "reviewer comment", "review", "thread",
+        ]
+        mock_claude.return_value = {"success": True, "output": "Done", "error": ""}
+        mock_commit.return_value = True
+
+        notify = MagicMock()
+        success, summary = run_pr_review("o", "r", "1", "/tmp/p", notify_fn=notify, skill_dir=PR_SKILL_DIR)
+        assert success is True
+        simplify_commit = [
+            c for c in mock_commit.call_args_list
+            if "simplify readability" in str(c)
+        ]
+        assert simplify_commit
+        assert simplify_commit[0].kwargs.get("amend") is False
+        # The failed probe must be surfaced, not silently swallowed.
+        assert any(
+            "commit count check failed" in str(c).lower()
+            for c in notify.call_args_list
+        )
 
     @patch("app.pr_review.detect_skills", return_value=(None, None))
     @patch("app.pr_review.detect_test_command", return_value=None)

@@ -73,15 +73,19 @@ def build_simplify_prompt(
     skill_name: str = "",
     skill_dir: Path = None,
     base: str = "main",
+    base_remote: str = "origin",
 ) -> str:
     """Build a prompt for the post-review simplify pass (readability-only).
 
-    *base* is the PR's target branch; it is templated into the diff range so the
-    pass inspects only this branch's work against the correct upstream target.
+    *base* is the PR's target branch and *base_remote* the remote the pipeline
+    actually rebased onto (``origin`` for same-repo PRs, ``upstream`` for a
+    fork). Both are templated into the diff range so the pass inspects only this
+    branch's work against the correct upstream target.
     """
     prompt = load_prompt_or_skill(
         skill_dir, "pr-simplify",
-        project_path=project_path, PROJECT_PATH=project_path, BASE=base,
+        project_path=project_path, PROJECT_PATH=project_path,
+        BASE=base, BASE_REMOTE=base_remote,
     )
     if skill_name:
         prompt += (
@@ -333,18 +337,27 @@ def run_pr_review(
         # Amend into HEAD when the branch is a single commit; otherwise land the
         # readability changes as their own refactor commit. On any git failure,
         # fall back to a new commit — safer than risking a bad amend.
+        base_ref = f"{rebase_remote}/{base}"
         try:
             rev_count = subprocess.run(
-                ["git", "rev-list", "--count", f"{base}..HEAD"],
+                ["git", "rev-list", "--count", f"{base_ref}..HEAD"],
                 capture_output=True, text=True, cwd=project_path, timeout=30,
             )
-            single_commit = rev_count.stdout.strip() == "1"
+            if rev_count.returncode != 0:
+                notify_fn(
+                    f"Commit count check failed (git rev-list exit "
+                    f"{rev_count.returncode}); landing simplify as a new commit"
+                )
+                single_commit = False
+            else:
+                single_commit = rev_count.stdout.strip() == "1"
         except subprocess.SubprocessError as e:
             notify_fn(f"Commit count check failed ({e}); landing simplify as a new commit")
             single_commit = False
         _run_claude_step(
             prompt=build_simplify_prompt(
-                project_path, refactor_skill, skill_dir=skill_dir, base=base,
+                project_path, refactor_skill, skill_dir=skill_dir,
+                base=base, base_remote=rebase_remote,
             ),
             project_path=project_path,
             commit_msg=f"refactor: simplify readability on #{pr_number}",

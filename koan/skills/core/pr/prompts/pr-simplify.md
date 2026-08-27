@@ -7,7 +7,7 @@ Working directory: `{PROJECT_PATH}`
 
 ## Your Task
 
-1. Run `git diff --name-only origin/{BASE}...HEAD` to identify the files this branch
+1. Run `git diff --name-only {BASE_REMOTE}/{BASE}...HEAD` to identify the files this branch
    changed since it diverged from the upstream target branch. The three-dot form
    diffs against the merge-base, so only this branch's own work is included.
 2. Read each changed file and look for **readability issues only**:
