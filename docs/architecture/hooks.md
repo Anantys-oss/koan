@@ -1,7 +1,7 @@
 ---
 type: doc
 title: "Lifecycle Hooks & Automation Rules"
-description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission/post_review): instance-wide and skill-bound Python hooks via `HookRegistry`, plus the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard."
+description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission/post_review): instance-wide and skill-bound Python hooks via `HookRegistry`, the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard, and the project-declared `hooks.<event>` skill lists read from a repo's own `.koan/config.yaml`."
 tags: [architecture]
 created: 2026-07-08
 updated: 2026-07-17
@@ -9,10 +9,14 @@ updated: 2026-07-17
 
 # Lifecycle Hooks & Automation Rules
 
-Kōan's agent loop fires named lifecycle events at fixed points; two independent
-mechanisms subscribe to them: **hooks** (arbitrary user-written Python) and
-**automation rules** (declarative YAML mapped to a fixed action set). Both are
-implemented in `koan/app/hooks.py`.
+Kōan's agent loop fires named lifecycle events at fixed points; three
+independent mechanisms subscribe to them: **hooks** (arbitrary user-written
+Python), **automation rules** (declarative YAML mapped to a fixed action set),
+and **project hook skills** (a reviewed repo naming its own Claude Code skills
+in `.koan/config.yaml`). All three are implemented in `koan/app/hooks.py`.
+
+The first two are the operator's; the third belongs to the repo being worked
+on, which is why it is the most tightly constrained of the three.
 
 ## Events
 
@@ -114,6 +118,47 @@ pause file directly), and `auto_merge` (invoke
   [Dashboard](../operations/dashboard.md)); there is no Telegram skill for
   them today.
 
+## Project hook skills (`.koan/config.yaml`)
+
+A reviewed repo can name skills to run when an event fires, without the
+operator writing any Python:
+
+```yaml
+hooks:
+  post_review:
+    - cp-docs-string-chain
+```
+
+Keys are the event names above; values are lists of skill names. For each name,
+`_fire_project_hook_skills` queues a pending mission that runs that skill.
+Read via `project_koan.get_hook_skills(project_path, event)`, so it only
+applies to events whose context carries a `project_path` (`pre_mission`,
+`post_mission`, `post_review`).
+
+**Queued, not executed.** Handlers run inline in the firing process and a skill
+pipeline can take minutes. Queuing also puts the work on the mission loop,
+which — unlike the read-only review subprocess — loads the project's own
+`.claude/skills`, can invoke the `Skill` tool, and does not have MCP stripped.
+That difference is the point of the mechanism: it is how a repo wires follow-up
+work that a review pass is deliberately not allowed to do.
+
+**The repo supplies names; Kōan composes the sentence.** Names must match
+`^[a-z0-9][a-z0-9-]*$`, capped at 10 per event, with anything else dropped and
+a warning logged. This is a security boundary, not tidiness: whoever can open a
+pull request can commit `.koan/config.yaml`, and the value reaches the prompt of
+a *write-capable* agent. A name that could carry an instruction, a path or a
+shell fragment is refused rather than sanitized. Contrast the operator-side
+mechanisms above, which may run arbitrary code because the operator owns them.
+
+**Idempotent per subject.** `insert_pending_mission` only de-duplicates entries
+shaped like `/<command> <github-url>`, so this path does its own check against
+the pending and in-progress sections, keyed on the skill name plus the subject
+(the PR URL, or the mission title). Re-reviewing the same PR does not queue the
+same work twice; a different PR queues separately.
+
+Fail-safe throughout: an absent, empty, or malformed `.koan/config.yaml` is a
+no-op, and a failure here never disturbs the event that fired.
+
 ## When to reach for which
 
 - **Hook** — arbitrary logic, external HTTP calls, custom parsing of
@@ -122,6 +167,10 @@ pause file directly), and `auto_merge` (invoke
   triggering process).
 - **Automation rule** — one of the five built-in actions, configured without
   writing Python, editable at runtime via the dashboard.
+- **Project hook skill** — the *repo* decides what runs after an event on its
+  own code, committed alongside it and reviewable in a pull request. Choose
+  this when the behavior belongs to the project rather than the operator, and
+  when naming a skill is enough. It cannot express logic or run commands.
 
 See `instance.example/hooks/README.md` for the full worked examples,
 including the convention for shipping tests alongside a skill-bound hook

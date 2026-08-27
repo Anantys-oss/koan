@@ -254,9 +254,10 @@ stream handler wired), so the load line is a direct `print`, not `logger.info`.
 `<project>/.koan/config.yaml` — a **second, YAML** surface alongside the markdown
 `.koan/KOAN.md` / `.koan/skills/` steering files, scoped to the *target repo* (distinct
 from the operator's KOAN_ROOT `instance/config.yaml`). It is a generic, extensible
-per-repo config designed to gain keys over time; this phase ships exactly one key,
-`review.always_check` (see the diff-size contract above), consumed via the typed accessor
-`get_review_always_check(project_path) -> list[str]`.
+per-repo config designed to gain keys over time. Two keys ship today, each consumed
+via a typed accessor: `review.always_check` (see the diff-size contract above), via
+`get_review_always_check(project_path) -> list[str]`; and `hooks.<event>`, via
+`get_hook_skills(project_path, event) -> list[str]`.
 
 **Fail-safe contract (untrusted-input hardening).** Every malformed shape converges to the
 absent-config no-op — the reader NEVER raises and NEVER aborts a review:
@@ -268,6 +269,11 @@ absent-config no-op — the reader NEVER raises and NEVER aborts a review:
 - `get_review_always_check` returns `[]` unless `review.always_check` is a list; it keeps
   only non-blank `str` items, and caps at `_MAX_ALWAYS_CHECK_PATTERNS` (100) patterns of
   `_MAX_PATTERN_LEN` (200) chars each, dropping the excess with one diagnostic.
+
+- `get_hook_skills` returns `[]` unless `hooks.<event>` is a list; it keeps only non-blank
+  `str` items matching `^[a-z0-9][a-z0-9-]*$` of at most `_MAX_SKILL_NAME_LEN` (64) chars,
+  de-duplicates, and caps at `_MAX_HOOK_SKILLS` (10) per event, dropping the excess with
+  one diagnostic per reason.
 
 Absent `.koan/config.yaml` (the common case) ⇒ `[]` ⇒ byte-identical review output.
 
@@ -301,6 +307,34 @@ review:   { pre_hooks: [...], post_hooks: [...] }   # a specific type; also fix/
 Execution, the operator opt-in gate, and the call sites are an **agent-loop
 contract** — see `specs/components/agent-loop.md` → `mission_hooks`. The resolver
 here is a pure reader; it never executes anything.
+
+### Project hook skills (`hooks.<event>`) — contract
+
+A repo MAY name Claude Code skills to run when a Kōan lifecycle event fires. Keys are the
+event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
+`post_review`); values are lists of skill names.
+
+- `HookRegistry._fire_project_hook_skills` evaluates this after user hooks and automation
+  rules, and ONLY for events whose context carries a `project_path`. Absent
+  `project_path` ⇒ no-op.
+- For each honored name, one pending mission is queued via `insert_pending_mission`. The
+  mission is NOT executed inline: handlers run in the firing process, and queuing is what
+  moves the work onto the mission loop, which (unlike the read-only review subprocess)
+  loads the project's own `.claude/skills`, may invoke the `Skill` tool, and is not
+  MCP-stripped.
+- **The repo supplies names; Kōan composes the mission text.** This is a security
+  boundary, not a style choice: `.koan/config.yaml` is committable by anyone who can open
+  a pull request, and the value reaches the prompt of a write-capable agent. The name
+  regex above rejects — rather than sanitizes — anything that could carry an instruction,
+  a path, or a shell fragment. Kōan MUST NOT interpolate repo-supplied free text into a
+  mission.
+- **Idempotent per subject.** `insert_pending_mission` only de-duplicates entries shaped
+  like `/<command> <github-url>`, so this path MUST perform its own check against the
+  pending and in-progress sections, keyed on the skill name plus the subject (`pr_url`,
+  else `mission_title`). Re-firing the same event for the same subject MUST NOT queue the
+  work twice.
+- Fail-safe: a malformed config, an unreadable `missions.md`, or any other failure here
+  MUST NOT disturb the event that fired.
 
 ### `add_project` workspace resolution (contract)
 

@@ -177,7 +177,9 @@ class HookRegistry:
         """Call all handlers for event, catching exceptions per-handler.
 
         After user hook modules execute, evaluates matching automation rules
-        from instance/automation_rules.yaml (if instance_dir was provided).
+        from instance/automation_rules.yaml (if instance_dir was provided),
+        then the reviewed project's own ``hooks.<event>`` skill list from its
+        ``.koan/config.yaml`` (if the event carries a ``project_path``).
 
         Returns a dict mapping failed handler names to error messages.
         Empty dict means all handlers succeeded.
@@ -202,12 +204,89 @@ class HookRegistry:
         # Execute matching automation rules
         if self._instance_dir is not None:
             self._fire_automation_rules(event, kwargs)
+            self._fire_project_hook_skills(event, kwargs)
 
         return failures
 
     def has_hooks(self, event: str) -> bool:
         """Check if any hooks are registered for event."""
         return bool(self._handlers.get(event))
+
+    # ------------------------------------------------------------------
+    # Project-declared hook skills (.koan/config.yaml)
+    # ------------------------------------------------------------------
+
+    def _fire_project_hook_skills(self, event: str, ctx: dict) -> None:
+        """Queue a mission per skill the reviewed repo declared for *event*.
+
+        Reads ``hooks.<event>`` from the project's own ``.koan/config.yaml``,
+        letting a repo owner wire a skill to a lifecycle event without the
+        operator writing a Python hook.
+
+        The repo supplies skill *names* only and the mission sentence is
+        composed here, so a config committed by whoever can open a pull
+        request cannot inject instructions into the write-capable mission that
+        will run the skill.
+
+        Queued rather than executed: handlers run inline in the firing
+        process, and a skill pipeline can take minutes. The mission loop is
+        also the path that loads the project's own Claude Code skills, which
+        a read-only review subprocess does not.
+
+        Fire-and-forget — a broken repo config never disturbs the event.
+        """
+        project_path = ctx.get("project_path")
+        if not project_path or self._instance_dir is None:
+            return
+        try:
+            from app.project_koan import get_hook_skills
+
+            for skill in get_hook_skills(str(project_path), event):
+                self._queue_hook_skill(event, skill, ctx)
+        except Exception as exc:
+            print(
+                f"[hooks] project hook skills failed for {event}: {exc}",
+                file=sys.stderr,
+            )
+
+    def _queue_hook_skill(self, event: str, skill: str, ctx: dict) -> None:
+        """Append one pending mission running *skill*, unless already queued."""
+        from app.missions import parse_sections
+        from app.utils import insert_pending_mission
+
+        subject = str(ctx.get("pr_url") or ctx.get("mission_title") or "").strip()
+        project = str(ctx.get("project_name") or "").strip()
+        prefix = f"[project:{project}] " if project else ""
+        target = f" for {subject}" if subject else ""
+        entry = (
+            f"{prefix}Use the {skill} skill{target}. Queued by the {event} "
+            f"lifecycle event via .koan/config.yaml."
+        )
+
+        missions_path = Path(self._instance_dir) / "missions.md"
+
+        # insert_pending_mission only dedups entries shaped like
+        # "/<command> <github-url>", so a composed sentence needs its own
+        # check or a re-review would queue the same work twice.
+        if subject and missions_path.exists():
+            try:
+                sections = parse_sections(missions_path.read_text(errors="replace"))
+            except OSError as exc:
+                print(
+                    f"[hooks] could not read {missions_path}: {exc}",
+                    file=sys.stderr,
+                )
+                return
+            queued = sections.get("pending", []) + sections.get("in_progress", [])
+            if any(skill in item and subject in item for item in queued):
+                return
+
+        if insert_pending_mission(missions_path, entry):
+            print(
+                f"[hooks] {event}: queued {skill}"
+                + (f" for {subject}" if subject else ""),
+                file=sys.stderr,
+            )
 
     # ------------------------------------------------------------------
     # Automation rules
