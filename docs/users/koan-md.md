@@ -1,7 +1,7 @@
 ---
 type: doc
 title: "KOAN.md — koan-only project instructions"
-description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
+description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check and hooks.<event>): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
 tags: [users]
 created: 2026-07-09
 updated: 2026-07-26
@@ -103,7 +103,7 @@ Alongside the markdown steering files, `.koan/` can hold a structured
 and is committed like any other project file.
 
 Everything in it is optional, and the surface is designed to grow more keys over
-time. This section documents the one key that ships today.
+time. This section documents the keys that ship today.
 
 ### `review.always_check` — never skip these files
 
@@ -138,6 +138,48 @@ review:
 - **Precedence & scope:** this only affects files already in the PR diff (it
   protects them from being skipped; it can't add unrelated files). It changes
   neither the review's findings schema nor its prompt wording.
+
+### `hooks.<event>` — run your own skills after a koan event
+
+Name Claude Code skills to run when one of koan's lifecycle events fires, and
+koan queues a mission for each. Keys are the event names — `session_start`,
+`session_end`, `pre_mission`, `post_mission`, `post_review` — and values are
+lists of skill names:
+
+```yaml
+# <your-repo>/.koan/config.yaml
+hooks:
+  post_review:
+    - cp-docs-string-chain
+```
+
+The example runs your `cp-docs-string-chain` skill after koan posts a review,
+receiving the PR it just reviewed.
+
+**Why this exists.** A `/review` runs read-only on purpose: no `Skill` tool, no
+subagents, no MCP, and your repo's `.claude/` settings are not loaded. That is
+right for reviewing untrusted code, but it means a review pass cannot do
+follow-up work that needs real tooling. Naming a skill here moves that work onto
+the mission loop, which *does* load your `.claude/skills`, can invoke skills,
+and is not MCP-stripped.
+
+- **Queued, not run inline.** Handlers execute inside the process that fired the
+  event, and a skill pipeline can take minutes. Your skill runs as a normal
+  pending mission shortly afterwards — watch `instance/missions.md` or
+  `make logs`.
+- **Names only.** A name must match `^[a-z0-9][a-z0-9-]*$` (max 64 chars, 10
+  skills per event); anything else is dropped with a warning. koan writes the
+  mission sentence itself. This is deliberate — anyone who can open a pull
+  request can commit this file, and the value reaches a *write-capable* agent,
+  so free text is refused rather than cleaned up.
+- **Not queued twice.** Re-firing the same event for the same subject (the PR
+  URL, or the mission title) is idempotent. A different PR queues separately.
+- **Events without a project** — `session_start` and `session_end` carry no
+  `project_path`, so they are a no-op here.
+- **Fail-safe:** a malformed config is ignored and never disturbs the event.
+
+Requires the named skill to be resolvable by Claude Code in your repo — most
+commonly `<your-repo>/.claude/skills/<name>/SKILL.md`.
 
 When at least one file is pinned, koan logs a line you can watch on `make logs`:
 

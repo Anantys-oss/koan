@@ -6,6 +6,7 @@ absent/blank/unreadable handling: absent is the normal case (no log); a
 present-but-unreadable file warns and is treated as empty.
 """
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -30,6 +31,17 @@ _MAX_HOOK_CMD_LEN = 1000
 
 # The two hook phases and the config sub-key each maps to.
 _HOOK_PHASES = {"pre": "pre_hooks", "post": "post_hooks"}
+
+# Caps for the hooks.<event> skill lists — one lifecycle event must not be able
+# to queue an unbounded number of missions.
+_MAX_HOOK_SKILLS = 10
+_MAX_SKILL_NAME_LEN = 64
+
+# Skill names only: lowercase, digits and hyphens. These values reach an
+# agent's prompt in a write-capable mission, so anything that could carry an
+# instruction, a path or a shell fragment is rejected outright rather than
+# sanitized. A repo owner chooses *which* skill runs; they never supply prose.
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 def log_context_load(label: str, content: str) -> None:
@@ -326,3 +338,54 @@ def get_mission_hooks(project_path: str, mission_type: str, phase: str) -> list[
         if typed:
             return typed
     return _section_list("default")
+
+
+def get_hook_skills(project_path: str, event: str) -> list[str]:
+    """Return the honored ``hooks.<event>`` skill names from .koan/config.yaml.
+
+    Lets a repo declare which Claude Code skills koan should run when one of
+    its lifecycle events fires, without the operator writing a Python hook.
+    The repo supplies *names*; koan composes the mission text itself, so a
+    committed config can never inject instructions into a write-capable agent.
+
+    Returns ``[]`` unless the value is a list; keeps only non-blank ``str``
+    items matching ``_SKILL_NAME_RE``, drops duplicates, and caps at
+    ``_MAX_HOOK_SKILLS`` (one diagnostic per drop reason). Fail-safe; never
+    raises — a broken repo config must never disturb the event that fired.
+    """
+    if not event:
+        return []
+    hooks = read_koan_config(project_path).get("hooks")
+    if not isinstance(hooks, dict):
+        return []
+    raw = hooks.get(event)
+    if not isinstance(raw, list):
+        return []
+    skills: list[str] = []
+    dropped_invalid = False
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name:
+            continue
+        if len(name) > _MAX_SKILL_NAME_LEN or not _SKILL_NAME_RE.match(name):
+            dropped_invalid = True
+            continue
+        if name not in skills:
+            skills.append(name)
+    if dropped_invalid:
+        logger.warning(
+            "dropped invalid hooks.%s skill name(s) — expected %s",
+            event,
+            _SKILL_NAME_RE.pattern,
+        )
+    if len(skills) > _MAX_HOOK_SKILLS:
+        logger.warning(
+            "hooks.%s capped at %d skills (had %d)",
+            event,
+            _MAX_HOOK_SKILLS,
+            len(skills),
+        )
+        skills = skills[:_MAX_HOOK_SKILLS]
+    return skills
