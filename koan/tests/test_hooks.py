@@ -990,7 +990,7 @@ class TestProjectHookSkills:
         }
         registry.fire("post_review", **ctx)
         registry.fire("post_review", **ctx)
-        assert self._pending(tmp_path).count("a-skill") == 1
+        assert self._pending(tmp_path).count("[hook-skill:a-skill]") == 1
 
     def test_distinct_subjects_queue_separately(self, tmp_path):
         project = self._make_project(
@@ -1002,7 +1002,7 @@ class TestProjectHookSkills:
                 "post_review", project_path=str(project), project_name="ulc",
                 pr_url=f"https://github.com/o/r/pull/{n}",
             )
-        assert self._pending(tmp_path).count("a-skill") == 2
+        assert self._pending(tmp_path).count("[hook-skill:a-skill]") == 2
 
     def test_multiple_skills_each_queue(self, tmp_path):
         project = self._make_project(
@@ -1071,3 +1071,21 @@ class TestProjectHookSkills:
         missions = self._pending(tmp_path)
         assert "[hook-skill:docs-lint]" in missions
         assert "[hook-skill:docs]" in missions
+
+    def test_substring_subject_not_masked_by_longer_queued_pr(self, tmp_path):
+        # PR #7's follow-up must queue even though PR #70 (whose URL contains
+        # "pull/7" as a substring) was reviewed first — the subject is matched
+        # via a delimited token, not as a bare substring.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        for n in (70, 7):
+            registry.fire(
+                "post_review", project_path=str(project), project_name="ulc",
+                pr_url=f"https://github.com/o/r/pull/{n}",
+            )
+        missions = self._pending(tmp_path)
+        assert "https://github.com/o/r/pull/70" in missions
+        assert "https://github.com/o/r/pull/7." in missions
+        assert missions.count("[hook-skill:a-skill]") == 2
