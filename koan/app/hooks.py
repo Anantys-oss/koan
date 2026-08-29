@@ -72,6 +72,12 @@ _VALID_SKILL_HOOK_EVENTS = (
 # by an already-queued ``docs-lint``).
 _HOOK_SKILL_MARKER_PREFIX = "[hook-skill:"
 
+# Delimited token stamped alongside the skill marker so the dedup below matches
+# the subject exactly rather than as a bare substring. Without the closing ``]``,
+# a shorter PR URL nests inside a longer one (``pull/7`` is a substring of
+# ``pull/70``) and would be wrongly treated as already queued.
+_HOOK_SUBJECT_MARKER_PREFIX = "[hook-subject:"
+
 
 class HookRegistry:
     """Discovers and manages hook modules from a directory."""
@@ -277,9 +283,10 @@ class HookRegistry:
         # never be masked by a longer name it is a substring of (docs vs.
         # docs-lint), and a queued mission is recognizable as this mechanism's.
         marker = f"{_HOOK_SKILL_MARKER_PREFIX}{skill}]"
+        subject_marker = f"{_HOOK_SUBJECT_MARKER_PREFIX}{subject}]" if subject else ""
         entry = (
             f"{prefix}Use the {skill} skill{target}. Queued by the {event} "
-            f"lifecycle event via .koan/config.yaml. {marker}"
+            f"lifecycle event via .koan/config.yaml. {marker}{subject_marker}"
         )
 
         missions_path = Path(self._instance_dir) / "missions.md"
@@ -297,7 +304,10 @@ class HookRegistry:
                 )
                 return
             queued = sections.get("pending", []) + sections.get("in_progress", [])
-            if any(marker in item and subject in item for item in queued):
+            # Both tokens are delimited by a closing ``]`` and matched exactly, so
+            # neither a longer skill name nor a longer PR URL can mask this one
+            # (``docs`` vs ``docs-lint``; ``pull/7`` vs ``pull/70``).
+            if any(marker in item and subject_marker in item for item in queued):
                 return
 
         if insert_pending_mission(missions_path, entry):

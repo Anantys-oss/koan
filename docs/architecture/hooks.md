@@ -152,11 +152,13 @@ mechanisms above, which may run arbitrary code because the operator owns them.
 
 **Idempotent per subject.** `insert_pending_mission` only de-duplicates entries
 shaped like `/<command> <github-url>`, so this path does its own check against
-the pending and in-progress sections, keyed on the subject (the PR URL, or the
-mission title) plus a delimited `[hook-skill:<name>]` marker stamped into each
-queued entry. Matching that exact marker rather than a bare substring means a
-shorter name (`docs`) is never masked by an already-queued longer one
-(`docs-lint`). Re-reviewing the same PR does not queue the same work twice; a
+the pending and in-progress sections, keyed on two delimited tokens stamped into
+each queued entry: a `[hook-skill:<name>]` marker and a
+`[hook-subject:<subject>]` token (the subject being the PR URL, or the mission
+title). Matching both tokens exactly rather than as bare substrings means
+neither a shorter skill name (`docs` masked by an already-queued `docs-lint`)
+nor a shorter PR URL (`pull/7` masked by `pull/70`) is wrongly treated as
+already queued. Re-reviewing the same PR does not queue the same work twice; a
 different PR queues separately.
 
 **No self-replication.** The mission this queues carries the `[hook-skill:…]`
