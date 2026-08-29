@@ -330,9 +330,16 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   mission.
 - **Idempotent per subject.** `insert_pending_mission` only de-duplicates entries shaped
   like `/<command> <github-url>`, so this path MUST perform its own check against the
-  pending and in-progress sections, keyed on the skill name plus the subject (`pr_url`,
-  else `mission_title`). Re-firing the same event for the same subject MUST NOT queue the
-  work twice.
+  pending and in-progress sections, keyed on the subject (`pr_url`, else `mission_title`)
+  plus a delimited `[hook-skill:<name>]` marker stamped into each queued entry. The match
+  MUST be on that exact marker, not a bare substring of the skill name, so a shorter name
+  (`docs`) is never masked by an already-queued longer one (`docs-lint`). Re-firing the
+  same event for the same subject MUST NOT queue the work twice.
+- **No self-replication.** A mission this mechanism queues carries the `[hook-skill:…]`
+  marker in its own `mission_title`, so its `pre_mission`/`post_mission` would otherwise
+  re-queue the skill without bound. `_fire_project_hook_skills` MUST detect that marker in
+  the firing context and queue nothing — a hook-skill mission does not spawn further hook
+  skills.
 - Fail-safe: a malformed config, an unreadable `missions.md`, or any other failure here
   MUST NOT disturb the event that fired.
 

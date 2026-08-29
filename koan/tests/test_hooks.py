@@ -1022,3 +1022,52 @@ class TestProjectHookSkills:
         # fire() must return normally; a broken repo config is not our problem
         assert registry.fire("post_review", project_path=str(project)) == {}
         assert "Use the" not in self._pending(tmp_path)
+
+    def test_queued_hook_skill_mission_does_not_self_replicate(self, tmp_path):
+        # A repo declaring hooks.post_mission would otherwise loop forever: the
+        # queued mission's own post_mission re-queues, without bound. The marker
+        # stamped into the queued entry rides along in mission_title, so firing
+        # post_mission for such a mission must queue nothing.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_mission:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        registry.fire(
+            "post_mission", project_path=str(project), project_name="ulc",
+            mission_title="Do the thing",
+        )
+        queued_title = self._pending(tmp_path)
+        assert "a-skill" in queued_title
+        # Simulate that queued mission completing: post_mission fires again with
+        # the queued entry as its own title (it carries the [hook-skill:...] tag).
+        registry.fire(
+            "post_mission", project_path=str(project), project_name="ulc",
+            mission_title="[project:ulc] Use the a-skill skill for Do the thing. "
+            "Queued by the post_mission lifecycle event via .koan/config.yaml. "
+            "[hook-skill:a-skill]",
+        )
+        # Still exactly one — the chain stopped.
+        assert self._pending(tmp_path).count("[hook-skill:a-skill]") == 1
+
+    def test_substring_skill_name_not_masked_by_longer_queued_skill(self, tmp_path):
+        # `docs` must not be treated as already-queued just because a
+        # `docs-lint` mission for the same PR exists — the marker is matched
+        # exactly, not as a bare substring.
+        pr = "https://github.com/o/r/pull/7"
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'docs-lint'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        registry.fire(
+            "post_review", project_path=str(project), project_name="ulc", pr_url=pr,
+        )
+        # Now the repo adds `docs` for the same PR.
+        (project / ".koan" / "config.yaml").write_text(
+            "hooks:\n  post_review:\n    - 'docs'\n"
+        )
+        registry.fire(
+            "post_review", project_path=str(project), project_name="ulc", pr_url=pr,
+        )
+        missions = self._pending(tmp_path)
+        assert "[hook-skill:docs-lint]" in missions
+        assert "[hook-skill:docs]" in missions

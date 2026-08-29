@@ -66,6 +66,12 @@ _VALID_SKILL_HOOK_EVENTS = (
     "post_review",
 )
 
+# Delimited token stamped into every mission queued by a project hook skill.
+# Doubles as the self-replication guard (a mission carrying it does not queue
+# more hook skills) and the exact-match dedup key (so ``docs`` is never masked
+# by an already-queued ``docs-lint``).
+_HOOK_SKILL_MARKER_PREFIX = "[hook-skill:"
+
 
 class HookRegistry:
     """Discovers and manages hook modules from a directory."""
@@ -238,6 +244,14 @@ class HookRegistry:
         project_path = ctx.get("project_path")
         if not project_path or self._instance_dir is None:
             return
+        # A mission this mechanism queued must not queue more hook skills, or a
+        # repo declaring hooks.post_mission (or pre_mission) would self-replicate
+        # without bound: each queued mission's own post_mission would re-queue,
+        # forever. The marker embedded in the queued entry rides along in
+        # mission_title, so its presence means we are already inside such a
+        # mission — stop the chain here.
+        if _HOOK_SKILL_MARKER_PREFIX in str(ctx.get("mission_title") or ""):
+            return
         try:
             from app.project_koan import get_hook_skills
 
@@ -258,9 +272,14 @@ class HookRegistry:
         project = str(ctx.get("project_name") or "").strip()
         prefix = f"[project:{project}] " if project else ""
         target = f" for {subject}" if subject else ""
+        # The marker is a stable, delimited token — both the self-replication
+        # guard and the dedup below match on it exactly, so a skill name can
+        # never be masked by a longer name it is a substring of (docs vs.
+        # docs-lint), and a queued mission is recognizable as this mechanism's.
+        marker = f"{_HOOK_SKILL_MARKER_PREFIX}{skill}]"
         entry = (
             f"{prefix}Use the {skill} skill{target}. Queued by the {event} "
-            f"lifecycle event via .koan/config.yaml."
+            f"lifecycle event via .koan/config.yaml. {marker}"
         )
 
         missions_path = Path(self._instance_dir) / "missions.md"
@@ -278,7 +297,7 @@ class HookRegistry:
                 )
                 return
             queued = sections.get("pending", []) + sections.get("in_progress", [])
-            if any(skill in item and subject in item for item in queued):
+            if any(marker in item and subject in item for item in queued):
                 return
 
         if insert_pending_mission(missions_path, entry):

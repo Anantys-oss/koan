@@ -113,7 +113,8 @@ review:
 #
 # Queued, not executed inline: hooks run in the firing process, and a skill
 # pipeline can take minutes. Re-firing the same event for the same subject (the
-# PR URL, or the mission title) does not queue the work twice.
+# PR URL, or the mission title) does not queue the work twice, and a skill named
+# under pre_mission/post_mission does not re-trigger itself into a runaway loop.
 hooks:
   post_review:
     - "cp-docs-string-chain"

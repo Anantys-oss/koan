@@ -174,6 +174,9 @@ and is not MCP-stripped.
   so free text is refused rather than cleaned up.
 - **Not queued twice.** Re-firing the same event for the same subject (the PR
   URL, or the mission title) is idempotent. A different PR queues separately.
+- **No runaway loop.** A skill you queue under `pre_mission` or `post_mission`
+  does not re-trigger itself: the mission koan queues is marked, and that mark
+  stops its own lifecycle events from queuing the skill again.
 - **Events without a project** — `session_start` and `session_end` carry no
   `project_path`, so they are a no-op here.
 - **Fail-safe:** a malformed config is ignored and never disturbs the event.
