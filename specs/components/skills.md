@@ -254,10 +254,11 @@ stream handler wired), so the load line is a direct `print`, not `logger.info`.
 `<project>/.koan/config.yaml` — a **second, YAML** surface alongside the markdown
 `.koan/KOAN.md` / `.koan/skills/` steering files, scoped to the *target repo* (distinct
 from the operator's KOAN_ROOT `instance/config.yaml`). It is a generic, extensible
-per-repo config designed to gain keys over time. Two keys ship today, each consumed
-via a typed accessor: `review.always_check` (see the diff-size contract above), via
-`get_review_always_check(project_path) -> list[str]`; and `hooks.<event>`, via
-`get_hook_skills(project_path, event) -> list[str]`.
+per-repo config designed to gain keys over time; this phase ships exactly one key,
+`review.always_check` (see the diff-size contract above), consumed via the typed accessor
+`get_review_always_check(project_path) -> list[str]`.
+A later phase adds a second typed-accessor key, `hooks.<event>`, consumed via
+`get_hook_skills(project_path, event) -> list[str]` (see "Project hook skills" below).
 
 **Fail-safe contract (untrusted-input hardening).** Every malformed shape converges to the
 absent-config no-op — the reader NEVER raises and NEVER aborts a review:
