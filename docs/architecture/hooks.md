@@ -152,9 +152,18 @@ mechanisms above, which may run arbitrary code because the operator owns them.
 
 **Idempotent per subject.** `insert_pending_mission` only de-duplicates entries
 shaped like `/<command> <github-url>`, so this path does its own check against
-the pending and in-progress sections, keyed on the skill name plus the subject
-(the PR URL, or the mission title). Re-reviewing the same PR does not queue the
-same work twice; a different PR queues separately.
+the pending and in-progress sections, keyed on the subject (the PR URL, or the
+mission title) plus a delimited `[hook-skill:<name>]` marker stamped into each
+queued entry. Matching that exact marker rather than a bare substring means a
+shorter name (`docs`) is never masked by an already-queued longer one
+(`docs-lint`). Re-reviewing the same PR does not queue the same work twice; a
+different PR queues separately.
+
+**No self-replication.** The mission this queues carries the `[hook-skill:…]`
+marker in its own title, so a repo naming a skill under `pre_mission` or
+`post_mission` would otherwise re-queue it every time that mission ran, without
+bound. `_fire_project_hook_skills` sees the marker in the firing context and
+queues nothing — a hook-skill mission never spawns further hook skills.
 
 Fail-safe throughout: an absent, empty, or malformed `.koan/config.yaml` is a
 no-op, and a failure here never disturbs the event that fired.
