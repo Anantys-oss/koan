@@ -1,7 +1,11 @@
 """Kōan brief skill — daily digest of agent activity."""
 
 import json
+import logging
 from datetime import date, datetime, timedelta
+
+
+log = logging.getLogger(__name__)
 
 
 def handle(ctx):
@@ -128,7 +132,7 @@ def _add_journal_highlights(parts, instance_dir):
 def _maybe_reschedule(instance_dir):
     """Ensure tomorrow's brief event exists (idempotent)."""
     try:
-        from app.event_scheduler import write_event_file
+        from app.event_scheduler import _quarantine, write_event_file
     except ImportError:
         return
 
@@ -141,11 +145,17 @@ def _maybe_reschedule(instance_dir):
     if events_dir.is_dir():
         for f in events_dir.glob("*.json"):
             try:
-                data = json.loads(f.read_text())
-                if tag in data.get("mission", ""):
-                    return
-            except (OSError, json.JSONDecodeError, ValueError):
+                data = json.loads(f.read_bytes().decode("utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                log.warning("[brief] quarantining unparseable %s: %s", f.name, exc)
+                _quarantine(f, events_dir / "quarantine")
                 continue
+            if not isinstance(data, dict) or not isinstance(data.get("mission"), str):
+                log.warning("[brief] quarantining structurally invalid %s", f.name)
+                _quarantine(f, events_dir / "quarantine")
+                continue
+            if tag in data["mission"]:
+                return
 
     write_event_file(events_dir, tomorrow, f"/brief [{tag}]")
 
@@ -153,7 +163,7 @@ def _maybe_reschedule(instance_dir):
 def _seed_schedule(instance_dir):
     """Explicitly seed the daily brief schedule."""
     try:
-        from app.event_scheduler import write_event_file
+        from app.event_scheduler import _quarantine, write_event_file
     except ImportError:
         return "event_scheduler not available."
 
@@ -166,11 +176,17 @@ def _seed_schedule(instance_dir):
     if events_dir.is_dir():
         for f in events_dir.glob("*.json"):
             try:
-                data = json.loads(f.read_text())
-                if tag in data.get("mission", ""):
-                    return f"Already scheduled for {tomorrow.strftime('%Y-%m-%d %H:%M')}."
-            except (OSError, json.JSONDecodeError, ValueError):
+                data = json.loads(f.read_bytes().decode("utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                log.warning("[brief] quarantining unparseable %s: %s", f.name, exc)
+                _quarantine(f, events_dir / "quarantine")
                 continue
+            if not isinstance(data, dict) or not isinstance(data.get("mission"), str):
+                log.warning("[brief] quarantining structurally invalid %s", f.name)
+                _quarantine(f, events_dir / "quarantine")
+                continue
+            if tag in data["mission"]:
+                return f"Already scheduled for {tomorrow.strftime('%Y-%m-%d %H:%M')}."
 
     write_event_file(events_dir, tomorrow, f"/brief [{tag}]")
     return f"Daily brief scheduled for {tomorrow.strftime('%Y-%m-%d %H:%M')}."

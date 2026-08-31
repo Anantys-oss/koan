@@ -117,6 +117,127 @@ class TestTick:
         assert "Mission A" in mission_texts
         assert "Mission B" in mission_texts
 
+    def test_non_utf8_file_tick_does_not_crash_and_is_quarantined(self, tmp_path):
+        """An event file with invalid UTF-8 bytes (byte 0xa3, the issue repro)
+        must not crash tick(); it is moved to events/quarantine/ so it can't
+        re-poison."""
+        events_dir = tmp_path / "events"
+        events_dir.mkdir()
+        bad = events_dir / "bad_enc.json"
+        bad.write_bytes(
+            b'{"type": "once", "run_at": "2020-01-01T00:00:00", "mission": "\xa3"}'
+        )
+
+        with patch("app.event_scheduler.insert_pending_mission") as mock_insert:
+            from app.event_scheduler import tick
+            result = tick(str(tmp_path))
+
+        mock_insert.assert_not_called()
+        assert result == []
+        assert not bad.exists(), "malformed file must leave the scan path"
+        quarantine_dir = events_dir / "quarantine"
+        assert (quarantine_dir / "bad_enc.json").exists()
+
+    def test_corrupt_but_utf8_json_quarantined(self, tmp_path):
+        """A valid-UTF-8 file that is invalid JSON is quarantined, not left to
+        re-poison every iteration."""
+        events_dir = tmp_path / "events"
+        events_dir.mkdir()
+        (events_dir / "bad.json").write_text("{not valid json", encoding="utf-8")
+
+        with patch("app.event_scheduler.insert_pending_mission") as mock_insert:
+            from app.event_scheduler import tick
+            result = tick(str(tmp_path))
+
+        mock_insert.assert_not_called()
+        assert result == []
+        assert not (events_dir / "bad.json").exists()
+        assert (events_dir / "quarantine" / "bad.json").exists()
+
+    def test_quarantine_collision_suffixed(self, tmp_path):
+        """Re-poisoning a same-named file must not clobber an earlier quarantine."""
+        events_dir = tmp_path / "events"
+        quarantine_dir = events_dir / "quarantine"
+        quarantine_dir.mkdir(parents=True)
+        (quarantine_dir / "bad.json").write_text("old corrupt", encoding="utf-8")
+
+        events_dir.mkdir(exist_ok=True)
+        (events_dir / "bad.json").write_text("{still bad", encoding="utf-8")
+
+        with patch("app.event_scheduler.insert_pending_mission") as mock_insert:
+            from app.event_scheduler import tick
+            result = tick(str(tmp_path))
+
+        mock_insert.assert_not_called()
+        assert result == []
+        # The pre-existing quarantine entry is untouched.
+        assert (quarantine_dir / "bad.json").read_text() == "old corrupt"
+        # Exactly one suffixed collision copy now sits alongside it, and the
+        # original scan-path file is gone.
+        quarantined = list(quarantine_dir.glob("bad_*.json"))
+        assert len(quarantined) == 1
+        assert not (events_dir / "bad.json").exists()
+
+    def test_missing_fields_quarantined(self, tmp_path):
+        """Events missing run_at or mission are quarantined (fail-loud), so they
+        stop re-tripping every iteration."""
+        events_dir = tmp_path / "events"
+        events_dir.mkdir()
+        (events_dir / "no_mission.json").write_text(
+            json.dumps({"type": "once", "run_at": "2020-01-01T00:00:00"}),
+            encoding="utf-8",
+        )
+        (events_dir / "no_run_at.json").write_text(
+            json.dumps({"type": "once", "mission": "Do something"}),
+            encoding="utf-8",
+        )
+
+        with patch("app.event_scheduler.insert_pending_mission") as mock_insert:
+            from app.event_scheduler import tick
+            result = tick(str(tmp_path))
+
+        mock_insert.assert_not_called()
+        assert result == []
+        quarantine_dir = events_dir / "quarantine"
+        assert (quarantine_dir / "no_mission.json").exists()
+        assert (quarantine_dir / "no_run_at.json").exists()
+
+    @pytest.mark.parametrize(
+        "contents",
+        ["[1, 2, 3]", "null", '{"mission": null, "run_at": 42}'],
+    )
+    def test_structurally_invalid_json_quarantined(self, tmp_path, contents):
+        """Valid JSON with an invalid event shape cannot crash the scheduler."""
+        events_dir = tmp_path / "events"
+        events_dir.mkdir()
+        (events_dir / "bad_shape.json").write_text(contents, encoding="utf-8")
+
+        with patch("app.event_scheduler.insert_pending_mission") as mock_insert:
+            from app.event_scheduler import tick
+            result = tick(str(tmp_path))
+
+        mock_insert.assert_not_called()
+        assert result == []
+        assert (events_dir / "quarantine" / "bad_shape.json").exists()
+
+    def test_invalid_run_at_quarantined(self, tmp_path):
+        """An invalid ISO timestamp leaves the active scan path."""
+        events_dir = tmp_path / "events"
+        events_dir.mkdir()
+        _write_event(
+            events_dir,
+            "bad_time.json",
+            {"type": "once", "run_at": "tomorrowish", "mission": "Do something"},
+        )
+
+        with patch("app.event_scheduler.insert_pending_mission") as mock_insert:
+            from app.event_scheduler import tick
+            result = tick(str(tmp_path))
+
+        mock_insert.assert_not_called()
+        assert result == []
+        assert (events_dir / "quarantine" / "bad_time.json").exists()
+
     def test_malformed_json_skipped(self, tmp_path):
         """Malformed JSON files are skipped without crashing."""
         events_dir = tmp_path / "events"

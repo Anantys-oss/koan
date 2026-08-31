@@ -18,6 +18,7 @@ Only ``type: "once"`` is supported.  Additional types may be added later.
 """
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -28,10 +29,24 @@ from typing import List, Optional
 
 from app.utils import insert_pending_mission
 
+log = logging.getLogger(__name__)
+
 # Regex for relative time specs like "30m", "2h", "1h30m", "90s"
 _RELATIVE_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 # Regex for HH:MM
 _HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def _quarantine(event_file: Path, quarantine_dir: Path) -> None:
+    """Move an unparseable event file to quarantine, suffixing on collision."""
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    dest = quarantine_dir / event_file.name
+    if dest.exists():
+        stem = event_file.stem
+        suffix = event_file.suffix
+        ts = int(time.time())
+        dest = quarantine_dir / f"{stem}_{ts}{suffix}"
+    shutil.move(str(event_file), str(dest))
 
 
 def tick(instance_dir: str) -> List[str]:
@@ -54,23 +69,53 @@ def tick(instance_dir: str) -> List[str]:
 
     missions_path = instance / "missions.md"
     archive_dir = events_dir / "archive"
+    quarantine_dir = events_dir / "quarantine"
     now = datetime.now()
     enqueued: List[str] = []
 
     for event_file in sorted(events_dir.glob("*.json")):
         try:
-            data = json.loads(event_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            # Strict, explicit-UTF-8 read: invalid bytes must be quarantined,
+            # not silently enqueued as a replacement-char mission. Decode in
+            # two steps so a bad byte surfaces as UnicodeDecodeError rather
+            # than being masked by errors="replace" inside a JSON string value.
+            text = event_file.read_bytes().decode("utf-8")
+            data = json.loads(text)
+        except (UnicodeDecodeError, OSError) as exc:
+            # UnicodeDecodeError is a ValueError subclass, not OSError, so a
+            # bare OSError except would miss it and crash the whole iteration.
+            log.warning("[events] skipping unparseable %s: %s", event_file.name, exc)
+            _quarantine(event_file, quarantine_dir)
+            continue
+        except ValueError as exc:
+            log.warning("[events] skipping unparseable %s: %s", event_file.name, exc)
+            _quarantine(event_file, quarantine_dir)
             continue
 
-        mission = data.get("mission", "").strip()
-        run_at_str = data.get("run_at", "")
-        if not mission or not run_at_str:
+        if not isinstance(data, dict):
+            log.warning("[events] structurally invalid %s; quarantining", event_file.name)
+            _quarantine(event_file, quarantine_dir)
             continue
+
+        mission_value = data.get("mission")
+        run_at_value = data.get("run_at")
+        if (
+            not isinstance(mission_value, str)
+            or not mission_value.strip()
+            or not isinstance(run_at_value, str)
+            or not run_at_value
+        ):
+            log.warning("[events] structurally invalid %s; quarantining", event_file.name)
+            _quarantine(event_file, quarantine_dir)
+            continue
+        mission = mission_value.strip()
+        run_at_str = run_at_value
 
         try:
             run_at = datetime.fromisoformat(run_at_str)
-        except ValueError:
+        except ValueError as exc:
+            log.warning("[events] invalid run_at in %s: %s", event_file.name, exc)
+            _quarantine(event_file, quarantine_dir)
             continue
         # ISO strings may carry a 'Z' or offset (tz-aware); 'now' is naive-local.
         # Comparing the two raises TypeError, which would crash the tick and leave

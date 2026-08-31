@@ -197,6 +197,29 @@ class TestRescheduling:
         event_files = list((instance / "events").glob("*.json"))
         assert len(event_files) == 1
 
+    def test_maybe_reschedule_ignores_corrupt_event_file(self, tmp_path, instance):
+        """_maybe_reschedule tolerates a non-UTF-8 event file without raising."""
+        from skills.core.brief.handler import _maybe_reschedule
+
+        (instance / "events" / "bad.json").write_bytes(b'{"mission": "\xa3"}')
+
+        _maybe_reschedule(instance)  # must not raise
+
+        fresh = list((instance / "events").glob("event_*.json"))
+        assert fresh, "a new well-formed event file is written after the corrupt one"
+        assert (instance / "events" / "quarantine" / "bad.json").exists()
+
+    def test_maybe_reschedule_quarantines_non_object_event(self, tmp_path, instance):
+        """A valid JSON array cannot crash brief schedule scanning."""
+        from skills.core.brief.handler import _maybe_reschedule
+
+        (instance / "events" / "bad.json").write_text("[1, 2, 3]", encoding="utf-8")
+
+        _maybe_reschedule(instance)
+
+        assert (instance / "events" / "quarantine" / "bad.json").exists()
+        assert list((instance / "events").glob("event_*.json"))
+
     def test_schedule_flag_idempotent(self, tmp_path, instance):
         from skills.core.brief.handler import handle
 
