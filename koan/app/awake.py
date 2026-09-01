@@ -197,6 +197,17 @@ def is_command(text: str) -> bool:
     return text.startswith("/")
 
 
+# `!cmd` is an alias for `/cmd` on every provider (Slack users who move to
+# Telegram keep their muscle memory). A bang before a non-letter — `!!`, `!42` —
+# is ordinary text, not a command.
+_BANG_COMMAND_RE = re.compile(r"![a-zA-Z]")
+
+
+def normalize_bang_command(text: str) -> str:
+    """Rewrite a leading ``!command`` to ``/command``; return text unchanged otherwise."""
+    return "/" + text[1:] if _BANG_COMMAND_RE.match(text) else text
+
+
 def promote_bare_skill_command(text: str) -> Optional[str]:
     """Promote a bare core-skill word to its slash form.
 
@@ -991,7 +1002,7 @@ def _handle_reaction_update(update: dict):
 
 
 def handle_message(text: str):
-    text = text.strip()
+    text = normalize_bang_command(text.strip())
     if not text:
         return
 

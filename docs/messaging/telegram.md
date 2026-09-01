@@ -4,7 +4,7 @@ title: "Telegram Setup Guide"
 description: "Step-by-step guide to configuring Kōan with Telegram (bot creation, chat ID, env vars), including group-chat privacy-mode setup and troubleshooting."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-07-16
+updated: 2026-08-31
 ---
 
 # Telegram Setup Guide
@@ -102,6 +102,26 @@ Your `.env` file is missing or the variable name is wrong. Double-check the form
 - Telegram has a 4000-character limit per message. Long messages are auto-chunked. Messages containing ` ``` ` code blocks are converted to HTML `<pre>` and chunked at code-block boundaries so a split never leaves an unbalanced `<pre>` tag (which Telegram rejects with a parse error, dropping the whole message — e.g. a long `/report`).
 - Duplicate messages within 5 minutes are flood-protected (first duplicate triggers a warning, subsequent ones are silently dropped).
 - **Duplicate startup/shutdown notices across restarts are also suppressed.** The flood protection above lives in memory and resets on every process restart, so a crash/restart loop (or repeated `stop`+`start`) used to re-announce idempotent lifecycle notices — "🌅 Running morning ritual…", "🛑 Shutting down…" — once per incarnation. These now dedupe across restarts (and across providers) via a persistent `instance/.notify-dedup.json` window (default 5 min), so you see each notice once even if the process restarts several times in quick succession. The dedup is fail-open: if its state file is unreadable, the notice is sent rather than dropped. (Event-bearing lines like "📬 GitHub: N new mission(s) queued." are intentionally not deduped — that count can differ per real batch.)
+
+## Commands: `/help` and `!help`
+
+Kōan accepts both prefixes for every command. A message starting with `!`
+followed by a letter is normalized to the slash form by the shared bridge, so
+`!help`, `!status`, `!review <url>` behave exactly like `/help`, `/status`,
+`/review <url>`. This exists so an operator moving from Slack (where `!command`
+avoids clashing with Slack's own slash commands) keeps the same muscle memory
+on Telegram.
+
+A bang before a non-letter is ordinary text: `!!`, `!42`, `!` are not commands.
+
+Two Telegram-specific caveats:
+
+- **No autocomplete.** Telegram's command menu only knows `/` commands, so `!`
+  gives no suggestions or inline help.
+- **In groups with Privacy Mode ON, `!` commands never arrive.** Telegram
+  delivers only `/commands`, `@mentions`, and replies to a privacy-mode bot —
+  `!help` is a plain message to Telegram and is dropped before Kōan sees it.
+  Use `/help`, or disable Privacy Mode (see [Group chats](#group-chats)).
 
 ## Group chats
 
