@@ -40,13 +40,43 @@ os.environ.pop("KOAN_SUPPRESS_RUNNER_OUTCOME", None)
 
 
 @pytest.fixture(autouse=True)
+def _no_real_mission_scopes():
+    """Keep the suite out of the host's systemd manager.
+
+    ``run_claude_task`` / ``_run_skill_mission`` tests spawn real subprocesses
+    (``echo``, ``sh -c …``), and ``mission_scope`` wraps every mission spawn in a
+    transient systemd scope. On a Linux host with a reachable manager that would
+    create and stop a real scope per test — slow, dependent on a live manager,
+    and host-dependent in its outcome.
+
+    Report "no usable systemd-run" so every test exercises the documented
+    fallback path (``start_new_session=True`` + a kill of the mission's process
+    group), which is also what a macOS dev box does for real. Tests that want
+    the scope path stub the probe themselves (see tests/test_mission_scope.py).
+    """
+    try:
+        from app import mission_scope
+    except ImportError:
+        yield
+        return
+    mission_scope.reset_probe_cache()
+    try:
+        with patch.object(mission_scope, "_probe_systemd_run", return_value=(None, [])):
+            yield
+    finally:
+        mission_scope.reset_probe_cache()
+
+
+@pytest.fixture(autouse=True)
 def _reset_run_module_state():
     """Reset module-level mission flags in `app.run` before each test.
 
     `_maybe_retry_mission` short-circuits on `_last_mission_timed_out`,
-    `_last_mission_aborted`, or `_last_mission_stagnated`. Several test
-    files (e.g. test_run.py) leave these flags set; under pytest-xdist
-    that pollution leaks into whatever test runs next on the same worker.
+    `_last_mission_aborted`, `_last_mission_stagnated`, or
+    `_last_mission_memory_cap`. Several test files (e.g. test_run.py) leave
+    these flags set; under pytest-xdist that pollution leaks into whatever test
+    runs next on the same worker — a set flag silently turns every later
+    retry/fallback test into a no-op pass.
     Resetting globally keeps every test starting from a clean state.
     """
     try:
@@ -54,6 +84,7 @@ def _reset_run_module_state():
         run_mod._last_mission_timed_out = False
         run_mod._last_mission_aborted = False
         run_mod._last_mission_stagnated.clear()
+        run_mod._last_mission_memory_cap = ""
     except Exception:
         pass
     yield

@@ -385,6 +385,30 @@ class TestPopenCli:
         assert len(after) <= len(before)
 
     @patch("app.cli_exec.subprocess.Popen")
+    def test_launcher_is_prefixed_after_the_prompt_rewrite(self, mock_popen):
+        """mission_scope wraps the provider CLI without hiding it from the rewrite."""
+        mock_popen.return_value = MagicMock()
+        cmd = ["claude", "-p", "secret", "--model", "opus"]
+
+        proc, cleanup = popen_cli(
+            cmd, launcher=["systemd-run", "--scope", "--"], stdout=subprocess.PIPE,
+        )
+
+        actual_cmd = mock_popen.call_args[0][0]
+        assert actual_cmd[:3] == ["systemd-run", "--scope", "--"]
+        assert actual_cmd[3] == "claude"
+        # The prompt was still rewritten to the stdin marker.
+        assert STDIN_PLACEHOLDER in actual_cmd
+        cleanup()
+
+    @patch("app.cli_exec.subprocess.Popen")
+    def test_no_launcher_leaves_argv_untouched(self, mock_popen):
+        mock_popen.return_value = MagicMock()
+        proc, cleanup = popen_cli(["claude", "-p", "x"], launcher=None)
+        assert mock_popen.call_args[0][0][0] == "claude"
+        cleanup()
+
+    @patch("app.cli_exec.subprocess.Popen")
     def test_no_p_flag_returns_noop_cleanup(self, mock_popen):
         mock_popen.return_value = MagicMock()
         cmd = ["git", "status"]

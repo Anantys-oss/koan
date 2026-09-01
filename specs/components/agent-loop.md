@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-26
+updated: 2026-08-31
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -243,6 +243,61 @@ heuristic:
   by construction — a new provider or mission type inherits both hooks. Default on
   (`page_cache_reclaim.enabled: true`); `idle_interval_s: 0` keeps only the
   post-mission hook. See `docs/operations/memory-footprint.md`.
+- **Every mission is contained in a cgroup scope, and the scope is torn down on
+  every exit path — success included.** Bounding scratch and page cache (above) does
+  nothing about *processes*: a mission that leaves a build daemon running raises the
+  host's idle baseline until someone kills it by hand. A process group is
+  structurally insufficient, because Gradle's build daemon (3-hour idle timeout)
+  detaches to `PPID 1` with its own session and has left the mission's group by the
+  time the mission ends — `os.killpg` can never reach it, while a cgroup catches
+  every descendant however often it double-forks. Killing that daemon is also what
+  releases the Testcontainers `ryuk` client socket it was holding, so ryuk reaps the
+  containers itself. `app/mission_scope.py` is the single containment primitive:
+  `launch_scoped()` wraps the spawn in `systemd-run --scope --collect
+  --unit=koan-mission-<uuid>.scope --property=MemoryMax=<n>
+  --property=MemoryHigh=<90% of n>` and `teardown()` MUST be called from the same
+  `finally` that reaps `TMPDIR`. The `.scope` suffix is part of the contract:
+  `systemctl` appends `.service` to an abbreviated unit name, so a bare name would
+  make every stop, kill and property read address a unit that never existed.
+  **All three** mission spawn sites go through it (`run_claude_task`,
+  `_run_skill_mission`, and `session_manager.spawn_session` for parallel sessions —
+  whose teardown lives in `poll_sessions` on completion and `kill_session` on abort);
+  the inner `provider/__init__.py` spawn intentionally shares `review_runner`'s
+  process group and so inherits the same cgroup. A spawn path added without
+  `launch_scoped` is a containment hole, not merely a gap in coverage: parallel
+  sessions shipped that way and were caught in production running a Gradle daemon at
+  `PPID 1` (822 MB, inside Kōan's own SSH login scope) while
+  `systemctl list-units 'koan-mission-*'` listed nothing. Cleanup MUST touch
+  only the mission's own descendants — fleet hosts are shared, so there is no
+  name-based sweep (no `pkill`, no `gradlew --stop`, no `docker prune`) and **no
+  container sweep at all**. A container is a child of the Docker daemon, not of the
+  mission, so no observable property distinguishes this mission's containers from a
+  co-tenant's: a creation time inside the mission's window proves overlap, never
+  ownership, and `docker rm -f` on that basis can destroy a live unrelated workload.
+  Containers MUST therefore be left to ryuk, which reaps them when the scope
+  teardown drops its client socket; a project that disables ryuk owns its own
+  container cleanup.
+  Teardown MUST judge the manager by result, not by reachability: `_systemctl` runs
+  with `check=False`, so a refusal is a non-zero `CompletedProcess`, and treating it
+  as success reports containment that never happened. A non-zero `systemctl stop` is
+  disambiguated with `systemctl show -p LoadState` — `not-found` means `--collect`
+  already reaped the scope (the ordinary clean ending), anything else escalates to
+  `systemctl kill -s SIGKILL`. `mission_scope.stop_scope_unit()` is the single lever
+  for this and `make stop` MUST use it too, keeping a registry entry whose scope it
+  could not confirm stopped — that record is the only durable handle on a live scope,
+  and its descendants have left the daemon's process group.
+  The cap is `max(memory_min, MemTotal - memory_reserve)` with an explicit
+  `memory_max` winning verbatim — a reserve **with a floor**, never a percentage of
+  RAM, because Kōan's baseline is roughly constant while the fleet spans 1.9–7.7 GiB
+  with no swap. A cap hit is a distinct mission result (`memory_cap_exceeded` /
+  `memory_cap_detail` in the `post_mission` hook context) and MUST NOT be retried.
+  Where no scope can be created (macOS, no systemd manager) the loop warns **once**
+  and falls back to `start_new_session=True` + a kill of the process group captured
+  at launch — the pgid, not the `Popen`, because `kill_process_group()` returns at its
+  `poll()` guard once the mission process is reaped and would signal nothing on the
+  success path. No host is left unable to run missions. Default on
+  (`mission_limits.enabled: true`). See
+  `docs/operations/memory-footprint.md`.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary
   enforced by prompt + convention; the loop's job is to host the subprocess, not to
   alter git state itself.

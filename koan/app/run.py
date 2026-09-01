@@ -72,6 +72,7 @@ from app.signals import (
 )
 from app.config import get_recovery_config
 from app.messaging_level import is_debug
+from app import mission_scope
 from app.subprocess_runner import kill_process_group
 from app.utils import atomic_write, koan_tmp_dir
 
@@ -320,9 +321,11 @@ def run_claude_task(
     Returns the child exit code.
     """
     global _last_mission_timed_out, _last_mission_aborted
+    global _last_mission_memory_cap
     global _stagnation_pattern_type, _stagnation_pattern_excerpt
     _last_mission_timed_out = False
     _last_mission_aborted = False
+    _last_mission_memory_cap = ""
     _last_mission_stagnated.clear()
     _stagnation_pattern_type = ""
     _stagnation_pattern_excerpt = ""
@@ -374,6 +377,12 @@ def run_claude_task(
     # Read once up front so the outer finally can always clear the liveness
     # signal, even if an exception fires before the subprocess loop (#2086).
     koan_root_active = os.environ.get("KOAN_ROOT", "")
+    # Bound before the try so the outer finally can always tear the mission's
+    # containment down and cancel the watchdog, even when an exception fires
+    # before the subprocess loop.
+    scoped = None
+    watchdog = None
+    cleanup = None
     try:
         with open(stdout_file, "w") as out_f, open(stderr_file, "w") as err_f:
             # provider is the role-resolved instance (cli: section); popen_cli
@@ -389,16 +398,31 @@ def run_claude_task(
                     child_env.get("PYTEST_ADDOPTS", ""), mission_tmp
                 )
                 popen_kwargs["env"] = child_env
+
+            def _spawn_in_scope(argv, launcher, **kwargs):
+                # popen_cli owns the provider's prompt-file stdin and the
+                # invocation lock, so the scope launcher is handed to it and
+                # prefixed there — after the prompt rewrite, never before.
+                nonlocal cleanup
+                spawned, cleanup = popen_cli(
+                    argv, provider=provider, launcher=launcher, **kwargs,
+                )
+                return spawned
+
             try:
-                proc, cleanup = popen_cli(
+                # Contain the mission in its own cgroup scope: the provider CLI
+                # spawns build tools that outlive it (a Gradle daemon detaches to
+                # PPID 1 in its own session), and only a cgroup catches those.
+                scoped = mission_scope.launch_scoped(
                     cmd,
-                    provider=provider,
+                    spawn=_spawn_in_scope,
+                    koan_root=koan_root_active or None,
                     stdout=out_f,
                     stderr=err_f,
                     cwd=cwd,
-                    start_new_session=True,
                     **popen_kwargs,
                 )
+                proc = scoped.proc
             except FileNotFoundError as e:
                 # The provider binary vanished mid-session (the startup check +
                 # planner gate handle the common case). Fail this mission
@@ -436,7 +460,6 @@ def run_claude_task(
 
             from app.subprocess_runner import ProcessWatchdog
 
-            watchdog = None
             if mission_timeout > 0:
                 watchdog = ProcessWatchdog(
                     proc, mission_timeout,
@@ -499,7 +522,8 @@ def run_claude_task(
                         _last_mission_stagnated.set()
                         _stagnation_pattern_type = stagnation_monitor.pattern_type
                         _stagnation_pattern_excerpt = stagnation_monitor.pattern_excerpt
-                cleanup()
+                if cleanup is not None:
+                    cleanup()
 
         exit_code = proc.returncode
         if _last_mission_aborted:
@@ -510,6 +534,25 @@ def run_claude_task(
         elif _last_mission_stagnated.is_set():
             exit_code = 1
     finally:
+        # Kill everything the mission left behind — the sweep that was missing
+        # from the success path. Runs before the TMPDIR reap so nothing is still
+        # writing into the scratch dir when it is removed. os.killpg alone is
+        # not enough: a Gradle daemon re-parents to PID 1 with its own session
+        # and has left the mission's process group by now, while a cgroup
+        # catches every descendant however often it double-forks.
+        if scoped is not None:
+            _koan_killed = bool(
+                _last_mission_aborted
+                or (watchdog is not None and watchdog.fired)
+                or _last_mission_stagnated.is_set()
+            )
+            try:
+                scoped.teardown(koan_initiated_kill=_koan_killed)
+            except Exception as e:
+                log("error", f"mission scope teardown failed: {e}")
+            if scoped.cap_exceeded:
+                _last_mission_memory_cap = scoped.cap_message()
+                log("error", f"Mission {_last_mission_memory_cap}")
         # Reap the mission's TMPDIR. In the rare "unkillable — abandoning"
         # path the child may still be alive; removing its scratch dir is safe
         # on POSIX (open fds survive) and the mission is already failed.
@@ -1956,6 +1999,10 @@ def _run_preflight_check(
 # Set by run_claude_task when the watchdog timer kills a runaway session.
 _last_mission_timed_out = False
 _last_mission_aborted = False
+# Human phrase for a mission the cgroup scope OOM-killed, e.g.
+# "exceeded memory cap (5.9G of 5.75G)"; "" when the mission fit. Read by
+# mission_runner (hook context) and mission_executor (never retry a cap hit).
+_last_mission_memory_cap = ""
 # Uses threading.Event for explicit cross-thread signaling between the
 # stagnation daemon (writer) and the main loop's _finalize_mission (reader).
 _last_mission_stagnated = threading.Event()
@@ -3395,6 +3442,9 @@ def _run_skill_mission(
     """
     from app.debug import debug_log
 
+    global _last_mission_memory_cap
+    _last_mission_memory_cap = ""
+
     mission_start = int(time.time())
     koan_pkg_dir = os.path.join(koan_root, "koan")
     pending_path = Path(instance) / "journal" / "pending.md"
@@ -3450,18 +3500,36 @@ def _run_skill_mission(
         skill_env["KOAN_SUPPRESS_RUNNER_OUTCOME"] = "1"
     stderr_fh = None
     out_fh = None
+    scoped = None
+    # True once one of the timeout/exception branches below has already killed
+    # the process group, so teardown does not misread our own SIGKILL as the
+    # memory cap firing.
+    koan_killed = False
     try:
         stderr_fh = open(stderr_file, "w")
-        proc = subprocess.Popen(
+        # Same containment as the generic mission path: /review, /fix and
+        # /implement drive real build tools, and a Gradle daemon started here
+        # detaches to PPID 1 where no process group can reach it. The inner
+        # provider spawn in provider/__init__.py deliberately shares this
+        # runner's process group, so it inherits this cgroup too.
+        def _spawn_skill(argv, launcher, **kwargs):
+            # Spawn through this module's own subprocess binding so the scope
+            # wrapping stays invisible to callers (and to the existing
+            # @patch("app.run.subprocess.Popen") test targets).
+            return subprocess.Popen(list(launcher) + list(argv), **kwargs)
+
+        scoped = mission_scope.launch_scoped(
             skill_cmd,
+            spawn=_spawn_skill,
+            koan_root=koan_root or None,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=stderr_fh,
             cwd=koan_pkg_dir,
             env=skill_env,
             text=True,
-            start_new_session=True,
         )
+        proc = scoped.proc
         # Register for double-tap CTRL-C termination.
         _sig.claude_proc = proc
 
@@ -3552,6 +3620,7 @@ def _run_skill_mission(
                 debug_log(f"[run] skill stderr: {skill_stderr[:2000]}")
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
+        koan_killed = True
         liveness_fired = liveness and liveness.fired
         timeout_kind = "liveness" if liveness_fired else "watchdog"
         timeout_val = first_output_timeout if liveness_fired else skill_timeout
@@ -3581,6 +3650,7 @@ def _run_skill_mission(
     except Exception as e:
         if proc is not None:
             _kill_process_group(proc)
+            koan_killed = True
         log("error", f"Skill runner failed: {e}\n{traceback.format_exc()}")
         debug_log(f"[run] skill exec: EXCEPTION {e}")
         exit_code = 1
@@ -3590,6 +3660,17 @@ def _run_skill_mission(
         skill_stdout = _read_back_or_tail(stdout_file, tail)
         skill_stderr = ""
     finally:
+        # Tear the mission's cgroup down before anything else in this block: the
+        # branch restore below runs git on the same worktree the skill was using,
+        # so no leaked build daemon should still be holding it.
+        if scoped is not None:
+            try:
+                scoped.teardown(koan_initiated_kill=koan_killed)
+            except Exception as e:
+                log("error", f"mission scope teardown failed: {e}")
+            if scoped.cap_exceeded:
+                _last_mission_memory_cap = scoped.cap_message()
+                log("error", f"Skill mission {_last_mission_memory_cap}")
         if out_fh is not None:
             with suppress_logged(log, "debug", "Skill stdout file close failed", OSError):
                 out_fh.close()

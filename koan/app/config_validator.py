@@ -114,6 +114,7 @@ CONFIG_SCHEMA: Dict[str, Any] = {
     "running_indicator": _NESTED,
     "verification": _NESTED,
     "config_sync": _NESTED,
+    "mission_limits": _NESTED,
 }
 
 # Top-level keys that are recognized but deprecated: they still work (honored
@@ -267,6 +268,14 @@ SECTION_SCHEMAS: Dict[str, Dict[str, str]] = {
     },
     "verification": {
         "max_requeue": "int",
+    },
+    # Per-mission cgroup scope (app/mission_scope.py). Size values are strings
+    # ("2G") or a bare byte count, so both spellings must validate.
+    "mission_limits": {
+        "enabled": "bool",
+        "memory_reserve": ("str", "int"),
+        "memory_min": ("str", "int"),
+        "memory_max": ("str", "int"),
     },
     "branch_cleanup": {
         "enabled": "bool",

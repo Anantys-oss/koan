@@ -1,5 +1,6 @@
 """Tests for pid_manager — exclusive PID file enforcement."""
 
+import contextlib
 import fcntl
 import os
 import subprocess
@@ -2172,3 +2173,116 @@ class TestDashboardConfig:
         }
         exit_code = _print_stack_results(results)
         assert exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# `make stop` must take the descendants with it
+# ---------------------------------------------------------------------------
+
+_GROUP_LEADER_WITH_CHILD = """
+import os, subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+with open(sys.argv[1], "w") as fh:
+    fh.write(str(child.pid))
+    fh.flush()
+time.sleep(60)
+"""
+
+
+def _wait_gone(pid, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _is_process_alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+class TestStopProcessesReachesDescendants:
+    """A single-PID SIGTERM left every child of the daemon running."""
+
+    def test_group_signal_takes_the_children_down(self, tmp_path):
+        child_pid_file = tmp_path / "child.pid"
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _GROUP_LEADER_WITH_CHILD, str(child_pid_file)],
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 10
+        child_pid = None
+        while time.monotonic() < deadline and child_pid is None:
+            text = child_pid_file.read_text().strip() if child_pid_file.exists() else ""
+            child_pid = int(text) if text else None
+            if child_pid is None:
+                time.sleep(0.05)
+        assert child_pid is not None, "helper never reported its child pid"
+
+        (tmp_path / ".koan-pid-run").write_text(str(proc.pid))
+        try:
+            results = stop_processes(tmp_path, timeout=3.0)
+            assert results["run"] in ("stopped", "force_killed")
+            assert _wait_gone(child_pid), (
+                "the daemon's child survived `make stop` — descendants leaked"
+            )
+        finally:
+            for pid in (child_pid, proc.pid):
+                if pid:
+                    with contextlib.suppress(OSError, ProcessLookupError):
+                        os.kill(pid, 9)
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+
+    @staticmethod
+    def _reachable_systemctl(calls):
+        def fake(manager_args, args, timeout=10.0):
+            calls.append(list(args))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            return result
+        return fake
+
+    def test_stops_a_registered_mission_scope_first(self, tmp_path):
+        scopes = tmp_path / ".koan-mission-scopes"
+        scopes.mkdir()
+        (scopes / "koan-mission-abc.scope").write_text(
+            '{"unit": "koan-mission-abc.scope", "manager_args": [], '
+            '"mode": "scope", "pid": 4242}'
+        )
+        from app import mission_scope
+        calls = []
+        with patch.object(mission_scope, "_systemctl",
+                          side_effect=self._reachable_systemctl(calls)):
+            stop_processes(tmp_path, timeout=0.5)
+        assert ["stop", "koan-mission-abc.scope"] in calls
+        assert not (scopes / "koan-mission-abc.scope").exists()
+
+    def test_keeps_the_record_of_a_scope_it_could_not_stop(self, tmp_path):
+        """The record is the only durable handle on a live scope.
+
+        Its descendants have left the daemon's process group, so if `make stop`
+        discards the entry after a failed stop nothing can reach them and a
+        later `make stop` does not even know the scope exists.
+        """
+        scopes = tmp_path / ".koan-mission-scopes"
+        scopes.mkdir()
+        entry = scopes / "koan-mission-stuck.scope"
+        entry.write_text(
+            '{"unit": "koan-mission-stuck.scope", "manager_args": [], '
+            '"mode": "scope", "pid": 4242}'
+        )
+        from app import mission_scope
+        # An unreachable manager: nothing confirms the scope is gone.
+        with patch.object(mission_scope, "_systemctl", return_value=None):
+            stop_processes(tmp_path, timeout=0.5)
+        assert entry.exists()
+
+    def test_never_signals_the_callers_own_group(self):
+        """A pid that does not lead its own group degrades to a single-PID kill."""
+        from app.pid_manager import _signal_process
+        with patch("app.pid_manager.os.getpgid", return_value=os.getpgid(0) + 1), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single:
+            assert _signal_process(12345, 15) is True
+        killpg.assert_not_called()
+        single.assert_called_once_with(12345, 15)

@@ -2603,6 +2603,40 @@ class TestGetPageCacheReclaimConfig:
         assert cfg["extra_roots"] == []
 
 
+class TestGetMissionLimitsConfig:
+    def test_defaults_are_on_with_a_reserve_and_a_floor(self):
+        from app.config import get_mission_limits_config
+        with _mock_config({}):
+            assert get_mission_limits_config() == {
+                "enabled": True,
+                "memory_reserve": "2G",
+                "memory_min": "1G",
+                "memory_max": None,
+            }
+
+    def test_overrides_and_untouched_defaults(self):
+        from app.config import get_mission_limits_config
+        with _mock_config({
+            "mission_limits": {
+                "enabled": False,
+                "memory_reserve": "3G",
+                "memory_max": "6G",
+            }
+        }):
+            cfg = get_mission_limits_config()
+        assert cfg["enabled"] is False
+        assert cfg["memory_reserve"] == "3G"
+        assert cfg["memory_min"] == "1G"       # untouched default
+        assert cfg["memory_max"] == "6G"
+
+    def test_malformed_section_falls_back_to_defaults(self):
+        from app.config import get_mission_limits_config
+        with _mock_config({"mission_limits": "nope"}):
+            cfg = get_mission_limits_config()
+        assert cfg["enabled"] is True
+        assert cfg["memory_reserve"] == "2G"
+
+
 # --- _get_config_with_overrides (shared helper, issue #2340) ---
 
 

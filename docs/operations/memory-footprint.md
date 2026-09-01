@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "Memory footprint: process RSS vs cgroup memory.current"
-description: "Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, and the anon-first triage rule."
+description: "Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, the per-mission cgroup scope that kills leaked build daemons, and the anon-first triage rule."
 tags: [operations, memory, cgroup]
 created: 2026-07-13
-updated: 2026-07-14
+updated: 2026-08-31
 ---
 
 # Memory footprint: process RSS vs cgroup memory.current
@@ -70,6 +70,122 @@ dropped `memory.current` from 1.53 GB to 952 MB instantly (−580 MB).
 
 Expected steady state after this ships: ~500–700 MB (`anon` ~300 MB + slab +
 incompressible cache) instead of 1.4–1.5 GB.
+
+## Per-mission containment: the cgroup scope (`mission_limits`)
+
+The sweeps above return *files* and *page cache*. They never returned
+**processes** — until this section shipped, Kōan had no process sweep on the
+mission success path at all. `run_claude_task`'s `finally` closed fds, cleared
+`_sig.claude_proc`, reset the terminal and restored the git branch; `killpg`
+only fired on the abort/timeout branches. So a mission that left a daemon
+running leaked it into the host's idle baseline.
+
+Observed on a 4 vCPU / 7.75 GiB fleet host with **no swap** after a Java/Gradle
+mission: git-fetch timeouts, a 38 s page-cache reclaim, `gh api` timeouts.
+Recovery was a manual `killall java`. The chain:
+
+1. Gradle's build daemon persists by design (3-hour idle timeout) and **detaches
+   to `PPID 1` with its own session** — 766 MB RSS idle for 26 minutes.
+2. In that project the test postgres is a Gradle **build service**, so the
+   container is started *inside the Gradle daemon JVM*, not in a test fork.
+3. So the daemon — not a test fork — holds the Testcontainers `ryuk` client
+   socket (`ss -tanp`: `java pid=40407 fd=444` → ryuk port 32772). Ryuk reaps
+   only once its client disconnects, so the container's reap timer was scoped to
+   the daemon's 3-hour life and the postgres container was never removed.
+4. **Kill the Gradle daemon and ryuk reaps the containers itself.** One lever
+   fixes the whole chain.
+
+**Why a process group is not sufficient.** Because the daemon re-parents to
+PID 1 with its own session, it is out of the mission's process group by the time
+the mission ends — `os.killpg` can never reach it. A cgroup can, because it
+catches every descendant regardless of how many times it double-forks.
+
+`app/mission_scope.py` is the single containment primitive. All **three** mission
+spawn sites go through it — `run.run_claude_task` (the generic path, via
+`popen_cli`'s `launcher` prefix, applied *after* the prompt rewrite),
+`run._run_skill_mission` (the `/review`, `/fix`, `/implement` dispatch path), and
+`session_manager.spawn_session` (parallel sessions, same `popen_cli` launcher
+prefix) — and `teardown()` runs in the `finally` blocks that already reap
+`TMPDIR` and drop page cache, so it fires on **every** exit path including
+success. For parallel sessions there is no single `finally`, so the teardown sits
+on both exit paths instead: `poll_sessions()` when the session completes and
+`kill_session()` when it is aborted. The inner `provider/__init__.py` spawn is
+deliberately left alone: it shares `review_runner`'s process group and so
+inherits the same cgroup.
+
+Parallel sessions were **missed** by the first cut of this and confirmed leaking
+in production on a fleet host: a parallel `implement` mission logged
+`[parallel] Spawned bbf2bd38511f` while `systemctl list-units 'koan-mission-*'`
+listed nothing, and its Gradle daemon showed up as `pid=97020 ppid=1 rss=822MB`
+in `/user.slice/user-0.slice/session-68.scope` — Kōan's own SSH login scope, not
+a mission scope. Host free memory fell 4653 → 3751 MB in two minutes on a
+7.75 GiB swapless box. The lesson generalises: *every* new spawn path has to go
+through `launch_scoped`, because nothing else in the process tree will catch a
+daemon that has already re-parented to PID 1.
+
+- **Boundary:** `systemd-run --scope --collect --quiet
+  --unit=koan-mission-<uuid>.scope
+  --property=MemoryMax=<n> --property=MemoryHigh=<90% of n>`. `MemoryHigh` gives
+  reclaim back-pressure before `MemoryMax` becomes an OOM kill. Non-root uses the
+  per-user manager (`--user`); the system manager needs polkit, which fails
+  non-interactively.
+- **Teardown** (`mission_scope.stop_scope_unit`, shared with `make stop` so both
+  judge a manager failure the same way): `systemctl stop <unit>`, then verify the
+  cgroup is empty via `cgroup.events`, escalating to `systemctl kill -s SIGKILL`
+  if it is not. `_systemctl` runs with `check=False`, so a refusal arrives as a
+  **non-zero result, not an exception** — accepting it would report containment
+  that never happened. A non-zero `stop` is therefore disambiguated with
+  `systemctl show -p LoadState`: `not-found` means `--collect` already reaped the
+  scope (the ordinary clean-mission ending, and quiet), anything else — or an
+  unreachable manager — is a real failure and escalates. The escalation targets
+  the *unit*, not the process group: on the success path the mission process has
+  already exited so `kill_process_group` signals nothing, and a re-parented
+  daemon has left the group anyway. The group is the last resort, pulled only
+  when nothing on the systemd side can confirm the scope is gone.
+- **Cap:** `max(memory_min, MemTotal - memory_reserve)`, with an explicit
+  `memory_max` winning verbatim. A reserve **with a floor**, not a percentage of
+  RAM: the fleet spans 1.9 GiB to 7.7 GiB with no swap anywhere, and Kōan's own
+  baseline is roughly constant (~500 MB: python ~97 MB + CLI ~275 MB +
+  mcp-atlassian ~129 MB), so a percentage under-reserves on the small hosts.
+- **Cap hit:** reported as a distinct mission result — `memory_cap_exceeded` /
+  `memory_cap_detail` in the `post_mission` hook context, reading e.g.
+  `exceeded memory cap (5.9G of 5.75G)` (peak from `memory.peak`, falling back to
+  `read_cgroup_memory_stat`'s `anon`). **Never retried**: re-running an
+  oversubscribed build only repeats the meltdown.
+- **No container sweep.** Containers are children of the Docker daemon, not of
+  the mission, so nothing Kōan can observe distinguishes one this mission
+  started from a co-tenant's: a creation timestamp inside the mission's window
+  proves *overlap*, never ownership, and a long mission overlaps everything a
+  shared host starts while it runs. A time-gated `docker rm -f` would therefore
+  destroy a live co-tenant workload's container and its state, which no default
+  and no documentation makes acceptable — so the sweep was removed rather than
+  merely disabled. Killing the scope is what handles containers: it drops the
+  ryuk client socket, and ryuk removes the containers that client owned. That is
+  the same lever the whole feature rests on. No `docker prune`, ever. The
+  hand-off does depend on ryuk being enabled: a project that sets
+  `TESTCONTAINERS_RYUK_DISABLED=true` owns its own container cleanup, and Kōan
+  will not (and cannot safely) do it for them.
+- **Fallback:** where `systemd-run` cannot create a scope (macOS, no manager, no
+  user manager) Kōan warns **once** and spawns with `start_new_session=True`,
+  tearing down the process group captured at launch (SIGTERM → 3 s → SIGKILL →
+  5 s). The *pgid* is what is signalled, not the `Popen`:
+  `kill_process_group()` returns at its `poll()` guard once the mission process
+  is reaped, so on the success path it would signal nothing while descendants
+  left in the group keep running. Every host must still be able to run missions.
+- **`make stop`:** `pid_manager.stop_processes` stops the live mission scope
+  first (registered under `$KOAN_ROOT/.koan-mission-scopes/`, one file per scope
+  so there is no read-modify-write to race on), then signals each daemon's
+  *process group* rather than the bare PID from `.koan-pid-*` — the single-PID
+  SIGTERM left every descendant running. A registry entry is unlinked only once
+  its scope is **confirmed** stopped: this is the retry mechanism, so discarding
+  a record it could not act on would destroy the only handle on a live scope.
+  `ScopedProcess.teardown` follows the same rule for scope records; only a
+  fallback `pid-<n>` record is dropped unconditionally, because a PID — unlike a
+  uuid4 unit name — can be recycled, and a stale one would aim `make stop` at an
+  unrelated process group. A retained record self-heals: once the scope really
+  is gone the next `make stop` sees `LoadState=not-found` and unlinks it.
+- **Config:** `mission_limits: { enabled, memory_reserve, memory_min,
+  memory_max }` — see `instance.example/config.yaml`. Default on.
 
 ## Triage rule: anon first
 

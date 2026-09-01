@@ -50,6 +50,13 @@ DEBUG_LOG_FILE = ".koan-debug.log"
 
 CHECK_NOTIFICATIONS_FILE = ".koan-check-notifications"
 
+# -- Mission containment -------------------------------------------------------
+
+# Directory of live per-mission cgroup scopes (one file per scope, so
+# registering and de-registering are a create and an unlink with no
+# read-modify-write for parallel sessions to race on). See app/mission_scope.py.
+MISSION_SCOPES_DIR = ".koan-mission-scopes"
+
 # -- Misc ----------------------------------------------------------------------
 
 ONBOARDING_FILE = ".koan-onboarding.json"
