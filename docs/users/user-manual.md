@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-08-19
+updated: 2026-08-31
 ---
 
 # Kōan User Manual
@@ -115,6 +115,8 @@ By default, Kōan processes one mission at a time. When idle, it picks the next 
 Just send a regular message — Kōan classifies it automatically. Short conversational messages get instant replies (chat mode). Task-like messages get queued as missions.
 
 **Bare skill shortcut:** if the first word of a plain message is the name (or alias) of a core skill, Kōan treats the whole message as that slash command — `time` runs `/time`, `review <url>` runs `/review <url>`. Only core skills trigger this; custom/instance skills do not. If a common word collides with a skill name and you meant to chat, prefix with `/chat`.
+
+**Bang prefix:** `!command` works everywhere `/command` does — `!help`, `!status`, `!review <url>`. Useful if you came from Slack, where `!` avoids clashing with Slack's own slash commands. A bang before a non-letter (`!!`, `!42`) is plain text. On Telegram there's no autocomplete for `!`, and in a group with Privacy Mode ON Telegram never delivers `!` messages to the bot — use `/` there.
 
 If Kōan misclassifies your message, use `/chat` to force chat mode:
 

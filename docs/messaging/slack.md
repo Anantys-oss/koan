@@ -4,7 +4,7 @@ title: "Slack Setup Guide"
 description: "Step-by-step guide to configuring Kōan with Slack (Socket Mode app setup, scopes, env vars) plus Slack-specific behavior like threading, reactions, and the assistant \"thinking\" status."
 tags: [messaging]
 created: 2026-05-28
-updated: 2026-08-12
+updated: 2026-08-31
 ---
 
 # Slack Setup Guide
@@ -201,8 +201,10 @@ You should see in the logs:
   ignored, so the bot is safe to drop into a shared channel.
 - **Commands need no mention**: A message beginning with `/` or `!` followed by
   a letter (e.g. `/help`, `!status`) is treated as a command addressed to Kōan —
-  exactly like `@Koan /help`. Slack normalizes `!command` to `/command` before
-  handing it to the shared bridge, avoiding conflicts with Slack slash commands.
+  exactly like `@Koan /help`. `!command` is normalized to `/command` before
+  dispatch — Slack does it in its own provider (it must decide *addressing*
+  before the shared bridge sees the text), and the shared bridge does it for
+  every provider, so the same bang form also works on Telegram.
   Slack's `<url>` and `<url|label>` link markup is also converted back to a
   plain URL, so URL-based commands keep any context written after the link.
   It replies in a thread under the command, no @mention required. A leading

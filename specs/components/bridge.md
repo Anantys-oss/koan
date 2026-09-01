@@ -4,7 +4,7 @@ title: "Component Spec — Telegram Bridge"
 description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-08-12
+updated: 2026-08-31
 ---
 
 # Component Spec — Telegram Bridge
@@ -78,10 +78,15 @@ awake.py (loop, ~3s poll)
   *how* the agent behaves.
 - **Command parsing is hyphen-hostile.** Skill names/aliases use underscores; Telegram
   treats `-` as a word boundary and truncates the command.
-- **Slack accepts bang-prefixed commands.** Slack recognizes `!command` and
-  `/command` without a bot mention. Its provider normalizes the bang form to
-  `/command` before the shared bridge dispatches it, keeping command handlers
-  provider-agnostic and avoiding Slack slash-command conflicts.
+- **Bang-prefixed commands are accepted on every provider.** A message whose
+  first characters are `!` followed by a letter (e.g. `!help`) is a command,
+  equivalent to `/help`. The **shared bridge** (`handle_message`) normalizes the
+  bang form to the slash form before dispatch, so every messaging provider gets
+  it without provider-specific code and command handlers stay provider-agnostic.
+  A bang followed by a non-letter (`!!`, `!42`) is not a command. Slack
+  additionally normalizes inbound bangs in its own provider because it must also
+  decide *addressing* (a bang command needs no bot mention) before the shared
+  bridge sees the text; that normalization is idempotent with the bridge's.
 - **Slack URLs reach shared dispatch as plain URLs.** Slack's provider removes
   mrkdwn link wrappers (`<url>` and `<url|label>`) before queueing inbound text.
   It also repairs a wrapper truncated immediately after the URL or separator so

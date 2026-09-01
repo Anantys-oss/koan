@@ -14,6 +14,7 @@ from app.awake import (
     is_mission,
     is_command,
     promote_bare_skill_command,
+    normalize_bang_command,
     parse_project,
     handle_chat,
     handle_message,
@@ -263,6 +264,46 @@ class TestPromoteBareSkillCommand:
         handle_message("time")
         mock_cmd.assert_called_once_with("/time")
         mock_worker.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# normalize_bang_command
+# ---------------------------------------------------------------------------
+
+class TestNormalizeBangCommand:
+    def test_bang_becomes_slash(self):
+        assert normalize_bang_command("!help") == "/help"
+        assert normalize_bang_command("!Status") == "/Status"
+
+    def test_arguments_preserved(self):
+        assert normalize_bang_command(
+            "!review https://github.com/o/r/pull/1"
+        ) == "/review https://github.com/o/r/pull/1"
+
+    def test_bang_before_non_letter_untouched(self):
+        for text in ("!! deploy note", "!42 is surprising", "!", "!/help"):
+            assert normalize_bang_command(text) == text
+
+    def test_non_leading_bang_untouched(self):
+        assert normalize_bang_command("wow! amazing") == "wow! amazing"
+        assert normalize_bang_command("/help") == "/help"
+        assert normalize_bang_command("") == ""
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.awake.handle_command")
+    def test_handle_message_routes_bang_to_command(self, mock_cmd, mock_worker):
+        """A bang command reaches handle_command as its slash form, not chat."""
+        handle_message("  !help  ")
+        mock_cmd.assert_called_once_with("/help")
+        mock_worker.assert_not_called()
+
+    @patch("app.awake._run_in_worker")
+    @patch("app.awake.handle_command")
+    def test_handle_message_bang_non_letter_not_a_command(self, mock_cmd, mock_worker):
+        """`!!` punctuation stays chat — it must not be dispatched as a command."""
+        handle_message("!! server was flaky")
+        mock_cmd.assert_not_called()
+        assert mock_worker.call_args.args[0].__name__ == "handle_chat"
 
 
 # ---------------------------------------------------------------------------
