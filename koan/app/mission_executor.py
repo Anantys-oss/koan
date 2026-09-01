@@ -407,6 +407,12 @@ def _maybe_retry_mission(
         log("koan", "Skipping retry — mission was killed by stagnation monitor")
         return claude_exit, stdout_file, stderr_file
 
+    # A mission the cgroup scope OOM-killed is not transient: re-running an
+    # oversubscribed build just repeats the meltdown on a host with no swap.
+    if _run._last_mission_memory_cap:
+        log("koan", f"Skipping retry — mission {_run._last_mission_memory_cap}")
+        return claude_exit, stdout_file, stderr_file
+
     # Read output for classification
     try:
         stdout_text = Path(stdout_file).read_text()
@@ -502,6 +508,9 @@ def _maybe_fallback_provider_rerun(
         _run._last_mission_timed_out
         or _run._last_mission_aborted
         or _run._last_mission_stagnated.is_set()
+        # A memory-cap kill is not a launch/auth failure — another provider
+        # would run the same oversubscribed build and hit the same cap.
+        or _run._last_mission_memory_cap
     ):
         return claude_exit, stdout_file, stderr_file
 

@@ -855,13 +855,46 @@ def _bootout_launchd_service(name: str) -> bool:
         return False
 
 
+def _signal_process(pid: int, sig: int) -> bool:
+    """Signal *pid*'s process group, falling back to the bare PID.
+
+    Returns False only when the target is already gone. Kōan starts every
+    daemon with ``start_new_session=True``, so the daemon leads its own group
+    and ``killpg`` reaches its children too; the ``pgid != pid`` fallback covers
+    a pid file written by something that is not a group leader, and guarantees
+    this never signals the caller's own group.
+    """
+    try:
+        pgid = os.getpgid(pid)
+    except (OSError, ProcessLookupError):
+        return False
+    if pgid == pid:
+        try:
+            os.killpg(pgid, sig)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+    try:
+        os.kill(pid, sig)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
 def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     """Stop all running Kōan processes (run + awake + ollama).
 
-    Detects and boots out launchd services first (prevents respawn),
-    then sends SIGTERM to each running process, waits up to timeout
-    seconds for termination. Creates .koan-stop signal file for
+    Detects and boots out launchd services first (prevents respawn), tears down
+    any live mission cgroup scope, then signals each running process's group
+    (SIGTERM, then SIGKILL on timeout). Creates .koan-stop signal file for
     graceful shutdown.
+
+    Signalling the *group* rather than the bare PID from the pid file is what
+    makes ``make stop`` actually stop: everything Kōan spawns is started with
+    ``start_new_session=True``, so each daemon leads its own group, and the old
+    single-PID SIGTERM left every descendant (the provider CLI and whatever it
+    started) running. A daemon that detached further still needs the mission
+    scope, which is why that is stopped first.
 
     Returns dict mapping process name to result: "stopped", "not_running",
     or "force_killed".
@@ -892,16 +925,26 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
     for name in PROCESS_NAMES:
         _bootout_launchd_service(name)
 
+    # Stop any live mission scope before the daemons: a build daemon that
+    # re-parented to PID 1 with its own session is outside every process group
+    # here, so only its cgroup can take it down.
+    try:
+        from app.mission_scope import stop_registered_scopes
+        stopped_scopes = stop_registered_scopes(str(koan_root))
+        if stopped_scopes:
+            print(f"[pid_manager] stopped mission scope(s): "
+                  f"{', '.join(stopped_scopes)}")
+    except Exception as e:
+        print(f"[pid_manager] mission scope teardown failed: {e}", file=sys.stderr)
+
     for name in PROCESS_NAMES:
         pid = check_pidfile(koan_root, name)
         if not pid:
             results[name] = "not_running"
             continue
 
-        # Send SIGTERM
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
+        # Send SIGTERM to the whole group so children die with the daemon.
+        if not _signal_process(pid, signal.SIGTERM):
             results[name] = "not_running"
             continue
 
@@ -910,8 +953,7 @@ def stop_processes(koan_root: Path, timeout: float = 5.0) -> dict:
             results[name] = "stopped"
         else:
             # Force kill
-            with contextlib.suppress(OSError, ProcessLookupError):
-                os.kill(pid, signal.SIGKILL)
+            _signal_process(pid, signal.SIGKILL)
             # Wait briefly for SIGKILL to take effect
             _wait_for_exit(pid, 1.0)
             results[name] = "force_killed"
@@ -933,15 +975,12 @@ def stop_process(koan_root: Path, name: str, timeout: float = 5.0) -> str:
     pid = check_pidfile(koan_root, name)
     if not pid:
         return "not_running"
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
+    if not _signal_process(pid, signal.SIGTERM):
         return "not_running"
     if _wait_for_exit(pid, timeout):
         result = "stopped"
     else:
-        with contextlib.suppress(OSError, ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
+        _signal_process(pid, signal.SIGKILL)
         _wait_for_exit(pid, 1.0)
         result = "force_killed"
     _pidfile_path(koan_root, name).unlink(missing_ok=True)

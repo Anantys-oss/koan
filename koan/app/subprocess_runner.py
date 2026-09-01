@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from typing import Callable, Optional
 
 
@@ -43,6 +44,73 @@ def kill_process_group(
                 )
     except (ProcessLookupError, PermissionError, OSError):
         pass
+
+
+def kill_process_group_by_pid(
+    pid: int,
+    graceful_timeout: float = 3,
+    force_timeout: float = 5,
+) -> None:
+    """SIGTERM then SIGKILL a process group named by *pid*, with no ``Popen``.
+
+    :func:`kill_process_group` needs the ``Popen`` so it can ``wait()`` on the
+    child.  Callers holding only a PID read from a file (the mission-scope
+    registry) are usually not the parent, so liveness is polled instead.
+
+    Only signals a group *led* by *pid* — which ``start_new_session=True``
+    guarantees for everything Kōan spawns — so a stale PID file can never make
+    this signal the caller's own group.
+    """
+    if pid <= 0:
+        return
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+    if pgid != pid:
+        return
+    kill_orphaned_process_group(pgid, graceful_timeout, force_timeout)
+
+
+def kill_orphaned_process_group(
+    pgid: int,
+    graceful_timeout: float = 3,
+    force_timeout: float = 5,
+) -> None:
+    """SIGTERM then SIGKILL every member of *pgid*, whose leader may be gone.
+
+    A process group outlives its leader: children left behind by a mission that
+    exited cleanly are still in it, and they are exactly what
+    :func:`kill_process_group` cannot touch — it returns at its ``poll()`` guard
+    the moment the leader is reaped.  So the group id must have been captured
+    while the leader was alive; ``os.getpgid`` cannot recover it afterwards.
+
+    Liveness is polled with ``killpg(pgid, 0)``, which reports the *group* empty
+    rather than merely the leader dead.
+    """
+    if pgid <= 1 or pgid == os.getpgrp():
+        # Never signal init's group or our own — either takes down far more than
+        # the mission. A group id below 2 means the capture failed, not that
+        # there is something to kill.
+        return
+    for sig, wait_for in ((signal.SIGTERM, graceful_timeout),
+                          (signal.SIGKILL, force_timeout)):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        deadline = time.monotonic() + wait_for
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError, OSError):
+                return
+            time.sleep(0.1)
+    print(
+        f"[subprocess_runner] warning: process group {pgid} "
+        f"did not exit after SIGKILL",
+        file=sys.stderr,
+    )
 
 
 def force_kill_process_group(proc: Optional[subprocess.Popen]) -> None:

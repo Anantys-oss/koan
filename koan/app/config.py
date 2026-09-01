@@ -815,6 +815,40 @@ def get_cleanup_min_tmp_age_seconds() -> float:
         return 600.0
 
 
+# Mission containment defaults. Enabled by default: a mission that leaks a
+# daemon (Gradle's build daemon re-parents to PID 1 with its own session, so no
+# process group can reach it) otherwise raises the host's idle baseline for the
+# rest of the day. See app/mission_scope.py for the full causal chain.
+_MISSION_LIMITS_DEFAULTS = {
+    "enabled": True,
+    "memory_reserve": "2G",
+    "memory_min": "1G",
+    "memory_max": None,
+}
+
+
+def get_mission_limits_config() -> dict:
+    """Per-mission cgroup-scope limits (``mission_limits:``). Enabled by default.
+
+    ``memory_reserve`` is what is left for the OS, Kōan's own ~500 MB baseline
+    and any day job sharing the host; ``memory_min`` floors the resulting cap so
+    a small, swapless host can still run a mission. A reserve-with-floor rather
+    than a percentage of RAM: Kōan's baseline is roughly constant, so a
+    percentage under-reserves on the small hosts. ``memory_max`` overrides both
+    verbatim when set.
+
+    Size values are parsed by :func:`app.mission_scope.parse_size` (``2G``,
+    ``512M``, or a bare byte count), so they are passed through as-is here.
+    """
+    section = _get_config_with_overrides("mission_limits", _MISSION_LIMITS_DEFAULTS)
+    return {
+        "enabled": bool(section["enabled"]),
+        "memory_reserve": section["memory_reserve"],
+        "memory_min": section["memory_min"],
+        "memory_max": section["memory_max"],
+    }
+
+
 def get_start_on_pause() -> bool:
     """Check if start_on_pause is enabled in config.yaml.
 

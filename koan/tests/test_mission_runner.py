@@ -843,6 +843,71 @@ class TestPostMissionHookFiring:
 
         mock_hook.assert_called_once()
 
+    @patch("app.mission_runner._fire_post_mission_hook")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_memory_cap_hit_reaches_the_hook_context(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_hook, tmp_path,
+    ):
+        """A cap hit is a distinct mission result, not a generic failure."""
+        import app.run as _run
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+        _run._last_mission_memory_cap = "exceeded memory cap (5.9G of 5.75G)"
+        try:
+            result = run_post_mission(
+                instance_dir=instance_dir,
+                project_name="koan",
+                project_path=str(tmp_path),
+                run_num=1,
+                exit_code=137,
+                stdout_file="/tmp/out.json",
+                stderr_file="/tmp/err.txt",
+            )
+        finally:
+            _run._last_mission_memory_cap = ""
+
+        assert result["memory_cap_exceeded"] is True
+        assert result["memory_cap_detail"] == "exceeded memory cap (5.9G of 5.75G)"
+        hook_result = mock_hook.call_args[0][6]
+        assert hook_result["memory_cap_detail"] == (
+            "exceeded memory cap (5.9G of 5.75G)"
+        )
+
+    @patch("app.mission_runner._fire_post_mission_hook")
+    @patch("app.mission_runner.check_auto_merge", return_value=None)
+    @patch("app.mission_runner.trigger_reflection", return_value=False)
+    @patch("app.mission_runner.archive_pending", return_value=False)
+    @patch("app.quota_handler.handle_quota_exhaustion", return_value=None)
+    @patch("app.mission_runner.update_usage", return_value=True)
+    def test_no_cap_hit_leaves_the_keys_empty(
+        self, mock_usage, mock_quota, mock_archive, mock_reflect,
+        mock_merge, mock_hook, tmp_path,
+    ):
+        import app.run as _run
+        from app.mission_runner import run_post_mission
+
+        instance_dir = str(tmp_path / "instance")
+        os.makedirs(instance_dir, exist_ok=True)
+        _run._last_mission_memory_cap = ""
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=0,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+        )
+        assert result["memory_cap_exceeded"] is False
+        assert result["memory_cap_detail"] == ""
+
 
 class TestRunPostMissionKoanRoot:
     """Test that run_post_mission uses KOAN_ROOT env var for koan_root."""

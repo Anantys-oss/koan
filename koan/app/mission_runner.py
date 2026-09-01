@@ -1503,6 +1503,24 @@ def _notify_mission_result(
         _log_runner("error", f"Mission result notification failed: {e}")
 
 
+def _read_memory_cap_detail() -> str:
+    """Cap-hit detail for the just-finished mission, or "" when it fit.
+
+    Read lazily off ``app.run``'s module state — the same pattern
+    ``mission_executor`` uses for ``_last_mission_timed_out`` — so this module
+    keeps no import-time dependency on the agent loop and stays importable from
+    the CLI entry point.
+    """
+    try:
+        import app.run as _run
+    except ImportError as exc:
+        # app.run is a required module; a broken import is a real fault, not the
+        # routine "the mission fit" case — surface it instead of reporting "fit".
+        _log_runner("error", f"memory-cap read: app.run import failed: {exc}")
+        return ""
+    return str(getattr(_run, "_last_mission_memory_cap", "") or "")
+
+
 def _fire_post_mission_hook(
     instance_dir: str,
     project_name: str,
@@ -1766,6 +1784,10 @@ def run_post_mission(
             auto_merge_branch (str|None): Branch name if auto-merge attempted.
             quota_exhausted (bool): Whether quota exhaustion was detected.
             quota_info (tuple|None): (reset_display, resume_message) if exhausted.
+            memory_cap_exceeded (bool): Whether the mission's cgroup scope
+                OOM-killed it (``mission_limits``).
+            memory_cap_detail (str): Human phrase for that cap hit, e.g.
+                "exceeded memory cap (5.9G of 5.75G)"; "" otherwise.
     """
     result = {
         "success": exit_code == 0,
@@ -1778,7 +1800,18 @@ def run_post_mission(
         "quota_info": None,
         "cost_tracking_failed": False,
         "pr_url": "",
+        "memory_cap_exceeded": False,
+        "memory_cap_detail": "",
     }
+    # A mission the cgroup scope OOM-killed gets a distinct outcome rather than
+    # a generic non-zero exit, so the post_mission hook context can say
+    # "exceeded memory cap (5.9G of 5.75G)" instead of leaving an operator to
+    # guess. Deliberately never retried — re-running an oversubscribed build
+    # only repeats the meltdown (see mission_executor's retry guards).
+    memory_cap_detail = _read_memory_cap_detail()
+    if memory_cap_detail:
+        result["memory_cap_exceeded"] = True
+        result["memory_cap_detail"] = memory_cap_detail
 
     tracker = _PipelineTracker()
 

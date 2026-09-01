@@ -262,6 +262,26 @@ class TestUnrecognizedKeys:
         warnings = validate_config({"review_draft_skip": {"enabled": True}})
         assert not any("unrecognized key 'review_draft_skip'" in m for _, m in warnings)
 
+    def test_mission_limits_is_recognized_with_size_strings_and_null(self):
+        warnings = validate_config({"mission_limits": {
+            "enabled": True,
+            "memory_reserve": "2G",
+            "memory_min": "1G",
+            "memory_max": None,
+        }})
+        assert warnings == []
+
+    def test_mission_limits_accepts_a_bare_byte_count(self):
+        warnings = validate_config(
+            {"mission_limits": {"memory_max": 6442450944}}
+        )
+        assert warnings == []
+
+    def test_mission_limits_typo_is_suggested(self):
+        warnings = validate_config({"mission_limits": {"memory_resrve": "2G"}})
+        assert len(warnings) == 1
+        assert "did you mean 'mission_limits.memory_reserve'" in warnings[0][1]
+
 
 # ---------------------------------------------------------------------------
 # validate_config — type mismatches
