@@ -459,7 +459,8 @@ def run_claude(
     # Accumulation mirrors run_command_streaming / mission_runner:
     # - Block-style events (Claude assistant blocks, Haze message_end) append
     #   full segments joined with newlines.
-    # - Delta-style events (Grok ``{"type":"text","data":"…"}``) buffer into
+    # - Delta-style events (Grok ``{"type":"text","data":"…"}``, Gemini
+    #   assistant message deltas — see provider._is_text_delta_event) buffer into
     #   stream_text_delta_parts and flush as one segment so "hel"+"lo" becomes
     #   "hello", not "hel\\nlo". Joining deltas with "\\n" shredded Grok replies
     #   into one-token-per-line bullets on /rebase PR comments.
@@ -482,6 +483,7 @@ def run_claude(
         from app.provider import (
             _extract_assistant_text_chunks,
             _extract_result_text,
+            _is_text_delta_event,
             _summarize_stream_event,
         )
 
@@ -498,10 +500,7 @@ def run_claude(
                 print(summary, flush=True)
                 stream_summary_lines.append(summary)
                 chunks = _extract_assistant_text_chunks(parsed)
-                if (
-                    parsed.get("type") == "text"
-                    and isinstance(parsed.get("data"), str)
-                ):
+                if _is_text_delta_event(parsed):
                     stream_text_delta_parts.extend(chunks)
                 else:
                     _flush_stream_deltas()

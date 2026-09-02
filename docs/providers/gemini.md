@@ -4,7 +4,7 @@ title: "Gemini CLI Provider"
 description: "Setup and behavior guide for using Google's Gemini CLI as Kōan's provider, including headless stream-json, auth, models, and limitations."
 tags: [providers]
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # Gemini CLI Provider
@@ -92,6 +92,16 @@ input counts exclude cache hits, matching every other provider.
 `result` event carries statistics only, no assistant body, so a stream that dies
 mid-flight still returns whatever text arrived.
 
+In `json` mode — what missions run — the single object's `response` field is the
+assistant text and its nested `stats.models.<id>.tokens`
+(`prompt`/`candidates`/`cached`) is the usage source. When a run touched more
+than one model (a pro→flash fallback under quota pressure), tokens are
+attributed to the model with the highest total, not to whichever id came first.
+
+A terminal `result` whose `status` is not a success value **fails the run** with
+an error naming `skip_permissions`, rather than returning the partial prose as
+if the mission had completed.
+
 ## Permissions
 
 Kōan emits `--approval-mode yolo` **only** when `skip_permissions: true`.
@@ -99,8 +109,10 @@ Kōan emits `--approval-mode yolo` **only** when `skip_permissions: true`.
 With permissions on, no approval flag is passed and Kōan logs a one-time
 warning: a headless run cannot answer a confirmation prompt, so a tool call that
 would prompt may fail. That is deliberate — the adapter will not silently
-escalate past the posture you configured. For autonomous missions
-(`/implement`, `/fix`, …) set `skip_permissions: true`.
+escalate past the posture you configured. When the session ends on a failed
+`result` status, the mission fails loudly instead of banking the partial text as
+a success. For autonomous missions (`/implement`, `/fix`, …) set
+`skip_permissions: true`.
 
 ## Capabilities and limitations
 

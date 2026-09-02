@@ -53,6 +53,7 @@ from app.provider.gemini import GeminiProvider  # noqa: F401
 from app.provider.haze import HazeProvider  # noqa: F401
 from app.provider.grok import GrokProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
+from app.token_parser import clamp_cached_input, dominant_stats_model
 
 
 def _extract_provider_error_preview(stdout: str) -> str:
@@ -1396,6 +1397,34 @@ def _is_cancelled_end_event(event: Dict[str, Any]) -> bool:
     return stop in _CANCELLED_STOP_REASONS
 
 
+# Terminal ``result`` statuses that mean the session did not complete. Only the
+# stats-bearing envelope shape is inspected (Gemini CLI:
+# ``{"type":"result","status":…,"stats":{…}}``) — envelopes that carry the
+# assistant text alongside the status (haze ``result``+``result``/``usage``)
+# keep their existing soft-return behaviour.
+_RESULT_FAILURE_STATUSES = frozenset(
+    {"error", "failed", "failure", "cancelled", "canceled", "aborted"}
+)
+
+
+def _is_failed_stats_result_event(event: Dict[str, Any]) -> bool:
+    """Return True for a stats-only terminal result reporting a failed status.
+
+    Without this a headless run that could not answer a tool confirmation
+    prompt exits 0 with partial prose, and the mission is reported complete
+    with no branch and no commit — the same soft-success hole
+    :func:`_is_cancelled_end_event` closes for Grok Build.
+    """
+    if str(event.get("type") or "") != "result":
+        return False
+    if "result" in event or "usage" in event or not isinstance(
+        event.get("stats"), dict
+    ):
+        return False
+    status = str(event.get("status") or "").strip().lower()
+    return status in _RESULT_FAILURE_STATUSES
+
+
 def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Extract token usage snapshot from a stream event when present."""
     if not isinstance(event, dict):
@@ -1468,15 +1497,14 @@ def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
         output_tokens = int(stats.get("output_tokens", 0) or 0)
         # ``cached`` is a SUBSET of input_tokens — subtract so input matches
         # Koan accounting (which excludes cache hits).
-        cached_input = int(stats.get("cached", 0) or 0)
-        if 0 < cached_input <= input_tokens:
-            input_tokens -= cached_input
+        cached_input = clamp_cached_input(
+            int(stats.get("cached", 0) or 0), input_tokens
+        )
+        input_tokens -= cached_input
         if input_tokens or output_tokens or cached_input:
             model = str(event.get("model") or "")
             if not model:
-                models = stats.get("models")
-                if isinstance(models, dict) and models:
-                    model = str(next(iter(models)))
+                model = dominant_stats_model(stats.get("models"))
             return {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
@@ -1674,6 +1702,7 @@ def run_command_streaming(
     usage_snapshot: Optional[Dict[str, Any]] = None
     saw_max_turns_event = False
     saw_cancelled_end = False
+    failed_result_status = ""
     stderr_text = ""
 
     def _flush_text_deltas() -> None:
@@ -1736,6 +1765,8 @@ def run_command_streaming(
                         saw_max_turns_event = True
                     if _is_cancelled_end_event(event):
                         saw_cancelled_end = True
+                    if _is_failed_stats_result_event(event):
+                        failed_result_status = str(event.get("status") or "")
                 else:
                     # Non-JSON: provider doesn't speak stream-json or a stray
                     # warning slipped in. Print and remember for the fallback.
@@ -1783,6 +1814,19 @@ def run_command_streaming(
                 "CLI session cancelled (stopReason=Cancelled) — often a "
                 "headless permission denial. For Grok, ensure "
                 "skip_permissions: true so tools use --always-approve."
+                f"{suffix}"
+            )
+
+        if failed_result_status:
+            # Same hole as above, reported through a terminal ``result``
+            # envelope instead of an ``end`` event: exit 0 plus partial prose.
+            _persist_stream_usage_snapshot(usage_snapshot)
+            detail = (return_text or "").strip()
+            suffix = f" Partial output: {detail[:200]}" if detail else ""
+            raise RuntimeError(
+                f"CLI session ended with status={failed_result_status} — often "
+                "a headless permission denial. Set skip_permissions: true so "
+                "tool calls are not left waiting on a confirmation prompt."
                 f"{suffix}"
             )
 
