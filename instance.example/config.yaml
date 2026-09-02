@@ -456,7 +456,8 @@ tools:
 
 # CLI provider — which AI CLI to use as the backend
 # Options: "claude" (default), "codex" (OpenAI Codex CLI), "copilot" (GitHub Copilot CLI),
-#          "haze", "grok" (xAI Grok Build CLI), "ollama-launch" (Ollama-managed Claude CLI)
+#          "haze", "grok" (xAI Grok Build CLI), "gemini" (Google Gemini CLI),
+#          "ollama-launch" (Ollama-managed Claude CLI)
 #          ("local" was removed — use ollama-launch)
 # Accepts "flavor" OR "flavor:path" — the same grammar as the per-role `cli:`
 # section below. A path pins the binary for the GLOBAL provider, e.g.
@@ -476,6 +477,9 @@ cli_provider: "claude"
 # CLI acceptEdits flag is a no-op). Set skip_permissions: true when using
 # cli_provider: grok so autonomous missions (/implement, etc.) are not cancelled
 # on shell tools. See docs/providers/grok.md.
+# Gemini: adds --approval-mode yolo. Headless Gemini cannot answer approval
+# prompts, so leaving this false means tool calls that would prompt may fail.
+# See docs/providers/gemini.md.
 # For MCP tools, use provider-specific allowlists/settings instead.
 # NOTE: this setting is deliberately IGNORED for read-only roles (/review). It
 # would bypass the tool denial / read-only sandbox that keeps a code review from
@@ -581,6 +585,16 @@ models:
     review_mode: "glm-5.2"   # code review
     chat: "glm-4.7"          # chat responses
     lightweight: "glm-4.7"   # low-cost calls (format_outbox, pick_mission)
+
+  # Gemini CLI overrides (when cli_provider: gemini).
+  # Use Gemini aliases (auto/pro/flash/flash-lite) or concrete ids like
+  # gemini-2.5-pro — never haiku/sonnet/opus. docs/providers/gemini.md
+  gemini:
+    mission: "pro"                # Main mission execution (empty = Gemini default)
+    chat: "flash"                 # Telegram/dashboard chat responses
+    lightweight: "flash-lite"     # Low-cost calls: format_outbox, pick_mission, contemplative
+    review_mode: "pro"            # Override model for REVIEW mode
+    reflect: "pro"                # Model for review reflection pass (empty = lightweight)
 
   # Grok Build overrides (when cli_provider: grok).
   # Use real Grok model ids from `grok models` — never haiku/sonnet/opus.
