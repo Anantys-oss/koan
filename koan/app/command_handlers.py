@@ -228,6 +228,18 @@ def handle_command(text: str):
     command_name = parts[0][1:].lower()  # strip the /
     command_args = parts[1] if len(parts) > 1 else ""
 
+    # A messaging client may append a footer attribution on a later line
+    # (e.g. Slack's "*Sent using* @Claude"). Commands/missions may legitimately
+    # span multiple lines, so don't blanket-truncate to the first line — only
+    # strip a trailing footer line so it isn't consumed as a positional argument
+    # when handlers call args.split() (which splits on newlines too).
+    # Scoped here (not in SkillContext) so in-process GitHub/Jira custom-skill
+    # dispatch can still pass multi-line context (see external_skill_dispatch).
+    _lines = command_args.splitlines()
+    if _lines and "Sent using" in _lines[-1]:
+        _lines = _lines[:-1]
+    command_args = "\n".join(_lines)
+
     # Aliases are handled by the skill registry (SKILL.md aliases: field)
     # No hardcoded alias remapping needed here.
 

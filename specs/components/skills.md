@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-07-26
+updated: 2026-09-01
 ---
 
 # Component Spec — Skills System
@@ -62,6 +62,14 @@ koan/skills/core/<name>/
 - **Names/aliases/dirs use underscores, never hyphens** — Telegram truncates at `-`.
 - **No hardcoded skill-name lists in `koan/app/`.** When core must recognize a specific
   custom skill, drive it off SKILL.md frontmatter flags (see `collect_forward_result_markers`).
+- **A bare `args.split()` may consume a client footer as a positional argument.**
+  Messaging providers may append a footer/signature on the last line (e.g. Slack's
+  `*Sent using* @Claude`). The Telegram ingress (`handle_command`) strips a trailing line
+  containing `Sent using` before constructing `SkillContext` — it does **not** blanket-truncate,
+  so multi-line mission text is preserved. Telegram handlers must not expect footer text in
+  `args`. The in-process GitHub/Jira custom-skill dispatch (`external_skill_dispatch`) does
+  **not** strip — multi-line @mention context and the appended Jira key must still reach the
+  handler unchanged.
 - **Skill stdout is DATA.** Runners emit structured transcripts; `mission_executor`
   passes `trust_stdout=False` so transcripts aren't misread as CLI errors.
 - **No private identifiers leak** into core skills, tests, or docs — use generic

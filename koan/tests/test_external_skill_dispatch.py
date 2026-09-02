@@ -219,6 +219,24 @@ class TestTryDispatchCustomHandler:
 
         assert reply == "got:PROJ-1 please"
 
+    def test_multiline_context_and_appended_key_preserved(self, tmp_path):
+        """Custom dispatch delivers multi-line context plus the appended Jira
+        key — first-line truncation is scoped to the Telegram ingress and must
+        not drop GitHub/Jira's multi-paragraph context feature."""
+        handler_src = (
+            "def handle(ctx):\n"
+            "    return f'got:{ctx.args}'\n"
+        )
+        skill = _make_custom_skill(tmp_path, handler_src)
+
+        reply = try_dispatch_custom_handler(
+            skill, "my_fix", "step 1\nstep 2\ndo the thing",
+            source="github",
+            github_body="tracked in JIRA JIRA-5",
+        )
+
+        assert reply == "got:step 1\nstep 2\ndo the thing JIRA-5"
+
     def test_returns_empty_string_when_handler_returns_none(self, tmp_path):
         # Handler returning None means "no user-visible reply" — caller should
         # still see "dispatched" (empty string) rather than None (fallthrough).

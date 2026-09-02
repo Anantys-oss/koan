@@ -761,6 +761,46 @@ class TestDispatchSkill:
             handle_command("/anantys.review")
             mock_exec.assert_called_once()
 
+    def test_multiline_args_stripped_footer(self, patch_bridge_state, mock_send, mock_registry):
+        """A client 'Sent using' footer line must not leak into ctx.args.
+
+        The Slack/Claude 'send message' integration appends an attribution
+        line (*Sent using* @Claude). A mission may span multiple lines, so only
+        a trailing 'Sent using' footer is stripped — other multi-line content is
+        preserved (issue #54).
+        """
+        from app.command_handlers import handle_command
+        from app.skills import Skill
+
+        skill = MagicMock(spec=Skill)
+        skill.worker = False
+        mock_registry.find_by_command.return_value = skill
+
+        with patch("app.command_handlers.execute_skill", return_value="done") as mock_exec:
+            handle_command(
+                "/add webpros-cpanel/ea-re2c\n*Sent using* @Claude"
+            )
+
+        captured_args = mock_exec.call_args[0][1].args
+        assert captured_args == "webpros-cpanel/ea-re2c"
+
+    def test_multiline_args_preserved_without_footer(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Multi-line mission text (no footer) is preserved, not truncated."""
+        from app.command_handlers import handle_command
+        from app.skills import Skill
+
+        skill = MagicMock(spec=Skill)
+        skill.worker = False
+        mock_registry.find_by_command.return_value = skill
+
+        with patch("app.command_handlers.execute_skill", return_value="done") as mock_exec:
+            handle_command("/add step 1\nstep 2\ndo the thing")
+
+        captured_args = mock_exec.call_args[0][1].args
+        assert captured_args == "step 1\nstep 2\ndo the thing"
+
 
 # ---------------------------------------------------------------------------
 # Test: cli_skill dispatch (queue as mission instead of inline execution)
