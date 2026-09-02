@@ -117,6 +117,6 @@ review:
 # under pre_mission/post_mission does not re-trigger itself into a runaway loop.
 hooks:
   post_review:
-    - "cp-docs-string-chain"
+    - "docs-refresh"
   # post_mission:
   #   - "some-other-skill"

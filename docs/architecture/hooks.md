@@ -4,7 +4,7 @@ title: "Lifecycle Hooks & Automation Rules"
 description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission/post_review): instance-wide and skill-bound Python hooks via `HookRegistry`, the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard, and the project-declared `hooks.<event>` skill lists read from a repo's own `.koan/config.yaml`."
 tags: [architecture]
 created: 2026-07-08
-updated: 2026-07-17
+updated: 2026-09-02
 ---
 
 # Lifecycle Hooks & Automation Rules
@@ -126,7 +126,7 @@ operator writing any Python:
 ```yaml
 hooks:
   post_review:
-    - cp-docs-string-chain
+    - docs-refresh
 ```
 
 Keys are the event names above; values are lists of skill names. For each name,
@@ -160,6 +160,10 @@ neither a shorter skill name (`docs` masked by an already-queued `docs-lint`)
 nor a shorter PR URL (`pull/7` masked by `pull/70`) is wrongly treated as
 already queued. Re-reviewing the same PR does not queue the same work twice; a
 different PR queues separately.
+The subject is whitespace-normalized before it is stamped, since `insert_mission`
+flattens newlines when it writes the entry — a multi-line mission title would
+otherwise be stored differently from the token the next fire looks for, and
+re-queue every time.
 
 **No self-replication.** The mission this queues carries the `[hook-skill:…]`
 marker in its own title, so a repo naming a skill under `pre_mission` or

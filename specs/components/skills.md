@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # Component Spec — Skills System
@@ -338,6 +338,10 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   already-queued `docs-lint`) nor a shorter PR URL (`pull/7` masked by `pull/70`) is
   wrongly treated as already queued. Re-firing the same event for the same subject MUST NOT
   queue the work twice; a different subject MUST queue separately.
+  The subject MUST be whitespace-normalized (any newline or run of whitespace collapsed to
+  a single space) before it is stamped, because `insert_mission` flattens newlines when it
+  writes the entry: an un-normalized token would be *stored* differently from the token the
+  next fire searches for, and a multi-line `mission_title` would re-queue on every fire.
 - **No self-replication.** A mission this mechanism queues carries the `[hook-skill:…]`
   marker in its own `mission_title`, so its `pre_mission`/`post_mission` would otherwise
   re-queue the skill without bound. `_fire_project_hook_skills` MUST detect that marker in

@@ -416,10 +416,10 @@ def test_hook_skills_empty_event_returns_empty(tmp_path):
 def test_hook_skills_reads_list(tmp_path):
     _write_config(
         tmp_path,
-        "hooks:\n  post_review:\n    - 'cp-docs-string-chain'\n    - 'other-skill'\n",
+        "hooks:\n  post_review:\n    - 'docs-refresh'\n    - 'other-skill'\n",
     )
     assert pk.get_hook_skills(str(tmp_path), "post_review") == [
-        "cp-docs-string-chain",
+        "docs-refresh",
         "other-skill",
     ]
 
