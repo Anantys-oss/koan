@@ -166,9 +166,42 @@ def _extract_tokens_from_dict(data: dict) -> Optional[TokenResult]:
             inp = sub.get("input_tokens", 0)
             out = sub.get("output_tokens", 0)
             if inp or out:
-                return _build_result(inp, out, model, data)
+                return _build_result(
+                    inp,
+                    out,
+                    _stats_model(sub, model),
+                    _with_stats_cache(data, sub, inp),
+                )
 
     return None
+
+
+def _stats_model(stats: dict, fallback: str) -> str:
+    """Resolve the model id from a ``stats.models`` map when *fallback* is unknown.
+
+    Gemini CLI reports per-model token breakdowns keyed by model id and has no
+    top-level ``model`` field on its result event.
+    """
+    if fallback and fallback != "unknown":
+        return fallback
+    models = stats.get("models")
+    if isinstance(models, dict) and models:
+        return str(next(iter(models)))
+    return fallback
+
+
+def _with_stats_cache(data: dict, stats: dict, input_tokens) -> dict:
+    """Surface a ``stats.cached`` count in the shape ``_build_result`` reads.
+
+    Shape-keyed, not provider-keyed: a ``cached`` field inside a stats object is
+    a SUBSET of ``input_tokens`` (Gemini CLI semantics), and Koan accounting
+    excludes cache hits from input. Returns *data* unchanged when there is no
+    usable cache count, so no other stats-reporting shape is affected.
+    """
+    cached = int(stats.get("cached", 0) or 0)
+    if not (0 < cached <= int(input_tokens or 0)) or data.get("usage"):
+        return data
+    return {**data, "usage": {"cached_input_tokens": cached}}
 
 
 def _has_usage(result: TokenResult) -> bool:

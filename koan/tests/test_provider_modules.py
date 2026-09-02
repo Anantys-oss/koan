@@ -2622,7 +2622,7 @@ class TestReadOnlyRoleEnforcement:
         # sandbox. Documented in specs/skills/review.md: read-only invocations on
         # these are rejected. "fake" is test-only and refuses instantiation
         # without KOAN_ALLOW_FAKE_PROVIDER=1.
-        unenforceable = {"cline", "haze", "copilot", "grok", "fake"}
+        unenforceable = {"cline", "haze", "copilot", "grok", "gemini", "fake"}
         assert unenforceable <= set(known_providers())
 
         enforced_count = 0
