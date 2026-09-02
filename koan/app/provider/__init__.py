@@ -16,6 +16,7 @@ Package structure:
     provider/cline.py        — ClineProvider implementation
     provider/codex.py        — CodexProvider implementation
     provider/copilot.py      — CopilotProvider implementation
+    provider/gemini.py       — GeminiProvider (Google Gemini CLI)
     provider/ollama_launch.py — OllamaLaunchProvider (ollama launch claude)
     provider/__init__.py     — Registry, resolution, convenience functions
 """
@@ -48,6 +49,7 @@ from app.provider.cline import ClineProvider  # noqa: F401
 from app.provider.codex import CodexProvider  # noqa: F401
 from app.provider.copilot import CopilotProvider  # noqa: F401
 from app.provider.fake import FakeProvider, FakeProviderNotAllowed  # noqa: F401
+from app.provider.gemini import GeminiProvider  # noqa: F401
 from app.provider.haze import HazeProvider  # noqa: F401
 from app.provider.grok import GrokProvider  # noqa: F401
 from app.provider.ollama_launch import OllamaLaunchProvider  # noqa: F401
@@ -123,6 +125,7 @@ _PROVIDERS = {
     "codex": CodexProvider,
     "copilot": CopilotProvider,
     "fake": FakeProvider,
+    "gemini": GeminiProvider,
     "haze": HazeProvider,
     "grok": GrokProvider,
     "ollama-launch": OllamaLaunchProvider,
@@ -976,6 +979,21 @@ def _tool_result_preview(content: Any, limit: int = 120) -> str:
     return ""
 
 
+def _error_message(err: Any) -> str:
+    """Pull the human-readable message out of an error field.
+
+    Accepts the bare string some providers emit and the
+    ``{"type": …, "message": …}`` object others do; anything else yields ''.
+    """
+    if isinstance(err, str):
+        return err
+    if isinstance(err, dict):
+        message = err.get("message")
+        if isinstance(message, str):
+            return message
+    return ""
+
+
 def _drop_part_sep(text: str) -> str:
     """Neutralize the ``", "`` part delimiter inside a free-text preview.
 
@@ -1044,6 +1062,35 @@ def _summarize_stream_event(event: Dict[str, Any]) -> str:
                 suffix = f": {detail}" if detail else ""
                 return f"[cli] tool_result {tid}{err}{suffix}"
         return "[cli] user turn"
+
+    # Gemini CLI-style NDJSON: init / message / tool_use / tool_result events,
+    # shape-keyed on their own field names (``tool_name``, ``role`` + string
+    # ``content``) — no provider-name checks. See tests/gemini_samples.py.
+    if etype == "init" and isinstance(event.get("model"), str):
+        return f"[cli] session init (model={event['model']})"
+
+    if etype == "message" and isinstance(event.get("content"), str):
+        if event.get("role") == "assistant":
+            preview = _drop_part_sep(_first_line(event.get("content")))
+            if preview:
+                return f"[cli] assistant — text: {preview}"
+            return "[cli] assistant — streaming"
+        return "[cli] user turn"
+
+    if etype == "tool_use" and isinstance(event.get("tool_name"), str):
+        name = event.get("tool_name") or "?"
+        preview = _drop_part_sep(_tool_input_preview(event.get("parameters")))
+        return (
+            f"[cli] assistant — tool_use: {name}: {preview}" if preview
+            else f"[cli] assistant — tool_use: {name}"
+        )
+
+    if etype == "tool_result" and "tool_id" in event:
+        tid = str(event.get("tool_id") or "")[:12]
+        err = " (error)" if str(event.get("status") or "").lower() == "error" else ""
+        detail = _tool_result_preview(_error_message(event.get("error"))) if err else ""
+        suffix = f": {detail}" if detail else ""
+        return f"[cli] tool_result {tid}{err}{suffix}"
 
     if etype == "result":
         # Claude labels results with ``subtype`` ("success"); haze-style
@@ -1198,6 +1245,15 @@ def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
         if isinstance(data, str) and data:
             chunks.append(data)
 
+    # Gemini CLI-style assistant chunks: {"type":"message","role":"assistant",
+    # "content":"…","delta":true}. Deltas are concatenated with "" by the
+    # caller (see _is_text_delta_event); user-role messages echo the prompt
+    # back and must never be collected as assistant output.
+    if event.get("type") == "message" and event.get("role") == "assistant":
+        content = event.get("content")
+        if isinstance(content, str) and content:
+            chunks.append(content)
+
     # Haze-style segment completion: ``message_end`` carries the finalized
     # text for one assistant segment (one event per segment id). Cumulative
     # ``message_update`` snapshots are deliberately NOT collected — they would
@@ -1238,6 +1294,25 @@ def _extract_assistant_text_chunks(event: Dict[str, Any]) -> List[str]:
             chunks.append(text)
 
     return chunks
+
+
+def _is_text_delta_event(event: Dict[str, Any]) -> bool:
+    """Return True when *event* carries an incremental assistant text chunk.
+
+    Delta chunks are joined with ``""`` so ``"hel" + "lo"`` becomes ``"hello"``,
+    whereas block-style segments are joined with newlines. Shape-keyed on two
+    known delta shapes: Grok Build's ``{"type":"text","data":…}`` and Gemini
+    CLI's ``{"type":"message","role":"assistant","delta":true,"content":…}``.
+    """
+    etype = event.get("type")
+    if etype == "text" and isinstance(event.get("data"), str):
+        return True
+    return (
+        etype == "message"
+        and event.get("role") == "assistant"
+        and bool(event.get("delta"))
+        and isinstance(event.get("content"), str)
+    )
 
 
 def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
@@ -1374,6 +1449,34 @@ def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]
                 model_usage = event.get("modelUsage")
                 if isinstance(model_usage, dict) and model_usage:
                     model = str(next(iter(model_usage)))
+            return {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read_input_tokens": cached_input,
+                "cache_creation_input_tokens": 0,
+                "model": model or "unknown",
+            }
+
+    # Gemini CLI reports usage under ``stats`` on its terminal ``result``
+    # event, not under ``usage``: {input_tokens, output_tokens, cached, input,
+    # total_tokens, models:{<id>:…}}. Shape-keyed on the nested field names.
+    stats = event.get("stats")
+    if isinstance(stats, dict) and (
+        "input_tokens" in stats or "output_tokens" in stats
+    ):
+        input_tokens = int(stats.get("input_tokens", 0) or 0)
+        output_tokens = int(stats.get("output_tokens", 0) or 0)
+        # ``cached`` is a SUBSET of input_tokens — subtract so input matches
+        # Koan accounting (which excludes cache hits).
+        cached_input = int(stats.get("cached", 0) or 0)
+        if 0 < cached_input <= input_tokens:
+            input_tokens -= cached_input
+        if input_tokens or output_tokens or cached_input:
+            model = str(event.get("model") or "")
+            if not model:
+                models = stats.get("models")
+                if isinstance(models, dict) and models:
+                    model = str(next(iter(models)))
             return {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
@@ -1561,9 +1664,10 @@ def run_command_streaming(
     # text_lines IS the fallback return value when no result event arrives —
     # it must stay unbounded or long sessions would silently lose output.
     # Block-style providers (Claude, Haze segments) append full segments and
-    # are joined with newlines. Delta-style providers (Grok Build text/data)
-    # buffer into text_delta_parts and flush as one segment so "hel"+"lo"
-    # becomes "hello", not "hel\\nlo".
+    # are joined with newlines. Delta-style providers (Grok Build text/data,
+    # Gemini assistant message deltas — see _is_text_delta_event) buffer into
+    # text_delta_parts and flush as one segment so "hel"+"lo" becomes "hello",
+    # not "hel\\nlo".
     text_lines: List[str] = []  # fallback return value when no result event
     text_delta_parts: List[str] = []
     final_result: Optional[str] = None
@@ -1620,10 +1724,7 @@ def run_command_streaming(
                     # kill, SIGPIPE) still returns whatever the provider managed
                     # to print, instead of silently returning "".
                     chunks = _extract_assistant_text_chunks(event)
-                    if (
-                        event.get("type") == "text"
-                        and isinstance(event.get("data"), str)
-                    ):
+                    if _is_text_delta_event(event):
                         text_delta_parts.extend(chunks)
                     else:
                         _flush_text_deltas()
