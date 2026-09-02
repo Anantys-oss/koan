@@ -913,3 +913,28 @@ class TestProjectWorktreeCollision:
         assert "cannot inspect worktrees" in hits[0].message
         assert len(fixes) == 1 and fixes[0].success is False
         assert "cannot inspect worktrees" in fixes[0].message
+
+    def test_base_branch_resolution_stays_local(self, tmp_path):
+        """/doctor without --full must not reach the network.
+
+        A repo built with `git init` + `remote add` + `fetch` never sets
+        refs/remotes/origin/HEAD, and the full detection then falls through to
+        `git ls-remote` (15s, twice) per project. With up to 50 projects that turns
+        an interactive command into minutes, so resolution stops at local refs and
+        the check is skipped instead.
+        """
+        from diagnostics import project_check
+        repo, _ = self._repo(tmp_path)
+        with patch(
+            "app.projects_config.load_projects_config",
+            return_value={"projects": {"p": {"path": repo}}},
+        ), patch(
+            "app.projects_config.get_projects_from_config", return_value=[("p", repo)],
+        ), patch("app.git_prep.run_git") as mock_git:
+            mock_git.return_value = (1, "", "not a symbolic ref")
+            results = project_check.run("/koan", "/koan/instance")
+
+        assert [r for r in results if r.name.endswith("_worktree")] == []
+        assert not any(
+            c.args and c.args[0] == "ls-remote" for c in mock_git.call_args_list
+        )

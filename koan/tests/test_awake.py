@@ -4189,10 +4189,38 @@ def test_worktree_reap_disabled_when_interval_zero():
 
 def test_worktree_reap_retries_when_maintenance_lane_is_busy():
     with patch("app.awake._run_in_worker", return_value=False) as mock_worker, \
+         patch("app.awake._worktree_reap_busy_logged_at", 10_000.0), \
          patch("app.awake.time.time", return_value=10_000.0):
         new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
         mock_worker.assert_called_once_with(awake._reap_worktrees, lane="maintenance")
         assert new_ts == 0.0
+
+
+def test_worktree_reap_reports_a_persistently_busy_maintenance_lane():
+    """A wedged sweep thread must not be silent.
+
+    Without this, a stuck maintenance worker makes reaping stop forever while the
+    logs look exactly like a healthy idle system.
+    """
+    with patch("app.awake._run_in_worker", return_value=False), \
+         patch("app.awake._worktree_reap_busy_logged_at", 0.0), \
+         patch("app.awake.time.time", return_value=10_000.0), \
+         patch("app.awake.log") as mock_log:
+        awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
+
+    errors = [c.args[1] for c in mock_log.call_args_list if c.args[0] == "error"]
+    assert any("maintenance lane is still busy" in message for message in errors)
+
+
+def test_worktree_reap_stays_quiet_when_the_lane_is_only_briefly_busy():
+    """One missed start is normal back-pressure, not a failure worth logging."""
+    with patch("app.awake._run_in_worker", return_value=False), \
+         patch("app.awake._worktree_reap_busy_logged_at", 0.0), \
+         patch("app.awake.time.time", return_value=5_000.0), \
+         patch("app.awake.log") as mock_log:
+        awake._maybe_reap_worktrees(last_reap=1_000.0, interval=3600)
+
+    assert not [c for c in mock_log.call_args_list if c.args[0] == "error"]
 
 
 def test_worktree_reap_survives_errors():

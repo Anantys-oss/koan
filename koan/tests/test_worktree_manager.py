@@ -750,8 +750,32 @@ class TestWorktreeErrorPaths:
             remove_worktree(git_repo, session_id=wt.session_id)
         assert "git branch -D failed" in capsys.readouterr().err
 
-    def test_list_worktrees_empty_on_error(self, tmp_path):
+    def test_list_worktrees_empty_on_error(self, tmp_path, capsys):
+        """An inspection failure returns [] — but says so.
+
+        Callers treat this list as proof that no worktree holds a branch, so a
+        silent [] made "git could not tell us" look like "nothing holds it", which
+        is how a blocking worktree stayed invisible for 90 missions.
+        """
         assert list_worktrees(str(tmp_path)) == []
+        assert "git worktree list failed" in capsys.readouterr().err
+
+    def test_list_worktrees_reports_a_timeout(self, git_repo, capsys):
+        with patch("app.worktree_manager.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("git", 15)):
+            assert list_worktrees(git_repo, timeout=15) == []
+        assert "git worktree list timed out" in capsys.readouterr().err
+
+    def test_retain_reason_is_logged_when_a_check_cannot_run(self, tmp_path, capsys):
+        """A guard that fails toward retention must name the reason.
+
+        Otherwise "kept because work would be lost" and "kept because the check
+        could not run" are indistinguishable, and a reaper that has silently
+        reverted to retain-everything looks like one with nothing to do.
+        """
+        from app.worktree_manager import _has_unpushed_commits
+        assert _has_unpushed_commits(str(tmp_path)) is True
+        assert "retain (HEAD ref check failed)" in capsys.readouterr().err
 
     def test_list_worktrees_parses_session(self, git_repo):
         wt = create_worktree(git_repo)
@@ -776,10 +800,17 @@ class TestWorktreeErrorPaths:
             cleanup_stale_worktrees(git_repo, active_session_ids=[])
         assert "stale worktree cleanup error" in capsys.readouterr().err
 
-    def test_prune_handles_called_process_error(self, git_repo, capsys):
-        def bad_run(cmd, **kw):
-            raise subprocess.CalledProcessError(1, cmd, stderr="prune fail")
-        with patch("app.worktree_manager.subprocess.run", side_effect=bad_run):
+    def test_prune_reports_a_nonzero_exit(self, git_repo, capsys):
+        """A failed prune must not pass for a clean one.
+
+        prune runs without check=True, so the exit code is the only signal; when it
+        was ignored, phantom worktree registrations persisted while the sweep still
+        reported "0 reclaimed" as though nothing needed pruning.
+        """
+        failed = subprocess.CompletedProcess(
+            [], returncode=1, stdout="", stderr="prune fail",
+        )
+        with patch("app.worktree_manager.subprocess.run", return_value=failed):
             prune_worktrees(git_repo)
         assert "worktree prune failed" in capsys.readouterr().err
 

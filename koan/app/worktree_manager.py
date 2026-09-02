@@ -313,6 +313,10 @@ def list_worktrees(project_path: str, timeout: Optional[float] = None) -> List[W
     """List all git worktrees for a project.
 
     Returns a list of WorktreeInfo, including the main worktree.
+
+    An inspection failure returns an empty list — but never silently: callers use
+    this as the sole evidence that no worktree holds a branch, so "git could not
+    tell us" must be distinguishable from "nothing holds it" in the logs.
     """
     try:
         result = subprocess.run(
@@ -323,7 +327,18 @@ def list_worktrees(project_path: str, timeout: Optional[float] = None) -> List[W
             check=True,
             **({"timeout": timeout} if timeout is not None else {}),
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        print(
+            f"[worktree_manager] git worktree list failed in {project_path}: {stderr}",
+            file=sys.stderr,
+        )
+        return []
+    except subprocess.TimeoutExpired:
+        print(
+            f"[worktree_manager] git worktree list timed out in {project_path}",
+            file=sys.stderr,
+        )
         return []
 
     worktrees = []
@@ -540,6 +555,18 @@ def _reap_timeout(deadline: float) -> float:
     return min(FOREIGN_WORKTREE_GIT_TIMEOUT_SECONDS, remaining)
 
 
+def _retain(worktree_path: str, reason: str) -> bool:
+    """Log why a worktree is being kept and return True (retain).
+
+    Every guard below fails toward retention, so "kept because work would be lost"
+    and "kept because the check could not run" look identical from the reap loop's
+    skip line. Naming the reason is what makes a reaper that has silently reverted
+    to retain-everything distinguishable from one with nothing to do.
+    """
+    print(f"[worktree_manager] retain ({reason}) {worktree_path}", file=sys.stderr)
+    return True
+
+
 def _log_reap_deadline(project_path: str) -> None:
     print(
         f"[worktree_manager] foreign worktree reap budget reached in {project_path}; "
@@ -582,10 +609,10 @@ def _has_uncommitted_changes(
             text=True,
             **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
         )
-    except (OSError, subprocess.SubprocessError):
-        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        return _retain(worktree_path, f"status check failed: {e}")
     if result.returncode != 0:
-        return True
+        return _retain(worktree_path, "status check failed")
     return bool(result.stdout.strip())
 
 
@@ -609,17 +636,22 @@ def _head_moved_since_worktree_creation(
             text=True,
             **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
         )
-    except (OSError, subprocess.SubprocessError):
-        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        return _retain(worktree_path, f"reflog check failed: {e}")
     entries = [entry for entry in result.stdout.splitlines() if entry]
     if result.returncode != 0 or not entries:
-        return True
+        return _retain(worktree_path, "reflog check failed")
     creation = entries[-1].split("\0", 1)
     if len(creation) != 2 or creation[1]:
         # The initial worktree-add entry has no reflog subject. If it expired,
         # the oldest visible entry cannot prove which commit created the tree.
-        return True
-    return creation[0] != head
+        # The empty subject is a git implementation detail, so log this case
+        # explicitly: a git version that writes a subject there would silently
+        # turn the sweep back into retain-everything.
+        return _retain(worktree_path, "reflog subject present on oldest HEAD entry")
+    if creation[0] != head:
+        return _retain(worktree_path, "HEAD moved since worktree creation")
+    return False
 
 
 def _has_recent_worktree_activity(
@@ -642,17 +674,17 @@ def _has_recent_worktree_activity(
             text=True,
             **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
         )
-    except (OSError, subprocess.SubprocessError):
-        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        return _retain(worktree_path, f"activity check failed: {e}")
     if result.returncode != 0:
-        return True
+        return _retain(worktree_path, "activity check failed")
 
     root = os.path.realpath(worktree_path)
     directories = {root}
     for index, relative_path in enumerate(result.stdout.split("\0")):
         if deadline is not None and index % _ACTIVITY_BUDGET_CHECK_EVERY == 0:
             if _reap_expired(deadline):
-                return True
+                return _retain(worktree_path, "activity check ran out of budget")
         if not relative_path:
             continue
         path = os.path.join(root, relative_path)
@@ -661,8 +693,8 @@ def _has_recent_worktree_activity(
                 return True
         except FileNotFoundError:
             pass  # A tracked deletion updates its parent directory mtime.
-        except OSError:
-            return True
+        except OSError as e:
+            return _retain(worktree_path, f"activity check failed: {e}")
 
         parent = os.path.dirname(path)
         while parent != root:
@@ -673,12 +705,12 @@ def _has_recent_worktree_activity(
         for index, path in enumerate(directories):
             if deadline is not None and index % _ACTIVITY_BUDGET_CHECK_EVERY == 0:
                 if _reap_expired(deadline):
-                    return True
+                    return _retain(worktree_path, "activity check ran out of budget")
             if os.lstat(path).st_mtime > cutoff:
                 return True
         return False
-    except OSError:
-        return True
+    except OSError as e:
+        return _retain(worktree_path, f"activity check failed: {e}")
 
 
 def _has_unpushed_commits(
@@ -712,8 +744,8 @@ def _has_unpushed_commits(
             text=True,
             **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
         )
-    except (OSError, subprocess.SubprocessError):
-        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        return _retain(worktree_path, f"HEAD ref check failed: {e}")
 
     if branch.returncode == 0:
         branch_name = branch.stdout.strip()
@@ -732,13 +764,13 @@ def _has_unpushed_commits(
                 text=True,
                 **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
             )
-        except (OSError, subprocess.SubprocessError):
-            return True
+        except (OSError, subprocess.SubprocessError) as e:
+            return _retain(worktree_path, f"upstream config check failed: {e}")
 
         if remote.returncode == 1 and merge.returncode == 1:
             return False  # The local branch itself keeps HEAD reachable.
         if remote.returncode != 0 or merge.returncode != 0:
-            return True
+            return _retain(worktree_path, "upstream config check failed")
 
         try:
             result = subprocess.run(
@@ -748,17 +780,17 @@ def _has_unpushed_commits(
                 text=True,
                 **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
             )
-        except (OSError, subprocess.SubprocessError):
-            return True
+        except (OSError, subprocess.SubprocessError) as e:
+            return _retain(worktree_path, f"upstream comparison failed: {e}")
         if result.returncode != 0:
-            return True
+            return _retain(worktree_path, "upstream comparison failed")
         try:
             return int(result.stdout.strip()) > 0
         except ValueError:
-            return True
+            return _retain(worktree_path, "upstream comparison unparseable")
 
     if branch.returncode != 1:
-        return True
+        return _retain(worktree_path, "HEAD ref check failed")
 
     # One revision walk, negated by every durable ref, instead of a containment scan per
     # ref. --max-count=1 stops at the first commit that no ref reaches, so the cost is the
@@ -771,10 +803,10 @@ def _has_unpushed_commits(
             text=True,
             **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
         )
-    except (OSError, subprocess.SubprocessError):
-        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        return _retain(worktree_path, f"reachability walk failed: {e}")
     if result.returncode != 0:
-        return True
+        return _retain(worktree_path, "reachability walk failed")
     if not result.stdout.strip():
         return False  # a durable ref reaches HEAD — removal loses nothing
     head = result.stdout.strip().splitlines()[0]
@@ -806,12 +838,19 @@ def prune_worktrees(project_path: str, timeout: Optional[float] = None):
             text=True,
             **({"timeout": timeout} if timeout is not None else {}),
         )
+        if result.returncode != 0:
+            # No check=True here, so a failed prune would otherwise be invisible and
+            # the sweep would report "0 reclaimed" as if nothing needed pruning.
+            stderr = (result.stderr or "").strip()
+            print(
+                "[worktree_manager] git worktree prune failed in "
+                f"{project_path}: {stderr}",
+                file=sys.stderr,
+            )
+            return
         output = (result.stdout or "").strip()
         if output:
             print(f"[worktree_manager] pruned stale worktrees:\n{output}", file=sys.stderr)
-    except subprocess.CalledProcessError as e:
-        stderr = (e.stderr or "").strip()
-        print(f"[worktree_manager] git worktree prune failed: {stderr}", file=sys.stderr)
     except subprocess.TimeoutExpired:
         print(f"[worktree_manager] git worktree prune timed out for {project_path}", file=sys.stderr)
     except FileNotFoundError:

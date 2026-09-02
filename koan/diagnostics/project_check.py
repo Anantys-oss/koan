@@ -176,12 +176,19 @@ def _base_branch(koan_root: str, project_name: str, project_path: str) -> str:
     git_auto_merge.base_branch wins, otherwise the remote's default branch is
     detected. Reporting a different branch than prep uses would make this check
     worse than useless.
+
+    Resolution is **local only**. `/doctor` without --full keeps every network
+    probe out of the default path, and detect_remote_default_branch() falls
+    through to `git ls-remote` (15s, twice) whenever refs/remotes/<remote>/HEAD is
+    unset — which a `git init` + `remote add` + `fetch` project never sets. With up
+    to 50 projects that turns an interactive command into minutes. When the ref is
+    unset we return "" and the caller skips the check rather than going to the wire.
     """
     from app.git_prep import (
         _find_project_entry,
-        detect_remote_default_branch,
         get_upstream_remote,
         load_projects_config,
+        local_remote_default_branch,
     )
 
     config = load_projects_config(koan_root)
@@ -191,7 +198,7 @@ def _base_branch(koan_root: str, project_name: str, project_path: str) -> str:
     if explicit:
         return explicit
     remote = get_upstream_remote(project_path, project_name, koan_root)
-    return detect_remote_default_branch(remote, project_path)
+    return local_remote_default_branch(remote, project_path) or ""
 
 
 def _branch_holder(

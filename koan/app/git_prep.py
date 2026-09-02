@@ -183,6 +183,35 @@ def detect_remote_default_branch(remote: str, project_path: str) -> str:
     1. Local symbolic ref (refs/remotes/<remote>/HEAD) — fast, no network
     2. git ls-remote --symref — requires network but always accurate
     3. Falls back to "main"
+
+    Callers that must not mistake the "main" fallback for a real detection use
+    resolve_remote_default_branch(), which returns None when both steps fail.
+    """
+    return resolve_remote_default_branch(remote, project_path) or "main"
+
+
+def local_remote_default_branch(remote: str, project_path: str) -> Optional[str]:
+    """Return the remote's default branch from local refs only — never the network.
+
+    Reads refs/remotes/<remote>/HEAD, which a clone (or a fetch with --set-head)
+    sets. Returns None when it is unset, so callers on latency-sensitive paths can
+    skip rather than reach for ls-remote.
+    """
+    rc, stdout, _ = run_git(
+        "symbolic-ref", f"refs/remotes/{remote}/HEAD", cwd=project_path
+    )
+    if rc == 0 and stdout:
+        # Output: refs/remotes/origin/master → extract "master"
+        return stdout.strip().rsplit("/", 1)[-1] or None
+    return None
+
+
+def resolve_remote_default_branch(remote: str, project_path: str) -> Optional[str]:
+    """Detect the default branch for a remote, or None when resolution is exhausted.
+
+    Same two steps as detect_remote_default_branch(), minus the "main" fallback:
+    an unreachable remote with no local symbolic ref returns None instead of a
+    guess that a caller could otherwise promote to an authoritative answer.
     """
     # 1. Try local symbolic ref (set after clone or fetch with --set-head)
     rc, stdout, _ = run_git(
@@ -215,7 +244,7 @@ def detect_remote_default_branch(remote: str, project_path: str) -> str:
                     if branch:
                         return branch
 
-    return "main"
+    return None
 
 
 @dataclass
@@ -575,17 +604,20 @@ def prepare_project_branch(
     # When the project pins no base branch and the generic default has no
     # remote-tracking ref here, resolve the remote's real default *before*
     # fetching. Detecting only after a failure made every mission on such a
-    # project pay for a doomed fetch first: `cp` sets issue_tracker.default_branch
-    # "140" but no git_auto_merge.base_branch, so base_branch fell back to "main"
-    # and every run fetched a branch that does not exist before finding "140".
+    # project pay for a doomed fetch first: a project setting
+    # issue_tracker.default_branch to a release branch but no
+    # git_auto_merge.base_branch had base_branch fall back to "main", so every run
+    # fetched a branch that does not exist before finding the real one.
     # Guarded on the missing ref so a configured branch that works is never
     # second-guessed; when the ref check is inconclusive the original
-    # detect-after-failure path below still applies.
+    # detect-after-failure path below still applies. resolve_* (not detect_*) so a
+    # failed resolution stays None instead of overriding the configured branch with
+    # the "main" fallback.
     if not config_explicit and not _has_remote_tracking_ref(
         remote, base_branch, project_path
     ):
-        detected = detect_remote_default_branch(remote, project_path)
-        if detected != base_branch:
+        detected = resolve_remote_default_branch(remote, project_path)
+        if detected and detected != base_branch:
             logger.info(
                 "Default branch for %s/%s is '%s', not '%s' (resolved pre-fetch)",
                 remote, project_name, detected, base_branch,

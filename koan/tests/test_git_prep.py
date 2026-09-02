@@ -157,6 +157,25 @@ class TestDetectRemoteDefaultBranch:
             result = detect_remote_default_branch("origin", "/proj")
         assert result == "main"
 
+    def test_resolve_returns_none_when_resolution_is_exhausted(self):
+        """The strict variant never guesses 'main' — callers must see the failure."""
+        from app.git_prep import resolve_remote_default_branch
+
+        with patch("app.git_prep.run_git", return_value=(1, "", "error")):
+            assert resolve_remote_default_branch("origin", "/proj") is None
+
+    def test_local_variant_never_touches_the_network(self):
+        """Local-only resolution reads the symbolic ref and stops there."""
+        from app.git_prep import local_remote_default_branch
+
+        def side_effect(*args, **kwargs):
+            if args[0] == "symbolic-ref":
+                return (1, "", "not a symbolic ref")
+            raise AssertionError(f"unexpected network-capable call: {args}")
+
+        with patch("app.git_prep.run_git", side_effect=side_effect):
+            assert local_remote_default_branch("origin", "/proj") is None
+
 
 # --- HTTPS token fallback helpers ---
 
@@ -1667,10 +1686,10 @@ class TestPrepareProjectBranchSelfHeal:
 class TestBaseBranchResolvedBeforeFetch:
     """A project with no pinned base branch must not pay for a doomed fetch.
 
-    `cp` sets issue_tracker.default_branch "140" but no
-    git_auto_merge.base_branch, so base_branch fell back to the generic "main"
-    and every single mission fetched a branch that does not exist before
-    discovering "140" and fetching again.
+    A project setting issue_tracker.default_branch to a release branch ("140"
+    here) but no git_auto_merge.base_branch had base_branch fall back to the
+    generic "main", so every single mission fetched a branch that does not exist
+    before discovering "140" and fetching again.
     """
 
     @staticmethod
@@ -1729,3 +1748,39 @@ class TestBaseBranchResolvedBeforeFetch:
         assert "main" in fetches[0], "configured branch must be tried first"
         assert result.success is True
         assert result.base_branch == "140"
+
+    def test_failed_detection_never_overrides_the_configured_branch(self):
+        """An unreachable remote must not promote the "main" guess to an answer.
+
+        detect_remote_default_branch() falls back to "main" when the symbolic ref
+        and ls-remote both fail. Taking that fallback as a detection would rewrite
+        a correct configured branch (say "master") to "main" and point the
+        operator's investigation at a branch they never configured, instead of at
+        the unreachable remote.
+        """
+        calls = []
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            calls.append(args)
+            if cmd == "rev-parse":
+                if "--verify" in args:
+                    return (1, "", "")  # no remote-tracking ref for the base branch
+                return (0, "feature", "")
+            if cmd in ("symbolic-ref", "ls-remote", "remote"):
+                return (1, "", "fatal: unable to access remote")
+            return (0, "", "")
+
+        stack, _ = TestPrepareProjectBranch()._patch_all(
+            run_git_side_effect=side_effect,
+            # Project entry with no git_auto_merge → the "master" base branch comes
+            # from defaults, so config_explicit is False and detection may run.
+            config={"projects": {"myproj": {}}},
+            auto_merge={"base_branch": "master"},
+        )
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.base_branch == "master"
+        fetches = [c for c in calls if c and c[0] == "fetch"]
+        assert fetches and "master" in fetches[0]

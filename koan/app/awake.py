@@ -844,6 +844,9 @@ def _bridge_should_restart(monitor) -> bool:
 # two days anyway, so sweeping more often would find nothing new.
 WORKTREE_REAP_INTERVAL = 3600
 
+# Last time the "maintenance lane still busy" warning was emitted (throttle state).
+_worktree_reap_busy_logged_at = 0.0
+
 
 def _reap_worktrees() -> None:
     """Reclaim leaked review worktrees across known projects off the poll loop.
@@ -912,7 +915,14 @@ def _maybe_reap_worktrees(last_reap: float, interval: int = WORKTREE_REAP_INTERV
     The full sweep runs on the single-flight maintenance lane. If a previous
     sweep is still active, retain ``last_reap`` so the next poll starts one as
     soon as the lane becomes available instead of delaying cleanup for an hour.
+
+    A wedged sweep thread (a Git call blocked past its timeout on an unresponsive
+    mount) would otherwise make this retry silently every poll forever, which looks
+    exactly like a healthy idle system. Once a whole extra interval has passed with
+    the lane still busy, say so — throttled to once per interval so a permanently
+    stuck lane does not flood the log every 3 s.
     """
+    global _worktree_reap_busy_logged_at
     if not interval:
         return last_reap
     now = time.time()
@@ -920,6 +930,17 @@ def _maybe_reap_worktrees(last_reap: float, interval: int = WORKTREE_REAP_INTERV
         return last_reap
     if _run_in_worker(_reap_worktrees, lane="maintenance"):
         return now
+    if (
+        (now - last_reap) >= 2 * interval
+        and (now - _worktree_reap_busy_logged_at) >= interval
+    ):
+        _worktree_reap_busy_logged_at = now
+        log(
+            "error",
+            "Worktree reap has not started for "
+            f"{(now - last_reap) / 60:.0f} min: the maintenance lane is still busy "
+            "(previous sweep may be stuck)",
+        )
     return last_reap
 
 
