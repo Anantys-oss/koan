@@ -473,8 +473,8 @@ class TestReapForeignWorktrees:
         assert reap_foreign_worktrees(git_repo) == []
         assert Path(foreign).is_dir()
 
-    def test_spares_detached_worktree_with_unique_commit(self, git_repo, tmp_path):
-        """A detached commit with no other ref must survive."""
+    def test_spares_idle_clean_detached_worktree_with_local_commit(self, git_repo, tmp_path):
+        """A clean tree can still hold committed work that exists nowhere else."""
         foreign = self._add_foreign(git_repo, tmp_path / "review-detached", age_days=5)
         (Path(foreign) / "detached.txt").write_text("unique commit\n")
         subprocess.run(["git", "add", "."], cwd=foreign, capture_output=True, check=True)
@@ -488,6 +488,27 @@ class TestReapForeignWorktrees:
 
         assert reap_foreign_worktrees(git_repo) == []
         assert Path(foreign).is_dir()
+
+    def test_spares_detached_worktree_with_uncommitted_changes(self, git_repo, tmp_path):
+        """Uncommitted changes are the signal that removal would lose real work."""
+        foreign = self._add_foreign(git_repo, tmp_path / "review-dirty", age_days=5)
+        (Path(foreign) / "detached.txt").write_text("unique commit\n")
+        subprocess.run(["git", "add", "."], cwd=foreign, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "detached work"],
+            cwd=foreign, capture_output=True, check=True,
+        )
+        # Backdate everything, including the dirty file: the activity guard runs first
+        # and would otherwise retain the worktree before the cleanliness check is reached.
+        (Path(foreign) / "in-progress.txt").write_text("not saved anywhere\n")
+        old = time.time() - (5 * 86400)
+        for name in ("detached.txt", "in-progress.txt"):
+            os.utime(Path(foreign) / name, (old, old))
+        os.utime(foreign, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert Path(foreign).is_dir()
+        assert (Path(foreign) / "in-progress.txt").exists()
 
     @staticmethod
     def _commit_on_remote_only_branch(repo):
@@ -528,6 +549,23 @@ class TestReapForeignWorktrees:
         """
         sha = self._commit_on_remote_only_branch(git_repo)
         foreign = self._add_foreign(git_repo, tmp_path / "review-pr", age_days=5, ref=sha)
+
+        assert reap_foreign_worktrees(git_repo) == [foreign]
+        assert not Path(foreign).exists()
+
+    def test_reaps_clean_closed_pull_request_checkout(self, git_repo, tmp_path):
+        """A PR checkout unchanged since creation remains reapable after ref deletion."""
+        sha = self._commit_on_remote_only_branch(git_repo)
+        foreign = self._add_foreign(
+            git_repo,
+            tmp_path / "review-closed",
+            age_days=5,
+            ref=sha,
+        )
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/remotes/origin/side"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
 
         assert reap_foreign_worktrees(git_repo) == [foreign]
         assert not Path(foreign).exists()
@@ -796,3 +834,82 @@ class TestWorktreeErrorPaths:
         from app.worktree_manager import _resolve_base_ref
         result = _resolve_base_ref(git_repo, "nonexistent")
         assert result in ("main", "master", "HEAD")
+
+
+class TestWorktreeOwnershipZones:
+    """Only `.worktrees/` and `.claude/worktrees/` belong to other code.
+
+    A worktree elsewhere inside the project — in practice `<project>/tmp/` — has no
+    owner: `cleanup_stale_worktrees()` only walks `.worktrees/`, and the OS temp
+    sweeper only walks the system temp directory. A blanket "skip anything inside the
+    project" rule left those unreclaimable by anything on the host.
+    """
+
+    def test_owned_directories_are_skipped(self):
+        from app.worktree_manager import _is_owned_by_other_code
+        assert _is_owned_by_other_code("/proj/.worktrees/abc", "/proj") is True
+        assert _is_owned_by_other_code("/proj/.claude/worktrees/agent-1", "/proj") is True
+
+    def test_project_tmp_is_in_scope(self):
+        from app.worktree_manager import _is_owned_by_other_code
+        assert _is_owned_by_other_code("/proj/tmp/review-123", "/proj") is False
+
+    def test_outside_the_project_is_in_scope(self):
+        from app.worktree_manager import _is_owned_by_other_code
+        assert _is_owned_by_other_code("/tmp/base140", "/proj") is False
+
+    def test_prefix_collision_is_not_owned(self):
+        """`.worktrees-backup` is not `.worktrees`."""
+        from app.worktree_manager import _is_owned_by_other_code
+        assert _is_owned_by_other_code("/proj/.worktrees-backup/x", "/proj") is False
+
+    def test_reaps_a_worktree_under_project_tmp(self, git_repo, tmp_path):
+        """The real shape: app-csf/tmp/review-* sat 34 days, reclaimable by nothing."""
+        scratch = Path(git_repo) / "tmp" / "review-inside"
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(scratch), "HEAD"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(scratch):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(scratch, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == [str(scratch)]
+        assert not scratch.exists()
+
+    def test_spares_a_worktree_owned_by_cleanup_stale_worktrees(self, git_repo, tmp_path):
+        """`.worktrees/` belongs to cleanup_stale_worktrees(); never touch it."""
+        owned = Path(git_repo) / ".worktrees" / "session-abc"
+        owned.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(owned), "HEAD"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(owned):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(owned, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert owned.is_dir()
+
+    def test_spares_a_harness_worktree(self, git_repo, tmp_path):
+        """`.claude/worktrees/` belongs to the Claude Code harness."""
+        owned = Path(git_repo) / ".claude" / "worktrees" / "agent-abc"
+        owned.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(owned), "HEAD"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(owned):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(owned, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert owned.is_dir()

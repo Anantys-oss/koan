@@ -57,14 +57,23 @@ awake.py (loop, ~3s poll)
 - **Bounded maintenance.** A foreign-worktree sweep has a fixed two-minute total
   deadline and a 15-second Git-command cap. Expired or timed-out safety checks
   retain worktrees and defer them to a later rotating sweep.
-- **Detached worktree safety.** A detached foreign worktree is removed only when its HEAD
-  is already contained in a durable ref — any local branch, tag, or remote-tracking ref —
-  because those keep the commits reachable after the worktree's path is removed. Reachability
-  from the default branch alone is NOT sufficient: review worktrees sit at pull-request head
-  commits, which are durable on their remote branch yet never ancestors of the default branch,
-  so a default-branch test would retain every one of them forever. The check MUST use a single
-  bounded revision walk rather than a per-ref containment scan, and any git failure retains
-  the worktree.
+- **Detached worktree safety.** Reachability alone MUST NOT decide retention. A detached
+  foreign worktree sits at a pull-request head commit, which is durable on its remote branch
+  only while that PR is open; once the PR is squash-merged or closed the remote branch is
+  deleted and no durable ref reaches that commit any more. Retaining on unreachability
+  therefore makes every *completed* review immortal — unbounded growth, not safety. A detached
+  worktree that no durable ref reaches is removed only when its HEAD still equals the commit
+  recorded when the worktree was created **and** its working tree is clean. A changed HEAD may
+  contain committed but never-pushed work; a dirty tree contains uncommitted work. The
+  reachability probe MUST use a single bounded revision walk rather than a per-ref containment
+  scan, and any git or reflog failure retains the worktree.
+- **Worktree ownership zones.** The sweep MUST NOT reclaim worktrees owned by other code:
+  `<project>/.worktrees/` belongs to `worktree_manager.cleanup_stale_worktrees()`, and
+  `<project>/.claude/worktrees/` belongs to the Claude Code harness. Everything else — a
+  worktree outside the project directory, or a scratch worktree under `<project>/tmp/` — has
+  no owner and is in scope. A blanket "skip anything inside the project directory" rule is
+  NOT sufficient: it leaves `<project>/tmp/` worktrees unreclaimable by any process on the
+  host, because the OS temp sweeper does not reach inside a project either.
 - **Chat is resilient to API contention (#1084).** While a mission runs, the agent loop
   and the bridge invoke the AI CLI concurrently against the same account (the default
   provider takes no cross-invocation lock), so a chat call can return an empty response or

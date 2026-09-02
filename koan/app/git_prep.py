@@ -406,6 +406,70 @@ def _heal_interrupted_operation(project_path: str) -> Optional[str]:
     return "; ".join(actions) if actions else None
 
 
+def _has_remote_tracking_ref(remote: str, branch: str, project_path: str) -> bool:
+    """Return True when refs/remotes/<remote>/<branch> exists locally.
+
+    Purely local, no network. Used to tell "this base branch is real" from
+    "nobody configured one and the generic default does not exist here".
+    """
+    rc, _, _ = run_git(
+        "rev-parse", "--verify", "--quiet",
+        f"refs/remotes/{remote}/{branch}",
+        cwd=project_path,
+    )
+    return rc == 0
+
+
+def _find_branch_holder(project_path: str, branch: str) -> Optional[str]:
+    """Return the path of another worktree that has ``branch`` checked out.
+
+    Git allows a branch to be checked out in at most one worktree, so a second
+    worktree holding the base branch blocks the main checkout for as long as it
+    holds it. Returns None when nothing holds it, when the holder is the main
+    worktree itself, or when the holder is ``locked`` (someone's live workspace
+    — never disturb those).
+    """
+    if not branch:
+        return None
+    try:
+        from app.worktree_manager import list_worktrees
+        worktrees = list_worktrees(project_path)
+    except (ImportError, OSError):
+        # Unreadable repo (missing path, permissions): nothing to detach. Prep
+        # falls through to its normal fallback rather than failing here.
+        return None
+
+    for wt in worktrees:
+        if wt.is_main or not wt.path or wt.branch != branch:
+            continue
+        if wt.locked:
+            logger.warning(
+                "Branch %s is held by locked worktree %s — not detaching",
+                branch, wt.path,
+            )
+            continue
+        return wt.path
+    return None
+
+
+def _release_branch_from_worktree(holder: str, branch: str) -> bool:
+    """Detach ``holder`` so ``branch`` becomes checkout-able again.
+
+    Detach, never remove: this runs unattended before every mission, so a false
+    positive must not be able to destroy an agent's in-flight work. Detaching
+    keeps the worktree, its files and any uncommitted changes exactly where they
+    are — it only gives up the branch name. Reclaiming the disk is the bridge's
+    foreign-worktree sweep's job.
+    """
+    rc, _, stderr = run_git("checkout", "--detach", cwd=holder)
+    if rc != 0:
+        logger.warning(
+            "Could not detach worktree %s holding %s: %s", holder, branch, stderr,
+        )
+        return False
+    return True
+
+
 def _diagnose_stash_failure(project_path: str, stderr: str) -> str:
     """Build an informative error for a failed pre-mission stash.
 
@@ -508,6 +572,27 @@ def prepare_project_branch(
         result.base_branch = result.previous_branch
         return result
 
+    # When the project pins no base branch and the generic default has no
+    # remote-tracking ref here, resolve the remote's real default *before*
+    # fetching. Detecting only after a failure made every mission on such a
+    # project pay for a doomed fetch first: `cp` sets issue_tracker.default_branch
+    # "140" but no git_auto_merge.base_branch, so base_branch fell back to "main"
+    # and every run fetched a branch that does not exist before finding "140".
+    # Guarded on the missing ref so a configured branch that works is never
+    # second-guessed; when the ref check is inconclusive the original
+    # detect-after-failure path below still applies.
+    if not config_explicit and not _has_remote_tracking_ref(
+        remote, base_branch, project_path
+    ):
+        detected = detect_remote_default_branch(remote, project_path)
+        if detected != base_branch:
+            logger.info(
+                "Default branch for %s/%s is '%s', not '%s' (resolved pre-fetch)",
+                remote, project_name, detected, base_branch,
+            )
+            base_branch = detected
+            result.base_branch = detected
+
     # Fetch latest refs (with HTTPS token fallback for repos cloned via
     # gh with an unauthenticated HTTPS remote URL)
     rc, _, stderr = _fetch_with_https_fallback(
@@ -561,17 +646,45 @@ def prepare_project_branch(
             return result
 
     # Checkout base branch
-    rc, _, stderr = run_git("checkout", base_branch, cwd=project_path)
+    rc, _, checkout_err = run_git("checkout", base_branch, cwd=project_path)
     if rc != 0:
-        # Branch may not exist locally — create from remote tracking
-        rc, _, stderr = run_git(
-            "checkout", "-b", base_branch, f"{remote}/{base_branch}",
-            cwd=project_path,
-        )
+        # Two different faults land here and they need different fixes:
+        #
+        #   1. another worktree holds the branch  -> detach that worktree, retry
+        #   2. the branch does not exist locally  -> create it from the remote
+        #
+        # Case 1 used to fall through to the case-2 fallback, which then failed
+        # with "a branch named 'X' already exists" — and that message overwrote
+        # the original stderr, so the log never named the holding worktree. One
+        # agent-created worktree holding the base branch cost 90 consecutive
+        # missions before anyone could see why. Try the real fix first, and never
+        # let the fallback's error be the only one reported. (If the detach works
+        # and the retry still fails, that retry error IS the useful one — the
+        # held-branch problem is solved by then.)
+        holder = _find_branch_holder(project_path, base_branch)
+        if holder and _release_branch_from_worktree(holder, base_branch):
+            rc, _, checkout_err = run_git(
+                "checkout", base_branch, cwd=project_path,
+            )
+            if rc == 0:
+                freed = f"detached worktree {holder} which held {base_branch}"
+                result.healed = f"{result.healed}; {freed}" if result.healed else freed
+                logger.info("git prep self-heal for %s: %s", project_name, freed)
+
         if rc != 0:
-            result.success = False
-            result.error = f"checkout failed: {stderr}"
-            return result
+            # Branch may not exist locally — create from remote tracking
+            rc, _, fallback_err = run_git(
+                "checkout", "-b", base_branch, f"{remote}/{base_branch}",
+                cwd=project_path,
+            )
+            if rc != 0:
+                result.success = False
+                result.error = (
+                    f"checkout failed: {checkout_err}"
+                    f" (creating from {remote}/{base_branch} also failed:"
+                    f" {fallback_err})"
+                )
+                return result
 
     # Fast-forward to match remote
     rc, _, stderr = run_git(

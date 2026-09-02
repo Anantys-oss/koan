@@ -529,6 +529,157 @@ def _make_run_git_side_effect(overrides=None):
     return side_effect
 
 
+# The exact stderr git emits when another worktree owns the branch. Hard-coded
+# from a live reproduction, not from memory — mis-remembering it is precisely
+# how this fault stayed invisible for 92 logged failures.
+HELD_BRANCH_STDERR = "fatal: 'main' is already used by worktree at '/tmp/base-main'"
+BRANCH_EXISTS_STDERR = "fatal: a branch named 'main' already exists"
+
+
+def _worktree(path, branch, *, is_main=False, locked=False):
+    """Build a WorktreeInfo the way list_worktrees() would."""
+    from app.worktree_manager import WorktreeInfo
+    return WorktreeInfo(
+        path=path, branch=branch, session_id="", project_path="/proj",
+        commit="abc123", is_main=is_main, locked=locked,
+    )
+
+
+def _checkout_blocked_once():
+    """run_git side effect: `checkout <base>` fails until the branch is freed.
+
+    `checkout --detach` (run in the holder) flips the gate, so the retry after a
+    successful detach succeeds — mirroring what git actually does.
+    """
+    state = {"held": True}
+
+    def side_effect(*args, **kwargs):
+        cmd = args[0] if args else ""
+        if cmd == "checkout":
+            if "--detach" in args:
+                state["held"] = False
+                return (0, "", "")
+            if "-b" in args:
+                return (1, "", BRANCH_EXISTS_STDERR)
+            if state["held"]:
+                return (1, "", HELD_BRANCH_STDERR)
+            return (0, "", "")
+        return _make_run_git_side_effect()(*args, **kwargs)
+
+    return side_effect
+
+
+class TestBranchHeldByAnotherWorktree:
+    """Prep recovers when another worktree owns the base branch.
+
+    Git checks a branch out in at most one worktree. An agent that runs
+    `git worktree add /tmp/base140 140` takes the branch away from the main
+    checkout, and every following mission dies in prep until it is given back.
+    """
+
+    def test_detaches_holder_and_retries(self):
+        """The holding worktree is detached, then checkout succeeds."""
+        holder = _worktree("/tmp/base-main", "main")
+        with patch("app.worktree_manager.list_worktrees", return_value=[holder]):
+            stack, mocks = TestPrepareProjectBranch()._patch_all(
+                run_git_side_effect=_checkout_blocked_once(),
+            )
+            with stack:
+                result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True
+        assert result.error is None
+        assert "/tmp/base-main" in result.healed
+        # The detach ran inside the holder, never in the project.
+        detach = [
+            c for c in mocks["run_git"].call_args_list
+            if c.args[:2] == ("checkout", "--detach")
+        ]
+        assert len(detach) == 1
+        assert detach[0].kwargs["cwd"] == "/tmp/base-main"
+
+    def test_locked_holder_is_never_detached(self):
+        """A locked worktree is someone's live workspace — leave it alone."""
+        holder = _worktree("/tmp/base-main", "main", locked=True)
+        with patch("app.worktree_manager.list_worktrees", return_value=[holder]):
+            stack, mocks = TestPrepareProjectBranch()._patch_all(
+                run_git_side_effect=_checkout_blocked_once(),
+            )
+            with stack:
+                result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is False
+        assert not any(
+            c.args[:2] == ("checkout", "--detach")
+            for c in mocks["run_git"].call_args_list
+        )
+
+    def test_main_worktree_is_never_the_holder(self):
+        """The project's own checkout holding the branch is not a collision."""
+        from app.git_prep import _find_branch_holder
+        main_wt = _worktree("/proj", "main", is_main=True)
+        with patch("app.worktree_manager.list_worktrees", return_value=[main_wt]):
+            assert _find_branch_holder("/proj", "main") is None
+
+    def test_error_keeps_the_first_checkout_message(self):
+        """The fallback's error must not overwrite the one naming the holder.
+
+        Regression guard for the outage: the `checkout -b` fallback reported
+        "a branch named 'main' already exists", which replaced the only message
+        that named the blocking worktree. Both must survive.
+        """
+        holder = _worktree("/tmp/base-main", "main", locked=True)
+        with patch("app.worktree_manager.list_worktrees", return_value=[holder]):
+            stack, _ = TestPrepareProjectBranch()._patch_all(
+                run_git_side_effect=_checkout_blocked_once(),
+            )
+            with stack:
+                result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert "already used by worktree at" in result.error
+        assert "/tmp/base-main" in result.error
+        assert "already exists" in result.error
+
+    def test_no_holder_falls_back_to_creating_the_branch(self):
+        """Nothing holding the branch: the create-from-remote path is unchanged."""
+        with patch("app.worktree_manager.list_worktrees", return_value=[]):
+            side_effect = _make_run_git_side_effect({
+                "checkout": (0, "", ""),
+            })
+            stack, mocks = TestPrepareProjectBranch()._patch_all(
+                run_git_side_effect=side_effect,
+            )
+            with stack:
+                result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True
+        assert result.healed is None
+
+    def test_detach_failure_still_reports_both_errors(self):
+        """If the detach itself fails, prep degrades to the old fallback."""
+        holder = _worktree("/tmp/base-main", "main")
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            if cmd == "checkout":
+                if "--detach" in args:
+                    return (1, "", "fatal: could not detach")
+                if "-b" in args:
+                    return (1, "", BRANCH_EXISTS_STDERR)
+                return (1, "", HELD_BRANCH_STDERR)
+            return _make_run_git_side_effect()(*args, **kwargs)
+
+        with patch("app.worktree_manager.list_worktrees", return_value=[holder]):
+            stack, _ = TestPrepareProjectBranch()._patch_all(
+                run_git_side_effect=side_effect,
+            )
+            with stack:
+                result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is False
+        assert "already used by worktree at" in result.error
+
+
 class TestPrepareProjectBranch:
     """Tests for prepare_project_branch()."""
 
@@ -1512,3 +1663,69 @@ class TestPrepareProjectBranchSelfHeal:
             prepare_project_branch("/koan", "koan", "/koan")
         mh.assert_not_called()
 
+
+class TestBaseBranchResolvedBeforeFetch:
+    """A project with no pinned base branch must not pay for a doomed fetch.
+
+    `cp` sets issue_tracker.default_branch "140" but no
+    git_auto_merge.base_branch, so base_branch fell back to the generic "main"
+    and every single mission fetched a branch that does not exist before
+    discovering "140" and fetching again.
+    """
+
+    @staticmethod
+    def _side_effect(calls, *, main_ref_exists):
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            calls.append(args)
+            if cmd == "rev-parse":
+                if "--verify" in args:
+                    ref = args[-1]
+                    exists = ref.endswith("/140") or (
+                        main_ref_exists and ref.endswith("/main")
+                    )
+                    return (0, "sha", "") if exists else (1, "", "")
+                return (0, "feature", "")
+            if cmd == "fetch":
+                target = args[-1] if args else ""
+                return (0, "", "") if target == "140" else (
+                    1, "", "fatal: couldn't find remote ref main"
+                )
+            if cmd == "symbolic-ref":
+                return (0, "refs/remotes/origin/140", "")
+            if cmd == "remote":
+                return (1, "", "no such remote")
+            return (0, "", "")
+        return side_effect
+
+    def test_detects_before_fetching_when_default_ref_is_absent(self):
+        """Only one fetch runs, and it targets the real default branch."""
+        calls = []
+        stack, _ = TestPrepareProjectBranch()._patch_all(
+            run_git_side_effect=self._side_effect(calls, main_ref_exists=False),
+        )
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True
+        assert result.base_branch == "140"
+        fetches = [c for c in calls if c and c[0] == "fetch"]
+        assert len(fetches) == 1, f"expected one fetch, got {len(fetches)}"
+        assert "main" not in fetches[0]
+
+    def test_configured_branch_that_exists_is_not_second_guessed(self):
+        """A working base branch is fetched directly; no detection runs."""
+        calls = []
+        stack, _ = TestPrepareProjectBranch()._patch_all(
+            run_git_side_effect=self._side_effect(calls, main_ref_exists=True),
+        )
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        # The configured branch has a remote-tracking ref, so prep fetches it
+        # first rather than overriding it with a detected default. Only when
+        # that fetch fails does the pre-existing detect-after-failure path run.
+        fetches = [c for c in calls if c and c[0] == "fetch"]
+        assert "main" in fetches[0], "configured branch must be tried first"
+        assert result.success is True
+        assert result.base_branch == "140"

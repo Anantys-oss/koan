@@ -32,6 +32,10 @@ GIT_RETRY_MAX_DELAY = 0.5
 
 # Default worktree directory name (relative to project root)
 WORKTREE_DIR = ".worktrees"
+# Directories inside a project that belong to other code and must never be reaped.
+# Everything else under the project — notably `<project>/tmp/`, where agents and
+# skills drop scratch checkouts — has no owner and is in scope.
+OWNED_WORKTREE_DIRS = (".worktrees", os.path.join(".claude", "worktrees"))
 
 # How long a worktree registered outside the project must sit untouched before
 # reap_foreign_worktrees() will remove it. Two days is comfortably longer than any single
@@ -392,10 +396,12 @@ def reap_foreign_worktrees(
 ) -> List[str]:
     """Remove stale worktrees registered in this project but living outside it.
 
-    Agents with a shell tool check revisions out ad hoc — `git worktree add
-    /tmp/review-<sha> <sha>` — because that is what the review skill instructs, and the
-    skill has no teardown step. Those worktrees are registered in the project's repo but
-    sit outside `<project>/.worktrees/`, so `cleanup_stale_worktrees()` (which only walks
+    Agents with an unrestricted shell check revisions out ad hoc — `git worktree add
+    /tmp/base140 140` — improvising, not following any skill instruction. (`/review` runs
+    in a worktree Kōan creates and removes, behind a read-only shell guard that denies
+    `git worktree` outright; the leak comes from `/fix`-class missions, whose shell is
+    unhooked.) Those worktrees are registered in the project's repo but sit outside
+    `<project>/.worktrees/`, so `cleanup_stale_worktrees()` (which only walks
     `.worktrees/`) never sees them, and `prune_worktrees()` only drops registrations whose
     directory is *already* gone. Nothing reclaims a leaked worktree whose directory still
     exists.
@@ -405,13 +411,17 @@ def reap_foreign_worktrees(
     phantom registrations.
 
     Guards, in order — each one exists because skipping it would destroy work:
-      * only worktrees *outside* project_path — anything inside is owned by
-        cleanup_stale_worktrees() or by another harness (e.g. `.claude/worktrees/`)
+      * never a worktree owned by other code — `<project>/.worktrees/` belongs to
+        cleanup_stale_worktrees(), `<project>/.claude/worktrees/` to the Claude Code
+        harness. Scratch worktrees under `<project>/tmp/` have no owner and ARE in
+        scope: the OS temp sweeper does not reach inside a project either, so a blanket
+        "skip anything inside the project" rule left them unreclaimable by anything.
       * never the main worktree
       * never a `locked` worktree — that is someone's live workspace
       * never one with tracked or untracked file activity within max_age_days — a review
         that started minutes ago is still running, and removing its tree kills the job
-      * never one holding commits absent from its upstream or from every durable ref
+      * never one on a branch holding commits absent from its upstream
+      * never one whose working tree is dirty when no durable ref reaches its HEAD
 
     ``deadline`` is a monotonic deadline shared by callers that sweep several
     projects. When omitted, the fixed maintenance budget applies. A timed-out
@@ -450,9 +460,8 @@ def reap_foreign_worktrees(
         if wt.is_main or not wt.path:
             continue
 
-        # Only foreign worktrees. Anything under the project belongs to another owner.
         wt_real = os.path.realpath(wt.path)
-        if wt_real == project_real or wt_real.startswith(project_real + os.sep):
+        if wt_real == project_real or _is_owned_by_other_code(wt_real, project_real):
             continue
         candidates.append((wt, wt_real))
 
@@ -473,6 +482,12 @@ def reap_foreign_worktrees(
             continue  # already gone — prune_worktrees() drops the registration
 
         if _has_recent_worktree_activity(wt_real, cutoff, deadline=deadline):
+            # Log it: `locked` and `unpushed commits` both report, so a silent skip
+            # here made a retained worktree impossible to explain from the logs.
+            print(
+                f"[worktree_manager] skip (recent activity) {wt.path}",
+                file=sys.stderr,
+            )
             continue  # possibly a live review, or activity could not be verified
 
         if _has_unpushed_commits(wt_real, deadline=deadline):
@@ -531,6 +546,80 @@ def _log_reap_deadline(project_path: str) -> None:
         "remaining worktrees will be retried next sweep",
         file=sys.stderr,
     )
+
+
+def _is_owned_by_other_code(wt_real: str, project_real: str) -> bool:
+    """Return True when this worktree belongs to code other than the sweep.
+
+    Only two directories inside a project have an owner: `.worktrees/` (managed by
+    ``cleanup_stale_worktrees``) and `.claude/worktrees/` (managed by the Claude Code
+    harness). A worktree living anywhere else inside the project — in practice
+    `<project>/tmp/` — is unowned scratch and must stay in scope, because nothing else
+    on the host reclaims it: the OS temp sweeper only walks the system temp directory.
+    """
+    if not wt_real.startswith(project_real + os.sep):
+        return False  # outside the project entirely — foreign, always in scope
+    relative = wt_real[len(project_real) + 1:]
+    return any(
+        relative == owned or relative.startswith(owned + os.sep)
+        for owned in OWNED_WORKTREE_DIRS
+    )
+
+
+def _has_uncommitted_changes(
+    worktree_path: str,
+    deadline: Optional[float] = None,
+) -> bool:
+    """Return True when the worktree has tracked or untracked local changes.
+
+    Any inspection failure reports True, so an unreadable worktree is retained.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if result.returncode != 0:
+        return True
+    return bool(result.stdout.strip())
+
+
+def _head_moved_since_worktree_creation(
+    worktree_path: str,
+    head: str,
+    deadline: Optional[float] = None,
+) -> bool:
+    """Return True when detached HEAD differs from its worktree-add commit.
+
+    A linked worktree has its own HEAD reflog. Its oldest entry records the commit
+    supplied to ``git worktree add``; a later detached commit changes HEAD while a
+    closed pull-request checkout does not. Any inspection failure returns True so
+    unique committed work is retained.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "reflog", "show", "--format=%H%x00%gs", "HEAD"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            **({"timeout": _reap_timeout(deadline)} if deadline is not None else {}),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    entries = [entry for entry in result.stdout.splitlines() if entry]
+    if result.returncode != 0 or not entries:
+        return True
+    creation = entries[-1].split("\0", 1)
+    if len(creation) != 2 or creation[1]:
+        # The initial worktree-add entry has no reflog subject. If it expired,
+        # the oldest visible entry cannot prove which commit created the tree.
+        return True
+    return creation[0] != head
 
 
 def _has_recent_worktree_activity(
@@ -598,14 +687,22 @@ def _has_unpushed_commits(
 ) -> bool:
     """Return True when removing the worktree could make commits unreachable.
 
-    Tracking branches are unsafe when HEAD exceeds their upstream. A detached HEAD is safe
-    only when some durable ref — a local branch, a tag, or a remote-tracking ref — already
-    reaches it, since those survive removing the worktree's path. Testing reachability from
-    the default branch alone would be wrong, not merely stricter: review worktrees sit at
-    pull-request head commits, which live on their remote branch but are never ancestors of
-    the default branch, so every one of them would be retained forever. Local branches
-    without upstreams remain durable after path-based removal. Any git or verification
-    failure keeps the worktree.
+    Tracking branches are unsafe when HEAD exceeds their upstream. Local branches without
+    upstreams remain durable after path-based removal.
+
+    For a detached HEAD, reachability alone cannot decide. A durable ref — local branch,
+    tag, or remote-tracking ref — reaching HEAD proves the commits survive removal, so the
+    worktree is safe to reap. But the converse does not hold. A review worktree sits at a
+    pull-request head commit, durable on its remote branch only while that PR is open; once
+    the PR is squash-merged the remote branch is deleted and nothing reaches that commit any
+    more. Retaining on unreachability therefore made every *completed* review immortal —
+    measured on the koan host, three of four leaked worktrees were permanently retained for
+    exactly this reason while the reaper reported "0 reclaimed" every hour for days.
+
+    So an unreachable detached HEAD is removable only when it still equals the commit used
+    to create the worktree and its tree is clean. A changed HEAD may contain committed but
+    never-pushed work, while a dirty tree contains uncommitted work. Age is already covered
+    by the caller's activity guard. Any git or verification failure keeps the worktree.
     """
     try:
         branch = subprocess.run(
@@ -678,7 +775,19 @@ def _has_unpushed_commits(
         return True
     if result.returncode != 0:
         return True
-    return bool(result.stdout.strip())
+    if not result.stdout.strip():
+        return False  # a durable ref reaches HEAD — removal loses nothing
+    head = result.stdout.strip().splitlines()[0]
+    # Unreachable: a closed pull request, or genuinely unique work. A closed-PR
+    # checkout remains at its creation commit; locally committed work moves HEAD.
+    return (
+        _head_moved_since_worktree_creation(
+            worktree_path,
+            head,
+            deadline=deadline,
+        )
+        or _has_uncommitted_changes(worktree_path, deadline=deadline)
+    )
 
 
 def prune_worktrees(project_path: str, timeout: Optional[float] = None):
@@ -689,7 +798,9 @@ def prune_worktrees(project_path: str, timeout: Optional[float] = None):
     """
     try:
         result = subprocess.run(
-            ["git", "worktree", "prune", "--verbose"],
+            # --expire now: the default gc.worktreePruneExpire is 3.months.ago, which
+            # would leave a freshly orphaned registration in place for a quarter.
+            ["git", "worktree", "prune", "--verbose", "--expire", "now"],
             cwd=project_path,
             capture_output=True,
             text=True,

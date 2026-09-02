@@ -124,6 +124,20 @@ workflows.
   because git cannot stash a conflicted tree and the next step resets to the
   remote base anyway. A **conflict-free** dirty tree is never discarded — the
   stash data-loss guard still holds for genuine uncommitted work.
+- **A held base branch is recoverable, not fatal.** Git checks a branch out in at
+  most one worktree, so any other worktree holding the base branch blocks the main
+  checkout for as long as it holds it. Prep MUST detect this and **detach** the
+  holding worktree — freeing the branch without deleting anything or disturbing its
+  uncommitted work — then retry the checkout once. Reclaiming that worktree's disk is
+  the bridge sweep's job, not prep's: prep runs unattended before every mission, so a
+  false positive must never be able to destroy an agent's in-flight work. A worktree
+  git reports as `locked` is never touched.
+- **The first checkout error is never discarded.** When `git checkout <base>` fails and
+  a fallback runs, the fallback's stderr MUST NOT overwrite the original. A branch held
+  by another worktree and a branch missing locally are different faults with different
+  fixes, and only the first message names the holding path. Origin: 92 logged prep
+  failures reported `a branch named 'X' already exists` — the fallback's error — while
+  the real cause, `is already used by worktree at ...`, never once reached the log.
 
 ### Mission status indicators (koan/mission)
 
