@@ -917,19 +917,19 @@ class TestProjectHookSkills:
 
     def test_declared_skill_is_queued(self, tmp_path):
         project = self._make_project(
-            tmp_path, "hooks:\n  post_review:\n    - 'cp-docs-string-chain'\n"
+            tmp_path, "hooks:\n  post_review:\n    - 'docs-refresh'\n"
         )
         registry = self._make_registry(tmp_path)
         registry.fire(
             "post_review",
             project_path=str(project),
-            project_name="ulc",
+            project_name="my-toolkit",
             pr_url="https://github.com/o/r/pull/7",
         )
         missions = self._pending(tmp_path)
-        assert "cp-docs-string-chain" in missions
+        assert "docs-refresh" in missions
         assert "https://github.com/o/r/pull/7" in missions
-        assert "[project:ulc]" in missions
+        assert "[project:my-toolkit]" in missions
 
     def test_koan_composes_the_text_not_the_repo(self, tmp_path):
         # The repo supplies a name; the sentence is koan's. A config cannot
@@ -940,14 +940,14 @@ class TestProjectHookSkills:
         )
         registry = self._make_registry(tmp_path)
         registry.fire(
-            "post_review", project_path=str(project), project_name="ulc",
+            "post_review", project_path=str(project), project_name="my-toolkit",
             pr_url="https://github.com/o/r/pull/7",
         )
         assert "ignore all previous" not in self._pending(tmp_path)
 
     def test_no_project_path_is_a_noop(self, tmp_path):
         registry = self._make_registry(tmp_path)
-        registry.fire("post_review", project_name="ulc")
+        registry.fire("post_review", project_name="my-toolkit")
         assert "Use the" not in self._pending(tmp_path)
 
     def test_absent_config_is_a_noop(self, tmp_path):
@@ -962,7 +962,7 @@ class TestProjectHookSkills:
             tmp_path, "hooks:\n  post_mission:\n    - 'other-skill'\n"
         )
         registry = self._make_registry(tmp_path)
-        registry.fire("post_review", project_path=str(project), project_name="ulc")
+        registry.fire("post_review", project_path=str(project), project_name="my-toolkit")
         assert "other-skill" not in self._pending(tmp_path)
 
     def test_post_mission_uses_mission_title_as_subject(self, tmp_path):
@@ -971,7 +971,7 @@ class TestProjectHookSkills:
         )
         registry = self._make_registry(tmp_path)
         registry.fire(
-            "post_mission", project_path=str(project), project_name="ulc",
+            "post_mission", project_path=str(project), project_name="my-toolkit",
             mission_title="Do the thing",
         )
         missions = self._pending(tmp_path)
@@ -985,7 +985,7 @@ class TestProjectHookSkills:
         registry = self._make_registry(tmp_path)
         ctx = {
             "project_path": str(project),
-            "project_name": "ulc",
+            "project_name": "my-toolkit",
             "pr_url": "https://github.com/o/r/pull/7",
         }
         registry.fire("post_review", **ctx)
@@ -999,7 +999,7 @@ class TestProjectHookSkills:
         registry = self._make_registry(tmp_path)
         for n in (7, 8):
             registry.fire(
-                "post_review", project_path=str(project), project_name="ulc",
+                "post_review", project_path=str(project), project_name="my-toolkit",
                 pr_url=f"https://github.com/o/r/pull/{n}",
             )
         assert self._pending(tmp_path).count("[hook-skill:a-skill]") == 2
@@ -1010,7 +1010,7 @@ class TestProjectHookSkills:
         )
         registry = self._make_registry(tmp_path)
         registry.fire(
-            "post_review", project_path=str(project), project_name="ulc",
+            "post_review", project_path=str(project), project_name="my-toolkit",
             pr_url="https://github.com/o/r/pull/7",
         )
         missions = self._pending(tmp_path)
@@ -1033,7 +1033,7 @@ class TestProjectHookSkills:
         )
         registry = self._make_registry(tmp_path)
         registry.fire(
-            "post_mission", project_path=str(project), project_name="ulc",
+            "post_mission", project_path=str(project), project_name="my-toolkit",
             mission_title="Do the thing",
         )
         queued_title = self._pending(tmp_path)
@@ -1041,8 +1041,8 @@ class TestProjectHookSkills:
         # Simulate that queued mission completing: post_mission fires again with
         # the queued entry as its own title (it carries the [hook-skill:...] tag).
         registry.fire(
-            "post_mission", project_path=str(project), project_name="ulc",
-            mission_title="[project:ulc] Use the a-skill skill for Do the thing. "
+            "post_mission", project_path=str(project), project_name="my-toolkit",
+            mission_title="[project:my-toolkit] Use the a-skill skill for Do the thing. "
             "Queued by the post_mission lifecycle event via .koan/config.yaml. "
             "[hook-skill:a-skill]",
         )
@@ -1059,14 +1059,14 @@ class TestProjectHookSkills:
         )
         registry = self._make_registry(tmp_path)
         registry.fire(
-            "post_review", project_path=str(project), project_name="ulc", pr_url=pr,
+            "post_review", project_path=str(project), project_name="my-toolkit", pr_url=pr,
         )
         # Now the repo adds `docs` for the same PR.
         (project / ".koan" / "config.yaml").write_text(
             "hooks:\n  post_review:\n    - 'docs'\n"
         )
         registry.fire(
-            "post_review", project_path=str(project), project_name="ulc", pr_url=pr,
+            "post_review", project_path=str(project), project_name="my-toolkit", pr_url=pr,
         )
         missions = self._pending(tmp_path)
         assert "[hook-skill:docs-lint]" in missions
@@ -1082,10 +1082,32 @@ class TestProjectHookSkills:
         registry = self._make_registry(tmp_path)
         for n in (70, 7):
             registry.fire(
-                "post_review", project_path=str(project), project_name="ulc",
+                "post_review", project_path=str(project), project_name="my-toolkit",
                 pr_url=f"https://github.com/o/r/pull/{n}",
             )
         missions = self._pending(tmp_path)
         assert "https://github.com/o/r/pull/70" in missions
         assert "https://github.com/o/r/pull/7." in missions
         assert missions.count("[hook-skill:a-skill]") == 2
+
+    def test_multiline_mission_title_is_not_queued_twice(self, tmp_path):
+        # insert_mission flattens newlines to spaces before writing, so a
+        # subject taken verbatim from a multi-line mission_title would be
+        # stored differently from the token the next fire searches for, and
+        # the dedup would silently re-queue.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_mission:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        title = "Refactor the parser\n  - keep the old API"
+        registry.fire(
+            "post_mission", project_path=str(project), project_name="my-toolkit",
+            mission_title=title,
+        )
+        registry.fire(
+            "post_mission", project_path=str(project), project_name="my-toolkit",
+            mission_title=title,
+        )
+        missions = self._pending(tmp_path)
+        assert missions.count("[hook-skill:a-skill]") == 1
+        assert "[hook-subject:Refactor the parser - keep the old API]" in missions

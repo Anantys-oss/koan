@@ -274,7 +274,13 @@ class HookRegistry:
         from app.missions import parse_sections
         from app.utils import insert_pending_mission
 
-        subject = str(ctx.get("pr_url") or ctx.get("mission_title") or "").strip()
+        # Collapse whitespace the way the store will: insert_mission rewrites
+        # the entry with re.sub(r"\r\n|\r|\n", " ", ...), so a multi-line
+        # mission_title would be stored flattened while the next fire searched
+        # for the un-flattened token — dedup silently failing and re-queuing.
+        subject = " ".join(
+            str(ctx.get("pr_url") or ctx.get("mission_title") or "").split()
+        )
         project = str(ctx.get("project_name") or "").strip()
         prefix = f"[project:{project}] " if project else ""
         target = f" for {subject}" if subject else ""

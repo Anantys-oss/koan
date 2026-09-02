@@ -4,7 +4,7 @@ title: "KOAN.md — koan-only project instructions"
 description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check and hooks.<event>): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
 tags: [users]
 created: 2026-07-09
-updated: 2026-07-26
+updated: 2026-09-02
 ---
 
 # KOAN.md — koan-only project instructions
@@ -150,10 +150,10 @@ lists of skill names:
 # <your-repo>/.koan/config.yaml
 hooks:
   post_review:
-    - cp-docs-string-chain
+    - docs-refresh
 ```
 
-The example runs your `cp-docs-string-chain` skill after koan posts a review,
+The example runs your `docs-refresh` skill after koan posts a review,
 receiving the PR it just reviewed.
 
 **Why this exists.** A `/review` runs read-only on purpose: no `Skill` tool, no
