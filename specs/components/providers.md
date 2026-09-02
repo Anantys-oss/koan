@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok, Gemini) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-09-01
+updated: 2026-09-02
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -179,7 +179,11 @@ tools — MCP tools must still be allowlisted via qualified names
   `modelUsage` map (camelCase per model id); Gemini CLI reports usage on the
   terminal `result` event under **`stats`** (not `usage`) as
   `input_tokens`/`output_tokens`/`cached`/`total_tokens` plus a per-model-id
-  `models` map. Shared extractors are shape-keyed
+  `models` map (json mode nests the counts as
+  `stats.models.<id>.tokens.{prompt,candidates,cached}` instead). A `cached`
+  count is a SUBSET of input and is clamped to it before subtraction — an
+  inconsistent count is logged once, never double-counted. Shared extractors
+  are shape-keyed
   on field names. Detectors read the summary stream, not assistant text.
 - **`tool_use` summary grammar carries an optional input preview.**
   `_summarize_stream_event()` renders a `tool_use` block as
@@ -408,8 +412,21 @@ tools — MCP tools must still be allowlisted via qualified names
   (`severity`/`message`), and a terminal `result` (`status` + `stats`). Final
   text is the concatenation of assistant `message.content` deltas (joined with
   `""`, not newlines) — the terminal `result` carries stats, **not** the
-  assistant body. `--output-format json` returns one object with top-level
-  `response` + `stats` (probe mode).
+  assistant body. `--output-format json` — the shape the **mission path**
+  builds — returns one object with top-level `response` + `stats`; both are
+  consumed shape-keyed: `response` joins the `result`/`content`/`text` key list
+  in `parse_claude_output`, and its `stats.models.<id>.tokens`
+  (`prompt`/`candidates`/`cached`, the nested SessionMetrics shape) is summed
+  across models by `token_parser`, so json-mode runs record usage rather than
+  zero. When a `models` map names more than one id, tokens are attributed to
+  the **dominant** entry (highest total), never the first key — a session that
+  fell back pro→flash must not be mis-priced.
+  **A terminal `result` whose `status` is not a success value is a hard
+  failure** (`RuntimeError` naming `skip_permissions`), not a soft return of
+  partial text: a headless run that could not answer a confirmation prompt
+  exits 0 with prose and would otherwise be reported as a complete mission with
+  no branch and no commit. Shape-keyed on the stats-only envelope, so
+  text-bearing `result` envelopes (haze) keep their existing behavior.
   **Permissions:** Kōan emits `--approval-mode yolo` **only** when
   `skip_permissions` is set. With permissions on, no approval flag is emitted
   and a once-per-process warning states that headless runs cannot answer a

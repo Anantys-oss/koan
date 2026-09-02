@@ -342,6 +342,49 @@ class TestGeminiStreamSamples:
         data = json.loads(gemini_samples.JSON_OBJECT_SUCCESS)
         assert data["response"] == gemini_samples.JSON_OBJECT_SUCCESS_TEXT
 
+    def test_failed_stats_result_is_a_hard_failure(self):
+        from app.provider import _is_failed_stats_result_event
+        assert _is_failed_stats_result_event(
+            {"type": "result", "status": "error", "stats": {"tool_calls": 1}}
+        )
+        assert not _is_failed_stats_result_event(
+            {"type": "result", "status": "success", "stats": {}}
+        )
+
+    def test_text_bearing_result_envelopes_stay_soft(self):
+        """Haze-style ``result`` carries its own text — unchanged behavior."""
+        from app.provider import _is_failed_stats_result_event
+        assert not _is_failed_stats_result_event(
+            {"type": "result", "status": "failed", "result": "boom", "usage": {}}
+        )
+
+
+# ---------------------------------------------------------------------------
+# Mission-path parsing — the real Kōan consumers, not fixture assertions
+# ---------------------------------------------------------------------------
+
+class TestGeminiMissionPathParsing:
+    def test_json_object_response_reaches_parse_claude_output(self):
+        from app.mission_runner import parse_claude_output
+        assert (
+            parse_claude_output(gemini_samples.JSON_OBJECT_SUCCESS)
+            == gemini_samples.JSON_OBJECT_SUCCESS_TEXT
+        )
+
+    def test_stream_deltas_are_concatenated_by_mission_runner(self):
+        from app.mission_runner import parse_claude_output
+        assert (
+            parse_claude_output(gemini_samples.STREAM_MULTI_DELTA)
+            == gemini_samples.STREAM_MULTI_DELTA_RESULT_TEXT
+        )
+
+    def test_truncated_stream_keeps_partial_text_unshredded(self):
+        from app.mission_runner import parse_claude_output
+        assert (
+            parse_claude_output(gemini_samples.STREAM_TRUNCATED)
+            == gemini_samples.STREAM_TRUNCATED_PARTIAL_TEXT
+        )
+
 
 # ---------------------------------------------------------------------------
 # Mission-path token parsing (token_parser sees the raw stdout stream)
@@ -358,6 +401,72 @@ class TestGeminiTokenParser:
         assert result.output_tokens == 40
         assert result.cache_read_input_tokens == 400
         assert result.model == "gemini-2.5-pro"
+
+    def test_json_mode_session_metrics_shape_extracts_tokens(self, tmp_path):
+        """The mission path runs --output-format json (nested SessionMetrics)."""
+        from app.token_parser import extract_tokens
+        out = tmp_path / "stdout.json"
+        out.write_text(gemini_samples.JSON_OBJECT_SUCCESS)
+        result = extract_tokens(out)
+        assert result is not None
+        assert result.input_tokens == 900
+        assert result.output_tokens == 12
+        assert result.model == "gemini-2.5-pro"
+
+    def test_json_mode_subtracts_cached_from_prompt_tokens(self, tmp_path):
+        from app.token_parser import extract_tokens
+        out = tmp_path / "stdout.json"
+        out.write_text(json.dumps({
+            "response": "ok",
+            "stats": {"models": {"gemini-2.5-pro": {
+                "tokens": {"prompt": 900, "candidates": 12, "cached": 300},
+            }}},
+        }))
+        result = extract_tokens(out)
+        assert result is not None
+        assert result.input_tokens == 600
+        assert result.cache_read_input_tokens == 300
+
+    def test_multi_model_stats_attributes_dominant_model(self, tmp_path):
+        """A pro→flash fallback must not be priced against the first key."""
+        from app.token_parser import extract_tokens
+        out = tmp_path / "stdout.json"
+        out.write_text(json.dumps({
+            "response": "ok",
+            "stats": {"models": {
+                "gemini-2.5-pro": {"tokens": {"prompt": 10, "candidates": 1}},
+                "gemini-2.5-flash": {"tokens": {"prompt": 900, "candidates": 40}},
+            }},
+        }))
+        result = extract_tokens(out)
+        assert result is not None
+        assert result.model == "gemini-2.5-flash"
+        assert result.input_tokens == 910
+
+    def test_usage_snapshot_picks_dominant_model(self):
+        event = {
+            "type": "result",
+            "status": "success",
+            "stats": {
+                "input_tokens": 500, "output_tokens": 20, "cached": 0,
+                "models": {
+                    "gemini-2.5-pro": {"total_tokens": 20},
+                    "gemini-2.5-flash": {"total_tokens": 500},
+                },
+            },
+        }
+        assert _usage_snapshot_from_event(event)["model"] == "gemini-2.5-flash"
+
+    def test_cached_exceeding_input_is_clamped_not_double_counted(self):
+        event = {
+            "type": "result",
+            "status": "success",
+            "model": "gemini-2.5-pro",
+            "stats": {"input_tokens": 100, "output_tokens": 5, "cached": 400},
+        }
+        snap = _usage_snapshot_from_event(event)
+        assert snap["input_tokens"] == 0
+        assert snap["cache_read_input_tokens"] == 100
 
 
 # ---------------------------------------------------------------------------

@@ -508,7 +508,11 @@ def _extract_stream_json_text(raw: str) -> Optional[str]:
 
     # Lazy import keeps mission_runner import-time light and matches other
     # provider helper call sites that already use these private extractors.
-    from app.provider import _extract_assistant_text_chunks, _extract_result_text
+    from app.provider import (
+        _extract_assistant_text_chunks,
+        _extract_result_text,
+        _is_text_delta_event,
+    )
 
     final_result: Optional[str] = None
     text_lines: List[str] = []
@@ -521,7 +525,7 @@ def _extract_stream_json_text(raw: str) -> Optional[str]:
 
     for event in events:
         chunks = _extract_assistant_text_chunks(event)
-        if event.get("type") == "text" and isinstance(event.get("data"), str):
+        if _is_text_delta_event(event):
             text_delta_parts.extend(chunks)
         else:
             _flush_deltas()
@@ -544,7 +548,8 @@ def parse_claude_output(raw_text: str) -> str:
     Handles multiple response shapes across providers:
     - NDJSON stream-json / streaming-json (Claude, Grok, Haze, …)
     - Single JSON envelopes: ``{"result": "..."}``, ``{"content": "..."}``,
-      ``{"text": "..."}`` (Claude json mode, Grok ``--output-format json``)
+      ``{"text": "..."}`` (Claude json mode, Grok ``--output-format json``),
+      ``{"response": "..."}`` (Gemini ``--output-format json``)
     - Plain text fallback when JSON parsing fails
 
     Args:
@@ -566,7 +571,7 @@ def parse_claude_output(raw_text: str) -> str:
         data = json.loads(stripped)
         if isinstance(data, dict):
             # Try common response keys in order
-            for key in ("result", "content", "text"):
+            for key in ("result", "content", "text", "response"):
                 if key in data and isinstance(data[key], str):
                     return data[key]
         # If none match, return the raw text
