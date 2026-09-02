@@ -1,11 +1,9 @@
 """Kōan brief skill — daily digest of agent activity."""
 
 import json
-import logging
 from datetime import date, datetime, timedelta
 
-
-log = logging.getLogger(__name__)
+from app.run_log import log_safe
 
 
 def handle(ctx):
@@ -146,12 +144,19 @@ def _maybe_reschedule(instance_dir):
         for f in events_dir.glob("*.json"):
             try:
                 data = json.loads(f.read_bytes().decode("utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                log.warning("[brief] quarantining unparseable %s: %s", f.name, exc)
+            except OSError as exc:
+                # Transient: the run loop may have archived this file between
+                # the glob and the read. Quarantining a path that no longer
+                # exists would raise and skip write_event_file() below,
+                # permanently breaking the self-rescheduling chain.
+                log_safe("warning", f"[brief] could not read {f.name}: {exc}")
+                continue
+            except ValueError as exc:
+                log_safe("warning", f"[brief] quarantining unparseable {f.name}: {exc}")
                 _quarantine(f, events_dir / "quarantine")
                 continue
             if not isinstance(data, dict) or not isinstance(data.get("mission"), str):
-                log.warning("[brief] quarantining structurally invalid %s", f.name)
+                log_safe("warning", f"[brief] quarantining structurally invalid {f.name}")
                 _quarantine(f, events_dir / "quarantine")
                 continue
             if tag in data["mission"]:
@@ -177,12 +182,15 @@ def _seed_schedule(instance_dir):
         for f in events_dir.glob("*.json"):
             try:
                 data = json.loads(f.read_bytes().decode("utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                log.warning("[brief] quarantining unparseable %s: %s", f.name, exc)
+            except OSError as exc:
+                log_safe("warning", f"[brief] could not read {f.name}: {exc}")
+                continue
+            except ValueError as exc:
+                log_safe("warning", f"[brief] quarantining unparseable {f.name}: {exc}")
                 _quarantine(f, events_dir / "quarantine")
                 continue
             if not isinstance(data, dict) or not isinstance(data.get("mission"), str):
-                log.warning("[brief] quarantining structurally invalid %s", f.name)
+                log_safe("warning", f"[brief] quarantining structurally invalid {f.name}")
                 _quarantine(f, events_dir / "quarantine")
                 continue
             if tag in data["mission"]:

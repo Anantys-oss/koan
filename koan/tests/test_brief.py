@@ -220,6 +220,24 @@ class TestRescheduling:
         assert (instance / "events" / "quarantine" / "bad.json").exists()
         assert list((instance / "events").glob("event_*.json"))
 
+    def test_maybe_reschedule_survives_transient_read_error(self, tmp_path, instance):
+        """A read failure must not abort the self-rescheduling chain: the file
+        may simply have been archived by the run loop mid-glob."""
+        from skills.core.brief.handler import _maybe_reschedule
+
+        (instance / "events" / "evt.json").write_text(
+            '{"mission": "something"}', encoding="utf-8"
+        )
+
+        with patch.object(Path, "read_bytes", side_effect=FileNotFoundError("gone")):
+            _maybe_reschedule(instance)
+
+        assert list((instance / "events").glob("event_*.json")), (
+            "tomorrow's brief is still scheduled"
+        )
+        assert not (instance / "events" / "quarantine").exists()
+        assert (instance / "events" / "evt.json").exists()
+
     def test_schedule_flag_idempotent(self, tmp_path, instance):
         from skills.core.brief.handler import handle
 
