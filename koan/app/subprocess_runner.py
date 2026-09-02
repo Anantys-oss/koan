@@ -87,6 +87,12 @@ def kill_orphaned_process_group(
 
     Liveness is polled with ``killpg(pgid, 0)``, which reports the *group* empty
     rather than merely the leader dead.
+
+    Only ``ProcessLookupError`` proves the group is gone. A ``PermissionError``
+    (a descendant that changed credentials) or any other ``OSError`` means the
+    group could not be signalled at all — on the fallback path this is the only
+    containment lever there is, so it is reported rather than mistaken for a
+    clean sweep.
     """
     if pgid <= 1 or pgid == os.getpgrp():
         # Never signal init's group or our own — either takes down far more than
@@ -97,13 +103,27 @@ def kill_orphaned_process_group(
                           (signal.SIGKILL, force_timeout)):
         try:
             os.killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError, OSError):
+        except ProcessLookupError:
+            return
+        except OSError as exc:
+            print(
+                f"[subprocess_runner] warning: process group {pgid} could not "
+                f"be signalled ({exc}) — descendants may survive",
+                file=sys.stderr,
+            )
             return
         deadline = time.monotonic() + wait_for
         while time.monotonic() < deadline:
             try:
                 os.killpg(pgid, 0)
-            except (ProcessLookupError, PermissionError, OSError):
+            except ProcessLookupError:
+                return
+            except OSError as exc:
+                print(
+                    f"[subprocess_runner] warning: process group {pgid} could "
+                    f"not be probed ({exc}) — descendants may survive",
+                    file=sys.stderr,
+                )
                 return
             time.sleep(0.1)
     print(

@@ -73,6 +73,12 @@ class SessionResult:
     exit_code: int
     stdout: str = ""
     stderr: str = ""
+    # Cap phrase from this session's own ScopedProcess ("" when it fit). A
+    # parallel session has no per-mission global to read: app.run's
+    # _last_mission_memory_cap belongs to the sequential mission, and reading
+    # it here would stamp a stale cap hit on a session that never came near
+    # its own — while the session's real cap hit went unreported.
+    memory_cap_detail: str = ""
 
 
 class SessionRegistry:
@@ -446,12 +452,24 @@ def poll_sessions(
         # baseline. A teardown failure must never stop the loop from collecting
         # the other sessions.
         scoped = getattr(session, "_scoped", None)
+        memory_cap_detail = ""
         if scoped is not None:
             try:
                 scoped.teardown()
             except Exception as e:
                 print(
                     f"[session_manager] scope teardown error for session "
+                    f"{session.id}: {e}",
+                    file=sys.stderr,
+                )
+            # teardown() is what reads the cgroup's OOM evidence, so the cap
+            # verdict only exists after it has run. Reported per session: the
+            # sequential loop's global says nothing about this one.
+            try:
+                memory_cap_detail = str(scoped.cap_message() or "")
+            except Exception as e:
+                print(
+                    f"[session_manager] cap read error for session "
                     f"{session.id}: {e}",
                     file=sys.stderr,
                 )
@@ -486,6 +504,7 @@ def poll_sessions(
             exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
+            memory_cap_detail=memory_cap_detail,
         ))
 
     return completed

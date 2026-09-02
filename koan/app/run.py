@@ -2099,6 +2099,12 @@ def _parallel_reap_sessions(
                 autonomous_mode=getattr(session, "autonomous_mode", "implement"),
                 start_time=int(session.started_at),
                 status_callback=lambda step: set_status(koan_root, f"[parallel] {step}"),
+                # This session's own cap verdict (read from its ScopedProcess
+                # in poll_sessions). The sequential loop's
+                # _last_mission_memory_cap belongs to a different mission and
+                # would be both a false positive here and a false negative for
+                # a session the scope really did OOM-kill.
+                memory_cap_detail=result.memory_cap_detail,
             )
         except Exception as e:
             log("error", f"[parallel] post-mission failed for {session.id}: {e}")
@@ -3720,6 +3726,8 @@ def _run_skill_mission(
             mission_tier=mission_tier,
             provider_name=_skill_provider_name,
             is_skill_dispatch=True,
+            # This mission's own cap result, set in the finally above.
+            memory_cap_detail=_last_mission_memory_cap,
         )
         if isinstance(post_result, dict) and post_result.get("quota_exhausted"):
             skill_result["quota_exhausted"] = True

@@ -1640,6 +1640,10 @@ def _run_iteration(
                 ),
                 mission_tier=mission_tier,
                 provider_name=provider_name,
+                # This loop owns the sequential mission's cap flag; hand it
+                # over explicitly rather than letting the pipeline read a
+                # global a parallel session would also see.
+                memory_cap_detail=_run._last_mission_memory_cap,
             )
 
             _completion_pr_url = post_result.get("pr_url", "")

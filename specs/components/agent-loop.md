@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-08-31
+updated: 2026-09-02
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -285,12 +285,25 @@ heuristic:
   `systemctl kill -s SIGKILL`. `mission_scope.stop_scope_unit()` is the single lever
   for this and `make stop` MUST use it too, keeping a registry entry whose scope it
   could not confirm stopped — that record is the only durable handle on a live scope,
-  and its descendants have left the daemon's process group.
+  and its descendants have left the daemon's process group. A destructive action MUST
+  verify its target first: a fallback `pid-<n>` record names a PID, and a PID is
+  recycled, so `make stop` MUST signal its process group only after the PID's real
+  start time matches the record's `started_at` — dropping a stale record afterwards
+  does not undo a SIGKILL already sent to a stranger's group. For the same reason
+  "cannot tell" is never "contained": only `FileNotFoundError` on `cgroup.events`
+  proves the cgroup is empty, and any other read failure MUST fall through to the
+  manager's own confirmation.
   The cap is `max(memory_min, MemTotal - memory_reserve)` with an explicit
   `memory_max` winning verbatim — a reserve **with a floor**, never a percentage of
   RAM, because Kōan's baseline is roughly constant while the fleet spans 1.9–7.7 GiB
   with no swap. A cap hit is a distinct mission result (`memory_cap_exceeded` /
   `memory_cap_detail` in the `post_mission` hook context) and MUST NOT be retried.
+  The verdict belongs to the mission that produced it: it is passed *into*
+  `run_post_mission` by that mission's own owner (the sequential loop's
+  `_last_mission_memory_cap`, or a parallel session's own `ScopedProcess` carried on
+  `SessionResult`), never read from a process-global by the pipeline — a session
+  reaped in a later iteration would otherwise inherit a previous mission's flag and
+  never report its own.
   Where no scope can be created (macOS, no systemd manager) the loop warns **once**
   and falls back to `start_new_session=True` + a kill of the process group captured
   at launch — the pgid, not the `Popen`, because `kill_process_group()` returns at its
