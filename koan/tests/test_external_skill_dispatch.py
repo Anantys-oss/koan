@@ -221,8 +221,8 @@ class TestTryDispatchCustomHandler:
 
     def test_multiline_context_and_appended_key_preserved(self, tmp_path):
         """Custom dispatch delivers multi-line context plus the appended Jira
-        key — first-line truncation is scoped to the Telegram ingress and must
-        not drop GitHub/Jira's multi-paragraph context feature."""
+        key — footer stripping is scoped to the Telegram ingress and must not
+        affect GitHub/Jira's multi-paragraph context feature."""
         handler_src = (
             "def handle(ctx):\n"
             "    return f'got:{ctx.args}'\n"

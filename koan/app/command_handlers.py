@@ -8,6 +8,7 @@ to avoid circular imports with awake.py.
 """
 
 import contextlib
+import re
 import time
 from typing import Callable, Optional
 
@@ -36,6 +37,12 @@ from app.utils import (
 # Must be a valid Telegram ReactionTypeEmoji — ✅ (U+2705) is NOT in that set
 # and yields "Bad Request: REACTION_INVALID", so use 👍 which is whitelisted.
 ACK_EMOJI = "👍"
+
+# Client attribution footer appended on its own trailing line by some messaging
+# clients (e.g. Slack's "*Sent using* @Claude"). Anchored at line start and
+# allowed to carry markdown emphasis, so a user's prose that merely mentions the
+# phrase mid-sentence is never mistaken for a footer.
+_CLIENT_FOOTER_RE = re.compile(r"^\s*\*?Sent using\*?\b.*$")
 
 # Callbacks injected by awake.py at startup to avoid circular imports
 _handle_chat_cb: Optional[Callable] = None
@@ -233,12 +240,14 @@ def handle_command(text: str):
     # span multiple lines, so don't blanket-truncate to the first line — only
     # strip a trailing footer line so it isn't consumed as a positional argument
     # when handlers call args.split() (which splits on newlines too).
+    # A footer is only ever a *trailing* line after real content, so require a
+    # preceding line: a single-line command that merely mentions the phrase keeps
+    # its args. The rstrip drops the blank line Slack leaves before the footer.
     # Scoped here (not in SkillContext) so in-process GitHub/Jira custom-skill
     # dispatch can still pass multi-line context (see external_skill_dispatch).
     _lines = command_args.splitlines()
-    if _lines and "Sent using" in _lines[-1]:
-        _lines = _lines[:-1]
-    command_args = "\n".join(_lines)
+    if len(_lines) > 1 and _CLIENT_FOOTER_RE.match(_lines[-1]):
+        command_args = "\n".join(_lines[:-1]).rstrip()
 
     # Aliases are handled by the skill registry (SKILL.md aliases: field)
     # No hardcoded alias remapping needed here.

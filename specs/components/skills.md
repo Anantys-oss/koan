@@ -64,9 +64,12 @@ koan/skills/core/<name>/
   custom skill, drive it off SKILL.md frontmatter flags (see `collect_forward_result_markers`).
 - **A bare `args.split()` may consume a client footer as a positional argument.**
   Messaging providers may append a footer/signature on the last line (e.g. Slack's
-  `*Sent using* @Claude`). The Telegram ingress (`handle_command`) strips a trailing line
-  containing `Sent using` before constructing `SkillContext` — it does **not** blanket-truncate,
-  so multi-line mission text is preserved. Telegram handlers must not expect footer text in
+  `*Sent using* @Claude`). The Telegram ingress (`handle_command`) strips the last line before
+  constructing `SkillContext` only when args span more than one line **and** that line matches
+  the anchored footer shape (`^\s*\*?Sent using\*?\b`), then right-strips the remainder to drop
+  the blank line clients leave in front of the footer. It does **not** blanket-truncate, and a
+  single-line command — or a real final line — that merely mentions the phrase mid-sentence
+  keeps its text. Telegram handlers must not expect footer text in
   `args`. The in-process GitHub/Jira custom-skill dispatch (`external_skill_dispatch`) does
   **not** strip — multi-line @mention context and the appended Jira key must still reach the
   handler unchanged.

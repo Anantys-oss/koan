@@ -778,11 +778,69 @@ class TestDispatchSkill:
 
         with patch("app.command_handlers.execute_skill", return_value="done") as mock_exec:
             handle_command(
-                "/add webpros-cpanel/ea-re2c\n*Sent using* @Claude"
+                "/add my-org/my-toolkit\n*Sent using* @Claude"
             )
 
         captured_args = mock_exec.call_args[0][1].args
-        assert captured_args == "webpros-cpanel/ea-re2c"
+        assert captured_args == "my-org/my-toolkit"
+
+    def test_blank_line_before_footer_is_trimmed(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """Slack leaves a blank line in front of the footer — don't keep it."""
+        from app.command_handlers import handle_command
+        from app.skills import Skill
+
+        skill = MagicMock(spec=Skill)
+        skill.worker = False
+        mock_registry.find_by_command.return_value = skill
+
+        with patch("app.command_handlers.execute_skill", return_value="done") as mock_exec:
+            handle_command("/add my-org/my-toolkit\n\n*Sent using* @Claude")
+
+        captured_args = mock_exec.call_args[0][1].args
+        assert captured_args == "my-org/my-toolkit"
+
+    def test_single_line_args_mentioning_footer_phrase_preserved(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """A one-line command whose text mentions the phrase keeps its args.
+
+        Without the "requires a preceding line" guard, `/idea log which
+        messages were Sent using the fallback provider` would dispatch with
+        empty args and the user's text would vanish.
+        """
+        from app.command_handlers import handle_command
+        from app.skills import Skill
+
+        skill = MagicMock(spec=Skill)
+        skill.worker = False
+        mock_registry.find_by_command.return_value = skill
+
+        text = "log which messages were Sent using the fallback provider"
+        with patch("app.command_handlers.execute_skill", return_value="done") as mock_exec:
+            handle_command(f"/idea {text}")
+
+        captured_args = mock_exec.call_args[0][1].args
+        assert captured_args == text
+
+    def test_multiline_args_final_line_mentioning_phrase_preserved(
+        self, patch_bridge_state, mock_send, mock_registry
+    ):
+        """A real final line that merely mentions the phrase is not a footer."""
+        from app.command_handlers import handle_command
+        from app.skills import Skill
+
+        skill = MagicMock(spec=Skill)
+        skill.worker = False
+        mock_registry.find_by_command.return_value = skill
+
+        text = "step 1\nlog which messages were Sent using the fallback provider"
+        with patch("app.command_handlers.execute_skill", return_value="done") as mock_exec:
+            handle_command(f"/add {text}")
+
+        captured_args = mock_exec.call_args[0][1].args
+        assert captured_args == text
 
     def test_multiline_args_preserved_without_footer(
         self, patch_bridge_state, mock_send, mock_registry
