@@ -313,6 +313,37 @@ class TestKillOrphanedProcessGroup:
                 kill_orphaned_process_group(pgid)
         killpg.assert_not_called()
 
+    def test_a_group_it_cannot_signal_is_reported(self, capsys):
+        """On the no-systemd path this is the only lever — a refusal must show.
+
+        A descendant that changed credentials (a helper under sudo/setuid)
+        makes killpg raise PermissionError. Returning quietly there reported a
+        containment that never happened, and the leaked process kept its RSS in
+        the host's idle baseline with nothing in the logs.
+        """
+        with patch("app.subprocess_runner.os.killpg",
+                   side_effect=PermissionError(1, "operation not permitted")):
+            kill_orphaned_process_group(4242)
+        assert "could not be signalled" in capsys.readouterr().err
+
+    def test_a_group_it_cannot_probe_is_reported(self, capsys):
+        signals = []
+
+        def fake_killpg(pgid, sig):
+            signals.append(sig)
+            if sig == 0:
+                raise PermissionError(1, "operation not permitted")
+
+        with patch("app.subprocess_runner.os.killpg", side_effect=fake_killpg):
+            kill_orphaned_process_group(4242)
+        assert signals[0] == signal.SIGTERM
+        assert "could not be probed" in capsys.readouterr().err
+
+    def test_a_group_that_is_already_gone_is_quiet(self, capsys):
+        with patch("app.subprocess_runner.os.killpg", side_effect=ProcessLookupError):
+            kill_orphaned_process_group(4242)
+        assert capsys.readouterr().err == ""
+
     def test_kills_a_group_whose_leader_is_already_gone(self):
         """The case kill_process_group() cannot reach: leader reaped, child alive."""
         with tempfile.TemporaryDirectory() as tmp:

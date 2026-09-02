@@ -4,7 +4,7 @@ title: "Memory footprint: process RSS vs cgroup memory.current"
 description: "Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, the per-mission cgroup scope that kills leaked build daemons, and the anon-first triage rule."
 tags: [operations, memory, cgroup]
 created: 2026-07-13
-updated: 2026-08-31
+updated: 2026-09-02
 ---
 
 # Memory footprint: process RSS vs cgroup memory.current
@@ -151,7 +151,17 @@ daemon that has already re-parented to PID 1.
   `memory_cap_detail` in the `post_mission` hook context, reading e.g.
   `exceeded memory cap (5.9G of 5.75G)` (peak from `memory.peak`, falling back to
   `read_cgroup_memory_stat`'s `anon`). **Never retried**: re-running an
-  oversubscribed build only repeats the meltdown.
+  oversubscribed build only repeats the meltdown. The phrase is *passed into*
+  `run_post_mission` by whoever owns the mission — the sequential loop hands
+  over `app.run._last_mission_memory_cap`, a parallel session hands over its own
+  `ScopedProcess.cap_message()` (carried on `SessionResult`). The pipeline never
+  reaches for the global: a session reaped in a later iteration would otherwise
+  inherit a previous sequential mission's cap flag and never report its own.
+  Evidence that cannot be read (`memory.events` gone with the collected cgroup,
+  an unreachable manager) is *unknown*, not "the mission fit": it is logged, and
+  deliberately not reported as a cap hit, because on a clean mission the
+  collected cgroup is unreadable by definition and believing the unknown would
+  mark every ordinary mission as capped — permanently disabling the retry path.
 - **No container sweep.** Containers are children of the Docker daemon, not of
   the mission, so nothing Kōan can observe distinguishes one this mission
   started from a co-tenant's: a creation timestamp inside the mission's window
@@ -179,11 +189,14 @@ daemon that has already re-parented to PID 1.
   SIGTERM left every descendant running. A registry entry is unlinked only once
   its scope is **confirmed** stopped: this is the retry mechanism, so discarding
   a record it could not act on would destroy the only handle on a live scope.
-  `ScopedProcess.teardown` follows the same rule for scope records; only a
-  fallback `pid-<n>` record is dropped unconditionally, because a PID — unlike a
-  uuid4 unit name — can be recycled, and a stale one would aim `make stop` at an
-  unrelated process group. A retained record self-heals: once the scope really
-  is gone the next `make stop` sees `LoadState=not-found` and unlinks it.
+  `ScopedProcess.teardown` follows the same rule for scope records. A fallback
+  `pid-<n>` record is dropped rather than retried, because a PID — unlike a uuid4
+  unit name — can be recycled; and for the same reason it is **signalled only
+  after** the PID's real start time (`/proc/<pid>/stat` + `btime`, or `ps -o
+  etime=` off Linux) matches the `started_at` in the record. Unlinking a stale
+  record afterwards would not undo a SIGKILL already sent to a stranger's process
+  group. A retained scope record self-heals: once the scope really is gone the
+  next `make stop` sees `LoadState=not-found` and unlinks it.
 - **Config:** `mission_limits: { enabled, memory_reserve, memory_min,
   memory_max }` — see `instance.example/config.yaml`. Default on.
 

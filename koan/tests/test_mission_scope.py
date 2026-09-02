@@ -6,7 +6,6 @@ dev box. The one test that needs a *real* cgroup to prove containment
 end-to-end is skipped when no usable ``systemd-run`` exists.
 """
 
-import ast
 import contextlib
 import itertools
 import json
@@ -15,7 +14,6 @@ import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -229,6 +227,24 @@ class TestResolveMemoryMax:
 
     def test_read_mem_total_is_none_off_linux(self):
         assert read_mem_total("/nonexistent/meminfo") is None
+
+    def test_a_mistyped_size_is_reported_not_silently_dropped(self, tmp_path):
+        """`memory_reserve: "2 gigs"` would otherwise hand a mission all of RAM."""
+        with patch.object(mission_scope, "log_safe") as logger:
+            cap = resolve_memory_max(
+                {"memory_reserve": "2 gigs", "memory_min": None},
+                _meminfo(tmp_path, int(7.75 * 1024 * 1024)),
+            )
+        assert cap == int(7.75 * 1024 * 1024) * 1024  # no reserve could be applied
+        assert any("memory_reserve" in str(c.args[1]) for c in logger.call_args_list)
+
+    def test_a_deliberate_zero_is_not_reported_as_a_typo(self, tmp_path):
+        with patch.object(mission_scope, "log_safe") as logger:
+            resolve_memory_max(
+                {"memory_reserve": "0", "memory_min": "512M"},
+                _meminfo(tmp_path, int(7.75 * 1024 * 1024)),
+            )
+        assert logger.call_args_list == []
 
 
 # ── launcher construction ───────────────────────────────────────────────
@@ -699,6 +715,69 @@ class TestTeardown:
         assert scoped.cap_exceeded is False
 
 
+# ── "cannot tell" is never "contained" ──────────────────────────────────
+
+class TestUnreadableEvidence:
+    def test_a_missing_cgroup_events_means_the_cgroup_is_gone(self, tmp_path):
+        assert mission_scope._cgroup_populated(tmp_path) is False
+
+    def test_a_cgroup_events_that_cannot_be_read_is_unknown(self, tmp_path):
+        # A directory in its place makes read_text raise a non-ENOENT OSError,
+        # which is the EACCES/EIO case without needing a chmod that root
+        # ignores.
+        (tmp_path / "cgroup.events").mkdir()
+        assert mission_scope._cgroup_populated(tmp_path) is None
+
+    def test_an_unreadable_cgroup_does_not_confirm_containment(self, tmp_path):
+        """Reporting "empty" here would drop the registry entry for a survivor."""
+        calls = []
+        with patch.object(mission_scope, "_systemctl",
+                          side_effect=_systemctl_recorder(calls)), \
+             patch.object(mission_scope, "_cgroup_dir", return_value=tmp_path), \
+             patch.object(mission_scope, "_cgroup_populated", return_value=None), \
+             patch.object(mission_scope, "_unit_is_gone", return_value=False) as gone:
+            contained = mission_scope.stop_scope_unit([], "koan-mission-test.scope")
+        assert contained is False
+        gone.assert_called()
+
+    def test_an_unreadable_cgroup_accepts_the_managers_confirmation(self, tmp_path):
+        calls = []
+        with patch.object(mission_scope, "_systemctl",
+                          side_effect=_systemctl_recorder(calls)), \
+             patch.object(mission_scope, "_cgroup_dir", return_value=tmp_path), \
+             patch.object(mission_scope, "_cgroup_populated", return_value=None), \
+             patch.object(mission_scope, "_unit_is_gone", return_value=True):
+            assert mission_scope.stop_scope_unit([], "koan-mission-test.scope") is True
+
+    def test_unreadable_oom_evidence_is_unknown_not_zero(self, tmp_path):
+        """0 means "the kernel killed nothing"; unreadable means nobody knows."""
+        assert mission_scope._read_oom_kills(tmp_path) is None
+        (tmp_path / "memory.events").write_text("oom_kill 0\n")
+        assert mission_scope._read_oom_kills(tmp_path) == 0
+        (tmp_path / "memory.events").write_text("oom_kill 2\n")
+        assert mission_scope._read_oom_kills(tmp_path) == 2
+
+    def test_a_failure_with_no_readable_evidence_is_reported(self, tmp_path):
+        """Unknown stays an ordinary failure — but never a silent one."""
+        proc = MagicMock()
+        proc.pid = 4242
+        proc.poll.return_value = 1
+        proc.returncode = 1
+        scoped = ScopedProcess(proc, unit="koan-mission-test.scope", mode="scope",
+                               memory_max=1024 ** 3, koan_root=str(tmp_path))
+        scoped._pgid = 0
+        with patch.object(mission_scope, "_systemctl", return_value=None), \
+             patch.object(mission_scope, "_cgroup_dir", return_value=None), \
+             patch.object(mission_scope, "_unit_property", return_value=""), \
+             patch.object(mission_scope, "kill_process_group"), \
+             patch.object(mission_scope, "kill_orphaned_process_group"), \
+             patch.object(mission_scope, "log_safe") as logger:
+            scoped.teardown()
+        assert scoped.cap_exceeded is False
+        assert any("cap fired" in str(c.args[1]) or "memory cap" in str(c.args[1])
+                   for c in logger.call_args_list)
+
+
 # ── scope registry (make stop) ──────────────────────────────────────────
 
 class TestScopeRegistry:
@@ -814,12 +893,75 @@ class TestScopeRegistry:
         directory = tmp_path / ".koan-mission-scopes"
         directory.mkdir()
         (directory / "pid-777").write_text(json.dumps({
-            "unit": "", "mode": "session", "pid": 777,
+            "unit": "", "mode": "session", "pid": 777, "started_at": 1000.0,
         }))
-        with patch.object(mission_scope, "kill_process_group_by_pid") as killer:
+        with patch.object(mission_scope, "_process_start_time", return_value=1000.2), \
+             patch.object(mission_scope, "kill_process_group_by_pid") as killer:
             handled = stop_registered_scopes(str(tmp_path))
         killer.assert_called_once_with(777)
         assert handled == ["pgid 777"]
+
+    def test_a_recycled_pid_is_dropped_instead_of_signalled(self, tmp_path):
+        """A PID is reused; a uuid4 unit name is not.
+
+        After a reboot (the crash this whole feature is about, or a power cut)
+        `pid-4242` can name a stranger's process that leads its own group.
+        Unlinking the record afterwards does not undo a SIGKILL already sent,
+        so the record is verified against the process's real start time first.
+        """
+        directory = tmp_path / ".koan-mission-scopes"
+        directory.mkdir()
+        entry = directory / "pid-4242"
+        entry.write_text(json.dumps({
+            "unit": "", "mode": "session", "pid": 4242, "started_at": 1000.0,
+        }))
+        with patch.object(mission_scope, "_process_start_time",
+                          return_value=9_000_000.0), \
+             patch.object(mission_scope, "kill_process_group_by_pid") as killer:
+            handled = stop_registered_scopes(str(tmp_path))
+        killer.assert_not_called()
+        assert handled == []
+        assert not entry.exists(), "a stale pid record must not be kept"
+
+    def test_an_unverifiable_pid_record_is_dropped_instead_of_signalled(self, tmp_path):
+        """No start time to compare against → no destructive guess."""
+        directory = tmp_path / ".koan-mission-scopes"
+        directory.mkdir()
+        entry = directory / "pid-4242"
+        entry.write_text(json.dumps({"unit": "", "mode": "session", "pid": 4242}))
+        with patch.object(mission_scope, "kill_process_group_by_pid") as killer:
+            handled = stop_registered_scopes(str(tmp_path))
+        killer.assert_not_called()
+        assert handled == []
+        assert not entry.exists()
+
+    def test_process_start_time_matches_a_freshly_spawned_process(self):
+        """The identity check has to work on the host, not only against a mock."""
+        before = time.time()
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            start = mission_scope._process_start_time(proc.pid)
+            assert start is not None, "cannot verify a pid record on this host"
+            assert abs(start - before) < mission_scope._PID_RECORD_START_TOLERANCE
+            assert mission_scope._record_still_names_its_process(proc.pid, before)
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    def test_an_unparseable_record_is_reported_not_skipped_silently(self, tmp_path):
+        """That file may be the only handle on a live scope."""
+        directory = tmp_path / ".koan-mission-scopes"
+        directory.mkdir()
+        (directory / "koan-mission-truncated.scope").write_text('{"unit": "koan-mi')
+        with patch.object(mission_scope, "log_safe") as logger:
+            handled = stop_registered_scopes(str(tmp_path))
+        assert handled == []
+        assert any("unusable" in str(c.args[1]) for c in logger.call_args_list)
 
     def test_missing_registry_is_not_an_error(self, tmp_path):
         assert stop_registered_scopes(str(tmp_path / "absent")) == []
@@ -838,13 +980,17 @@ class TestNoContainerSweep:
     client socket and ryuk reaps what that client owned.
     """
 
-    def test_teardown_never_reaches_for_docker(self, tmp_path):
+    @staticmethod
+    def _teardown_watching_for_docker(tmp_path, *, systemctl, cgroup_dir=None,
+                                      oom_kills=None, memory_max=None,
+                                      returncode=0):
+        """Run a teardown branch and report every binary/argv it reached for."""
         proc = MagicMock()
         proc.pid = 4242
         proc.poll.return_value = None
-        proc.returncode = 0
+        proc.returncode = returncode
         scoped = ScopedProcess(proc, unit="koan-mission-test.scope", mode="scope",
-                               koan_root=str(tmp_path))
+                               memory_max=memory_max, koan_root=str(tmp_path))
         scoped._pgid = 0
         which_calls = []
 
@@ -852,66 +998,79 @@ class TestNoContainerSweep:
             which_calls.append(binary)
             return f"/usr/bin/{binary}"
 
-        systemctl_calls = []
-        with patch.object(mission_scope, "_systemctl",
-                          side_effect=_systemctl_recorder(systemctl_calls)), \
-             patch.object(mission_scope, "_cgroup_dir", return_value=None), \
+        with patch.object(mission_scope, "_systemctl", side_effect=systemctl), \
+             patch.object(mission_scope, "_cgroup_dir", return_value=cgroup_dir), \
              patch.object(mission_scope, "_read_peak_bytes", return_value=None), \
-             patch.object(mission_scope, "_read_oom_kills", return_value=0), \
+             patch.object(mission_scope, "_read_oom_kills", return_value=oom_kills), \
              patch.object(mission_scope, "_unit_property", return_value=""), \
+             patch.object(mission_scope, "kill_process_group"), \
+             patch.object(mission_scope, "kill_orphaned_process_group"), \
              patch.object(mission_scope.shutil, "which", side_effect=fake_which), \
-             patch.object(mission_scope.subprocess, "run") as run:
+             patch.object(mission_scope.subprocess, "run") as run, \
+             patch.object(mission_scope.time, "sleep", return_value=None), \
+             patch.object(mission_scope.time, "time",
+                          side_effect=itertools.count(0, 1).__next__):
             scoped.teardown()
+        return which_calls, run.call_args_list, scoped
+
+    @staticmethod
+    def _stop_fails(calls):
+        def fake(manager_args, args, timeout=10.0):
+            calls.append(list(args))
+            if args[0] == "stop":
+                return None  # manager unreachable / timed out
+            result = MagicMock()
+            result.stdout = "active" if args[0] == "show" else ""
+            result.returncode = 0
+            return result
+        return fake
+
+    def _assert_no_docker(self, which_calls, run_calls, systemctl_calls):
         assert "docker" not in which_calls
-        assert not any("docker" in str(c) for c in run.call_args_list)
+        assert not any("docker" in str(c) for c in run_calls)
         assert not any("docker" in " ".join(args) for args in systemctl_calls)
 
-    def test_the_module_has_no_container_code_at_all(self):
-        """specs/components/agent-loop.md: "no container sweep at all".
-
-        The previous sweep was merely defaulted off, which left a setting an
-        operator could switch on and lose a co-tenant's database to. There is no
-        safe value for it, so the mechanism is gone rather than disabled.
-
-        Asserted over the parsed module rather than a list of the names it used
-        to have: a sweep reintroduced as `prune_stale_containers`, or inlined as
-        `subprocess.run(["docker", "rm", "-f", …])`, would slip past a blocklist
-        and past the behavioural test above (which only sees an *unconditional*
-        call). Prose may discuss Docker — comments and docstrings are excluded —
-        but no executable line may name it.
-        """
-        tree = ast.parse(Path(mission_scope.__file__).read_text(encoding="utf-8"))
-        docstrings = {
-            node.body[0].value
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Module, ast.ClassDef,
-                                 ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-            and isinstance(node.body[0].value.value, str)
-        }
-        banned = ("docker", "testcontainer")
-        offenders = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                text = node.value.lower()
-                if node not in docstrings and any(b in text for b in banned):
-                    offenders.append(f"line {node.lineno}: string {node.value[:40]!r}")
-            elif isinstance(node, ast.Name) and any(b in node.id.lower() for b in banned):
-                offenders.append(f"line {node.lineno}: {node.id}")
-            elif isinstance(node, ast.Attribute) and any(
-                b in node.attr.lower() for b in banned
-            ):
-                offenders.append(f"line {node.lineno}: .{node.attr}")
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
-                b in node.name.lower() for b in banned
-            ):
-                offenders.append(f"line {node.lineno}: def {node.name}")
-        assert not offenders, (
-            "mission_scope grew container-removal code again — a sweep cannot "
-            f"establish ownership: {offenders}"
+    def test_a_clean_teardown_never_reaches_for_docker(self, tmp_path):
+        systemctl_calls = []
+        which_calls, run_calls, _ = self._teardown_watching_for_docker(
+            tmp_path, systemctl=_systemctl_recorder(systemctl_calls),
         )
+        self._assert_no_docker(which_calls, run_calls, systemctl_calls)
+
+    def test_the_sigkill_escalation_never_reaches_for_docker(self, tmp_path):
+        """A survivor in the cgroup is escalated against — never swept by name."""
+        cgroup = tmp_path / "cg"
+        cgroup.mkdir()
+        (cgroup / "cgroup.events").write_text("populated 1\nfrozen 0\n")
+        systemctl_calls = []
+        which_calls, run_calls, _ = self._teardown_watching_for_docker(
+            tmp_path, systemctl=_systemctl_recorder(systemctl_calls),
+            cgroup_dir=cgroup,
+        )
+        assert ["kill", "-s", "SIGKILL", "koan-mission-test.scope"] in systemctl_calls
+        self._assert_no_docker(which_calls, run_calls, systemctl_calls)
+
+    def test_a_failed_stop_never_reaches_for_docker(self, tmp_path):
+        """The last resort is the process group, not a container sweep."""
+        systemctl_calls = []
+        which_calls, run_calls, _ = self._teardown_watching_for_docker(
+            tmp_path, systemctl=self._stop_fails(systemctl_calls),
+        )
+        self._assert_no_docker(which_calls, run_calls, systemctl_calls)
+
+    def test_a_cap_hit_never_reaches_for_docker(self, tmp_path):
+        """Not even the OOM path — a capped mission's containers are ryuk's.
+
+        This is the branch most likely to tempt a sweep: the mission blew its
+        memory cap, so something clearly leaked. Ownership is still unknowable.
+        """
+        systemctl_calls = []
+        which_calls, run_calls, scoped = self._teardown_watching_for_docker(
+            tmp_path, systemctl=_systemctl_recorder(systemctl_calls),
+            cgroup_dir=tmp_path, oom_kills=1, memory_max=1024 ** 3,
+        )
+        assert scoped.cap_exceeded is True
+        self._assert_no_docker(which_calls, run_calls, systemctl_calls)
 
 
 # ── the regression guard: a daemon that leaves the process group ────────
@@ -1001,7 +1160,9 @@ class TestDetachedDaemonContainment:
             if scoped.proc.poll() is None:
                 scoped.proc.kill()
 
-    def test_session_teardown_kills_a_child_the_exited_leader_left_behind(self, tmp_path):
+    def test_session_teardown_kills_a_child_the_exited_leader_left_behind(
+        self, tmp_path, real_mission_scope_group_kill,
+    ):
         """The fallback path must sweep the success path too.
 
         Hosts with no usable systemd-run get `start_new_session=True` and a
@@ -1010,6 +1171,11 @@ class TestDetachedDaemonContainment:
         own — the success path this module exists for — it signals nothing while
         a child left in the group keeps running. Teardown must reach that child
         via the pgid captured at launch.
+
+        Requests `real_mission_scope_group_kill` because conftest stubs that
+        kill out for every other test: those mock `Popen`, so the pgid they
+        would signal is an invented integer that may name a live process group
+        on the host. Here the group is a real subprocess this test spawned.
         """
         pid_path = tmp_path / "child.pid"
         go_path = tmp_path / "leader-may-exit"

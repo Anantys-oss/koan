@@ -839,13 +839,25 @@ def get_mission_limits_config() -> dict:
 
     Size values are parsed by :func:`app.mission_scope.parse_size` (``2G``,
     ``512M``, or a bare byte count), so they are passed through as-is here.
+
+    An explicitly null key falls back to the default rather than to ``None``:
+    ``_get_config_with_overrides`` merges as ``{**defaults, **section}``, so a
+    bare ``enabled:`` would otherwise read as False and silently turn
+    containment off, and a bare ``memory_reserve:`` would drop the reserve and
+    hand a mission all of RAM. ``memory_max`` is the one key where null is the
+    documented value ("no absolute override"), and it defaults to null anyway.
     """
     section = _get_config_with_overrides("mission_limits", _MISSION_LIMITS_DEFAULTS)
+
+    def _or_default(key):
+        value = section.get(key)
+        return _MISSION_LIMITS_DEFAULTS[key] if value is None else value
+
     return {
-        "enabled": bool(section["enabled"]),
-        "memory_reserve": section["memory_reserve"],
-        "memory_min": section["memory_min"],
-        "memory_max": section["memory_max"],
+        "enabled": bool(_or_default("enabled")),
+        "memory_reserve": _or_default("memory_reserve"),
+        "memory_min": _or_default("memory_min"),
+        "memory_max": section.get("memory_max"),
     }
 
 

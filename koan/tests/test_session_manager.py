@@ -821,6 +821,54 @@ class TestParallelSessionScopeTeardown:
 
         assert order == ["teardown", "cleanup"]
 
+    def test_poll_sessions_reports_the_sessions_own_cap_hit(
+        self, registry, sample_session,
+    ):
+        """A capped parallel session must report its own cap, not a global.
+
+        The verdict is read after teardown(), which is what collects the
+        cgroup's OOM evidence.
+        """
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 137
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock()
+        scoped = MagicMock()
+        scoped.cap_message.return_value = "exceeded memory cap (5.9G of 5.75G)"
+        sample_session._scoped = scoped
+        sample_session.stdout_file = ""
+        sample_session.stderr_file = ""
+
+        registry.register(sample_session)
+        results = poll_sessions([sample_session], registry)
+
+        assert results[0].memory_cap_detail == "exceeded memory cap (5.9G of 5.75G)"
+
+    def test_poll_sessions_never_borrows_the_sequential_missions_cap(
+        self, registry, sample_session,
+    ):
+        """A session that fit reports nothing, whatever the agent loop last saw."""
+        import app.run as run_mod
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock()
+        scoped = MagicMock()
+        scoped.cap_message.return_value = ""
+        sample_session._scoped = scoped
+        sample_session.stdout_file = ""
+        sample_session.stderr_file = ""
+
+        registry.register(sample_session)
+        run_mod._last_mission_memory_cap = "exceeded memory cap (5.9G of 5.75G)"
+        try:
+            results = poll_sessions([sample_session], registry)
+        finally:
+            run_mod._last_mission_memory_cap = ""
+
+        assert results[0].memory_cap_detail == ""
+
     def test_a_teardown_failure_still_collects_the_other_sessions(
         self, registry, sample_session, capsys,
     ):

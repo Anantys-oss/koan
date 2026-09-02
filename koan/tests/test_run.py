@@ -8847,9 +8847,13 @@ class TestMissionScopeTeardown:
         assert run_mod._last_mission_memory_cap == (
             "exceeded memory cap (5.9G of 5.75G)"
         )
-        # run_post_mission surfaces it to the post_mission hook context.
-        from app.mission_runner import _read_memory_cap_detail
-        assert _read_memory_cap_detail() == "exceeded memory cap (5.9G of 5.75G)"
+        # mission_executor hands that phrase to run_post_mission, which turns
+        # it into the post_mission hook's cap keys.
+        from app.mission_runner import _memory_cap_result
+        assert _memory_cap_result(run_mod._last_mission_memory_cap) == {
+            "memory_cap_exceeded": True,
+            "memory_cap_detail": "exceeded memory cap (5.9G of 5.75G)",
+        }
         run_mod._last_mission_memory_cap = ""
 
     def test_teardown_failure_never_masks_the_mission_result(self, tmp_path):

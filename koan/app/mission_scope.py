@@ -81,6 +81,10 @@ _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
 _probe_cache: Optional[Tuple[Optional[str], List[str]]] = None
 _fallback_warned = False
 
+# (key, raw value) pairs already reported as unparseable, so a permanently bad
+# config.yaml costs one log line rather than one per mission.
+_warned_bad_sizes: set = set()
+
 
 # ---------------------------------------------------------------------------
 # Size parsing and cap resolution
@@ -132,6 +136,37 @@ def read_mem_total(meminfo_path: str = _MEMINFO_PATH) -> Optional[int]:
     return None
 
 
+def _configured_size(config: dict, key: str) -> Optional[int]:
+    """:func:`parse_size` for a ``mission_limits`` key, loud about junk.
+
+    ``parse_size`` cannot tell "unset" from "unparseable", and the caller
+    coerces None to 0 — so a typo like ``memory_reserve: 2 gigs`` would
+    silently drop the reserve and let a mission have all of RAM, which is the
+    host meltdown this module exists to prevent. Report it instead; the value
+    is still ignored, because guessing at a size an operator mistyped is worse
+    than falling back to the documented default behaviour.
+    """
+    raw = config.get(key)
+    parsed = parse_size(raw)
+    if parsed is not None or raw is None or raw == "":
+        return parsed
+    # A value in a size *shape* that resolves to zero ("0", 0) is an explicit
+    # "none of this", not a typo. Only text the grammar rejects is reported.
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return parsed
+    if _SIZE_RE.match(str(raw)):
+        return parsed
+    marker = (key, str(raw))
+    if marker not in _warned_bad_sizes:
+        _warned_bad_sizes.add(marker)
+        log_safe(
+            "warn",
+            f"mission_scope: mission_limits.{key}={raw!r} is not a size "
+            f"(2G / 512M / a byte count) — ignoring it",
+        )
+    return parsed
+
+
 def resolve_memory_max(config: dict, meminfo_path: str = _MEMINFO_PATH) -> Optional[int]:
     """Bytes for ``MemoryMax``, or None when no cap can be resolved.
 
@@ -145,14 +180,14 @@ def resolve_memory_max(config: dict, meminfo_path: str = _MEMINFO_PATH) -> Optio
     on any host, so a percentage under-reserves exactly where it hurts. The
     floor keeps the smallest hosts able to run a mission at all.
     """
-    explicit = parse_size(config.get("memory_max"))
+    explicit = _configured_size(config, "memory_max")
     if explicit:
         return explicit
     total = read_mem_total(meminfo_path)
     if not total:
         return None
-    reserve = parse_size(config.get("memory_reserve")) or 0
-    floor = parse_size(config.get("memory_min")) or 0
+    reserve = _configured_size(config, "memory_reserve") or 0
+    floor = _configured_size(config, "memory_min") or 0
     cap = max(floor, total - reserve)
     # A reserve larger than RAM with no floor would otherwise produce
     # MemoryMax=0, which the kernel reads as "kill on first page".
@@ -199,7 +234,7 @@ def systemd_run() -> Tuple[Optional[str], List[str]]:
 
 
 def reset_probe_cache() -> None:
-    """Forget the cached probe (and the one-shot fallback warning).
+    """Forget the cached probe (and the one-shot warnings).
 
     Exists so tests can exercise both the scope and the fallback path in one
     session — macOS dev machines have no systemd at all, so the probe is always
@@ -208,6 +243,7 @@ def reset_probe_cache() -> None:
     global _probe_cache, _fallback_warned
     _probe_cache = None
     _fallback_warned = False
+    _warned_bad_sizes.clear()
 
 
 def _warn_fallback_once(reason: str) -> None:
@@ -243,6 +279,12 @@ def read_registered_scopes(koan_root: Optional[str] = None) -> List[dict]:
     One file per scope rather than one shared JSON file: registration and
     de-registration are then a create and an unlink, with no read-modify-write
     for parallel sessions to race on.
+
+    A record that cannot be read or parsed is the *only* durable handle on a
+    scope whose descendants have left every process group, so it is reported
+    rather than skipped in silence — an invisible handle is indistinguishable
+    from "nothing to stop", which is exactly the report an operator must not
+    get while a 766 MB daemon is still resident.
     """
     directory = _registry_dir(koan_root)
     if directory is None:
@@ -250,17 +292,118 @@ def read_registered_scopes(koan_root: Optional[str] = None) -> List[dict]:
     records = []
     try:
         entries = sorted(directory.iterdir())
-    except OSError:
+    except FileNotFoundError:
+        return []  # no mission has run yet — the ordinary case
+    except OSError as exc:
+        log_safe("error", f"mission_scope: registry {directory} unreadable: {exc}")
         return []
     for entry in entries:
         try:
             record = json.loads(entry.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            log_safe(
+                "error",
+                f"mission_scope: registry record {entry} unusable ({exc}) — its "
+                f"scope, if still alive, can no longer be reached from here",
+            )
             continue
         if isinstance(record, dict):
             record["_path"] = str(entry)
             records.append(record)
     return records
+
+
+# A PID record is trusted only when the process's real start time matches the
+# one recorded at launch. Spawn-to-record latency is milliseconds; the window
+# is generous only against coarse `ps etime` granularity and clock nudges.
+_PID_RECORD_START_TOLERANCE = 30.0
+
+
+def _boot_time() -> Optional[float]:
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("btime "):
+                    return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _parse_etime(value: str) -> Optional[float]:
+    """Seconds from ``ps -o etime=`` (``[[dd-]hh:]mm:ss``)."""
+    text = value.strip()
+    if not text:
+        return None
+    days = 0
+    if "-" in text:
+        day_part, _, text = text.partition("-")
+        try:
+            days = int(day_part)
+        except ValueError:
+            return None
+    parts = text.split(":")
+    if len(parts) not in (2, 3):
+        return None
+    try:
+        numbers = [int(p) for p in parts]
+    except ValueError:
+        return None
+    if len(numbers) == 2:
+        numbers.insert(0, 0)
+    hours, minutes, seconds = numbers
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _process_start_time(pid: int) -> Optional[float]:
+    """Epoch seconds when *pid* started, or None when it cannot be determined.
+
+    ``/proc/<pid>/stat`` field 22 (clock ticks since boot) plus ``btime`` on
+    Linux; ``ps -o etime=`` everywhere else, so a macOS dev box — where the
+    fallback path is the *normal* one — still gets a verified `make stop`.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as f:
+            # The comm field can contain spaces and parentheses; everything
+            # after the last ')' is fixed-width, so state is index 0 (field 3)
+            # and starttime (field 22) is index 19.
+            fields = f.read().rpartition(")")[2].split()
+        boot = _boot_time()
+        if boot is not None:
+            return boot + float(fields[19]) / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, AttributeError):
+        pass
+    binary = shutil.which("ps")
+    if not binary:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "-p", str(pid), "-o", "etime="],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    elapsed = _parse_etime(result.stdout or "")
+    return time.time() - elapsed if elapsed is not None else None
+
+
+def _record_still_names_its_process(pid: int, started_at) -> bool:
+    """True only when *pid* is still the process the record was written for.
+
+    A PID is recycled; a uuid4 unit name is not. After a reboot (or enough
+    churn) ``pid-4242`` can name an unrelated process that leads its own
+    group, and signalling it would SIGKILL a stranger's whole group — the one
+    destructive mistake this registry can make. Kill only on a start-time
+    match; anything unverifiable is dropped instead.
+    """
+    if not isinstance(started_at, (int, float)) or isinstance(started_at, bool):
+        return False
+    start = _process_start_time(pid)
+    if start is None:
+        return False
+    return abs(start - float(started_at)) <= _PID_RECORD_START_TOLERANCE
 
 
 def stop_registered_scopes(koan_root: Optional[str] = None) -> List[str]:
@@ -277,7 +420,10 @@ def stop_registered_scopes(koan_root: Optional[str] = None) -> List[str]:
     cannot reach descendants that have left it. ``ScopedProcess.teardown``
     follows the same rule for its scope records; only a fallback ``pid-<n>``
     record is dropped unconditionally, because a PID (unlike a uuid4 unit name)
-    can be recycled and a stale one would aim this at an unrelated group.
+    can be recycled — and for the same reason it is signalled only after
+    :func:`_record_still_names_its_process` confirms the PID is the process the
+    record was written for. Dropping a stale record afterwards would not undo
+    the SIGKILL it had already sent to a stranger's process group.
     """
     handled = []
     for record in read_registered_scopes(koan_root):
@@ -294,8 +440,15 @@ def stop_registered_scopes(koan_root: Optional[str] = None) -> List[str]:
                 continue
             handled.append(unit)
         elif isinstance(pid, int) and pid > 0:
-            kill_process_group_by_pid(pid)
-            handled.append(f"pgid {pid}")
+            if _record_still_names_its_process(pid, record.get("started_at")):
+                kill_process_group_by_pid(pid)
+                handled.append(f"pgid {pid}")
+            else:
+                log_safe(
+                    "warn",
+                    f"mission_scope: dropping stale registry record pid-{pid} — "
+                    f"that PID is no longer the process it was written for",
+                )
         path = record.get("_path")
         if path:
             Path(path).unlink(missing_ok=True)
@@ -335,14 +488,23 @@ def _cgroup_dir(manager_args: List[str], unit: str) -> Optional[Path]:
     return path if path.is_dir() else None
 
 
-def _cgroup_populated(cgroup_dir: Path) -> bool:
-    """True while any process remains in the cgroup (including sub-cgroups)."""
+def _cgroup_populated(cgroup_dir: Path) -> Optional[bool]:
+    """Whether any process remains in the cgroup — None when it cannot be read.
+
+    Only ``FileNotFoundError`` proves the cgroup is gone and therefore holds
+    nothing. Every other ``OSError`` (EACCES on a cgroup delegated to another
+    manager, EIO, a v1 layout with no ``cgroup.events``) means "cannot tell",
+    and reporting that as empty would claim a containment this module refuses
+    to claim unverified — the survivor would then be dropped from the registry
+    and unreachable by any later `make stop`.
+    """
     try:
         events = (cgroup_dir / "cgroup.events").read_text(encoding="utf-8")
-    except OSError:
-        # Directory gone → nothing left to hold. Any other read error is
-        # reported as "unknown but not populated": we already sent the stop.
+    except FileNotFoundError:
         return False
+    except OSError as exc:
+        log_safe("error", f"mission_scope: {cgroup_dir}/cgroup.events unreadable: {exc}")
+        return None
     for line in events.splitlines():
         parts = line.split()
         if len(parts) == 2 and parts[0] == "populated":
@@ -393,7 +555,11 @@ def _await_empty_cgroup(
                 return True
             time.sleep(0.5)
             continue
-        if not _cgroup_populated(cgroup_dir):
+        populated = _cgroup_populated(cgroup_dir)
+        if populated is False:
+            return True
+        if populated is None and _unit_is_gone(manager_args, unit):
+            # Cannot read the cgroup; only the manager can still confirm it.
             return True
         time.sleep(0.2)
     log_safe("error", f"mission_scope: {unit} survived SIGKILL — abandoning")
@@ -416,8 +582,13 @@ def stop_scope_unit(manager_args: List[str], unit: str) -> bool:
     result = _systemctl(manager_args, ["stop", unit])
     if result is not None and result.returncode == 0:
         cgroup_dir = _cgroup_dir(manager_args, unit)
-        if cgroup_dir is None or not _cgroup_populated(cgroup_dir):
+        populated = _cgroup_populated(cgroup_dir) if cgroup_dir is not None else False
+        if populated is False:
             return True
+        if populated is None:
+            # The cgroup exists but says nothing. "Cannot tell" is not "empty":
+            # only the manager confirming the unit is gone counts as contained.
+            return _unit_is_gone(manager_args, unit)
         # A process ignoring SIGTERM (the scope's default KillSignal) keeps the
         # cgroup populated. Escalate rather than report a clean teardown.
         log_safe("warn", f"mission_scope: {unit} still populated after stop — SIGKILL")
@@ -437,19 +608,35 @@ def stop_scope_unit(manager_args: List[str], unit: str) -> bool:
     return _await_empty_cgroup(manager_args, unit, _cgroup_dir(manager_args, unit))
 
 
-def _read_oom_kills(cgroup_dir: Path) -> int:
+def _read_oom_kills(cgroup_dir: Path) -> Optional[int]:
+    """Kernel OOM kills inside the scope — None when the evidence is unreadable.
+
+    ``0`` means "the kernel killed nothing", which is a genuine outcome. A file
+    that is missing, unreadable or malformed means the outcome is *unknown*,
+    and collapsing the two hides a cap hit inside an ordinary failure.
+    """
     try:
         events = (cgroup_dir / "memory.events").read_text(encoding="utf-8")
-    except OSError:
-        return 0
+    except OSError as exc:
+        log_safe(
+            "debug",
+            f"mission_scope: {cgroup_dir}/memory.events unreadable ({exc}) — "
+            f"cap evidence unavailable",
+        )
+        return None
     for line in events.splitlines():
         parts = line.split()
         if len(parts) == 2 and parts[0] == "oom_kill":
             try:
                 return int(parts[1])
             except ValueError:
-                return 0
-    return 0
+                log_safe(
+                    "error",
+                    f"mission_scope: {cgroup_dir}/memory.events has a "
+                    f"non-numeric oom_kill value {parts[1]!r}",
+                )
+                return None
+    return None
 
 
 def _read_peak_bytes(cgroup_dir: Path) -> Optional[int]:
@@ -501,7 +688,9 @@ class ScopedProcess:
         self.memory_max = memory_max
         self.started_at = time.time()
         self.peak_bytes: Optional[int] = None
-        self.oom_kills = 0
+        # None = the kernel's evidence could not be read, which is not the same
+        # outcome as "it killed nothing" (0).
+        self.oom_kills: Optional[int] = None
         self.cap_exceeded = False
         self._koan_root = koan_root
         self._pgid = self._read_pgid()
@@ -537,22 +726,25 @@ class ScopedProcess:
     # -- registry ---------------------------------------------------------
 
     def _register(self) -> None:
-        """Record this scope so ``make stop`` can reach it. Never fatal."""
+        """Record this scope so ``make stop`` can reach it. Never fatal.
+
+        Written atomically: a crash mid-write would otherwise leave a truncated
+        record, and a record that cannot be parsed is a live scope `make stop`
+        can no longer name.
+        """
         entry = _registry_entry(self._koan_root, self._registry_name)
         if entry is None:
             return
         try:
+            from app.utils import atomic_write
             entry.parent.mkdir(parents=True, exist_ok=True)
-            entry.write_text(
-                json.dumps({
-                    "unit": self.unit,
-                    "manager_args": self.manager_args,
-                    "mode": self.mode,
-                    "pid": self.pid,
-                    "started_at": self.started_at,
-                }),
-                encoding="utf-8",
-            )
+            atomic_write(entry, json.dumps({
+                "unit": self.unit,
+                "manager_args": self.manager_args,
+                "mode": self.mode,
+                "pid": self.pid,
+                "started_at": self.started_at,
+            }))
         except (OSError, TypeError, ValueError) as exc:
             # Bookkeeping for `make stop` only — never fail a mission over it.
             log_safe("error", f"mission_scope: scope registration failed: {exc}")
@@ -638,15 +830,23 @@ class ScopedProcess:
         goes inactive, so on a mission whose whole subtree already exited the
         cgroup may be gone before this runs. The exit-status branch below is
         what keeps the common cap-hit reportable anyway.
+
+        "The evidence could not be read" is a different outcome from "the
+        kernel killed nothing", and a failure with no readable evidence is
+        logged as such. It is deliberately *not* reported as a cap hit: the
+        collected cgroup of a clean mission is unreadable by definition, so
+        believing an unknown would mark ordinary missions as capped and, since
+        a cap hit is never retried, silently disable the retry path.
         """
         cgroup_dir = _cgroup_dir(self.manager_args, self.unit)
         if cgroup_dir is not None:
             self.peak_bytes = _read_peak_bytes(cgroup_dir)
             self.oom_kills = _read_oom_kills(cgroup_dir)
-        if self.oom_kills > 0:
+        if self.oom_kills:
             self.cap_exceeded = True
             return
-        if _unit_property(self.manager_args, self.unit, "Result") == "oom-kill":
+        unit_result = _unit_property(self.manager_args, self.unit, "Result")
+        if unit_result == "oom-kill":
             self.cap_exceeded = True
             return
         # No cgroup evidence left to read (unit already collected). A SIGKILL
@@ -657,6 +857,20 @@ class ScopedProcess:
             and self.proc.returncode in (-9, 137)
         ):
             self.cap_exceeded = True
+            return
+        if (
+            self.oom_kills is None
+            and not unit_result
+            and self.memory_max
+            and self.proc.returncode not in (0, None)
+        ):
+            log_safe(
+                "warn",
+                f"mission_scope: {self.unit} failed (exit "
+                f"{self.proc.returncode}) and neither the cgroup nor the "
+                f"manager could say whether the memory cap fired — reporting "
+                f"an ordinary failure",
+            )
 
     def _stop_unit(self) -> bool:
         """Stop the scope; fall back to the process group only if that failed.

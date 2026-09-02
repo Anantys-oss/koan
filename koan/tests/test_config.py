@@ -2636,6 +2636,29 @@ class TestGetMissionLimitsConfig:
         assert cfg["enabled"] is True
         assert cfg["memory_reserve"] == "2G"
 
+    def test_an_explicit_null_falls_back_to_the_default(self):
+        """`enabled:` with no value must not silently disable containment.
+
+        The merge is {**defaults, **section}, so a null key overrides rather
+        than falls through — and `bool(None)` would turn the whole feature off
+        while `memory_reserve: null` would hand a mission all of RAM.
+        """
+        from app.config import get_mission_limits_config
+        with _mock_config({
+            "mission_limits": {
+                "enabled": None,
+                "memory_reserve": None,
+                "memory_min": None,
+                "memory_max": None,
+            }
+        }):
+            cfg = get_mission_limits_config()
+        assert cfg["enabled"] is True
+        assert cfg["memory_reserve"] == "2G"
+        assert cfg["memory_min"] == "1G"
+        # memory_max is the one key where null is the documented value.
+        assert cfg["memory_max"] is None
+
 
 # --- _get_config_with_overrides (shared helper, issue #2340) ---
 

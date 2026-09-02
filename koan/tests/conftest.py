@@ -39,9 +39,21 @@ if _xdist_worker and _xdist_worker != "master":
 os.environ.pop("KOAN_SUPPRESS_RUNNER_OUTCOME", None)
 
 
+@pytest.fixture
+def real_mission_scope_group_kill():
+    """Opt back in to ``mission_scope``'s real process-group kill.
+
+    Requested by the few tests that spawn a *real* subprocess and assert its
+    group is reaped. Everything else gets the no-op stub below, because the
+    group id a mocked ``Popen`` yields is an invented integer that may name a
+    live, unrelated process group on the host running the suite.
+    """
+    return True
+
+
 @pytest.fixture(autouse=True)
-def _no_real_mission_scopes():
-    """Keep the suite out of the host's systemd manager.
+def _no_real_mission_scopes(request):
+    """Keep the suite out of the host's systemd manager and its process groups.
 
     ``run_claude_task`` / ``_run_skill_mission`` tests spawn real subprocesses
     (``echo``, ``sh -c …``), and ``mission_scope`` wraps every mission spawn in a
@@ -53,6 +65,13 @@ def _no_real_mission_scopes():
     fallback path (``start_new_session=True`` + a kill of the mission's process
     group), which is also what a macOS dev box does for real. Tests that want
     the scope path stub the probe themselves (see tests/test_mission_scope.py).
+
+    That fallback path ends in a **real** ``os.killpg``, and tests that mock
+    ``Popen`` give it an invented pid: ``ScopedProcess._read_pgid`` resolves that
+    integer against the live host, so a same-user process that happens to lead
+    group 12345 would be SIGTERMed and SIGKILLed by whoever runs ``make test``.
+    Stub the group kill out; a test that genuinely needs it requests the
+    ``real_mission_scope_group_kill`` fixture above.
     """
     try:
         from app import mission_scope
@@ -61,7 +80,14 @@ def _no_real_mission_scopes():
         return
     mission_scope.reset_probe_cache()
     try:
-        with patch.object(mission_scope, "_probe_systemd_run", return_value=(None, [])):
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                mission_scope, "_probe_systemd_run", return_value=(None, []),
+            ))
+            if "real_mission_scope_group_kill" not in request.fixturenames:
+                stack.enter_context(patch.object(
+                    mission_scope, "kill_orphaned_process_group",
+                ))
             yield
     finally:
         mission_scope.reset_probe_cache()

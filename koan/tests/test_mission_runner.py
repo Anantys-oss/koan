@@ -854,24 +854,20 @@ class TestPostMissionHookFiring:
         mock_merge, mock_hook, tmp_path,
     ):
         """A cap hit is a distinct mission result, not a generic failure."""
-        import app.run as _run
         from app.mission_runner import run_post_mission
 
         instance_dir = str(tmp_path / "instance")
         os.makedirs(instance_dir, exist_ok=True)
-        _run._last_mission_memory_cap = "exceeded memory cap (5.9G of 5.75G)"
-        try:
-            result = run_post_mission(
-                instance_dir=instance_dir,
-                project_name="koan",
-                project_path=str(tmp_path),
-                run_num=1,
-                exit_code=137,
-                stdout_file="/tmp/out.json",
-                stderr_file="/tmp/err.txt",
-            )
-        finally:
-            _run._last_mission_memory_cap = ""
+        result = run_post_mission(
+            instance_dir=instance_dir,
+            project_name="koan",
+            project_path=str(tmp_path),
+            run_num=1,
+            exit_code=137,
+            stdout_file="/tmp/out.json",
+            stderr_file="/tmp/err.txt",
+            memory_cap_detail="exceeded memory cap (5.9G of 5.75G)",
+        )
 
         assert result["memory_cap_exceeded"] is True
         assert result["memory_cap_detail"] == "exceeded memory cap (5.9G of 5.75G)"
@@ -890,21 +886,30 @@ class TestPostMissionHookFiring:
         self, mock_usage, mock_quota, mock_archive, mock_reflect,
         mock_merge, mock_hook, tmp_path,
     ):
+        """A caller that reports no cap gets no cap — even mid-agent-loop.
+
+        The sequential loop's ``app.run._last_mission_memory_cap`` belongs to
+        whatever mission it last ran. A parallel session reaped afterwards must
+        not inherit it, so the pipeline reads only what its caller passes.
+        """
         import app.run as _run
         from app.mission_runner import run_post_mission
 
         instance_dir = str(tmp_path / "instance")
         os.makedirs(instance_dir, exist_ok=True)
-        _run._last_mission_memory_cap = ""
-        result = run_post_mission(
-            instance_dir=instance_dir,
-            project_name="koan",
-            project_path=str(tmp_path),
-            run_num=1,
-            exit_code=0,
-            stdout_file="/tmp/out.json",
-            stderr_file="/tmp/err.txt",
-        )
+        _run._last_mission_memory_cap = "exceeded memory cap (5.9G of 5.75G)"
+        try:
+            result = run_post_mission(
+                instance_dir=instance_dir,
+                project_name="koan",
+                project_path=str(tmp_path),
+                run_num=1,
+                exit_code=0,
+                stdout_file="/tmp/out.json",
+                stderr_file="/tmp/err.txt",
+            )
+        finally:
+            _run._last_mission_memory_cap = ""
         assert result["memory_cap_exceeded"] is False
         assert result["memory_cap_detail"] == ""
 
