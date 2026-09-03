@@ -2286,3 +2286,20 @@ class TestStopProcessesReachesDescendants:
             assert _signal_process(12345, 15) is True
         killpg.assert_not_called()
         single.assert_called_once_with(12345, 15)
+
+    def test_a_self_referential_pid_file_degrades_to_a_single_pid_kill(self):
+        """A daemon stopping a set that includes itself must survive the sweep.
+
+        If the target leads its own group *and* that group is the caller's,
+        `killpg` takes the caller down mid-sweep: the remaining daemons keep
+        running and their `.koan-pid-*` files are never unlinked. Mirrors the
+        guard in subprocess_runner.kill_orphaned_process_group.
+        """
+        from app.pid_manager import _signal_process
+        own = os.getpgrp()
+        with patch("app.pid_manager.os.getpgid", return_value=own), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single:
+            assert _signal_process(own, 15) is True
+        killpg.assert_not_called()
+        single.assert_called_once_with(own, 15)

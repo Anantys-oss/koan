@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-09-02
+updated: 2026-09-03
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -292,7 +292,20 @@ heuristic:
   does not undo a SIGKILL already sent to a stranger's group. For the same reason
   "cannot tell" is never "contained": only `FileNotFoundError` on `cgroup.events`
   proves the cgroup is empty, and any other read failure MUST fall through to the
-  manager's own confirmation.
+  manager's own confirmation. The fallback path is held to the same standard — only
+  a `ProcessLookupError` from `killpg` proves the group is empty, so an EPERM
+  refusal, a group that outlived SIGKILL, or a pgid that was never captured MUST
+  keep the registry record rather than report a clean sweep. The rule is
+  symmetric, and its mirror binds just as hard: **known-negative evidence MUST NOT
+  be overridden by a guess.** `memory.events`' `oom_kill 0` is the kernel saying the
+  cap did not fire, and it is readable in exactly the case this contract targets (a
+  leaked daemon keeps the scope populated, so `--collect` has not reaped the
+  cgroup), so the exit-status heuristic MUST be gated on evidence that is genuinely
+  *unreadable*. Otherwise an unrelated SIGKILL — a co-tenant exhausting RAM and the
+  kernel's *global* OOM killer taking the CLI — is relabelled a cap hit and, since
+  a cap hit is never retried, permanently suppresses both retry paths. Every kill
+  Kōan issues itself MUST be attributable for the same reason, the double-tap
+  CTRL-C included: `_on_sigint` records it as an abort exactly as `/abort` does.
   The cap is `max(memory_min, MemTotal - memory_reserve)` with an explicit
   `memory_max` winning verbatim — a reserve **with a floor**, never a percentage of
   RAM, because Kōan's baseline is roughly constant while the fleet spans 1.9–7.7 GiB
@@ -304,11 +317,21 @@ heuristic:
   `SessionResult`), never read from a process-global by the pipeline — a session
   reaped in a later iteration would otherwise inherit a previous mission's flag and
   never report its own.
-  Where no scope can be created (macOS, no systemd manager) the loop warns **once**
-  and falls back to `start_new_session=True` + a kill of the process group captured
-  at launch — the pgid, not the `Popen`, because `kill_process_group()` returns at its
+  A scope also outlives a hard crash of `run.py`, which never reaches `teardown()`,
+  so startup MUST reconcile the registry (`stop_registered_scopes` from
+  `startup_manager`, alongside the stale-`TMPDIR` sweep): a record under this
+  `KOAN_ROOT` can only be a previous incarnation of this instance, and both record
+  kinds are already verified before they are acted on.
+  Where no scope can be created (macOS, no systemd manager) the loop falls back to
+  `start_new_session=True` + a kill of the process group captured at launch — the
+  pgid, not the `Popen`, because `kill_process_group()` returns at its
   `poll()` guard once the mission process is reaped and would signal nothing on the
-  success path. No host is left unable to run missions. Default on
+  success path. No host is left unable to run missions. The degraded-mode warning is
+  once per process for the *probe* verdict (a host does not grow a `systemd-run`
+  mid-run, so repeating it says nothing new) but **every occurrence** for a scope
+  that fails to *start*: a manager that goes away mid-run leaves every later mission
+  uncontained, and one shared one-shot budget would hide exactly the invisible leak
+  this contract exists to end. Default on
   (`mission_limits.enabled: true`). See
   `docs/operations/memory-footprint.md`.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary

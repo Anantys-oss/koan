@@ -651,6 +651,31 @@ class TestOnSigint:
                 _on_sigint(signal.SIGINT, None)
             mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
 
+    def test_second_ctrl_c_records_the_abort(self, capsys):
+        """Our own SIGKILL must not read as the mission's memory cap firing.
+
+        `mission_scope.teardown` decides that from `koan_initiated_kill`, which
+        both mission paths derive from `_last_mission_aborted`. Without the
+        flag a hand-aborted mission's -9 exit was reported as
+        "exceeded memory cap (…)" and then refused both retry paths, because a
+        cap hit is deliberately never retried.
+        """
+        import app.run as run_mod
+        from app.run import _on_sigint, _sig, _init_colors
+        _init_colors()
+        run_mod._last_mission_aborted = False
+        _sig.task_running = True
+        _sig.first_ctrl_c = time.time()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+        _sig.claude_proc = mock_proc
+        with patch("app.run.os.getpgid", return_value=12345), \
+             patch("app.run.os.killpg"), \
+             pytest.raises(KeyboardInterrupt):
+            _on_sigint(signal.SIGINT, None)
+        assert run_mod._last_mission_aborted is True
+
     def test_expired_timeout_resets(self, capsys):
         from app.run import _on_sigint, _sig, _init_colors
         _init_colors()

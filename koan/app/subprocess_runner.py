@@ -50,7 +50,7 @@ def kill_process_group_by_pid(
     pid: int,
     graceful_timeout: float = 3,
     force_timeout: float = 5,
-) -> None:
+) -> bool:
     """SIGTERM then SIGKILL a process group named by *pid*, with no ``Popen``.
 
     :func:`kill_process_group` needs the ``Popen`` so it can ``wait()`` on the
@@ -60,23 +60,30 @@ def kill_process_group_by_pid(
     Only signals a group *led* by *pid* — which ``start_new_session=True``
     guarantees for everything Kōan spawns — so a stale PID file can never make
     this signal the caller's own group.
+
+    Returns whether the group is *confirmed* gone, so a caller holding the only
+    durable handle on it can keep that handle when it is not.
     """
     if pid <= 0:
-        return
+        return False
     try:
         pgid = os.getpgid(pid)
-    except (ProcessLookupError, PermissionError, OSError):
-        return
+    except ProcessLookupError:
+        # The leader is gone, but a group outlives its leader and the id can no
+        # longer be recovered — nothing here can confirm the group is empty.
+        return False
+    except (PermissionError, OSError):
+        return False
     if pgid != pid:
-        return
-    kill_orphaned_process_group(pgid, graceful_timeout, force_timeout)
+        return False
+    return kill_orphaned_process_group(pgid, graceful_timeout, force_timeout)
 
 
 def kill_orphaned_process_group(
     pgid: int,
     graceful_timeout: float = 3,
     force_timeout: float = 5,
-) -> None:
+) -> bool:
     """SIGTERM then SIGKILL every member of *pgid*, whose leader may be gone.
 
     A process group outlives its leader: children left behind by a mission that
@@ -88,49 +95,52 @@ def kill_orphaned_process_group(
     Liveness is polled with ``killpg(pgid, 0)``, which reports the *group* empty
     rather than merely the leader dead.
 
-    Only ``ProcessLookupError`` proves the group is gone. A ``PermissionError``
-    (a descendant that changed credentials) or any other ``OSError`` means the
-    group could not be signalled at all — on the fallback path this is the only
-    containment lever there is, so it is reported rather than mistaken for a
-    clean sweep.
+    Returns True **only** when the group is confirmed empty.  Only
+    ``ProcessLookupError`` proves that.  A ``PermissionError`` (a descendant
+    that changed credentials), any other ``OSError``, a group that outlived
+    SIGKILL, or a pgid that was never captured all mean containment could not
+    be verified — on the fallback path this is the only containment lever there
+    is, so an unverified sweep is reported rather than mistaken for a clean
+    one.
     """
     if pgid <= 1 or pgid == os.getpgrp():
         # Never signal init's group or our own — either takes down far more than
         # the mission. A group id below 2 means the capture failed, not that
-        # there is something to kill.
-        return
+        # there is something to kill, and a failed capture is not containment.
+        return False
     for sig, wait_for in ((signal.SIGTERM, graceful_timeout),
                           (signal.SIGKILL, force_timeout)):
         try:
             os.killpg(pgid, sig)
         except ProcessLookupError:
-            return
+            return True
         except OSError as exc:
             print(
                 f"[subprocess_runner] warning: process group {pgid} could not "
                 f"be signalled ({exc}) — descendants may survive",
                 file=sys.stderr,
             )
-            return
+            return False
         deadline = time.monotonic() + wait_for
         while time.monotonic() < deadline:
             try:
                 os.killpg(pgid, 0)
             except ProcessLookupError:
-                return
+                return True
             except OSError as exc:
                 print(
                     f"[subprocess_runner] warning: process group {pgid} could "
                     f"not be probed ({exc}) — descendants may survive",
                     file=sys.stderr,
                 )
-                return
+                return False
             time.sleep(0.1)
     print(
         f"[subprocess_runner] warning: process group {pgid} "
         f"did not exit after SIGKILL",
         file=sys.stderr,
     )
+    return False
 
 
 def force_kill_process_group(proc: Optional[subprocess.Popen]) -> None:

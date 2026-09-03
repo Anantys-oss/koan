@@ -303,14 +303,16 @@ class TestKillOrphanedProcessGroup:
 
     def test_refuses_our_own_group(self):
         with patch("app.subprocess_runner.os.killpg") as killpg:
-            kill_orphaned_process_group(os.getpgrp())
+            assert kill_orphaned_process_group(os.getpgrp()) is False
         killpg.assert_not_called()
 
     def test_refuses_init_and_unset_group_ids(self):
         """A pgid of 0 or 1 means the capture failed, not that init must die."""
         with patch("app.subprocess_runner.os.killpg") as killpg:
             for pgid in (-1, 0, 1):
-                kill_orphaned_process_group(pgid)
+                # A failed capture is not containment: the caller must keep
+                # its registry record rather than report a clean sweep.
+                assert kill_orphaned_process_group(pgid) is False
         killpg.assert_not_called()
 
     def test_a_group_it_cannot_signal_is_reported(self, capsys):
@@ -323,7 +325,7 @@ class TestKillOrphanedProcessGroup:
         """
         with patch("app.subprocess_runner.os.killpg",
                    side_effect=PermissionError(1, "operation not permitted")):
-            kill_orphaned_process_group(4242)
+            assert kill_orphaned_process_group(4242) is False
         assert "could not be signalled" in capsys.readouterr().err
 
     def test_a_group_it_cannot_probe_is_reported(self, capsys):
@@ -335,13 +337,22 @@ class TestKillOrphanedProcessGroup:
                 raise PermissionError(1, "operation not permitted")
 
         with patch("app.subprocess_runner.os.killpg", side_effect=fake_killpg):
-            kill_orphaned_process_group(4242)
+            assert kill_orphaned_process_group(4242) is False
         assert signals[0] == signal.SIGTERM
         assert "could not be probed" in capsys.readouterr().err
 
+    def test_a_group_that_outlives_sigkill_is_not_confirmed(self):
+        """Signalled but still populated — the one outcome worst to believe."""
+        with patch("app.subprocess_runner.os.killpg"), \
+             patch("app.subprocess_runner.time.sleep"), \
+             patch("app.subprocess_runner.time.monotonic",
+                   side_effect=itertools.count(step=10)):
+            assert kill_orphaned_process_group(4242) is False
+
     def test_a_group_that_is_already_gone_is_quiet(self, capsys):
         with patch("app.subprocess_runner.os.killpg", side_effect=ProcessLookupError):
-            kill_orphaned_process_group(4242)
+            # ProcessLookupError is the only proof the group is empty.
+            assert kill_orphaned_process_group(4242) is True
         assert capsys.readouterr().err == ""
 
     def test_kills_a_group_whose_leader_is_already_gone(self):

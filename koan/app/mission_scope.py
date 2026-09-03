@@ -77,7 +77,11 @@ _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
 
 # systemd-run probe result, resolved once per process. None means "not probed
 # yet"; a probed-absent host caches ``(None, [])`` so every mission does not
-# re-shell-out. _fallback_warned keeps the degraded-mode warning to one line.
+# re-shell-out. _fallback_warned keeps the *probe* verdict to one log line —
+# it is a static property of the host, so repeating it per mission says
+# nothing new. A scope that fails to *start* is not static (a manager can go
+# away mid-run) and is logged every time it happens, because every occurrence
+# is one more mission running uncontained.
 _probe_cache: Optional[Tuple[Optional[str], List[str]]] = None
 _fallback_warned = False
 
@@ -246,17 +250,37 @@ def reset_probe_cache() -> None:
     _warned_bad_sizes.clear()
 
 
+def _fallback_warning(reason: str) -> str:
+    return (
+        f"mission_limits: no cgroup scope for missions ({reason}) — falling back "
+        f"to process-group cleanup, which cannot reach a daemon that re-parents "
+        f"to PID 1 (e.g. Gradle's)"
+    )
+
+
 def _warn_fallback_once(reason: str) -> None:
+    """One line per process for the *probe* verdict — a static host property.
+
+    Only for "this host has no usable systemd-run", which cannot change while
+    the process runs. A per-mission failure uses :func:`_warn_fallback`.
+    """
     global _fallback_warned
     if _fallback_warned:
         return
     _fallback_warned = True
-    log_safe(
-        "warn",
-        f"mission_limits: no cgroup scope for missions ({reason}) — falling back "
-        f"to process-group cleanup, which cannot reach a daemon that re-parents "
-        f"to PID 1 (e.g. Gradle's)",
-    )
+    log_safe("warn", _fallback_warning(reason))
+
+
+def _warn_fallback(reason: str) -> None:
+    """Log every occurrence of a scope that failed to start.
+
+    Deliberately not one-shot, and deliberately not sharing the probe's
+    budget: a manager that goes away mid-run makes every later mission run
+    uncontained, and swallowing those lines reproduces the invisible leak this
+    module exists to end — an empty ``systemctl list-units 'koan-mission-*'``
+    with a clean log while daemons accumulate.
+    """
+    log_safe("warn", _fallback_warning(reason))
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +473,19 @@ def stop_registered_scopes(koan_root: Optional[str] = None) -> List[str]:
                     f"mission_scope: dropping stale registry record pid-{pid} — "
                     f"that PID is no longer the process it was written for",
                 )
+        else:
+            # Neither handle survived registration: no unit name, and a pid
+            # that is missing, zero or not an int (which `_register` writes
+            # whenever `ScopedProcess.pid` degraded to 0). There is nothing
+            # left to signal, so the record is dropped — but never silently,
+            # because dropping a handle without acting on it is exactly what
+            # the rest of this function refuses to do.
+            log_safe(
+                "error",
+                f"mission_scope: discarding an unusable registry record "
+                f"({record.get('_path') or 'unknown path'}) — it names neither "
+                f"a unit nor a usable pid, so nothing can be stopped from it",
+            )
         path = record.get("_path")
         if path:
             Path(path).unlink(missing_ok=True)
@@ -790,26 +827,27 @@ class ScopedProcess:
                 self._collect_scope_evidence(koan_initiated_kill)
                 contained = self._stop_unit()
             else:
-                self._kill_session_group()
+                contained = self._kill_session_group()
         finally:
             if contained:
                 self._deregister()
             else:
-                # Nothing confirmed the scope is gone, and the group kill above
-                # reaches only what stayed in the group — not the re-parented
-                # daemon this module exists to contain. The record is then the
-                # only durable handle on a live scope, so `make stop` keeps its
-                # chance to retry. Unlike a fallback `pid-<n>` record this names
-                # a uuid4 unit, which is never recycled, and it self-heals: once
-                # the scope really is gone the next `make stop` sees
-                # LoadState=not-found and unlinks it.
+                # Nothing confirmed containment, and a group kill reaches only
+                # what stayed in the group — not the re-parented daemon this
+                # module exists to contain. The record is then the only durable
+                # handle on what is left, so `make stop` keeps its chance to
+                # retry. A scope record self-heals: once the scope really is
+                # gone the next `make stop` sees LoadState=not-found and unlinks
+                # it. A fallback `pid-<n>` record is start-time-verified there
+                # before it is signalled, so a recycled PID is dropped rather
+                # than acted on.
                 log_safe(
                     "error",
-                    f"mission_scope: keeping the registry entry for {self.unit} — "
-                    f"containment unconfirmed",
+                    f"mission_scope: keeping the registry entry for "
+                    f"{self._registry_name} — containment unconfirmed",
                 )
 
-    def _kill_session_group(self) -> None:
+    def _kill_session_group(self) -> bool:
         """Fallback-path teardown: take the mission's whole process group.
 
         ``kill_process_group`` alone is not enough here. It returns at its
@@ -819,9 +857,15 @@ class ScopedProcess:
         Signalling the pgid captured at launch reaches them; the ``Popen`` call
         stays for the still-running case, where it can ``wait()`` on the child
         instead of polling.
+
+        Returns whether the group is *confirmed* empty. On this path the group
+        is the only containment lever there is, so an EPERM refusal, a group
+        that outlived SIGKILL, or a pgid that was never captured must not be
+        reported as a clean sweep — the caller keeps its registry record so
+        ``make stop`` can try again.
         """
         kill_process_group(self.proc)
-        kill_orphaned_process_group(self._pgid)
+        return kill_orphaned_process_group(self._pgid)
 
     def _collect_scope_evidence(self, koan_initiated_kill: bool) -> None:
         """Read peak / OOM evidence before the stop collects the cgroup.
@@ -832,11 +876,13 @@ class ScopedProcess:
         what keeps the common cap-hit reportable anyway.
 
         "The evidence could not be read" is a different outcome from "the
-        kernel killed nothing", and a failure with no readable evidence is
-        logged as such. It is deliberately *not* reported as a cap hit: the
-        collected cgroup of a clean mission is unreadable by definition, so
-        believing an unknown would mark ordinary missions as capped and, since
-        a cap hit is never retried, silently disable the retry path.
+        kernel killed nothing", and the two are never collapsed. A failure with
+        no readable evidence is logged as such and deliberately *not* reported
+        as a cap hit: the collected cgroup of a clean mission is unreadable by
+        definition, so believing an unknown would mark ordinary missions as
+        capped and, since a cap hit is never retried, silently disable the
+        retry path. The mirror rule holds too — a readable ``oom_kill 0`` is
+        proof the cap did not fire, so no guess may override it.
         """
         cgroup_dir = _cgroup_dir(self.manager_args, self.unit)
         if cgroup_dir is not None:
@@ -849,10 +895,22 @@ class ScopedProcess:
         if unit_result == "oom-kill":
             self.cap_exceeded = True
             return
-        # No cgroup evidence left to read (unit already collected). A SIGKILL
-        # exit under a cap that Kōan did not deliver itself is the cap firing.
+        if self.oom_kills == 0:
+            # The kernel's own counter says nothing inside this scope was
+            # OOM-killed. That is definitive, and it is readable in exactly the
+            # case this module targets: a leaked daemon keeps the scope
+            # populated, so `--collect` has not reaped the cgroup yet. The
+            # exit-status guess below must never override it — a global OOM
+            # kill triggered by a co-tenant, or a SIGKILL Kōan delivered on a
+            # path that does not set koan_initiated_kill, would otherwise be
+            # relabelled a cap hit and then permanently barred from retry.
+            return
+        # No cgroup evidence left to read — the unit was already collected, so
+        # self.oom_kills is None rather than a number. A SIGKILL exit under a
+        # cap that Kōan did not deliver itself is the cap firing.
         if (
-            not koan_initiated_kill
+            self.oom_kills is None
+            and not koan_initiated_kill
             and self.memory_max
             and self.proc.returncode in (-9, 137)
         ):
@@ -986,7 +1044,7 @@ def launch_scoped(
         # The provider binary is missing — the caller's own handler owns this.
         raise
     except (OSError, subprocess.SubprocessError) as exc:
-        _warn_fallback_once(f"scope {unit} failed to start: {exc}")
+        _warn_fallback(f"scope {unit} failed to start: {exc}")
         return ScopedProcess(
             spawn(argv, [], **popen_kwargs), mode="session", **scope_kwargs,
         )
