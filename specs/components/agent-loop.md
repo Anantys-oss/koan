@@ -289,7 +289,15 @@ heuristic:
   verify its target first: a fallback `pid-<n>` record names a PID, and a PID is
   recycled, so `make stop` MUST signal its process group only after the PID's real
   start time matches the record's `started_at` — dropping a stale record afterwards
-  does not undo a SIGKILL already sent to a stranger's group. For the same reason
+  does not undo a SIGKILL already sent to a stranger's group. The rule binds every
+  escalation from a stored PID to a `killpg`, the daemon `.koan-pid-*` files
+  included: `check_pidfile` verifies identity only via the flock probe, so a
+  non-Python daemon (or one that died without cleaning up) falls through to a bare
+  liveness check that a recycled PID passes. `stop_processes` MUST therefore
+  escalate to the process group only when the PID's real start time is consistent
+  with the pid file that named it, and degrade to a single-PID `os.kill` when it
+  cannot be confirmed — a stale pid file after a reboot must cost one wrong signal,
+  not a stranger's whole session. For the same reason
   "cannot tell" is never "contained": only `FileNotFoundError` on `cgroup.events`
   proves the cgroup is empty, and any other read failure MUST fall through to the
   manager's own confirmation. The fallback path is held to the same standard — only
@@ -326,14 +334,27 @@ heuristic:
   `start_new_session=True` + a kill of the process group captured at launch — the
   pgid, not the `Popen`, because `kill_process_group()` returns at its
   `poll()` guard once the mission process is reaped and would signal nothing on the
-  success path. No host is left unable to run missions. The degraded-mode warning is
+  success path. No host is left unable to run missions. The probe MUST establish
+  that a scope can actually be *created*, not merely that `systemd-run` is on PATH
+  with a live manager: a manager that rejects the transient scope or its
+  `MemoryMax`/`MemoryHigh` properties (an undelegated memory controller, a manager
+  that refuses resource control) lets `systemd-run` start, exit non-zero and never
+  exec the provider — which `Popen` reports as success, so no exception-based
+  fallback can fire and *every* mission on that host would fail with empty output.
+  The probe therefore creates a throwaway resource-controlled scope once per
+  process and caches the verdict beside the binary lookup. The degraded-mode warning is
   once per process for the *probe* verdict (a host does not grow a `systemd-run`
   mid-run, so repeating it says nothing new) but **every occurrence** for a scope
   that fails to *start*: a manager that goes away mid-run leaves every later mission
   uncontained, and one shared one-shot budget would hide exactly the invisible leak
   this contract exists to end. Default on
-  (`mission_limits.enabled: true`). See
-  `docs/operations/memory-footprint.md`.
+  (`mission_limits.enabled: true`); `enabled: false` is a true off switch and MUST
+  restore the pre-containment behaviour exactly — no scope, no registry record, and
+  **no teardown sweep at all**. A disabled feature that still SIGTERM/SIGKILLs the
+  mission's whole process group on every exit path leaves an operator whose mission
+  deliberately backgrounds a process no configuration that turns the reaping off,
+  which is the one thing a master switch on a default-on destructive feature is for.
+  See `docs/operations/memory-footprint.md`.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary
   enforced by prompt + convention; the loop's job is to host the subprocess, not to
   alter git state itself.

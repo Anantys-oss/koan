@@ -72,6 +72,13 @@ _CGROUP_ROOT = "/sys/fs/cgroup"
 # before MemoryMax turns into an OOM kill.
 _MEMORY_HIGH_RATIO = 0.90
 
+# The throwaway scope the probe creates carries a real memory cap, because a
+# manager can accept a bare scope and still refuse resource control. 64 MiB is
+# far more than `true` needs, so a non-zero exit means the *manager* refused,
+# never that the probe capped itself to death.
+_PROBE_MEMORY_MAX = 64 * 1024 ** 2
+_PROBE_TIMEOUT = 10.0
+
 _SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?)i?b?\s*$", re.IGNORECASE)
 _SIZE_UNITS = {"": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3, "t": 1024 ** 4}
 
@@ -202,6 +209,52 @@ def resolve_memory_max(config: dict, meminfo_path: str = _MEMINFO_PATH) -> Optio
 # systemd-run probe
 # ---------------------------------------------------------------------------
 
+def _scope_creation_works(path: str, manager_args: List[str]) -> bool:
+    """Whether the manager will actually accept a resource-controlled scope.
+
+    A live manager socket only proves ``systemd-run`` can *talk* to it. When the
+    manager rejects the transient scope or its ``MemoryMax``/``MemoryHigh``
+    properties — a user slice with no delegated memory controller, a manager
+    that refuses resource control — ``systemd-run`` starts fine, prints to
+    stderr and exits non-zero **without ever exec'ing the mission**. ``Popen``
+    succeeded, so no exception-based fallback can fire: the mission would be
+    finalized as an ordinary failure with empty output, and so would every
+    mission after it. The only way to learn this is to try it once.
+
+    The throwaway scope carries the same properties a mission's does, because a
+    manager can accept a bare scope and still refuse ``MemoryMax``.
+    """
+    helper = shutil.which("true")
+    if not helper:
+        # Nothing safe to run inside the probe scope. Assume the manager is
+        # usable rather than disabling containment over a missing coreutils.
+        return True
+    unit = f"{UNIT_PREFIX}probe-{uuid.uuid4().hex}{UNIT_SUFFIX}"
+    argv = [path, *manager_args, "--scope", "--collect", "--quiet",
+            f"--unit={unit}",
+            f"--property=MemoryMax={_PROBE_MEMORY_MAX}",
+            f"--property=MemoryHigh={int(_PROBE_MEMORY_MAX * _MEMORY_HIGH_RATIO)}",
+            "--", helper]
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True,
+            timeout=_PROBE_TIMEOUT, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_safe("warn", f"mission_limits: scope probe failed to run: {exc}")
+        return False
+    if result.returncode == 0:
+        return True
+    detail = (result.stderr or result.stdout or "").strip().splitlines()
+    log_safe(
+        "warn",
+        f"mission_limits: the systemd manager refused a test scope (exit "
+        f"{result.returncode}: {detail[-1] if detail else 'no output'}) — "
+        f"missions would fail with empty output if they were wrapped in one",
+    )
+    return False
+
+
 def _probe_systemd_run() -> Tuple[Optional[str], List[str]]:
     """Locate a ``systemd-run`` that can actually create a scope right now.
 
@@ -212,7 +265,9 @@ def _probe_systemd_run() -> Tuple[Optional[str], List[str]]:
     ``shutil.which`` alone is not enough. As a non-root user the *system*
     manager needs polkit authentication, which fails non-interactively, so a
     non-root Kōan must go through its own user manager — and that manager has
-    to be live, which ``$XDG_RUNTIME_DIR/systemd/private`` proves.
+    to be live, which ``$XDG_RUNTIME_DIR/systemd/private`` proves. Nor is a live
+    manager enough: it also has to accept a resource-controlled scope, which
+    only :func:`_scope_creation_works` can establish.
     """
     path = shutil.which("systemd-run")
     if not path:
@@ -222,11 +277,17 @@ def _probe_systemd_run() -> Tuple[Optional[str], List[str]]:
     except AttributeError:  # pragma: no cover - non-POSIX
         return None, []
     if is_root:
-        return (path, []) if Path("/run/systemd/system").is_dir() else (None, [])
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
-    if runtime_dir and Path(runtime_dir, "systemd", "private").exists():
-        return path, ["--user"]
-    return None, []
+        if not Path("/run/systemd/system").is_dir():
+            return None, []
+        manager_args: List[str] = []
+    else:
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "")
+        if not (runtime_dir and Path(runtime_dir, "systemd", "private").exists()):
+            return None, []
+        manager_args = ["--user"]
+    if not _scope_creation_works(path, manager_args):
+        return None, []
+    return path, manager_args
 
 
 def systemd_run() -> Tuple[Optional[str], List[str]]:
@@ -704,8 +765,10 @@ class ScopedProcess:
     """A mission subprocess plus the boundary that will contain its children.
 
     ``mode`` is ``"scope"`` when the process runs inside a transient systemd
-    scope named by ``unit``, and ``"session"`` on the fallback path where the
-    only boundary available is the process group.
+    scope named by ``unit``, ``"session"`` on the fallback path where the only
+    boundary available is the process group, and ``"off"`` when
+    ``mission_limits.enabled: false`` turned containment off — no registry
+    record, and a teardown that does nothing.
     """
 
     def __init__(
@@ -730,10 +793,14 @@ class ScopedProcess:
         self.oom_kills: Optional[int] = None
         self.cap_exceeded = False
         self._koan_root = koan_root
-        self._pgid = self._read_pgid()
+        self._pgid = 0 if mode == "off" else self._read_pgid()
         self._registry_name = unit or f"pid-{self.pid}"
         self._torn_down = False
-        self._register()
+        if mode != "off":
+            # A record exists so `make stop` can sweep what teardown contains.
+            # Containment is off here, so there is nothing to sweep — and a
+            # record would hand `make stop` a group kill the operator disabled.
+            self._register()
 
     @property
     def pid(self) -> int:
@@ -817,10 +884,20 @@ class ScopedProcess:
         *koan_initiated_kill* says the abort / mission-timeout / stagnation
         paths already SIGKILLed the process group, so a ``-9`` exit here is
         ours and must not be reported as a memory-cap hit.
+
+        ``mode == "off"`` is a genuine off switch: ``mission_limits.enabled:
+        false`` sweeps nothing, because a mission that deliberately backgrounds
+        a process (a dev server, a watcher started without ``setsid``) is
+        exactly why an operator reaches for it. Without this the switch would
+        only disable the *cgroup* while still SIGTERM/SIGKILLing the mission's
+        whole process group on every exit path, success included — behaviour
+        that did not exist before this module.
         """
         if self._torn_down:
             return
         self._torn_down = True
+        if self.mode == "off":
+            return
         contained = True
         try:
             if self.mode == "scope" and self.unit:
@@ -1014,6 +1091,10 @@ def launch_scoped(
     ``start_new_session=True`` is always set: the abort, mission-timeout and
     stagnation paths still ``killpg`` the mission, and the cgroup teardown is
     an addition to that, not a replacement.
+
+    ``mission_limits.enabled: false`` returns a ``mode="off"`` handle — the
+    pre-containment spawn, verbatim: no scope, no registry record and a
+    teardown that sweeps nothing.
     """
     if config is None:
         from app.config import get_mission_limits_config
@@ -1025,7 +1106,7 @@ def launch_scoped(
 
     if not config.get("enabled", True):
         return ScopedProcess(
-            spawn(argv, [], **popen_kwargs), mode="session", **scope_kwargs,
+            spawn(argv, [], **popen_kwargs), mode="off", **scope_kwargs,
         )
 
     binary, manager_args = systemd_run()

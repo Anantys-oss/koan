@@ -945,7 +945,15 @@ page_cache_reclaim:
 # `start_new_session=True` plus a kill of the mission's process group, warning
 # once about the host (it cannot grow a systemd-run mid-run) but on every
 # occurrence of a scope that fails to start, since each one is another mission
-# running uncontained.
+# running uncontained. "Unavailable" is decided by creating one throwaway
+# resource-controlled scope at startup, not by looking for the binary: a manager
+# that refuses the scope (no delegated memory controller, resource control
+# disabled) lets systemd-run exit non-zero without ever starting the mission, so
+# without that probe every mission would fail with empty output.
+#
+# `enabled: false` is a true off switch: the mission is spawned exactly as Kōan
+# spawned it before this feature — no scope, and no process-group sweep at the
+# end either. Turn it off if a mission deliberately leaves a process running.
 #
 # memory_reserve is what stays available for the OS, Kōan's own ~500 MB baseline
 # and any day job sharing the host; memory_min floors the resulting cap so a
@@ -956,7 +964,7 @@ page_cache_reclaim:
 # back-pressure before MemoryMax turns into an OOM kill; a mission the cap does
 # kill is reported as "exceeded memory cap (5.9G of 5.75G)" and never retried.
 # mission_limits:
-#   enabled: true                  # Master switch (default: true)
+#   enabled: true                  # Master switch (default: true); false = no scope, no sweep
 #   memory_reserve: 2G             # Left for OS + Kōan + any day job (default: 2G)
 #   memory_min: 1G                 # Floor for the resulting cap (default: 1G)
 #   memory_max: null               # Absolute override; wins over reserve/floor

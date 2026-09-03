@@ -2287,6 +2287,58 @@ class TestStopProcessesReachesDescendants:
         killpg.assert_not_called()
         single.assert_called_once_with(12345, 15)
 
+    def test_a_stale_pid_file_does_not_escalate_to_a_group_kill(self, tmp_path):
+        """A recycled PID must cost one wrong signal, not a stranger's session.
+
+        `check_pidfile` verifies identity only through the flock probe. A
+        non-Python daemon (`ollama`), or any daemon that died without its file
+        being cleaned, falls through to a bare liveness check — which a PID
+        reassigned across a reboot passes. Escalating to `killpg` there takes
+        down whatever session now leads that group.
+        """
+        from app.pid_manager import _signal_process
+        pidfile = tmp_path / ".koan-pid-ollama"
+        pidfile.write_text("4242")
+        stale = time.time() - 86400
+        os.utime(pidfile, (stale, stale))
+        with patch("app.pid_manager.os.getpgid", return_value=4242), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single, \
+             patch("app.mission_scope._process_start_time",
+                   return_value=time.time()):
+            assert _signal_process(4242, 15, pidfile) is True
+        killpg.assert_not_called()
+        single.assert_called_once_with(4242, 15)
+
+    def test_an_unverifiable_start_time_degrades_to_a_single_pid_kill(self, tmp_path):
+        """No proof is not proof: a host where the start time cannot be read
+        gets the pre-existing single-PID signal rather than a group kill."""
+        from app.pid_manager import _signal_process
+        pidfile = tmp_path / ".koan-pid-run"
+        pidfile.write_text("4242")
+        with patch("app.pid_manager.os.getpgid", return_value=4242), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single, \
+             patch("app.mission_scope._process_start_time", return_value=None):
+            assert _signal_process(4242, 15, pidfile) is True
+        killpg.assert_not_called()
+        single.assert_called_once_with(4242, 15)
+
+    def test_a_pid_file_that_vouches_for_its_process_reaches_the_group(self, tmp_path):
+        """The daemon writes its own pid file once it is already running, so a
+        start time at or before the file's mtime is the identity proof."""
+        from app.pid_manager import _signal_process
+        pidfile = tmp_path / ".koan-pid-run"
+        pidfile.write_text("4242")
+        with patch("app.pid_manager.os.getpgid", return_value=4242), \
+             patch("app.pid_manager.os.killpg") as killpg, \
+             patch("app.pid_manager.os.kill") as single, \
+             patch("app.mission_scope._process_start_time",
+                   return_value=pidfile.stat().st_mtime - 1):
+            assert _signal_process(4242, 15, pidfile) is True
+        killpg.assert_called_once_with(4242, 15)
+        single.assert_not_called()
+
     def test_a_self_referential_pid_file_degrades_to_a_single_pid_kill(self):
         """A daemon stopping a set that includes itself must survive the sweep.
 

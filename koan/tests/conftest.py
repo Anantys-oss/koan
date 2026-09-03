@@ -72,6 +72,13 @@ def _no_real_mission_scopes(request):
     group 12345 would be SIGTERMed and SIGKILLed by whoever runs ``make test``.
     Stub the group kill out; a test that genuinely needs it requests the
     ``real_mission_scope_group_kill`` fixture above.
+
+    **Both** primitives are stubbed, because ``_kill_session_group`` calls two:
+    ``kill_orphaned_process_group(pgid)`` *and* ``kill_process_group(proc)``.
+    The latter only short-circuits on ``proc.poll() is not None``, and a
+    ``MagicMock`` whose ``poll()`` returns None sails past that guard straight
+    into ``os.getpgid(<invented pid>)`` / ``os.killpg``. Stubbing one and not the
+    other left the exact hazard this fixture documents.
     """
     try:
         from app import mission_scope
@@ -87,6 +94,9 @@ def _no_real_mission_scopes(request):
             if "real_mission_scope_group_kill" not in request.fixturenames:
                 stack.enter_context(patch.object(
                     mission_scope, "kill_orphaned_process_group",
+                ))
+                stack.enter_context(patch.object(
+                    mission_scope, "kill_process_group",
                 ))
             yield
     finally:

@@ -185,8 +185,19 @@ daemon that has already re-parented to PID 1.
   hand-off does depend on ryuk being enabled: a project that sets
   `TESTCONTAINERS_RYUK_DISABLED=true` owns its own container cleanup, and Kōan
   will not (and cannot safely) do it for them.
+- **Probe:** "can this host create a scope?" is answered by *creating one* —
+  `systemd-run … --property=MemoryMax=64M -- true`, once per process, cached
+  beside the binary lookup. Finding the binary and a live manager socket is not
+  enough: a manager that rejects the transient scope or its memory properties
+  (an undelegated memory controller, resource control refused) lets
+  `systemd-run` start, exit non-zero and **never exec the provider CLI**. That
+  is a `Popen` *success*, so no exception-based fallback can catch it — the
+  mission would be finalized as an ordinary failure with empty stdout, and so
+  would every mission after it. A refused probe logs the manager's own error
+  and falls back for the life of the process.
 - **Fallback:** where `systemd-run` cannot create a scope (macOS, no manager, no
-  user manager) Kōan spawns with `start_new_session=True`, tearing down the
+  user manager, a manager that refuses one) Kōan spawns with
+  `start_new_session=True`, tearing down the
   process group captured at launch (SIGTERM → 3 s → SIGKILL → 5 s). The *pgid*
   is what is signalled, not the `Popen`: `kill_process_group()` returns at its
   `poll()` guard once the mission process is reaped, so on the success path it
@@ -207,7 +218,16 @@ daemon that has already re-parented to PID 1.
   first (registered under `$KOAN_ROOT/.koan-mission-scopes/`, one file per scope
   so there is no read-modify-write to race on), then signals each daemon's
   *process group* rather than the bare PID from `.koan-pid-*` — the single-PID
-  SIGTERM left every descendant running. A registry entry is unlinked only once
+  SIGTERM left every descendant running. That escalation is **verified the same
+  way** a `pid-<n>` registry record is: `check_pidfile` proves identity only via
+  the flock probe, so a non-Python daemon (`ollama`) or one that died without
+  its file being cleaned falls through to a bare liveness check that a recycled
+  PID passes — a reboot with stale `.koan-pid-*` files on disk is the ordinary
+  way to get there. The group is signalled only when the PID's real start time
+  is consistent with the pid file's mtime (the file is written by the daemon
+  once it is already running, so it can never predate it); anything unconfirmed
+  degrades to the single-PID `os.kill`, costing one wrong signal instead of a
+  stranger's whole session. A registry entry is unlinked only once
   its scope is **confirmed** stopped: this is the retry mechanism, so discarding
   a record it could not act on would destroy the only handle on a live scope.
   `ScopedProcess.teardown` follows the same rule for scope records. A fallback
@@ -227,7 +247,14 @@ daemon that has already re-parented to PID 1.
   name is a uuid4 that cannot collide, and a fallback `pid-<n>` record is
   start-time-verified before it is signalled.
 - **Config:** `mission_limits: { enabled, memory_reserve, memory_min,
-  memory_max }` — see `instance.example/config.yaml`. Default on.
+  memory_max }` — see `instance.example/config.yaml`. Default on. `enabled:
+  false` is a real off switch, not just a cgroup switch: the mission is spawned
+  the way Kōan spawned it before this feature, with no scope, no registry record
+  and **no process-group sweep at teardown**. That matters for a mission that
+  deliberately backgrounds something (a dev server, a watcher started without
+  `setsid`) — otherwise there would be no configuration that stops Kōan reaping
+  it, which is the one thing a master switch on a default-on destructive feature
+  has to provide.
 
 ## Triage rule: anon first
 
