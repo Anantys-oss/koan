@@ -624,17 +624,60 @@ class TestReapForeignWorktrees:
         assert reap_foreign_worktrees(git_repo, dry_run=True) == [foreign]
         assert Path(foreign).is_dir()
 
-    def test_reaps_incidentally_dirty_worktree(self, git_repo, tmp_path):
-        """Reviews leave edits behind (a regenerated lockfile); that must not block reap."""
+    def test_spares_dirty_worktree_even_when_head_is_durable(self, git_repo, tmp_path):
+        """Removal is `--force`; a dirty tree loses uncommitted work with no recovery.
+
+        HEAD here is the default branch's tip — as durable as a commit gets — so the
+        reachability guard says "removal loses nothing". Cleanliness is the separate
+        question, and it is what decides this case.
+        """
         foreign = self._add_foreign(git_repo, tmp_path / "review-dirty", age_days=5)
         readme = Path(foreign) / "README.md"
-        readme.write_text("touched by review\n")
+        readme.write_text("edited, never committed\n")
         old = time.time() - (5 * 86400)
         os.utime(readme, (old, old))
         os.utime(foreign, (old, old))
 
-        assert reap_foreign_worktrees(git_repo) == [foreign]
-        assert not Path(foreign).exists()
+        assert reap_foreign_worktrees(git_repo) == []
+        assert readme.read_text() == "edited, never committed\n"
+
+    def test_spares_dirty_in_project_worktree_on_local_branch(self, git_repo, tmp_path):
+        """A hand-made in-project worktree is where a human parks WIP.
+
+        `<project>/wt/feature-x` on a local branch with no upstream: the branch keeps HEAD
+        reachable, so nothing about *commits* blocks removal — but the uncommitted edits
+        exist nowhere else, and the sweep runs unattended on an hourly timer.
+        """
+        wip = Path(git_repo) / "wt" / "feature-x"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "feature-x", str(wip)],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        (wip / "README.md").write_text("three days of unsaved work\n")
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(wip):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(wip, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert (wip / "README.md").read_text() == "three days of unsaved work\n"
+
+    def test_reaps_idle_clean_in_project_worktree_on_local_branch(self, git_repo, tmp_path):
+        """The dirty guard must not make every in-project worktree immortal."""
+        scratch = Path(git_repo) / "tmp" / "scratch"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "scratch", str(scratch)],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(scratch):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(scratch, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == [str(scratch)]
+        assert not scratch.exists()
 
     def test_spares_recent_tracked_file_edit(self, git_repo, tmp_path):
         """Editing an existing file does not update root mtime, but remains live work."""

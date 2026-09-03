@@ -4137,6 +4137,18 @@ def test_watchdog_skips_restart_when_worker_busy():
         assert awake._bridge_should_restart(monitor) is False
 
 
+def test_watchdog_restarts_while_maintenance_sweep_runs():
+    """A wedged maintenance sweep must not disable the memory watchdog."""
+    monitor = MagicMock()
+    monitor.sample.return_value = True
+    alive = MagicMock()
+    alive.is_alive.return_value = True
+    lanes = {"chat": None, "bg": None, "maintenance": alive}
+    with patch.dict(awake._worker_threads, lanes, clear=True):
+        assert awake._workers_idle() is True
+        assert awake._bridge_should_restart(monitor) is True
+
+
 def test_watchdog_no_monitor_never_restarts():
     assert awake._bridge_should_restart(None) is False
 

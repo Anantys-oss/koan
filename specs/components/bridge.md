@@ -4,7 +4,7 @@ title: "Component Spec — Telegram Bridge"
 description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-08-31
+updated: 2026-09-02
 ---
 
 # Component Spec — Telegram Bridge
@@ -57,16 +57,24 @@ awake.py (loop, ~3s poll)
 - **Bounded maintenance.** A foreign-worktree sweep has a fixed two-minute total
   deadline and a 15-second Git-command cap. Expired or timed-out safety checks
   retain worktrees and defer them to a later rotating sweep.
+- **A dirty worktree is never reaped.** Removal is `git worktree remove --force`, which
+  deletes uncommitted work with no recovery path, so cleanliness MUST be checked for
+  *every* candidate — on a branch or detached, reachable or not — and not merely as a
+  tie-breaker on the unreachable-detached path. Commit reachability answers "would commits
+  be lost"; it says nothing about the working tree, and a hand-made in-project worktree on
+  a local branch (`<project>/wt/feature-x`) is precisely where a human parks WIP. The sweep
+  runs unattended on an hourly timer, so this guard is the only thing standing between it
+  and unrecoverable loss. Retaining a leaked-but-dirty worktree costs disk, which is
+  recoverable and logged; the inverse is not.
 - **Detached worktree safety.** Reachability alone MUST NOT decide retention. A detached
   foreign worktree sits at a pull-request head commit, which is durable on its remote branch
   only while that PR is open; once the PR is squash-merged or closed the remote branch is
   deleted and no durable ref reaches that commit any more. Retaining on unreachability
   therefore makes every *completed* review immortal — unbounded growth, not safety. A detached
   worktree that no durable ref reaches is removed only when its HEAD still equals the commit
-  recorded when the worktree was created **and** its working tree is clean. A changed HEAD may
-  contain committed but never-pushed work; a dirty tree contains uncommitted work. The
-  reachability probe MUST use a single bounded revision walk rather than a per-ref containment
-  scan, and any git or reflog failure retains the worktree.
+  recorded when the worktree was created: a changed HEAD may contain committed but
+  never-pushed work. The reachability probe MUST use a single bounded revision walk rather
+  than a per-ref containment scan, and any git or reflog failure retains the worktree.
 - **Worktree ownership zones.** The sweep MUST NOT reclaim worktrees owned by other code:
   `<project>/.worktrees/` belongs to `worktree_manager.cleanup_stale_worktrees()`, and
   `<project>/.claude/worktrees/` belongs to the Claude Code harness. Everything else — a
@@ -139,10 +147,16 @@ awake.py (loop, ~3s poll)
   one poll cycle (`_read_sections_cached`). A `MemoryMonitor` watchdog
   (`memory_monitor.bridge:` sub-block, **enabled by default**, threshold
   600 MB; set `enabled: false` to opt out) samples RSS once per poll cycle
-  and, **only when no worker lane is busy**, self-restarts via
+  and, **only when no user-facing worker lane is busy**, self-restarts via
   `reexec_bridge()` (`os.execv`, same PID) as a backstop. The watchdog must
   never restart mid-worker, and a baseline-safety guard refuses to arm when
-  the threshold isn't safely above the current RSS.
+  the threshold isn't safely above the current RSS. The **maintenance lane is
+  excluded from that gate**: it carries idempotent, restart-safe internal work
+  with no human waiting on it, and a task wedged past its own timeout (a git
+  child in uninterruptible I/O outlives a Python-level `kill()`) would
+  otherwise disable the watchdog permanently and silently — trading a clean
+  re-exec for the OOM kill the watchdog exists to prevent. Only lanes tied to
+  a pending human reply may hold back a restart.
 - **Idempotent lifecycle notices dedupe across incarnations (#2426).** The
   provider's flood suppression (`notify.py`) only spans a single long-lived
   process, so when the agent loop / bridge (re)starts several times in a short

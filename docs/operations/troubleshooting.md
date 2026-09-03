@@ -80,12 +80,18 @@ the project (`/tmp/review-<sha>`) **and** worktrees you created by hand inside i
 those, so the sweep can delete them once they go idle.
 
 **What it keeps** — locked worktrees, worktrees with recent non-ignored file activity
-(idle for less than two days), tracking branches with commits missing upstream, and
-detached commits that no local branch, tag, or remote-tracking ref reaches. That last
-check is a single revision walk rather than a per-ref scan, so it stays fast in
-repositories with many refs. Each sweep is capped at two minutes, with a 15-second limit
-per Git command; deferred worktrees are retried in a later hourly sweep, and every
-retained worktree logs its reason (`skip (locked)`, `retain (activity check failed)`, …).
+(idle for less than two days), **any worktree with uncommitted changes** (removal is
+`--force`, so a dirty tree is never touched, however durable its branch is), tracking
+branches with commits missing upstream, and detached commits that no local branch, tag,
+or remote-tracking ref reaches. That last check is a single revision walk rather than a
+per-ref scan, so it stays fast in repositories with many refs. Each sweep is capped at two
+minutes, with a 15-second limit per Git command; deferred worktrees are retried in a later
+hourly sweep, and every retained worktree logs its reason (`skip (locked)`, `skip
+(uncommitted changes)`, `retain (activity check failed)`, …).
+
+So a leaked review checkout that left an edit behind is *kept*, not reclaimed — commit and
+discard it (or remove the worktree by hand) if you want the disk back. That is the
+deliberate trade: disk is recoverable, an unattended `--force` on someone's WIP is not.
 
 **Opting out** — `git worktree lock <path>` marks a worktree as a live workspace. The
 sweep never removes a locked worktree, and git prep never detaches one (see below).

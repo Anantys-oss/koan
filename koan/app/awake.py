@@ -813,16 +813,25 @@ def _build_bridge_memory_monitor():
 
 
 def _workers_idle() -> bool:
-    """True when no worker lane has a live thread.
+    """True when no *user-facing* worker lane has a live thread.
 
     Reuses the pre-existing module globals ``_worker_threads`` and
     ``_worker_lock`` — the same ones ``_run_in_worker`` uses for
     back-pressure. Introduces no new lock.
+
+    The maintenance lane is deliberately excluded. It carries internal,
+    idempotent, restart-safe housekeeping (the worktree sweep — a half-removed
+    worktree is pruned on the next pass), and unlike chat/bg it is not tied to a
+    human waiting on a reply. A wedged sweep — a git child stuck in
+    uninterruptible I/O outlives its Python-level timeout — would otherwise
+    disable the memory watchdog permanently and silently, trading a clean
+    re-exec for the OOM kill the watchdog exists to prevent.
     """
     with _worker_lock:
         return all(
             t is None or not t.is_alive()
-            for t in _worker_threads.values()
+            for lane, t in _worker_threads.items()
+            if lane != "maintenance"
         )
 
 

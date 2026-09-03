@@ -435,8 +435,11 @@ def reap_foreign_worktrees(
       * never a `locked` worktree — that is someone's live workspace
       * never one with tracked or untracked file activity within max_age_days — a review
         that started minutes ago is still running, and removing its tree kills the job
-      * never one on a branch holding commits absent from its upstream
-      * never one whose working tree is dirty when no durable ref reaches its HEAD
+      * never one whose working tree is dirty — removal is `--force`, so uncommitted work
+        would be deleted with no recovery path. This applies to every candidate, on a
+        branch or detached: a hand-made in-project worktree (`<project>/wt/feature-x`) is
+        exactly where a human parks WIP, and its local branch says nothing about the tree
+      * never one holding commits no other ref would keep reachable after removal
 
     ``deadline`` is a monotonic deadline shared by callers that sweep several
     projects. When omitted, the fixed maintenance budget applies. A timed-out
@@ -505,6 +508,16 @@ def reap_foreign_worktrees(
             )
             continue  # possibly a live review, or activity could not be verified
 
+        # Every candidate, not just the unreachable-detached one: removal is `--force`,
+        # and a dirty tree on a perfectly durable local branch still holds uncommitted
+        # work that nothing else has a copy of.
+        if _has_uncommitted_changes(wt_real, deadline=deadline):
+            print(
+                f"[worktree_manager] skip (uncommitted changes) {wt.path}",
+                file=sys.stderr,
+            )
+            continue
+
         if _has_unpushed_commits(wt_real, deadline=deadline):
             print(
                 f"[worktree_manager] skip (unpushed commits) {wt.path}",
@@ -517,8 +530,9 @@ def reap_foreign_worktrees(
             continue
 
         try:
-            # force=True: reviews routinely leave incidental edits behind (a regenerated
-            # lockfile, a touched test file), which would otherwise block removal.
+            # force=True: reviews leave ignored build output (node_modules, .venv) behind,
+            # which can block a plain removal. Safe only because the dirty-tree guard above
+            # already ran — `--force` deletes uncommitted work without asking.
             remove_worktree(
                 project_path,
                 worktree_path=wt.path,
@@ -732,9 +746,10 @@ def _has_unpushed_commits(
     exactly this reason while the reaper reported "0 reclaimed" every hour for days.
 
     So an unreachable detached HEAD is removable only when it still equals the commit used
-    to create the worktree and its tree is clean. A changed HEAD may contain committed but
-    never-pushed work, while a dirty tree contains uncommitted work. Age is already covered
-    by the caller's activity guard. Any git or verification failure keeps the worktree.
+    to create the worktree: a changed HEAD may contain committed but never-pushed work.
+    This answers only "would commits be lost". Uncommitted work is a separate question,
+    guarded for every candidate by the caller, and age by the caller's activity guard.
+    Any git or verification failure keeps the worktree.
     """
     try:
         branch = subprocess.run(
@@ -812,13 +827,10 @@ def _has_unpushed_commits(
     head = result.stdout.strip().splitlines()[0]
     # Unreachable: a closed pull request, or genuinely unique work. A closed-PR
     # checkout remains at its creation commit; locally committed work moves HEAD.
-    return (
-        _head_moved_since_worktree_creation(
-            worktree_path,
-            head,
-            deadline=deadline,
-        )
-        or _has_uncommitted_changes(worktree_path, deadline=deadline)
+    return _head_moved_since_worktree_creation(
+        worktree_path,
+        head,
+        deadline=deadline,
     )
 
 

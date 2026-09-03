@@ -4,7 +4,7 @@ title: "Daemon Runtime"
 description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-08-07
+updated: 2026-09-02
 ---
 
 # Daemon Runtime
@@ -64,6 +64,11 @@ daemon-thread lanes (`awake._run_in_worker(fn, lane=...)`):
   poll loop, so a large repository cannot delay Slack, Telegram, or other
   inbound commands. Each sweep has a fixed two-minute deadline and a 15-second
   cap per Git command; incomplete checks retain worktrees for a later sweep.
+  Unlike chat and bg, this lane does **not** hold back the bridge's memory
+  watchdog: its work is idempotent and restart-safe (a half-removed worktree is
+  pruned on the next sweep), so a sweep wedged in uninterruptible I/O — which
+  outlives its Python-level timeout — cannot silently disable the watchdog and
+  trade a clean re-exec for an OOM kill.
 
 Because the lanes run concurrently, a long-running background task never
 blocks an interactive chat reply, and neither blocks the poll loop. One
