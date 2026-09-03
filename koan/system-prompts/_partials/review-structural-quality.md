@@ -28,9 +28,11 @@ Signals worth naming when you see them:
 - **Obscured contracts** — new casts, `any`/`unknown`, or optional parameters
   that paper over an invariant an explicit boundary would state outright.
 - **File-size explosion** — a change that pushes an already-large file
-  substantially larger; crossing ~1000 lines is a useful default threshold. Check
-  it with the read-only shell (`wc -l path/to/file.py`) rather than guessing.
-  This is a smell, not a rule: a large file that stayed clearly organized is fine.
+  substantially larger. Use the size limit the reviewed repo's own convention
+  docs state when there is one; fall back to ~1000 lines only for repos that
+  state none. Check it with the read-only shell (`wc -l path/to/file.py`) rather
+  than guessing. This is a smell, not a rule: a large file that stayed clearly
+  organized is fine.
 
 When you raise one of these, propose the **structural** remedy: delete the layer,
 reframe the state so the branches vanish, move the logic to the module that

@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-08-19
+updated: 2026-09-03
 ---
 
 # Skill Spec — `review`
@@ -298,6 +298,16 @@ deterministic Python (`review_identity`, `review_reuse`, `review_reconcile`,
   is dropped. Set by the shared `review-severity-rubric` prompt partial ({@include}-d
   by `review.md` + `review-with-plan.md`; the markdown architecture prompt carries an
   equivalent Rules bullet). The bar is prompt-fixed at strict (not runtime config).
+- **Structural-quality lens (always on).** All three main review prompts
+  (`review.md`, `review-with-plan.md`, the markdown architecture prompt) carry the
+  `review-structural-quality` partial ({@include}-d): the reviewer judges whether the
+  change leaves surrounding code simpler or messier (spaghetti growth, wrong layer,
+  duplicated canonical helper, thin abstraction, file-size explosion) and names the
+  structural remedy. Findings default to `suggestion`/🟢 and never block on style
+  alone; promotion to `warning` requires naming concrete harm, per the same bar as
+  FR-008–010. The focused `--errors` / `--comments` passes deliberately omit it.
+  `reflect.md` scores a concrete structural finding in the 5-7 band (8-10 when the
+  diff shows the mess) and a vague one at 0-2.
 - **Exhaustive single-pass (FR-025).** The default prompt aims to surface every
   genuine issue in one pass (no finding cap), so later reviews have less to add;
   higher recall still flows through the same bar (no blocking-set inflation).
@@ -337,7 +347,10 @@ The review skill is the first skill covered by the deterministic eval harness
   finding at the right severity, precision cases (`clean_refactor`,
   `benign_style`) that must LGTM without false positives, and `suggestion_only`,
   which carries a legitimate low-severity nit that must be surfaced *and* still
-  yield `lgtm: true` (guards the verdict-follows-severity invariant).
+  yield `lgtm: true` (guards the verdict-follows-severity invariant), and
+  `structural_growth`, a feature-specific branch bolted into a shared helper that
+  the structural-quality lens must surface as a `suggestion` while still
+  LGTM-ing (guards the always-on structural lens).
 - **Scored dimensions:** JSON/schema validity (via `validate_review`), recall of
   seeded findings (file + keyword-stem + severity-band match), LGTM correctness,
   and precision (no flags on `forbidden_files`).

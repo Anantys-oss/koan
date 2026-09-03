@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-08-31
+updated: 2026-09-03
 ---
 
 # Kōan User Manual
@@ -611,6 +611,7 @@ The debug loop enforces four steps:
   the retained findings. Malformed reflection metadata fails open to the complete
   primary review.
 - **Project memory:** Reviews automatically inject the project's filtered learnings plus human-curated `context.md`/`priorities.md`, ranked against the PR's title, body, and diff via the SQLite FTS5 memory index. Set `review_memory.enabled: true` in `config.yaml` to *also* include recent typed project memory (decisions, observations) for extra reviewer context. Both apply to `/review` and the backend private review gate.
+- **Structural quality:** The main review passes (default, plan-aware, and `--architecture`) also judge whether the change leaves the surrounding code simpler or messier — ad-hoc branches bolted onto unrelated flows, feature logic in a shared module, a bespoke helper duplicating a canonical one, or a file pushed past a healthy size (the limit your repo's convention docs state, else ~1000 lines). Findings name the structural remedy and stay 🟢 Suggestions unless concrete harm is named, so they never block a merge on style alone.
 - **Prior review context:** On a re-review, the bot's own most recent structured review is surfaced in a dedicated, head-preserving prompt slot so the new review builds on it (confirming whether prior findings are resolved) instead of losing it to the recency-truncated conversation thread. That prior review comment is also collapsed to a short "superseded" pointer so it doesn't echo or crowd out human feedback — set `review_history.preserve_previous: true` to keep it intact instead. Tune the prompt slot via `review_context` in `config.yaml` (`include_bot_feedback`, `prior_review_max_chars`).
 
 <details>

@@ -96,13 +96,13 @@ human-curated context/priorities into the review prompt, ranked against the PR
 content. Enable `review_memory` in `config.yaml` to also include recent typed
 project memory (decisions, observations) from the SQLite memory index.
 
-**Structural quality:** Every review pass (default, plan-aware, and
-`--architecture`) also judges whether the change leaves the surrounding code
+**Structural quality:** The main review passes (default, plan-aware, and
+`--architecture`) also judge whether the change leaves the surrounding code
 simpler or messier — spaghetti growth from ad-hoc branches bolted onto unrelated
 flows, feature logic landing in a shared module, a bespoke helper duplicating a
 canonical one, thin pass-through wrappers, and files the PR pushes past a healthy
-size (~1000 lines). Findings name the structural remedy rather than a cosmetic
-one. The severity bar is unchanged: these are 🟢 Suggestions unless the reviewer
+size (the limit your repo's convention docs state, else ~1000 lines). Findings
+name the structural remedy rather than a cosmetic one. The severity bar is unchanged: these are 🟢 Suggestions unless the reviewer
 can name concrete harm, so they never block a merge on style alone.
 
 **Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in
