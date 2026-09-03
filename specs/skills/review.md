@@ -347,10 +347,11 @@ The review skill is the first skill covered by the deterministic eval harness
   finding at the right severity, precision cases (`clean_refactor`,
   `benign_style`) that must LGTM without false positives, and `suggestion_only`,
   which carries a legitimate low-severity nit that must be surfaced *and* still
-  yield `lgtm: true` (guards the verdict-follows-severity invariant), and
-  `structural_growth`, a feature-specific branch bolted into a shared helper that
-  the structural-quality lens must surface as a `suggestion` while still
-  LGTM-ing (guards the always-on structural lens).
+  yield `lgtm: true` (guards the verdict-follows-severity invariant).
+- **Structural-quality case:** `structural_growth` — a feature-specific branch
+  bolted into a shared helper that the structural-quality lens must surface as a
+  `suggestion` while still yielding `lgtm: true` (guards the always-on structural
+  lens).
 - **Scored dimensions:** JSON/schema validity (via `validate_review`), recall of
   seeded findings (file + keyword-stem + severity-band match), LGTM correctness,
   and precision (no flags on `forbidden_files`).
