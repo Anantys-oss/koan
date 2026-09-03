@@ -172,10 +172,13 @@ def run(koan_root: str, instance_dir: str, full: bool = False) -> List[CheckResu
 def _base_branch(koan_root: str, project_name: str, project_path: str) -> str:
     """Return the branch git prep will try to check out for this project.
 
-    Mirrors prepare_project_branch(): an explicit project-level
-    git_auto_merge.base_branch wins, otherwise the remote's default branch is
-    detected. Reporting a different branch than prep uses would make this check
-    worse than useless.
+    Mirrors prepare_project_branch(), which resolves the branch through
+    get_project_auto_merge() — so a base_branch written once under `defaults:`
+    counts exactly as much as a per-project override, and only the hardcoded
+    "main" fallback is open to auto-detection. Resolving it any other way here
+    makes the check worse than useless: it would detach a developer's worktree
+    over a branch prep never wants, while missing the collision on the branch
+    prep actually checks out.
 
     Resolution is **local only**. `/doctor` without --full keeps every network
     probe out of the default path, and detect_remote_default_branch() falls
@@ -186,18 +189,31 @@ def _base_branch(koan_root: str, project_name: str, project_path: str) -> str:
     """
     from app.git_prep import (
         _find_project_entry,
+        _has_remote_tracking_ref,
+        get_project_auto_merge,
         get_upstream_remote,
         load_projects_config,
         local_remote_default_branch,
     )
 
-    config = load_projects_config(koan_root)
-    projects = (config or {}).get("projects", {}) or {}
-    project_config = _find_project_entry(projects, project_name) or {}
-    explicit = (project_config.get("git_auto_merge", {}) or {}).get("base_branch")
-    if explicit:
-        return explicit
+    config = load_projects_config(koan_root) or {}
+    branch = get_project_auto_merge(config, project_name).get("base_branch", "main")
+
+    projects = config.get("projects", {}) or {}
+    project_am = (
+        (_find_project_entry(projects, project_name) or {}).get("git_auto_merge", {})
+        or {}
+    )
+    defaults_am = (config.get("defaults", {}) or {}).get("git_auto_merge", {}) or {}
+    configured = bool(project_am.get("base_branch") or defaults_am.get("base_branch"))
+    if configured:
+        return branch
+
     remote = get_upstream_remote(project_path, project_name, koan_root)
+    # Same gate as prep: an unconfigured "main" that exists here is kept as-is;
+    # only when it has no tracking ref does prep look up the remote's default.
+    if _has_remote_tracking_ref(remote, branch, project_path):
+        return branch
     return local_remote_default_branch(remote, project_path) or ""
 
 

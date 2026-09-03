@@ -938,3 +938,91 @@ class TestProjectWorktreeCollision:
         assert not any(
             c.args and c.args[0] == "ls-remote" for c in mock_git.call_args_list
         )
+
+    @staticmethod
+    def _repo_with_two_branches(tmp_path):
+        """Repo with 'main' and 'develop', both parked in their own worktree."""
+        repo = tmp_path / "proj"
+        repo.mkdir()
+        run = lambda *a: subprocess.run(  # noqa: E731 - terse test helper
+            a, cwd=str(repo), capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "init", "-b", "main", str(repo)], capture_output=True, check=True,
+        )
+        run("git", "config", "user.email", "t@t")
+        run("git", "config", "user.name", "T")
+        run("git", "commit", "--allow-empty", "-m", "init")
+        run("git", "branch", "develop")
+        # A remote whose default branch is 'main' — the answer the check must
+        # NOT use once `defaults:` configures 'develop'.
+        run("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        run(
+            "git", "symbolic-ref", "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        )
+        run("git", "checkout", "--detach")
+        run("git", "worktree", "add", str(tmp_path / "on-main"), "main")
+        run("git", "worktree", "add", str(tmp_path / "on-develop"), "develop")
+        return str(repo), str(tmp_path / "on-main"), str(tmp_path / "on-develop")
+
+    def _patched_config(self, repo, config):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        stack = ExitStack()
+        stack.enter_context(patch(
+            "app.projects_config.load_projects_config", return_value=config,
+        ))
+        stack.enter_context(patch(
+            "app.git_prep.load_projects_config", return_value=config,
+        ))
+        stack.enter_context(patch(
+            "app.projects_config.get_projects_from_config", return_value=[("p", repo)],
+        ))
+        return stack
+
+    def test_defaults_base_branch_is_the_branch_reported(self, tmp_path):
+        """A base_branch set only under `defaults:` is what git prep checks out.
+
+        projects_config deep-merges `defaults:` into every project entry, so
+        prepare_project_branch() wants 'develop' here. Reporting 'main' instead
+        would flag — and `--fix` would detach — a worktree that never blocked a
+        mission, while missing the one actually holding the base branch.
+        """
+        from diagnostics import project_check
+        repo, on_main, on_develop = self._repo_with_two_branches(tmp_path)
+        config = {
+            "defaults": {"git_auto_merge": {"base_branch": "develop"}},
+            "projects": {"p": {"path": repo}},
+        }
+        with self._patched_config(repo, config):
+            results = project_check.run("/koan", "/koan/instance")
+
+        hits = [r for r in results if r.name.endswith("_worktree")]
+        assert len(hits) == 1
+        assert "'develop'" in hits[0].message
+        assert on_develop in hits[0].message
+        assert on_main not in hits[0].message
+
+    def test_defaults_base_branch_does_not_detach_an_unrelated_worktree(self, tmp_path):
+        """--fix must leave the 'main' holder alone when prep wants 'develop'."""
+        from diagnostics import project_check
+        repo, on_main, on_develop = self._repo_with_two_branches(tmp_path)
+        config = {
+            "defaults": {"git_auto_merge": {"base_branch": "develop"}},
+            "projects": {"p": {"path": repo}},
+        }
+        with self._patched_config(repo, config):
+            fixes = project_check.fix("/koan", "/koan/instance")
+
+        assert len(fixes) == 1 and fixes[0].success is True
+        assert on_develop in fixes[0].message
+
+        def head_of(wt):
+            return subprocess.run(
+                ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+                cwd=wt, capture_output=True, text=True,
+            )
+
+        assert head_of(on_main).stdout.strip() == "main", "unrelated worktree detached"
+        assert head_of(on_develop).returncode != 0, "develop holder should be detached"
