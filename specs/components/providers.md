@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-08-19
+updated: 2026-09-03
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -77,6 +77,10 @@ tools — MCP tools must still be allowlisted via qualified names
   **CLI flag boundary**, not by relocating tracked files on disk.
 - **One invocation lock per uid.** Provider auth state is per-user, so the subprocess
   lock lives under `koan_tmp_dir()` (per-uid), not a fixed `/tmp` path.
+  The wait for it MUST poll (`LOCK_EX | LOCK_NB` + `LOCK_POLL_INTERVAL` sleep), never
+  block in `LOCK_EX`: contention is unbounded (a peer Kōan holds it for a whole
+  mission), and a thread parked in a blocking flock cannot run Python-level signal
+  handlers, which would make the runner deaf to `/abort` and `/restart --force`.
 - **Provider resolution has a fixed precedence** (env → config → default) for the
   GLOBAL provider. Per-role selection (`cli.<role>`) layers on top via
   `get_provider_for_role`; it does not introduce a second GLOBAL resolution path.
