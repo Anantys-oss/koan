@@ -247,6 +247,96 @@ class TestResolveMemoryMax:
         assert logger.call_args_list == []
 
 
+# ── the probe: "usable" means a scope can actually be created ───────────
+
+class TestProbeVerifiesScopeCreation:
+    """Finding the binary is not the same as being allowed to use it.
+
+    When the manager rejects the transient scope or its memory properties (an
+    undelegated memory controller, resource control refused), `systemd-run`
+    starts fine, exits non-zero and never execs the mission. `Popen` reports
+    success, so no exception-based fallback can fire and every mission on the
+    host would be finalized as a plain failure with empty output.
+    """
+
+    @staticmethod
+    def _live_manager():
+        """Put the real probe back, with its binary/manager half saying "usable".
+
+        conftest stubs `_probe_systemd_run` for the whole suite (no test may
+        reach the host's systemd), so the function under test has to be restored
+        deliberately — `_REAL_PROBE` is the one captured at import time.
+        """
+        return (
+            patch.object(mission_scope, "_probe_systemd_run", side_effect=_REAL_PROBE),
+            patch.object(mission_scope.shutil, "which",
+                         side_effect=lambda name: f"/usr/bin/{name}"),
+            patch.object(mission_scope.os, "geteuid", return_value=0),
+            patch.object(mission_scope.Path, "is_dir", return_value=True),
+        )
+
+    @staticmethod
+    def _systemd_run_result(returncode, stderr=""):
+        result = MagicMock()
+        result.returncode = returncode
+        result.stderr = stderr
+        result.stdout = ""
+        return result
+
+    def _probe_with(self, returncode, stderr=""):
+        result = self._systemd_run_result(returncode, stderr)
+        probe, which, euid, is_dir = self._live_manager()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(list(argv))
+            return result
+
+        with probe, which, euid, is_dir, \
+             patch.object(mission_scope.subprocess, "run", side_effect=fake_run):
+            mission_scope.reset_probe_cache()
+            verdict = mission_scope.systemd_run()
+        return verdict, calls
+
+    def test_a_manager_that_refuses_a_scope_is_not_usable(self):
+        verdict, calls = self._probe_with(
+            1, "Failed to start transient scope unit: Unit property is not supported",
+        )
+        assert verdict == (None, [])
+        # It really tried to create one, with the memory properties a mission gets.
+        assert calls and "--scope" in calls[0]
+        assert any(a.startswith("--property=MemoryMax=") for a in calls[0])
+
+    def test_a_manager_that_accepts_a_scope_is_usable(self):
+        verdict, calls = self._probe_with(0)
+        assert verdict == ("/usr/bin/systemd-run", [])
+        assert calls and "--scope" in calls[0]
+
+    def test_a_refused_scope_falls_back_instead_of_failing(self, tmp_path):
+        """The end the operator sees: an uncontained mission, not a broken one."""
+        probe, which, euid, is_dir = self._live_manager()
+        result = self._systemd_run_result(1, "Failed to start transient scope unit")
+        spawn = _RecordingSpawn()
+        with probe, which, euid, is_dir, \
+             patch.object(mission_scope.subprocess, "run", return_value=result):
+            mission_scope.reset_probe_cache()
+            scoped = launch_scoped(list(_MISSION_ARGV), config=dict(_BASE_CONFIG),
+                                   spawn=spawn, koan_root=str(tmp_path))
+        assert scoped.mode == "session"
+        assert spawn.calls[0]["launcher"] == []
+
+    def test_the_probe_runs_once_per_process(self):
+        probe, which, euid, is_dir = self._live_manager()
+        result = self._systemd_run_result(0)
+        with probe, which, euid, is_dir, \
+             patch.object(mission_scope.subprocess, "run",
+                          return_value=result) as run:
+            mission_scope.reset_probe_cache()
+            for _ in range(3):
+                mission_scope.systemd_run()
+        assert run.call_count == 1
+
+
 # ── launcher construction ───────────────────────────────────────────────
 
 class TestScopeLauncher:
@@ -353,21 +443,31 @@ class TestLaunchScoped:
         assert spawn.calls[0]["kwargs"]["start_new_session"] is True
 
     def test_disabled_reproduces_the_unscoped_spawn(self, stub_systemd, tmp_path):
-        """enabled: false must behave exactly as Kōan did before this module."""
+        """enabled: false must behave exactly as Kōan did before this module.
+
+        Which means no sweep either. An operator whose mission deliberately
+        backgrounds a process (a dev server, a watcher started without setsid)
+        reaches for the master switch precisely to stop Kōan reaping it; a
+        switch that only disables the cgroup while still SIGTERM/SIGKILLing the
+        mission's whole process group on the success path gives them no way out.
+        """
         config = {**_BASE_CONFIG, "enabled": False}
         spawn = _RecordingSpawn()
         scoped = launch_scoped(list(_MISSION_ARGV), config=config, spawn=spawn,
                                koan_root=str(tmp_path))
-        assert scoped.mode == "session"
+        assert scoped.mode == "off"
         assert scoped.unit == ""
         assert spawn.calls[0]["launcher"] == []
         assert spawn.calls[0]["kwargs"]["start_new_session"] is True
         assert len(spawn.calls) == 1
-        # Teardown degrades to the pre-existing process-group kill.
+        # Nothing registered, so `make stop` cannot sweep it either.
+        assert not (tmp_path / ".koan-mission-scopes").exists()
         with patch.object(mission_scope, "kill_process_group") as killer, \
+             patch.object(mission_scope, "kill_orphaned_process_group") as group, \
              patch.object(mission_scope, "_systemctl") as systemctl:
             scoped.teardown()
-        killer.assert_called_once_with(scoped.proc)
+        killer.assert_not_called()
+        group.assert_not_called()
         systemctl.assert_not_called()
 
     def test_disabled_does_not_probe_for_systemd(self, tmp_path):
@@ -578,7 +678,9 @@ class TestTeardown:
         # The unit answered, so there is nothing for the group kill to add.
         killer.assert_not_called()
 
-    def test_failed_stop_kills_the_scope_even_on_the_success_path(self, tmp_path):
+    def test_failed_stop_kills_the_scope_even_on_the_success_path(
+        self, tmp_path, real_mission_scope_group_kill,
+    ):
         """The regression: an exited mission process leaves killpg with no target.
 
         The real kill_process_group runs here (only os.killpg underneath it is
@@ -587,6 +689,11 @@ class TestTeardown:
         sent. That is the success path — the whole point of this module — where
         the old fallback silently signalled nothing while logging that it had
         killed the group. Reaching the scope cannot depend on it.
+
+        Requests `real_mission_scope_group_kill` for exactly that reason: with
+        conftest's stub in place the assertion below would hold vacuously. The
+        `poll()` guard is what keeps it safe — it returns before `os.getpgid`
+        ever sees this test's invented pid.
         """
         calls = []
         scoped = self._scoped(tmp_path)
@@ -1218,13 +1325,18 @@ class TestDetachedDaemonContainment:
             raise
         return proc, daemon_pid
 
-    def test_process_group_cannot_reach_a_detached_daemon(self, tmp_path):
+    def test_process_group_cannot_reach_a_detached_daemon(
+        self, tmp_path, real_mission_scope_group_kill,
+    ):
         """Proves the premise: killpg is structurally unable to do this job.
 
         The daemon double-forks and calls setsid, so it is in its own session
         with PPID 1 — exactly what Gradle's build daemon does. A regression that
         swaps the cgroup teardown back for a process-group kill would make the
         second half of this test a false claim about cleanup.
+
+        Requests `real_mission_scope_group_kill` because the group it signals is
+        a real subprocess this test spawned, not a mocked pid.
         """
         proc, daemon_pid = self._launch_daemon_holder(tmp_path)
         try:

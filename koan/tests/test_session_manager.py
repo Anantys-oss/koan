@@ -728,7 +728,7 @@ class TestSpawnSessionMissionScope:
             session, captured = _ScopeSpawnHarness.spawn(registry, tmp_path, monkeypatch)
 
         probe.assert_not_called()
-        assert session._scoped.mode == "session"
+        assert session._scoped.mode == "off"
         assert session._scoped.unit == ""
         assert captured["kwargs"]["launcher"] == []
         assert captured["kwargs"]["start_new_session"] is True
