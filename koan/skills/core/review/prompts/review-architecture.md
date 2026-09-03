@@ -63,6 +63,13 @@ Analyze the code changes through an **architecture lens**. Focus on:
    - Do module/class/function names accurately describe their responsibility?
    - Is there a mismatch between a module's name and what the new code makes it do?
 
+7. **Structural Simplification**
+   - Could the change be reframed so that branches, flags, helpers, or whole
+     layers become unnecessary rather than merely better organized?
+   - Does the diff leave the surrounding code simpler or more tangled?
+
+{@include review-structural-quality}
+
 ### Verification
 
 When an architectural claim depends on how surrounding code behaves (e.g. "this
@@ -72,6 +79,9 @@ reporting. Flag unverifiable claims explicitly.
 ### Rules
 
 - Be specific: reference file names and line ranges from the diff.
+- Be ambitious: when a structural problem has a real fix, propose the
+  restructuring rather than a cosmetic patch on top of it. Do not settle for
+  "rename this" when the issue is that the design itself is wrong.
 - Be exhaustive: surface every genuine architectural issue in this one pass —
   don't stop after the first few, so a later review has little to add.
 - Prioritize: separate blocking architectural issues from minor suggestions.
