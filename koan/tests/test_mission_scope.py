@@ -387,7 +387,8 @@ class TestLaunchScoped:
             scoped.teardown()
         killer.assert_called_once_with(scoped.proc)
 
-    def test_fallback_warning_is_logged_once(self, stub_no_systemd, tmp_path):
+    def test_the_probe_verdict_is_logged_once(self, stub_no_systemd, tmp_path):
+        """A host with no systemd-run cannot grow one mid-run — say it once."""
         with patch.object(mission_scope, "log_safe") as logger:
             for _ in range(3):
                 launch_scoped(list(_MISSION_ARGV), config=dict(_BASE_CONFIG),
@@ -395,6 +396,31 @@ class TestLaunchScoped:
         warnings = [c for c in logger.call_args_list if c.args[0] == "warn"]
         assert len(warnings) == 1
         assert "systemd-run unavailable" in warnings[0].args[1]
+
+    def test_every_scope_start_failure_is_logged(self, stub_systemd, tmp_path):
+        """Not one-shot, and not sharing the probe's budget.
+
+        A user manager that restarts mid-run makes every later mission run
+        uncontained. Swallowing those lines reproduces the invisible-leak state
+        this module exists to end: an empty `systemctl list-units
+        'koan-mission-*'` and a clean log while daemons accumulate.
+        """
+        def spawn(argv, launcher, **kwargs):
+            if launcher:
+                raise OSError("Failed to connect to bus")
+            proc = MagicMock()
+            proc.pid = 4242
+            proc.poll.return_value = None
+            proc.returncode = 0
+            return proc
+
+        with patch.object(mission_scope, "log_safe") as logger:
+            for _ in range(3):
+                launch_scoped(list(_MISSION_ARGV), config=dict(_BASE_CONFIG),
+                              spawn=spawn, koan_root=str(tmp_path))
+        warnings = [c for c in logger.call_args_list if c.args[0] == "warn"]
+        assert len(warnings) == 3
+        assert all("failed to start" in c.args[1] for c in warnings)
 
     def test_scope_start_failure_falls_back_and_still_spawns(self, stub_systemd, tmp_path):
         attempts = []
@@ -706,6 +732,43 @@ class TestTeardown:
         assert scoped.cap_exceeded is True
         assert scoped.cap_message() == "exceeded memory cap (4G)"
 
+    def test_a_readable_oom_kill_zero_beats_the_exit_status_guess(self, tmp_path):
+        """`oom_kill 0` is proof the cap did not fire — never overridden.
+
+        The cgroup is readable in exactly the case this module targets: a
+        leaked daemon keeps the scope populated, so `--collect` has not reaped
+        it. A SIGKILL that arrives anyway (a co-tenant exhausting RAM and the
+        *global* OOM killer taking the CLI, or a Kōan kill on a path that does
+        not set koan_initiated_kill) must stay an ordinary failure: a cap hit
+        is never retried, so believing the guess permanently suppresses both
+        the retry and the provider fallback.
+        """
+        scoped = self._scoped(tmp_path)
+        scoped.proc.returncode = -9
+        with patch.object(mission_scope, "_systemctl", return_value=None), \
+             patch.object(mission_scope, "_cgroup_dir", return_value=tmp_path), \
+             patch.object(mission_scope, "_read_peak_bytes", return_value=None), \
+             patch.object(mission_scope, "_read_oom_kills", return_value=0), \
+             patch.object(mission_scope, "_unit_property", return_value=""):
+            scoped.teardown(koan_initiated_kill=False)
+        assert scoped.cap_exceeded is False
+        assert scoped.cap_message() == ""
+
+    def test_known_negative_evidence_is_not_logged_as_unknown(self, tmp_path):
+        """A read `oom_kill 0` answers the question, so nothing is unknown."""
+        scoped = self._scoped(tmp_path)
+        scoped.proc.returncode = 1
+        with patch.object(mission_scope, "_systemctl", return_value=None), \
+             patch.object(mission_scope, "_cgroup_dir", return_value=tmp_path), \
+             patch.object(mission_scope, "_read_peak_bytes", return_value=None), \
+             patch.object(mission_scope, "_read_oom_kills", return_value=0), \
+             patch.object(mission_scope, "_unit_property", return_value=""), \
+             patch.object(mission_scope, "log_safe") as logger:
+            scoped.teardown()
+        assert scoped.cap_exceeded is False
+        assert not any("memory cap fired" in str(c.args[1])
+                       for c in logger.call_args_list)
+
     def test_clean_exit_is_never_a_cap_hit(self, tmp_path):
         scoped = self._scoped(tmp_path)
         with patch.object(mission_scope, "_systemctl", return_value=None), \
@@ -816,6 +879,43 @@ class TestScopeRegistry:
         # the pgid captured at launch (for children an exited leader left).
         killer.assert_called_once_with(scoped.proc)
         group_killer.assert_called_once_with(scoped._pgid)
+
+    def test_a_fallback_teardown_that_reached_nothing_keeps_its_record(
+        self, tmp_path, stub_no_systemd,
+    ):
+        """"Cannot tell" is never "contained" on the fallback path either.
+
+        `kill_orphaned_process_group` returns normally after an EPERM refusal
+        (a descendant that changed credentials), after a group that outlived
+        SIGKILL, and for a pgid that was never captured. Treating any of those
+        as a clean sweep unlinked the only handle on the leaked descendants
+        while the log claimed the mission was contained.
+        """
+        scoped = launch_scoped(list(_MISSION_ARGV), config=dict(_BASE_CONFIG),
+                               spawn=_RecordingSpawn(), koan_root=str(tmp_path))
+        assert scoped.mode == "session"
+        entry = tmp_path / ".koan-mission-scopes" / f"pid-{scoped.pid}"
+        assert entry.exists()
+        with patch.object(mission_scope, "kill_process_group"), \
+             patch.object(mission_scope, "kill_orphaned_process_group",
+                          return_value=False), \
+             patch.object(mission_scope, "log_safe") as logger:
+            scoped.teardown()
+        assert entry.exists(), "an unconfirmed fallback sweep lost its record"
+        assert any(c.args[0] == "error" and "containment unconfirmed" in str(c.args[1])
+                   for c in logger.call_args_list)
+
+    def test_a_confirmed_fallback_teardown_drops_its_record(
+        self, tmp_path, stub_no_systemd,
+    ):
+        scoped = launch_scoped(list(_MISSION_ARGV), config=dict(_BASE_CONFIG),
+                               spawn=_RecordingSpawn(), koan_root=str(tmp_path))
+        entry = tmp_path / ".koan-mission-scopes" / f"pid-{scoped.pid}"
+        with patch.object(mission_scope, "kill_process_group"), \
+             patch.object(mission_scope, "kill_orphaned_process_group",
+                          return_value=True):
+            scoped.teardown()
+        assert not entry.exists()
 
     @staticmethod
     def _manager(calls, *, stop_rc=0, kill_rc=0, load_state="not-found"):
@@ -962,6 +1062,29 @@ class TestScopeRegistry:
             handled = stop_registered_scopes(str(tmp_path))
         assert handled == []
         assert any("unusable" in str(c.args[1]) for c in logger.call_args_list)
+
+    def test_a_record_naming_neither_handle_is_reported_before_it_is_dropped(
+        self, tmp_path,
+    ):
+        """Parseable but unactionable: no unit, and a pid of 0.
+
+        `_register` writes this whenever `ScopedProcess.pid` degraded to 0.
+        There is nothing left to signal, so the record goes — but silently
+        discarding a registered handle is exactly what the rest of this
+        function refuses to do, so an operator has to be able to see it.
+        """
+        directory = tmp_path / ".koan-mission-scopes"
+        directory.mkdir()
+        entry = directory / "pid-0"
+        entry.write_text(json.dumps({"unit": "", "mode": "session", "pid": 0}))
+        with patch.object(mission_scope, "kill_process_group_by_pid") as killer, \
+             patch.object(mission_scope, "log_safe") as logger:
+            handled = stop_registered_scopes(str(tmp_path))
+        killer.assert_not_called()
+        assert handled == []
+        assert not entry.exists()
+        assert any(c.args[0] == "error" and "unusable" in str(c.args[1])
+                   for c in logger.call_args_list)
 
     def test_missing_registry_is_not_an_error(self, tmp_path):
         assert stop_registered_scopes(str(tmp_path / "absent")) == []

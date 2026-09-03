@@ -202,6 +202,7 @@ def _kill_process_group(proc):
 
 def _on_sigint(signum, frame):
     """SIGINT handler: first press warns, second press aborts."""
+    global _last_mission_aborted
     if not _sig.task_running:
         raise KeyboardInterrupt
 
@@ -212,6 +213,12 @@ def _on_sigint(signum, frame):
             # Second CTRL-C within timeout — abort
             print()
             log("koan", "Confirmed. Aborting...")
+            # Record it the way /abort does (_on_sigusr1) *before* the kill:
+            # this SIGKILL is ours, and mission_scope.teardown must not read
+            # the resulting -9 exit as the memory cap firing — a cap hit is
+            # never retried, so a hand-aborted mission would be mislabelled
+            # and then permanently refused both retry paths.
+            _last_mission_aborted = True
             _kill_process_group(_sig.claude_proc)
             _sig.first_ctrl_c = 0
             _sig.task_running = False
@@ -541,6 +548,10 @@ def run_claude_task(
         # and has left the mission's process group by now, while a cgroup
         # catches every descendant however often it double-forks.
         if scoped is not None:
+            # _last_mission_aborted covers both the /abort file branch and the
+            # double-tap CTRL-C, which _on_sigint now records before it
+            # SIGKILLs the group — otherwise a hand-aborted mission's -9 exit
+            # is read as the memory cap firing and then refused a retry.
             _koan_killed = bool(
                 _last_mission_aborted
                 or (watchdog is not None and watchdog.fired)
@@ -3670,6 +3681,10 @@ def _run_skill_mission(
         # branch restore below runs git on the same worktree the skill was using,
         # so no leaked build daemon should still be holding it.
         if scoped is not None:
+            # A double-tap CTRL-C SIGKILLs this process group from _on_sigint,
+            # which records it as an abort — the only trace of a kill Kōan
+            # delivered on that path, and it must not read as the cap firing.
+            koan_killed = koan_killed or _last_mission_aborted
             try:
                 scoped.teardown(koan_initiated_kill=koan_killed)
             except Exception as e:

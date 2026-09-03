@@ -861,14 +861,19 @@ def _signal_process(pid: int, sig: int) -> bool:
     Returns False only when the target is already gone. Kōan starts every
     daemon with ``start_new_session=True``, so the daemon leads its own group
     and ``killpg`` reaches its children too; the ``pgid != pid`` fallback covers
-    a pid file written by something that is not a group leader, and guarantees
-    this never signals the caller's own group.
+    a pid file written by something that is not a group leader.
+
+    The caller's own group is never signalled, and that is structural rather
+    than incidental: if a daemon ever calls ``stop_processes`` over a set that
+    includes itself, ``killpg`` would take the caller down mid-sweep and leave
+    the remaining daemons running with their pid files intact. Mirrors the
+    guard in :func:`app.subprocess_runner.kill_orphaned_process_group`.
     """
     try:
         pgid = os.getpgid(pid)
     except (OSError, ProcessLookupError):
         return False
-    if pgid == pid:
+    if pgid == pid and pgid != os.getpgrp():
         try:
             os.killpg(pgid, sig)
             return True

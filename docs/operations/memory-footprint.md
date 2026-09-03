@@ -4,7 +4,7 @@ title: "Memory footprint: process RSS vs cgroup memory.current"
 description: "Why the container memory graph plateaus high after missions (page cache + slab, not a leak), the /tmp leftovers that inflate it, the post-mission sweep, the per-mission cgroup scope that kills leaked build daemons, and the anon-first triage rule."
 tags: [operations, memory, cgroup]
 created: 2026-07-13
-updated: 2026-09-02
+updated: 2026-09-03
 ---
 
 # Memory footprint: process RSS vs cgroup memory.current
@@ -162,6 +162,16 @@ daemon that has already re-parented to PID 1.
   deliberately not reported as a cap hit, because on a clean mission the
   collected cgroup is unreadable by definition and believing the unknown would
   mark every ordinary mission as capped — permanently disabling the retry path.
+  The mirror of that rule matters just as much: a readable `oom_kill 0` is the
+  kernel saying the cap did **not** fire, so the exit-status heuristic is gated
+  on `oom_kills is None` and never overrides it. That evidence is readable in
+  exactly the case this feature targets (a leaked daemon keeps the scope
+  populated, so `--collect` has not reaped the cgroup), and it is what separates
+  the cap from a co-tenant exhausting RAM and the kernel's *global* OOM killer
+  taking the CLI. Kills Kōan issues itself are excluded by
+  `koan_initiated_kill`, the double-tap CTRL-C included — `_on_sigint` records
+  it as an abort exactly as `/abort` does, so its own SIGKILL is not read as the
+  cap firing and then refused a retry.
 - **No container sweep.** Containers are children of the Docker daemon, not of
   the mission, so nothing Kōan can observe distinguishes one this mission
   started from a co-tenant's: a creation timestamp inside the mission's window
@@ -176,12 +186,23 @@ daemon that has already re-parented to PID 1.
   `TESTCONTAINERS_RYUK_DISABLED=true` owns its own container cleanup, and Kōan
   will not (and cannot safely) do it for them.
 - **Fallback:** where `systemd-run` cannot create a scope (macOS, no manager, no
-  user manager) Kōan warns **once** and spawns with `start_new_session=True`,
-  tearing down the process group captured at launch (SIGTERM → 3 s → SIGKILL →
-  5 s). The *pgid* is what is signalled, not the `Popen`:
-  `kill_process_group()` returns at its `poll()` guard once the mission process
-  is reaped, so on the success path it would signal nothing while descendants
-  left in the group keep running. Every host must still be able to run missions.
+  user manager) Kōan spawns with `start_new_session=True`, tearing down the
+  process group captured at launch (SIGTERM → 3 s → SIGKILL → 5 s). The *pgid*
+  is what is signalled, not the `Popen`: `kill_process_group()` returns at its
+  `poll()` guard once the mission process is reaped, so on the success path it
+  would signal nothing while descendants left in the group keep running. Every
+  host must still be able to run missions. The same "cannot tell is never
+  contained" rule applies here — only a `ProcessLookupError` from `killpg`
+  proves the group is empty, so an EPERM refusal (a descendant that changed
+  credentials), a group that outlived SIGKILL, or a pgid that was never captured
+  keeps its registry record for `make stop` instead of reporting a clean sweep.
+  The **warning** is once per process for the *probe* verdict (a host does not
+  grow a `systemd-run` mid-run, so repeating it says nothing new) but logged on
+  **every** occurrence of a scope that fails to *start*: a user manager that
+  restarts mid-run leaves each later mission uncontained, and sharing one
+  one-shot budget hid exactly that — an empty
+  `systemctl list-units 'koan-mission-*'` and a clean log while daemons
+  accumulate.
 - **`make stop`:** `pid_manager.stop_processes` stops the live mission scope
   first (registered under `$KOAN_ROOT/.koan-mission-scopes/`, one file per scope
   so there is no read-modify-write to race on), then signals each daemon's
@@ -197,6 +218,14 @@ daemon that has already re-parented to PID 1.
   record afterwards would not undo a SIGKILL already sent to a stranger's process
   group. A retained scope record self-heals: once the scope really is gone the
   next `make stop` sees `LoadState=not-found` and unlinks it.
+- **Startup reconciliation:** `teardown()` covers every ordinary mission exit,
+  but a hard crash or SIGKILL of `run.py` never runs it — the case the registry
+  exists for. `startup_manager` therefore sweeps it (`Leaked mission scope
+  sweep`, next to the stale-`TMPDIR` sweep) so a scope from a previous
+  incarnation is not left holding a 766 MB daemon until someone runs `make
+  stop`. A record under this `KOAN_ROOT` can only be this instance's, the unit
+  name is a uuid4 that cannot collide, and a fallback `pid-<n>` record is
+  start-time-verified before it is signalled.
 - **Config:** `mission_limits: { enabled, memory_reserve, memory_min,
   memory_max }` — see `instance.example/config.yaml`. Default on.
 

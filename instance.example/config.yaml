@@ -941,8 +941,11 @@ page_cache_reclaim:
 # ryuk removes the containers that client owned.
 #
 # Where systemd-run is unavailable (macOS, a container with no manager, a user
-# session with no user manager) missions still run: Kōan warns once and falls
-# back to `start_new_session=True` plus a kill of the mission's process group.
+# session with no user manager) missions still run: Kōan falls back to
+# `start_new_session=True` plus a kill of the mission's process group, warning
+# once about the host (it cannot grow a systemd-run mid-run) but on every
+# occurrence of a scope that fails to start, since each one is another mission
+# running uncontained.
 #
 # memory_reserve is what stays available for the OS, Kōan's own ~500 MB baseline
 # and any day job sharing the host; memory_min floors the resulting cap so a
