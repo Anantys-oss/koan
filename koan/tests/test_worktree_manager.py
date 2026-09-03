@@ -642,13 +642,13 @@ class TestReapForeignWorktrees:
         assert readme.read_text() == "edited, never committed\n"
 
     def test_spares_dirty_in_project_worktree_on_local_branch(self, git_repo, tmp_path):
-        """A hand-made in-project worktree is where a human parks WIP.
+        """An in-scope scratch worktree still gets the dirty guard.
 
-        `<project>/wt/feature-x` on a local branch with no upstream: the branch keeps HEAD
+        `<project>/tmp/wip` on a local branch with no upstream: the branch keeps HEAD
         reachable, so nothing about *commits* blocks removal — but the uncommitted edits
         exist nowhere else, and the sweep runs unattended on an hourly timer.
         """
-        wip = Path(git_repo) / "wt" / "feature-x"
+        wip = Path(git_repo) / "tmp" / "wip"
         subprocess.run(
             ["git", "worktree", "add", "-b", "feature-x", str(wip)],
             cwd=git_repo, capture_output=True, check=True,
@@ -911,31 +911,38 @@ class TestWorktreeErrorPaths:
 
 
 class TestWorktreeOwnershipZones:
-    """Only `.worktrees/` and `.claude/worktrees/` belong to other code.
+    """Inside a project, only `<project>/tmp/` is in scope.
 
-    A worktree elsewhere inside the project — in practice `<project>/tmp/` — has no
-    owner: `cleanup_stale_worktrees()` only walks `.worktrees/`, and the OS temp
-    sweeper only walks the system temp directory. A blanket "skip anything inside the
-    project" rule left those unreclaimable by anything on the host.
+    A scratch checkout there has no owner: `cleanup_stale_worktrees()` only walks
+    `.worktrees/`, and the OS temp sweeper only walks the system temp directory, so a
+    blanket "skip anything inside the project" rule left those unreclaimable by
+    anything on the host. Everywhere else in-project is somebody's workspace and stays
+    out of reach of an unattended `--force`.
     """
 
     def test_owned_directories_are_skipped(self):
-        from app.worktree_manager import _is_owned_by_other_code
-        assert _is_owned_by_other_code("/proj/.worktrees/abc", "/proj") is True
-        assert _is_owned_by_other_code("/proj/.claude/worktrees/agent-1", "/proj") is True
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/proj/.worktrees/abc", "/proj") is False
+        assert _is_in_scope("/proj/.claude/worktrees/agent-1", "/proj") is False
 
     def test_project_tmp_is_in_scope(self):
-        from app.worktree_manager import _is_owned_by_other_code
-        assert _is_owned_by_other_code("/proj/tmp/review-123", "/proj") is False
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/proj/tmp/review-123", "/proj") is True
+
+    def test_hand_made_in_project_workspace_is_out_of_scope(self):
+        """`<project>/wt/feature-x` is a human's workspace, not scratch."""
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/proj/wt/feature-x", "/proj") is False
 
     def test_outside_the_project_is_in_scope(self):
-        from app.worktree_manager import _is_owned_by_other_code
-        assert _is_owned_by_other_code("/tmp/base140", "/proj") is False
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/tmp/base140", "/proj") is True
 
-    def test_prefix_collision_is_not_owned(self):
-        """`.worktrees-backup` is not `.worktrees`."""
-        from app.worktree_manager import _is_owned_by_other_code
-        assert _is_owned_by_other_code("/proj/.worktrees-backup/x", "/proj") is False
+    def test_prefix_collision_is_not_scratch(self):
+        """`tmpfiles` is not `tmp`, and `.worktrees-backup` is not `.worktrees`."""
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/proj/tmpfiles/x", "/proj") is False
+        assert _is_in_scope("/proj/.worktrees-backup/x", "/proj") is False
 
     def test_reaps_a_worktree_under_project_tmp(self, git_repo, tmp_path):
         """The real shape: app-csf/tmp/review-* sat 34 days, reclaimable by nothing."""
@@ -953,6 +960,40 @@ class TestWorktreeOwnershipZones:
 
         assert reap_foreign_worktrees(git_repo) == [str(scratch)]
         assert not scratch.exists()
+
+    def test_spares_a_hand_made_worktree_holding_only_ignored_files(
+        self, git_repo, tmp_path
+    ):
+        """Gitignored local-only files are invisible to every retention guard.
+
+        `<project>/wt/feature-x`: everything tracked is committed and pushed, the tree
+        has been idle for days, and the branch has no upstream — so `git status
+        --porcelain`, the `--exclude-standard` activity scan and the upstream check all
+        report "nothing here". Only the `.env.local` / `dev.db` a developer left behind
+        would have been lost, and `git worktree remove --force` gives no way back.
+        """
+        (Path(git_repo) / ".gitignore").write_text(".env.local\ndev.db\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=git_repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "ignore local state"], cwd=git_repo, check=True,
+            capture_output=True,
+        )
+        wip = Path(git_repo) / "wt" / "feature-x"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "feature-x", str(wip)],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        (wip / ".env.local").write_text("TOKEN=secret\n")
+        (wip / "dev.db").write_text("local database\n")
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(wip):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(wip, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert (wip / ".env.local").read_text() == "TOKEN=secret\n"
+        assert (wip / "dev.db").read_text() == "local database\n"
 
     def test_spares_a_worktree_owned_by_cleanup_stale_worktrees(self, git_repo, tmp_path):
         """`.worktrees/` belongs to cleanup_stale_worktrees(); never touch it."""

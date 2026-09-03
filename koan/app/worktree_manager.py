@@ -32,10 +32,11 @@ GIT_RETRY_MAX_DELAY = 0.5
 
 # Default worktree directory name (relative to project root)
 WORKTREE_DIR = ".worktrees"
-# Directories inside a project that belong to other code and must never be reaped.
-# Everything else under the project — notably `<project>/tmp/`, where agents and
-# skills drop scratch checkouts — has no owner and is in scope.
-OWNED_WORKTREE_DIRS = (".worktrees", os.path.join(".claude", "worktrees"))
+# Directories inside a project the sweep may reclaim from. `<project>/tmp/` is where
+# agents and skills drop scratch checkouts: nothing else on the host reclaims them, and
+# the directory name says the contents are disposable. Every other in-project path is
+# out of scope — see _is_in_scope().
+IN_PROJECT_SCRATCH_DIRS = ("tmp",)
 
 # How long a worktree registered outside the project must sit untouched before
 # reap_foreign_worktrees() will remove it. Two days is comfortably longer than any single
@@ -426,19 +427,21 @@ def reap_foreign_worktrees(
     phantom registrations.
 
     Guards, in order — each one exists because skipping it would destroy work:
-      * never a worktree owned by other code — `<project>/.worktrees/` belongs to
-        cleanup_stale_worktrees(), `<project>/.claude/worktrees/` to the Claude Code
-        harness. Scratch worktrees under `<project>/tmp/` have no owner and ARE in
-        scope: the OS temp sweeper does not reach inside a project either, so a blanket
-        "skip anything inside the project" rule left them unreclaimable by anything.
+      * never a worktree inside the project other than one under `<project>/tmp/`.
+        `.worktrees/` belongs to cleanup_stale_worktrees() and `.claude/worktrees/` to
+        the Claude Code harness; a hand-made `<project>/wt/feature-x` is a human's
+        workspace, whose gitignored local-only files no guard below can see. Scratch
+        worktrees under `<project>/tmp/` have no owner and ARE in scope: the OS temp
+        sweeper does not reach inside a project either, so a blanket "skip anything
+        inside the project" rule left them unreclaimable by anything.
       * never the main worktree
       * never a `locked` worktree — that is someone's live workspace
       * never one with tracked or untracked file activity within max_age_days — a review
         that started minutes ago is still running, and removing its tree kills the job
       * never one whose working tree is dirty — removal is `--force`, so uncommitted work
         would be deleted with no recovery path. This applies to every candidate, on a
-        branch or detached: a hand-made in-project worktree (`<project>/wt/feature-x`) is
-        exactly where a human parks WIP, and its local branch says nothing about the tree
+        branch or detached: a scratch checkout on a local branch still holds uncommitted
+        edits nothing else has a copy of, and its branch says nothing about the tree
       * never one holding commits no other ref would keep reachable after removal
 
     ``deadline`` is a monotonic deadline shared by callers that sweep several
@@ -479,7 +482,7 @@ def reap_foreign_worktrees(
             continue
 
         wt_real = os.path.realpath(wt.path)
-        if wt_real == project_real or _is_owned_by_other_code(wt_real, project_real):
+        if wt_real == project_real or not _is_in_scope(wt_real, project_real):
             continue
         candidates.append((wt, wt_real))
 
@@ -589,21 +592,30 @@ def _log_reap_deadline(project_path: str) -> None:
     )
 
 
-def _is_owned_by_other_code(wt_real: str, project_real: str) -> bool:
-    """Return True when this worktree belongs to code other than the sweep.
+def _is_in_scope(wt_real: str, project_real: str) -> bool:
+    """Return True when the sweep may consider this worktree for removal at all.
 
-    Only two directories inside a project have an owner: `.worktrees/` (managed by
-    ``cleanup_stale_worktrees``) and `.claude/worktrees/` (managed by the Claude Code
-    harness). A worktree living anywhere else inside the project — in practice
-    `<project>/tmp/` — is unowned scratch and must stay in scope, because nothing else
-    on the host reclaims it: the OS temp sweeper only walks the system temp directory.
+    Outside the project, always: nothing else on the host reclaims a leaked
+    `/tmp/review-<sha>`. Inside the project, only `<project>/tmp/` — an unowned
+    scratch checkout (`cleanup_stale_worktrees()` walks `.worktrees/` only, and the OS
+    temp sweeper never reaches inside a project), announced as disposable by the
+    directory it sits in.
+
+    Every other in-project path is out of scope. `.worktrees/` and `.claude/worktrees/`
+    because other code owns them; anything else (`<project>/wt/feature-x`) because it
+    is a hand-made human workspace, and none of the retention guards below can see one.
+    They all ask git, and git is silent about the gitignored `.env.local` or `dev.db`
+    such a workspace keeps: `git status --porcelain` omits ignored files, the activity
+    scan uses `--exclude-standard`, and a local branch with no upstream reports nothing
+    unpushed. A clean-looking tree would be `--force`-removed with those files in it,
+    unattended, on an hourly timer.
     """
     if not wt_real.startswith(project_real + os.sep):
-        return False  # outside the project entirely — foreign, always in scope
+        return True  # outside the project entirely — foreign, always in scope
     relative = wt_real[len(project_real) + 1:]
     return any(
-        relative == owned or relative.startswith(owned + os.sep)
-        for owned in OWNED_WORKTREE_DIRS
+        relative.startswith(scratch + os.sep)
+        for scratch in IN_PROJECT_SCRATCH_DIRS
     )
 
 

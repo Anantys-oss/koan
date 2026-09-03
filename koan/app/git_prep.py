@@ -557,6 +557,7 @@ def prepare_project_branch(
     result.remote_used = remote
 
     config_explicit = False
+    config_configured = False
     try:
         config = load_projects_config(koan_root)
         if config:
@@ -572,6 +573,13 @@ def prepare_project_branch(
             proj_am = proj_cfg.get("git_auto_merge", {}) or {}
             if proj_am.get("base_branch"):
                 config_explicit = True
+            # Separately: was the branch typed by a human *anywhere* (project or
+            # defaults), or is it the hardcoded "main" fallback? The pre-fetch
+            # override below may only rewrite the hardcoded fallback.
+            defaults_am = (config.get("defaults", {}) or {}).get(
+                "git_auto_merge", {}
+            ) or {}
+            config_configured = config_explicit or bool(defaults_am.get("base_branch"))
     except Exception as e:
         logger.warning("config load error for base_branch: %s", e)
 
@@ -601,19 +609,25 @@ def prepare_project_branch(
         result.base_branch = result.previous_branch
         return result
 
-    # When the project pins no base branch and the generic default has no
-    # remote-tracking ref here, resolve the remote's real default *before*
-    # fetching. Detecting only after a failure made every mission on such a
+    # When nothing configured a base branch at all and the hardcoded "main"
+    # fallback has no remote-tracking ref here, resolve the remote's real default
+    # *before* fetching. Detecting only after a failure made every mission on such a
     # project pay for a doomed fetch first: a project setting
     # issue_tracker.default_branch to a release branch but no
     # git_auto_merge.base_branch had base_branch fall back to "main", so every run
     # fetched a branch that does not exist before finding the real one.
-    # Guarded on the missing ref so a configured branch that works is never
-    # second-guessed; when the ref check is inconclusive the original
-    # detect-after-failure path below still applies. resolve_* (not detect_*) so a
-    # failed resolution stays None instead of overriding the configured branch with
-    # the "main" fallback.
-    if not config_explicit and not _has_remote_tracking_ref(
+    #
+    # Gated on config_configured, not config_explicit: a branch inherited from
+    # `defaults:` was still typed by a human, and _has_remote_tracking_ref() answers
+    # "is this ref in refs/remotes/ already", not "does it exist on the remote". A
+    # `defaults: develop` project whose tracking ref simply had not been fetched yet
+    # (fresh clone, new project, after `git remote prune`) would otherwise be
+    # silently rebased onto the remote's default and open its PR against the wrong
+    # base. Fetching the configured branch answers the real question; when that
+    # fetch fails the detect-after-failure path below still applies. resolve_* (not
+    # detect_*) so a failed resolution stays None instead of promoting the "main"
+    # fallback to an answer.
+    if not config_configured and not _has_remote_tracking_ref(
         remote, base_branch, project_path
     ):
         detected = resolve_remote_default_branch(remote, project_path)

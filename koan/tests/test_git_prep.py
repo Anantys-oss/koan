@@ -1749,6 +1749,45 @@ class TestBaseBranchResolvedBeforeFetch:
         assert result.success is True
         assert result.base_branch == "140"
 
+    def test_defaults_branch_without_a_tracking_ref_is_still_fetched_first(self):
+        """A `defaults:` base branch is configured; an absent tracking ref is not proof.
+
+        `refs/remotes/<remote>/develop` is missing on a fresh clone until something
+        fetches it, but the branch exists on the remote. Overriding it pre-fetch with
+        the remote's default would branch the mission off the wrong base and open its
+        PR against the wrong base, until some unrelated command created the ref.
+        """
+        calls = []
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            calls.append(args)
+            if cmd == "rev-parse":
+                if "--verify" in args:
+                    return (1, "", "")  # develop has no remote-tracking ref yet
+                return (0, "feature", "")
+            if cmd == "symbolic-ref":
+                return (0, "refs/remotes/origin/main", "")
+            # The fetch of develop succeeds — the branch exists on the remote.
+            return (0, "", "")
+
+        stack, _ = TestPrepareProjectBranch()._patch_all(
+            run_git_side_effect=side_effect,
+            config={
+                "defaults": {"git_auto_merge": {"base_branch": "develop"}},
+                "projects": {"myproj": {}},
+            },
+            auto_merge={"base_branch": "develop"},
+        )
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True
+        assert result.base_branch == "develop"
+        fetches = [c for c in calls if c and c[0] == "fetch"]
+        assert len(fetches) == 1, f"expected one fetch, got {len(fetches)}"
+        assert "develop" in fetches[0]
+
     def test_failed_detection_never_overrides_the_configured_branch(self):
         """An unreachable remote must not promote the "main" guess to an answer.
 

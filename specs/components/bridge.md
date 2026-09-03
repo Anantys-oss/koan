@@ -61,8 +61,8 @@ awake.py (loop, ~3s poll)
   deletes uncommitted work with no recovery path, so cleanliness MUST be checked for
   *every* candidate — on a branch or detached, reachable or not — and not merely as a
   tie-breaker on the unreachable-detached path. Commit reachability answers "would commits
-  be lost"; it says nothing about the working tree, and a hand-made in-project worktree on
-  a local branch (`<project>/wt/feature-x`) is precisely where a human parks WIP. The sweep
+  be lost"; it says nothing about the working tree, and a scratch worktree on a local
+  branch (`<project>/tmp/wip`) still holds edits that exist nowhere else. The sweep
   runs unattended on an hourly timer, so this guard is the only thing standing between it
   and unrecoverable loss. Retaining a leaked-but-dirty worktree costs disk, which is
   recoverable and logged; the inverse is not.
@@ -75,13 +75,18 @@ awake.py (loop, ~3s poll)
   recorded when the worktree was created: a changed HEAD may contain committed but
   never-pushed work. The reachability probe MUST use a single bounded revision walk rather
   than a per-ref containment scan, and any git or reflog failure retains the worktree.
-- **Worktree ownership zones.** The sweep MUST NOT reclaim worktrees owned by other code:
-  `<project>/.worktrees/` belongs to `worktree_manager.cleanup_stale_worktrees()`, and
-  `<project>/.claude/worktrees/` belongs to the Claude Code harness. Everything else — a
-  worktree outside the project directory, or a scratch worktree under `<project>/tmp/` — has
-  no owner and is in scope. A blanket "skip anything inside the project directory" rule is
-  NOT sufficient: it leaves `<project>/tmp/` worktrees unreclaimable by any process on the
-  host, because the OS temp sweeper does not reach inside a project either.
+- **Worktree scope zones.** Outside the project directory every registered worktree is in
+  scope — nothing else on the host reclaims one. Inside it, only `<project>/tmp/` is: those
+  scratch checkouts have no owner (`worktree_manager.cleanup_stale_worktrees()` walks
+  `.worktrees/` only, the Claude Code harness owns `.claude/worktrees/`, and the OS temp
+  sweeper does not reach inside a project), so a blanket "skip anything inside the project
+  directory" rule leaves them unreclaimable by any process on the host. Every other
+  in-project path — a hand-made `<project>/wt/feature-x` — MUST stay out of scope. The
+  retention guards all ask git, and git is silent about the gitignored `.env.local` or
+  `dev.db` a human workspace keeps: `git status --porcelain` omits ignored files, the
+  activity scan uses `--exclude-standard`, and a local branch with no upstream reports
+  nothing unpushed. Such a tree looks empty to every guard, and `--force` removal of it is
+  unrecoverable, so scope — not cleanliness — is what protects it.
 - **Chat is resilient to API contention (#1084).** While a mission runs, the agent loop
   and the bridge invoke the AI CLI concurrently against the same account (the default
   provider takes no cross-invocation lock), so a chat call can return an empty response or

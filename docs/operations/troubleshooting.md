@@ -72,12 +72,15 @@ Kōan cleans up worktrees on startup during crash recovery. If you see stale wor
 The bridge also starts an hourly background sweep for leaked worktrees, such as temporary
 review checkouts. The sweep does not block messaging.
 
-**What is in scope** — every worktree registered on the project *except* the main
-checkout itself and anything under `<project>/.worktrees/` or
-`<project>/.claude/worktrees/`, which other code owns. That includes worktrees outside
-the project (`/tmp/review-<sha>`) **and** worktrees you created by hand inside it
-(`<project>/tmp/wip`, `<project>/wt/feature-x`) — nothing else on the host reclaims
-those, so the sweep can delete them once they go idle.
+**What is in scope** — every worktree registered on the project that lives *outside* the
+project directory (`/tmp/review-<sha>`), plus scratch checkouts under `<project>/tmp/`.
+Nothing else on the host reclaims either, so the sweep can delete them once they go idle.
+Everything else inside the project is out of scope: the main checkout,
+`<project>/.worktrees/` and `<project>/.claude/worktrees/` (other code owns those), and
+any worktree you made by hand elsewhere in the project (`<project>/wt/feature-x`). The
+guards below all read git, and git says nothing about the gitignored files — `.env.local`,
+`dev.db` — a workspace like that keeps, so it is kept whole by scope rather than by the
+dirty check.
 
 **What it keeps** — locked worktrees, worktrees with recent non-ignored file activity
 (idle for less than two days), **any worktree with uncommitted changes** (removal is
