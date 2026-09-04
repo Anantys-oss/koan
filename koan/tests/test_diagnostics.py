@@ -779,3 +779,250 @@ class TestInstanceCheckFix:
 
         results = fix(str(tmp_path), str(tmp_path / "nonexistent"))
         assert len(results) == 0
+
+
+class TestProjectWorktreeCollision:
+    """/doctor surfaces — and can repair — a base branch held by another worktree.
+
+    An agent running `git worktree add /tmp/base140 140` takes the branch away
+    from the project's own checkout. Git prep self-heals this now, but the check
+    gives an operator a way to see and clear it without waiting for a mission.
+    """
+
+    @staticmethod
+    def _repo(tmp_path):
+        """A real repo whose base branch is held by a second worktree."""
+        import subprocess
+        repo = tmp_path / "proj"
+        repo.mkdir()
+        run = lambda *a: subprocess.run(  # noqa: E731 - terse test helper
+            a, cwd=str(repo), capture_output=True, check=True,
+        )
+        subprocess.run(["git", "init", "-b", "main", str(repo)], capture_output=True, check=True)
+        run("git", "config", "user.email", "t@t")
+        run("git", "config", "user.name", "T")
+        run("git", "commit", "--allow-empty", "-m", "init")
+        run("git", "checkout", "--detach")
+        run("git", "worktree", "add", str(tmp_path / "holder"), "main")
+        return str(repo), str(tmp_path / "holder")
+
+    def _patched(self, repo):
+        """Point the diagnostic at our scratch repo with 'main' as the base."""
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        stack = ExitStack()
+        stack.enter_context(patch(
+            "app.projects_config.load_projects_config",
+            return_value={"projects": {"p": {"path": repo}}},
+        ))
+        stack.enter_context(patch(
+            "app.projects_config.get_projects_from_config",
+            return_value=[("p", repo)],
+        ))
+        stack.enter_context(patch(
+            "diagnostics.project_check._base_branch", return_value="main",
+        ))
+        return stack
+
+    def test_reports_the_collision_as_fixable(self, tmp_path):
+        from diagnostics import project_check
+        repo, holder = self._repo(tmp_path)
+        with self._patched(repo):
+            results = project_check.run("/koan", "/koan/instance")
+
+        hits = [r for r in results if r.name.endswith("_worktree")]
+        assert len(hits) == 1
+        assert hits[0].severity == "error"
+        assert hits[0].fixable is True
+        assert holder in hits[0].message
+
+    def test_fix_detaches_the_holder(self, tmp_path):
+        import subprocess
+        from diagnostics import project_check
+        repo, holder = self._repo(tmp_path)
+        with self._patched(repo):
+            fixes = project_check.fix("/koan", "/koan/instance")
+
+        assert len(fixes) == 1 and fixes[0].success is True
+        # The branch is free again and the holder still exists, merely detached.
+        assert Path(holder).is_dir()
+        head = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+            cwd=holder, capture_output=True, text=True,
+        )
+        assert head.returncode != 0, "holder should be detached"
+        subprocess.run(["git", "checkout", "main"], cwd=repo, capture_output=True, check=True)
+
+    def test_fix_preserves_uncommitted_work_in_the_holder(self, tmp_path):
+        from diagnostics import project_check
+        repo, holder = self._repo(tmp_path)
+        (Path(holder) / "WIP.txt").write_text("not saved anywhere\n")
+        with self._patched(repo):
+            fixes = project_check.fix("/koan", "/koan/instance")
+
+        assert fixes[0].success is True
+        assert (Path(holder) / "WIP.txt").read_text() == "not saved anywhere\n"
+
+    def test_clean_project_reports_nothing(self, tmp_path):
+        import subprocess
+        from diagnostics import project_check
+        repo, holder = self._repo(tmp_path)
+        subprocess.run(
+            ["git", "checkout", "--detach"], cwd=holder, capture_output=True, check=True,
+        )
+        with self._patched(repo):
+            results = project_check.run("/koan", "/koan/instance")
+            fixes = project_check.fix("/koan", "/koan/instance")
+
+        assert [r for r in results if r.name.endswith("_worktree")] == []
+        assert fixes == []
+
+    def test_locked_holder_is_reported_by_neither(self, tmp_path):
+        """A locked worktree is someone's live workspace — never auto-detached."""
+        import subprocess
+        from diagnostics import project_check
+        repo, holder = self._repo(tmp_path)
+        subprocess.run(
+            ["git", "worktree", "lock", holder], cwd=repo, capture_output=True, check=True,
+        )
+        try:
+            with self._patched(repo):
+                results = project_check.run("/koan", "/koan/instance")
+                fixes = project_check.fix("/koan", "/koan/instance")
+            assert [r for r in results if r.name.endswith("_worktree")] == []
+            assert fixes == []
+        finally:
+            subprocess.run(
+                ["git", "worktree", "unlock", holder],
+                cwd=repo, capture_output=True, check=True,
+            )
+
+    def test_detection_failure_is_reported(self, tmp_path):
+        from diagnostics import project_check
+        repo, _ = self._repo(tmp_path)
+        with self._patched(repo), patch(
+            "diagnostics.project_check._branch_holder",
+            side_effect=RuntimeError("cannot inspect worktrees"),
+        ):
+            results = project_check.run("/koan", "/koan/instance")
+            fixes = project_check.fix("/koan", "/koan/instance")
+
+        hits = [r for r in results if r.name.endswith("_worktree")]
+        assert len(hits) == 1
+        assert hits[0].severity == "error"
+        assert "cannot inspect worktrees" in hits[0].message
+        assert len(fixes) == 1 and fixes[0].success is False
+        assert "cannot inspect worktrees" in fixes[0].message
+
+    def test_base_branch_resolution_stays_local(self, tmp_path):
+        """/doctor without --full must not reach the network.
+
+        A repo built with `git init` + `remote add` + `fetch` never sets
+        refs/remotes/origin/HEAD, and the full detection then falls through to
+        `git ls-remote` (15s, twice) per project. With up to 50 projects that turns
+        an interactive command into minutes, so resolution stops at local refs and
+        the check is skipped instead.
+        """
+        from diagnostics import project_check
+        repo, _ = self._repo(tmp_path)
+        with patch(
+            "app.projects_config.load_projects_config",
+            return_value={"projects": {"p": {"path": repo}}},
+        ), patch(
+            "app.projects_config.get_projects_from_config", return_value=[("p", repo)],
+        ), patch("app.git_prep.run_git") as mock_git:
+            mock_git.return_value = (1, "", "not a symbolic ref")
+            results = project_check.run("/koan", "/koan/instance")
+
+        assert [r for r in results if r.name.endswith("_worktree")] == []
+        assert not any(
+            c.args and c.args[0] == "ls-remote" for c in mock_git.call_args_list
+        )
+
+    @staticmethod
+    def _repo_with_two_branches(tmp_path):
+        """Repo with 'main' and 'develop', both parked in their own worktree."""
+        repo = tmp_path / "proj"
+        repo.mkdir()
+        run = lambda *a: subprocess.run(  # noqa: E731 - terse test helper
+            a, cwd=str(repo), capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "init", "-b", "main", str(repo)], capture_output=True, check=True,
+        )
+        run("git", "config", "user.email", "t@t")
+        run("git", "config", "user.name", "T")
+        run("git", "commit", "--allow-empty", "-m", "init")
+        run("git", "branch", "develop")
+        # A remote whose default branch is 'main' — the answer the check must
+        # NOT use once `defaults:` configures 'develop'.
+        run("git", "update-ref", "refs/remotes/origin/main", "HEAD")
+        run(
+            "git", "symbolic-ref", "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        )
+        run("git", "checkout", "--detach")
+        run("git", "worktree", "add", str(tmp_path / "on-main"), "main")
+        run("git", "worktree", "add", str(tmp_path / "on-develop"), "develop")
+        return str(repo), str(tmp_path / "on-main"), str(tmp_path / "on-develop")
+
+    def _patched_config(self, repo, config):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        stack = ExitStack()
+        stack.enter_context(patch(
+            "app.projects_config.load_projects_config", return_value=config,
+        ))
+        stack.enter_context(patch(
+            "app.git_prep.load_projects_config", return_value=config,
+        ))
+        stack.enter_context(patch(
+            "app.projects_config.get_projects_from_config", return_value=[("p", repo)],
+        ))
+        return stack
+
+    def test_defaults_base_branch_is_the_branch_reported(self, tmp_path):
+        """A base_branch set only under `defaults:` is what git prep checks out.
+
+        projects_config deep-merges `defaults:` into every project entry, so
+        prepare_project_branch() wants 'develop' here. Reporting 'main' instead
+        would flag — and `--fix` would detach — a worktree that never blocked a
+        mission, while missing the one actually holding the base branch.
+        """
+        from diagnostics import project_check
+        repo, on_main, on_develop = self._repo_with_two_branches(tmp_path)
+        config = {
+            "defaults": {"git_auto_merge": {"base_branch": "develop"}},
+            "projects": {"p": {"path": repo}},
+        }
+        with self._patched_config(repo, config):
+            results = project_check.run("/koan", "/koan/instance")
+
+        hits = [r for r in results if r.name.endswith("_worktree")]
+        assert len(hits) == 1
+        assert "'develop'" in hits[0].message
+        assert on_develop in hits[0].message
+        assert on_main not in hits[0].message
+
+    def test_defaults_base_branch_does_not_detach_an_unrelated_worktree(self, tmp_path):
+        """--fix must leave the 'main' holder alone when prep wants 'develop'."""
+        from diagnostics import project_check
+        repo, on_main, on_develop = self._repo_with_two_branches(tmp_path)
+        config = {
+            "defaults": {"git_auto_merge": {"base_branch": "develop"}},
+            "projects": {"p": {"path": repo}},
+        }
+        with self._patched_config(repo, config):
+            fixes = project_check.fix("/koan", "/koan/instance")
+
+        assert len(fixes) == 1 and fixes[0].success is True
+        assert on_develop in fixes[0].message
+
+        def head_of(wt):
+            return subprocess.run(
+                ["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+                cwd=wt, capture_output=True, text=True,
+            )
+
+        assert head_of(on_main).stdout.strip() == "main", "unrelated worktree detached"
+        assert head_of(on_develop).returncode != 0, "develop holder should be detached"

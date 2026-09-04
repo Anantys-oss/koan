@@ -4,7 +4,7 @@ title: "Troubleshooting"
 description: "Catalogs common operational issues (agent loop, git/worktrees, memory, bridge, GitHub, CLI provider, parallel sessions, config) and their fixes."
 tags: [operations]
 created: 2026-06-04
-updated: 2026-07-30
+updated: 2026-09-02
 ---
 
 # Troubleshooting
@@ -69,15 +69,49 @@ git worktree prune         # Remove stale references
 
 Kōan cleans up worktrees on startup during crash recovery. If you see stale worktrees, restarting the agent loop should clear them.
 
-The bridge also sweeps hourly for leaked worktrees registered outside the project, such
-as temporary review checkouts. It keeps locked worktrees, worktrees with recent
-non-ignored file activity, tracking branches with commits missing upstream, and
-detached commits missing every durable branch, remote, or tag.
+The bridge also starts an hourly background sweep for leaked worktrees, such as temporary
+review checkouts. The sweep does not block messaging.
+
+**What is in scope** — every worktree registered on the project that lives *outside* the
+project directory (`/tmp/review-<sha>`), plus scratch checkouts under `<project>/tmp/`.
+Nothing else on the host reclaims either, so the sweep can delete them once they go idle.
+Everything else inside the project is out of scope: the main checkout,
+`<project>/.worktrees/` and `<project>/.claude/worktrees/` (other code owns those), and
+any worktree you made by hand elsewhere in the project (`<project>/wt/feature-x`). The
+guards below all read git, and git says nothing about the gitignored files — `.env.local`,
+`dev.db` — a workspace like that keeps, so it is kept whole by scope rather than by the
+dirty check.
+
+**What it keeps** — locked worktrees, worktrees with recent non-ignored file activity
+(idle for less than two days), **any worktree with uncommitted changes** (removal is
+`--force`, so a dirty tree is never touched, however durable its branch is), tracking
+branches with commits missing upstream, and detached commits that no local branch, tag,
+or remote-tracking ref reaches. That last check is a single revision walk rather than a
+per-ref scan, so it stays fast in repositories with many refs. Each sweep is capped at two
+minutes, with a 15-second limit per Git command; deferred worktrees are retried in a later
+hourly sweep, and every retained worktree logs its reason (`skip (locked)`, `skip
+(uncommitted changes)`, `retain (activity check failed)`, …).
+
+So a leaked review checkout that left an edit behind is *kept*, not reclaimed — commit and
+discard it (or remove the worktree by hand) if you want the disk back. That is the
+deliberate trade: disk is recoverable, an unattended `--force` on someone's WIP is not.
+
+**Opting out** — `git worktree lock <path>` marks a worktree as a live workspace. The
+sweep never removes a locked worktree, and git prep never detaches one (see below).
 
 ### Branch conflicts (can't checkout, can't push)
 
 1. **Force-push protection** — Kōan uses `koan/*` branches (configurable via `branch_prefix`). If the branch already exists on remote from another instance, the agent may fail to push.
 2. **Shared project repos** — if multiple Kōan instances target the same repo, ensure each uses a distinct `branch_prefix` in `config.yaml`.
+3. **Another worktree holds the base branch** — git allows a branch in at most one
+   worktree, so a second worktree sitting on `main` blocks the project's own checkout and
+   every mission fails in git prep. Kōan self-heals this before each mission: it runs
+   `git checkout --detach` in the holding worktree, which frees the branch while leaving
+   that worktree, its files and any uncommitted changes exactly where they are (nothing is
+   removed). The heal is reported in the prep result and the log. `/doctor` reports the
+   same collision, and `/doctor --fix` performs the same detach. To keep a worktree on the
+   base branch, `git worktree lock <path>` — a locked holder is never detached, and the
+   collision is reported instead.
 
 ### SSH authentication failures
 
