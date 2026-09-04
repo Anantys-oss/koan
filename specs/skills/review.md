@@ -154,7 +154,7 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   error naming the provider and `cli.review_mode`. `/review` never executes
   against an unenforceable provider — a review that could write to the live
   project clone is worse than no review, and the user-facing docs promise the
-  boundary unconditionally. Operators on `cline`/`haze`/`copilot`/`grok` must pin
+  boundary unconditionally. Operators on `cline`/`haze`/`copilot`/`grok`/`gemini` must pin
   `cli.review_mode` to `claude`, `codex`, or `ollama-launch`; the refused
   providers stay available for every other role. This covers the `/review` skill, which runs
   through `run_command_streaming`. It does **not** cover the separate

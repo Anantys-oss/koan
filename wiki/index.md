@@ -68,6 +68,7 @@ This wiki spans two content roots — `docs/` (operational "how to use", see [`d
 - [`providers/copilot.md`](docs/providers/copilot.md) — Setup guide and feature/tool-mapping differences for using GitHub Copilot CLI as Kōan's provider.
 - [`providers/fake.md`](docs/providers/fake.md) — Fail-closed no-op provider for deterministic, offline tests of the skill pipeline; refuses to run unless `KOAN_ALLOW_FAKE_PROVIDER=1` is set.
 - [`providers/haze.md`](docs/providers/haze.md) — Setup and behavior guide for using haze (multi-backend agentic CLI) as Kōan's provider, including stream-json integration, usage accounting, capabilities and limitations.
+- [`providers/gemini.md`](docs/providers/gemini.md) — Setup and behavior guide for using Google's Gemini CLI as Kōan's provider, including headless stream-json, auth, models, and limitations.
 - [`providers/grok.md`](docs/providers/grok.md) — Setup and behavior guide for using xAI's Grok Build CLI as Kōan's provider, including headless streaming-json, auth, models, and limitations.
 - [`providers/local.md`](docs/providers/local.md) — Explains that the `local` Ollama provider was removed and points to `ollama-launch` or a custom Claude CLI endpoint as the supported replacements.
 - [`providers/ollama-launch.md`](docs/providers/ollama-launch.md) — Documents the `ollama-launch` provider, which runs the Claude Code CLI through `ollama launch claude` for full tool-use/streaming parity with native Claude.

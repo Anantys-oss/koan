@@ -166,9 +166,166 @@ def _extract_tokens_from_dict(data: dict) -> Optional[TokenResult]:
             inp = sub.get("input_tokens", 0)
             out = sub.get("output_tokens", 0)
             if inp or out:
-                return _build_result(inp, out, model, data)
+                return _build_result(
+                    inp,
+                    out,
+                    _stats_model(sub, model),
+                    _with_stats_cache(data, sub, inp),
+                )
+            nested = _extract_nested_model_tokens(data, sub, model)
+            if nested is not None:
+                return nested
 
     return None
+
+
+def _extract_nested_model_tokens(
+    data: dict, stats: dict, model: str
+) -> Optional[TokenResult]:
+    """Extract tokens from a per-model ``stats.models.<id>.tokens`` breakdown.
+
+    Gemini CLI's ``--output-format json`` object — the shape the mission path
+    actually produces — reports no flattened ``stats.input_tokens``; the counts
+    live under ``models.<id>.tokens.{prompt,candidates,cached}``. Counts are
+    summed across models (a session can fall back pro→flash mid-run) and the
+    model id is the dominant one. Shape-keyed on the nested field names, so no
+    other stats-reporting envelope is affected.
+    """
+    models = stats.get("models")
+    if not isinstance(models, dict) or not models:
+        return None
+
+    total_in = total_out = total_cached = 0
+    for entry in models.values():
+        tokens = entry.get("tokens") if isinstance(entry, dict) else None
+        if not isinstance(tokens, dict):
+            continue
+        total_in += int(tokens.get("prompt", 0) or 0)
+        total_out += int(tokens.get("candidates", 0) or 0)
+        total_cached += int(tokens.get("cached", 0) or 0)
+
+    if not (total_in or total_out):
+        return None
+
+    # ``cached`` is a SUBSET of prompt tokens; Koan input excludes cache hits.
+    cached = clamp_cached_input(total_cached, total_in)
+    resolved = model if model and model != "unknown" else dominant_stats_model(models)
+    return _build_result(
+        total_in - cached,
+        total_out,
+        resolved or "unknown",
+        {**data, "usage": {"cache_read_input_tokens": cached}} if cached else data,
+    )
+
+
+def _stats_model(stats: dict, fallback: str) -> str:
+    """Resolve the model id from a ``stats.models`` map when *fallback* is unknown.
+
+    Gemini CLI reports per-model token breakdowns keyed by model id and has no
+    top-level ``model`` field on its result event.
+    """
+    if fallback and fallback != "unknown":
+        return fallback
+    return dominant_stats_model(stats.get("models")) or fallback
+
+
+def dominant_stats_model(models) -> str:
+    """Pick the model id accounting for the most tokens in a ``stats.models`` map.
+
+    Mirrors :func:`_primary_model_from_usage`: a session that fell back
+    pro→flash under quota pressure must not be priced against whichever id
+    happens to come first in the dict. Handles both the flattened
+    (``total_tokens``) and the nested (``tokens.total``) per-model shapes.
+    """
+    if not isinstance(models, dict) or not models:
+        return ""
+    if len(models) == 1:
+        return str(next(iter(models)))
+    best = ""
+    best_total = -1
+    for name, entry in models.items():
+        total = _model_entry_total(entry)
+        if total > best_total:
+            best_total = total
+            best = str(name)
+    return best
+
+
+def _model_entry_total(entry) -> int:
+    """Total tokens for one ``stats.models`` entry, flattened or nested."""
+    if not isinstance(entry, dict):
+        return 0
+    total = int(entry.get("total_tokens", 0) or 0)
+    if total:
+        return total
+    tokens = entry.get("tokens")
+    if isinstance(tokens, dict):
+        total = int(tokens.get("total", 0) or 0)
+        if total:
+            return total
+        return int(tokens.get("prompt", 0) or 0) + int(
+            tokens.get("candidates", 0) or 0
+        )
+    return int(entry.get("input_tokens", 0) or 0) + int(
+        entry.get("output_tokens", 0) or 0
+    )
+
+
+_WARNED_CACHE_INCONSISTENCY = False
+
+
+def _warn(message: str) -> None:
+    """Log a token-accounting warning without importing run_log at module load."""
+    from app.run_log import log_safe
+    log_safe("warning", f"[tokens] {message}")
+
+
+def clamp_cached_input(cached, input_tokens) -> int:
+    """Return the cache-hit count safe to subtract from *input_tokens*.
+
+    A ``cached`` count is a SUBSET of input tokens. When a provider reports
+    more cache hits than input, keeping the raw figure would count the same
+    tokens twice (once in input, once as cache reads), so both fields are
+    clamped together and the inconsistency is logged once per process rather
+    than silently skipped.
+    """
+    global _WARNED_CACHE_INCONSISTENCY
+    cached = int(cached or 0)
+    input_tokens = int(input_tokens or 0)
+    if cached <= 0:
+        return 0
+    if cached > input_tokens:
+        if not _WARNED_CACHE_INCONSISTENCY:
+            _WARNED_CACHE_INCONSISTENCY = True
+            _warn(
+                f"cached={cached} exceeds input_tokens={input_tokens}; "
+                "clamping both to avoid double counting"
+            )
+        return input_tokens
+    return cached
+
+
+def _with_stats_cache(data: dict, stats: dict, input_tokens) -> dict:
+    """Surface a ``stats.cached`` count in the shape ``_build_result`` reads.
+
+    Shape-keyed, not provider-keyed: a ``cached`` field inside a stats object is
+    a SUBSET of ``input_tokens`` (Gemini CLI semantics), and Koan accounting
+    excludes cache hits from input. Returns *data* unchanged when there is no
+    cache count, so no other stats-reporting shape is affected. An existing
+    ``usage`` object wins (it is the more specific source) but is logged as a
+    conflict rather than dropped silently.
+    """
+    cached = clamp_cached_input(stats.get("cached", 0), input_tokens)
+    if not cached:
+        return data
+    existing = data.get("usage")
+    if isinstance(existing, dict) and existing:
+        if not existing.get("cached_input_tokens") and not existing.get(
+            "cache_read_input_tokens"
+        ):
+            return {**data, "usage": {**existing, "cached_input_tokens": cached}}
+        return data
+    return {**data, "usage": {"cached_input_tokens": cached}}
 
 
 def _has_usage(result: TokenResult) -> bool:

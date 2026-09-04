@@ -1687,6 +1687,29 @@ class TestProcWaitPolling:
 # Test: post-mission pipeline deadline
 # ---------------------------------------------------------------------------
 
+def _capture_pipeline_events(monkeypatch):
+    """Record the threading.Event objects run_post_mission creates.
+
+    Returns a list whose first entry is the pipeline-deadline event, letting a
+    test trip the deadline deterministically instead of sleeping past a timer.
+    """
+    import threading as _threading
+
+    events = []
+
+    class _RecordingThreading:
+        def __getattr__(self, name):
+            return getattr(_threading, name)
+
+        def Event(self):
+            event = _threading.Event()
+            events.append(event)
+            return event
+
+    monkeypatch.setattr("app.mission_runner.threading", _RecordingThreading())
+    return events
+
+
 class TestPostMissionDeadline:
     """Verify the overall timeout on run_post_mission."""
 
@@ -1702,14 +1725,19 @@ class TestPostMissionDeadline:
 
         steps_called = []
 
+        # Trip the deadline from inside the first step instead of racing a
+        # wall-clock timer: with a short timeout the pipeline's own setup work
+        # (imports, config load, quota check) can exhaust the budget before
+        # verification even starts, which skipped every step on slow CI hosts.
+        pipeline_events = _capture_pipeline_events(monkeypatch)
+
         def slow_verification(*args, **kwargs):
             steps_called.append("verification")
-            import time
-            time.sleep(0.5)  # Will exceed our 0.2s deadline
+            pipeline_events[0].set()  # as if the deadline fired mid-step
             return None
 
         monkeypatch.setattr(
-            "app.mission_runner._resolve_post_mission_timeout", lambda: 0.2
+            "app.mission_runner._resolve_post_mission_timeout", lambda: 3600
         )
         monkeypatch.setattr(
             "app.mission_runner._run_mission_verification", slow_verification
