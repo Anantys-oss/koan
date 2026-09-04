@@ -4,7 +4,7 @@ title: "KOAN.md — koan-only project instructions"
 description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
 tags: [users]
 created: 2026-07-09
-updated: 2026-07-26
+updated: 2026-07-28
 ---
 
 # KOAN.md — koan-only project instructions
@@ -80,19 +80,26 @@ the mission text instead.
 
 ### Seeing what got loaded (`make logs`)
 
-Every steering file koan folds into a prompt is announced on the run log, so you
-can confirm the context is actually in play. Watch `make logs` for lines like:
+Every steering file koan folds into a prompt is announced on the run log as a
+single summary before Claude Code runs, so you can confirm the context is
+actually in play. Watch `make logs` for a block like:
 
 ```
-[context] Detected KOAN.md, loaded 1240 chars (~ 354 tokens)
-[context] Detected .koan/skills/plan, loaded 380 chars (~ 108 tokens)
-[context] Detected CLAUDE.md (auto-loaded by CLI), loaded 8900 chars (~ 2542 tokens)
+[context] Steering loaded before Claude (3 file(s), ~ 3004 tokens total):
+[context]   • CLAUDE.md (auto-loaded by CLI): 8900 chars (~ 2542 tokens)
+[context]   • KOAN.md: 1240 chars (~ 354 tokens)
+[context]   • .koan/skills/plan: 380 chars (~ 108 tokens)
 ```
 
-`KOAN.md` and `.koan/skills/<skill>` lines mean koan injected that content;
-the `CLAUDE.md` line is **detection-only** — Claude Code loads `CLAUDE.md` from
+`KOAN.md` and `.koan/skills/<skill>` entries mean koan injected that content;
+the `CLAUDE.md` entry is **detection-only** — Claude Code loads `CLAUDE.md` from
 the working directory itself, koan just reports its size so you can see the full
 steering context at a glance. Token counts are a `chars/3.5` estimate.
+
+The block appears once per mission: skills that call the CLI several times (like
+`plan`) rebuild the prompt for each call, and a repeat of the same steering set
+is suppressed rather than re-printed. A new mission always re-announces, even
+when the files have not changed.
 
 ## The `.koan/config.yaml` file
 

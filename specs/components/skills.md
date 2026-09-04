@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-07-26
+updated: 2026-07-28
 ---
 
 # Component Spec — Skills System
@@ -230,12 +230,17 @@ a large root `KOAN.md` and large per-skill instructions). Prompt-only skills
 (`_execute_prompt` returns raw `prompt_body`) run without a resolved project in
 scope, so they receive no project-scoped injection — by design, not a gap.
 
-Every actual injection is announced on **stderr** (so it lands in `logs/run.log`
-and is visible via `make logs`) through `project_koan.log_context_load(label,
-content)`, which emits `Detected <label>, loaded N chars (~ M tokens)` — `label`
-is `KOAN.md` for the general block and `.koan/skills/<skill>` for the per-skill
-block. `logging.getLogger` output alone is invisible in the run loop (no
-stream handler wired), so the load line is a direct `print`, not `logger.info`.
+Every actual injection is folded in silently via
+`project_koan.record_context_load(label, content)` — `label` is `KOAN.md` for the
+general block and `.koan/skills/<skill>` for the per-skill block.
+`prompts.load_skill_prompt` then calls `project_koan.flush_context_summary()`
+once, at the end of the build, which emits a single `Steering loaded before
+Claude (…)` block on **stderr** (so it lands in `logs/run.log` and is visible via
+`make logs`) listing every recorded file with per-file and total token estimates.
+`logging.getLogger` output alone is invisible in the run loop (no stream handler
+wired), so the summary is a direct `print`, not `logger.info`. Repeated builds
+within one mission that carry the same steering set are deduped (see
+`specs/components/agent-loop.md` § "Steering-context visibility").
 
 ### Repo config file (`.koan/config.yaml`)
 

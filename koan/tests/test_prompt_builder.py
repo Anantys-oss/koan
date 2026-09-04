@@ -1716,6 +1716,16 @@ class TestBuildAgentPromptParts:
         assert "Mission Spec" in user_prompt
         assert "Do the thing" in user_prompt
 
+    def test_steering_summary_lists_claude_md_then_koan_md(self, prompt_env, capsys):
+        """The split builder surfaces CLAUDE.md (detection-only) and KOAN.md."""
+        project = Path(prompt_env["project_path"])
+        (project / "CLAUDE.md").write_text("Project rules here.")
+        (project / "KOAN.md").write_text("Always run make lint before pushing.")
+        self._build(prompt_env)
+        err = capsys.readouterr().err
+        assert "Steering loaded before Claude" in err
+        assert err.index("CLAUDE.md (auto-loaded by CLI):") < err.index("KOAN.md:")
+
     def test_language_preference_in_system_prompt(self, prompt_env):
         """Language preference appears in system prompt when set."""
         with patch(
@@ -2713,32 +2723,41 @@ class TestKoanMdSection:
         assert _get_koan_md_section(str(tmp_path)) == ""
 
     def test_koan_md_section_logs_load(self, tmp_path, capsys):
+        # _get_koan_md_section only records; the builders flush the summary.
+        from app.project_koan import flush_context_summary
         from app.prompt_builder import _get_koan_md_section
         (tmp_path / "KOAN.md").write_text("Always run make lint before pushing.")
         _get_koan_md_section(str(tmp_path))
+        flush_context_summary()
         err = capsys.readouterr().err
-        assert "Detected KOAN.md" in err and "tokens" in err
+        assert "KOAN.md:" in err and "tokens" in err
 
 
 class TestClaudeMdDetection:
     """_log_claude_md_detected surfaces CLAUDE.md in make logs (detection-only)."""
 
     def test_logs_when_present(self, tmp_path, capsys):
+        from app.project_koan import flush_context_summary
         from app.prompt_builder import _log_claude_md_detected
         (tmp_path / "CLAUDE.md").write_text("Project rules here.")
         _log_claude_md_detected(str(tmp_path))
+        flush_context_summary()
         err = capsys.readouterr().err
-        assert "Detected CLAUDE.md" in err
-        assert "auto-loaded by CLI" in err
+        assert "CLAUDE.md (auto-loaded by CLI):" in err
+        assert "Steering loaded before Claude" in err
 
     def test_silent_when_absent(self, tmp_path, capsys):
+        from app.project_koan import flush_context_summary
         from app.prompt_builder import _log_claude_md_detected
         _log_claude_md_detected(str(tmp_path))
+        flush_context_summary()
         assert "CLAUDE.md" not in capsys.readouterr().err
 
     def test_silent_when_empty_path(self, capsys):
+        from app.project_koan import flush_context_summary
         from app.prompt_builder import _log_claude_md_detected
         _log_claude_md_detected("")
+        flush_context_summary()
         assert capsys.readouterr().err == ""
 
 

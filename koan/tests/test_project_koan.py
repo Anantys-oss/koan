@@ -1,6 +1,16 @@
 from pathlib import Path
 
+import pytest
+
 import app.project_koan as pk
+
+
+@pytest.fixture(autouse=True)
+def _reset_context_log():
+    # Module-global batch/signature state: isolate every test from its neighbors.
+    pk.reset_context_load_log()
+    yield
+    pk.reset_context_load_log()
 
 
 def test_general_absent_returns_empty(tmp_path):
@@ -95,15 +105,62 @@ def test_skill_cap(tmp_path, monkeypatch):
     assert "truncated" in out
 
 
-def test_log_context_load_emits_chars_and_tokens(capsys):
-    pk.log_context_load("KOAN.md", "x" * 35)
+def test_record_is_silent_flush_emits_summary(capsys):
+    pk.record_context_load("KOAN.md", "x" * 35)
+    pk.record_context_load("CLAUDE.md (auto-loaded by CLI)", "y" * 70)
+    assert capsys.readouterr().err == ""  # recording is silent
+    pk.flush_context_summary()
     err = capsys.readouterr().err
-    assert "Detected KOAN.md" in err
-    assert "35 chars" in err
+    assert "Steering loaded before Claude (2 file(s)" in err
+    assert "KOAN.md: 35 chars" in err
+    assert "CLAUDE.md (auto-loaded by CLI): 70 chars" in err
     assert "tokens" in err  # ~ 10 tokens at chars/3.5
 
 
-def test_log_context_load_never_raises(capsys, monkeypatch):
+def test_flush_empty_batch_is_noop(capsys):
+    pk.flush_context_summary()
+    assert capsys.readouterr().err == ""
+
+
+def test_record_dedups_same_label_within_build(capsys):
+    pk.record_context_load("KOAN.md", "a" * 10)
+    pk.record_context_load("KOAN.md", "a" * 10)
+    pk.flush_context_summary()
+    err = capsys.readouterr().err
+    assert err.count("KOAN.md:") == 1
+    assert "(1 file(s)" in err
+
+
+def test_consecutive_identical_summary_suppressed(capsys):
+    pk.record_context_load("KOAN.md", "z" * 20)
+    pk.flush_context_summary()
+    assert "Steering loaded" in capsys.readouterr().err
+    pk.record_context_load("KOAN.md", "z" * 20)  # same set + sizes
+    pk.flush_context_summary()
+    assert capsys.readouterr().err == ""  # deduped
+
+
+def test_changed_steering_set_re_emits(capsys):
+    pk.record_context_load("KOAN.md", "z" * 20)
+    pk.flush_context_summary()
+    capsys.readouterr()
+    pk.record_context_load("KOAN.md", "z" * 20)
+    pk.record_context_load(".koan/skills/plan", "q" * 30)
+    pk.flush_context_summary()
+    assert "(2 file(s)" in capsys.readouterr().err
+
+
+def test_reset_lets_next_mission_re_emit(capsys):
+    pk.record_context_load("KOAN.md", "z" * 20)
+    pk.flush_context_summary()
+    capsys.readouterr()
+    pk.reset_context_load_log()  # new mission
+    pk.record_context_load("KOAN.md", "z" * 20)
+    pk.flush_context_summary()
+    assert "Steering loaded" in capsys.readouterr().err
+
+
+def test_record_never_raises(monkeypatch):
     # A broken token estimator must not break prompt assembly.
     import app.diff_compressor as dc
 
@@ -111,7 +168,8 @@ def test_log_context_load_never_raises(capsys, monkeypatch):
         raise RuntimeError("estimator down")
 
     monkeypatch.setattr(dc, "estimate_tokens", _boom)
-    pk.log_context_load("KOAN.md", "content")  # must not raise
+    pk.record_context_load("KOAN.md", "content")  # must not raise
+    pk.flush_context_summary()  # must not raise
 
 
 # --- read_repo_convention_docs ---
