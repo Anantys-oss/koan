@@ -39,6 +39,10 @@ Analyze the code changes and produce a structured review. Focus on:
 5. **YAGNI** — Code added without clear callers or usage. Verify with Grep or
    `git grep` that there really is no caller before flagging — many legitimate additions (skill handlers,
    CLI entrypoints, config-wired callbacks) have no same-diff caller.
+6. **Structural quality** — Whether the change makes the surrounding code simpler
+   or messier, and whether a reframing would remove the complexity outright.
+
+{@include review-structural-quality}
 
 ### Verification Discipline
 

@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-08-19
+updated: 2026-09-03
 ---
 
 # Skills Reference
@@ -95,6 +95,15 @@ with `private_review_gate` in `config.yaml` or `projects.yaml`.
 human-curated context/priorities into the review prompt, ranked against the PR
 content. Enable `review_memory` in `config.yaml` to also include recent typed
 project memory (decisions, observations) from the SQLite memory index.
+
+**Structural quality:** The main review passes (default, plan-aware, and
+`--architecture`) also judge whether the change leaves the surrounding code
+simpler or messier — spaghetti growth from ad-hoc branches bolted onto unrelated
+flows, feature logic landing in a shared module, a bespoke helper duplicating a
+canonical one, thin pass-through wrappers, and files the PR pushes past a healthy
+size (the limit your repo's convention docs state, else ~1000 lines). Findings
+name the structural remedy rather than a cosmetic one. The severity bar is unchanged: these are 🟢 Suggestions unless the reviewer
+can name concrete harm, so they never block a merge on style alone.
 
 **Inline comments (opt-in):** Set `review_inline_comments.enabled: true` in
 `config.yaml` to also post each finding as an inline PR comment anchored to its
