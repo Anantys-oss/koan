@@ -918,6 +918,57 @@ page_cache_reclaim:
 #     - /tmp/jest_rs
 #   min_tmp_age_seconds: 600   # Skip trees touched within this window (default: 600)
 
+# Per-mission containment (mission_limits). Every mission runs inside its own
+# transient systemd scope — `systemd-run --scope --collect --unit=koan-mission-<uuid>.scope`
+# — which is torn down when the mission ends, on the SUCCESS path as well as on
+# abort/timeout. All three spawn paths are covered — generic missions, skill
+# dispatch (/review, /fix, /implement) and parallel sessions — so a new spawn
+# path that skips it is a containment hole, not just an uncovered case.
+# A process group is not enough: Gradle's build daemon persists by
+# design (3-hour idle timeout) and detaches to PPID 1 with its own session, so it
+# has already left the mission's process group; a cgroup catches every descendant
+# no matter how often it double-forks. Killing that daemon is also what makes
+# Testcontainers' ryuk reap the containers it was holding open (on a Gradle
+# *build service* the container is started inside the daemon JVM, so the daemon —
+# not a test fork — holds the ryuk client socket).
+#
+# The cgroup gives an exact descendant set, and cleanup never guesses by name: no
+# `pkill java`, no `gradlew --stop`, no `docker prune`, and no container sweep of
+# any kind. A container is a child of the Docker daemon, not of the mission, so
+# nothing Kōan can see tells this mission's containers apart from a co-tenant's
+# — a creation time inside the mission's window proves overlap, never ownership.
+# Killing the scope is what handles them: it drops the ryuk client socket and
+# ryuk removes the containers that client owned.
+#
+# Where systemd-run is unavailable (macOS, a container with no manager, a user
+# session with no user manager) missions still run: Kōan falls back to
+# `start_new_session=True` plus a kill of the mission's process group, warning
+# once about the host (it cannot grow a systemd-run mid-run) but on every
+# occurrence of a scope that fails to start, since each one is another mission
+# running uncontained. "Unavailable" is decided by creating one throwaway
+# resource-controlled scope at startup, not by looking for the binary: a manager
+# that refuses the scope (no delegated memory controller, resource control
+# disabled) lets systemd-run exit non-zero without ever starting the mission, so
+# without that probe every mission would fail with empty output.
+#
+# `enabled: false` is a true off switch: the mission is spawned exactly as Kōan
+# spawned it before this feature — no scope, and no process-group sweep at the
+# end either. Turn it off if a mission deliberately leaves a process running.
+#
+# memory_reserve is what stays available for the OS, Kōan's own ~500 MB baseline
+# and any day job sharing the host; memory_min floors the resulting cap so a
+# small swapless host can still run a mission. A reserve with a floor rather than
+# a percentage of RAM: Kōan's baseline is roughly constant, so a percentage
+# under-reserves exactly on the small hosts. memory_max overrides both verbatim.
+# MemoryHigh is set to 90% of the cap so an oversubscribed build feels reclaim
+# back-pressure before MemoryMax turns into an OOM kill; a mission the cap does
+# kill is reported as "exceeded memory cap (5.9G of 5.75G)" and never retried.
+# mission_limits:
+#   enabled: true                  # Master switch (default: true); false = no scope, no sweep
+#   memory_reserve: 2G             # Left for OS + Kōan + any day job (default: 2G)
+#   memory_min: 1G                 # Floor for the resulting cap (default: 1G)
+#   memory_max: null               # Absolute override; wins over reserve/floor
+
 # CI check: master switch for the entire CI monitoring pipeline.
 # Controls queue draining, auto-dispatch of fix missions, CI enqueue
 # after rebase, and the /ci_check skill command. Disable to save tokens

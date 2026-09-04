@@ -65,10 +65,12 @@ class TestMaybeRetryMission:
         import app.run as _run
         _run._last_mission_timed_out = False
         _run._last_mission_aborted = False
+        _run._last_mission_memory_cap = ""
         _run._last_mission_stagnated.clear()
         yield
         _run._last_mission_timed_out = False
         _run._last_mission_aborted = False
+        _run._last_mission_memory_cap = ""
         _run._last_mission_stagnated.clear()
 
     def _call(self, **overrides):
@@ -109,6 +111,19 @@ class TestMaybeRetryMission:
         with patch("app.run.log"):
             exit_code, _, _ = self._call()
         assert exit_code == 1
+
+    def test_skips_on_memory_cap_hit(self):
+        """Re-running an oversubscribed build just repeats the meltdown."""
+        import app.run as _run
+        _run._last_mission_memory_cap = "exceeded memory cap (5.9G of 5.75G)"
+        try:
+            with patch("app.run.log"), \
+                 patch("app.run.run_claude_task") as retry:
+                exit_code, _, _ = self._call()
+        finally:
+            _run._last_mission_memory_cap = ""
+        assert exit_code == 1
+        retry.assert_not_called()
 
     def test_skips_non_retryable(self, tmp_path):
         from app.cli_errors import ErrorCategory

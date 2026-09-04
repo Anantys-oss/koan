@@ -651,6 +651,31 @@ class TestOnSigint:
                 _on_sigint(signal.SIGINT, None)
             mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
 
+    def test_second_ctrl_c_records_the_abort(self, capsys):
+        """Our own SIGKILL must not read as the mission's memory cap firing.
+
+        `mission_scope.teardown` decides that from `koan_initiated_kill`, which
+        both mission paths derive from `_last_mission_aborted`. Without the
+        flag a hand-aborted mission's -9 exit was reported as
+        "exceeded memory cap (…)" and then refused both retry paths, because a
+        cap hit is deliberately never retried.
+        """
+        import app.run as run_mod
+        from app.run import _on_sigint, _sig, _init_colors
+        _init_colors()
+        run_mod._last_mission_aborted = False
+        _sig.task_running = True
+        _sig.first_ctrl_c = time.time()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 12345
+        _sig.claude_proc = mock_proc
+        with patch("app.run.os.getpgid", return_value=12345), \
+             patch("app.run.os.killpg"), \
+             pytest.raises(KeyboardInterrupt):
+            _on_sigint(signal.SIGINT, None)
+        assert run_mod._last_mission_aborted is True
+
     def test_expired_timeout_resets(self, capsys):
         from app.run import _on_sigint, _sig, _init_colors
         _init_colors()
@@ -8775,3 +8800,133 @@ class TestFinalizeVerifyRequeue:
         requeue.assert_called_once()
         notify.assert_not_called()
         complete.assert_called_once()        # falls through to normal completion
+
+
+# ---------------------------------------------------------------------------
+# Mission containment: the scope must be torn down on EVERY path, success
+# included. Before mission_scope, run_claude_task's finally only closed fds,
+# reaped TMPDIR and dropped page cache — a leaked build daemon survived.
+# ---------------------------------------------------------------------------
+
+class TestMissionScopeTeardown:
+    def test_generic_mission_tears_the_scope_down_on_success(self, tmp_path):
+        from app import mission_scope
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+        calls = []
+
+        def record(self, *, koan_initiated_kill=False):
+            calls.append(koan_initiated_kill)
+
+        with patch.object(mission_scope.ScopedProcess, "teardown", record):
+            exit_code = run_claude_task(
+                cmd=["echo", "contained"],
+                stdout_file=str(tmp_path / "out.txt"),
+                stderr_file=str(tmp_path / "err.txt"),
+                cwd=str(tmp_path),
+            )
+
+        assert exit_code == 0
+        assert calls == [False], "teardown must run on the success path exactly once"
+
+    def test_watchdog_kill_is_flagged_as_koan_initiated(self, tmp_path):
+        """Our own SIGKILL must never be reported as the memory cap firing."""
+        from app import mission_scope
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+        calls = []
+
+        def record(self, *, koan_initiated_kill=False):
+            calls.append(koan_initiated_kill)
+
+        with patch("app.config.get_mission_timeout", return_value=1), \
+             patch.object(mission_scope.ScopedProcess, "teardown", record):
+            run_claude_task(
+                cmd=["sleep", "30"],
+                stdout_file=str(tmp_path / "out.txt"),
+                stderr_file=str(tmp_path / "err.txt"),
+                cwd=str(tmp_path),
+            )
+
+        assert calls == [True]
+
+    def test_cap_hit_is_recorded_and_blocks_a_retry(self, tmp_path):
+        import app.run as run_mod
+        from app import mission_scope
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        def fake_teardown(self, *, koan_initiated_kill=False):
+            self.cap_exceeded = True
+            self.memory_max = int(5.75 * 1024 ** 3)
+            self.peak_bytes = int(5.9 * 1024 ** 3)
+
+        with patch.object(mission_scope.ScopedProcess, "teardown", fake_teardown):
+            run_claude_task(
+                cmd=["echo", "oversubscribed"],
+                stdout_file=str(tmp_path / "out.txt"),
+                stderr_file=str(tmp_path / "err.txt"),
+                cwd=str(tmp_path),
+            )
+
+        assert run_mod._last_mission_memory_cap == (
+            "exceeded memory cap (5.9G of 5.75G)"
+        )
+        # mission_executor hands that phrase to run_post_mission, which turns
+        # it into the post_mission hook's cap keys.
+        from app.mission_runner import _memory_cap_result
+        assert _memory_cap_result(run_mod._last_mission_memory_cap) == {
+            "memory_cap_exceeded": True,
+            "memory_cap_detail": "exceeded memory cap (5.9G of 5.75G)",
+        }
+        run_mod._last_mission_memory_cap = ""
+
+    def test_teardown_failure_never_masks_the_mission_result(self, tmp_path):
+        from app import mission_scope
+        from app.run import run_claude_task, _sig
+        _sig.task_running = False
+
+        def boom(self, *, koan_initiated_kill=False):
+            raise RuntimeError("systemctl exploded")
+
+        with patch.object(mission_scope.ScopedProcess, "teardown", boom):
+            exit_code = run_claude_task(
+                cmd=["echo", "still fine"],
+                stdout_file=str(tmp_path / "out.txt"),
+                stderr_file=str(tmp_path / "err.txt"),
+                cwd=str(tmp_path),
+            )
+        assert exit_code == 0
+
+
+class TestSkillMissionScopeTeardown(TestRunSkillMissionEnv):
+    def test_skill_mission_tears_the_scope_down_on_success(self, tmp_path):
+        from app import mission_scope
+        from app.run import _run_skill_mission
+
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+        calls = []
+
+        def record(self, *, koan_initiated_kill=False):
+            calls.append(koan_initiated_kill)
+
+        with patch("app.run.subprocess.Popen", side_effect=mock_proc._side_effect), \
+             patch("app.run._get_koan_branch", return_value="main"), \
+             patch("app.run._restore_koan_branch"), \
+             patch("app.run._reset_terminal"), \
+             patch("app.mission_runner.run_post_mission"), \
+             patch.object(mission_scope.ScopedProcess, "teardown", record):
+            _run_skill_mission(
+                skill_cmd=["python3", "--help"],
+                koan_root=str(tmp_path),
+                instance=str(tmp_path / "instance"),
+                project_name="test",
+                project_path=str(tmp_path),
+                run_num=1,
+                mission_title="/review https://github.com/o/r/pull/1",
+                autonomous_mode="implement",
+            )
+
+        assert calls == [False], "teardown must run on the skill success path"

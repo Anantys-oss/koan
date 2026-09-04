@@ -228,15 +228,24 @@ def run_cli(
 def popen_cli(
     cmd,
     provider: Optional[CLIProvider] = None,
+    launcher: Optional[List[str]] = None,
     **kwargs,
 ) -> Tuple[subprocess.Popen, Callable[[], None]]:
     """Start a :class:`~subprocess.Popen` process with the prompt via temp-file stdin.
 
     Returns ``(proc, cleanup)`` where *cleanup()* **must** be called after
     the process exits to close the file handle and delete the temp file.
+
+    *launcher* is an argv prefix applied **after** the prompt rewrite —
+    ``mission_scope`` uses it to wrap the provider CLI in a ``systemd-run
+    --scope`` invocation. Prefixing before :func:`prepare_prompt_file` would
+    hide the provider's own argv from the rewrite, so the prefix is deliberately
+    applied at the last moment, immediately before the spawn.
     """
     provider = provider or _get_cli_provider()
     cmd, prompt_path, use_as_stdin = prepare_prompt_file(cmd, provider=provider)
+    if launcher:
+        cmd = list(launcher) + list(cmd)
     cli_lock = _ProviderInvocationLock(provider.invocation_lock_name())
     cli_lock.__enter__()
     # One outer guard so the lock is released on ANY failure after acquisition —

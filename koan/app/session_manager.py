@@ -3,10 +3,15 @@
 Manages parallel Claude Code sessions, each running in its own git worktree:
 - Session dataclass: tracks individual session state
 - SessionRegistry: persistent session tracking via sessions.json (fcntl-locked)
-- spawn_session(): create worktree + start Claude subprocess
-- poll_sessions(): check subprocess status, collect results
-- kill_session(): terminate a session and clean up
+- spawn_session(): create worktree + start Claude subprocess in a mission scope
+- poll_sessions(): check subprocess status, collect results, tear the scope down
+- kill_session(): terminate a session, tear the scope down and clean up
 - get_max_parallel_sessions(): read config
+
+Every session is spawned through ``mission_scope.launch_scoped`` — the third
+spawn path in Kōan, alongside ``run_claude_task`` and ``_run_skill_mission`` —
+so a build daemon that detaches to PPID 1 is still contained by a cgroup rather
+than escaping the mission's process group.
 
 The registry file (instance/sessions.json) follows Koan's existing pattern
 of file-based state with fcntl locks for cross-process safety.
@@ -68,6 +73,12 @@ class SessionResult:
     exit_code: int
     stdout: str = ""
     stderr: str = ""
+    # Cap phrase from this session's own ScopedProcess ("" when it fit). A
+    # parallel session has no per-mission global to read: app.run's
+    # _last_mission_memory_cap belongs to the sequential mission, and reading
+    # it here would stamp a stale cap hit on a session that never came near
+    # its own — while the session's real cap hit went unreported.
+    memory_cap_detail: str = ""
 
 
 class SessionRegistry:
@@ -303,10 +314,15 @@ def spawn_session(
     )
 
     # Start subprocess — file handles must outlive the process
+    from app import mission_scope
     from app.cli_exec import popen_cli
 
     out_f = None
     err_f = None
+    # Bound before the try so the nested spawn below has a `nonlocal` binding
+    # to assign into, and so the failure path can tell "never spawned" from
+    # "spawned, and something holds the provider's invocation lock".
+    cli_cleanup = None
     try:
         out_f = open(stdout_file, "w")  # noqa: SIM115
         err_f = open(stderr_file, "w")  # noqa: SIM115
@@ -318,16 +334,47 @@ def spawn_session(
                 child_env.get("PYTEST_ADDOPTS", ""), session_tmp
             )
             popen_kwargs["env"] = child_env
-        proc, cli_cleanup = popen_cli(
+
+        def _spawn_in_scope(argv, launcher, **kwargs):
+            # popen_cli owns the provider's prompt-file stdin and the
+            # invocation lock, so the scope launcher is handed to it and
+            # prefixed there — after the prompt rewrite, never before.
+            nonlocal cli_cleanup
+            spawned, cli_cleanup = popen_cli(
+                argv, provider=session_cli_provider, launcher=launcher, **kwargs,
+            )
+            return spawned
+
+        # Contain the session in its own cgroup scope, exactly as the two
+        # sequential spawn paths (run_claude_task, _run_skill_mission) already
+        # do. A parallel /implement drives the same build tools, and a Gradle
+        # daemon it starts detaches to PPID 1 with its own session — it has
+        # left the mission's process group by the time the session ends, so
+        # os.killpg can never reach it. launch_scoped sets start_new_session
+        # itself, so the group kill on the abort path is unchanged.
+        #
+        # A missing provider binary still arrives as the FileNotFoundError
+        # popen_cli would have raised (launch_scoped pre-checks argv[0] so the
+        # systemd-run wrapping cannot swallow it). Parallel dispatch has no
+        # exit-127 handler of its own — run.py's caller logs the spawn failure
+        # and skips the mission — so it is re-raised unchanged below.
+        scoped = mission_scope.launch_scoped(
             cmd,
-            provider=session_cli_provider,
+            spawn=_spawn_in_scope,
+            koan_root=os.environ.get("KOAN_ROOT", "") or None,
             stdout=out_f,
             stderr=err_f,
             cwd=wt.path,
-            start_new_session=True,
             **popen_kwargs,
         )
+        proc = scoped.proc
     except Exception:
+        # A spawn that got as far as popen_cli holds the provider's invocation
+        # lock; releasing it matters more than the stdin fd of a process this
+        # path is abandoning anyway — a leaked lock stalls every later mission.
+        if cli_cleanup:
+            with contextlib.suppress(Exception):
+                cli_cleanup()
         if err_f:
             err_f.close()
         if out_f:
@@ -355,9 +402,12 @@ def spawn_session(
                     file=sys.stderr,
                 )
 
-    # Store cleanup and proc as transient state (not persisted)
+    # Store cleanup, proc and containment as transient state (not persisted).
+    # Both exit paths — poll_sessions on completion and kill_session on abort —
+    # need the ScopedProcess to tear the scope down.
     session._proc = proc  # type: ignore[attr-defined]
     session._cleanup = _session_cleanup  # type: ignore[attr-defined]
+    session._scoped = scoped  # type: ignore[attr-defined]
 
     # Register in persistent store
     registry.register(session)
@@ -394,6 +444,36 @@ def poll_sessions(
         session.exit_code = exit_code
         session.finished_at = time.time()
 
+        # Kill everything the session left behind, before the cleanup below
+        # reaps its TMPDIR. This is the success path — the one the containment
+        # exists for: os.killpg reaches only what stayed in the session's
+        # process group, while a build daemon that re-parented to PID 1 with
+        # its own session has left it and would survive into the host's idle
+        # baseline. A teardown failure must never stop the loop from collecting
+        # the other sessions.
+        scoped = getattr(session, "_scoped", None)
+        memory_cap_detail = ""
+        if scoped is not None:
+            try:
+                scoped.teardown()
+            except Exception as e:
+                print(
+                    f"[session_manager] scope teardown error for session "
+                    f"{session.id}: {e}",
+                    file=sys.stderr,
+                )
+            # teardown() is what reads the cgroup's OOM evidence, so the cap
+            # verdict only exists after it has run. Reported per session: the
+            # sequential loop's global says nothing about this one.
+            try:
+                memory_cap_detail = str(scoped.cap_message() or "")
+            except Exception as e:
+                print(
+                    f"[session_manager] cap read error for session "
+                    f"{session.id}: {e}",
+                    file=sys.stderr,
+                )
+
         # Call cleanup
         cleanup = getattr(session, "_cleanup", None)
         if cleanup:
@@ -424,6 +504,7 @@ def poll_sessions(
             exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
+            memory_cap_detail=memory_cap_detail,
         ))
 
     return completed
@@ -457,6 +538,25 @@ def kill_session(
         # No proc reference — try killing by PID
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(session.pid, signal.SIGTERM)
+
+    # Then drop the containment boundary, the way run.py's abort path does:
+    # the group kill above reaches only what stayed inside the group, and a
+    # daemon that re-parented to PID 1 in its own session left it while alive.
+    # In fallback mode teardown IS the same killpg, applied to the group id
+    # captured at launch — an addition to the block above (which returns at its
+    # poll() guard once the leader is reaped), never a replacement for it.
+    scoped = getattr(session, "_scoped", None)
+    if scoped is not None:
+        try:
+            # We SIGKILLed the group ourselves, so a -9 exit is ours and must
+            # not be misread as the scope's memory cap firing.
+            scoped.teardown(koan_initiated_kill=True)
+        except Exception as e:
+            print(
+                f"[session_manager] scope teardown error for session "
+                f"{session.id}: {e}",
+                file=sys.stderr,
+            )
 
     # Call cleanup
     cleanup = getattr(session, "_cleanup", None)

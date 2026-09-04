@@ -4,7 +4,7 @@ title: "Component Spec — Agent Loop Pipeline"
 description: "Design contract for the core mission pipeline (iteration manager, mission executor/runner, quota handling, stagnation monitor) that pulls missions, invokes the CLI provider, and finalizes lifecycle state."
 tags: [agent-loop]
 created: 2026-06-27
-updated: 2026-07-26
+updated: 2026-09-03
 ---
 
 # Component Spec — Agent Loop Pipeline
@@ -243,6 +243,118 @@ heuristic:
   by construction — a new provider or mission type inherits both hooks. Default on
   (`page_cache_reclaim.enabled: true`); `idle_interval_s: 0` keeps only the
   post-mission hook. See `docs/operations/memory-footprint.md`.
+- **Every mission is contained in a cgroup scope, and the scope is torn down on
+  every exit path — success included.** Bounding scratch and page cache (above) does
+  nothing about *processes*: a mission that leaves a build daemon running raises the
+  host's idle baseline until someone kills it by hand. A process group is
+  structurally insufficient, because Gradle's build daemon (3-hour idle timeout)
+  detaches to `PPID 1` with its own session and has left the mission's group by the
+  time the mission ends — `os.killpg` can never reach it, while a cgroup catches
+  every descendant however often it double-forks. Killing that daemon is also what
+  releases the Testcontainers `ryuk` client socket it was holding, so ryuk reaps the
+  containers itself. `app/mission_scope.py` is the single containment primitive:
+  `launch_scoped()` wraps the spawn in `systemd-run --scope --collect
+  --unit=koan-mission-<uuid>.scope --property=MemoryMax=<n>
+  --property=MemoryHigh=<90% of n>` and `teardown()` MUST be called from the same
+  `finally` that reaps `TMPDIR`. The `.scope` suffix is part of the contract:
+  `systemctl` appends `.service` to an abbreviated unit name, so a bare name would
+  make every stop, kill and property read address a unit that never existed.
+  **All three** mission spawn sites go through it (`run_claude_task`,
+  `_run_skill_mission`, and `session_manager.spawn_session` for parallel sessions —
+  whose teardown lives in `poll_sessions` on completion and `kill_session` on abort);
+  the inner `provider/__init__.py` spawn intentionally shares `review_runner`'s
+  process group and so inherits the same cgroup. A spawn path added without
+  `launch_scoped` is a containment hole, not merely a gap in coverage: parallel
+  sessions shipped that way and were caught in production running a Gradle daemon at
+  `PPID 1` (822 MB, inside Kōan's own SSH login scope) while
+  `systemctl list-units 'koan-mission-*'` listed nothing. Cleanup MUST touch
+  only the mission's own descendants — fleet hosts are shared, so there is no
+  name-based sweep (no `pkill`, no `gradlew --stop`, no `docker prune`) and **no
+  container sweep at all**. A container is a child of the Docker daemon, not of the
+  mission, so no observable property distinguishes this mission's containers from a
+  co-tenant's: a creation time inside the mission's window proves overlap, never
+  ownership, and `docker rm -f` on that basis can destroy a live unrelated workload.
+  Containers MUST therefore be left to ryuk, which reaps them when the scope
+  teardown drops its client socket; a project that disables ryuk owns its own
+  container cleanup.
+  Teardown MUST judge the manager by result, not by reachability: `_systemctl` runs
+  with `check=False`, so a refusal is a non-zero `CompletedProcess`, and treating it
+  as success reports containment that never happened. A non-zero `systemctl stop` is
+  disambiguated with `systemctl show -p LoadState` — `not-found` means `--collect`
+  already reaped the scope (the ordinary clean ending), anything else escalates to
+  `systemctl kill -s SIGKILL`. `mission_scope.stop_scope_unit()` is the single lever
+  for this and `make stop` MUST use it too, keeping a registry entry whose scope it
+  could not confirm stopped — that record is the only durable handle on a live scope,
+  and its descendants have left the daemon's process group. A destructive action MUST
+  verify its target first: a fallback `pid-<n>` record names a PID, and a PID is
+  recycled, so `make stop` MUST signal its process group only after the PID's real
+  start time matches the record's `started_at` — dropping a stale record afterwards
+  does not undo a SIGKILL already sent to a stranger's group. The rule binds every
+  escalation from a stored PID to a `killpg`, the daemon `.koan-pid-*` files
+  included: `check_pidfile` verifies identity only via the flock probe, so a
+  non-Python daemon (or one that died without cleaning up) falls through to a bare
+  liveness check that a recycled PID passes. `stop_processes` MUST therefore
+  escalate to the process group only when the PID's real start time is consistent
+  with the pid file that named it, and degrade to a single-PID `os.kill` when it
+  cannot be confirmed — a stale pid file after a reboot must cost one wrong signal,
+  not a stranger's whole session. For the same reason
+  "cannot tell" is never "contained": only `FileNotFoundError` on `cgroup.events`
+  proves the cgroup is empty, and any other read failure MUST fall through to the
+  manager's own confirmation. The fallback path is held to the same standard — only
+  a `ProcessLookupError` from `killpg` proves the group is empty, so an EPERM
+  refusal, a group that outlived SIGKILL, or a pgid that was never captured MUST
+  keep the registry record rather than report a clean sweep. The rule is
+  symmetric, and its mirror binds just as hard: **known-negative evidence MUST NOT
+  be overridden by a guess.** `memory.events`' `oom_kill 0` is the kernel saying the
+  cap did not fire, and it is readable in exactly the case this contract targets (a
+  leaked daemon keeps the scope populated, so `--collect` has not reaped the
+  cgroup), so the exit-status heuristic MUST be gated on evidence that is genuinely
+  *unreadable*. Otherwise an unrelated SIGKILL — a co-tenant exhausting RAM and the
+  kernel's *global* OOM killer taking the CLI — is relabelled a cap hit and, since
+  a cap hit is never retried, permanently suppresses both retry paths. Every kill
+  Kōan issues itself MUST be attributable for the same reason, the double-tap
+  CTRL-C included: `_on_sigint` records it as an abort exactly as `/abort` does.
+  The cap is `max(memory_min, MemTotal - memory_reserve)` with an explicit
+  `memory_max` winning verbatim — a reserve **with a floor**, never a percentage of
+  RAM, because Kōan's baseline is roughly constant while the fleet spans 1.9–7.7 GiB
+  with no swap. A cap hit is a distinct mission result (`memory_cap_exceeded` /
+  `memory_cap_detail` in the `post_mission` hook context) and MUST NOT be retried.
+  The verdict belongs to the mission that produced it: it is passed *into*
+  `run_post_mission` by that mission's own owner (the sequential loop's
+  `_last_mission_memory_cap`, or a parallel session's own `ScopedProcess` carried on
+  `SessionResult`), never read from a process-global by the pipeline — a session
+  reaped in a later iteration would otherwise inherit a previous mission's flag and
+  never report its own.
+  A scope also outlives a hard crash of `run.py`, which never reaches `teardown()`,
+  so startup MUST reconcile the registry (`stop_registered_scopes` from
+  `startup_manager`, alongside the stale-`TMPDIR` sweep): a record under this
+  `KOAN_ROOT` can only be a previous incarnation of this instance, and both record
+  kinds are already verified before they are acted on.
+  Where no scope can be created (macOS, no systemd manager) the loop falls back to
+  `start_new_session=True` + a kill of the process group captured at launch — the
+  pgid, not the `Popen`, because `kill_process_group()` returns at its
+  `poll()` guard once the mission process is reaped and would signal nothing on the
+  success path. No host is left unable to run missions. The probe MUST establish
+  that a scope can actually be *created*, not merely that `systemd-run` is on PATH
+  with a live manager: a manager that rejects the transient scope or its
+  `MemoryMax`/`MemoryHigh` properties (an undelegated memory controller, a manager
+  that refuses resource control) lets `systemd-run` start, exit non-zero and never
+  exec the provider — which `Popen` reports as success, so no exception-based
+  fallback can fire and *every* mission on that host would fail with empty output.
+  The probe therefore creates a throwaway resource-controlled scope once per
+  process and caches the verdict beside the binary lookup. The degraded-mode warning is
+  once per process for the *probe* verdict (a host does not grow a `systemd-run`
+  mid-run, so repeating it says nothing new) but **every occurrence** for a scope
+  that fails to *start*: a manager that goes away mid-run leaves every later mission
+  uncontained, and one shared one-shot budget would hide exactly the invisible leak
+  this contract exists to end. Default on
+  (`mission_limits.enabled: true`); `enabled: false` is a true off switch and MUST
+  restore the pre-containment behaviour exactly — no scope, no registry record, and
+  **no teardown sweep at all**. A disabled feature that still SIGTERM/SIGKILLs the
+  mission's whole process group on every exit path leaves an operator whose mission
+  deliberately backgrounds a process no configuration that turns the reaping off,
+  which is the one thing a master switch on a default-on destructive feature is for.
+  See `docs/operations/memory-footprint.md`.
 - **`run.py` never commits to main and never merges.** This is a hard safety boundary
   enforced by prompt + convention; the loop's job is to host the subprocess, not to
   alter git state itself.
