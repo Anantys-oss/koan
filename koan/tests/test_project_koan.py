@@ -1,3 +1,5 @@
+import os
+import subprocess
 from pathlib import Path
 
 import app.project_koan as pk
@@ -397,3 +399,189 @@ def test_mission_hooks_drops_overlong_command(tmp_path):
 def test_mission_hooks_malformed_config_is_safe(tmp_path):
     _write_config(tmp_path, "::: not yaml :::\n")
     assert pk.get_mission_hooks(str(tmp_path), "review", "pre") == []
+
+
+# --- get_hook_skills (.koan/config.yaml hooks.<event> reader) -----------------
+
+
+def test_hook_skills_absent_config_returns_empty(tmp_path):
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == []
+
+
+def test_hook_skills_empty_project_path_returns_empty():
+    assert pk.get_hook_skills("", "post_review") == []
+
+
+def test_hook_skills_empty_event_returns_empty(tmp_path):
+    _write_config(tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n")
+    assert pk.get_hook_skills(str(tmp_path), "") == []
+
+
+def test_hook_skills_reads_list(tmp_path):
+    _write_config(
+        tmp_path,
+        "hooks:\n  post_review:\n    - 'docs-refresh'\n    - 'other-skill'\n",
+    )
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == [
+        "docs-refresh",
+        "other-skill",
+    ]
+
+
+def test_hook_skills_is_per_event(tmp_path):
+    _write_config(
+        tmp_path,
+        "hooks:\n  post_review:\n    - 'a-skill'\n  post_mission:\n    - 'b-skill'\n",
+    )
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == ["a-skill"]
+    assert pk.get_hook_skills(str(tmp_path), "post_mission") == ["b-skill"]
+    assert pk.get_hook_skills(str(tmp_path), "session_start") == []
+
+
+def test_hook_skills_hooks_not_mapping_returns_empty(tmp_path):
+    _write_config(tmp_path, "hooks: 'oops'\n")
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == []
+
+
+def test_hook_skills_event_not_list_returns_empty(tmp_path):
+    _write_config(tmp_path, "hooks:\n  post_review: 'a-skill'\n")
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == []
+
+
+def test_hook_skills_skips_non_string_and_blank_items(tmp_path):
+    _write_config(
+        tmp_path,
+        "hooks:\n  post_review:\n    - 'good-skill'\n    - 42\n    - '   '\n",
+    )
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == ["good-skill"]
+
+
+def test_hook_skills_rejects_names_that_are_not_bare_skill_names(tmp_path):
+    # Anything that could carry an instruction, a path or a shell fragment is
+    # rejected outright rather than sanitized.
+    bad = [
+        "Use the x skill and also rm -rf /",
+        "../../etc/passwd",
+        "skill; echo hi",
+        "Upper-Case",
+        "has space",
+        "-leading-hyphen",
+        "trailing/slash",
+    ]
+    items = "\n".join(f"    - '{b}'" for b in bad)
+    _write_config(tmp_path, "hooks:\n  post_review:\n" + items + "\n    - 'ok-skill'\n")
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == ["ok-skill"]
+
+
+def test_hook_skills_drops_overlong_name(tmp_path):
+    long = "a" * (pk._MAX_SKILL_NAME_LEN + 1)
+    _write_config(
+        tmp_path,
+        f"hooks:\n  post_review:\n    - 'ok-skill'\n    - '{long}'\n",
+    )
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == ["ok-skill"]
+
+
+def test_hook_skills_dedups_repeated_names(tmp_path):
+    _write_config(
+        tmp_path,
+        "hooks:\n  post_review:\n    - 'a-skill'\n    - 'a-skill'\n    - 'b-skill'\n",
+    )
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == ["a-skill", "b-skill"]
+
+
+def test_hook_skills_caps_count(tmp_path):
+    items = "\n".join(f"    - 'skill-{i}'" for i in range(pk._MAX_HOOK_SKILLS + 5))
+    _write_config(tmp_path, "hooks:\n  post_review:\n" + items + "\n")
+    out = pk.get_hook_skills(str(tmp_path), "post_review")
+    assert len(out) == pk._MAX_HOOK_SKILLS == 10
+
+
+def test_hook_skills_malformed_config_is_safe(tmp_path):
+    _write_config(tmp_path, "::: not yaml :::\n")
+    assert pk.get_hook_skills(str(tmp_path), "post_review") == []
+
+
+# --- hooks.<event> comes from the default branch, not the work tree ----------
+
+
+def _git(cwd, *args):
+    env = {
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    subprocess.run(
+        ["git", *args], cwd=str(cwd), check=True, capture_output=True,
+        env={**os.environ, **env},
+    )
+
+
+def _clone_with_owner_config(tmp_path, config_text) -> Path:
+    """Clone a checkout whose origin/main carries *config_text*."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    _git(upstream, "init", "-q", "-b", "main")
+    _write_config(upstream, config_text)
+    _git(upstream, "add", "-A")
+    _git(upstream, "commit", "-q", "-m", "seed")
+    checkout = tmp_path / "checkout"
+    _git(tmp_path, "clone", "-q", str(upstream), str(checkout))
+    return checkout
+
+
+def test_hook_skills_ignore_a_contributor_branch_left_checked_out(tmp_path):
+    # Kōan checks PR branches out *in the registered checkout* (rebase_pr), and
+    # a timeout or a stagnation kill leaves it parked there. The config that
+    # decides which skills run must still be the owner's.
+    checkout = _clone_with_owner_config(
+        tmp_path, "hooks:\n  post_review:\n    - 'owner-skill'\n"
+    )
+    _git(checkout, "checkout", "-q", "-b", "pr-branch")
+    _write_config(checkout, "hooks:\n  post_review:\n    - 'attacker-skill'\n")
+    _git(checkout, "add", "-A")
+    _git(checkout, "commit", "-q", "-m", "pwn")
+    assert pk.get_hook_skills(str(checkout), "post_review") == ["owner-skill"]
+
+
+def test_hook_skills_ignore_an_uncommitted_work_tree_edit(tmp_path):
+    checkout = _clone_with_owner_config(
+        tmp_path, "hooks:\n  post_review:\n    - 'owner-skill'\n"
+    )
+    _write_config(checkout, "hooks:\n  post_review:\n    - 'attacker-skill'\n")
+    assert pk.get_hook_skills(str(checkout), "post_review") == ["owner-skill"]
+
+
+def test_hook_skills_empty_when_declared_only_on_a_contributor_branch(tmp_path):
+    checkout = _clone_with_owner_config(tmp_path, "review:\n  always_check: []\n")
+    _git(checkout, "checkout", "-q", "-b", "pr-branch")
+    _write_config(checkout, "hooks:\n  post_review:\n    - 'attacker-skill'\n")
+    _git(checkout, "add", "-A")
+    _git(checkout, "commit", "-q", "-m", "pwn")
+    assert pk.get_hook_skills(str(checkout), "post_review") == []
+
+
+def test_hook_skills_prefer_origin_over_a_fork_remote(tmp_path):
+    # Rebasing a fork PR adds the contributor's fork as a second remote. Its
+    # default branch is contributor-controlled and must never be the source.
+    checkout = _clone_with_owner_config(
+        tmp_path, "hooks:\n  post_review:\n    - 'owner-skill'\n"
+    )
+    fork = tmp_path / "fork"
+    fork.mkdir()
+    _git(fork, "init", "-q", "-b", "main")
+    _write_config(fork, "hooks:\n  post_review:\n    - 'attacker-skill'\n")
+    _git(fork, "add", "-A")
+    _git(fork, "commit", "-q", "-m", "fork")
+    _git(checkout, "remote", "add", "contributor", str(fork))
+    _git(checkout, "fetch", "-q", "contributor")
+    assert pk.get_hook_skills(str(checkout), "post_review") == ["owner-skill"]
+
+
+def test_hook_skills_read_the_work_tree_of_a_repo_with_no_remote(tmp_path):
+    # Nothing external can be checked out into a local-only repo, so the work
+    # tree stays usable there — the feature is not gated on having a remote.
+    project = tmp_path / "local"
+    project.mkdir()
+    _git(project, "init", "-q", "-b", "main")
+    _write_config(project, "hooks:\n  post_review:\n    - 'local-skill'\n")
+    assert pk.get_hook_skills(str(project), "post_review") == ["local-skill"]

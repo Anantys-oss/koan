@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "KOAN.md — koan-only project instructions"
-description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
+description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check and hooks.<event>): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
 tags: [users]
 created: 2026-07-09
-updated: 2026-07-26
+updated: 2026-09-04
 ---
 
 # KOAN.md — koan-only project instructions
@@ -103,7 +103,7 @@ Alongside the markdown steering files, `.koan/` can hold a structured
 and is committed like any other project file.
 
 Everything in it is optional, and the surface is designed to grow more keys over
-time. This section documents the one key that ships today.
+time. This section documents the keys that ship today.
 
 ### `review.always_check` — never skip these files
 
@@ -144,6 +144,89 @@ When at least one file is pinned, koan logs a line you can watch on `make logs`:
 ```
 [review] Pinned 3 file(s) via .koan review.always_check: plugins/x/SKILL.md, README.md, docs/api/spec.md
 ```
+
+### `hooks.<event>` — run your own skills after a koan event
+
+Name Claude Code skills to run when one of koan's lifecycle events fires, and
+koan queues a mission for each. Keys are the event names — `session_start`,
+`session_end`, `pre_mission`, `post_mission`, `post_review` — and values are
+lists of skill names:
+
+```yaml
+# <your-repo>/.koan/config.yaml
+hooks:
+  post_review:
+    - docs-refresh
+```
+
+The example runs your `docs-refresh` skill after koan posts a review,
+receiving the PR it just reviewed.
+
+**Why this exists.** A `/review` runs read-only on purpose: no `Skill` tool, no
+subagents, no MCP, and your repo's `.claude/` settings are not loaded. That is
+right for reviewing untrusted code, but it means a review pass cannot do
+follow-up work that needs real tooling. Naming a skill here moves that work onto
+the mission loop, which *does* load your `.claude/skills`, can invoke skills,
+and is not MCP-stripped.
+
+- **The operator must enable it — it is off by default.** Declaring
+  `hooks.<event>` is not enough on its own: each name queues a *write-capable*
+  mission on the operator's machine and quota, so the operator opts in with
+  `hook_skills: {enabled: true}` in their own `instance/config.yaml`, or
+  per-project with `hook_skills: true` in their `projects.yaml`. Until then koan
+  logs a one-line "skipped (not enabled)" note and your declaration is inert.
+- **Read from the operator's checkout, not the PR.** A review runs against a
+  detached worktree of the *pull request head*, so a `.koan/config.yaml` in it
+  is whatever the contributor pushed. koan therefore reads `hooks.<event>` from
+  the project checkout the operator registered — a PR cannot add or change the
+  skills that run. A project koan does not have registered is a no-op.
+- **Read from your default branch, as committed.** Within that checkout, koan
+  reads the file from the default branch of its `origin` (`git show
+  origin/main:.koan/config.yaml`, in effect), not from whatever the working tree
+  currently holds — koan itself checks pull-request branches out there when it
+  rebases one, and a killed run can leave one parked. So an edit to this key
+  takes effect once it is **merged and fetched**, not while it sits on a branch
+  or uncommitted. Two exceptions where the working tree is used instead, because
+  nothing external can land in it: a directory that is not a git repo, and a
+  repo with no remote at all. If the default branch cannot be resolved (several
+  remotes and none named `origin`), koan reads nothing and logs a warning.
+- **Queued, not run inline.** Handlers execute inside the process that fired the
+  event, and a skill pipeline can take minutes. Your skill runs as a normal
+  pending mission shortly afterwards — watch `instance/missions.md` or
+  `make logs`.
+- **Names only.** A name must match `^[a-z0-9][a-z0-9-]*$` (max 64 chars, 10
+  skills per event); anything else is dropped with a warning. koan writes the
+  mission sentence itself. This is deliberate — the value reaches a
+  *write-capable* agent, so free text is refused rather than cleaned up.
+- **Not queued twice.** Re-firing the same event for the same subject (the PR
+  URL, or the mission title) does not queue the work again *while the earlier
+  mission is still pending or in progress*. Once it has completed, a later
+  re-fire — a new push to the same PR, say — queues it again. A different PR
+  queues separately.
+- **No runaway loop.** A skill you queue under `pre_mission` or `post_mission`
+  does not re-trigger itself: the mission koan queues is marked, and that mark
+  stops its own lifecycle events from queuing the skill again. `post_review`
+  needs a second guard, because it carries no mission title for that mark to
+  ride on and every round would bring a PR URL "not queued twice" has never
+  seen: **a pull request opened by one of these missions is not auto-reviewed**,
+  which is where the cycle would otherwise close (PR → autoreview → `/review` →
+  `post_review` → another mission → another PR). Review such a PR on demand
+  instead — `/review <url>` or an @mention.
+- **A daily ceiling backstops all of it.** At most 20 fires per event per day
+  actually queue work for a project; past that the skills are skipped and a line
+  is logged. A re-fire that "not queued twice" absorbed queued nothing and does
+  not count against it.
+- **Events without a project** — `session_start` and `session_end` carry no
+  `project_path`, so they are a no-op here.
+- **Events without a subject** — koan's own autonomous and contemplative
+  iterations fire `pre_mission`/`post_mission` with no mission title and no PR,
+  and those queue nothing. The subject is what "not queued twice" keys on, so an
+  event without one would append a fresh copy every iteration. `post_mission`
+  after a real mission, and `post_review` after a review, always carry one.
+- **Fail-safe:** a malformed config is ignored and never disturbs the event.
+
+Requires the named skill to be resolvable by Claude Code in your repo — most
+commonly `<your-repo>/.claude/skills/<name>/SKILL.md`.
 
 ### Mission hooks — run shell before/after a mission
 

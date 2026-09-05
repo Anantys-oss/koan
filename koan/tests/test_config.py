@@ -2852,3 +2852,33 @@ class TestIsMissionHooksEnabled:
         from app.config import is_mission_hooks_enabled
         with _mock_config({"mission_hooks": "yes please"}):
             assert is_mission_hooks_enabled() is False
+
+
+# --- is_hook_skills_enabled (operator opt-in for repo-declared hook skills) ---
+
+
+class TestIsHookSkillsEnabled:
+    def test_default_disabled(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({}):
+            assert is_hook_skills_enabled() is False
+
+    def test_enabled_when_true(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({"hook_skills": {"enabled": True}}):
+            assert is_hook_skills_enabled() is True
+
+    def test_disabled_when_explicit_false(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({"hook_skills": {"enabled": False}}):
+            assert is_hook_skills_enabled() is False
+
+    def test_bool_shorthand(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({"hook_skills": True}):
+            assert is_hook_skills_enabled() is True
+
+    def test_malformed_type_defaults_disabled(self):
+        from app.config import is_hook_skills_enabled
+        with _mock_config({"hook_skills": "yes please"}):
+            assert is_hook_skills_enabled() is False

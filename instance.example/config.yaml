@@ -362,6 +362,15 @@ skill_timeout: 7200
 # mission_hooks:
 #   enabled: false                # Master switch (default: false)
 
+# Hook skills — allow a TARGET REPO's .koan/config.yaml to name Claude Code
+# skills to run when a Koan lifecycle event fires (`hooks: {post_review: [...]}`).
+# ⚠️ Each honored name queues a WRITE-CAPABLE mission on THIS host and quota,
+# from a repo-controlled file, so it is DISABLED by default and must be opted
+# into here. May be narrowed (or enabled alone) per-project in projects.yaml
+# (`hook_skills: true|false`). See docs/architecture/hooks.md.
+# hook_skills:
+#   enabled: false                # Master switch (default: false)
+
 # Review reply guard — prevents the bot from replying to itself in PR
 # comment threads and caps the total depth of any single thread.
 # When the bot is the last poster in a thread and no human followed up,

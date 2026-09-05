@@ -1,18 +1,22 @@
 ---
 type: doc
 title: "Lifecycle Hooks & Automation Rules"
-description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission/post_review): instance-wide and skill-bound Python hooks via `HookRegistry`, plus the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard."
+description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission/post_review): instance-wide and skill-bound Python hooks via `HookRegistry`, the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard, and the project-declared `hooks.<event>` skill lists read from a repo's own `.koan/config.yaml`."
 tags: [architecture]
 created: 2026-07-08
-updated: 2026-07-17
+updated: 2026-09-04
 ---
 
 # Lifecycle Hooks & Automation Rules
 
-Kōan's agent loop fires named lifecycle events at fixed points; two independent
-mechanisms subscribe to them: **hooks** (arbitrary user-written Python) and
-**automation rules** (declarative YAML mapped to a fixed action set). Both are
-implemented in `koan/app/hooks.py`.
+Kōan's agent loop fires named lifecycle events at fixed points; three
+independent mechanisms subscribe to them: **hooks** (arbitrary user-written
+Python), **automation rules** (declarative YAML mapped to a fixed action set),
+and **project hook skills** (a reviewed repo naming its own Claude Code skills
+in `.koan/config.yaml`). All three are implemented in `koan/app/hooks.py`.
+
+The first two are the operator's; the third belongs to the repo being worked
+on, which is why it is the most tightly constrained of the three.
 
 ## Events
 
@@ -114,6 +118,152 @@ pause file directly), and `auto_merge` (invoke
   [Dashboard](../operations/dashboard.md)); there is no Telegram skill for
   them today.
 
+## Project hook skills (`.koan/config.yaml`)
+
+A reviewed repo can name skills to run when an event fires, without the
+operator writing any Python:
+
+```yaml
+hooks:
+  post_review:
+    - docs-refresh
+```
+
+Keys are the event names above; values are lists of skill names. For each name,
+`_fire_project_hook_skills` queues a pending mission that runs that skill.
+Read via `project_koan.get_hook_skills(project_path, event)`, so it only
+applies to events whose context carries a `project_path` (`pre_mission`,
+`post_mission`, `post_review`). Queuing is per-skill isolated — a failure on one
+name still queues the rest, since `post_review` fires only once per review.
+
+**Default off; the operator opts in.** Registering a project does not by itself
+give that repo this lever: the value comes from a repo-controlled file and each
+name spends a *write-capable* mission on the operator's host and quota, so
+`_fire_project_hook_skills` checks `hooks.hook_skills_enabled(project_name)`
+before it even reads the repo's config, and logs a one-line "skipped (not
+enabled)" note otherwise. The gate is the same shape as the sibling
+`pre_hooks`/`post_hooks` surface's ([mission-hooks.md](../security/mission-hooks.md)):
+
+```yaml
+# operator's own KOAN_ROOT instance/config.yaml — never a target repo
+hook_skills:
+  enabled: true      # default false
+```
+
+A per-project `hook_skills: true|false` in `projects.yaml` wins over the global
+value when set, so the operator can enable one repo without enabling all of
+them, or exempt a repo they do not own while the global gate is on. Both
+resolvers fail closed — a config that cannot be read leaves the mechanism off.
+The trusted-branch read and the name regex below bound *who* may set the value
+and *what shape* it takes; this gate is what bounds whether the mechanism runs
+for the operator at all.
+
+**Read from the operator's checkout, not the event's path.** The `project_path`
+an event carries is not a trusted source of repo config: on `post_review` it is
+a detached worktree of the *pull request head*
+(`review_runner.run_review` → `pinned_review_worktree`), so the
+`.koan/config.yaml` in it is whatever the contributor pushed. `hooks.<event>` is
+therefore resolved through `_trusted_project_path` — the checkout registered for
+that project name in `projects.yaml` — and a project Kōan has no registration
+for is a no-op. `review.always_check` may be read from the PR head because it
+only reorders a read-only prompt; this key queues a write-capable mission, so it
+may not.
+
+**Trusted branch, not just a trusted directory.** A registered checkout is a
+path, and its working tree is not owner-controlled: `rebase_pr._checkout_pr_branch`
+runs `git checkout -B <branch> <fetch-remote>/<branch>` in exactly that
+directory, and a timeout, a stagnation kill, or a crash leaves it parked on the
+contributor's branch. `project_koan.read_trusted_koan_config` therefore reads the
+blob from the default branch of the checkout's trusted remote
+(`git show origin/main:.koan/config.yaml`, in effect) rather than from the work
+tree — changing that ref needs push access. The trusted remote is `origin`, else
+the sole remote of a single-remote repo; several remotes with no `origin` is
+ambiguous (rebasing a fork PR adds the contributor's fork as a second remote) and
+reads nothing. The work tree is used only where nothing external can land in it:
+a non-git directory, or a git repo with no remote. The consequence for repo
+owners is that a change to `hooks.<event>` takes effect once merged and fetched,
+not while it sits on a branch.
+
+**Queued, not executed.** Handlers run inline in the firing process and a skill
+pipeline can take minutes. Queuing also puts the work on the mission loop,
+which — unlike the read-only review subprocess — loads the project's own
+`.claude/skills`, can invoke the `Skill` tool, and does not have MCP stripped.
+That difference is the point of the mechanism: it is how a repo wires follow-up
+work that a review pass is deliberately not allowed to do.
+
+**The repo supplies names; Kōan composes the sentence.** Names must match
+`^[a-z0-9][a-z0-9-]*$`, capped at 10 per event, with anything else dropped and
+a warning logged. This is a security boundary, not tidiness: the value reaches
+the prompt of a *write-capable* agent. A name that could carry an instruction, a
+path or a shell fragment is refused rather than sanitized. Contrast the
+operator-side mechanisms above, which may run arbitrary code because the
+operator owns them.
+
+**Idempotent per subject, while the earlier mission is still queued.**
+`insert_pending_mission` only de-duplicates entries shaped like
+`/<command> <github-url>`, so this path does its own check against the pending
+and in-progress sections, keyed on two delimited tokens stamped into each queued
+entry: a `[hook-skill:<name>]` marker and a `[hook-subject:<subject>]` token
+(the subject being the PR URL, or the mission title). Matching both tokens
+exactly rather than as bare substrings means neither a shorter skill name
+(`docs` masked by an already-queued `docs-lint`) nor a shorter PR URL (`pull/7`
+masked by `pull/70`) is wrongly treated as already queued. Re-reviewing the same
+PR while the earlier mission is still pending or in progress does not queue the
+work twice; once it has completed, a re-review queues again (by design — a new
+push should re-run the skill). A different PR queues separately.
+The check and the insert happen inside one locked read-modify-write
+(`utils.modify_missions_file`), so two processes firing the same event
+concurrently cannot both decide "not queued" and both insert.
+The subject is stamped in the form the store will hold it: lifecycle markers
+(`⏳`/`▶`/`✅`/`❌`) and system metadata (`[complexity:…]`, `[r:N]`) stripped,
+whitespace collapsed. A `mission_title` arrives carrying those, and the store
+strips them on ingest — an un-normalized token would be stored differently from
+the token the next fire looks for and re-queue every time. An embedded `⏳` is
+worse still: `insert_mission` would skip its own queue stamp and the new mission
+would inherit the previous mission's queue time.
+
+**An event without a subject queues nothing.** The subject is the dedup key, so
+an event that carries none has no identity to match against and would append a
+fresh copy on every fire. Kōan's autonomous and contemplative iterations go
+through the same `pre_mission`/`post_mission` path as missions but carry an empty
+`mission_title` and no `pr_url`, so a project that merely declared
+`hooks.post_mission` would otherwise ping-pong between an autonomous session and
+a hook-skill mission indefinitely. `_fire_project_hook_skills` normalizes the
+subject up front (`_hook_subject`) and returns when it is empty.
+
+**No self-replication.** The mission this queues carries the `[hook-skill:…]`
+marker in its own title, so a repo naming a skill under `pre_mission` or
+`post_mission` would otherwise re-queue it every time that mission ran, without
+bound. `_fire_project_hook_skills` sees the marker in the firing context and
+queues nothing — a hook-skill mission never spawns further hook skills.
+
+**A hook-skill mission's PR is not auto-reviewed.** Neither guard above can see a
+chain that gets a *new subject* each round, and `post_review` is exactly that
+case: it carries no `mission_title` for the marker guard to find, and each round
+brings a fresh PR URL the dedup has never seen. With `autoreview` on, a config
+committed to the default branch reaches it — hook-skill mission → opens a PR →
+autoreview queues `/review` → `post_review` fires again → another hook-skill
+mission, one PR and one mission of the operator's quota per round, forever. So
+`_maybe_queue_autoreview` skips any mission whose title carries the
+`[hook-skill:…]` marker, cutting the cycle at its only automated link. Those PRs
+are still reviewable on demand — `/review <url>` or an @mention.
+
+**A fire budget backstops all three.** At most **20 fires per (project, event)
+per day** actually queue anything; past that the skills are skipped with a line
+on stderr, so a chain through some path nobody anticipated still stops. The
+count lives in `instance/.hook-skill-fires.json` rather than in memory because
+`post_review` fires from the review subprocess, where a per-process counter would
+restart on every link of the chain. The window is a day, not a minute, because a
+link is a whole mission plus a review — a per-hour cap loose enough for real use
+would never be reached by a chain that only advances a few times an hour. A fire
+the dedup absorbed (the same PR reviewed twice) queued no work and costs no
+budget, and the window rolls, so a repo that legitimately merges many PRs keeps
+working.
+
+Fail-safe throughout: an absent, empty, or malformed `.koan/config.yaml` is a
+no-op, an unwritable budget file falls back to not enforcing rather than muting
+the repo's hooks, and a failure here never disturbs the event that fired.
+
 ## When to reach for which
 
 - **Hook** — arbitrary logic, external HTTP calls, custom parsing of
@@ -122,6 +272,12 @@ pause file directly), and `auto_merge` (invoke
   triggering process).
 - **Automation rule** — one of the five built-in actions, configured without
   writing Python, editable at runtime via the dashboard.
+- **Project hook skill** — the *repo* decides what runs after an event on its
+  own code, committed alongside it and reviewable in a pull request. Choose
+  this when the behavior belongs to the project rather than the operator, and
+  when naming a skill is enough. It cannot express logic or run commands, and
+  the operator must have turned it on (`hook_skills.enabled`) for it to run at
+  all.
 
 See `instance.example/hooks/README.md` for the full worked examples,
 including the convention for shipping tests alongside a skill-bound hook

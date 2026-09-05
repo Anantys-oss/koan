@@ -413,6 +413,47 @@ def get_project_mission_hooks(project_name: str) -> Optional[bool]:
     return None
 
 
+def get_project_hook_skills(project_name: str) -> Optional[bool]:
+    """Per-project override for the hook-skills opt-in, or None if unset.
+
+    Reads the project's ``hook_skills:`` bool from projects.yaml. When set it
+    overrides the global ``config.is_hook_skills_enabled()``; when unset (None)
+    the caller falls back to the global setting. Self-loads the projects config
+    from ``KOAN_ROOT`` and is safe when that is unset or the config is missing
+    (returns None). Never raises.
+
+    **Fail closed on error**, for the same reason as
+    :func:`get_project_mission_hooks`: this override is how an operator turns off
+    a repo's ability to queue write-capable missions, so a read/parse error must
+    not silently defer to the global gate. On any exception this returns
+    ``False`` (hook skills off for this project), never ``None``.
+    """
+    import os
+
+    try:
+        koan_root = os.environ.get("KOAN_ROOT", "")
+        if not koan_root:
+            return None
+        config = load_projects_config(koan_root)
+        if not config:
+            return None
+        project_cfg = get_project_config(config, project_name)
+        val = project_cfg.get("hook_skills")
+        if isinstance(val, bool):
+            return val
+        # Accept a nested {enabled: bool} form for symmetry with instance config.
+        if isinstance(val, dict) and isinstance(val.get("enabled"), bool):
+            return val["enabled"]
+    except Exception as e:
+        print(
+            f"[projects_config] get_project_hook_skills({project_name!r}) "
+            f"failed, failing closed (hook skills disabled for this project): {e}",
+            file=sys.stderr,
+        )
+        return False
+    return None
+
+
 def get_project_running_indicator(config: dict, project_name: str) -> dict:
     """Per-project override for the GitHub "Running" indicator.
 
