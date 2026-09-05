@@ -136,6 +136,28 @@ applies to events whose context carries a `project_path` (`pre_mission`,
 `post_mission`, `post_review`). Queuing is per-skill isolated — a failure on one
 name still queues the rest, since `post_review` fires only once per review.
 
+**Default off; the operator opts in.** Registering a project does not by itself
+give that repo this lever: the value comes from a repo-controlled file and each
+name spends a *write-capable* mission on the operator's host and quota, so
+`_fire_project_hook_skills` checks `hooks.hook_skills_enabled(project_name)`
+before it even reads the repo's config, and logs a one-line "skipped (not
+enabled)" note otherwise. The gate is the same shape as the sibling
+`pre_hooks`/`post_hooks` surface's ([mission-hooks.md](../security/mission-hooks.md)):
+
+```yaml
+# operator's own KOAN_ROOT instance/config.yaml — never a target repo
+hook_skills:
+  enabled: true      # default false
+```
+
+A per-project `hook_skills: true|false` in `projects.yaml` wins over the global
+value when set, so the operator can enable one repo without enabling all of
+them, or exempt a repo they do not own while the global gate is on. Both
+resolvers fail closed — a config that cannot be read leaves the mechanism off.
+The trusted-branch read and the name regex below bound *who* may set the value
+and *what shape* it takes; this gate is what bounds whether the mechanism runs
+for the operator at all.
+
 **Read from the operator's checkout, not the event's path.** The `project_path`
 an event carries is not a trusted source of repo config: on `post_review` it is
 a detached worktree of the *pull request head*
@@ -253,7 +275,9 @@ the repo's hooks, and a failure here never disturbs the event that fired.
 - **Project hook skill** — the *repo* decides what runs after an event on its
   own code, committed alongside it and reviewable in a pull request. Choose
   this when the behavior belongs to the project rather than the operator, and
-  when naming a skill is enough. It cannot express logic or run commands.
+  when naming a skill is enough. It cannot express logic or run commands, and
+  the operator must have turned it on (`hook_skills.enabled`) for it to run at
+  all.
 
 See `instance.example/hooks/README.md` for the full worked examples,
 including the convention for shipping tests alongside a skill-bound hook

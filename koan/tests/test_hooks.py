@@ -909,6 +909,14 @@ class TestProjectHookSkills:
         monkeypatch.setattr(
             "app.utils.get_known_projects", lambda: list(self._known)
         )
+        # The mechanism is default-off (operator opt-in); these tests describe
+        # what happens once the operator has enabled it. The gate itself is
+        # covered by TestProjectHookSkillsOptIn below.
+        monkeypatch.setattr("app.config.is_hook_skills_enabled", lambda: True)
+        monkeypatch.setattr(
+            "app.projects_config.get_project_hook_skills", lambda _name: None
+        )
+        monkeypatch.setattr(hooks, "_hook_skills_skip_logged", False)
 
     def _make_registry(self, tmp_path):
         hooks_dir = tmp_path / "hooks"
@@ -1309,3 +1317,96 @@ class TestProjectHookSkills:
         missions = self._pending(tmp_path)
         assert missions.count("[hook-skill:a-skill]") == 1
         assert "[hook-subject:Refactor the parser - keep the old API]" in missions
+
+    def test_verify_requeued_mission_is_not_queued_twice(self, tmp_path):
+        # Post-mission verification failure re-queues the mission with a
+        # "[verify-failed: …]" tag appended (on by default). That tag varies per
+        # attempt, so a subject that kept it would differ from the first run's
+        # and queue the hook skill again while the first one is still pending.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_mission:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        registry.fire(
+            "post_mission", project_path=str(project), project_name="my-toolkit",
+            mission_title="Add dark mode",
+        )
+        registry.fire(
+            "post_mission", project_path=str(project), project_name="my-toolkit",
+            mission_title="Add dark mode [verify-failed: tests red] [r:1]",
+        )
+        missions = self._pending(tmp_path)
+        assert missions.count("[hook-skill:a-skill]") == 1
+        assert "[hook-subject:Add dark mode]" in missions
+
+
+class TestProjectHookSkillsOptIn:
+    """The operator opt-in gate in front of repo-declared hook skills."""
+
+    @pytest.fixture(autouse=True)
+    def _project(self, monkeypatch, tmp_path):
+        self.project = tmp_path / "project"
+        (self.project / ".koan").mkdir(parents=True)
+        (self.project / ".koan" / "config.yaml").write_text(
+            "hooks:\n  post_review:\n    - 'a-skill'\n"
+        )
+        monkeypatch.setattr(
+            "app.utils.get_known_projects",
+            lambda: [("my-toolkit", str(self.project))],
+        )
+        monkeypatch.setattr(hooks, "_hook_skills_skip_logged", False)
+        self.instance = tmp_path / "instance"
+        (self.instance / "hooks").mkdir(parents=True)
+        (self.instance / "missions.md").write_text(
+            "# Missions\n\n## Pending\n\n## In Progress\n\n## Done\n"
+        )
+
+    def _fire(self):
+        registry = HookRegistry(
+            self.instance / "hooks", instance_dir=str(self.instance)
+        )
+        registry.fire(
+            "post_review",
+            project_path=str(self.project),
+            project_name="my-toolkit",
+            pr_url="https://github.com/o/r/pull/7",
+        )
+        return (self.instance / "missions.md").read_text()
+
+    def _set_gate(self, monkeypatch, *, global_on, project_override):
+        monkeypatch.setattr(
+            "app.config.is_hook_skills_enabled", lambda: global_on
+        )
+        monkeypatch.setattr(
+            "app.projects_config.get_project_hook_skills",
+            lambda _name: project_override,
+        )
+
+    def test_disabled_by_default(self, monkeypatch):
+        # No hook_skills config anywhere: a repo that declares hooks.<event>
+        # must not be able to queue a write-capable mission on this host.
+        monkeypatch.setattr("app.config._load_config", lambda: {})
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        assert "a-skill" not in self._fire()
+
+    def test_global_opt_in_enables_it(self, monkeypatch):
+        self._set_gate(monkeypatch, global_on=True, project_override=None)
+        assert "[hook-skill:a-skill]" in self._fire()
+
+    def test_per_project_override_disables_it(self, monkeypatch):
+        self._set_gate(monkeypatch, global_on=True, project_override=False)
+        assert "a-skill" not in self._fire()
+
+    def test_per_project_override_enables_it(self, monkeypatch):
+        self._set_gate(monkeypatch, global_on=False, project_override=True)
+        assert "[hook-skill:a-skill]" in self._fire()
+
+    def test_enablement_error_fails_closed(self, monkeypatch):
+        def _boom(_name):
+            raise RuntimeError("unreadable projects.yaml")
+
+        monkeypatch.setattr("app.config.is_hook_skills_enabled", lambda: True)
+        monkeypatch.setattr(
+            "app.projects_config.get_project_hook_skills", _boom
+        )
+        assert "a-skill" not in self._fire()

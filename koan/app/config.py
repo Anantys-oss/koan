@@ -1170,6 +1170,29 @@ def is_mission_hooks_enabled() -> bool:
     return False
 
 
+def is_hook_skills_enabled() -> bool:
+    """Whether repo-declared hook skills may queue missions (operator opt-in).
+
+    ``hooks.<event>`` in a *target repo's* ``.koan/config.yaml`` names skills
+    Kōan should run when a lifecycle event fires, and each honored name queues a
+    **write-capable** mission on the operator's host and quota. Like
+    ``mission_hooks``, the value comes from a repo-controlled file, so the
+    mechanism is **disabled by default** and must be enabled by the operator
+    here. A per-project override may narrow or widen it (see
+    ``projects_config.get_project_hook_skills``).
+
+    Config key: hook_skills.enabled (default: False). Fail-safe: any unexpected
+    shape defaults to disabled.
+    """
+    config = _load_config()
+    cfg = config.get("hook_skills", {})
+    if isinstance(cfg, dict):
+        return bool(cfg.get("enabled", False))
+    if isinstance(cfg, bool):
+        return cfg
+    return False
+
+
 def get_running_indicator_config() -> dict:
     """Resolve the GitHub "Running" indicator config.
 
