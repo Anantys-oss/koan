@@ -45,7 +45,9 @@ Automation rules:
 """
 
 import contextlib
+import fcntl
 import importlib.util
+import json
 import os
 import sys
 import time
@@ -77,6 +79,37 @@ _HOOK_SKILL_MARKER_PREFIX = "[hook-skill:"
 # a shorter PR URL nests inside a longer one (``pull/7`` is a substring of
 # ``pull/70``) and would be wrongly treated as already queued.
 _HOOK_SUBJECT_MARKER_PREFIX = "[hook-subject:"
+
+# Backstop bound on how often one (project, event) pair may queue hook skills.
+# Neither the marker guard nor the dedup can see a chain that launders itself
+# through a *new subject*: a queued hook-skill mission opens a PR, autoreview
+# queues ``/review`` for it, and the resulting post_review carries a fresh PR
+# URL and no mission_title at all — so both guards miss. That specific cycle is
+# cut in ``mission_runner._maybe_queue_autoreview``, which refuses to review a
+# hook-skill mission's PR; this budget bounds any *other* such chain, regardless
+# of which context key the firing event happens to carry.
+#
+# It is persisted rather than in-memory (unlike the automation-rule loop guard)
+# because post_review fires from the review subprocess — see
+# ``review_runner._fire_post_review`` — so a per-process counter would start
+# over on every link of the chain and never bound anything.
+#
+# The window is a day rather than a minute because a link of that chain is a
+# whole mission plus a review: an hourly cap generous enough for legitimate use
+# would never be reached by a chain that only advances a few times an hour.
+_HOOK_SKILL_FIRE_WINDOW_SECONDS = 86400.0
+_HOOK_SKILL_MAX_FIRES_PER_WINDOW = 20
+_HOOK_SKILL_FIRES_FILE = ".hook-skill-fires.json"
+
+
+def is_hook_skill_mission(mission_title: str) -> bool:
+    """True when *mission_title* belongs to a mission this mechanism queued.
+
+    Callers outside the hook system use this to avoid feeding such a mission's
+    output back into an event that would queue another one — see
+    ``mission_runner._maybe_queue_autoreview``.
+    """
+    return _HOOK_SKILL_MARKER_PREFIX in str(mission_title or "")
 
 
 def _hook_subject(ctx: dict) -> str:
@@ -309,6 +342,12 @@ class HookRegistry:
         anything — the subject is the dedup key, and an event without one would
         re-queue on every fire.
 
+        Both the marker guard and the dedup are blind to a chain that launders
+        itself through a new subject each round (queued mission → PR →
+        autoreview → post_review with a fresh PR URL and no mission_title).
+        That link is cut in ``mission_runner._maybe_queue_autoreview``; a
+        persistent per-(project, event) budget bounds the rest.
+
         Fire-and-forget — a broken repo config never disturbs the event.
         """
         project_path = ctx.get("project_path")
@@ -320,7 +359,7 @@ class HookRegistry:
         # forever. The marker embedded in the queued entry rides along in
         # mission_title, so its presence means we are already inside such a
         # mission — stop the chain here.
-        if _HOOK_SKILL_MARKER_PREFIX in str(ctx.get("mission_title") or ""):
+        if is_hook_skill_mission(ctx.get("mission_title")):
             return
         try:
             from app.project_koan import get_hook_skills
@@ -352,25 +391,114 @@ class HookRegistry:
                 file=sys.stderr,
             )
             return
+        if not skills:
+            return
+        project_key = str(ctx.get("project_name") or trusted)
+        fires = self._hook_skill_fire_count(project_key, event)
+        if fires >= _HOOK_SKILL_MAX_FIRES_PER_WINDOW:
+            print(
+                f"[hooks] {event}: hook-skill budget exhausted for {project_key} "
+                f"({_HOOK_SKILL_MAX_FIRES_PER_WINDOW} in the last "
+                f"{_HOOK_SKILL_FIRE_WINDOW_SECONDS / 3600:.0f}h) — "
+                f"skipping {', '.join(skills)}",
+                file=sys.stderr,
+            )
+            return
         # Per-skill isolation: one failing queue (a locked store, an OSError on
         # the export write) must not cancel the skills after it — post_review
         # fires once per review, so a skipped sibling is lost for good.
+        queued_any = False
         for skill in skills:
             try:
-                self._queue_hook_skill(event, skill, ctx, subject)
+                queued_any |= self._queue_hook_skill(event, skill, ctx, subject)
             except Exception as exc:
                 print(
                     f"[hooks] {event}: could not queue {skill}: {exc}",
                     file=sys.stderr,
                 )
+        # Spend budget only on fires that actually queued something. A re-fire
+        # the dedup absorbed (the same PR reviewed twice) added no work to the
+        # queue, so it must not consume a link's worth of the bound.
+        if queued_any:
+            self._hook_skill_fire_count(project_key, event, record=True)
+
+    def _hook_skill_fire_count(
+        self, project: str, event: str, *, record: bool = False,
+    ) -> int:
+        """Fires recorded for *(project, event)* inside the rolling window.
+
+        With ``record=True``, stamps one more before returning. Timestamps live
+        in ``instance/.hook-skill-fires.json`` because the events that need
+        bounding fire from different processes (the run loop and the review
+        subprocess), so an in-memory counter would reset between links of the
+        very chain it is meant to stop. Wall-clock time, not ``monotonic``, for
+        the same reason.
+
+        Best-effort: any failure reading or writing the file returns ``0``, so a
+        broken state file degrades to the pre-existing behaviour rather than
+        silently muting a repo's hooks.
+        """
+        if self._instance_dir is None:
+            return 0
+        from app.utils import atomic_write_json
+
+        state_path = Path(self._instance_dir) / _HOOK_SKILL_FIRES_FILE
+        key = f"{project}\x1f{event}"
+        now = time.time()
+
+        def _fresh(stamps) -> List[float]:
+            # A clock that jumped backwards would otherwise strand entries in
+            # the file forever; treat a future stamp as outside the window too.
+            return [
+                float(t) for t in stamps
+                if isinstance(t, (int, float))
+                and 0 <= now - float(t) < _HOOK_SKILL_FIRE_WINDOW_SECONDS
+            ]
+
+        try:
+            with open(state_path.with_suffix(".lock"), "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    try:
+                        raw = json.loads(state_path.read_text())
+                    except (OSError, ValueError):
+                        raw = {}
+                    if not isinstance(raw, dict):
+                        raw = {}
+                    # Prune every key, not just this one, so the file does not
+                    # grow without bound across projects and events.
+                    state: Dict[str, List[float]] = {}
+                    for k, v in raw.items():
+                        fresh = _fresh(v) if isinstance(v, list) else []
+                        if fresh:
+                            state[k] = fresh
+                    count = len(state.get(key, []))
+                    if record:
+                        state.setdefault(key, []).append(now)
+                    atomic_write_json(state_path, state)
+                    return count
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except Exception as exc:
+            # Fire-and-forget like the rest of this path: an unwritable or
+            # unreadable budget file degrades to "not enforced" rather than
+            # silently muting a repo's hooks or disturbing the event.
+            print(
+                f"[hooks] hook-skill fire budget unavailable ({exc}) — not enforced",
+                file=sys.stderr,
+            )
+            return 0
 
     def _queue_hook_skill(
         self, event: str, skill: str, ctx: dict, subject: str
-    ) -> None:
+    ) -> bool:
         """Append one pending mission running *skill*, unless already queued.
 
         *subject* is the already-normalized, non-empty identity of the firing
         event (see :func:`_hook_subject`); it is what the dedup below keys on.
+
+        Returns True when an entry was actually inserted, so the caller only
+        spends fire budget on fires that added work.
         """
         from app.missions import insert_mission, parse_sections
         from app.utils import modify_missions_file
@@ -416,6 +544,7 @@ class HookRegistry:
                 f"[hooks] {event}: queued {skill} for {subject}",
                 file=sys.stderr,
             )
+        return inserted
 
     # ------------------------------------------------------------------
     # Automation rules
