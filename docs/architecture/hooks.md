@@ -147,6 +147,21 @@ for is a no-op. `review.always_check` may be read from the PR head because it
 only reorders a read-only prompt; this key queues a write-capable mission, so it
 may not.
 
+**Trusted branch, not just a trusted directory.** A registered checkout is a
+path, and its working tree is not owner-controlled: `rebase_pr._checkout_pr_branch`
+runs `git checkout -B <branch> <fetch-remote>/<branch>` in exactly that
+directory, and a timeout, a stagnation kill, or a crash leaves it parked on the
+contributor's branch. `project_koan.read_trusted_koan_config` therefore reads the
+blob from the default branch of the checkout's trusted remote
+(`git show origin/main:.koan/config.yaml`, in effect) rather than from the work
+tree — changing that ref needs push access. The trusted remote is `origin`, else
+the sole remote of a single-remote repo; several remotes with no `origin` is
+ambiguous (rebasing a fork PR adds the contributor's fork as a second remote) and
+reads nothing. The work tree is used only where nothing external can land in it:
+a non-git directory, or a git repo with no remote. The consequence for repo
+owners is that a change to `hooks.<event>` takes effect once merged and fetched,
+not while it sits on a branch.
+
 **Queued, not executed.** Handlers run inline in the firing process and a skill
 pipeline can take minutes. Queuing also puts the work on the mission loop,
 which — unlike the read-only review subprocess — loads the project's own
@@ -184,6 +199,15 @@ strips them on ingest — an un-normalized token would be stored differently fro
 the token the next fire looks for and re-queue every time. An embedded `⏳` is
 worse still: `insert_mission` would skip its own queue stamp and the new mission
 would inherit the previous mission's queue time.
+
+**An event without a subject queues nothing.** The subject is the dedup key, so
+an event that carries none has no identity to match against and would append a
+fresh copy on every fire. Kōan's autonomous and contemplative iterations go
+through the same `pre_mission`/`post_mission` path as missions but carry an empty
+`mission_title` and no `pr_url`, so a project that merely declared
+`hooks.post_mission` would otherwise ping-pong between an autonomous session and
+a hook-skill mission indefinitely. `_fire_project_hook_skills` normalizes the
+subject up front (`_hook_subject`) and returns when it is empty.
 
 **No self-replication.** The mission this queues carries the `[hook-skill:…]`
 marker in its own title, so a repo naming a skill under `pre_mission` or

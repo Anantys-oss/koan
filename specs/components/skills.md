@@ -326,6 +326,20 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   reading it would let any contributor who can open a PR choose which write-capable
   mission Kōan queues on the operator's quota. `review.always_check` may be read from the
   PR head because it only reorders a read-only prompt; this key MUST NOT.
+- **Trusted *branch*, not merely a trusted directory.** A registered checkout is a path,
+  and its work tree is not owner-controlled: `rebase_pr._checkout_pr_branch` runs
+  `git checkout -B <branch> <fetch-remote>/<branch>` in that very directory, and a timeout,
+  a stagnation kill, or a crash leaves it parked on the contributor's branch. The list
+  MUST therefore be read from the **committed default branch** of the checkout's trusted
+  remote (`project_koan.read_trusted_koan_config`, i.e. `git show
+  <remote>/<default>:.koan/config.yaml`), NEVER from the work tree, so changing which
+  skills run requires push access rather than an open pull request. The trusted remote is
+  `origin`, else the sole remote of a single-remote repo; several remotes with no `origin`
+  is ambiguous — rebasing a fork PR adds the contributor's fork as a second remote — and
+  MUST read nothing. The work tree MAY be read ONLY where nothing external can land in it:
+  a non-git directory, or a git repo with no remote at all. An unresolvable default branch
+  ⇒ no-op. Consequence for repo owners: a change to `hooks.<event>` takes effect once
+  merged and fetched, not while it sits on a branch.
 - For each honored name, one pending mission is queued. Queuing is per-skill isolated: a
   failure while queuing one name MUST NOT prevent the remaining names from queuing. The
   mission is NOT executed inline: handlers run in the firing process, and queuing is what
@@ -362,6 +376,16 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   the *stored* token differs from the token the next fire searches for and every re-fire
   re-queues — and an embedded `⏳` additionally suppresses `insert_mission`'s fresh queue
   stamp, so the new mission would inherit the previous mission's `queued_at`.
+- **An event without a subject MUST queue nothing.** The subject is the dedup key above,
+  so an event carrying neither `pr_url` nor a non-blank `mission_title` has no identity to
+  match against and would append a fresh copy on every fire. Kōan's autonomous and
+  contemplative iterations run through the same `pre_mission`/`post_mission` path as
+  missions with an empty `mission_title` (`mission_executor._run_iteration`), so a project
+  that merely declares `hooks.post_mission` would otherwise alternate autonomous session ⇄
+  hook-skill mission without bound. `_fire_project_hook_skills` MUST normalize the subject
+  once, before resolving the config, and return when it is empty; the dedup below is
+  consequently unconditional. `post_review` (which always carries `pr_url`) and
+  `post_mission` after a real mission are unaffected.
 - **No self-replication.** A mission this mechanism queues carries the `[hook-skill:…]`
   marker in its own `mission_title`, so its `pre_mission`/`post_mission` would otherwise
   re-queue the skill without bound. `_fire_project_hook_skills` MUST detect that marker in

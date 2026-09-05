@@ -174,6 +174,16 @@ and is not MCP-stripped.
   is whatever the contributor pushed. koan therefore reads `hooks.<event>` from
   the project checkout the operator registered — a PR cannot add or change the
   skills that run. A project koan does not have registered is a no-op.
+- **Read from your default branch, as committed.** Within that checkout, koan
+  reads the file from the default branch of its `origin` (`git show
+  origin/main:.koan/config.yaml`, in effect), not from whatever the working tree
+  currently holds — koan itself checks pull-request branches out there when it
+  rebases one, and a killed run can leave one parked. So an edit to this key
+  takes effect once it is **merged and fetched**, not while it sits on a branch
+  or uncommitted. Two exceptions where the working tree is used instead, because
+  nothing external can land in it: a directory that is not a git repo, and a
+  repo with no remote at all. If the default branch cannot be resolved (several
+  remotes and none named `origin`), koan reads nothing and logs a warning.
 - **Queued, not run inline.** Handlers execute inside the process that fired the
   event, and a skill pipeline can take minutes. Your skill runs as a normal
   pending mission shortly afterwards — watch `instance/missions.md` or
@@ -192,6 +202,11 @@ and is not MCP-stripped.
   stops its own lifecycle events from queuing the skill again.
 - **Events without a project** — `session_start` and `session_end` carry no
   `project_path`, so they are a no-op here.
+- **Events without a subject** — koan's own autonomous and contemplative
+  iterations fire `pre_mission`/`post_mission` with no mission title and no PR,
+  and those queue nothing. The subject is what "not queued twice" keys on, so an
+  event without one would append a fresh copy every iteration. `post_mission`
+  after a real mission, and `post_review` after a review, always carry one.
 - **Fail-safe:** a malformed config is ignored and never disturbs the event.
 
 Requires the named skill to be resolvable by Claude Code in your repo — most
