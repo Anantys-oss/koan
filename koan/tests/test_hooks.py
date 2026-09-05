@@ -964,8 +964,12 @@ class TestProjectHookSkills:
     def test_absent_config_is_a_noop(self, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
+        self._known.append(("my-toolkit", str(project)))
         registry = self._make_registry(tmp_path)
-        registry.fire("post_review", project_path=str(project))
+        registry.fire(
+            "post_review", project_path=str(project), project_name="my-toolkit",
+            pr_url="https://github.com/o/r/pull/7",
+        )
         assert "Use the" not in self._pending(tmp_path)
 
     def test_other_events_are_not_queued(self, tmp_path):
@@ -973,8 +977,27 @@ class TestProjectHookSkills:
             tmp_path, "hooks:\n  post_mission:\n    - 'other-skill'\n"
         )
         registry = self._make_registry(tmp_path)
-        registry.fire("post_review", project_path=str(project), project_name="my-toolkit")
+        registry.fire(
+            "post_review", project_path=str(project), project_name="my-toolkit",
+            pr_url="https://github.com/o/r/pull/7",
+        )
         assert "other-skill" not in self._pending(tmp_path)
+
+    def test_event_without_a_subject_queues_nothing(self, tmp_path):
+        # An autonomous or contemplative iteration runs through the same
+        # post_mission path as a mission but carries no mission_title and no
+        # pr_url. With no subject there is nothing to de-duplicate on, so
+        # queuing would append another identical entry on every iteration.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_mission:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        for _ in range(3):
+            registry.fire(
+                "post_mission", project_path=str(project),
+                project_name="my-toolkit", mission_title="",
+            )
+        assert self._pending(tmp_path).count("[hook-skill:a-skill]") == 0
 
     def test_post_mission_uses_mission_title_as_subject(self, tmp_path):
         project = self._make_project(
@@ -1031,7 +1054,10 @@ class TestProjectHookSkills:
         project = self._make_project(tmp_path, "::: not yaml :::\n")
         registry = self._make_registry(tmp_path)
         # fire() must return normally; a broken repo config is not our problem
-        assert registry.fire("post_review", project_path=str(project)) == {}
+        assert registry.fire(
+            "post_review", project_path=str(project), project_name="my-toolkit",
+            pr_url="https://github.com/o/r/pull/7",
+        ) == {}
         assert "Use the" not in self._pending(tmp_path)
 
     def test_queued_hook_skill_mission_does_not_self_replicate(self, tmp_path):

@@ -43,6 +43,10 @@ _MAX_SKILL_NAME_LEN = 64
 # sanitized. A repo owner chooses *which* skill runs; they never supply prose.
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
+# Branch names tried when a checkout's remote HEAD symbolic ref was never set
+# locally (``git clone`` sets it; ``git remote add`` does not).
+_TRUSTED_BRANCH_FALLBACKS = ("main", "master")
+
 
 def log_context_load(label: str, content: str) -> None:
     """Announce a steering file koan just loaded into a prompt, for ``make logs``.
@@ -220,16 +224,20 @@ def read_koan_config(project_path: str) -> dict:
     if not project_path:
         return {}
     path = Path(project_path) / ".koan" / "config.yaml"
-    text = _read_or_empty(path)
+    return _parse_koan_config(_read_or_empty(path), str(path))
+
+
+def _parse_koan_config(text: str, source: str) -> dict:
+    """Parse .koan/config.yaml *text* into a dict, or ``{}``. Never raises."""
     if not text:
         return {}
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        logger.warning("unparseable .koan/config.yaml at %s: %s", path, e)
+        logger.warning("unparseable .koan/config.yaml at %s: %s", source, e)
         return {}
     if not isinstance(data, dict):
-        logger.warning(".koan/config.yaml top level is not a mapping at %s", path)
+        logger.warning(".koan/config.yaml top level is not a mapping at %s", source)
         return {}
     return data
 
@@ -340,6 +348,98 @@ def get_mission_hooks(project_path: str, mission_type: str, phase: str) -> list[
     return _section_list("default")
 
 
+def _select_trusted_remote(remotes: list[str]) -> str:
+    """Pick the remote whose branches the repo *owner* controls, or "".
+
+    Only one remote can be trusted: when Kōan rebases a pull request it adds the
+    **contributor's fork** as a second remote in this same checkout, and those
+    branches are exactly what must not be trusted here. ``origin`` wins; a
+    single-remote repo uses that remote; anything more ambiguous returns ``""``
+    and the caller reads nothing rather than guessing.
+    """
+    if "origin" in remotes:
+        return "origin"
+    if len(remotes) == 1:
+        return remotes[0]
+    return ""
+
+
+def _trusted_config_ref(project_path: str, remote: str) -> str:
+    """Return the remote-tracking ref of *remote*'s default branch, or "".
+
+    Prefers the local symbolic ref ``refs/remotes/<remote>/HEAD`` (set by
+    ``git clone``); falls back to the conventional default branch names when it
+    was never set. Never queries the network — this runs inside a lifecycle
+    event and must stay cheap.
+    """
+    from app.git_utils import run_git
+
+    rc, head, _ = run_git(
+        "symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote}/HEAD",
+        cwd=project_path,
+    )
+    if rc == 0 and head.strip():
+        return head.strip()
+    for branch in _TRUSTED_BRANCH_FALLBACKS:
+        rc, _, _ = run_git(
+            "rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}",
+            cwd=project_path,
+        )
+        if rc == 0:
+            return f"{remote}/{branch}"
+    return ""
+
+
+def read_trusted_koan_config(project_path: str) -> dict:
+    """Parse .koan/config.yaml as the repo *owner* published it, not as checked out.
+
+    :func:`read_koan_config` reads the work tree, and the work tree of a
+    registered checkout is not owner-controlled: Kōan itself parks it on
+    arbitrary contributor branches (``rebase_pr._checkout_pr_branch`` runs
+    ``git checkout -B <branch> <fork-remote>/<branch>`` right there), and a
+    timeout, a stagnation kill or a crash leaves it parked. For keys that grant
+    *execution* — ``hooks.<event>`` — the blob is therefore read from the
+    default branch of the trusted remote instead, which needs write access to
+    change, so a pull request cannot occupy it.
+
+    The work tree is used only when nothing external can land in it: a
+    non-git directory, or a git repo with no remote at all. When the trusted
+    ref cannot be resolved, returns ``{}`` — fail-safe, never raises.
+    """
+    if not project_path:
+        return {}
+    from app.git_utils import run_git
+
+    rc, _, _ = run_git("rev-parse", "--git-dir", cwd=project_path)
+    if rc != 0:
+        return read_koan_config(project_path)
+    rc, out, _ = run_git("remote", cwd=project_path)
+    remotes = [r.strip() for r in out.splitlines() if r.strip()] if rc == 0 else []
+    if rc == 0 and not remotes:
+        # A local-only checkout: no branch from anywhere else can reach it.
+        return read_koan_config(project_path)
+    remote = _select_trusted_remote(remotes)
+    if not remote:
+        logger.warning(
+            "no trusted remote for %s — .koan/config.yaml not read", project_path
+        )
+        return {}
+    ref = _trusted_config_ref(project_path, remote)
+    if not ref:
+        logger.warning(
+            "could not resolve the default branch of %s in %s — "
+            ".koan/config.yaml not read",
+            remote,
+            project_path,
+        )
+        return {}
+    rc, text, _ = run_git("show", f"{ref}:.koan/config.yaml", cwd=project_path)
+    if rc != 0:
+        # Absent on the default branch is the common case (no repo config).
+        return {}
+    return _parse_koan_config(text.strip(), f"{ref} in {project_path}")
+
+
 def get_hook_skills(project_path: str, event: str) -> list[str]:
     """Return the honored ``hooks.<event>`` skill names from .koan/config.yaml.
 
@@ -348,6 +448,11 @@ def get_hook_skills(project_path: str, event: str) -> list[str]:
     The repo supplies *names*; koan composes the mission text itself, so a
     committed config can never inject instructions into a write-capable agent.
 
+    Read via :func:`read_trusted_koan_config` — from the default branch of the
+    checkout's trusted remote, never from whatever branch the work tree happens
+    to have checked out, so a contributor's PR branch sitting in the registered
+    checkout cannot choose which skills run.
+
     Returns ``[]`` unless the value is a list; keeps only non-blank ``str``
     items matching ``_SKILL_NAME_RE``, drops duplicates, and caps at
     ``_MAX_HOOK_SKILLS`` (one diagnostic per drop reason). Fail-safe; never
@@ -355,7 +460,7 @@ def get_hook_skills(project_path: str, event: str) -> list[str]:
     """
     if not event:
         return []
-    hooks = read_koan_config(project_path).get("hooks")
+    hooks = read_trusted_koan_config(project_path).get("hooks")
     if not isinstance(hooks, dict):
         return []
     raw = hooks.get(event)

@@ -79,6 +79,28 @@ _HOOK_SKILL_MARKER_PREFIX = "[hook-skill:"
 _HOOK_SUBJECT_MARKER_PREFIX = "[hook-subject:"
 
 
+def _hook_subject(ctx: dict) -> str:
+    """Return the firing event's subject, normalized as the mission store holds it.
+
+    The subject (the PR URL, else the mission title) is the dedup key stamped
+    into every queued entry, so it MUST be normalized exactly as the store will
+    normalize it — otherwise the token written here is not the token the next
+    fire searches for and every re-fire re-queues. A ``mission_title`` arrives
+    carrying its ⏳/▶ lifecycle timestamps and ``[complexity:…]``/``[r:N]``
+    metadata, all of which the store strips on ingest; newlines are flattened to
+    spaces by ``insert_mission``. An embedded ⏳ is doubly harmful —
+    ``insert_mission`` would treat the entry as already stamped and the new
+    mission would inherit the previous mission's queue time.
+
+    Returns ``""`` when the event carries no subject at all, which the caller
+    treats as "queue nothing" (see :meth:`_fire_project_hook_skills`).
+    """
+    from app.missions import strip_all_lifecycle_markers, strip_system_metadata
+
+    raw = str(ctx.get("pr_url") or ctx.get("mission_title") or "")
+    return " ".join(strip_system_metadata(strip_all_lifecycle_markers(raw)).split())
+
+
 def _trusted_project_path(ctx: dict) -> Optional[str]:
     """Return the operator-registered checkout for the firing project, if any.
 
@@ -283,6 +305,10 @@ class HookRegistry:
         also the path that loads the project's own Claude Code skills, which
         a read-only review subprocess does not.
 
+        Only events that carry a subject (a PR URL or a mission title) queue
+        anything — the subject is the dedup key, and an event without one would
+        re-queue on every fire.
+
         Fire-and-forget — a broken repo config never disturbs the event.
         """
         project_path = ctx.get("project_path")
@@ -299,6 +325,18 @@ class HookRegistry:
         try:
             from app.project_koan import get_hook_skills
 
+            # Every queued entry is de-duplicated on its subject, so an event
+            # that carries none has no identity to match against and would
+            # re-queue on every fire. That is not hypothetical: koan's own
+            # autonomous and contemplative iterations run through this same
+            # pre_mission/post_mission path with an empty mission_title and no
+            # pr_url, so a project that merely declares hooks.post_mission would
+            # otherwise ping-pong autonomous session → hook-skill mission →
+            # autonomous session indefinitely. Subject-less events queue
+            # nothing, by contract.
+            subject = _hook_subject(ctx)
+            if not subject:
+                return
             trusted = _trusted_project_path(ctx)
             if not trusted:
                 print(
@@ -319,46 +357,34 @@ class HookRegistry:
         # fires once per review, so a skipped sibling is lost for good.
         for skill in skills:
             try:
-                self._queue_hook_skill(event, skill, ctx)
+                self._queue_hook_skill(event, skill, ctx, subject)
             except Exception as exc:
                 print(
                     f"[hooks] {event}: could not queue {skill}: {exc}",
                     file=sys.stderr,
                 )
 
-    def _queue_hook_skill(self, event: str, skill: str, ctx: dict) -> None:
-        """Append one pending mission running *skill*, unless already queued."""
-        from app.missions import (
-            insert_mission,
-            parse_sections,
-            strip_all_lifecycle_markers,
-            strip_system_metadata,
-        )
+    def _queue_hook_skill(
+        self, event: str, skill: str, ctx: dict, subject: str
+    ) -> None:
+        """Append one pending mission running *skill*, unless already queued.
+
+        *subject* is the already-normalized, non-empty identity of the firing
+        event (see :func:`_hook_subject`); it is what the dedup below keys on.
+        """
+        from app.missions import insert_mission, parse_sections
         from app.utils import modify_missions_file
 
-        # Normalize the subject exactly as the store will, or the token stamped
-        # here is not the token the next fire searches for and every re-fire
-        # re-queues. A ``mission_title`` arrives carrying its ⏳/▶ lifecycle
-        # timestamps and ``[complexity:…]``/``[r:N]`` metadata, all of which the
-        # store strips on ingest; newlines are flattened to spaces by
-        # ``insert_mission``. An embedded ⏳ is doubly harmful — ``insert_mission``
-        # would treat the entry as already stamped and the new mission would
-        # inherit the previous mission's queue time.
-        raw_subject = str(ctx.get("pr_url") or ctx.get("mission_title") or "")
-        subject = " ".join(
-            strip_system_metadata(strip_all_lifecycle_markers(raw_subject)).split()
-        )
         project = str(ctx.get("project_name") or "").strip()
         prefix = f"[project:{project}] " if project else ""
-        target = f" for {subject}" if subject else ""
         # The marker is a stable, delimited token — both the self-replication
         # guard and the dedup below match on it exactly, so a skill name can
         # never be masked by a longer name it is a substring of (docs vs.
         # docs-lint), and a queued mission is recognizable as this mechanism's.
         marker = f"{_HOOK_SKILL_MARKER_PREFIX}{skill}]"
-        subject_marker = f"{_HOOK_SUBJECT_MARKER_PREFIX}{subject}]" if subject else ""
+        subject_marker = f"{_HOOK_SUBJECT_MARKER_PREFIX}{subject}]"
         entry = (
-            f"{prefix}Use the {skill} skill{target}. Queued by the {event} "
+            f"{prefix}Use the {skill} skill for {subject}. Queued by the {event} "
             f"lifecycle event via .koan/config.yaml. {marker}{subject_marker}"
         )
 
@@ -374,22 +400,20 @@ class HookRegistry:
             # concurrently, and an unlocked read would let both observe "not
             # queued" and both insert.
             nonlocal inserted
-            if subject:
-                sections = parse_sections(content)
-                queued = sections.get("pending", []) + sections.get("in_progress", [])
-                # Both tokens are delimited by a closing ``]`` and matched exactly,
-                # so neither a longer skill name nor a longer PR URL can mask this
-                # one (``docs`` vs ``docs-lint``; ``pull/7`` vs ``pull/70``).
-                if any(marker in item and subject_marker in item for item in queued):
-                    return content
+            sections = parse_sections(content)
+            queued = sections.get("pending", []) + sections.get("in_progress", [])
+            # Both tokens are delimited by a closing ``]`` and matched exactly,
+            # so neither a longer skill name nor a longer PR URL can mask this
+            # one (``docs`` vs ``docs-lint``; ``pull/7`` vs ``pull/70``).
+            if any(marker in item and subject_marker in item for item in queued):
+                return content
             inserted = True
             return insert_mission(content, entry)
 
         modify_missions_file(missions_path, _transform)
         if inserted:
             print(
-                f"[hooks] {event}: queued {skill}"
-                + (f" for {subject}" if subject else ""),
+                f"[hooks] {event}: queued {skill} for {subject}",
                 file=sys.stderr,
             )
 
