@@ -4,7 +4,7 @@ title: "Daemon Runtime"
 description: "Describes how the Koan daemon is assembled: startup/process management, the bridge's chat/bg worker lanes, the agent loop's modular pieces, runtime modes, parallel sessions, and the bounded-memory model for CLI stdout capture."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-07-17
+updated: 2026-09-02
 ---
 
 # Daemon Runtime
@@ -137,6 +137,30 @@ configured GitHub/Jira notification poll is due, or a small minimum breath when
 notification polling is disabled, so always-on instances do not hot-loop.
 During those idle waits, the runner only wakes for the run-targeted restart
 marker (`.koan-restart-run`); stale legacy `.koan-restart` markers are ignored.
+
+A restart marker is normally honored **between** missions, so `/restart` never
+interrupts work in flight. `/restart --force` writes the same markers with an
+extra `force` line and sends SIGUSR2 to the runner: the signal handler kills the
+mission subprocess and exits with the restart code immediately, and the marker
+is re-read inside the mission wait loop as a fallback if the signal is lost.
+The interrupted mission stays In Progress and is re-queued by `recover.py` on the
+next startup — or escalated to Failed if its crash count has already reached
+`max_crash_retries`, since the forced kill counts as a crash. The bridge needs no
+forced path — it re-execs on its next poll tick.
+
+SIGUSR2 is **capability-gated**. Its default disposition is *terminate*, so
+sending it to a runner that never installed the handler would hard-kill it: the
+mission's `finally` blocks would not run, and the provider subprocess (started
+with `start_new_session=True`, so it is not in the runner's process group) would
+survive as an orphan — still burning quota and editing the worktree while the
+relaunched runner picks up the next mission in the same repo. This is a real
+window, because `/update` re-execs the bridge immediately but lets the runner
+finish its current mission, so a new bridge routinely drives an older runner.
+The runner therefore writes `.koan-run-caps` (its PID plus a `sigusr2` line)
+right after installing the handler and removes it on exit; `/restart --force`
+signals only when that file vouches for the live PID. Otherwise it degrades to
+the polite restart — the behavior every runner understands — and says so in the
+reply.
 
 The loop writes real-time state to status files so the bridge, dashboard, and
 commands can report progress without directly controlling the runner.

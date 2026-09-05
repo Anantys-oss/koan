@@ -43,6 +43,9 @@ from app.pid_manager import acquire_pidfile, release_pidfile
 from app.restart_manager import (
     check_restart,
     clear_restart,
+    clear_runner_caps,
+    declare_runner_caps,
+    is_force_restart,
     RESTART_EXIT_CODE,
     RESTART_RUN_FILE,
 )
@@ -158,6 +161,9 @@ class SignalState:
     claude_proc: Optional[subprocess.Popen] = None
     timeout: int = 10
     phase: str = ""  # Human-readable description of current activity
+    # Set while claude_proc is being published — see _sigusr2_deferred().
+    defer_force_restart: bool = False
+    pending_force_restart: str = ""
 
 
 _sig = SignalState()
@@ -241,6 +247,91 @@ def _on_sigusr1(signum, frame):
         Path(koan_root_path, ABORT_FILE).unlink(missing_ok=True)
     log("koan", "Abort signal received — killing current mission")
     _kill_process_group(proc)
+
+
+# How often the mission wait loop wakes to check abort / forced-restart signals.
+MISSION_POLL_INTERVAL = 30
+
+# Wall-clock time main_loop() started. Restart markers older than this are
+# leftovers from a previous incarnation and must not force a restart. Stays
+# 0.0 outside the daemon (tests, direct run_claude_task calls) → no filtering.
+_runner_start_time = 0.0
+
+
+@contextlib.contextmanager
+def _sigusr2_deferred():
+    """Hold off a forced restart until ``_sig.claude_proc`` is published.
+
+    Closes the publish race in :func:`run_claude_task`: SIGUSR2 delivered
+    between ``popen_cli()`` returning and ``_sig.claude_proc = proc`` would
+    find no process, kill nothing, and re-exec — orphaning a provider process
+    group started with ``start_new_session=True``.
+
+    The block must stay *short*, or a forced restart is silently swallowed for
+    its duration. :func:`run_claude_task` therefore takes the provider
+    invocation lock (``cli_exec.acquire_provider_lock``) before entering: that
+    is the one unbounded wait inside ``popen_cli``, and honouring a restart
+    during it is safe precisely because nothing has been forked yet. What
+    remains here is prompt-file setup plus ``fork``/``exec`` — milliseconds.
+
+    The deferral is done in :func:`_on_sigusr2` rather than with
+    ``pthread_sigmask``, because a signal mask is *per thread*: a
+    process-directed ``kill()`` is accepted by any thread that has not blocked
+    it (the runner always has some — the journal tail, the watchdog, the
+    stagnation monitor), and CPython then runs the Python-level handler on the
+    main thread regardless of the main thread's own mask. Recording the
+    request and replaying it on exit is independent of that thread topology:
+    the Python handler only ever runs on the main thread, which is the thread
+    sitting inside this block.
+    """
+    _sig.pending_force_restart = ""
+    _sig.defer_force_restart = True
+    try:
+        yield
+    finally:
+        _sig.defer_force_restart = False
+        reason = _sig.pending_force_restart
+        _sig.pending_force_restart = ""
+        if reason:
+            _force_restart_now(reason)
+
+
+def _force_restart_now(reason: str):
+    """Kill any in-flight mission and exit for re-launch — never returns.
+
+    The forced-restart path (``/restart --force``). Raising ``SystemExit`` in
+    the main thread unwinds through the mission's ``finally`` blocks (pidfile
+    released, status cleared) up to :func:`main`, which re-execs on
+    ``RESTART_EXIT_CODE``. The killed mission stays In Progress and is
+    re-queued by crash recovery on the next startup — or failed by it, once
+    the mission has exhausted ``max_crash_retries``.
+    """
+    log("koan", f"{reason} — killing current mission and restarting now")
+    proc = _sig.claude_proc
+    if proc is not None and proc.poll() is None:
+        _kill_process_group(proc)
+    elif _sig.task_running:
+        # A mission is in flight but its subprocess is not published yet (or
+        # already gone). Say so — a survivor would keep burning quota and
+        # mutating the worktree after the re-exec, invisibly.
+        log("warn", "Forced restart found no live mission subprocess to kill")
+    raise SystemExit(RESTART_EXIT_CODE)
+
+
+def _on_sigusr2(signum, frame):
+    """SIGUSR2 handler: forced restart from the bridge (``/restart --force``).
+
+    Unlike the between-missions restart check, this does not wait for the
+    current mission. Sent by the /restart skill; the forced marker on disk
+    is the fallback if the signal is lost.
+    """
+    reason = "Forced restart signal received"
+    if _sig.defer_force_restart:
+        # Mid-publication of the mission subprocess — restarting now would
+        # orphan it. :func:`_sigusr2_deferred` replays this on block exit.
+        _sig.pending_force_restart = reason
+        return
+    _force_restart_now(reason)
 
 
 def _start_stagnation_monitor(stdout_file: str, proc, project_name: str):
@@ -338,7 +429,7 @@ def run_claude_task(
             stdout_file, instance_dir, project_name, run_num,
         )
 
-    from app.cli_exec import popen_cli
+    from app.cli_exec import acquire_provider_lock, popen_cli
     from app.config import (
         get_bash_foreground_timeout_ms,
         get_cli_provider_name,
@@ -389,16 +480,28 @@ def run_claude_task(
                     child_env.get("PYTEST_ADDOPTS", ""), mission_tmp
                 )
                 popen_kwargs["env"] = child_env
+            # Take the provider invocation lock BEFORE arming the deferral: it
+            # is a contended wait that a peer Kōan can hold for a whole mission,
+            # and a forced restart during it must be honoured at once (no child
+            # exists yet, so there is nothing to orphan). Ownership passes to
+            # popen_cli's cleanup(); only a failure before that returns leaves
+            # it to us.
+            cli_lock = acquire_provider_lock(provider)
             try:
-                proc, cleanup = popen_cli(
-                    cmd,
-                    provider=provider,
-                    stdout=out_f,
-                    stderr=err_f,
-                    cwd=cwd,
-                    start_new_session=True,
-                    **popen_kwargs,
-                )
+                # A forced restart is held until claude_proc is published, so
+                # it can never re-exec past a just-spawned session.
+                with _sigusr2_deferred():
+                    proc, cleanup = popen_cli(
+                        cmd,
+                        provider=provider,
+                        cli_lock=cli_lock,
+                        stdout=out_f,
+                        stderr=err_f,
+                        cwd=cwd,
+                        start_new_session=True,
+                        **popen_kwargs,
+                    )
+                    _sig.claude_proc = proc
             except FileNotFoundError as e:
                 # The provider binary vanished mid-session (the startup check +
                 # planner gate handle the common case). Fail this mission
@@ -414,7 +517,13 @@ def run_claude_task(
                     err_f.flush()
                 exit_code = 127
                 return exit_code
-            _sig.claude_proc = proc
+            except BaseException:
+                # popen_cli releases the lock on its own failures; this covers
+                # the paths that never reach it (e.g. SystemExit raised by a
+                # deferred forced restart replaying on block exit). release()
+                # is idempotent.
+                cli_lock.release()
+                raise
 
             # Record the live provider PID so status consumers can report
             # observed runtime state instead of an inferred timestamp (#2086).
@@ -454,7 +563,7 @@ def run_claude_task(
                 # otherwise block forever.
                 while True:
                     try:
-                        proc.wait(timeout=30)
+                        proc.wait(timeout=MISSION_POLL_INTERVAL)
                         break
                     except subprocess.TimeoutExpired:
                         # Check for abort signal (user sent /abort)
@@ -470,6 +579,12 @@ def run_claude_task(
                             except subprocess.TimeoutExpired:
                                 log("error", f"Process {proc.pid} unkillable after abort — abandoning")
                             break
+                        # Forced restart requested while the mission runs and
+                        # SIGUSR2 never landed (stale PID file, signal lost).
+                        if koan_root_path and is_force_restart(
+                            koan_root_path, "run", since=_runner_start_time,
+                        ):
+                            _force_restart_now("Forced restart marker detected")
                         if watchdog and watchdog.fired:
                             # Watchdog already fired but process survived —
                             # make one last kill attempt from the main thread.
@@ -1257,8 +1372,10 @@ def main_loop():
     # Parse projects (projects.yaml > KOAN_PROJECTS)
     projects = parse_projects()
 
-    # Record startup time
-    start_time = time.time()
+    # Record startup time — also published module-wide so the mission wait
+    # loop can ignore restart markers from a previous incarnation.
+    global _runner_start_time
+    start_time = _runner_start_time = time.time()
 
     # Acquire PID (flock-based exclusive lock)
     pidfile_lock = acquire_pidfile(Path(koan_root), "run")
@@ -1282,6 +1399,15 @@ def main_loop():
     # run_claude_task(). The file is still written for durability so a
     # missed signal (runner restarting, etc.) is recovered on next poll.
     signal.signal(signal.SIGUSR1, _on_sigusr1)
+
+    # Install SIGUSR2 handler — /restart --force. Kills the in-flight mission
+    # and exits with RESTART_EXIT_CODE instead of waiting for it to finish.
+    # The forced marker on disk is polled as a fallback if the signal is lost.
+    # Only once the handler exists do we advertise the capability: SIGUSR2's
+    # default disposition is terminate, so /restart --force must never signal a
+    # runner that predates this handler (it would orphan the provider session).
+    signal.signal(signal.SIGUSR2, _on_sigusr2)
+    declare_runner_caps(koan_root, os.getpid())
 
     # Initialize project state
     if projects:
@@ -1517,6 +1643,8 @@ def main_loop():
         _session_registry = None
         # Cleanup
         Path(koan_root, STATUS_FILE).unlink(missing_ok=True)
+        # Withdraw the SIGUSR2 capability before the PID can be recycled.
+        clear_runner_caps(koan_root)
         release_pidfile(pidfile_lock, Path(koan_root), "run")
         log("koan", f"Shutdown. {count} runs executed.")
         _reset_terminal()
