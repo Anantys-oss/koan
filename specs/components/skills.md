@@ -391,8 +391,31 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   re-queue the skill without bound. `_fire_project_hook_skills` MUST detect that marker in
   the firing context and queue nothing — a hook-skill mission does not spawn further hook
   skills.
-- Fail-safe: a malformed config, an unreadable `missions.md`, or any other failure here
-  MUST NOT disturb the event that fired.
+- **A hook-skill mission's PR MUST NOT be auto-reviewed.** Both guards above are blind to a
+  chain that launders itself through a *new subject* each round, and `post_review` is
+  exactly that: it carries no `mission_title`, so the marker guard cannot see it, and every
+  round brings a fresh `pr_url`, so the dedup cannot either. With `autoreview` enabled the
+  chain is reachable from a config on the default branch — hook-skill mission → opens a PR
+  → `mission_runner._maybe_queue_autoreview` queues `/review` → `post_review` fires again —
+  and it costs the operator a mission and a PR per round, indefinitely.
+  `_maybe_queue_autoreview` MUST therefore skip a mission whose title carries the
+  `[hook-skill:…]` marker (via the exported `hooks.is_hook_skill_mission`), cutting the
+  cycle at its one automated link. Such a PR remains reviewable on demand.
+- **A persistent per-(project, event) fire budget MUST bound the total anyway.**
+  `_fire_project_hook_skills` MUST cap fires that actually queue work at
+  `_HOOK_SKILL_MAX_FIRES_PER_WINDOW` per `(project, event)` per
+  `_HOOK_SKILL_FIRE_WINDOW_SECONDS`, so a chain through some *other* path is bounded
+  without depending on which context key the firing event happened to carry. The counter
+  MUST be **persisted** (`instance/.hook-skill-fires.json`, flock-guarded, wall-clock
+  stamps): `post_review` fires from the review subprocess
+  (`review_runner._fire_post_review`), so an in-memory counter like the automation-rule loop
+  guard would reset on every link of the chain it is meant to stop. The window MUST be long
+  relative to a chain link — a link is a whole mission plus a review, so a per-minute or
+  per-hour cap loose enough for legitimate use would never bind. A fire the dedup absorbed
+  queued nothing and MUST NOT spend budget, and the window is rolling, so a repo
+  legitimately merging many PRs recovers.
+- Fail-safe: a malformed config, an unreadable `missions.md`, an unwritable budget file, or
+  any other failure here MUST NOT disturb the event that fired.
 
 ### `add_project` workspace resolution (contract)
 

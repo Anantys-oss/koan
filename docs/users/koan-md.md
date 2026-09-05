@@ -199,7 +199,17 @@ and is not MCP-stripped.
   queues separately.
 - **No runaway loop.** A skill you queue under `pre_mission` or `post_mission`
   does not re-trigger itself: the mission koan queues is marked, and that mark
-  stops its own lifecycle events from queuing the skill again.
+  stops its own lifecycle events from queuing the skill again. `post_review`
+  needs a second guard, because it carries no mission title for that mark to
+  ride on and every round would bring a PR URL "not queued twice" has never
+  seen: **a pull request opened by one of these missions is not auto-reviewed**,
+  which is where the cycle would otherwise close (PR → autoreview → `/review` →
+  `post_review` → another mission → another PR). Review such a PR on demand
+  instead — `/review <url>` or an @mention.
+- **A daily ceiling backstops all of it.** At most 20 fires per event per day
+  actually queue work for a project; past that the skills are skipped and a line
+  is logged. A re-fire that "not queued twice" absorbed queued nothing and does
+  not count against it.
 - **Events without a project** — `session_start` and `session_end` carry no
   `project_path`, so they are a no-op here.
 - **Events without a subject** — koan's own autonomous and contemplative

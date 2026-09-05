@@ -3775,6 +3775,30 @@ class TestMaybeQueueAutoreview:
 
     @patch("app.utils.insert_pending_mission", return_value=True)
     @patch("app.session_tracker.detect_pr_created", return_value=True)
+    @patch("app.projects_config.get_project_autoreview", return_value=True)
+    def test_skips_pr_from_a_hook_skill_mission(
+        self, mock_autoreview, mock_detect, mock_insert, tmp_path
+    ):
+        # Reviewing this PR would fire post_review, which queues another
+        # hook-skill mission, which opens another PR — a cycle the hook
+        # system's own guards cannot see (post_review carries no mission_title,
+        # and each round has a PR URL the dedup has never seen).
+        config = {"projects": {"myapp": {"path": str(tmp_path)}}}
+        (tmp_path / "missions.md").write_text("## Pending\n")
+        self._call(
+            tmp_path,
+            mission_title=(
+                "[project:myapp] Use the docs-refresh skill for "
+                "https://github.com/owner/repo/pull/7. Queued by the post_review "
+                "lifecycle event via .koan/config.yaml. [hook-skill:docs-refresh]"
+                "[hook-subject:https://github.com/owner/repo/pull/7]"
+            ),
+            projects_config=config,
+        )
+        mock_insert.assert_not_called()
+
+    @patch("app.utils.insert_pending_mission", return_value=True)
+    @patch("app.session_tracker.detect_pr_created", return_value=True)
     @patch("app.projects_config.get_project_autoreview", return_value=False)
     def test_skips_when_disabled(
         self, mock_autoreview, mock_detect, mock_insert, tmp_path

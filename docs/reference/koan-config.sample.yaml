@@ -126,6 +126,14 @@ review:
 # The subject is what that de-duplication keys on, so an event carrying none
 # queues nothing: Kōan's own autonomous and contemplative iterations fire
 # pre_mission/post_mission with no mission title and no PR, and are skipped here.
+#
+# Two more bounds, so a config on your default branch cannot spend the
+# operator's quota in a loop:
+#   - A pull request opened BY one of these missions is not auto-reviewed.
+#     Otherwise its review would fire post_review, queueing another mission,
+#     which opens another PR, forever. Review such a PR on demand instead.
+#   - At most 20 fires per event per day actually queue work for a project;
+#     past that the skills are skipped and a line is logged.
 # ===========================================================================
 
 # hooks:

@@ -1660,11 +1660,26 @@ def _maybe_queue_autoreview(
     - no PR URL can be extracted from pending_content or stdout
     - the PR was auto-merged (merge_result is not None)
     - the mission is itself a /review or /rebase (prevents infinite loops)
+    - the mission was queued by a project hook skill (prevents infinite loops)
     - security review blocked the PR
     """
     # Never trigger autoreview on review/rebase missions themselves
     tokens = re.findall(r'/\w+', (mission_title or "").lower())
     if any(t in ('/review', '/rebase', '/review_rebase') for t in tokens):
+        return
+
+    # Nor on a mission a project hook skill queued. Reviewing its PR fires
+    # post_review, which queues another hook-skill mission, which opens another
+    # PR — a cycle neither of the hook system's own guards can see, because
+    # post_review carries no mission_title for its marker guard and every round
+    # brings a PR URL its dedup has never seen. The operator can still review
+    # such a PR by hand or by @mention.
+    from app.hooks import is_hook_skill_mission
+    if is_hook_skill_mission(mission_title):
+        _log_runner(
+            "info",
+            f"Autoreview: skipped for {project_name} — PR from a hook-skill mission",
+        )
         return
 
     # Skip if auto-merged — PR is already done

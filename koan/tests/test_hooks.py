@@ -2,12 +2,14 @@
 
 import os
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
+from app import hooks
 from app.hooks import HookRegistry, fire_hook, init_hooks, reset_registry
+
 from tests.conftest import patched_run_iteration
 
 
@@ -1085,6 +1087,109 @@ class TestProjectHookSkills:
         )
         # Still exactly one — the chain stopped.
         assert self._pending(tmp_path).count("[hook-skill:a-skill]") == 1
+
+    def test_post_review_chain_of_new_prs_is_bounded(self, tmp_path):
+        # post_review carries no mission_title, so the marker guard cannot see
+        # the chain, and every link has a fresh PR URL, so the dedup cannot
+        # either: queued mission -> opens a PR -> autoreview queues /review ->
+        # post_review fires again. Left unbounded that burns the operator's
+        # quota and opens a PR per round, so a budget must cap it.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        for n in range(40):
+            registry.fire(
+                "post_review", project_path=str(project), project_name="my-toolkit",
+                pr_url=f"https://github.com/o/r/pull/{n}",
+            )
+        queued = self._pending(tmp_path).count("[hook-skill:a-skill]")
+        assert 0 < queued <= hooks._HOOK_SKILL_MAX_FIRES_PER_WINDOW
+
+    def test_budget_is_shared_across_processes(self, tmp_path):
+        # post_review fires from the review subprocess, so the run loop's
+        # registry and the review's are different objects in different
+        # processes. A counter that lived only in memory would restart on each
+        # link and bound nothing — the budget must be read back from disk.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n"
+        )
+        self._make_registry(tmp_path)
+        for n in range(40):
+            # A brand new registry per fire, as a fresh subprocess would build.
+            HookRegistry(tmp_path / "hooks", instance_dir=str(tmp_path)).fire(
+                "post_review", project_path=str(project), project_name="my-toolkit",
+                pr_url=f"https://github.com/o/r/pull/{n}",
+            )
+        queued = self._pending(tmp_path).count("[hook-skill:a-skill]")
+        assert 0 < queued <= hooks._HOOK_SKILL_MAX_FIRES_PER_WINDOW
+
+    def test_budget_recovers_once_the_window_elapses(self, tmp_path):
+        # The bound is a rolling window, not a lifetime cap: a repo that
+        # legitimately merges many PRs must keep working the next hour.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        for n in range(40):
+            registry.fire(
+                "post_review", project_path=str(project), project_name="my-toolkit",
+                pr_url=f"https://github.com/o/r/pull/{n}",
+            )
+        exhausted = self._pending(tmp_path).count("[hook-skill:a-skill]")
+        real_time = time.time
+        with patch.object(
+            hooks.time, "time",
+            lambda: real_time() + hooks._HOOK_SKILL_FIRE_WINDOW_SECONDS + 1,
+        ):
+            registry.fire(
+                "post_review", project_path=str(project), project_name="my-toolkit",
+                pr_url="https://github.com/o/r/pull/999",
+            )
+        assert self._pending(tmp_path).count("[hook-skill:a-skill]") == exhausted + 1
+
+    def test_deduplicated_refire_does_not_spend_budget(self, tmp_path):
+        # Re-reviewing the same PR queues nothing (the dedup absorbs it), so it
+        # must not burn a link's worth of the bound and starve later PRs.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        for _ in range(20):
+            registry.fire(
+                "post_review", project_path=str(project), project_name="my-toolkit",
+                pr_url="https://github.com/o/r/pull/7",
+            )
+        registry.fire(
+            "post_review", project_path=str(project), project_name="my-toolkit",
+            pr_url="https://github.com/o/r/pull/8",
+        )
+        missions = self._pending(tmp_path)
+        assert missions.count("[hook-skill:a-skill]") == 2
+        assert "https://github.com/o/r/pull/8" in missions
+
+    def test_budget_is_per_project(self, tmp_path):
+        # One noisy repo exhausting its budget must not mute another's hooks.
+        noisy = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n", name="noisy"
+        )
+        quiet = tmp_path / "quiet"
+        (quiet / ".koan").mkdir(parents=True)
+        (quiet / ".koan" / "config.yaml").write_text(
+            "hooks:\n  post_review:\n    - 'b-skill'\n"
+        )
+        self._known.append(("quiet", str(quiet)))
+        registry = self._make_registry(tmp_path)
+        for n in range(40):
+            registry.fire(
+                "post_review", project_path=str(noisy), project_name="noisy",
+                pr_url=f"https://github.com/o/noisy/pull/{n}",
+            )
+        registry.fire(
+            "post_review", project_path=str(quiet), project_name="quiet",
+            pr_url="https://github.com/o/quiet/pull/1",
+        )
+        assert "[hook-skill:b-skill]" in self._pending(tmp_path)
 
     def test_substring_skill_name_not_masked_by_longer_queued_skill(self, tmp_path):
         # `docs` must not be treated as already-queued just because a

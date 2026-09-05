@@ -215,8 +215,32 @@ marker in its own title, so a repo naming a skill under `pre_mission` or
 bound. `_fire_project_hook_skills` sees the marker in the firing context and
 queues nothing — a hook-skill mission never spawns further hook skills.
 
+**A hook-skill mission's PR is not auto-reviewed.** Neither guard above can see a
+chain that gets a *new subject* each round, and `post_review` is exactly that
+case: it carries no `mission_title` for the marker guard to find, and each round
+brings a fresh PR URL the dedup has never seen. With `autoreview` on, a config
+committed to the default branch reaches it — hook-skill mission → opens a PR →
+autoreview queues `/review` → `post_review` fires again → another hook-skill
+mission, one PR and one mission of the operator's quota per round, forever. So
+`_maybe_queue_autoreview` skips any mission whose title carries the
+`[hook-skill:…]` marker, cutting the cycle at its only automated link. Those PRs
+are still reviewable on demand — `/review <url>` or an @mention.
+
+**A fire budget backstops all three.** At most **20 fires per (project, event)
+per day** actually queue anything; past that the skills are skipped with a line
+on stderr, so a chain through some path nobody anticipated still stops. The
+count lives in `instance/.hook-skill-fires.json` rather than in memory because
+`post_review` fires from the review subprocess, where a per-process counter would
+restart on every link of the chain. The window is a day, not a minute, because a
+link is a whole mission plus a review — a per-hour cap loose enough for real use
+would never be reached by a chain that only advances a few times an hour. A fire
+the dedup absorbed (the same PR reviewed twice) queued no work and costs no
+budget, and the window rolls, so a repo that legitimately merges many PRs keeps
+working.
+
 Fail-safe throughout: an absent, empty, or malformed `.koan/config.yaml` is a
-no-op, and a failure here never disturbs the event that fired.
+no-op, an unwritable budget file falls back to not enforcing rather than muting
+the repo's hooks, and a failure here never disturbs the event that fired.
 
 ## When to reach for which
 
