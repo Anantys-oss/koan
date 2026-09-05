@@ -4,7 +4,7 @@ title: "KOAN.md — koan-only project instructions"
 description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check and hooks.<event>): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
 tags: [users]
 created: 2026-07-09
-updated: 2026-09-02
+updated: 2026-09-04
 ---
 
 # KOAN.md — koan-only project instructions
@@ -139,6 +139,12 @@ review:
   protects them from being skipped; it can't add unrelated files). It changes
   neither the review's findings schema nor its prompt wording.
 
+When at least one file is pinned, koan logs a line you can watch on `make logs`:
+
+```
+[review] Pinned 3 file(s) via .koan review.always_check: plugins/x/SKILL.md, README.md, docs/api/spec.md
+```
+
 ### `hooks.<event>` — run your own skills after a koan event
 
 Name Claude Code skills to run when one of koan's lifecycle events fires, and
@@ -163,17 +169,24 @@ follow-up work that needs real tooling. Naming a skill here moves that work onto
 the mission loop, which *does* load your `.claude/skills`, can invoke skills,
 and is not MCP-stripped.
 
+- **Read from the operator's checkout, not the PR.** A review runs against a
+  detached worktree of the *pull request head*, so a `.koan/config.yaml` in it
+  is whatever the contributor pushed. koan therefore reads `hooks.<event>` from
+  the project checkout the operator registered — a PR cannot add or change the
+  skills that run. A project koan does not have registered is a no-op.
 - **Queued, not run inline.** Handlers execute inside the process that fired the
   event, and a skill pipeline can take minutes. Your skill runs as a normal
   pending mission shortly afterwards — watch `instance/missions.md` or
   `make logs`.
 - **Names only.** A name must match `^[a-z0-9][a-z0-9-]*$` (max 64 chars, 10
   skills per event); anything else is dropped with a warning. koan writes the
-  mission sentence itself. This is deliberate — anyone who can open a pull
-  request can commit this file, and the value reaches a *write-capable* agent,
-  so free text is refused rather than cleaned up.
+  mission sentence itself. This is deliberate — the value reaches a
+  *write-capable* agent, so free text is refused rather than cleaned up.
 - **Not queued twice.** Re-firing the same event for the same subject (the PR
-  URL, or the mission title) is idempotent. A different PR queues separately.
+  URL, or the mission title) does not queue the work again *while the earlier
+  mission is still pending or in progress*. Once it has completed, a later
+  re-fire — a new push to the same PR, say — queues it again. A different PR
+  queues separately.
 - **No runaway loop.** A skill you queue under `pre_mission` or `post_mission`
   does not re-trigger itself: the mission koan queues is marked, and that mark
   stops its own lifecycle events from queuing the skill again.
@@ -183,12 +196,6 @@ and is not MCP-stripped.
 
 Requires the named skill to be resolvable by Claude Code in your repo — most
 commonly `<your-repo>/.claude/skills/<name>/SKILL.md`.
-
-When at least one file is pinned, koan logs a line you can watch on `make logs`:
-
-```
-[review] Pinned 3 file(s) via .koan review.always_check: plugins/x/SKILL.md, README.md, docs/api/spec.md
-```
 
 ### Mission hooks — run shell before/after a mission
 

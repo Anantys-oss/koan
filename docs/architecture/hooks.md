@@ -4,7 +4,7 @@ title: "Lifecycle Hooks & Automation Rules"
 description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission/post_review): instance-wide and skill-bound Python hooks via `HookRegistry`, the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard, and the project-declared `hooks.<event>` skill lists read from a repo's own `.koan/config.yaml`."
 tags: [architecture]
 created: 2026-07-08
-updated: 2026-09-02
+updated: 2026-09-04
 ---
 
 # Lifecycle Hooks & Automation Rules
@@ -133,7 +133,19 @@ Keys are the event names above; values are lists of skill names. For each name,
 `_fire_project_hook_skills` queues a pending mission that runs that skill.
 Read via `project_koan.get_hook_skills(project_path, event)`, so it only
 applies to events whose context carries a `project_path` (`pre_mission`,
-`post_mission`, `post_review`).
+`post_mission`, `post_review`). Queuing is per-skill isolated — a failure on one
+name still queues the rest, since `post_review` fires only once per review.
+
+**Read from the operator's checkout, not the event's path.** The `project_path`
+an event carries is not a trusted source of repo config: on `post_review` it is
+a detached worktree of the *pull request head*
+(`review_runner.run_review` → `pinned_review_worktree`), so the
+`.koan/config.yaml` in it is whatever the contributor pushed. `hooks.<event>` is
+therefore resolved through `_trusted_project_path` — the checkout registered for
+that project name in `projects.yaml` — and a project Kōan has no registration
+for is a no-op. `review.always_check` may be read from the PR head because it
+only reorders a read-only prompt; this key queues a write-capable mission, so it
+may not.
 
 **Queued, not executed.** Handlers run inline in the firing process and a skill
 pipeline can take minutes. Queuing also puts the work on the mission loop,
@@ -144,26 +156,34 @@ work that a review pass is deliberately not allowed to do.
 
 **The repo supplies names; Kōan composes the sentence.** Names must match
 `^[a-z0-9][a-z0-9-]*$`, capped at 10 per event, with anything else dropped and
-a warning logged. This is a security boundary, not tidiness: whoever can open a
-pull request can commit `.koan/config.yaml`, and the value reaches the prompt of
-a *write-capable* agent. A name that could carry an instruction, a path or a
-shell fragment is refused rather than sanitized. Contrast the operator-side
-mechanisms above, which may run arbitrary code because the operator owns them.
+a warning logged. This is a security boundary, not tidiness: the value reaches
+the prompt of a *write-capable* agent. A name that could carry an instruction, a
+path or a shell fragment is refused rather than sanitized. Contrast the
+operator-side mechanisms above, which may run arbitrary code because the
+operator owns them.
 
-**Idempotent per subject.** `insert_pending_mission` only de-duplicates entries
-shaped like `/<command> <github-url>`, so this path does its own check against
-the pending and in-progress sections, keyed on two delimited tokens stamped into
-each queued entry: a `[hook-skill:<name>]` marker and a
-`[hook-subject:<subject>]` token (the subject being the PR URL, or the mission
-title). Matching both tokens exactly rather than as bare substrings means
-neither a shorter skill name (`docs` masked by an already-queued `docs-lint`)
-nor a shorter PR URL (`pull/7` masked by `pull/70`) is wrongly treated as
-already queued. Re-reviewing the same PR does not queue the same work twice; a
-different PR queues separately.
-The subject is whitespace-normalized before it is stamped, since `insert_mission`
-flattens newlines when it writes the entry — a multi-line mission title would
-otherwise be stored differently from the token the next fire looks for, and
-re-queue every time.
+**Idempotent per subject, while the earlier mission is still queued.**
+`insert_pending_mission` only de-duplicates entries shaped like
+`/<command> <github-url>`, so this path does its own check against the pending
+and in-progress sections, keyed on two delimited tokens stamped into each queued
+entry: a `[hook-skill:<name>]` marker and a `[hook-subject:<subject>]` token
+(the subject being the PR URL, or the mission title). Matching both tokens
+exactly rather than as bare substrings means neither a shorter skill name
+(`docs` masked by an already-queued `docs-lint`) nor a shorter PR URL (`pull/7`
+masked by `pull/70`) is wrongly treated as already queued. Re-reviewing the same
+PR while the earlier mission is still pending or in progress does not queue the
+work twice; once it has completed, a re-review queues again (by design — a new
+push should re-run the skill). A different PR queues separately.
+The check and the insert happen inside one locked read-modify-write
+(`utils.modify_missions_file`), so two processes firing the same event
+concurrently cannot both decide "not queued" and both insert.
+The subject is stamped in the form the store will hold it: lifecycle markers
+(`⏳`/`▶`/`✅`/`❌`) and system metadata (`[complexity:…]`, `[r:N]`) stripped,
+whitespace collapsed. A `mission_title` arrives carrying those, and the store
+strips them on ingest — an un-normalized token would be stored differently from
+the token the next fire looks for and re-queue every time. An embedded `⏳` is
+worse still: `insert_mission` would skip its own queue stamp and the new mission
+would inherit the previous mission's queue time.
 
 **No self-replication.** The mission this queues carries the `[hook-skill:…]`
 marker in its own title, so a repo naming a skill under `pre_mission` or

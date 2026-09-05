@@ -362,22 +362,25 @@ def get_hook_skills(project_path: str, event: str) -> list[str]:
     if not isinstance(raw, list):
         return []
     skills: list[str] = []
-    dropped_invalid = False
+    dropped = 0
     for item in raw:
-        if not isinstance(item, str):
+        # Every drop is counted, including a non-string or blank entry: a repo
+        # owner whose config silently loses a line needs to see it in the log.
+        if not isinstance(item, str) or not item.strip():
+            dropped += 1
             continue
         name = item.strip()
-        if not name:
-            continue
         if len(name) > _MAX_SKILL_NAME_LEN or not _SKILL_NAME_RE.match(name):
-            dropped_invalid = True
+            dropped += 1
             continue
         if name not in skills:
             skills.append(name)
-    if dropped_invalid:
+    if dropped:
         logger.warning(
-            "dropped invalid hooks.%s skill name(s) — expected %s",
+            "dropped %d invalid hooks.%s skill name(s) in %s — expected %s",
+            dropped,
             event,
+            project_path,
             _SKILL_NAME_RE.pattern,
         )
     if len(skills) > _MAX_HOOK_SKILLS:

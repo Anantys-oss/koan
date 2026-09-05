@@ -898,6 +898,16 @@ class TestAutomationRuleJournal:
 class TestProjectHookSkills:
     """hooks.<event> skill lists declared in a project's .koan/config.yaml."""
 
+    @pytest.fixture(autouse=True)
+    def _project_registry(self, monkeypatch):
+        # Hook skills are read from the operator-registered checkout, never from
+        # the path the event carries (post_review carries a PR-head worktree),
+        # so a test project must be registered the way projects.yaml would.
+        self._known: list = []
+        monkeypatch.setattr(
+            "app.utils.get_known_projects", lambda: list(self._known)
+        )
+
     def _make_registry(self, tmp_path):
         hooks_dir = tmp_path / "hooks"
         hooks_dir.mkdir()
@@ -906,10 +916,11 @@ class TestProjectHookSkills:
         )
         return HookRegistry(hooks_dir, instance_dir=str(tmp_path))
 
-    def _make_project(self, tmp_path, config_text):
+    def _make_project(self, tmp_path, config_text, name="my-toolkit"):
         project = tmp_path / "project"
         (project / ".koan").mkdir(parents=True)
         (project / ".koan" / "config.yaml").write_text(config_text)
+        self._known.append((name, str(project)))
         return project
 
     def _pending(self, tmp_path):
@@ -1089,6 +1100,62 @@ class TestProjectHookSkills:
         assert "https://github.com/o/r/pull/70" in missions
         assert "https://github.com/o/r/pull/7." in missions
         assert missions.count("[hook-skill:a-skill]") == 2
+
+    def test_pr_head_worktree_config_is_not_read(self, tmp_path):
+        # post_review carries a detached worktree of the PULL REQUEST HEAD, so
+        # a .koan/config.yaml found there is the contributor's, not the repo
+        # owner's. Only the registered checkout may name skills.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n"
+        )
+        worktree = tmp_path / "tmp" / "review-42-abc"
+        (worktree / ".koan").mkdir(parents=True)
+        (worktree / ".koan" / "config.yaml").write_text(
+            "hooks:\n  post_review:\n    - 'attacker-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        registry.fire(
+            "post_review", project_path=str(worktree), project_name="my-toolkit",
+            pr_url="https://github.com/o/r/pull/42",
+        )
+        missions = self._pending(tmp_path)
+        assert "attacker-skill" not in missions
+        # The owner's own declaration, read from the registered checkout, stands.
+        assert "[hook-skill:a-skill]" in missions
+        assert project.exists()
+
+    def test_unregistered_project_is_a_noop(self, tmp_path):
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n", name="my-toolkit"
+        )
+        self._known.clear()  # project not in projects.yaml
+        registry = self._make_registry(tmp_path)
+        registry.fire(
+            "post_review", project_path=str(project), project_name="my-toolkit",
+            pr_url="https://github.com/o/r/pull/7",
+        )
+        assert "a-skill" not in self._pending(tmp_path)
+
+    def test_mission_title_with_lifecycle_marker_is_not_queued_twice(self, tmp_path):
+        # A mission_title reaches the hook carrying its ⏳ stamp and system
+        # metadata, both of which the store strips on ingest. The subject token
+        # must be stamped in the stripped form or the dedup never matches.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_mission:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        title = "Do the thing ⏳(2026-09-04T10:00) [complexity:medium]"
+        registry.fire(
+            "post_mission", project_path=str(project), project_name="my-toolkit",
+            mission_title=title,
+        )
+        registry.fire(
+            "post_mission", project_path=str(project), project_name="my-toolkit",
+            mission_title=title,
+        )
+        missions = self._pending(tmp_path)
+        assert missions.count("[hook-skill:a-skill]") == 1
+        assert "[hook-subject:Do the thing]" in missions
 
     def test_multiline_mission_title_is_not_queued_twice(self, tmp_path):
         # insert_mission flattens newlines to spaces before writing, so a

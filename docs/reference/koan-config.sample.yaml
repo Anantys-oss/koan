@@ -92,31 +92,36 @@ review:
 #   pre_hooks: ["make deps"]
 #   post_hooks: ["make clean"]
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # hooks — run a repo's own Claude Code skills when a Kōan lifecycle event fires.
 #
+# ⚠️ SECURITY: each honored name queues a mission that a WRITE-CAPABLE agent
+# executes on the operator's host. Two rules bound that:
+#   1. Kōan reads this key from the checkout the OPERATOR registered, never
+#      from the pull-request worktree a review runs against — so a contributor
+#      cannot add or change the skills that run by pushing a commit.
+#   2. The repo supplies skill NAMES only; Kōan composes the mission sentence
+#      itself. Names must match ^[a-z0-9][a-z0-9-]*$ (≤64 chars, ≤10 per
+#      event); anything that could carry an instruction, a path or a shell
+#      fragment is dropped with a warning rather than sanitized.
+#
 # Keys are Kōan's lifecycle event names: session_start, session_end,
-# pre_mission, post_mission, post_review. Values are a list of skill NAMES.
+# pre_mission, post_mission, post_review. Values are a list of skill names.
 #
-# For each name, Kōan queues a pending mission that runs that skill. The
-# mission is executed by the normal mission loop, which — unlike the read-only
-# review subprocess — loads the project's own `.claude/skills`, can invoke the
-# Skill tool, and can reach an MCP server. So this is how a repo wires
-# follow-up work that needs more than a review pass is allowed to do.
-#
-# The repo supplies names only; Kōan composes the mission sentence itself.
-# Names must match ^[a-z0-9][a-z0-9-]*$ — anything else is dropped with a
-# warning. That is deliberate: whoever can open a pull request can commit this
-# file, and the value ends up in the prompt of a write-capable agent, so a name
-# that could carry an instruction, a path or a shell fragment is refused rather
-# than sanitized. At most 10 skills per event.
+# The queued mission is executed by the normal mission loop, which — unlike the
+# read-only review subprocess — loads the project's own `.claude/skills`, can
+# invoke the Skill tool, and can reach an MCP server. So this is how a repo
+# wires follow-up work that a review pass is not allowed to do.
 #
 # Queued, not executed inline: hooks run in the firing process, and a skill
 # pipeline can take minutes. Re-firing the same event for the same subject (the
-# PR URL, or the mission title) does not queue the work twice, and a skill named
-# under pre_mission/post_mission does not re-trigger itself into a runaway loop.
-hooks:
-  post_review:
-    - "docs-refresh"
-  # post_mission:
-  #   - "some-other-skill"
+# PR URL, or the mission title) does not queue the work again while the earlier
+# mission is still pending or in progress; a skill named under
+# pre_mission/post_mission does not re-trigger itself into a runaway loop.
+# ===========================================================================
+
+# hooks:
+#   post_review:
+#     - "docs-refresh"          # your repo's .claude/skills/docs-refresh/
+#   post_mission:
+#     - "some-other-skill"

@@ -79,6 +79,39 @@ _HOOK_SKILL_MARKER_PREFIX = "[hook-skill:"
 _HOOK_SUBJECT_MARKER_PREFIX = "[hook-subject:"
 
 
+def _trusted_project_path(ctx: dict) -> Optional[str]:
+    """Return the operator-registered checkout for the firing project, if any.
+
+    ``ctx["project_path"]`` is NOT a trusted source of repo config. On the
+    ``post_review`` path it is a detached worktree of the **pull request head**
+    (``review_runner.run_review`` pins it via ``pinned_review_worktree``), so a
+    ``.koan/config.yaml`` read from it is whatever the *contributor* committed,
+    not what the repo owner did. Reading hook skills there would let any PR
+    author queue a write-capable mission on the operator's quota.
+
+    Resolve the path from the project registry instead — ``project_name`` first,
+    then ``project_path`` but only when it *is* a registered checkout. Anything
+    else (a review worktree, an unregistered directory) returns ``None`` and the
+    caller queues nothing.
+    """
+    from app.utils import get_known_projects
+
+    known = get_known_projects()
+    name = str(ctx.get("project_name") or "").strip().lower()
+    if name:
+        for pname, ppath in known:
+            if str(pname).strip().lower() == name:
+                return str(ppath)
+    raw = str(ctx.get("project_path") or "")
+    if not raw:
+        return None
+    target = os.path.realpath(raw)
+    for _pname, ppath in known:
+        if os.path.realpath(str(ppath)) == target:
+            return str(ppath)
+    return None
+
+
 class HookRegistry:
     """Discovers and manages hook modules from a directory."""
 
@@ -235,6 +268,11 @@ class HookRegistry:
         letting a repo owner wire a skill to a lifecycle event without the
         operator writing a Python hook.
 
+        The config is read from the **operator-registered checkout**
+        (:func:`_trusted_project_path`), never from the path the event carries:
+        on ``post_review`` that path is a worktree of the PR head, so trusting
+        it would hand the choice of skill to the contributor.
+
         The repo supplies skill *names* only and the mission sentence is
         composed here, so a config committed by whoever can open a pull
         request cannot inject instructions into the write-capable mission that
@@ -261,25 +299,54 @@ class HookRegistry:
         try:
             from app.project_koan import get_hook_skills
 
-            for skill in get_hook_skills(str(project_path), event):
-                self._queue_hook_skill(event, skill, ctx)
+            trusted = _trusted_project_path(ctx)
+            if not trusted:
+                print(
+                    f"[hooks] {event}: no registered checkout for "
+                    f"{ctx.get('project_name') or project_path} — hook skills skipped",
+                    file=sys.stderr,
+                )
+                return
+            skills = get_hook_skills(trusted, event)
         except Exception as exc:
             print(
                 f"[hooks] project hook skills failed for {event}: {exc}",
                 file=sys.stderr,
             )
+            return
+        # Per-skill isolation: one failing queue (a locked store, an OSError on
+        # the export write) must not cancel the skills after it — post_review
+        # fires once per review, so a skipped sibling is lost for good.
+        for skill in skills:
+            try:
+                self._queue_hook_skill(event, skill, ctx)
+            except Exception as exc:
+                print(
+                    f"[hooks] {event}: could not queue {skill}: {exc}",
+                    file=sys.stderr,
+                )
 
     def _queue_hook_skill(self, event: str, skill: str, ctx: dict) -> None:
         """Append one pending mission running *skill*, unless already queued."""
-        from app.missions import parse_sections
-        from app.utils import insert_pending_mission
+        from app.missions import (
+            insert_mission,
+            parse_sections,
+            strip_all_lifecycle_markers,
+            strip_system_metadata,
+        )
+        from app.utils import modify_missions_file
 
-        # Collapse whitespace the way the store will: insert_mission rewrites
-        # the entry with re.sub(r"\r\n|\r|\n", " ", ...), so a multi-line
-        # mission_title would be stored flattened while the next fire searched
-        # for the un-flattened token — dedup silently failing and re-queuing.
+        # Normalize the subject exactly as the store will, or the token stamped
+        # here is not the token the next fire searches for and every re-fire
+        # re-queues. A ``mission_title`` arrives carrying its ⏳/▶ lifecycle
+        # timestamps and ``[complexity:…]``/``[r:N]`` metadata, all of which the
+        # store strips on ingest; newlines are flattened to spaces by
+        # ``insert_mission``. An embedded ⏳ is doubly harmful — ``insert_mission``
+        # would treat the entry as already stamped and the new mission would
+        # inherit the previous mission's queue time.
+        raw_subject = str(ctx.get("pr_url") or ctx.get("mission_title") or "")
         subject = " ".join(
-            str(ctx.get("pr_url") or ctx.get("mission_title") or "").split()
+            strip_system_metadata(strip_all_lifecycle_markers(raw_subject)).split()
         )
         project = str(ctx.get("project_name") or "").strip()
         prefix = f"[project:{project}] " if project else ""
@@ -296,27 +363,30 @@ class HookRegistry:
         )
 
         missions_path = Path(self._instance_dir) / "missions.md"
+        inserted = False
 
-        # insert_pending_mission only dedups entries shaped like
-        # "/<command> <github-url>", so a composed sentence needs its own
-        # check or a re-review would queue the same work twice.
-        if subject and missions_path.exists():
-            try:
-                sections = parse_sections(missions_path.read_text(errors="replace"))
-            except OSError as exc:
-                print(
-                    f"[hooks] could not read {missions_path}: {exc}",
-                    file=sys.stderr,
-                )
-                return
-            queued = sections.get("pending", []) + sections.get("in_progress", [])
-            # Both tokens are delimited by a closing ``]`` and matched exactly, so
-            # neither a longer skill name nor a longer PR URL can mask this one
-            # (``docs`` vs ``docs-lint``; ``pull/7`` vs ``pull/70``).
-            if any(marker in item and subject_marker in item for item in queued):
-                return
+        def _transform(content: str) -> str:
+            # insert_pending_mission only dedups entries shaped like
+            # "/<command> <github-url>", so a composed sentence needs its own
+            # check or a re-review would queue the same work twice. Doing it
+            # inside the locked read-modify-write closes the TOCTOU window: the
+            # review subprocess and the run loop can fire the same event
+            # concurrently, and an unlocked read would let both observe "not
+            # queued" and both insert.
+            nonlocal inserted
+            if subject:
+                sections = parse_sections(content)
+                queued = sections.get("pending", []) + sections.get("in_progress", [])
+                # Both tokens are delimited by a closing ``]`` and matched exactly,
+                # so neither a longer skill name nor a longer PR URL can mask this
+                # one (``docs`` vs ``docs-lint``; ``pull/7`` vs ``pull/70``).
+                if any(marker in item and subject_marker in item for item in queued):
+                    return content
+            inserted = True
+            return insert_mission(content, entry)
 
-        if insert_pending_mission(missions_path, entry):
+        modify_missions_file(missions_path, _transform)
+        if inserted:
             print(
                 f"[hooks] {event}: queued {skill}"
                 + (f" for {subject}" if subject else ""),
