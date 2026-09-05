@@ -96,7 +96,11 @@ review:
 # hooks — run a repo's own Claude Code skills when a Kōan lifecycle event fires.
 #
 # ⚠️ SECURITY: each honored name queues a mission that a WRITE-CAPABLE agent
-# executes on the operator's host. Two rules bound that:
+# executes on the operator's host. Three rules bound that:
+#   0. The mechanism is OFF unless the operator opted in, in their own
+#      instance/config.yaml (`hook_skills: {enabled: true}`) or per-project in
+#      their projects.yaml (`hook_skills: true`). Until then this key is inert
+#      and Kōan logs a "skipped (not enabled)" note.
 #   1. Kōan reads this key from the DEFAULT BRANCH of the checkout the OPERATOR
 #      registered — never from the pull-request worktree a review runs against,
 #      and never from whatever branch that checkout currently has out (Kōan

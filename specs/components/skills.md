@@ -318,6 +318,21 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
 - `HookRegistry._fire_project_hook_skills` evaluates this after user hooks and automation
   rules, and ONLY for events whose context carries a `project_path`. Absent
   `project_path` ⇒ no-op.
+- **Operator opt-in, default off.** The list is repo-controlled and every honored name
+  spends a *write-capable* mission on the operator's host and quota, so registering a
+  project MUST NOT by itself grant that repo this lever. `_fire_project_hook_skills` MUST
+  check `hooks.hook_skills_enabled(project_name)` **before** resolving the repo config and
+  return when it is false, logging the "skipped (not enabled)" diagnostic at most once per
+  process. Resolution mirrors `mission_hooks.hooks_enabled` — the per-project override
+  (`projects_config.get_project_hook_skills`, the `hook_skills:` bool in `projects.yaml`)
+  when set, else the global `config.is_hook_skills_enabled()` (`hook_skills.enabled` in the
+  operator's `instance/config.yaml`, **default `False`**). Both resolvers MUST fail closed:
+  any error ⇒ disabled, never a silent fall-through to the global gate. This is the same
+  containment the sibling `pre_hooks`/`post_hooks` surface has (see
+  `specs/components/agent-loop.md` → "Mission hooks", `docs/security/mission-hooks.md`);
+  the trusted-branch read below bounds *who* may set the value and the name regex bounds
+  *what shape* it takes, but neither bounds whether the operator consented to the
+  mechanism.
 - **Trusted source of the config.** The list MUST be read from the operator-registered
   checkout for the firing project (resolved from `project_name`, else from `project_path`
   only when that path IS a registered checkout; anything else ⇒ no-op), NEVER from the
@@ -369,10 +384,17 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   store (`utils.modify_missions_file`), not as a read followed by a separate insert: the
   review subprocess and the run loop can fire the same event concurrently, and an unlocked
   read lets both observe "not queued" and both insert.
-  The subject MUST be stamped in the form the store will hold it: lifecycle markers
-  (`⏳`/`▶`/`✅`/`❌`) and queue-appended system metadata (`[complexity:…]`, `[r:N]`, origin
-  markers) stripped via `missions.strip_all_lifecycle_markers` /
-  `missions.strip_system_metadata`, then whitespace collapsed to single spaces. Otherwise
+  The subject MUST be stamped in the form the store will hold it, and MUST be identical
+  across a mission's whole lifecycle: lifecycle markers (`⏳`/`▶`/`✅`/`❌`), queue-appended
+  system metadata (`[complexity:…]`, `[r:N]`, origin markers) **and the
+  `[verify-failed: …]` requeue tag** stripped, then whitespace collapsed to single spaces.
+  Identity MUST come from `missions.canonical_mission_key` (the repo's single definition of
+  stable mission identity, which covers the requeue tag) composed with
+  `missions.strip_all_lifecycle_markers` (which additionally truncates at a bare `⏳`
+  carrying no parseable timestamp) and `missions.strip_system_metadata` (origin markers).
+  A subject that kept the requeue tag would differ from the first attempt's — post-mission
+  verification re-queues a failed mission as `<title> [verify-failed: …]` by default — and
+  the same work would queue a second time while the first is still pending. Otherwise
   the *stored* token differs from the token the next fire searches for and every re-fire
   re-queues — and an embedded `⏳` additionally suppresses `insert_mission`'s fresh queue
   stamp, so the new mission would inherit the previous mission's `queued_at`.

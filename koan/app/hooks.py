@@ -101,6 +101,38 @@ _HOOK_SKILL_FIRE_WINDOW_SECONDS = 86400.0
 _HOOK_SKILL_MAX_FIRES_PER_WINDOW = 20
 _HOOK_SKILL_FIRES_FILE = ".hook-skill-fires.json"
 
+# Remembered so the "skipped (not enabled)" diagnostic is printed at most once
+# per process rather than on every event — mirrors ``mission_hooks._skip_logged``.
+_hook_skills_skip_logged = False
+
+
+def hook_skills_enabled(project_name: str) -> bool:
+    """Whether repo-declared hook skills may queue missions for *project_name*.
+
+    ``hooks.<event>`` lives in a **repo-controlled** file and each honored name
+    queues a *write-capable* mission on the operator's host and quota, so the
+    operator — not the repo — decides whether the mechanism runs at all. This is
+    the same gate shape ``mission_hooks.hooks_enabled`` uses for the sibling
+    ``pre_hooks``/``post_hooks`` surface: a per-project override
+    (``projects.yaml`` ``hook_skills:``) wins when set, otherwise the global
+    opt-in (``hook_skills.enabled`` in ``instance/config.yaml``, default False).
+
+    Fail-safe: any error ⇒ False, so a broken config can never enable execution.
+    """
+    try:
+        from app.projects_config import get_project_hook_skills
+        override = get_project_hook_skills(project_name)
+        if override is not None:
+            return override
+        from app.config import is_hook_skills_enabled
+        return is_hook_skills_enabled()
+    except Exception as exc:  # never let a config error enable/crash hooks
+        print(
+            f"[hooks] hook-skill enablement check failed: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
 
 def is_hook_skill_mission(mission_title: str) -> bool:
     """True when *mission_title* belongs to a mission this mechanism queued.
@@ -125,13 +157,30 @@ def _hook_subject(ctx: dict) -> str:
     ``insert_mission`` would treat the entry as already stamped and the new
     mission would inherit the previous mission's queue time.
 
+    Identity is taken from ``missions.canonical_mission_key`` — the repo's one
+    definition of "the same mission across lifecycle" — so a title that comes
+    back re-queued also strips the ``[verify-failed: …]`` tag the post-mission
+    verification path appends (``run.py`` requeue, on by default). Without it a
+    verify-requeued mission produces a *different* subject from its first run's
+    and queues the hook skill a second time while the first is still pending.
+    ``strip_all_lifecycle_markers`` still runs first because it also truncates at
+    a bare ⏳ that carries no parseable timestamp, and ``strip_system_metadata``
+    for the 📬/🎫 origin markers that neither of the other two touch.
+
     Returns ``""`` when the event carries no subject at all, which the caller
     treats as "queue nothing" (see :meth:`_fire_project_hook_skills`).
     """
-    from app.missions import strip_all_lifecycle_markers, strip_system_metadata
+    from app.missions import (
+        canonical_mission_key,
+        strip_all_lifecycle_markers,
+        strip_system_metadata,
+    )
 
     raw = str(ctx.get("pr_url") or ctx.get("mission_title") or "")
-    return " ".join(strip_system_metadata(strip_all_lifecycle_markers(raw)).split())
+    clean = canonical_mission_key(
+        strip_system_metadata(strip_all_lifecycle_markers(raw))
+    )
+    return " ".join(clean.split())
 
 
 def _trusted_project_path(ctx: dict) -> Optional[str]:
@@ -323,6 +372,11 @@ class HookRegistry:
         letting a repo owner wire a skill to a lifecycle event without the
         operator writing a Python hook.
 
+        Gated on the operator opt-in (:func:`hook_skills_enabled`, default off)
+        before the repo's config is read at all — registering a project must not
+        by itself grant that repo the ability to spend write-capable missions
+        here.
+
         The config is read from the **operator-registered checkout**
         (:func:`_trusted_project_path`), never from the path the event carries:
         on ``post_review`` that path is a worktree of the PR head, so trusting
@@ -350,8 +404,23 @@ class HookRegistry:
 
         Fire-and-forget — a broken repo config never disturbs the event.
         """
+        global _hook_skills_skip_logged
+
         project_path = ctx.get("project_path")
         if not project_path or self._instance_dir is None:
+            return
+        # Operator opt-in, checked before the repo's config is even read: the
+        # list comes from a file the repo controls and each name spends a
+        # write-capable mission, so registering a project must not by itself
+        # hand that repo a lever on this host.
+        if not hook_skills_enabled(str(ctx.get("project_name") or "")):
+            if not _hook_skills_skip_logged:
+                print(
+                    "[hooks] project hook skills skipped (not enabled) — set "
+                    "hook_skills.enabled: true to run repo-declared hook skills",
+                    file=sys.stderr,
+                )
+                _hook_skills_skip_logged = True
             return
         # A mission this mechanism queued must not queue more hook skills, or a
         # repo declaring hooks.post_mission (or pre_mission) would self-replicate

@@ -169,6 +169,12 @@ follow-up work that needs real tooling. Naming a skill here moves that work onto
 the mission loop, which *does* load your `.claude/skills`, can invoke skills,
 and is not MCP-stripped.
 
+- **The operator must enable it — it is off by default.** Declaring
+  `hooks.<event>` is not enough on its own: each name queues a *write-capable*
+  mission on the operator's machine and quota, so the operator opts in with
+  `hook_skills: {enabled: true}` in their own `instance/config.yaml`, or
+  per-project with `hook_skills: true` in their `projects.yaml`. Until then koan
+  logs a one-line "skipped (not enabled)" note and your declaration is inert.
 - **Read from the operator's checkout, not the PR.** A review runs against a
   detached worktree of the *pull request head*, so a `.koan/config.yaml` in it
   is whatever the contributor pushed. koan therefore reads `hooks.<event>` from
