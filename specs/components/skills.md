@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-09-02
+updated: 2026-09-04
 ---
 
 # Component Spec — Skills System
@@ -318,7 +318,16 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
 - `HookRegistry._fire_project_hook_skills` evaluates this after user hooks and automation
   rules, and ONLY for events whose context carries a `project_path`. Absent
   `project_path` ⇒ no-op.
-- For each honored name, one pending mission is queued via `insert_pending_mission`. The
+- **Trusted source of the config.** The list MUST be read from the operator-registered
+  checkout for the firing project (resolved from `project_name`, else from `project_path`
+  only when that path IS a registered checkout; anything else ⇒ no-op), NEVER from the
+  `project_path` the event carries. On `post_review` that path is a detached worktree of
+  the **pull request head** (`review_runner.run_review` → `pinned_review_worktree`), so
+  reading it would let any contributor who can open a PR choose which write-capable
+  mission Kōan queues on the operator's quota. `review.always_check` may be read from the
+  PR head because it only reorders a read-only prompt; this key MUST NOT.
+- For each honored name, one pending mission is queued. Queuing is per-skill isolated: a
+  failure while queuing one name MUST NOT prevent the remaining names from queuing. The
   mission is NOT executed inline: handlers run in the firing process, and queuing is what
   moves the work onto the mission loop, which (unlike the read-only review subprocess)
   loads the project's own `.claude/skills`, may invoke the `Skill` tool, and is not
@@ -329,19 +338,30 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   regex above rejects — rather than sanitizes — anything that could carry an instruction,
   a path, or a shell fragment. Kōan MUST NOT interpolate repo-supplied free text into a
   mission.
-- **Idempotent per subject.** `insert_pending_mission` only de-duplicates entries shaped
-  like `/<command> <github-url>`, so this path MUST perform its own check against the
-  pending and in-progress sections, keyed on two delimited tokens stamped into each queued
-  entry: a `[hook-skill:<name>]` marker and a `[hook-subject:<subject>]` token (the subject
-  being `pr_url`, else `mission_title`). The match MUST be on both exact tokens, not on a
-  bare substring of either, so neither a shorter skill name (`docs` masked by an
-  already-queued `docs-lint`) nor a shorter PR URL (`pull/7` masked by `pull/70`) is
-  wrongly treated as already queued. Re-firing the same event for the same subject MUST NOT
-  queue the work twice; a different subject MUST queue separately.
-  The subject MUST be whitespace-normalized (any newline or run of whitespace collapsed to
-  a single space) before it is stamped, because `insert_mission` flattens newlines when it
-  writes the entry: an un-normalized token would be *stored* differently from the token the
-  next fire searches for, and a multi-line `mission_title` would re-queue on every fire.
+- **Idempotent per subject, while the earlier mission is still queued.**
+  `insert_pending_mission` only de-duplicates entries shaped like
+  `/<command> <github-url>`, so this path MUST perform its own check against the pending
+  and in-progress sections, keyed on two delimited tokens stamped into each queued entry:
+  a `[hook-skill:<name>]` marker and a `[hook-subject:<subject>]` token (the subject being
+  `pr_url`, else `mission_title`). The match MUST be on both exact tokens, not on a bare
+  substring of either, so neither a shorter skill name (`docs` masked by an already-queued
+  `docs-lint`) nor a shorter PR URL (`pull/7` masked by `pull/70`) is wrongly treated as
+  already queued. Re-firing the same event for the same subject MUST NOT queue the work
+  twice while a prior mission for that subject is still pending or in progress; once that
+  mission has completed, a later re-fire (a new push to the same PR) queues again — the
+  check covers Pending + In Progress only, by design. A different subject MUST queue
+  separately.
+  The check and the insert MUST happen inside one locked read-modify-write of the mission
+  store (`utils.modify_missions_file`), not as a read followed by a separate insert: the
+  review subprocess and the run loop can fire the same event concurrently, and an unlocked
+  read lets both observe "not queued" and both insert.
+  The subject MUST be stamped in the form the store will hold it: lifecycle markers
+  (`⏳`/`▶`/`✅`/`❌`) and queue-appended system metadata (`[complexity:…]`, `[r:N]`, origin
+  markers) stripped via `missions.strip_all_lifecycle_markers` /
+  `missions.strip_system_metadata`, then whitespace collapsed to single spaces. Otherwise
+  the *stored* token differs from the token the next fire searches for and every re-fire
+  re-queues — and an embedded `⏳` additionally suppresses `insert_mission`'s fresh queue
+  stamp, so the new mission would inherit the previous mission's `queued_at`.
 - **No self-replication.** A mission this mechanism queues carries the `[hook-skill:…]`
   marker in its own `mission_title`, so its `pre_mission`/`post_mission` would otherwise
   re-queue the skill without bound. `_fire_project_hook_skills` MUST detect that marker in
