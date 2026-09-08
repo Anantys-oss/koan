@@ -38,7 +38,7 @@ workflows.
 | `force_push_guard.py` | Post-force-push content-preservation harness for the rebase pipeline. `observe_remote_head()` snapshots the remote branch tip (and fetches its objects) immediately before **every** pipeline push (main push and private-gate re-pushes — the gate feeds its observations back via `push_state`) and again on a `--force-with-lease` rejection, so the tip the plain `--force` fallback clobbers is still nameable; it returns `None` (not `""`) when the lookup itself failed, so "could not look" stays distinguishable from "nothing was there" and surfaces as an unverified check; observations are scoped to the remote whose push succeeded; `verify_content_preserved()` compares the pre-rebase PR head against the **required last successfully pushed SHA** (never bare local HEAD; absent ⇒ guard skipped): `git cherry` patch-id screening plus a separate `rev-list --merges` pass for merge commits (invisible to `cherry`, dropped by a plain rebase — screened through their `--cc` combined diff), each refined by content-level cross-checks (byte-identical files at both heads, or an old→pushed diff that removes none of the commit's added lines — so upstream squash-merges and context-line drift count as preserved, while identical text elsewhere in a file cannot mask a revert), a file-level dropped-changes check, clobbered mid-pipeline pushes, and a post-push `ls-remote` race check. Anything unverifiable (git failure, deletion-only commit) is reported, never cleared. Per-commit analysis is capped (`_MAX_ANALYZED`) with the cap reported, never silent. `build_push_warning()` renders the findings as one amber/red `build_alert()` callout with the recoverable pre-rebase SHA (full SHA, actual push remote) and a shell-quoted, SHA-derived recovery command carrying no PR-controlled text. Best-effort by contract: any internal failure degrades to "no findings" and never blocks a push or fails the mission. |
 | `head_tracker.py` | Detects remote HEAD change (master→main), throttled 12h, state in `.head-tracker.json`. |
 | `github_url_parser.py` | Single PR/issue URL parsing path. |
-| `git_prep.py::prepare_project_branch()` | Pre-mission: fetch → **self-heal interrupted merge/rebase** → stash → checkout base → ff-only/reset to `<remote>/<base>`. Non-fatal; returns `PrepResult`. |
+| `git_prep.py::prepare_project_branch()` | Pre-mission: **resolve base branch** → fetch → **self-heal interrupted merge/rebase** → stash → checkout base → ff-only/reset to `<remote>/<base>`. Non-fatal; returns `PrepResult`. |
 
 ## Invariants
 
@@ -124,6 +124,15 @@ workflows.
   because git cannot stash a conflicted tree and the next step resets to the
   remote base anyway. A **conflict-free** dirty tree is never discarded — the
   stash data-loss guard still holds for genuine uncommitted work.
+- **Base-branch resolution never dead-ends on one candidate.** When nothing configured
+  a base branch, prep MAY resolve the remote's real default before fetching rather than
+  paying for a doomed fetch of the generic `main` fallback — but that resolution reads
+  `refs/remotes/<remote>/HEAD` without touching the network, so an upstream rename leaves
+  it pointing at a branch that no longer exists. Prep MUST therefore still try the value
+  it started from when the resolved branch's fetch fails. A resolution step that can only
+  narrow the candidates turns a stale local ref into every-mission prep failure until
+  `head_tracker.py` refreshes it (throttled to 12h). A failed resolution stays `None` and
+  is never promoted to an override of a configured branch.
 - **A held base branch is recoverable, not fatal.** Git checks a branch out in at
   most one worktree, so any other worktree holding the base branch blocks the main
   checkout for as long as it holds it. Prep MUST detect this and **detach** the

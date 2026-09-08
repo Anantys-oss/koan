@@ -1864,3 +1864,45 @@ class TestBaseBranchResolvedBeforeFetch:
         assert result.base_branch == "master"
         fetches = [c for c in calls if c and c[0] == "fetch"]
         assert fetches and "master" in fetches[0]
+
+    def test_stale_symbolic_ref_falls_back_to_the_original_base(self):
+        """A stale refs/remotes/origin/HEAD must not strand the project.
+
+        Upstream renamed `develop` → `main` and deleted `develop`, but the local
+        symbolic ref still points at `origin/develop` and no `origin/main` ref was
+        ever fetched. Resolution runs off local refs only, so it hands back the
+        dead branch; the fetch of it fails, and re-detecting yields the same stale
+        answer. Prep must still try the `main` fallback it started from, or every
+        mission on this project fails in prep until head_tracker refreshes the ref.
+        """
+        calls = []
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            calls.append(args)
+            if cmd == "rev-parse":
+                if "--verify" in args:
+                    return (1, "", "")  # neither main nor develop has a tracking ref
+                return (0, "feature", "")
+            if cmd == "symbolic-ref":
+                return (0, "refs/remotes/origin/develop", "")  # stale
+            if cmd == "fetch":
+                target = args[-1] if args else ""
+                return (0, "", "") if target == "main" else (
+                    1, "", "fatal: couldn't find remote ref develop"
+                )
+            if cmd == "remote":
+                return (1, "", "no such remote")
+            return (0, "", "")
+
+        stack, _ = TestPrepareProjectBranch()._patch_all(
+            run_git_side_effect=side_effect,
+            config={"projects": {"myproj": {}}},  # nothing configures a base branch
+        )
+        with stack:
+            result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is True, result.error
+        assert result.base_branch == "main"
+        fetched = [c[-1] for c in calls if c and c[0] == "fetch"]
+        assert "main" in fetched, f"main was never fetched: {fetched}"

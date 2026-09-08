@@ -647,6 +647,7 @@ def prepare_project_branch(
     # fetch fails the detect-after-failure path below still applies. resolve_* (not
     # detect_*) so a failed resolution stays None instead of promoting the "main"
     # fallback to an answer.
+    original_base = base_branch
     if not config_configured and not _has_remote_tracking_ref(
         remote, base_branch, project_path
     ):
@@ -665,18 +666,32 @@ def prepare_project_branch(
         remote, base_branch, project_path, timeout=30
     )
     if rc != 0 and not config_explicit:
-        # Base branch was not explicitly configured — detect remote default
+        # Base branch was not explicitly configured — detect remote default.
+        # Then, if the pre-fetch override above moved us off the fallback, fall
+        # back to that original value: resolution reads refs/remotes/<remote>/HEAD
+        # without touching the network, so a symbolic ref left stale by an upstream
+        # rename points at a branch that no longer exists. Retrying the value we
+        # started from recovers the case where the fallback branch is the one that
+        # actually exists — otherwise every mission on that project fails in prep
+        # until head_tracker refreshes the ref (throttled to 12h).
+        candidates = []
         detected = detect_remote_default_branch(remote, project_path)
         if detected != base_branch:
+            candidates.append(detected)
+        if original_base != base_branch and original_base not in candidates:
+            candidates.append(original_base)
+        for candidate in candidates:
             logger.info(
-                "Default branch for %s/%s is '%s', not '%s'",
-                remote, project_name, detected, base_branch,
+                "Fetch of '%s' failed for %s/%s; trying '%s' instead",
+                base_branch, remote, project_name, candidate,
             )
-            base_branch = detected
-            result.base_branch = detected
+            base_branch = candidate
+            result.base_branch = candidate
             rc, _, stderr = _fetch_with_https_fallback(
                 remote, base_branch, project_path, timeout=30
             )
+            if rc == 0:
+                break
     if rc != 0:
         result.success = False
         result.error = f"fetch failed: {stderr}"
