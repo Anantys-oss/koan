@@ -449,36 +449,56 @@ def _has_remote_tracking_ref(remote: str, branch: str, project_path: str) -> boo
     return rc == 0
 
 
-def _find_branch_holder(project_path: str, branch: str) -> Optional[str]:
-    """Return the path of another worktree that has ``branch`` checked out.
+def _branch_holder_worktree(project_path: str, branch: str):
+    """Return the worktree entry that has ``branch`` checked out, locked or not.
 
     Git allows a branch to be checked out in at most one worktree, so a second
     worktree holding the base branch blocks the main checkout for as long as it
     holds it. Returns None when nothing holds it, when the holder is the main
-    worktree itself, or when the holder is ``locked`` (someone's live workspace
-    — never disturb those).
+    worktree itself, or when the worktree list could not be read — the last case
+    is logged, so "we could not look" never reads like "nothing holds it".
+
+    Locked holders are returned, not filtered: prep must not detach them, but
+    /doctor must still report them — that collision is the one no automation can
+    heal, so hiding it leaves a fully-broken project looking clean.
     """
     if not branch:
         return None
     try:
         from app.worktree_manager import list_worktrees
         worktrees = list_worktrees(project_path)
-    except (ImportError, OSError):
+    except (ImportError, OSError) as e:
         # Unreadable repo (missing path, permissions): nothing to detach. Prep
         # falls through to its normal fallback rather than failing here.
+        logger.warning(
+            "Could not inspect worktrees in %s while checking who holds %s: %s",
+            project_path, branch, e,
+        )
         return None
 
     for wt in worktrees:
         if wt.is_main or not wt.path or wt.branch != branch:
             continue
-        if wt.locked:
-            logger.warning(
-                "Branch %s is held by locked worktree %s — not detaching",
-                branch, wt.path,
-            )
-            continue
-        return wt.path
+        return wt
     return None
+
+
+def _find_branch_holder(project_path: str, branch: str) -> Optional[str]:
+    """Return the path of a *detachable* worktree holding ``branch``.
+
+    None when nothing holds it, or when the holder is ``locked`` (someone's live
+    workspace — never disturb those).
+    """
+    wt = _branch_holder_worktree(project_path, branch)
+    if wt is None:
+        return None
+    if wt.locked:
+        logger.warning(
+            "Branch %s is held by locked worktree %s — not detaching",
+            branch, wt.path,
+        )
+        return None
+    return wt.path
 
 
 def _release_branch_from_worktree(holder: str, branch: str) -> bool:
@@ -709,13 +729,16 @@ def prepare_project_branch(
         # held-branch problem is solved by then.)
         holder = _find_branch_holder(project_path, base_branch)
         if holder and _release_branch_from_worktree(holder, base_branch):
+            # Record the detach the moment it happens, not after the retry: it
+            # mutated someone else's worktree either way, and if the retry fails
+            # for an unrelated reason (corrupt index, …) an operator must still
+            # be able to find out what moved their worktree off the branch.
+            freed = f"detached worktree {holder} which held {base_branch}"
+            result.healed = f"{result.healed}; {freed}" if result.healed else freed
+            logger.info("git prep self-heal for %s: %s", project_name, freed)
             rc, _, checkout_err = run_git(
                 "checkout", base_branch, cwd=project_path,
             )
-            if rc == 0:
-                freed = f"detached worktree {holder} which held {base_branch}"
-                result.healed = f"{result.healed}; {freed}" if result.healed else freed
-                logger.info("git prep self-heal for %s: %s", project_name, freed)
 
         if rc != 0:
             # Branch may not exist locally — create from remote tracking

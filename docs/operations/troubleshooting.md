@@ -4,7 +4,7 @@ title: "Troubleshooting"
 description: "Catalogs common operational issues (agent loop, git/worktrees, memory, bridge, GitHub, CLI provider, parallel sessions, config) and their fixes."
 tags: [operations]
 created: 2026-06-04
-updated: 2026-09-02
+updated: 2026-09-08
 ---
 
 # Troubleshooting
@@ -111,7 +111,12 @@ sweep never removes a locked worktree, and git prep never detaches one (see belo
    removed). The heal is reported in the prep result and the log. `/doctor` reports the
    same collision, and `/doctor --fix` performs the same detach. To keep a worktree on the
    base branch, `git worktree lock <path>` — a locked holder is never detached, and the
-   collision is reported instead.
+   collision is reported instead: `/doctor` flags it as a non-fixable error, and the fix
+   is yours to run (`git worktree unlock <path> && git -C <path> checkout --detach`).
+   If `/doctor` instead reports that the collision check was *skipped*, the project's
+   base branch could not be resolved without the network — set
+   `git_auto_merge.base_branch` in `projects.yaml`, or run `git remote set-head origin -a`
+   in the project.
 
 ### SSH authentication failures
 

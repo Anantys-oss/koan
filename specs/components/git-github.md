@@ -4,7 +4,7 @@ title: "Component Spec — Git & GitHub"
 description: "Design contract for everything touching git history or the GitHub API: branch/PR creation, sync, webhook/notification handling, and rebase/recreate/CI-fix workflows."
 tags: [git-github]
 created: 2026-06-27
-updated: 2026-09-02
+updated: 2026-09-08
 ---
 
 # Component Spec — Git & GitHub
@@ -132,6 +132,13 @@ workflows.
   the bridge sweep's job, not prep's: prep runs unattended before every mission, so a
   false positive must never be able to destroy an agent's in-flight work. A worktree
   git reports as `locked` is never touched.
+- **What prep cannot heal, `/doctor` MUST report.** A `locked` holder is the one
+  collision no automation resolves — every mission for that project keeps failing —
+  so the diagnostic reports it as a non-fixable error naming the unlock command,
+  while `--fix` still leaves it alone. The same applies when the base branch cannot
+  be resolved from local refs: the check is skipped, and the skip is reported. A
+  diagnostic that stays green on a project where nothing can run is worse than no
+  diagnostic.
 - **The first checkout error is never discarded.** When `git checkout <base>` fails and
   a fallback runs, the fallback's stderr MUST NOT overwrite the original. A branch held
   by another worktree and a branch missing locally are different faults with different

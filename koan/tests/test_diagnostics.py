@@ -877,8 +877,13 @@ class TestProjectWorktreeCollision:
         assert [r for r in results if r.name.endswith("_worktree")] == []
         assert fixes == []
 
-    def test_locked_holder_is_reported_by_neither(self, tmp_path):
-        """A locked worktree is someone's live workspace — never auto-detached."""
+    def test_locked_holder_is_reported_but_never_detached(self, tmp_path):
+        """A locked worktree is someone's live workspace — never auto-detached.
+
+        It is also the one collision git prep cannot heal, so every mission for
+        the project fails until a human acts: reporting it is the whole point of
+        the check.
+        """
         import subprocess
         from diagnostics import project_check
         repo, holder = self._repo(tmp_path)
@@ -889,7 +894,12 @@ class TestProjectWorktreeCollision:
             with self._patched(repo):
                 results = project_check.run("/koan", "/koan/instance")
                 fixes = project_check.fix("/koan", "/koan/instance")
-            assert [r for r in results if r.name.endswith("_worktree")] == []
+            hits = [r for r in results if r.name.endswith("_worktree")]
+            assert len(hits) == 1
+            assert hits[0].severity == "error"
+            assert hits[0].fixable is False
+            assert holder in hits[0].message
+            assert "git worktree unlock" in hits[0].hint
             assert fixes == []
         finally:
             subprocess.run(
@@ -934,10 +944,31 @@ class TestProjectWorktreeCollision:
             mock_git.return_value = (1, "", "not a symbolic ref")
             results = project_check.run("/koan", "/koan/instance")
 
-        assert [r for r in results if r.name.endswith("_worktree")] == []
         assert not any(
             c.args and c.args[0] == "ls-remote" for c in mock_git.call_args_list
         )
+        # Skipping is fine; skipping silently is not — a check that can never
+        # fire must not look like a clean bill of health.
+        hits = [r for r in results if r.name.endswith("_worktree")]
+        assert len(hits) == 1
+        assert hits[0].severity == "warn"
+        assert "skipped" in hits[0].message
+        assert "git remote set-head" in hits[0].hint
+
+    def test_unresolvable_base_branch_is_not_fixed(self, tmp_path):
+        """The skip warning is informational — --fix has nothing to detach."""
+        from diagnostics import project_check
+        repo, _ = self._repo(tmp_path)
+        with patch(
+            "app.projects_config.load_projects_config",
+            return_value={"projects": {"p": {"path": repo}}},
+        ), patch(
+            "app.projects_config.get_projects_from_config", return_value=[("p", repo)],
+        ), patch("app.git_prep.run_git") as mock_git:
+            mock_git.return_value = (1, "", "not a symbolic ref")
+            fixes = project_check.fix("/koan", "/koan/instance")
+
+        assert fixes == []
 
     @staticmethod
     def _repo_with_two_branches(tmp_path):

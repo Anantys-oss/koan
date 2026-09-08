@@ -633,6 +633,47 @@ class TestBranchHeldByAnotherWorktree:
             for c in mocks["run_git"].call_args_list
         )
 
+    def test_detach_is_reported_even_when_the_retry_fails(self):
+        """A detach that happened must be reported, whatever the retry does.
+
+        The detach moved someone else's worktree off the branch. If the retry
+        then dies on an unrelated fault (corrupt index), the operator still needs
+        a record of what touched their worktree.
+        """
+        holder = _worktree("/tmp/base-main", "main")
+
+        def side_effect(*args, **kwargs):
+            cmd = args[0] if args else ""
+            if cmd == "checkout":
+                if "--detach" in args:
+                    return (0, "", "")
+                # Both the retry and the -b fallback fail on a broken index.
+                return (1, "", "error: bad index file")
+            return _make_run_git_side_effect()(*args, **kwargs)
+
+        with patch("app.worktree_manager.list_worktrees", return_value=[holder]):
+            stack, _ = TestPrepareProjectBranch()._patch_all(
+                run_git_side_effect=side_effect,
+            )
+            with stack:
+                result = prepare_project_branch("/proj", "myproj", "/koan")
+
+        assert result.success is False
+        assert "/tmp/base-main" in result.healed
+
+    def test_unreadable_worktree_list_is_logged(self, caplog):
+        """"We could not look" must not read like "nothing holds the branch"."""
+        import logging
+
+        from app.git_prep import _find_branch_holder
+        with patch(
+            "app.worktree_manager.list_worktrees",
+            side_effect=PermissionError("Permission denied: .git/worktrees"),
+        ), caplog.at_level(logging.WARNING):
+            assert _find_branch_holder("/proj", "main") is None
+
+        assert "Permission denied" in caplog.text
+
     def test_main_worktree_is_never_the_holder(self):
         """The project's own checkout holding the branch is not a collision."""
         from app.git_prep import _find_branch_holder
