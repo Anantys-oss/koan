@@ -326,9 +326,20 @@ class TestForcedMarkerFallback:
         The lock is acquired by ``run_claude_task`` itself (hoisted out of
         ``popen_cli``), so stubbing ``popen_cli`` does not bypass it —
         ``koan_tmp_dir`` is redirected here so the lock file is per-test.
+
+        Mission limits are switched off so the spawn is the bare argv on every
+        host: otherwise ``launch_scoped`` wraps it in ``systemd-run --scope``
+        wherever that binary exists, and these tests assert on the *mission's*
+        exit code, not systemd's.
         """
-        def fake_popen_cli(cmd, provider=None, cli_lock=None, **kwargs):
+        def fake_popen_cli(cmd, provider=None, launcher=None, cli_lock=None,
+                           **kwargs):
+            # popen_cli takes `launcher` as an explicit parameter and prefixes
+            # it onto argv (mission_scope.launch_scoped always passes one, `[]`
+            # when systemd-run is unavailable) — it is not a Popen kwarg.
             kwargs.pop("stdin", None)
+            if launcher:
+                cmd = list(launcher) + list(cmd)
             proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **kwargs)
             return proc, lambda: (cli_lock.release() if cli_lock else None)
 
@@ -336,6 +347,9 @@ class TestForcedMarkerFallback:
         monkeypatch.setattr("app.cli_exec.popen_cli", fake_popen_cli)
         monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
         monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "app.config.get_mission_limits_config", lambda *a, **k: {"enabled": False},
+        )
 
     def test_mission_wait_loop_kills_and_exits_on_forced_marker(
             self, tmp_path, monkeypatch):
