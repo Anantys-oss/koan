@@ -1047,3 +1047,84 @@ class TestMaybeAppendGeneralKoanMd:
         err = capsys.readouterr().err
         assert "Detected KOAN.md" in err
         assert "chars" in err and "tokens" in err
+
+
+class TestNoPlaceholderIsSilentlyDropped:
+    """No ``load_prompt`` caller may pass a placeholder its template lacks.
+
+    ``_substitute`` replaces only ``{KEY}`` tokens that appear in the template
+    and leaves everything else alone, so a caller that passes ``FOO=...`` to a
+    template with no ``{FOO}`` loses the data with no error at either end. That
+    is not a hypothetical: a downstream fork shipped a prompt whose two JSON
+    payloads were both dropped this way, and the calls that depended on them
+    failed for days against a prompt that rendered a constant size for every
+    input.
+
+    No such call site exists in this tree today -- this test is the tripwire
+    that keeps it that way.
+
+    The check is static (AST) rather than behavioural because the failure is the
+    *absence* of an effect -- there is no exception, no log line and no shape
+    change to assert on at runtime. It covers ``load_prompt`` call sites whose
+    prompt name is a literal; ``load_skill_prompt``/``load_prompt_or_skill``
+    resolve ``skill_dir`` dynamically and are out of its reach, so a future
+    equivalent there still needs its own per-prompt test.
+    """
+
+    KOAN_DIR = Path(__file__).resolve().parent.parent
+    # Injected by _default_placeholders for every prompt, so never "dropped".
+    DEFAULTS = frozenset({"KOAN_PYTHON"})
+
+    @staticmethod
+    def _placeholders(text):
+        import re
+        return set(re.findall(r"\{([^{}]+)\}", text))
+
+    def _call_sites(self):
+        """Yield (py_path, lineno, prompt_name, kwarg_names) for literal calls."""
+        import ast
+
+        for py in sorted(self.KOAN_DIR.rglob("*.py")):
+            if "tests" in py.parts or ".venv" in py.parts:
+                continue
+            try:
+                tree = ast.parse(py.read_text(errors="ignore"))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+                if name != "load_prompt" or not node.args:
+                    continue
+                first = node.args[0]
+                if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                    continue
+                kwargs = {kw.arg for kw in node.keywords if kw.arg}
+                if kwargs:
+                    yield py, node.lineno, first.value, kwargs
+
+    def test_every_load_prompt_kwarg_is_consumed_by_its_template(self):
+        dropped = []
+        checked = 0
+        for py, lineno, prompt_name, kwargs in self._call_sites():
+            template = PROMPT_DIR / f"{prompt_name}.md"
+            if not template.exists():
+                continue  # resolved elsewhere (e.g. git fallback); not our call
+            checked += 1
+            missing = kwargs - self._placeholders(template.read_text()) - self.DEFAULTS
+            if missing:
+                rel = py.relative_to(self.KOAN_DIR)
+                dropped.append(
+                    f"{rel}:{lineno} passes {sorted(missing)} to "
+                    f"{prompt_name}.md, which declares no such placeholder"
+                )
+        assert dropped == [], (
+            "Placeholders passed but never interpolated (the data is silently "
+            "lost — add the {PLACEHOLDER} to the template or drop the kwarg):\n"
+            + "\n".join(dropped)
+        )
+        # Guard the guard: if a refactor makes every call site unresolvable this
+        # test would pass by vacuity, which is how the original bug survived.
+        assert checked >= 20, f"only {checked} call sites resolved; scan broke"

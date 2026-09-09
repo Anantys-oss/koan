@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-03
+updated: 2026-09-09
 ---
 
 # Skill Spec — `review`
@@ -130,8 +130,32 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   a `|` inside a quoted argument — a regex alternation such as
   `git grep -n 'a\|b' src` — is a literal character Bash passes to the program
   and can never start a second command, so it is allowed.
+  **Stderr-only redirection is the one redirection allowed**, in exactly the
+  spellings `2>/dev/null` and `2>&1` (optional single space after `2>`, and only
+  when the whole form stands as its own word). Neither can create or truncate a
+  file — `/dev/null` discards and `&1` merges into an existing stream — so
+  neither turns a reader into a writer, which is the property the redirection
+  ban exists to hold. They are recognised and elided from the raw string
+  *before* the structural scan, so every other `>`/`<` (including
+  `2>/tmp/anything`, `&>`, and a second `>` alongside an allowed form) is still
+  rejected. This is a deliberate narrowing of the previous absolute ban:
+  `2>/dev/null` is the idiom a reviewer reaches for constantly, denying it
+  taught the model nothing it could act on, and the denials cost real turns and
+  provider budget on every review.
   `koan/app/review_bash_guard.py` is the enumeration; this spec governs the
   policy.
+- **Operands are confined to the pinned worktree by resolution, not by
+  spelling.** Every file/dir operand is resolved (`realpath`, symlinks
+  included) against the session's `cwd` — itself resolved — and must land on
+  that directory or inside it. An **absolute path that resolves inside the
+  worktree is allowed**, because it names a tree this shell may already read and
+  because `Read`/`Glob`/`Grep` accept the same path: a `Bash` gate that
+  disagrees with the file tools about one path emits a denial the model cannot
+  believe (the review worktree is not "outside the review worktree") and it
+  retries instead of rephrasing. A `~` operand stays rejected outright — Bash,
+  not `shlex`, expands it, so the guard never sees the path it will become.
+  Denials name the resolved path, so the reason is checkable rather than
+  assertive.
 - **No allowlisted program may execute another, or read the process
   environment.** The allowlist adjudicates the *invoked* program, so a flag that
   makes an allowed program run a second one launders any binary past the
