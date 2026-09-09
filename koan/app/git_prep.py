@@ -458,6 +458,12 @@ def _branch_holder_worktree(project_path: str, branch: str):
     worktree itself, or when the worktree list could not be read — the last case
     is logged, so "we could not look" never reads like "nothing holds it".
 
+    ``is_main`` alone is not enough to recognise the project's own checkout: it
+    is a ``normpath`` comparison, while git reports the path it recorded with
+    symlinks already resolved. A project registered under a symlinked (or
+    relative) path therefore shows up as a non-main worktree of itself, so the
+    identity test goes through ``_is_same_dir`` as well.
+
     Locked holders are returned, not filtered: prep must not detach them, but
     /doctor must still report them — that collision is the one no automation can
     heal, so hiding it leaves a fully-broken project looking clean.
@@ -478,6 +484,9 @@ def _branch_holder_worktree(project_path: str, branch: str):
 
     for wt in worktrees:
         if wt.is_main or not wt.path or wt.branch != branch:
+            continue
+        if _is_same_dir(wt.path, project_path):
+            # The project's own checkout, reported under a different path.
             continue
         return wt
     return None

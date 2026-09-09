@@ -681,6 +681,27 @@ class TestBranchHeldByAnotherWorktree:
         with patch("app.worktree_manager.list_worktrees", return_value=[main_wt]):
             assert _find_branch_holder("/proj", "main") is None
 
+    def test_symlinked_project_path_is_not_its_own_holder(self, tmp_path):
+        """A project registered under a symlink is never a holder of itself.
+
+        `git worktree list` prints the resolved path it recorded at clone time,
+        while `projects.yaml` may hold a symlinked one. Comparing them without
+        resolving symlinks makes the project's own checkout look like a foreign
+        worktree squatting on its base branch — and `--fix` would then detach
+        the live checkout.
+        """
+        from app.git_prep import _find_branch_holder
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+
+        # is_main=False is what _parse_worktree_entry computes here: normpath
+        # does not collapse the symlink, so the two spellings differ.
+        main_wt = _worktree(str(real), "main", is_main=False)
+        with patch("app.worktree_manager.list_worktrees", return_value=[main_wt]):
+            assert _find_branch_holder(str(link), "main") is None
+
     def test_error_keeps_the_first_checkout_message(self):
         """The fallback's error must not overwrite the one naming the holder.
 
