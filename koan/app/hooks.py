@@ -224,6 +224,10 @@ class HookRegistry:
         self._instance_dir: Optional[str] = instance_dir
         # Per-rule fire timestamps for the loop guard: {rule_id: [timestamp, ...]}
         self._rule_fire_times: Dict[str, List[float]] = defaultdict(list)
+        # Fallback hook-skill fire budget, used only when the persisted one
+        # (instance/.hook-skill-fires.json) cannot be read or written.
+        self._hook_skill_fire_times: Dict[str, List[float]] = defaultdict(list)
+        self._hook_skill_budget_degraded = False
         self._discover(hooks_dir)
         # Also discover skill-bound hooks under instance/skills/<scope>/<name>/.
         # Instance-wide hooks above are registered first, so they fire first
@@ -503,12 +507,17 @@ class HookRegistry:
         very chain it is meant to stop. Wall-clock time, not ``monotonic``, for
         the same reason.
 
-        Best-effort: any failure reading or writing the file returns ``0``, so a
-        broken state file degrades to the pre-existing behaviour rather than
-        silently muting a repo's hooks.
+        When the file cannot be read or written, the count comes from an
+        **in-process fallback** instead of ``0``. Returning zero would make the
+        bound permanently non-binding for as long as the state file is
+        unwritable — a full disk would silently retire the very backstop that
+        stops a chain no other guard can see. The fallback is weaker (it resets
+        with the process, and ``post_review`` fires from a fresh subprocess),
+        but it still bounds every chain that advances within one process, and it
+        never raises or disturbs the event.
         """
         if self._instance_dir is None:
-            return 0
+            return self._hook_skill_fire_count_fallback(project, event, record=record)
         from app.utils import atomic_write_json
 
         state_path = Path(self._instance_dir) / _HOOK_SKILL_FIRES_FILE
@@ -549,14 +558,40 @@ class HookRegistry:
                 finally:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
         except Exception as exc:
-            # Fire-and-forget like the rest of this path: an unwritable or
-            # unreadable budget file degrades to "not enforced" rather than
-            # silently muting a repo's hooks or disturbing the event.
-            print(
-                f"[hooks] hook-skill fire budget unavailable ({exc}) — not enforced",
-                file=sys.stderr,
-            )
-            return 0
+            # An unwritable budget file must not retire the bound: fall back to
+            # the in-process counter rather than reporting "zero fires", which
+            # would let an unseen chain queue a write-capable mission per round
+            # for as long as the disk stays full. Warned once per process — one
+            # line per fire is noise nobody reads.
+            if not self._hook_skill_budget_degraded:
+                self._hook_skill_budget_degraded = True
+                print(
+                    f"[hooks] hook-skill fire budget file unavailable ({exc}) — "
+                    "falling back to an in-process counter for this process",
+                    file=sys.stderr,
+                )
+            return self._hook_skill_fire_count_fallback(project, event, record=record)
+
+    def _hook_skill_fire_count_fallback(
+        self, project: str, event: str, *, record: bool = False,
+    ) -> int:
+        """In-memory stand-in for :meth:`_hook_skill_fire_count`'s state file.
+
+        Same rolling window, same ``record`` semantics; the timestamps simply do
+        not survive the process. Used only when the persisted budget is
+        unavailable, so the cap keeps binding instead of silently going away.
+        """
+        now = time.time()
+        key = f"{project}\x1f{event}"
+        stamps = [
+            t for t in self._hook_skill_fire_times[key]
+            if 0 <= now - t < _HOOK_SKILL_FIRE_WINDOW_SECONDS
+        ]
+        self._hook_skill_fire_times[key] = stamps
+        count = len(stamps)
+        if record:
+            stamps.append(now)
+        return count
 
     def _queue_hook_skill(
         self, event: str, skill: str, ctx: dict, subject: str

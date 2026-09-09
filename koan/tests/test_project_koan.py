@@ -1,7 +1,10 @@
+import logging
 import os
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
+import app.git_utils as pk_git_utils
 import app.project_koan as pk
 
 
@@ -575,6 +578,57 @@ def test_hook_skills_prefer_origin_over_a_fork_remote(tmp_path):
     _git(checkout, "remote", "add", "contributor", str(fork))
     _git(checkout, "fetch", "-q", "contributor")
     assert pk.get_hook_skills(str(checkout), "post_review") == ["owner-skill"]
+
+
+def test_hook_skills_empty_when_the_repository_probe_fails(tmp_path):
+    # run_git flattens a timeout to the same rc as "not a git repository". Only
+    # git's definite answer earns the work-tree fallback; an inconclusive probe
+    # must read nothing rather than trust an attacker-controlled work tree.
+    checkout = _clone_with_owner_config(
+        tmp_path, "hooks:\n  post_review:\n    - 'owner-skill'\n"
+    )
+    _write_config(checkout, "hooks:\n  post_review:\n    - 'attacker-skill'\n")
+    real = pk_git_utils.run_git
+
+    def _fake(*args, **kwargs):
+        if args[:1] == ("rev-parse",) and "--is-inside-work-tree" in args:
+            return 1, "", "Git command timed out"
+        return real(*args, **kwargs)
+
+    with patch.object(pk_git_utils, "run_git", _fake):
+        assert pk.get_hook_skills(str(checkout), "post_review") == []
+
+
+def test_hook_skills_log_an_unexpected_git_show_failure(tmp_path, caplog):
+    # An absent config on the default branch is the common case and stays
+    # quiet; an operational failure silently disables the repo's hooks, so it
+    # must be visible.
+    checkout = _clone_with_owner_config(tmp_path, "review:\n  always_check: []\n")
+    real = pk_git_utils.run_git
+
+    def _fake(*args, **kwargs):
+        if args[:1] == ("show",):
+            return 1, "", "error: object file is empty"
+        return real(*args, **kwargs)
+
+    with patch.object(pk_git_utils, "run_git", _fake):
+        with caplog.at_level(logging.WARNING, logger=pk.logger.name):
+            assert pk.get_hook_skills(str(checkout), "post_review") == []
+    assert "object file is empty" in caplog.text
+
+
+def test_hook_skills_absent_on_the_default_branch_logs_nothing(tmp_path, caplog):
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    _git(upstream, "init", "-q", "-b", "main")
+    (upstream / "README.md").write_text("hi")
+    _git(upstream, "add", "-A")
+    _git(upstream, "commit", "-q", "-m", "seed")
+    checkout = tmp_path / "checkout"
+    _git(tmp_path, "clone", "-q", str(upstream), str(checkout))
+    with caplog.at_level(logging.WARNING, logger=pk.logger.name):
+        assert pk.get_hook_skills(str(checkout), "post_review") == []
+    assert caplog.text == ""
 
 
 def test_hook_skills_read_the_work_tree_of_a_repo_with_no_remote(tmp_path):

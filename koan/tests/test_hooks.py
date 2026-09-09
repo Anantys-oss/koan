@@ -1176,6 +1176,26 @@ class TestProjectHookSkills:
         assert missions.count("[hook-skill:a-skill]") == 2
         assert "https://github.com/o/r/pull/8" in missions
 
+    def test_budget_still_binds_when_its_state_file_is_unusable(self, tmp_path):
+        # A full disk must not retire the backstop: with the persisted counter
+        # unavailable the bound falls back to an in-process counter rather than
+        # reporting "zero fires" and letting the chain run forever.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_review:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        with patch.object(
+            hooks, "fcntl", **{"flock.side_effect": OSError("disk full")}
+        ):
+            for n in range(40):
+                registry.fire(
+                    "post_review", project_path=str(project),
+                    project_name="my-toolkit",
+                    pr_url=f"https://github.com/o/r/pull/{n}",
+                )
+        queued = self._pending(tmp_path).count("[hook-skill:a-skill]")
+        assert 0 < queued <= hooks._HOOK_SKILL_MAX_FIRES_PER_WINDOW
+
     def test_budget_is_per_project(self, tmp_path):
         # One noisy repo exhausting its budget must not mute another's hooks.
         noisy = self._make_project(

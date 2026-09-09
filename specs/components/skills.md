@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-09-04
+updated: 2026-09-09
 ---
 
 # Component Spec — Skills System
@@ -436,6 +436,17 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   per-hour cap loose enough for legitimate use would never bind. A fire the dedup absorbed
   queued nothing and MUST NOT spend budget, and the window is rolling, so a repo
   legitimately merging many PRs recovers.
+  An unwritable or unreadable budget file MUST degrade to an **in-process** counter of the
+  same window rather than to a count of zero: reporting zero fires would make the bound
+  non-binding for exactly as long as the fault lasts, retiring the backstop instead of
+  weakening it. The degradation MUST be logged.
+- **An operational read failure MUST be distinguishable from an absent config.** `run_git`
+  flattens a timeout, a corrupt object store and a missing binary to the same non-zero
+  return as "path not in this ref", so `read_trusted_koan_config` MUST recognize the
+  *expected* conditions by message — git's own "not a git repository", and `git show`'s
+  missing-path error — and treat anything else as an error: log it, and read nothing.
+  In particular an inconclusive repository probe MUST NOT fall through to the work tree,
+  which is the untrusted source the trusted read exists to avoid.
 - Fail-safe: a malformed config, an unreadable `missions.md`, an unwritable budget file, or
   any other failure here MUST NOT disturb the event that fired.
 

@@ -390,6 +390,23 @@ def _trusted_config_ref(project_path: str, remote: str) -> str:
     return ""
 
 
+def _is_not_a_repository(stderr: str) -> bool:
+    """True when git's stderr is its definite "not a repository" answer.
+
+    ``run_git`` flattens every failure to rc=1 (a timeout and a corrupt object
+    store included), so the *expected* condition has to be recognized by its
+    message; anything else is an error the caller must not mistake for it.
+    """
+    text = (stderr or "").lower()
+    return "not a git repository" in text or "not a git repo" in text
+
+
+def _is_missing_path(stderr: str) -> bool:
+    """True when ``git show <ref>:<path>`` failed because the path is absent."""
+    text = (stderr or "").lower()
+    return "does not exist in" in text or "exists on disk, but not in" in text
+
+
 def read_trusted_koan_config(project_path: str) -> dict:
     """Parse .koan/config.yaml as the repo *owner* published it, not as checked out.
 
@@ -403,15 +420,29 @@ def read_trusted_koan_config(project_path: str) -> dict:
     change, so a pull request cannot occupy it.
 
     The work tree is used only when nothing external can land in it: a
-    non-git directory, or a git repo with no remote at all. When the trusted
-    ref cannot be resolved, returns ``{}`` — fail-safe, never raises.
+    non-git directory (git's own "not a git repository" answer — an
+    inconclusive probe reads nothing), or a git repo with no remote at all.
+    When the trusted ref cannot be resolved, returns ``{}`` — fail-safe, never
+    raises.
     """
     if not project_path:
         return {}
     from app.git_utils import run_git
 
-    rc, _, _ = run_git("rev-parse", "--git-dir", cwd=project_path)
+    rc, _, err = run_git("rev-parse", "--is-inside-work-tree", cwd=project_path)
     if rc != 0:
+        # Only git's definite "this is not a repository" answer earns the
+        # work-tree fallback. run_git also returns rc=1 on a timeout, a corrupt
+        # object store or a missing binary, and treating those as "plain
+        # directory" would read an attacker-controlled work tree instead.
+        if not _is_not_a_repository(err):
+            logger.warning(
+                "could not determine whether %s is a git repository (%s) — "
+                ".koan/config.yaml not read",
+                project_path,
+                err or "no stderr",
+            )
+            return {}
         return read_koan_config(project_path)
     rc, out, _ = run_git("remote", cwd=project_path)
     remotes = [r.strip() for r in out.splitlines() if r.strip()] if rc == 0 else []
@@ -433,9 +464,19 @@ def read_trusted_koan_config(project_path: str) -> dict:
             project_path,
         )
         return {}
-    rc, text, _ = run_git("show", f"{ref}:.koan/config.yaml", cwd=project_path)
+    rc, text, err = run_git("show", f"{ref}:.koan/config.yaml", cwd=project_path)
     if rc != 0:
-        # Absent on the default branch is the common case (no repo config).
+        # Absent on the default branch is the common case (no repo config) and
+        # stays silent. Anything else — a timeout, a corrupt pack, an unreadable
+        # object — is an operational failure that silently disables the repo's
+        # declared hook skills, so it is logged rather than swallowed.
+        if not _is_missing_path(err):
+            logger.warning(
+                "could not read .koan/config.yaml from %s in %s: %s",
+                ref,
+                project_path,
+                err or "no stderr",
+            )
         return {}
     return _parse_koan_config(text.strip(), f"{ref} in {project_path}")
 

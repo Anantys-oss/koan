@@ -4,7 +4,7 @@ title: "Lifecycle Hooks & Automation Rules"
 description: "Documents the lifecycle-event system (session_start/session_end/pre_mission/post_mission/post_review): instance-wide and skill-bound Python hooks via `HookRegistry`, the declarative automation-rules layer (notify/create_mission/pause/resume/auto_merge) with its per-rule loop guard, and the project-declared `hooks.<event>` skill lists read from a repo's own `.koan/config.yaml`."
 tags: [architecture]
 created: 2026-07-08
-updated: 2026-09-04
+updated: 2026-09-09
 ---
 
 # Lifecycle Hooks & Automation Rules
@@ -258,11 +258,18 @@ link is a whole mission plus a review — a per-hour cap loose enough for real u
 would never be reached by a chain that only advances a few times an hour. A fire
 the dedup absorbed (the same PR reviewed twice) queued no work and costs no
 budget, and the window rolls, so a repo that legitimately merges many PRs keeps
-working.
+working. When that file cannot be read or written, the count falls back to an
+in-process counter rather than to zero: reporting no fires would retire the
+backstop for as long as the disk stays full, which is precisely when nobody is
+watching. The fallback is weaker across processes, and the degradation is
+logged once per process.
 
-Fail-safe throughout: an absent, empty, or malformed `.koan/config.yaml` is a
-no-op, an unwritable budget file falls back to not enforcing rather than muting
-the repo's hooks, and a failure here never disturbs the event that fired.
+Reading the repo's config is fail-safe but not silent: an absent, empty, or
+malformed `.koan/config.yaml` is a no-op, while an *operational* failure —
+`git show` timing out, a probe that cannot say whether the path is a repository
+at all — reads nothing and logs a warning, so a skipped hook is
+distinguishable from an unconfigured one. A failure here never disturbs the
+event that fired.
 
 ## When to reach for which
 
