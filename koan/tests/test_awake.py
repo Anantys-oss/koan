@@ -4137,6 +4137,18 @@ def test_watchdog_skips_restart_when_worker_busy():
         assert awake._bridge_should_restart(monitor) is False
 
 
+def test_watchdog_restarts_while_maintenance_sweep_runs():
+    """A wedged maintenance sweep must not disable the memory watchdog."""
+    monitor = MagicMock()
+    monitor.sample.return_value = True
+    alive = MagicMock()
+    alive.is_alive.return_value = True
+    lanes = {"chat": None, "bg": None, "maintenance": alive}
+    with patch.dict(awake._worker_threads, lanes, clear=True):
+        assert awake._workers_idle() is True
+        assert awake._bridge_should_restart(monitor) is True
+
+
 def test_watchdog_no_monitor_never_restarts():
     assert awake._bridge_should_restart(None) is False
 
@@ -4165,51 +4177,105 @@ def test_periodic_compaction_disabled_when_interval_zero():
 
 
 def test_worktree_reap_fires_on_interval():
-    with patch("app.project_explorer.get_projects",
-               return_value=[("proj", "/srv/proj")]), \
-         patch("app.worktree_manager.reap_foreign_worktrees",
-               return_value=["/tmp/review-abc"]) as mock_reap, \
+    with patch("app.awake._run_in_worker", return_value=True) as mock_worker, \
          patch("app.awake.time.time", return_value=10_000.0):
         new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
-        mock_reap.assert_called_once_with("/srv/proj")
+        mock_worker.assert_called_once_with(awake._reap_worktrees, lane="maintenance")
         assert new_ts == 10_000.0
 
 
 def test_worktree_reap_skips_before_interval():
-    with patch("app.worktree_manager.reap_foreign_worktrees") as mock_reap, \
+    with patch("app.awake._run_in_worker") as mock_worker, \
          patch("app.awake.time.time", return_value=100.0):
         new_ts = awake._maybe_reap_worktrees(last_reap=90.0, interval=3600)
-        mock_reap.assert_not_called()
+        mock_worker.assert_not_called()
         assert new_ts == 90.0
 
 
 def test_worktree_reap_disabled_when_interval_zero():
-    with patch("app.worktree_manager.reap_foreign_worktrees") as mock_reap:
+    with patch("app.awake._run_in_worker") as mock_worker:
         new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=0)
-        mock_reap.assert_not_called()
+        mock_worker.assert_not_called()
         assert new_ts == 0.0
 
 
-def test_worktree_reap_survives_errors():
-    """A reap failure must never take the poll loop down."""
-    with patch("app.project_explorer.get_projects",
-               side_effect=RuntimeError("config gone")), \
+def test_worktree_reap_retries_when_maintenance_lane_is_busy():
+    with patch("app.awake._run_in_worker", return_value=False) as mock_worker, \
+         patch("app.awake._worktree_reap_busy_logged_at", 10_000.0), \
          patch("app.awake.time.time", return_value=10_000.0):
         new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
-        # Timestamp still advances, so a persistent failure doesn't retry every cycle.
-        assert new_ts == 10_000.0
+        mock_worker.assert_called_once_with(awake._reap_worktrees, lane="maintenance")
+        assert new_ts == 0.0
+
+
+def test_worktree_reap_reports_a_persistently_busy_maintenance_lane():
+    """A wedged sweep thread must not be silent.
+
+    Without this, a stuck maintenance worker makes reaping stop forever while the
+    logs look exactly like a healthy idle system.
+    """
+    with patch("app.awake._run_in_worker", return_value=False), \
+         patch("app.awake._worktree_reap_busy_logged_at", 0.0), \
+         patch("app.awake.time.time", return_value=10_000.0), \
+         patch("app.awake.log") as mock_log:
+        awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
+
+    errors = [c.args[1] for c in mock_log.call_args_list if c.args[0] == "error"]
+    assert any("maintenance lane is still busy" in message for message in errors)
+
+
+def test_worktree_reap_stays_quiet_when_the_lane_is_only_briefly_busy():
+    """One missed start is normal back-pressure, not a failure worth logging."""
+    with patch("app.awake._run_in_worker", return_value=False), \
+         patch("app.awake._worktree_reap_busy_logged_at", 0.0), \
+         patch("app.awake.time.time", return_value=5_000.0), \
+         patch("app.awake.log") as mock_log:
+        awake._maybe_reap_worktrees(last_reap=1_000.0, interval=3600)
+
+    assert not [c for c in mock_log.call_args_list if c.args[0] == "error"]
+
+
+def test_worktree_reap_survives_errors():
+    """A failed sweep must be logged, not lost to the worker thread's excepthook.
+
+    The sweep runs detached on the maintenance lane, so an escaping exception would reach
+    threading.excepthook and produce no koan log entry — a reaper that has been broken for
+    weeks would be indistinguishable from one with nothing to do.
+    """
+    with patch("app.project_explorer.get_projects",
+               side_effect=RuntimeError("config gone")), \
+         patch("app.awake.log") as mock_log:
+        awake._reap_worktrees()
+
+    errors = [c.args[1] for c in mock_log.call_args_list if c.args[0] == "error"]
+    assert any("config gone" in message for message in errors)
 
 
 def test_worktree_reap_continues_across_projects():
-    """One project's failure must not stop the others being swept."""
+    """One project's failure must not stop the others being swept.
+
+    time.time() is pinned because the sweep rotates its project order by the hour, so an
+    unpinned clock makes the expected order flip every hour. 7200.0 gives rotation 0.
+    """
     with patch("app.project_explorer.get_projects",
                return_value=[("a", "/srv/a"), ("b", "/srv/b")]), \
+         patch("app.awake.time.time", return_value=7200.0), \
          patch("app.worktree_manager.reap_foreign_worktrees",
-               side_effect=[RuntimeError("bad repo"), ["/tmp/review-b"]]) as mock_reap, \
-         patch("app.awake.time.time", return_value=10_000.0):
-        new_ts = awake._maybe_reap_worktrees(last_reap=0.0, interval=3600)
+               side_effect=[RuntimeError("bad repo"), ["/tmp/review-b"]]) as mock_reap:
+        awake._reap_worktrees()
         assert [c.args[0] for c in mock_reap.call_args_list] == ["/srv/a", "/srv/b"]
-        assert new_ts == 10_000.0
+
+
+def test_worktree_reap_stops_after_shared_budget():
+    with patch("app.project_explorer.get_projects",
+               return_value=[("a", "/srv/a"), ("b", "/srv/b")]), \
+         patch("app.worktree_manager.reap_foreign_worktrees") as mock_reap, \
+         patch("app.awake.time.time", return_value=7200.0), \
+         patch("app.awake.time.monotonic", side_effect=[0.0, 0.0, 121.0, 121.0]):
+        awake._reap_worktrees()
+
+    mock_reap.assert_called_once()
+    assert mock_reap.call_args.kwargs["deadline"] == 120.0
 
 
 def test_read_sections_cached_serves_within_ttl():

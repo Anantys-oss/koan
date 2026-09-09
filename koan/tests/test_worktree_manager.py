@@ -11,6 +11,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
+import app.worktree_manager as worktree_manager
+
 from app.worktree_manager import (
     WorktreeInfo,
     create_worktree,
@@ -51,6 +53,14 @@ def git_repo(tmp_path):
     result = subprocess.run(
         ["git", "branch", "-M", "main"],
         cwd=str(repo), capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "main"],
+        cwd=str(repo), capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=str(repo), capture_output=True, check=True,
     )
     return str(repo)
 
@@ -391,10 +401,10 @@ class TestReapForeignWorktrees:
     """
 
     @staticmethod
-    def _add_foreign(repo, path, age_days=0.0):
+    def _add_foreign(repo, path, age_days=0.0, ref="HEAD"):
         """Register a worktree outside the project, optionally backdated."""
         subprocess.run(
-            ["git", "worktree", "add", "--detach", str(path), "HEAD"],
+            ["git", "worktree", "add", "--detach", str(path), ref],
             cwd=repo, capture_output=True, check=True,
         )
         if age_days:
@@ -409,10 +419,17 @@ class TestReapForeignWorktrees:
         foreign = self._add_foreign(git_repo, tmp_path / "review-abc", age_days=5)
         assert Path(foreign).is_dir()
 
-        reaped = reap_foreign_worktrees(git_repo)
+        with patch.object(worktree_manager.subprocess, "run", wraps=subprocess.run) as run:
+            reaped = reap_foreign_worktrees(git_repo)
 
         assert reaped == [foreign]
         assert not Path(foreign).exists()
+        commands = [call.args[0] for call in run.call_args_list]
+        assert [
+            "git", "rev-list", "--max-count=1", "HEAD",
+            "--not", "--branches", "--tags", "--remotes",
+        ] in commands
+        assert not any(command[:2] == ["git", "for-each-ref"] for command in commands)
         # The registration must be gone too, not just the directory — leaving it behind is
         # exactly the phantom state that accumulated on the real host.
         paths = [w.path for w in list_worktrees(git_repo)]
@@ -456,8 +473,8 @@ class TestReapForeignWorktrees:
         assert reap_foreign_worktrees(git_repo) == []
         assert Path(foreign).is_dir()
 
-    def test_spares_detached_worktree_with_unique_commit(self, git_repo, tmp_path):
-        """A detached commit with no other ref must survive."""
+    def test_spares_idle_clean_detached_worktree_with_local_commit(self, git_repo, tmp_path):
+        """A clean tree can still hold committed work that exists nowhere else."""
         foreign = self._add_foreign(git_repo, tmp_path / "review-detached", age_days=5)
         (Path(foreign) / "detached.txt").write_text("unique commit\n")
         subprocess.run(["git", "add", "."], cwd=foreign, capture_output=True, check=True)
@@ -471,6 +488,103 @@ class TestReapForeignWorktrees:
 
         assert reap_foreign_worktrees(git_repo) == []
         assert Path(foreign).is_dir()
+
+    def test_spares_detached_worktree_with_uncommitted_changes(self, git_repo, tmp_path):
+        """Uncommitted changes are the signal that removal would lose real work."""
+        foreign = self._add_foreign(git_repo, tmp_path / "review-dirty", age_days=5)
+        (Path(foreign) / "detached.txt").write_text("unique commit\n")
+        subprocess.run(["git", "add", "."], cwd=foreign, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "detached work"],
+            cwd=foreign, capture_output=True, check=True,
+        )
+        # Backdate everything, including the dirty file: the activity guard runs first
+        # and would otherwise retain the worktree before the cleanliness check is reached.
+        (Path(foreign) / "in-progress.txt").write_text("not saved anywhere\n")
+        old = time.time() - (5 * 86400)
+        for name in ("detached.txt", "in-progress.txt"):
+            os.utime(Path(foreign) / name, (old, old))
+        os.utime(foreign, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert Path(foreign).is_dir()
+        assert (Path(foreign) / "in-progress.txt").exists()
+
+    @staticmethod
+    def _commit_on_remote_only_branch(repo):
+        """Return a SHA reachable *only* from refs/remotes/origin/side.
+
+        This is the shape of a real review checkout: `git worktree add /tmp/review-<sha>
+        <sha>` at a pull-request head. The commit is durable on its remote branch but is
+        not an ancestor of the default branch, and no local branch or tag holds it.
+        """
+        subprocess.run(
+            ["git", "checkout", "-b", "side"],
+            cwd=repo, capture_output=True, check=True,
+        )
+        (Path(repo) / "pr.txt").write_text("pull request head\n")
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "pr head"],
+            cwd=repo, capture_output=True, check=True,
+        )
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/side", sha],
+            cwd=repo, capture_output=True, check=True,
+        )
+        subprocess.run(["git", "checkout", "main"], cwd=repo, capture_output=True, check=True)
+        subprocess.run(["git", "branch", "-D", "side"], cwd=repo, capture_output=True, check=True)
+        return sha
+
+    def test_reaps_detached_worktree_at_unmerged_pull_request_head(self, git_repo, tmp_path):
+        """The population the reaper exists for: a review checkout at an open PR's head.
+
+        The commit is durable on origin/side, so removing the worktree loses nothing — but
+        it is not an ancestor of the default branch. Testing reachability from the default
+        branch alone would retain every review worktree forever.
+        """
+        sha = self._commit_on_remote_only_branch(git_repo)
+        foreign = self._add_foreign(git_repo, tmp_path / "review-pr", age_days=5, ref=sha)
+
+        assert reap_foreign_worktrees(git_repo) == [foreign]
+        assert not Path(foreign).exists()
+
+    def test_reaps_clean_closed_pull_request_checkout(self, git_repo, tmp_path):
+        """A PR checkout unchanged since creation remains reapable after ref deletion."""
+        sha = self._commit_on_remote_only_branch(git_repo)
+        foreign = self._add_foreign(
+            git_repo,
+            tmp_path / "review-closed",
+            age_days=5,
+            ref=sha,
+        )
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/remotes/origin/side"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+
+        assert reap_foreign_worktrees(git_repo) == [foreign]
+        assert not Path(foreign).exists()
+
+    def test_reaps_detached_worktree_without_remote_default_branch(self, git_repo, tmp_path):
+        """Cleanup must not depend on refs/remotes/origin/HEAD, which is often unset.
+
+        A plain `git clone` leaves it unset whenever the remote's HEAD is unresolvable, and
+        `git init` + `remote add` + `fetch` never sets it at all. Making it a precondition
+        turned the whole sweep into a no-op on those hosts.
+        """
+        foreign = self._add_foreign(git_repo, tmp_path / "review-no-default", age_days=5)
+        subprocess.run(
+            ["git", "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+
+        assert reap_foreign_worktrees(git_repo) == [foreign]
+        assert not Path(foreign).exists()
 
     def test_ignores_project_owned_worktrees(self, git_repo):
         """`.worktrees/` belongs to cleanup_stale_worktrees(); don't poach it."""
@@ -510,17 +624,60 @@ class TestReapForeignWorktrees:
         assert reap_foreign_worktrees(git_repo, dry_run=True) == [foreign]
         assert Path(foreign).is_dir()
 
-    def test_reaps_incidentally_dirty_worktree(self, git_repo, tmp_path):
-        """Reviews leave edits behind (a regenerated lockfile); that must not block reap."""
+    def test_spares_dirty_worktree_even_when_head_is_durable(self, git_repo, tmp_path):
+        """Removal is `--force`; a dirty tree loses uncommitted work with no recovery.
+
+        HEAD here is the default branch's tip — as durable as a commit gets — so the
+        reachability guard says "removal loses nothing". Cleanliness is the separate
+        question, and it is what decides this case.
+        """
         foreign = self._add_foreign(git_repo, tmp_path / "review-dirty", age_days=5)
         readme = Path(foreign) / "README.md"
-        readme.write_text("touched by review\n")
+        readme.write_text("edited, never committed\n")
         old = time.time() - (5 * 86400)
         os.utime(readme, (old, old))
         os.utime(foreign, (old, old))
 
-        assert reap_foreign_worktrees(git_repo) == [foreign]
-        assert not Path(foreign).exists()
+        assert reap_foreign_worktrees(git_repo) == []
+        assert readme.read_text() == "edited, never committed\n"
+
+    def test_spares_dirty_in_project_worktree_on_local_branch(self, git_repo, tmp_path):
+        """An in-scope scratch worktree still gets the dirty guard.
+
+        `<project>/tmp/wip` on a local branch with no upstream: the branch keeps HEAD
+        reachable, so nothing about *commits* blocks removal — but the uncommitted edits
+        exist nowhere else, and the sweep runs unattended on an hourly timer.
+        """
+        wip = Path(git_repo) / "tmp" / "wip"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "feature-x", str(wip)],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        (wip / "README.md").write_text("three days of unsaved work\n")
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(wip):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(wip, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert (wip / "README.md").read_text() == "three days of unsaved work\n"
+
+    def test_reaps_idle_clean_in_project_worktree_on_local_branch(self, git_repo, tmp_path):
+        """The dirty guard must not make every in-project worktree immortal."""
+        scratch = Path(git_repo) / "tmp" / "scratch"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "scratch", str(scratch)],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(scratch):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(scratch, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == [str(scratch)]
+        assert not scratch.exists()
 
     def test_spares_recent_tracked_file_edit(self, git_repo, tmp_path):
         """Editing an existing file does not update root mtime, but remains live work."""
@@ -537,6 +694,49 @@ class TestReapForeignWorktrees:
 
         assert reap_foreign_worktrees(git_repo, max_age_days=2) == []
         assert reap_foreign_worktrees(git_repo, max_age_days=0.5) == [foreign]
+
+    def test_expired_budget_keeps_foreign_worktree(self, git_repo, tmp_path):
+        foreign = self._add_foreign(git_repo, tmp_path / "review-expired", age_days=5)
+
+        assert reap_foreign_worktrees(
+            git_repo,
+            deadline=time.monotonic() - 1,
+        ) == []
+        assert Path(foreign).is_dir()
+
+    def test_timed_out_activity_check_keeps_foreign_worktree(self, git_repo, tmp_path):
+        foreign = self._add_foreign(git_repo, tmp_path / "review-timeout", age_days=5)
+
+        with patch.object(
+            worktree_manager.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired("git", 15),
+        ):
+            assert worktree_manager._has_recent_worktree_activity(
+                foreign,
+                time.time() - 86400,
+                deadline=time.monotonic() + 60,
+            ) is True
+        assert Path(foreign).is_dir()
+
+    def test_incomplete_removal_is_not_reported_as_reaped(self, git_repo, tmp_path):
+        foreign = self._add_foreign(git_repo, tmp_path / "review-remove-timeout", age_days=5)
+
+        with patch.object(worktree_manager, "remove_worktree"):
+            assert reap_foreign_worktrees(git_repo) == []
+        assert Path(foreign).is_dir()
+
+    def test_rotates_foreign_candidates_in_dry_run(self, git_repo, tmp_path):
+        first = self._add_foreign(git_repo, tmp_path / "review-a", age_days=5)
+        second = self._add_foreign(git_repo, tmp_path / "review-b", age_days=5)
+
+        reaped = reap_foreign_worktrees(
+            git_repo,
+            dry_run=True,
+            start_index=1,
+        )
+
+        assert reaped == [second, first]
 
 
 class TestWorktreeLockedParsing:
@@ -593,8 +793,32 @@ class TestWorktreeErrorPaths:
             remove_worktree(git_repo, session_id=wt.session_id)
         assert "git branch -D failed" in capsys.readouterr().err
 
-    def test_list_worktrees_empty_on_error(self, tmp_path):
+    def test_list_worktrees_empty_on_error(self, tmp_path, capsys):
+        """An inspection failure returns [] — but says so.
+
+        Callers treat this list as proof that no worktree holds a branch, so a
+        silent [] made "git could not tell us" look like "nothing holds it", which
+        is how a blocking worktree stayed invisible for 90 missions.
+        """
         assert list_worktrees(str(tmp_path)) == []
+        assert "git worktree list failed" in capsys.readouterr().err
+
+    def test_list_worktrees_reports_a_timeout(self, git_repo, capsys):
+        with patch("app.worktree_manager.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("git", 15)):
+            assert list_worktrees(git_repo, timeout=15) == []
+        assert "git worktree list timed out" in capsys.readouterr().err
+
+    def test_retain_reason_is_logged_when_a_check_cannot_run(self, tmp_path, capsys):
+        """A guard that fails toward retention must name the reason.
+
+        Otherwise "kept because work would be lost" and "kept because the check
+        could not run" are indistinguishable, and a reaper that has silently
+        reverted to retain-everything looks like one with nothing to do.
+        """
+        from app.worktree_manager import _has_unpushed_commits
+        assert _has_unpushed_commits(str(tmp_path)) is True
+        assert "retain (HEAD ref check failed)" in capsys.readouterr().err
 
     def test_list_worktrees_parses_session(self, git_repo):
         wt = create_worktree(git_repo)
@@ -619,10 +843,17 @@ class TestWorktreeErrorPaths:
             cleanup_stale_worktrees(git_repo, active_session_ids=[])
         assert "stale worktree cleanup error" in capsys.readouterr().err
 
-    def test_prune_handles_called_process_error(self, git_repo, capsys):
-        def bad_run(cmd, **kw):
-            raise subprocess.CalledProcessError(1, cmd, stderr="prune fail")
-        with patch("app.worktree_manager.subprocess.run", side_effect=bad_run):
+    def test_prune_reports_a_nonzero_exit(self, git_repo, capsys):
+        """A failed prune must not pass for a clean one.
+
+        prune runs without check=True, so the exit code is the only signal; when it
+        was ignored, phantom worktree registrations persisted while the sweep still
+        reported "0 reclaimed" as though nothing needed pruning.
+        """
+        failed = subprocess.CompletedProcess(
+            [], returncode=1, stdout="", stderr="prune fail",
+        )
+        with patch("app.worktree_manager.subprocess.run", return_value=failed):
             prune_worktrees(git_repo)
         assert "worktree prune failed" in capsys.readouterr().err
 
@@ -677,3 +908,123 @@ class TestWorktreeErrorPaths:
         from app.worktree_manager import _resolve_base_ref
         result = _resolve_base_ref(git_repo, "nonexistent")
         assert result in ("main", "master", "HEAD")
+
+
+class TestWorktreeOwnershipZones:
+    """Inside a project, only `<project>/tmp/` is in scope.
+
+    A scratch checkout there has no owner: `cleanup_stale_worktrees()` only walks
+    `.worktrees/`, and the OS temp sweeper only walks the system temp directory, so a
+    blanket "skip anything inside the project" rule left those unreclaimable by
+    anything on the host. Everywhere else in-project is somebody's workspace and stays
+    out of reach of an unattended `--force`.
+    """
+
+    def test_owned_directories_are_skipped(self):
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/proj/.worktrees/abc", "/proj") is False
+        assert _is_in_scope("/proj/.claude/worktrees/agent-1", "/proj") is False
+
+    def test_project_tmp_is_in_scope(self):
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/proj/tmp/review-123", "/proj") is True
+
+    def test_hand_made_in_project_workspace_is_out_of_scope(self):
+        """`<project>/wt/feature-x` is a human's workspace, not scratch."""
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/proj/wt/feature-x", "/proj") is False
+
+    def test_outside_the_project_is_in_scope(self):
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/tmp/base140", "/proj") is True
+
+    def test_prefix_collision_is_not_scratch(self):
+        """`tmpfiles` is not `tmp`, and `.worktrees-backup` is not `.worktrees`."""
+        from app.worktree_manager import _is_in_scope
+        assert _is_in_scope("/proj/tmpfiles/x", "/proj") is False
+        assert _is_in_scope("/proj/.worktrees-backup/x", "/proj") is False
+
+    def test_reaps_a_worktree_under_project_tmp(self, git_repo, tmp_path):
+        """The real shape: app-csf/tmp/review-* sat 34 days, reclaimable by nothing."""
+        scratch = Path(git_repo) / "tmp" / "review-inside"
+        scratch.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(scratch), "HEAD"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(scratch):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(scratch, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == [str(scratch)]
+        assert not scratch.exists()
+
+    def test_spares_a_hand_made_worktree_holding_only_ignored_files(
+        self, git_repo, tmp_path
+    ):
+        """Gitignored local-only files are invisible to every retention guard.
+
+        `<project>/wt/feature-x`: everything tracked is committed and pushed, the tree
+        has been idle for days, and the branch has no upstream — so `git status
+        --porcelain`, the `--exclude-standard` activity scan and the upstream check all
+        report "nothing here". Only the `.env.local` / `dev.db` a developer left behind
+        would have been lost, and `git worktree remove --force` gives no way back.
+        """
+        (Path(git_repo) / ".gitignore").write_text(".env.local\ndev.db\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=git_repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "ignore local state"], cwd=git_repo, check=True,
+            capture_output=True,
+        )
+        wip = Path(git_repo) / "wt" / "feature-x"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "feature-x", str(wip)],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        (wip / ".env.local").write_text("TOKEN=secret\n")
+        (wip / "dev.db").write_text("local database\n")
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(wip):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(wip, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert (wip / ".env.local").read_text() == "TOKEN=secret\n"
+        assert (wip / "dev.db").read_text() == "local database\n"
+
+    def test_spares_a_worktree_owned_by_cleanup_stale_worktrees(self, git_repo, tmp_path):
+        """`.worktrees/` belongs to cleanup_stale_worktrees(); never touch it."""
+        owned = Path(git_repo) / ".worktrees" / "session-abc"
+        owned.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(owned), "HEAD"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(owned):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(owned, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert owned.is_dir()
+
+    def test_spares_a_harness_worktree(self, git_repo, tmp_path):
+        """`.claude/worktrees/` belongs to the Claude Code harness."""
+        owned = Path(git_repo) / ".claude" / "worktrees" / "agent-abc"
+        owned.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(owned), "HEAD"],
+            cwd=git_repo, capture_output=True, check=True,
+        )
+        old = time.time() - (5 * 86400)
+        for root, directories, files in os.walk(owned):
+            for name in directories + files:
+                os.utime(os.path.join(root, name), (old, old))
+        os.utime(owned, (old, old))
+
+        assert reap_foreign_worktrees(git_repo) == []
+        assert owned.is_dir()

@@ -4,7 +4,7 @@ title: "Component Spec — Telegram Bridge"
 description: "Design contract for the Telegram bridge process that classifies human messages into chat vs. mission, dispatches commands/skills, and flushes the agent's outbox crash-safely."
 tags: [bridge]
 created: 2026-06-27
-updated: 2026-08-31
+updated: 2026-09-02
 ---
 
 # Component Spec — Telegram Bridge
@@ -30,6 +30,7 @@ awake.py (loop, ~3s poll)
   │                    mission → queue to missions.md
   ├─ command_handlers.py: /help /stop /pause /resume /skill ... + skill dispatch
   ├─ flush outbox.md → Telegram (atomic staging via outbox-sending.md)
+  └─ maintenance worker: long-running housekeeping outside the poll loop
   └─ bridge_state.py: shared config/paths/registries (avoids circular imports)
 ```
 
@@ -50,6 +51,42 @@ awake.py (loop, ~3s poll)
 
 - **Two-process isolation.** The bridge and the agent loop share *only* files in
   `instance/` (atomic writes). The bridge must never call agent-loop internals directly.
+- **Inbound responsiveness.** Repository maintenance, including foreign-worktree
+  reaping, MUST run on the bridge's maintenance worker lane rather than its poll
+  loop, so it cannot delay inbound commands or outbox flushing.
+- **Bounded maintenance.** A foreign-worktree sweep has a fixed two-minute total
+  deadline and a 15-second Git-command cap. Expired or timed-out safety checks
+  retain worktrees and defer them to a later rotating sweep.
+- **A dirty worktree is never reaped.** Removal is `git worktree remove --force`, which
+  deletes uncommitted work with no recovery path, so cleanliness MUST be checked for
+  *every* candidate — on a branch or detached, reachable or not — and not merely as a
+  tie-breaker on the unreachable-detached path. Commit reachability answers "would commits
+  be lost"; it says nothing about the working tree, and a scratch worktree on a local
+  branch (`<project>/tmp/wip`) still holds edits that exist nowhere else. The sweep
+  runs unattended on an hourly timer, so this guard is the only thing standing between it
+  and unrecoverable loss. Retaining a leaked-but-dirty worktree costs disk, which is
+  recoverable and logged; the inverse is not.
+- **Detached worktree safety.** Reachability alone MUST NOT decide retention. A detached
+  foreign worktree sits at a pull-request head commit, which is durable on its remote branch
+  only while that PR is open; once the PR is squash-merged or closed the remote branch is
+  deleted and no durable ref reaches that commit any more. Retaining on unreachability
+  therefore makes every *completed* review immortal — unbounded growth, not safety. A detached
+  worktree that no durable ref reaches is removed only when its HEAD still equals the commit
+  recorded when the worktree was created: a changed HEAD may contain committed but
+  never-pushed work. The reachability probe MUST use a single bounded revision walk rather
+  than a per-ref containment scan, and any git or reflog failure retains the worktree.
+- **Worktree scope zones.** Outside the project directory every registered worktree is in
+  scope — nothing else on the host reclaims one. Inside it, only `<project>/tmp/` is: those
+  scratch checkouts have no owner (`worktree_manager.cleanup_stale_worktrees()` walks
+  `.worktrees/` only, the Claude Code harness owns `.claude/worktrees/`, and the OS temp
+  sweeper does not reach inside a project), so a blanket "skip anything inside the project
+  directory" rule leaves them unreclaimable by any process on the host. Every other
+  in-project path — a hand-made `<project>/wt/feature-x` — MUST stay out of scope. The
+  retention guards all ask git, and git is silent about the gitignored `.env.local` or
+  `dev.db` a human workspace keeps: `git status --porcelain` omits ignored files, the
+  activity scan uses `--exclude-standard`, and a local branch with no upstream reports
+  nothing unpushed. Such a tree looks empty to every guard, and `--force` removal of it is
+  unrecoverable, so scope — not cleanliness — is what protects it.
 - **Chat is resilient to API contention (#1084).** While a mission runs, the agent loop
   and the bridge invoke the AI CLI concurrently against the same account (the default
   provider takes no cross-invocation lock), so a chat call can return an empty response or
@@ -115,10 +152,16 @@ awake.py (loop, ~3s poll)
   one poll cycle (`_read_sections_cached`). A `MemoryMonitor` watchdog
   (`memory_monitor.bridge:` sub-block, **enabled by default**, threshold
   600 MB; set `enabled: false` to opt out) samples RSS once per poll cycle
-  and, **only when no worker lane is busy**, self-restarts via
+  and, **only when no user-facing worker lane is busy**, self-restarts via
   `reexec_bridge()` (`os.execv`, same PID) as a backstop. The watchdog must
   never restart mid-worker, and a baseline-safety guard refuses to arm when
-  the threshold isn't safely above the current RSS.
+  the threshold isn't safely above the current RSS. The **maintenance lane is
+  excluded from that gate**: it carries idempotent, restart-safe internal work
+  with no human waiting on it, and a task wedged past its own timeout (a git
+  child in uninterruptible I/O outlives a Python-level `kill()`) would
+  otherwise disable the watchdog permanently and silently — trading a clean
+  re-exec for the OOM kill the watchdog exists to prevent. Only lanes tied to
+  a pending human reply may hold back a restart.
 - **Idempotent lifecycle notices dedupe across incarnations (#2426).** The
   provider's flood suppression (`notify.py`) only spans a single long-lived
   process, so when the agent loop / bridge (re)starts several times in a short

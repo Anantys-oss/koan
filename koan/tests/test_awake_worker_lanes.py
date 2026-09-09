@@ -10,7 +10,7 @@ import app.command_handlers as ch
 @pytest.fixture(autouse=True)
 def _reset_lanes():
     # Ensure each test starts with empty lanes and no leftover live thread.
-    awake._worker_threads = {"chat": None, "bg": None}
+    awake._worker_threads = {"chat": None, "bg": None, "maintenance": None}
     yield
     for t in awake._worker_threads.values():
         if t is not None and t.is_alive():
@@ -38,6 +38,28 @@ def test_chat_and_bg_run_concurrently():
     assert bg_ran.wait(timeout=2), "bg lane was blocked by busy chat lane"
 
     release_chat.set()
+
+
+def test_maintenance_does_not_block_chat():
+    """A worktree sweep must never delay an interactive reply."""
+    maintenance_started = threading.Event()
+    release_maintenance = threading.Event()
+    chat_ran = threading.Event()
+
+    def maintenance_task():
+        maintenance_started.set()
+        release_maintenance.wait(timeout=2)
+
+    def chat_task():
+        chat_ran.set()
+
+    awake._run_in_worker(maintenance_task, lane="maintenance")
+    assert maintenance_started.wait(timeout=2), "maintenance lane never started"
+
+    awake._run_in_worker(chat_task, lane="chat")
+    assert chat_ran.wait(timeout=2), "chat lane was blocked by maintenance"
+
+    release_maintenance.set()
 
 
 def test_busy_chat_lane_sends_busy_message():

@@ -1,15 +1,19 @@
 """
 Kōan diagnostic — Project health checks.
 
-Validates project paths, git repo status, and remote reachability.
-Remote checks are behind the --full flag (slow).
+Validates project paths, git repo status, worktree branch ownership, and remote
+reachability. Remote checks are behind the --full flag (slow).
 """
 
+import logging
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
-from diagnostics import CheckResult
+from diagnostics import CheckResult, FixResult
+
+logger = logging.getLogger(__name__)
 
 
 def run(koan_root: str, instance_dir: str, full: bool = False) -> List[CheckResult]:
@@ -71,6 +75,72 @@ def run(koan_root: str, instance_dir: str, full: bool = False) -> List[CheckResu
             ))
             continue
 
+        # Check the base branch is not held hostage by another worktree
+        try:
+            holder = _branch_holder(koan_root, name, str(project_path))
+        except Exception as e:
+            logger.warning(
+                "Worktree collision check failed for project %s: %s",
+                name,
+                e,
+            )
+            results.append(CheckResult(
+                name=f"project_{name}_worktree",
+                severity="error",
+                message=f"Project '{name}' worktree collision check failed: {e}",
+                hint="Check logs and project git configuration before retrying /doctor",
+            ))
+            holder = None
+        if holder and not holder.branch:
+            # The check never ran: no configured base branch, no tracking ref for
+            # "main", and refs/remotes/<remote>/HEAD unset. Say so — otherwise a
+            # permanently disabled check is indistinguishable from a clean repo.
+            results.append(CheckResult(
+                name=f"project_{name}_worktree",
+                severity="warn",
+                message=(
+                    f"Project '{name}' worktree collision check skipped: its base "
+                    "branch is not resolvable from local refs"
+                ),
+                hint=(
+                    "Run 'git remote set-head origin -a' in the project, or set "
+                    "git_auto_merge.base_branch in projects.yaml"
+                ),
+            ))
+        elif holder and holder.locked:
+            # git prep cannot heal this one — a locked worktree is deliberately
+            # left alone — so every mission keeps failing until a human acts.
+            results.append(CheckResult(
+                name=f"project_{name}_worktree",
+                severity="error",
+                message=(
+                    f"Project '{name}' base branch '{holder.branch}' is held by a "
+                    f"locked worktree: {holder.holder}"
+                ),
+                hint=(
+                    "Missions for this project fail in git prep until the branch is "
+                    "released, and a locked worktree is never detached "
+                    "automatically. Release it by hand: git worktree unlock "
+                    f"{holder.holder} && git -C {holder.holder} checkout --detach"
+                ),
+                fixable=False,
+            ))
+        elif holder:
+            results.append(CheckResult(
+                name=f"project_{name}_worktree",
+                severity="error",
+                message=(
+                    f"Project '{name}' base branch '{holder.branch}' is held by "
+                    f"another worktree: {holder.holder}"
+                ),
+                hint=(
+                    "Missions for this project fail in git prep until the branch is "
+                    "released. Run /doctor --fix, or detach it by hand: "
+                    f"git -C {holder.holder} checkout --detach"
+                ),
+                fixable=True,
+            ))
+
         # Check for uncommitted changes on main (warn only)
         try:
             result = subprocess.run(
@@ -130,4 +200,150 @@ def run(koan_root: str, instance_dir: str, full: bool = False) -> List[CheckResu
                     message=f"Project '{name}' remote check failed: {e}",
                 ))
 
+    return results
+
+
+def _base_branch(koan_root: str, project_name: str, project_path: str) -> str:
+    """Return the branch git prep will try to check out for this project.
+
+    Mirrors prepare_project_branch(), which resolves the branch through
+    get_project_auto_merge() — so a base_branch written once under `defaults:`
+    counts exactly as much as a per-project override, and only the hardcoded
+    "main" fallback is open to auto-detection. Resolving it any other way here
+    makes the check worse than useless: it would detach a developer's worktree
+    over a branch prep never wants, while missing the collision on the branch
+    prep actually checks out.
+
+    Resolution is **local only**. `/doctor` without --full keeps every network
+    probe out of the default path, and detect_remote_default_branch() falls
+    through to `git ls-remote` (15s, twice) whenever refs/remotes/<remote>/HEAD is
+    unset — which a `git init` + `remote add` + `fetch` project never sets. With up
+    to 50 projects that turns an interactive command into minutes. When the ref is
+    unset we return "" and the caller skips the check rather than going to the wire.
+    """
+    from app.git_prep import (
+        _find_project_entry,
+        _has_remote_tracking_ref,
+        get_project_auto_merge,
+        get_upstream_remote,
+        load_projects_config,
+        local_remote_default_branch,
+    )
+
+    config = load_projects_config(koan_root) or {}
+    branch = get_project_auto_merge(config, project_name).get("base_branch", "main")
+
+    projects = config.get("projects", {}) or {}
+    project_am = (
+        (_find_project_entry(projects, project_name) or {}).get("git_auto_merge", {})
+        or {}
+    )
+    defaults_am = (config.get("defaults", {}) or {}).get("git_auto_merge", {}) or {}
+    configured = bool(project_am.get("base_branch") or defaults_am.get("base_branch"))
+    if configured:
+        return branch
+
+    remote = get_upstream_remote(project_path, project_name, koan_root)
+    # Same gate as prep: an unconfigured "main" that exists here is kept as-is;
+    # only when it has no tracking ref does prep look up the remote's default.
+    if _has_remote_tracking_ref(remote, branch, project_path):
+        return branch
+    return local_remote_default_branch(remote, project_path) or ""
+
+
+@dataclass
+class _BaseBranchStatus:
+    """What /doctor found about the project's base branch.
+
+    ``branch`` is empty when it could not be resolved from local refs — that is
+    reportable in itself, because the check then never runs at all.
+    """
+
+    branch: str
+    holder: str = ""
+    locked: bool = False
+
+
+def _branch_holder(
+    koan_root: str, project_name: str, project_path: str,
+) -> Optional[_BaseBranchStatus]:
+    """Return what is worth reporting about the base branch, else None.
+
+    The collision is the shape that took 90 consecutive missions down: an agent
+    ran `git worktree add /tmp/base140 140`, and git allows a branch in at most
+    one worktree, so the project's own checkout could not return to it.
+
+    Three outcomes are reportable and each needs a different message:
+    a base branch that local refs cannot resolve (the check is a no-op and the
+    operator should know why), an unlocked holder (git prep self-heals it, and
+    `--fix` can too), and a **locked** holder — the one collision nothing
+    automates away, so it must never be silently dropped. None means the base
+    branch resolved and nothing holds it.
+    """
+    branch = _base_branch(koan_root, project_name, project_path)
+    if not branch:
+        return _BaseBranchStatus(branch="")
+    from app.git_prep import _branch_holder_worktree
+    wt = _branch_holder_worktree(project_path, branch)
+    if wt is None or not wt.path:
+        return None
+    return _BaseBranchStatus(branch=branch, holder=wt.path, locked=bool(wt.locked))
+
+
+def fix(koan_root: str, instance_dir: str) -> List[FixResult]:
+    """Detach any worktree holding a project's base branch.
+
+    Detach, never remove: this frees the branch while leaving the worktree, its
+    files and any uncommitted changes exactly where they are. Reclaiming the disk
+    belongs to the bridge's foreign-worktree sweep.
+    """
+    results: List[FixResult] = []
+    try:
+        from app.projects_config import get_projects_from_config, load_projects_config
+        config = load_projects_config(koan_root)
+    except Exception as e:
+        return [FixResult(
+            name="projects_load", success=False,
+            message=f"Could not load projects config: {e}",
+        )]
+    if config is None:
+        return results
+
+    for name, path in get_projects_from_config(config):
+        if not Path(path).is_dir():
+            continue
+        try:
+            holder = _branch_holder(koan_root, name, str(path))
+        except Exception as e:
+            logger.warning(
+                "Worktree collision fix check failed for project %s: %s",
+                name,
+                e,
+            )
+            results.append(FixResult(
+                name=f"project_{name}_worktree",
+                success=False,
+                message=f"Could not check worktree collision for {name}: {e}",
+            ))
+            continue
+        if not holder or not holder.holder or holder.locked:
+            # Nothing to detach, or a locked workspace `run()` reports but never
+            # touches.
+            continue
+        branch, holder_path = holder.branch, holder.holder
+        try:
+            from app.git_prep import _release_branch_from_worktree
+            freed = _release_branch_from_worktree(holder_path, branch)
+            detail = holder_path
+        except Exception as e:
+            freed, detail = False, f"{holder_path} ({e})"
+        results.append(FixResult(
+            name=f"project_{name}_worktree",
+            success=freed,
+            message=(
+                f"Detached {detail}, releasing '{branch}' for {name}"
+                if freed else
+                f"Could not detach {detail} holding '{branch}' for {name}"
+            ),
+        ))
     return results
