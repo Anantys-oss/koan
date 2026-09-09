@@ -835,6 +835,15 @@ def run_startup(koan_root: str, instance: str, projects: list):
         _safe_run("Mission store ingest", ensure_ingested, instance)
         from app.utils import reap_stale_mission_tmp_dirs
         _safe_run("Stale mission tmp sweep", reap_stale_mission_tmp_dirs)
+        # A scope outlives a hard crash or SIGKILL of run.py: teardown covers
+        # every ordinary mission exit, but not one that never runs. The
+        # registry is exactly the durable handle for that case, and a record
+        # left under this KOAN_ROOT can only be a previous incarnation of this
+        # instance — the unit name is a uuid4 that cannot collide, and a
+        # fallback pid-<n> record is start-time-verified before it is
+        # signalled. Same shape as the stale-TMPDIR sweep above.
+        from app.mission_scope import stop_registered_scopes
+        _safe_run("Leaked mission scope sweep", stop_registered_scopes, koan_root)
         _safe_run("Health check", check_health, koan_root)
         _safe_run("Config baseline", write_config_baseline, koan_root)
 

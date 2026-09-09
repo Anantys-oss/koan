@@ -1503,6 +1503,18 @@ def _notify_mission_result(
         _log_runner("error", f"Mission result notification failed: {e}")
 
 
+def _memory_cap_result(memory_cap_detail: str) -> dict:
+    """The two cap keys for *memory_cap_detail* ("" when the mission fit).
+
+    Passed in by the caller that owns the mission, never read off a global:
+    ``app.run._last_mission_memory_cap`` belongs to the sequential mission the
+    agent loop is running, and a parallel session reaped in the next iteration
+    would otherwise inherit that flag while never reporting its own.
+    """
+    detail = str(memory_cap_detail or "")
+    return {"memory_cap_exceeded": bool(detail), "memory_cap_detail": detail}
+
+
 def _fire_post_mission_hook(
     instance_dir: str,
     project_name: str,
@@ -1732,6 +1744,7 @@ def run_post_mission(
     mission_tier: Optional[str] = None,
     provider_name: str = "",
     is_skill_dispatch: bool = False,
+    memory_cap_detail: str = "",
 ) -> dict:
     """Run the complete post-mission processing pipeline.
 
@@ -1755,6 +1768,8 @@ def run_post_mission(
         is_skill_dispatch: When True, stdout_file contains skill runner text
             (not Claude CLI JSON). Skips token extraction warnings and
             quota detection (the caller handles quota independently).
+        memory_cap_detail: Human phrase for a cgroup memory-cap kill of *this*
+            mission ("" when it fit), from the caller's own ``ScopedProcess``.
 
     Returns:
         Dict with keys:
@@ -1766,6 +1781,10 @@ def run_post_mission(
             auto_merge_branch (str|None): Branch name if auto-merge attempted.
             quota_exhausted (bool): Whether quota exhaustion was detected.
             quota_info (tuple|None): (reset_display, resume_message) if exhausted.
+            memory_cap_exceeded (bool): Whether the mission's cgroup scope
+                OOM-killed it (``mission_limits``).
+            memory_cap_detail (str): Human phrase for that cap hit, e.g.
+                "exceeded memory cap (5.9G of 5.75G)"; "" otherwise.
     """
     result = {
         "success": exit_code == 0,
@@ -1778,7 +1797,15 @@ def run_post_mission(
         "quota_info": None,
         "cost_tracking_failed": False,
         "pr_url": "",
+        "memory_cap_exceeded": False,
+        "memory_cap_detail": "",
     }
+    # A mission the cgroup scope OOM-killed gets a distinct outcome rather than
+    # a generic non-zero exit, so the post_mission hook context can say
+    # "exceeded memory cap (5.9G of 5.75G)" instead of leaving an operator to
+    # guess. Deliberately never retried — re-running an oversubscribed build
+    # only repeats the meltdown (see mission_executor's retry guards).
+    result.update(_memory_cap_result(memory_cap_detail))
 
     tracker = _PipelineTracker()
 

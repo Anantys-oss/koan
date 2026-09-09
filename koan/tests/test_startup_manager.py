@@ -913,6 +913,7 @@ class TestRunStartup:
         assert result == (10, 60, "koan/")
         mock_banner.assert_called_once_with({"provider": "claude"})
 
+    @patch("app.mission_scope.stop_registered_scopes", return_value=[])
     @patch("app.startup_manager.run_morning_ritual")
     @patch("app.startup_manager.run_daily_report")
     @patch("app.startup_manager.run_git_sync")
@@ -944,7 +945,7 @@ class TestRunStartup:
         mock_sanity, mock_memory, mock_history, mock_health,
         mock_reflection, mock_pause, mock_git_id, mock_gh_auth,
         mock_set_status, mock_build_status, mock_notify,
-        mock_git_sync, mock_daily, mock_ritual,
+        mock_git_sync, mock_daily, mock_ritual, mock_scope_sweep,
     ):
         from app.startup_manager import run_startup
         run_startup("/tmp/koan", "/tmp/koan/instance", [("proj1", "/p1")])
@@ -965,6 +966,10 @@ class TestRunStartup:
         mock_git_sync.assert_called_once()
         mock_daily.assert_called_once()
         mock_ritual.assert_called_once()
+        # A mission scope outlives a hard crash of run.py, which never reaches
+        # ScopedProcess.teardown — the registry is the durable handle for that
+        # case, so startup reconciles it like the stale-TMPDIR sweep does.
+        mock_scope_sweep.assert_called_once_with("/tmp/koan")
 
     @patch("app.startup_manager.run_morning_ritual")
     @patch("app.startup_manager.run_daily_report")

@@ -620,3 +620,377 @@ class TestRecoverStaleSessions:
 
         retrieved = registry.get("permission")
         assert retrieved.status == "running"
+
+
+# ---------------------------------------------------------------------------
+# Mission containment: parallel sessions are the THIRD spawn path.
+#
+# The first cut of mission containment wired run_claude_task and
+# _run_skill_mission and missed this one, which
+# was then confirmed live on a fleet host: a parallel /implement logged
+# "[parallel] Spawned bbf2bd38511f" while `systemctl list-units 'koan-mission-*'`
+# listed nothing, and its Gradle daemon sat at pid=97020 ppid=1 rss=822MB in
+# koan's own SSH login scope (session-68.scope) — already out of the mission's
+# process group, so os.killpg could never have reached it.
+# ---------------------------------------------------------------------------
+
+class _ScopeSpawnHarness:
+    """Spawn a session with the worktree/provider/CLI boundaries stubbed out."""
+
+    @staticmethod
+    def spawn(registry, tmp_path, monkeypatch, session_id="scopesess1234",
+              cmd=None, **spawn_kwargs):
+        # Keep the scope registry (and `make stop`'s view of it) inside the
+        # test's own tree rather than the worker's ambient KOAN_ROOT.
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+
+        wt = MagicMock()
+        wt.session_id = session_id
+        wt.path = str(tmp_path / "worktree")
+        wt.branch = f"koan/session-{session_id}"
+
+        captured = {}
+
+        def fake_popen(argv, provider=None, **kwargs):
+            captured["argv"] = list(argv)
+            captured["kwargs"] = dict(kwargs)
+            proc = MagicMock()
+            proc.pid = 4321
+            proc.poll.return_value = None
+            return proc, MagicMock()
+
+        with patch("app.session_manager.create_worktree", return_value=wt), \
+             patch("app.session_manager.inject_worktree_claude_md"), \
+             patch("app.mission_runner.build_mission_command",
+                   return_value=(cmd or ["echo", "hi"], [])), \
+             patch("app.cli_exec.popen_cli", side_effect=fake_popen):
+            session = spawn_session(
+                mission_text="test",
+                project_name="p",
+                project_path=str(tmp_path),
+                instance_dir=registry.instance_dir,
+                registry=registry,
+                **spawn_kwargs,
+            )
+        return session, captured
+
+
+class TestSpawnSessionMissionScope:
+    """spawn_session must go through mission_scope, not bare popen_cli."""
+
+    def test_cli_is_started_through_launch_scoped(self, registry, tmp_path, monkeypatch):
+        from app.mission_scope import ScopedProcess
+
+        session, captured = _ScopeSpawnHarness.spawn(registry, tmp_path, monkeypatch)
+
+        # The ScopedProcess is what proves the route: only launch_scoped builds
+        # one, and only it passes `launcher` down to popen_cli so the wrapping
+        # lands after the prompt rewrite.
+        assert isinstance(session._scoped, ScopedProcess)
+        assert session._scoped.proc is session._proc
+        assert "launcher" in captured["kwargs"]
+        session._cleanup()
+
+    def test_start_new_session_still_set_exactly_once(self, registry, tmp_path, monkeypatch):
+        """launch_scoped owns the flag now — it must not be passed twice."""
+        session, captured = _ScopeSpawnHarness.spawn(registry, tmp_path, monkeypatch)
+
+        assert captured["kwargs"]["start_new_session"] is True
+        session._cleanup()
+
+    def test_the_mission_argv_is_never_rewritten(self, registry, tmp_path, monkeypatch):
+        session, captured = _ScopeSpawnHarness.spawn(
+            registry, tmp_path, monkeypatch, cmd=["echo", "contained"],
+        )
+
+        assert captured["argv"] == ["echo", "contained"]
+        session._cleanup()
+
+    def test_the_scope_is_registered_under_koan_root(self, registry, tmp_path, monkeypatch):
+        """`make stop` reaches a live parallel session through this record."""
+        from app.signals import MISSION_SCOPES_DIR
+
+        session, _ = _ScopeSpawnHarness.spawn(registry, tmp_path, monkeypatch)
+
+        entries = list((tmp_path / MISSION_SCOPES_DIR).iterdir())
+        assert len(entries) == 1
+        record = json.loads(entries[0].read_text())
+        assert record["pid"] == 4321
+        session._cleanup()
+
+    def test_disabled_reproduces_the_unscoped_spawn(self, registry, tmp_path, monkeypatch):
+        """mission_limits.enabled: false must behave exactly as before mission scopes."""
+        from app import mission_scope
+
+        with patch("app.config.get_mission_limits_config",
+                   return_value={"enabled": False}), \
+             patch.object(mission_scope, "_probe_systemd_run") as probe:
+            session, captured = _ScopeSpawnHarness.spawn(registry, tmp_path, monkeypatch)
+
+        probe.assert_not_called()
+        assert session._scoped.mode == "off"
+        assert session._scoped.unit == ""
+        assert captured["kwargs"]["launcher"] == []
+        assert captured["kwargs"]["start_new_session"] is True
+        session._cleanup()
+
+    def test_fallback_when_systemd_run_is_absent_still_spawns(
+        self, registry, tmp_path, monkeypatch,
+    ):
+        """The conftest fixture reports no usable systemd-run — the macOS case."""
+        session, captured = _ScopeSpawnHarness.spawn(registry, tmp_path, monkeypatch)
+
+        assert session._scoped.mode == "session"
+        assert captured["kwargs"]["launcher"] == []
+        assert session.pid == 4321
+        session._cleanup()
+
+    def test_spawn_failure_still_closes_the_file_handles(self, registry, tmp_path, monkeypatch):
+        """The scope wrapping must not defeat the existing leak guard."""
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        wt = MagicMock()
+        wt.session_id = "scopeboom1234"
+        wt.path = str(tmp_path / "worktree")
+        wt.branch = "koan/session-scopeboom1234"
+
+        opened = []
+        real_open = open
+
+        def tracking_open(path, mode="r", **kwargs):
+            f = real_open(path, mode, **kwargs)
+            opened.append(f)
+            return f
+
+        with patch("app.session_manager.create_worktree", return_value=wt), \
+             patch("app.session_manager.inject_worktree_claude_md"), \
+             patch("app.mission_runner.build_mission_command", return_value=(["echo"], [])), \
+             patch("builtins.open", side_effect=tracking_open), \
+             patch("app.cli_exec.popen_cli", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                spawn_session(
+                    mission_text="test",
+                    project_name="p",
+                    project_path=str(tmp_path),
+                    instance_dir=registry.instance_dir,
+                    registry=registry,
+                )
+
+        assert len(opened) == 2
+        assert all(f.closed for f in opened), "leaked file handle(s)"
+
+
+class TestParallelSessionScopeTeardown:
+    """Both exit paths must drop the boundary — success included."""
+
+    def test_poll_sessions_tears_the_scope_down_on_success(
+        self, registry, sample_session, tmp_path,
+    ):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock()
+        sample_session._scoped = MagicMock()
+        sample_session.stdout_file = ""
+        sample_session.stderr_file = ""
+
+        registry.register(sample_session)
+        results = poll_sessions([sample_session], registry)
+
+        assert len(results) == 1
+        assert results[0].session.status == "done"
+        sample_session._scoped.teardown.assert_called_once_with()
+
+    def test_poll_sessions_tears_down_before_the_tmpdir_is_reaped(
+        self, registry, sample_session,
+    ):
+        """Order matters: a leaked daemon must not still be writing into the
+        scratch dir _cleanup() is about to remove."""
+        order = []
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock(side_effect=lambda: order.append("cleanup"))
+        scoped = MagicMock()
+        scoped.teardown.side_effect = lambda **kw: order.append("teardown")
+        sample_session._scoped = scoped
+        sample_session.stdout_file = ""
+        sample_session.stderr_file = ""
+
+        registry.register(sample_session)
+        poll_sessions([sample_session], registry)
+
+        assert order == ["teardown", "cleanup"]
+
+    def test_poll_sessions_reports_the_sessions_own_cap_hit(
+        self, registry, sample_session,
+    ):
+        """A capped parallel session must report its own cap, not a global.
+
+        The verdict is read after teardown(), which is what collects the
+        cgroup's OOM evidence.
+        """
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 137
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock()
+        scoped = MagicMock()
+        scoped.cap_message.return_value = "exceeded memory cap (5.9G of 5.75G)"
+        sample_session._scoped = scoped
+        sample_session.stdout_file = ""
+        sample_session.stderr_file = ""
+
+        registry.register(sample_session)
+        results = poll_sessions([sample_session], registry)
+
+        assert results[0].memory_cap_detail == "exceeded memory cap (5.9G of 5.75G)"
+
+    def test_poll_sessions_never_borrows_the_sequential_missions_cap(
+        self, registry, sample_session,
+    ):
+        """A session that fit reports nothing, whatever the agent loop last saw."""
+        import app.run as run_mod
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock()
+        scoped = MagicMock()
+        scoped.cap_message.return_value = ""
+        sample_session._scoped = scoped
+        sample_session.stdout_file = ""
+        sample_session.stderr_file = ""
+
+        registry.register(sample_session)
+        run_mod._last_mission_memory_cap = "exceeded memory cap (5.9G of 5.75G)"
+        try:
+            results = poll_sessions([sample_session], registry)
+        finally:
+            run_mod._last_mission_memory_cap = ""
+
+        assert results[0].memory_cap_detail == ""
+
+    def test_a_teardown_failure_still_collects_the_other_sessions(
+        self, registry, sample_session, capsys,
+    ):
+        def _running(session_id):
+            s = Session(id=session_id, mission_text="m", project_name="p",
+                        project_path="/tmp/fake", worktree_path="/tmp/fake/wt",
+                        branch_name="b", status="running")
+            s._proc = MagicMock(**{"poll.return_value": 0})
+            s._cleanup = MagicMock()
+            return s
+
+        first = _running("boom")
+        first._scoped = MagicMock()
+        first._scoped.teardown.side_effect = RuntimeError("systemctl exploded")
+        second = _running("fine")
+        second._scoped = MagicMock()
+        registry.register(first)
+        registry.register(second)
+
+        results = poll_sessions([first, second], registry)
+
+        assert {r.session.id for r in results} == {"boom", "fine"}
+        second._scoped.teardown.assert_called_once()
+        assert "scope teardown error" in capsys.readouterr().err
+
+    def test_sessions_without_a_scope_are_unaffected(self, registry, sample_session):
+        """Registry-restored sessions carry no transient _scoped attribute."""
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock()
+        sample_session.stdout_file = ""
+        sample_session.stderr_file = ""
+
+        registry.register(sample_session)
+        results = poll_sessions([sample_session], registry)
+
+        assert len(results) == 1
+
+    def test_kill_session_tears_the_scope_down(self, registry, sample_session):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 99999
+        mock_proc.wait.return_value = None
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock()
+        sample_session._scoped = MagicMock()
+
+        registry.register(sample_session)
+
+        with patch("os.getpgid", return_value=99999), \
+             patch("os.killpg"), \
+             patch("app.session_manager.remove_worktree"):
+            kill_session(sample_session, registry)
+
+        # Our own SIGKILL must not be reported back as a memory-cap hit.
+        sample_session._scoped.teardown.assert_called_once_with(
+            koan_initiated_kill=True,
+        )
+
+    def test_kill_session_keeps_the_process_group_kill(self, registry, sample_session):
+        """The scope teardown is an addition to killpg, never a replacement."""
+        import signal as _signal
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 33333
+        mock_proc.wait.return_value = None
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock()
+        sample_session._scoped = MagicMock()
+
+        registry.register(sample_session)
+
+        with patch("os.getpgid", return_value=33333), \
+             patch("os.killpg") as mock_killpg, \
+             patch("app.session_manager.remove_worktree"):
+            kill_session(sample_session, registry)
+
+        assert mock_killpg.call_args_list[0].args == (33333, _signal.SIGTERM)
+        sample_session._scoped.teardown.assert_called_once()
+
+    def test_kill_session_survives_a_teardown_failure(
+        self, registry, sample_session, capsys,
+    ):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 0
+        sample_session._proc = mock_proc
+        sample_session._cleanup = MagicMock()
+        sample_session._scoped = MagicMock()
+        sample_session._scoped.teardown.side_effect = RuntimeError("no manager")
+
+        registry.register(sample_session)
+
+        with patch("app.session_manager.remove_worktree"):
+            kill_session(sample_session, registry)
+
+        assert sample_session.status == "failed"
+        assert registry.get(sample_session.id).status == "failed"
+        assert "scope teardown error" in capsys.readouterr().err
+
+    def test_fallback_teardown_kills_the_mission_process_group(
+        self, registry, tmp_path, monkeypatch,
+    ):
+        """With no systemd-run the boundary IS the process group, and killing
+        it must still happen on the abort path."""
+        from app import mission_scope
+
+        session, _ = _ScopeSpawnHarness.spawn(
+            registry, tmp_path, monkeypatch, session_id="fallbackkill",
+        )
+        assert session._scoped.mode == "session"
+        session._scoped._pgid = 4321
+
+        with patch.object(mission_scope, "kill_process_group") as killer, \
+             patch.object(mission_scope, "kill_orphaned_process_group") as orphan_killer, \
+             patch.object(mission_scope, "_systemctl") as systemctl, \
+             patch("app.session_manager.remove_worktree"), \
+             patch("os.getpgid", return_value=4321), \
+             patch("os.killpg"):
+            kill_session(session, registry)
+
+        killer.assert_called_once_with(session._proc)
+        orphan_killer.assert_called_once_with(4321)
+        systemctl.assert_not_called()
