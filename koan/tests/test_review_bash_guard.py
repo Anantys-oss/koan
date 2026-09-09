@@ -62,6 +62,16 @@ ALLOWED = [
     "git grep -rn 'def foo\\|class Bar' koan",
     "rg -n 'foo|bar' src",
     "git log --grep='fix|bug' -n 20",
+    # Stderr-only redirection is the one allowed redirection: `/dev/null`
+    # discards and `&1` merges into an existing stream, so neither can create or
+    # truncate a file. Denying these taught the model nothing actionable and it
+    # retried them for a whole turn budget on every review.
+    "ls -la 2>/dev/null",
+    "git log --oneline -5 2>/dev/null",
+    "find . -maxdepth 3 -type f 2>/dev/null",
+    "cat f.py 2> /dev/null",
+    "git status 2>&1",
+    "rg -n 'symbol' src 2>/dev/null",
 ]
 
 # The list that matters. Each entry is (command, label) where label names the
@@ -98,6 +108,22 @@ REJECTED = [
     ("git log\nrm -rf .", "embedded-newline"),
     ("git log\rrm -rf .", "embedded-cr"),
     ('git "log" ; rm', "operator-after-quoted-token"),
+    # --- near-misses of the allowed stderr-only redirection ----------------
+    # Each one differs from `2>/dev/null` / `2>&1` by a few bytes and each one
+    # writes, chains, or escapes. The narrowness of _SAFE_STDERR_REDIRECT is
+    # what keeps them denied, so every clause of it gets a case here.
+    ("cat f 2>/tmp/x", "stderr-redirect-to-real-file"),
+    ("cat f 2>>/tmp/x", "stderr-append-to-real-file"),
+    ("cat f 2>/dev/nullx", "stderr-devnull-lookalike"),
+    ("cat f 2>/dev/null/../../etc/passwd", "stderr-devnull-path-suffix"),
+    ("cat f &>/dev/null", "ampersand-redirect-all-streams"),
+    ("cat f >/dev/null", "stdout-redirect-is-still-redirect"),
+    ("cat f 2>/dev/null > out", "allowed-form-plus-real-redirect"),
+    ("cat f 2>/dev/null; rm -rf .", "allowed-form-plus-chain"),
+    ("ls 2>&1&& rm -rf /", "stderr-merge-glued-to-and-chain"),
+    ("ls x2>/dev/null", "stderr-form-not-its-own-word"),
+    ("cat f 2>&2", "stderr-merge-to-unlisted-fd"),
+    ("cat f 3>/dev/null", "unlisted-fd-redirect"),
     # --- write flags on otherwise-allowed commands ------------------------
     ("sed -i 's/a/b/' f.py", "sed-in-place"),
     ("sed -i.bak 's/a/b/' f.py", "sed-in-place-suffix"),
@@ -388,6 +414,49 @@ class TestOperandConstraint:
         allowed, reason = self._checked("cat src/not-yet.py f.py")
         assert allowed, reason
 
+    def test_absolute_paths_inside_the_worktree_are_allowed(self):
+        # The regression that cost a night of reviews: the gate rejected any
+        # operand starting with `/` before comparing it to cwd, so the worktree
+        # itself came back as "resolves outside the review worktree". Read/Glob/
+        # Grep accept these same paths, so the model could see the denial was
+        # false and retried instead of rephrasing.
+        ok = [
+            f"ls -la {self.REVIEW_CWD}",
+            f"ls -la {self.REVIEW_CWD}/",
+            f"ls -la {self.REVIEW_CWD}/src",
+            f"cat {self.REVIEW_CWD}/src/a.py",
+            f"git diff -- {self.REVIEW_CWD}/src",
+            # `..` is likewise judged by where it lands, not by its spelling.
+            "cat src/../f.py",
+        ]
+        for command in ok:
+            allowed, reason = self._checked(command)
+            assert allowed, f"{command!r} should be allowed, got: {reason}"
+
+    def test_absolute_paths_outside_the_worktree_are_still_rejected(self):
+        # Relaxing the spelling must not relax the boundary: the sibling
+        # directory and the parent are both still out.
+        for command in [
+            "ls -la /review",
+            "ls -la /review/other-worktree",
+            f"cat {self.REVIEW_CWD}/../escape.py",
+            f"cat {self.REVIEW_CWD}x/f.py",  # prefix match is not containment
+        ]:
+            allowed, reason = self._checked(command)
+            assert not allowed, f"ESCAPE: {command!r} was allowed"
+            assert "outside the review worktree" in reason, command
+
+    def test_worktree_under_a_symlinked_parent_is_allowed(self, tmp_path):
+        # cwd must be resolved before comparison. Comparing a resolved operand
+        # against an unresolved base rejects the whole worktree wherever the
+        # parent is a symlink (/tmp -> /private/tmp on macOS).
+        real = tmp_path / "real"
+        (real / "src").mkdir(parents=True)
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        allowed, reason = self._checked(f"ls -la {link}/src", cwd=str(link))
+        assert allowed, reason
+
 
 class TestHookIO:
     def _run(self, payload):
@@ -420,6 +489,51 @@ class TestHookIO:
     def test_non_bash_tool_is_not_gated(self):
         proc = self._run({"tool_name": "Read", "tool_input": {"file_path": "x"}})
         assert self._decision(proc)["permissionDecision"] == "allow"
+
+    def test_end_to_end_replay_of_the_reviews_that_failed(self, tmp_path):
+        """The exact commands a night of reviews spent its turn budget on.
+
+        Both halves of the gate run here (is_allowed + _check_operands with a
+        real cwd), which is the only place the stderr elision and the operand
+        containment are exercised together. The `2>/dev/null` word must not
+        survive into the operand check as a relative file named `2>`.
+        """
+        worktree = tmp_path / "review-4242-deadbeef"
+        (worktree / "src").mkdir(parents=True)
+        for command in [
+            "ls -la",
+            f"ls -la {worktree}",
+            f"ls -la {worktree}/src",
+            "git log --oneline -5 2>/dev/null",
+            "find . -maxdepth 3 -type f 2>/dev/null",
+            "ls -la 2>/dev/null",
+        ]:
+            proc = self._run({
+                "tool_name": "Bash",
+                "cwd": str(worktree),
+                "tool_input": {"command": command},
+            })
+            decision = self._decision(proc)
+            assert decision["permissionDecision"] == "allow", (
+                f"{command!r}: {decision['permissionDecisionReason']}"
+            )
+
+    def test_end_to_end_escapes_stay_denied_with_a_real_cwd(self, tmp_path):
+        worktree = tmp_path / "review-4242-deadbeef"
+        worktree.mkdir(parents=True)
+        for command in [
+            "cat /etc/passwd",
+            f"ls -la {worktree.parent}",
+            "cat ~/.ssh/id_rsa",
+            "git log --oneline 2>/tmp/stolen",
+            "ls -la 2>/dev/null > /tmp/stolen",
+        ]:
+            proc = self._run({
+                "tool_name": "Bash",
+                "cwd": str(worktree),
+                "tool_input": {"command": command},
+            })
+            assert self._decision(proc)["permissionDecision"] == "deny", command
 
     @pytest.mark.parametrize("payload,label", [
         ({"tool_name": "Bash"}, "no tool_input"),

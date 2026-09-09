@@ -156,6 +156,35 @@ _JQ_ENV_ACCESS = re.compile(r"(?:^|[^.\w$])env(?!\w)|\$ENV\b")
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+# The only redirection a reader may use. ``2>/dev/null`` discards stderr and
+# ``2>&1`` merges it into an existing stream; neither can create or truncate a
+# file, so neither converts a reader into a writer -- the single property the
+# redirection ban exists to hold.
+#
+# Deliberately narrow, and every part of the narrowness is load-bearing:
+#   * ``/dev/null`` is spelled out, so ``2>/tmp/x`` (a real write) stays denied.
+#   * ``(?:^|(?<=\s))`` requires the form to start its own word, so ``x2>/dev/null``
+#     keeps its ``>`` and is rejected.
+#   * ``(?=\s|$)`` requires it to end one, so ``2>/dev/null/../../etc/passwd``
+#     and ``2>&1&& rm -rf /`` keep their metacharacters and are rejected.
+# Elision happens before the structural scan, so any *other* ``>``/``<`` left in
+# the string -- including a second one alongside an allowed form, as in
+# ``cat f 2>/dev/null > out`` -- still fires the reject.
+_SAFE_STDERR_REDIRECT = re.compile(r"(?:^|(?<=\s))2>[ ]?(?:/dev/null|&1)(?=\s|$)")
+
+
+def _strip_safe_stderr_redirects(command: str) -> str:
+    """Remove the allowed stderr-only redirections from *command*.
+
+    Returns the string the rest of the gate reasons about. Callers must use the
+    result for BOTH the structural scan and the operand check, so the elided
+    words never reappear as bogus path operands (``2>/dev/null`` would otherwise
+    look like a relative file named ``2>``).
+    """
+    if not isinstance(command, str):
+        return command
+    return _SAFE_STDERR_REDIRECT.sub(" ", command)
+
 
 def _has_expandable_dollar(command: str) -> bool:
     """True if ``command`` contains a ``$`` that Bash would expand.
@@ -335,15 +364,25 @@ def _check_operands(
       which passes it through untouched), so it can resolve outside ``cwd`` even
       when the literal token looks relative. There is no legitimate use for the
       home directory in a review of a worktree.
-    * Absolute and ``..``-escaping paths are rejected: both are how an operand
-      points at a file outside the worktree. ``head /etc/passwd``,
-      ``git diff -- /etc/hosts`` and ``cat ../other`` are in this class.
-    * Relative operands are resolved against ``cwd`` and their resolved path is
-      checked to stay under it, so ``cat x/../../etc/passwd`` cannot escape even
-      though no single segment is ``..``. Nothing is required to exist -- the
-      path is checked lexically plus symlink resolution when the referent does
-      exist (a symlink inside the worktree to a host file still points outside).
+    * Everything else is judged by RESOLUTION, not by spelling. Absolute paths
+      and ``..`` segments are not rejected on sight -- they are resolved and then
+      contained. ``head /etc/passwd``, ``git diff -- /etc/hosts`` and
+      ``cat ../other`` still fail, because they resolve outside; but
+      ``ls /abs/path/to/this/worktree`` now passes, because it does not.
+      Rejecting the absolute spelling was a false positive with a cost:
+      ``Read``/``Glob``/``Grep`` accept the worktree's own absolute path, so the
+      gate told the model that the directory it was standing in "resolves
+      outside the review worktree" -- a claim it could see was false, so it
+      retried rather than rephrasing (observed burning a whole turn budget).
+    * ``cwd`` is resolved too. Comparing a resolved operand against an
+      unresolved base breaks wherever the worktree's parent is a symlink
+      (``/tmp`` -> ``/private/tmp`` on macOS), rejecting the entire worktree.
+    * Nothing is required to exist -- the path is checked lexically plus symlink
+      resolution when the referent does exist, so ``cat x/../../etc/passwd``
+      cannot escape even though no single segment is ``..``, and a symlink
+      inside the worktree pointing at a host file still resolves outside.
     """
+    base = os.path.realpath(cwd)
     for token in argv:
         if not _is_pathish(token):
             continue
@@ -353,16 +392,19 @@ def _check_operands(
             # inside it by construction. Skip the (throwaway) Path work; the
             # model's common case stays cheap and correct.
             continue
-        if raw.startswith(("~", "/")) or ".." in raw.split("/"):
+        if raw.startswith("~"):
             return _reject(
-                f"`{token}` resolves outside the review worktree "
-                f"({what}); only paths within it may be read"
+                f"`{token}` is a home-directory path and resolves outside the "
+                f"review worktree ({what}) -- the shell expands `~` after this "
+                "gate sees it; only paths within the worktree may be read"
             )
-        resolved = os.path.realpath(os.path.join(cwd, raw))
-        if not (resolved == cwd or resolved.startswith(cwd + os.sep)):
+        # os.path.join discards `base` when `raw` is absolute, which is exactly
+        # right: an absolute operand names itself and is then contained below.
+        resolved = os.path.realpath(os.path.join(base, raw))
+        if not (resolved == base or resolved.startswith(base + os.sep)):
             return _reject(
                 f"`{token}` resolves to {resolved!r}, outside the review "
-                f"worktree ({what}); only paths within it may be read"
+                f"worktree {base!r} ({what}); only paths within it may be read"
             )
     return True, ""
 
@@ -410,6 +452,12 @@ def is_allowed(command: str) -> Tuple[bool, str]:
 
     if len(command) > MAX_COMMAND_LEN:
         return _reject(f"command exceeds {MAX_COMMAND_LEN} characters")
+
+    # Length is measured on what the model sent; every check below reasons about
+    # the string with the allowed stderr-only redirections elided. See
+    # _strip_safe_stderr_redirects -- ``main`` elides identically before the
+    # operand check so the two halves of the gate never see different commands.
+    command = _strip_safe_stderr_redirects(command)
 
     # Reject control and non-ASCII characters outright rather than normalizing
     # them: homoglyphs and bidirectional overrides make a command read as one
@@ -556,7 +604,9 @@ def main(argv: Sequence[str] = ()) -> int:
         # read-only command cannot open an arbitrary host path.
         cwd = payload.get("cwd") or os.getcwd()
         allowed, reason = _check_operands(
-            shlex.split(command, posix=True), str(cwd), "Bash command",
+            shlex.split(_strip_safe_stderr_redirects(command), posix=True),
+            str(cwd),
+            "Bash command",
         )
     print(_decision(allowed, reason or "read-only review shell"))
     return 0

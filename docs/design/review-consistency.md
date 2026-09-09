@@ -4,7 +4,7 @@ title: "Review consistency, triage & human dispositions"
 description: "Why /review is stable across re-runs, how the yellow-tier bar and pre-existing labeling work, and the deliberate 'human decides' posture (and its injection tradeoff) for honoring PR-comment dispositions."
 tags: [design, review, decision]
 created: 2026-07-22
-updated: 2026-07-22
+updated: 2026-09-09
 ---
 
 # Review consistency, triage & human dispositions (spec 010)
@@ -71,6 +71,21 @@ Attribution and dismiss-honoring are enforced by the prompt (the model's narrati
 cannot be deterministically verified); the `[Deferred]` downgrade *is* enforced in Python
 (`review_triage.enforce_deferred`). Stickiness and retraction come for free: PR comments
 are the persistent store, re-read each review, so "latest comment wins".
+
+### The review shell allows stderr-only redirection
+
+The read-only review shell rejects redirection on the raw string, with two exceptions:
+`2>/dev/null` and `2>&1`, each only when it stands as its own word. Neither can create
+or truncate a file, so neither turns a reader into a writer. Operands are likewise
+confined by *resolution* rather than spelling — an absolute path that resolves inside the
+pinned worktree is allowed, matching what `Read`/`Glob`/`Grep` already accept, so the gate
+never denies a path with a reason the model can see is false. Both were false positives
+that cost turns on every review. Contract: `specs/skills/review.md`.
+
+A related tripwire lives in the test suite: no `load_prompt` caller may pass a
+placeholder its template does not declare, because `prompts._substitute` drops unknown
+keys silently and the loss is invisible at both ends. See
+`koan/tests/test_prompts.py::TestNoPlaceholderIsSilentlyDropped`.
 
 ## Related
 
