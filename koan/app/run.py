@@ -3459,8 +3459,13 @@ def _run_skill_mission(
     """
     from app.debug import debug_log
 
-    global _last_mission_memory_cap
+    global _last_mission_memory_cap, _last_mission_aborted
     _last_mission_memory_cap = ""
+    # Per-mission state, reset the way run_claude_task resets it: this path
+    # reads the flag at teardown to tell Kōan's own SIGKILL from the cap
+    # firing, so an abort left over from a previous mission would otherwise
+    # suppress this mission's cap verdict for the rest of the process.
+    _last_mission_aborted = False
 
     mission_start = int(time.time())
     koan_pkg_dir = os.path.join(koan_root, "koan")

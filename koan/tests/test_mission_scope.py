@@ -307,6 +307,35 @@ class TestProbeVerifiesScopeCreation:
         assert calls and "--scope" in calls[0]
         assert any(a.startswith("--property=MemoryMax=") for a in calls[0])
 
+    def test_the_probe_target_is_not_left_to_PATH(self):
+        """`true` is a shell builtin on a minimal image, so PATH may not have it.
+
+        The probe still has to run something, and the interpreter running Kōan
+        exists by definition.
+        """
+        with patch.object(mission_scope.shutil, "which", return_value=None), \
+             patch.object(mission_scope.os, "access", return_value=False):
+            assert mission_scope._probe_helper_argv()[0] == sys.executable
+
+    def test_no_probe_target_means_unusable_not_assumed_usable(self):
+        """An unanswered probe is not a passing probe.
+
+        Assuming usable reinstates the failure the probe exists for: every
+        mission wrapped in a scope the manager refuses, exiting non-zero with
+        empty output.
+        """
+        probe, which, euid, is_dir = self._live_manager()
+        with probe, which, euid, is_dir, \
+             patch.object(mission_scope, "_probe_helper_argv", return_value=[]), \
+             patch.object(mission_scope.subprocess, "run") as run, \
+             patch.object(mission_scope, "log_safe") as logger:
+            mission_scope.reset_probe_cache()
+            verdict = mission_scope.systemd_run()
+        assert verdict == (None, [])
+        run.assert_not_called()
+        assert any(c.args[0] == "warn" and "probe target" in str(c.args[1])
+                   for c in logger.call_args_list)
+
     def test_a_manager_that_accepts_a_scope_is_usable(self):
         verdict, calls = self._probe_with(0)
         assert verdict == ("/usr/bin/systemd-run", [])
@@ -1107,6 +1136,26 @@ class TestScopeRegistry:
             handled = stop_registered_scopes(str(tmp_path))
         killer.assert_called_once_with(777)
         assert handled == ["pgid 777"]
+
+    def test_an_unconfirmed_group_sweep_is_not_reported_as_handled(self, tmp_path):
+        """EPERM from a descendant that changed credentials is not containment.
+
+        The unit branch refuses to report an unconfirmed stop; the fallback
+        branch is the only lever there is, so it must not claim more.
+        """
+        directory = tmp_path / ".koan-mission-scopes"
+        directory.mkdir()
+        (directory / "pid-777").write_text(json.dumps({
+            "unit": "", "mode": "session", "pid": 777, "started_at": 1000.0,
+        }))
+        with patch.object(mission_scope, "_process_start_time", return_value=1000.2), \
+             patch.object(mission_scope, "kill_process_group_by_pid",
+                          return_value=False), \
+             patch.object(mission_scope, "log_safe") as logger:
+            handled = stop_registered_scopes(str(tmp_path))
+        assert handled == []
+        assert any(c.args[0] == "error" and "777" in str(c.args[1])
+                   for c in logger.call_args_list)
 
     def test_a_recycled_pid_is_dropped_instead_of_signalled(self, tmp_path):
         """A PID is reused; a uuid4 unit name is not.

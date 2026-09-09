@@ -2339,6 +2339,32 @@ class TestStopProcessesReachesDescendants:
         killpg.assert_called_once_with(4242, 15)
         single.assert_not_called()
 
+    def test_a_refused_group_signal_still_reaches_the_daemon_itself(self, tmp_path):
+        """EPERM on `killpg` means undeliverable, not "already gone".
+
+        Returning False there makes `stop_processes` record `not_running`, skip
+        its SIGKILL escalation and leave a live daemon behind — worse than the
+        single-PID kill this function replaced.
+        """
+        from app.pid_manager import _signal_process
+        pidfile = tmp_path / ".koan-pid-run"
+        pidfile.write_text("4242")
+        with patch("app.pid_manager.os.getpgid", return_value=4242), \
+             patch("app.pid_manager.os.killpg",
+                   side_effect=PermissionError(1, "Operation not permitted")), \
+             patch("app.pid_manager.os.kill") as single, \
+             patch("app.mission_scope._process_start_time",
+                   return_value=pidfile.stat().st_mtime - 1):
+            assert _signal_process(4242, 15, pidfile) is True
+        single.assert_called_once_with(4242, 15)
+
+    def test_a_group_whose_leader_is_gone_is_reported_gone(self, tmp_path):
+        from app.pid_manager import _signal_process
+        with patch("app.pid_manager.os.getpgid", side_effect=ProcessLookupError), \
+             patch("app.pid_manager.os.kill") as single:
+            assert _signal_process(4242, 15) is False
+        single.assert_not_called()
+
     def test_a_self_referential_pid_file_degrades_to_a_single_pid_kill(self):
         """A daemon stopping a set that includes itself must survive the sweep.
 

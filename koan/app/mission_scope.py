@@ -43,6 +43,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -209,6 +210,24 @@ def resolve_memory_max(config: dict, meminfo_path: str = _MEMINFO_PATH) -> Optio
 # systemd-run probe
 # ---------------------------------------------------------------------------
 
+def _probe_helper_argv() -> List[str]:
+    """A trivial argv the probe scope can exec, or ``[]`` if none exists.
+
+    ``shutil.which("true")`` alone is not enough: on a minimal image ``true``
+    is only a shell builtin, and PATH is whatever the daemon inherited. The
+    interpreter running Kōan is guaranteed to exist by definition, so it is the
+    fallback — slower than ``/bin/true``, but this runs once per process.
+    """
+    found = shutil.which("true")
+    if found:
+        return [found]
+    if os.access("/bin/true", os.X_OK):
+        return ["/bin/true"]
+    if sys.executable:
+        return [sys.executable, "-c", "pass"]
+    return []
+
+
 def _scope_creation_works(path: str, manager_args: List[str]) -> bool:
     """Whether the manager will actually accept a resource-controlled scope.
 
@@ -224,17 +243,26 @@ def _scope_creation_works(path: str, manager_args: List[str]) -> bool:
     The throwaway scope carries the same properties a mission's does, because a
     manager can accept a bare scope and still refuse ``MemoryMax``.
     """
-    helper = shutil.which("true")
+    helper = _probe_helper_argv()
     if not helper:
-        # Nothing safe to run inside the probe scope. Assume the manager is
-        # usable rather than disabling containment over a missing coreutils.
-        return True
+        # No argv to run inside the probe scope, so the question this function
+        # exists to answer is unanswered — and "unanswered" is not "usable".
+        # Assuming usable would reinstate exactly the undetectable failure
+        # documented above: every mission wrapped in a scope the manager
+        # refuses, exiting non-zero with empty output and no cause logged.
+        log_safe(
+            "warn",
+            "mission_limits: no probe target to test scope creation with "
+            "(no /bin/true and no python interpreter) — treating the manager "
+            "as unusable rather than risking missions that never start",
+        )
+        return False
     unit = f"{UNIT_PREFIX}probe-{uuid.uuid4().hex}{UNIT_SUFFIX}"
     argv = [path, *manager_args, "--scope", "--collect", "--quiet",
             f"--unit={unit}",
             f"--property=MemoryMax={_PROBE_MEMORY_MAX}",
             f"--property=MemoryHigh={int(_PROBE_MEMORY_MAX * _MEMORY_HIGH_RATIO)}",
-            "--", helper]
+            "--", *helper]
     try:
         result = subprocess.run(
             argv, capture_output=True, text=True,
@@ -526,8 +554,19 @@ def stop_registered_scopes(koan_root: Optional[str] = None) -> List[str]:
             handled.append(unit)
         elif isinstance(pid, int) and pid > 0:
             if _record_still_names_its_process(pid, record.get("started_at")):
-                kill_process_group_by_pid(pid)
-                handled.append(f"pgid {pid}")
+                # An unconfirmed sweep is not containment — the unit branch
+                # above refuses to report one, and on the fallback path this
+                # kill is the only lever there is. The record is still dropped
+                # (a PID is recyclable, so retrying it later is the dangerous
+                # option), but the operator is told it was not confirmed.
+                if kill_process_group_by_pid(pid):
+                    handled.append(f"pgid {pid}")
+                else:
+                    log_safe(
+                        "error",
+                        f"mission_scope: could not confirm the process group of "
+                        f"pid {pid} is gone — its descendants may still be running",
+                    )
             else:
                 log_safe(
                     "warn",

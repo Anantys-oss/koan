@@ -8930,3 +8930,49 @@ class TestSkillMissionScopeTeardown(TestRunSkillMissionEnv):
             )
 
         assert calls == [False], "teardown must run on the skill success path"
+
+    def test_a_previous_missions_abort_does_not_suppress_this_cap_verdict(
+        self, tmp_path,
+    ):
+        """`_last_mission_aborted` is per-mission state, so this path resets it.
+
+        Left set from an earlier abort it would mark every later skill mission's
+        teardown as a Kōan-initiated kill, so a real cap hit would never be
+        reported — and the mission would be retried straight back into the same
+        meltdown.
+        """
+        import app.run as run_mod
+        from app import mission_scope
+        from app.run import _run_skill_mission
+
+        (tmp_path / "instance" / "journal").mkdir(parents=True)
+        (tmp_path / "koan").mkdir()
+        mock_proc = self._make_mock_popen(returncode=0, stdout_lines=["ok\n"])
+        calls = []
+
+        def record(self, *, koan_initiated_kill=False):
+            calls.append(koan_initiated_kill)
+
+        run_mod._last_mission_aborted = True
+        try:
+            with patch("app.run.subprocess.Popen",
+                       side_effect=mock_proc._side_effect), \
+                 patch("app.run._get_koan_branch", return_value="main"), \
+                 patch("app.run._restore_koan_branch"), \
+                 patch("app.run._reset_terminal"), \
+                 patch("app.mission_runner.run_post_mission"), \
+                 patch.object(mission_scope.ScopedProcess, "teardown", record):
+                _run_skill_mission(
+                    skill_cmd=["python3", "--help"],
+                    koan_root=str(tmp_path),
+                    instance=str(tmp_path / "instance"),
+                    project_name="test",
+                    project_path=str(tmp_path),
+                    run_num=1,
+                    mission_title="/review https://github.com/o/r/pull/1",
+                    autonomous_mode="implement",
+                )
+        finally:
+            run_mod._last_mission_aborted = False
+
+        assert calls == [False]

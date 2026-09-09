@@ -905,11 +905,21 @@ def _signal_process(pid: int, sig: int, pidfile: Optional[Path] = None) -> bool:
     includes itself, ``killpg`` would take the caller down mid-sweep and leave
     the remaining daemons running with their pid files intact. Mirrors the
     guard in :func:`app.subprocess_runner.kill_orphaned_process_group`.
+
+    Only ``ProcessLookupError`` means "already gone". Every other ``OSError``
+    (notably EPERM, from a group member running under different credentials)
+    means the group signal could not be delivered, not that the daemon is dead —
+    reporting False there would make ``stop_processes`` record ``not_running``,
+    skip its SIGKILL escalation and leave the daemon live, where the single-PID
+    ``os.kill`` this function predates would have stopped it. So those fall
+    through to the bare PID instead.
     """
     try:
         pgid = os.getpgid(pid)
-    except (OSError, ProcessLookupError):
+    except ProcessLookupError:
         return False
+    except OSError:
+        pgid = None
     if (
         pgid == pid
         and pgid != os.getpgrp()
@@ -918,8 +928,10 @@ def _signal_process(pid: int, sig: int, pidfile: Optional[Path] = None) -> bool:
         try:
             os.killpg(pgid, sig)
             return True
-        except (OSError, ProcessLookupError):
+        except ProcessLookupError:
             return False
+        except OSError:
+            pass
     try:
         os.kill(pid, sig)
         return True

@@ -194,7 +194,11 @@ daemon that has already re-parented to PID 1.
   is a `Popen` *success*, so no exception-based fallback can catch it — the
   mission would be finalized as an ordinary failure with empty stdout, and so
   would every mission after it. A refused probe logs the manager's own error
-  and falls back for the life of the process.
+  and falls back for the life of the process. The probe target is never left to
+  PATH (`true` is a shell builtin on a minimal image): `/bin/true` first, then
+  the interpreter running Kōan. A probe that cannot run at all is *unanswered*,
+  and unanswered falls back — assuming "usable" would reinstate the very
+  failure the probe exists to catch.
 - **Fallback:** where `systemd-run` cannot create a scope (macOS, no manager, no
   user manager, a manager that refuses one) Kōan spawns with
   `start_new_session=True`, tearing down the
