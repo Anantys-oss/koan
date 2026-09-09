@@ -484,6 +484,43 @@ def check_json_success(stdout_file: str) -> bool:
         return False
 
 
+def json_output_reports_failure(stdout_file: str) -> str:
+    """Return a failure reason when a json-mode envelope reports an error.
+
+    Shape-keyed, not provider-keyed: a single JSON object carrying a non-empty
+    top-level ``error`` describes a session that did not complete, even when it
+    also carries prose. Gemini's ``--output-format json`` object —
+    ``{"response", "stats", "error"?, "warnings"?}`` — is emitted with exit 0
+    when a tool confirmation is refused, so without this the mission banks the
+    partial ``response`` as completed work with no branch and no commit.
+
+    An explicit ``is_error: false`` wins (Claude's proven success flag), so
+    envelopes that already report their own outcome are untouched.
+
+    Returns the error message (or ``"error"`` when the payload has none), or
+    ``""`` when the output reports no failure.
+    """
+    try:
+        raw = Path(stdout_file).read_text()
+    except OSError:
+        return ""
+    if not raw.strip():
+        return ""
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return ""
+    if not isinstance(data, dict) or data.get("is_error") is False:
+        return ""
+    err = data.get("error")
+    if isinstance(err, str) and err.strip():
+        return err.strip()
+    if isinstance(err, dict) and err:
+        message = err.get("message")
+        return message.strip() if isinstance(message, str) and message.strip() else "error"
+    return ""
+
+
 def _extract_stream_json_text(raw: str) -> Optional[str]:
     """Extract assistant text from NDJSON stream-json / streaming-json stdout.
 

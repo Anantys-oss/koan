@@ -342,19 +342,30 @@ class TestGeminiStreamSamples:
         data = json.loads(gemini_samples.JSON_OBJECT_SUCCESS)
         assert data["response"] == gemini_samples.JSON_OBJECT_SUCCESS_TEXT
 
-    def test_failed_stats_result_is_a_hard_failure(self):
-        from app.provider import _is_failed_stats_result_event
-        assert _is_failed_stats_result_event(
+    def test_failed_result_is_a_hard_failure(self):
+        from app.provider import _is_failed_result_event
+        assert _is_failed_result_event(
             {"type": "result", "status": "error", "stats": {"tool_calls": 1}}
         )
-        assert not _is_failed_stats_result_event(
+        assert not _is_failed_result_event(
             {"type": "result", "status": "success", "stats": {}}
+        )
+
+    def test_failed_result_without_stats_is_a_hard_failure(self):
+        """``stats`` is optional — an abort before any model call omits it."""
+        from app.provider import _is_failed_result_event
+        assert _is_failed_result_event(
+            {
+                "type": "result",
+                "status": "error",
+                "error": {"message": "tool confirmation required"},
+            }
         )
 
     def test_text_bearing_result_envelopes_stay_soft(self):
         """Haze-style ``result`` carries its own text — unchanged behavior."""
-        from app.provider import _is_failed_stats_result_event
-        assert not _is_failed_stats_result_event(
+        from app.provider import _is_failed_result_event
+        assert not _is_failed_result_event(
             {"type": "result", "status": "failed", "result": "boom", "usage": {}}
         )
 
@@ -384,6 +395,29 @@ class TestGeminiMissionPathParsing:
             parse_claude_output(gemini_samples.STREAM_TRUNCATED)
             == gemini_samples.STREAM_TRUNCATED_PARTIAL_TEXT
         )
+
+    def test_json_error_envelope_reports_failure(self, tmp_path):
+        """Exit 0 + partial prose + ``error`` must not be banked as success."""
+        from app.mission_runner import json_output_reports_failure
+        out = tmp_path / "stdout.json"
+        out.write_text(gemini_samples.JSON_OBJECT_ERROR)
+        assert "tool confirmation required" in json_output_reports_failure(str(out))
+
+    def test_json_success_envelope_reports_no_failure(self, tmp_path):
+        from app.mission_runner import json_output_reports_failure
+        out = tmp_path / "stdout.json"
+        out.write_text(gemini_samples.JSON_OBJECT_SUCCESS)
+        assert json_output_reports_failure(str(out)) == ""
+
+    def test_explicit_is_error_false_wins_over_error_field(self, tmp_path):
+        """Claude-style envelopes that report their own outcome stay untouched."""
+        from app.mission_runner import json_output_reports_failure
+        out = tmp_path / "stdout.json"
+        out.write_text(json.dumps({
+            "type": "result", "is_error": False, "result": "done",
+            "error": {"message": "a recovered tool error"},
+        }))
+        assert json_output_reports_failure(str(out)) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +502,57 @@ class TestGeminiTokenParser:
         assert snap["input_tokens"] == 0
         assert snap["cache_read_input_tokens"] == 100
 
+    def test_thinking_tokens_count_as_output(self, tmp_path):
+        """``thoughts`` is billed output — dropping it understates burn rate."""
+        from app.token_parser import extract_tokens
+        out = tmp_path / "stdout.json"
+        out.write_text(json.dumps({
+            "response": "ok",
+            "stats": {"models": {"gemini-2.5-pro": {"tokens": {
+                "prompt": 100, "candidates": 50, "thoughts": 900, "tool": 20,
+                "total": 1070,
+            }}}},
+        }))
+        result = extract_tokens(out)
+        assert result is not None
+        assert result.output_tokens == 950
+        assert result.input_tokens == 120
+
+    def test_dominant_model_ranks_by_the_counted_buckets(self, tmp_path):
+        """Ranking and accounting must use the same definition of "tokens"."""
+        from app.token_parser import extract_tokens
+        out = tmp_path / "stdout.json"
+        out.write_text(json.dumps({
+            "response": "ok",
+            "stats": {"models": {
+                "gemini-2.5-pro": {"tokens": {
+                    "prompt": 50, "candidates": 50, "thoughts": 900,
+                    "total": 1000,
+                }},
+                "gemini-2.5-flash": {"tokens": {
+                    "prompt": 400, "candidates": 200, "total": 600,
+                }},
+            }},
+        }))
+        result = extract_tokens(out)
+        assert result is not None
+        assert result.model == "gemini-2.5-pro"
+        assert result.input_tokens == 450
+        assert result.output_tokens == 1150
+
+    def test_stats_cache_conflict_with_usage_is_logged(self, monkeypatch):
+        """The conflict branch must leave a trace, as its docstring claims."""
+        import app.token_parser as tp
+        warnings: list = []
+        monkeypatch.setattr(tp, "_WARNED_CACHE_CONFLICT", False)
+        monkeypatch.setattr(tp, "_warn", warnings.append)
+        data = {
+            "usage": {"cache_read_input_tokens": 10},
+            "stats": {"cached": 40},
+        }
+        assert tp._with_stats_cache(data, data["stats"], 100) is data
+        assert warnings and "stats.cached=40" in warnings[0]
+
 
 # ---------------------------------------------------------------------------
 # Quota / auth detection
@@ -549,3 +634,85 @@ class TestGeminiOnboarding:
         from app.onboarding import PROVIDER_TOOLS, PROVIDERS
         assert PROVIDER_TOOLS.get("gemini") == "gemini"
         assert any(p[0] == "gemini" for p in PROVIDERS)
+
+
+# ---------------------------------------------------------------------------
+# Streaming replay through run_command_streaming (exit-code / result interplay)
+# ---------------------------------------------------------------------------
+
+class _FakeStream:
+    def __init__(self, lines=None, read_value=""):
+        self._lines = list(lines or [])
+        self._read_value = read_value
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def read(self):
+        return self._read_value
+
+    def close(self):
+        pass
+
+
+class _FakeProc:
+    def __init__(self, transcript: str, returncode: int = 0, stderr_text: str = ""):
+        self.stdout = _FakeStream(transcript.splitlines(keepends=True))
+        self.stderr = _FakeStream(read_value=stderr_text)
+        self.returncode = returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def kill(self):
+        pass
+
+
+def _replay(transcript: str, returncode: int = 0, stderr_text: str = ""):
+    """Run a recorded Gemini transcript through run_command_streaming."""
+    import app.provider as provider_pkg
+
+    fake_proc = _FakeProc(transcript, returncode=returncode, stderr_text=stderr_text)
+    with patch.object(
+        provider_pkg,
+        "_resolve_role_provider_and_models",
+        return_value=(GeminiProvider(), {}),
+    ), patch("app.cli_exec.popen_cli", return_value=(fake_proc, lambda: None)):
+        return provider_pkg.run_command_streaming(
+            prompt="do the thing",
+            project_path="/tmp",
+            allowed_tools=[],
+            timeout=30,
+        )
+
+
+class TestGeminiStreamingReplay:
+    def test_stats_less_failed_result_raises_despite_exit_zero(self, monkeypatch):
+        monkeypatch.delenv("KOAN_STREAM_USAGE_FILE", raising=False)
+        with pytest.raises(RuntimeError) as exc:
+            _replay(gemini_samples.STREAM_PERMISSION_ABORT)
+        message = str(exc.value)
+        assert "skip_permissions" in message
+        assert "tool confirmation required" in message
+
+    def test_non_zero_exit_keeps_stderr_for_quota_detection(self, monkeypatch):
+        """A failed result must not shadow the stderr-bearing exit-code error."""
+        monkeypatch.delenv("KOAN_STREAM_USAGE_FILE", raising=False)
+        with pytest.raises(RuntimeError) as exc:
+            _replay(
+                gemini_samples.STREAM_QUOTA_FAILURE,
+                returncode=1,
+                stderr_text=gemini_samples.QUOTA_STDERR,
+            )
+        message = str(exc.value)
+        assert "RESOURCE_EXHAUSTED" in message
+        assert GeminiProvider().detect_quota_exhaustion(
+            stderr_text=message, exit_code=1,
+        ) is True
+
+    def test_successful_stream_returns_text(self, monkeypatch):
+        monkeypatch.delenv("KOAN_STREAM_USAGE_FILE", raising=False)
+        assert (
+            _replay(gemini_samples.STREAM_SUCCESS)
+            == gemini_samples.STREAM_SUCCESS_RESULT_TEXT
+        )

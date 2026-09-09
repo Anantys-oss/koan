@@ -4,7 +4,7 @@ title: "Gemini CLI Provider"
 description: "Setup and behavior guide for using Google's Gemini CLI as Kōan's provider, including headless stream-json, auth, models, and limitations."
 tags: [providers]
 created: 2026-09-01
-updated: 2026-09-02
+updated: 2026-09-09
 ---
 
 # Gemini CLI Provider
@@ -79,7 +79,7 @@ progress line (visible in `make logs` and `/live`):
 | `message` (`role: assistant`, `delta: true`) | assistant text chunks — concatenated, not newline-joined |
 | `tool_use` | tool call + a bounded input preview |
 | `tool_result` | tool outcome; failures carry a reason excerpt |
-| `error` | non-fatal warning |
+| `error` | advisory system message (`severity`) — logged, never fatal on its own |
 | `result` | terminal envelope: `status` + `stats` |
 
 **Usage accounting** comes from `result.stats`, which is where Gemini puts
@@ -94,13 +94,30 @@ mid-flight still returns whatever text arrived.
 
 In `json` mode — what missions run — the single object's `response` field is the
 assistant text and its nested `stats.models.<id>.tokens`
-(`prompt`/`candidates`/`cached`) is the usage source. When a run touched more
-than one model (a pro→flash fallback under quota pressure), tokens are
-attributed to the model with the highest total, not to whichever id came first.
+(`prompt`/`candidates`/`thoughts`/`tool`/`cached`) is the usage source.
+`thoughts` counts as output (thinking models spend a large share of billed
+output there) and `tool` as input, matching the Gemini API's
+`thoughtsTokenCount` / `toolUsePromptTokenCount`. When a run touched more than
+one model (a pro→flash fallback under quota pressure), tokens are attributed to
+the model with the highest total of those same counters, not to whichever id
+came first.
 
 A terminal `result` whose `status` is not a success value **fails the run** with
 an error naming `skip_permissions`, rather than returning the partial prose as
-if the mission had completed.
+if the mission had completed — including when the envelope carries no `stats`
+block, which is what an abort before the first model call looks like. In `json`
+mode the equivalent signal is a non-empty top-level `error`: the mission fails
+instead of banking the partial `response`.
+
+When the CLI **also exits non-zero**, the error Kōan raises is the exit-code
+error carrying stderr — that is what quota (`RESOURCE_EXHAUSTED` / 429) and auth
+(401) detection match on, so a rate-limited run still pauses the loop instead of
+being reported as a permission denial.
+
+A mid-stream `error` event is advisory: Gemini emits them for recoverable
+conditions (a failed tool call the model then works around), so the session
+verdict comes from the terminal `result` status and the exit code, never from a
+single `severity: "error"` line.
 
 ## Permissions
 

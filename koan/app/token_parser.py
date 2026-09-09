@@ -186,10 +186,18 @@ def _extract_nested_model_tokens(
 
     Gemini CLI's ``--output-format json`` object — the shape the mission path
     actually produces — reports no flattened ``stats.input_tokens``; the counts
-    live under ``models.<id>.tokens.{prompt,candidates,cached}``. Counts are
-    summed across models (a session can fall back pro→flash mid-run) and the
-    model id is the dominant one. Shape-keyed on the nested field names, so no
-    other stats-reporting envelope is affected.
+    live under ``models.<id>.tokens.{prompt,candidates,thoughts,tool,cached}``.
+    Counts are summed across models (a session can fall back pro→flash mid-run)
+    and the model id is the dominant one. Shape-keyed on the nested field names,
+    so no other stats-reporting envelope is affected.
+
+    Bucket mapping, matching the Gemini API ``usageMetadata`` fields these
+    counters mirror: ``thoughts`` (``thoughtsTokenCount``) is billed output and
+    is a routine, non-trivial share of it on thinking-enabled models, so
+    dropping it would understate burn rate; ``tool``
+    (``toolUsePromptTokenCount``) is prompt-side and counts as input.
+    :func:`_model_entry_total` ranks models by the same four counters, so
+    dominant-model attribution and the reported totals cannot disagree.
     """
     models = stats.get("models")
     if not isinstance(models, dict) or not models:
@@ -200,8 +208,8 @@ def _extract_nested_model_tokens(
         tokens = entry.get("tokens") if isinstance(entry, dict) else None
         if not isinstance(tokens, dict):
             continue
-        total_in += int(tokens.get("prompt", 0) or 0)
-        total_out += int(tokens.get("candidates", 0) or 0)
+        total_in += _nested_input_tokens(tokens)
+        total_out += _nested_output_tokens(tokens)
         total_cached += int(tokens.get("cached", 0) or 0)
 
     if not (total_in or total_out):
@@ -235,7 +243,7 @@ def dominant_stats_model(models) -> str:
     Mirrors :func:`_primary_model_from_usage`: a session that fell back
     pro→flash under quota pressure must not be priced against whichever id
     happens to come first in the dict. Handles both the flattened
-    (``total_tokens``) and the nested (``tokens.total``) per-model shapes.
+    (``total_tokens``) and the nested (``tokens.*``) per-model shapes.
     """
     if not isinstance(models, dict) or not models:
         return ""
@@ -251,8 +259,24 @@ def dominant_stats_model(models) -> str:
     return best
 
 
+def _nested_input_tokens(tokens: dict) -> int:
+    """Input-side counters of a nested ``tokens`` object (prompt + tool use)."""
+    return int(tokens.get("prompt", 0) or 0) + int(tokens.get("tool", 0) or 0)
+
+
+def _nested_output_tokens(tokens: dict) -> int:
+    """Output-side counters of a nested ``tokens`` object (answer + thinking)."""
+    return int(tokens.get("candidates", 0) or 0) + int(tokens.get("thoughts", 0) or 0)
+
+
 def _model_entry_total(entry) -> int:
-    """Total tokens for one ``stats.models`` entry, flattened or nested."""
+    """Total tokens for one ``stats.models`` entry, flattened or nested.
+
+    The nested branch sums exactly the counters
+    :func:`_extract_nested_model_tokens` reports, so ranking and accounting
+    cannot diverge; ``tokens.total`` is only a fallback for an entry that
+    carries the aggregate without the per-bucket breakdown.
+    """
     if not isinstance(entry, dict):
         return 0
     total = int(entry.get("total_tokens", 0) or 0)
@@ -260,18 +284,15 @@ def _model_entry_total(entry) -> int:
         return total
     tokens = entry.get("tokens")
     if isinstance(tokens, dict):
-        total = int(tokens.get("total", 0) or 0)
-        if total:
-            return total
-        return int(tokens.get("prompt", 0) or 0) + int(
-            tokens.get("candidates", 0) or 0
-        )
+        counted = _nested_input_tokens(tokens) + _nested_output_tokens(tokens)
+        return counted or int(tokens.get("total", 0) or 0)
     return int(entry.get("input_tokens", 0) or 0) + int(
         entry.get("output_tokens", 0) or 0
     )
 
 
 _WARNED_CACHE_INCONSISTENCY = False
+_WARNED_CACHE_CONFLICT = False
 
 
 def _warn(message: str) -> None:
@@ -315,6 +336,7 @@ def _with_stats_cache(data: dict, stats: dict, input_tokens) -> dict:
     ``usage`` object wins (it is the more specific source) but is logged as a
     conflict rather than dropped silently.
     """
+    global _WARNED_CACHE_CONFLICT
     cached = clamp_cached_input(stats.get("cached", 0), input_tokens)
     if not cached:
         return data
@@ -324,6 +346,12 @@ def _with_stats_cache(data: dict, stats: dict, input_tokens) -> dict:
             "cache_read_input_tokens"
         ):
             return {**data, "usage": {**existing, "cached_input_tokens": cached}}
+        if not _WARNED_CACHE_CONFLICT:
+            _WARNED_CACHE_CONFLICT = True
+            _warn(
+                f"stats.cached={cached} ignored — usage already reports cache "
+                "reads; input_tokens is left un-reduced for this envelope"
+            )
         return data
     return {**data, "usage": {"cached_input_tokens": cached}}
 

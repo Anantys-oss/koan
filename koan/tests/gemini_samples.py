@@ -112,6 +112,24 @@ STREAM_TRUNCATED = """\
 STREAM_TRUNCATED_PARTIAL_TEXT = "Partial progress so far"
 
 # ---------------------------------------------------------------------------
+# stream-json: session aborted before any model call — terminal ``result`` with
+# ``status: error`` and NO ``stats`` block (``stats`` is optional in the
+# schema). Exit code is 0, so only the result envelope marks the failure.
+# ---------------------------------------------------------------------------
+STREAM_PERMISSION_ABORT = """\
+{"type":"init","timestamp":"2026-09-01T10:04:00.000Z","session_id":"sess-fixture-006","model":"gemini-2.5-pro"}
+{"type":"message","timestamp":"2026-09-01T10:04:00.500Z","role":"assistant","content":"I'll start by","delta":true}
+{"type":"result","timestamp":"2026-09-01T10:04:01.000Z","status":"error","error":{"type":"TOOL_CONFIRMATION_REQUIRED","message":"tool confirmation required"}}
+"""
+
+# stream-json: failed result AND a non-zero exit — stderr carries the quota
+# payload downstream classification matches on.
+STREAM_QUOTA_FAILURE = """\
+{"type":"init","timestamp":"2026-09-01T10:05:00.000Z","session_id":"sess-fixture-007","model":"gemini-2.5-pro"}
+{"type":"result","timestamp":"2026-09-01T10:05:01.000Z","status":"error","stats":{"total_tokens":10,"input_tokens":10,"output_tokens":0,"cached":0,"input":10,"duration_ms":900,"tool_calls":0,"models":{}}}
+"""
+
+# ---------------------------------------------------------------------------
 # --output-format json single object (probe / non-stream mode). ``stats`` here
 # is the raw SessionMetrics shape, NOT the flattened StreamStats above.
 # ---------------------------------------------------------------------------
@@ -134,6 +152,19 @@ JSON_OBJECT_SUCCESS = """\
 """
 
 JSON_OBJECT_SUCCESS_TEXT = "ok"
+
+# ``--output-format json`` object for a session that aborted: partial
+# ``response`` prose alongside a non-empty ``error``, exit code 0. The mission
+# path must treat this as a failure, not bank the prose as completed work.
+JSON_OBJECT_ERROR = """\
+{
+  "session_id": "sess-fixture-008",
+  "response": "I'll start by reading the repository layout",
+  "error": {"type": "TOOL_CONFIRMATION_REQUIRED",
+            "message": "tool confirmation required"},
+  "stats": {"models": {}}
+}
+"""
 
 # ---------------------------------------------------------------------------
 # Failure text samples (stderr) for quota / auth detection.

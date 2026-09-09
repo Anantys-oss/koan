@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok, Gemini) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-09-02
+updated: 2026-09-09
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -180,9 +180,11 @@ tools — MCP tools must still be allowlisted via qualified names
   terminal `result` event under **`stats`** (not `usage`) as
   `input_tokens`/`output_tokens`/`cached`/`total_tokens` plus a per-model-id
   `models` map (json mode nests the counts as
-  `stats.models.<id>.tokens.{prompt,candidates,cached}` instead). A `cached`
-  count is a SUBSET of input and is clamped to it before subtraction — an
-  inconsistent count is logged once, never double-counted. Shared extractors
+  `stats.models.<id>.tokens.{prompt,candidates,thoughts,tool,cached}` instead).
+  A `cached` count is a SUBSET of input and is clamped to it before
+  subtraction — an inconsistent count is logged once, never double-counted, and
+  a `stats.cached` that collides with an explicit `usage` cache field is logged
+  once rather than dropped in silence. Shared extractors
   are shape-keyed
   on field names. Detectors read the summary stream, not assistant text.
 - **`tool_use` summary grammar carries an optional input preview.**
@@ -416,17 +418,37 @@ tools — MCP tools must still be allowlisted via qualified names
   builds — returns one object with top-level `response` + `stats`; both are
   consumed shape-keyed: `response` joins the `result`/`content`/`text` key list
   in `parse_claude_output`, and its `stats.models.<id>.tokens`
-  (`prompt`/`candidates`/`cached`, the nested SessionMetrics shape) is summed
-  across models by `token_parser`, so json-mode runs record usage rather than
-  zero. When a `models` map names more than one id, tokens are attributed to
-  the **dominant** entry (highest total), never the first key — a session that
+  (`prompt`/`candidates`/`thoughts`/`tool`/`cached`, the nested SessionMetrics
+  shape) is summed across models by `token_parser`, so json-mode runs record
+  usage rather than zero. Bucket mapping follows the Gemini API `usageMetadata`
+  fields these counters mirror: `thoughts` is billed **output** (thinking
+  models spend a large share there) and `tool` is prompt-side **input**.
+  When a `models` map names more than one id, tokens are attributed to
+  the **dominant** entry — ranked by those same counters, so attribution and
+  reported totals cannot disagree — never the first key: a session that
   fell back pro→flash must not be mis-priced.
   **A terminal `result` whose `status` is not a success value is a hard
   failure** (`RuntimeError` naming `skip_permissions`), not a soft return of
   partial text: a headless run that could not answer a confirmation prompt
   exits 0 with prose and would otherwise be reported as a complete mission with
-  no branch and no commit. Shape-keyed on the stats-only envelope, so
-  text-bearing `result` envelopes (haze) keep their existing behavior.
+  no branch and no commit. `stats` is **optional** on that envelope — a session
+  that aborts before any model call emits `status` + `error` only — so the
+  guard is keyed on the *text-less* terminal shape, leaving text-bearing
+  `result` envelopes (haze) with their existing behavior. The failure is
+  reported **after** the exit-code branch: a non-zero exit still raises
+  `_format_cli_error(...)`, which is the only payload carrying stderr and the
+  exit code, and quota/auth classification is text-matched on it.
+  The **json mission path** applies the same rule from the other end: a json
+  object carrying a non-empty top-level `error` fails the mission
+  (`mission_runner.json_output_reports_failure`), so partial `response` prose
+  is never banked as completed work on an exit-0 abort.
+  **`error` events are advisory.** `severity` is recorded in the vocabulary but
+  deliberately not a failure trigger: upstream emits `error` events for
+  recoverable conditions (a failed tool call the model then works around), and
+  the authoritative session verdict is the terminal `result` status plus the
+  exit code. Making a mid-stream `error` fatal would abort sessions that
+  recover. Revisit only with a measured stream showing a fatal `severity:
+  "error"` with no terminal `result`.
   **Permissions:** Kōan emits `--approval-mode yolo` **only** when
   `skip_permissions` is set. With permissions on, no approval flag is emitted
   and a once-per-process warning states that headless runs cannot answer a

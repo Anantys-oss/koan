@@ -1506,6 +1506,23 @@ def _run_iteration(
                 log("koan", f"CLI exited {claude_exit} but JSON output indicates success — overriding to 0")
                 claude_exit = 0
 
+        # --- JSON failure detection (the mirror of the override above) ---
+        # A json-mode envelope can report an error and still exit 0 (Gemini
+        # emits {"response": <partial prose>, "error": {...}} when a tool
+        # confirmation is refused). Without this the mission is finalized as
+        # Done with no branch and no commit.
+        if claude_exit == 0:
+            from app.mission_runner import json_output_reports_failure
+            json_failure = json_output_reports_failure(stdout_file)
+            if json_failure:
+                log(
+                    "error",
+                    "CLI exited 0 but JSON output reports a failed session "
+                    f"({json_failure}) — treating as failure. If this is a "
+                    "headless approval prompt, set skip_permissions: true.",
+                )
+                claude_exit = 1
+
         # Verify core files survived the mission (after retry, so result is final)
         log("koan", "Running core file integrity check...")
         integrity_warnings = check_core_files(koan_root, core_snapshot, project_path)
