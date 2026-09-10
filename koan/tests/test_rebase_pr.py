@@ -3075,6 +3075,139 @@ class TestResolveRebaseConflicts:
         ]
 
 
+class TestContinueRebaseStagesResolvedTree:
+    """`git rebase --continue` needs a fully staged tracked tree.
+
+    Observed failure: the resolution agent also edited a file that was not
+    conflicted, to keep the merged tree coherent, and left it unstaged. No
+    unmerged path remained, so the loop believed the round succeeded, but
+    every `git rebase --continue` was refused with "You must edit all merge
+    conflicts..." until the rounds ran out.
+    """
+
+    def test_stages_tracked_edits_before_continuing(self):
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+
+        def fake_run_git(cmd, **kwargs):
+            git_calls.append(cmd)
+            return ""
+
+        def fake_subprocess_run(cmd, **kwargs):
+            git_calls.append(cmd)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.rebase_pr._run_git", side_effect=fake_run_git), \
+             patch("app.rebase_pr.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+            done, detail = _continue_rebase("/project")
+
+        assert done is True
+        assert detail == ""
+        assert git_calls[0] == ["git", "add", "-u"]
+        assert git_calls[1][:3] == ["git", "rebase", "--continue"]
+
+    def test_untracked_files_are_not_swept_into_the_commit(self):
+        """`add -u` only — scratch files never block `--continue`."""
+        from app.rebase_pr import _continue_rebase
+
+        with patch("app.rebase_pr._run_git", return_value="") as run_git, \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="", stderr="")), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+            _continue_rebase("/project")
+
+        assert run_git.call_args_list[0].args[0] == ["git", "add", "-u"]
+
+    def test_refused_continue_returns_git_error_text(self):
+        from app.rebase_pr import _continue_rebase
+
+        with patch("app.rebase_pr._run_git", return_value=""), \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=1, stdout="",
+                 stderr="You must edit all merge conflicts")), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            done, detail = _continue_rebase("/project")
+
+        assert done is False
+        assert "You must edit all merge conflicts" in detail
+
+    def test_next_commit_conflict_is_not_an_error(self):
+        """A `--continue` that stops on the next commit reports no detail."""
+        from app.rebase_pr import _continue_rebase
+
+        with patch("app.rebase_pr._run_git", return_value=""), \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="", stderr="")), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            done, detail = _continue_rebase("/project")
+
+        assert done is False
+        assert detail == ""
+
+
+class TestResolveRebaseConflictsProgress:
+    """The round loop must not spin when the rebase cannot advance."""
+
+    def test_stuck_continue_fails_fast_with_the_real_cause(self):
+        failure_detail = []
+        continues = []
+
+        def fake_continue(project_path):
+            continues.append(project_path)
+            return False, "git rebase --continue failed: unstaged changes"
+
+        with patch("app.rebase_pr._get_conflicted_files", return_value=[]), \
+             patch("app.rebase_pr._continue_rebase", side_effect=fake_continue):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=10,
+                failure_detail=failure_detail,
+            )
+
+        assert result is False
+        # One attempt, not ten — a stuck rebase never becomes unstuck by retrying.
+        assert len(continues) == 1
+        assert failure_detail == [
+            "git rebase --continue failed: unstaged changes"
+        ]
+
+    def test_exhausted_rounds_report_that_reason(self):
+        failure_detail = []
+        # Per round: conflicted → resolved → the next commit conflicts again.
+        from itertools import cycle
+        rounds = cycle([["a.py"], [], ["b.py"]])
+        with patch("app.rebase_pr._get_conflicted_files",
+                   side_effect=lambda *_a, **_k: next(rounds)), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={"success": True}), \
+             patch("app.rebase_pr._continue_rebase", return_value=(False, "")), \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=600):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=2,
+                skill_dir=REBASE_SKILL_DIR, failure_detail=failure_detail,
+            )
+
+        assert result is False
+        assert failure_detail == ["exceeded 2 conflict-resolution rounds"]
+
+    def test_unresolved_files_report_the_files_not_the_initial_error(self):
+        failure_detail = []
+        with patch("app.rebase_pr._get_conflicted_files", return_value=["a.py"]), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={"success": True}), \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=600):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=1,
+                skill_dir=REBASE_SKILL_DIR, failure_detail=failure_detail,
+            )
+
+        assert result is False
+        assert failure_detail == [
+            "1 file(s) still conflicted after resolution: a.py"
+        ]
+
+
 class TestFetchPrContextHeadOwner:
     """Tests that fetch_pr_context extracts head_owner."""
 
