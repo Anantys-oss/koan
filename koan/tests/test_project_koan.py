@@ -631,6 +631,39 @@ def test_hook_skills_absent_on_the_default_branch_logs_nothing(tmp_path, caplog)
     assert caplog.text == ""
 
 
+def test_hook_skills_empty_when_the_remote_head_is_unset(tmp_path, caplog):
+    # A renamed default branch leaves a stale — and no longer protected —
+    # refs/remotes/origin/main behind, so guessing main/master would read the
+    # execution-granting key from an abandoned branch. Unresolvable ⇒ no-op.
+    checkout = _clone_with_owner_config(
+        tmp_path, "hooks:\n  post_review:\n    - 'stale-skill'\n"
+    )
+    _git(checkout, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")
+    with caplog.at_level(logging.WARNING, logger=pk.logger.name):
+        assert pk.get_hook_skills(str(checkout), "post_review") == []
+    assert "default branch" in caplog.text
+    assert "git remote set-head" in caplog.text
+
+
+def test_hook_skills_pin_the_git_locale_for_message_classified_calls(tmp_path):
+    # git translates "not a git repository" and "does not exist in" on a
+    # localized host, and both are classified by substring here.
+    checkout = _clone_with_owner_config(
+        tmp_path, "hooks:\n  post_review:\n    - 'owner-skill'\n"
+    )
+    real = pk_git_utils.run_git
+    seen = {}
+
+    def _spy(*args, **kwargs):
+        seen[args[0]] = kwargs.get("env")
+        return real(*args, **kwargs)
+
+    with patch.object(pk_git_utils, "run_git", _spy):
+        assert pk.get_hook_skills(str(checkout), "post_review") == ["owner-skill"]
+    assert seen["rev-parse"] == {"LC_ALL": "C"}
+    assert seen["show"] == {"LC_ALL": "C"}
+
+
 def test_hook_skills_read_the_work_tree_of_a_repo_with_no_remote(tmp_path):
     # Nothing external can be checked out into a local-only repo, so the work
     # tree stays usable there — the feature is not gated on having a remote.

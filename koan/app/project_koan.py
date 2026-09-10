@@ -43,9 +43,12 @@ _MAX_SKILL_NAME_LEN = 64
 # sanitized. A repo owner chooses *which* skill runs; they never supply prose.
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
-# Branch names tried when a checkout's remote HEAD symbolic ref was never set
-# locally (``git clone`` sets it; ``git remote add`` does not).
-_TRUSTED_BRANCH_FALLBACKS = ("main", "master")
+# Locale pin for the git calls whose *stderr* this module classifies by message
+# ("not a git repository", "does not exist in"). Git translates those on a host
+# with LANG=fr_FR.UTF-8 and the substring checks would stop matching, turning an
+# expected condition into a spurious operational failure. LC_ALL=C also disables
+# the LANGUAGE override, which gettext ignores in the C locale.
+_GIT_C_LOCALE = {"LC_ALL": "C"}
 
 
 def log_context_load(label: str, content: str) -> None:
@@ -367,10 +370,14 @@ def _select_trusted_remote(remotes: list[str]) -> str:
 def _trusted_config_ref(project_path: str, remote: str) -> str:
     """Return the remote-tracking ref of *remote*'s default branch, or "".
 
-    Prefers the local symbolic ref ``refs/remotes/<remote>/HEAD`` (set by
-    ``git clone``); falls back to the conventional default branch names when it
-    was never set. Never queries the network — this runs inside a lifecycle
-    event and must stay cheap.
+    Reads the local symbolic ref ``refs/remotes/<remote>/HEAD`` (set by
+    ``git clone``, or by ``git remote set-head``) and nothing else. It is
+    deliberately not guessed from ``main``/``master``: a repo whose default
+    branch was renamed keeps a stale — and no longer protected — remote-tracking
+    ``main``, and reading an execution-granting key from it would defeat the
+    whole trusted-branch read. An unresolvable default branch is a no-op, per
+    ``specs/components/skills.md``. Never queries the network — this runs inside
+    a lifecycle event and must stay cheap.
     """
     from app.git_utils import run_git
 
@@ -380,13 +387,6 @@ def _trusted_config_ref(project_path: str, remote: str) -> str:
     )
     if rc == 0 and head.strip():
         return head.strip()
-    for branch in _TRUSTED_BRANCH_FALLBACKS:
-        rc, _, _ = run_git(
-            "rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}",
-            cwd=project_path,
-        )
-        if rc == 0:
-            return f"{remote}/{branch}"
     return ""
 
 
@@ -429,7 +429,9 @@ def read_trusted_koan_config(project_path: str) -> dict:
         return {}
     from app.git_utils import run_git
 
-    rc, _, err = run_git("rev-parse", "--is-inside-work-tree", cwd=project_path)
+    rc, _, err = run_git(
+        "rev-parse", "--is-inside-work-tree", cwd=project_path, env=_GIT_C_LOCALE,
+    )
     if rc != 0:
         # Only git's definite "this is not a repository" answer earns the
         # work-tree fallback. run_git also returns rc=1 on a timeout, a corrupt
@@ -458,13 +460,18 @@ def read_trusted_koan_config(project_path: str) -> dict:
     ref = _trusted_config_ref(project_path, remote)
     if not ref:
         logger.warning(
-            "could not resolve the default branch of %s in %s — "
-            ".koan/config.yaml not read",
+            "could not resolve the default branch of %s in %s "
+            "(refs/remotes/%s/HEAD is unset; run `git remote set-head %s -a` "
+            "there) — .koan/config.yaml not read",
             remote,
             project_path,
+            remote,
+            remote,
         )
         return {}
-    rc, text, err = run_git("show", f"{ref}:.koan/config.yaml", cwd=project_path)
+    rc, text, err = run_git(
+        "show", f"{ref}:.koan/config.yaml", cwd=project_path, env=_GIT_C_LOCALE,
+    )
     if rc != 0:
         # Absent on the default branch is the common case (no repo config) and
         # stays silent. Anything else — a timeout, a corrupt pack, an unreadable

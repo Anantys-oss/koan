@@ -179,7 +179,12 @@ blob from the default branch of the checkout's trusted remote
 tree — changing that ref needs push access. The trusted remote is `origin`, else
 the sole remote of a single-remote repo; several remotes with no `origin` is
 ambiguous (rebasing a fork PR adds the contributor's fork as a second remote) and
-reads nothing. The work tree is used only where nothing external can land in it:
+reads nothing. The default branch itself comes from `refs/remotes/<remote>/HEAD`
+only — never guessed from `main`/`master`, since a renamed default leaves a stale
+and no longer protected remote-tracking `main` behind. A checkout where that
+symbolic ref was never set (`git init` + `git remote add`, rather than a clone)
+reads nothing and logs the remedy, `git remote set-head <remote> -a`.
+The work tree is used only where nothing external can land in it:
 a non-git directory, or a git repo with no remote. The consequence for repo
 owners is that a change to `hooks.<event>` takes effect once merged and fetched,
 not while it sits on a branch.
@@ -268,8 +273,10 @@ Reading the repo's config is fail-safe but not silent: an absent, empty, or
 malformed `.koan/config.yaml` is a no-op, while an *operational* failure —
 `git show` timing out, a probe that cannot say whether the path is a repository
 at all — reads nothing and logs a warning, so a skipped hook is
-distinguishable from an unconfigured one. A failure here never disturbs the
-event that fired.
+distinguishable from an unconfigured one. Those two conditions are recognized by
+git's own message, so the calls run with `LC_ALL=C`: on a localized host the
+translated text would make every ordinary repo look like a failure. A failure
+here never disturbs the event that fired.
 
 ## When to reach for which
 

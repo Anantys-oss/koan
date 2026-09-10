@@ -4,7 +4,7 @@ title: "KOAN.md — koan-only project instructions"
 description: "Documents the optional project-root KOAN.md file and the .koan/ directory (a second .koan/KOAN.md, per-skill .koan/skills/<skill>/*.md hooks, and a structured .koan/config.yaml with review.always_check and hooks.<event>): koan-only steering injected into the autonomous agent's system prompt but never loaded by interactive Claude Code sessions, with precedence rules, the 16k-char cap, and this repo's dogfood layout."
 tags: [users]
 created: 2026-07-09
-updated: 2026-09-04
+updated: 2026-09-09
 ---
 
 # KOAN.md — koan-only project instructions
@@ -188,8 +188,12 @@ and is not MCP-stripped.
   takes effect once it is **merged and fetched**, not while it sits on a branch
   or uncommitted. Two exceptions where the working tree is used instead, because
   nothing external can land in it: a directory that is not a git repo, and a
-  repo with no remote at all. If the default branch cannot be resolved (several
-  remotes and none named `origin`), koan reads nothing and logs a warning.
+  repo with no remote at all. If the trusted remote or its default branch cannot
+  be resolved — several remotes and none named `origin`, or a checkout whose
+  `refs/remotes/origin/HEAD` was never set — koan reads nothing and logs a
+  warning naming the fix (`git remote set-head origin -a`). It never falls back
+  to guessing `main`/`master`, because a renamed default branch leaves a stale,
+  unprotected `origin/main` behind.
 - **Queued, not run inline.** Handlers execute inside the process that fired the
   event, and a skill pipeline can take minutes. Your skill runs as a normal
   pending mission shortly afterwards — watch `instance/missions.md` or

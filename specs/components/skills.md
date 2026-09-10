@@ -352,9 +352,14 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   `origin`, else the sole remote of a single-remote repo; several remotes with no `origin`
   is ambiguous — rebasing a fork PR adds the contributor's fork as a second remote — and
   MUST read nothing. The work tree MAY be read ONLY where nothing external can land in it:
-  a non-git directory, or a git repo with no remote at all. An unresolvable default branch
-  ⇒ no-op. Consequence for repo owners: a change to `hooks.<event>` takes effect once
-  merged and fetched, not while it sits on a branch.
+  a non-git directory, or a git repo with no remote at all. The default branch MUST be
+  resolved from `refs/remotes/<remote>/HEAD` alone and MUST NOT be guessed from
+  conventional names: a repo whose default branch was renamed keeps a stale — and no
+  longer protected — remote-tracking `main`, so a guess would read the key from a branch
+  anyone with push rights to an abandoned ref controls. An unresolvable default branch
+  ⇒ no-op, logged with the remedy (`git remote set-head <remote> -a`). Consequence for
+  repo owners: a change to `hooks.<event>` takes effect once merged and fetched, not while
+  it sits on a branch.
 - For each honored name, one pending mission is queued. Queuing is per-skill isolated: a
   failure while queuing one name MUST NOT prevent the remaining names from queuing. The
   mission is NOT executed inline: handlers run in the firing process, and queuing is what
@@ -446,7 +451,10 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   *expected* conditions by message — git's own "not a git repository", and `git show`'s
   missing-path error — and treat anything else as an error: log it, and read nothing.
   In particular an inconclusive repository probe MUST NOT fall through to the work tree,
-  which is the untrusted source the trusted read exists to avoid.
+  which is the untrusted source the trusted read exists to avoid. Because those messages
+  are translated on a localized host, every git call classified this way MUST pin the
+  message locale (`LC_ALL=C`); otherwise the expected conditions read as operational
+  failures and the log points at the wrong cause.
 - Fail-safe: a malformed config, an unreadable `missions.md`, an unwritable budget file, or
   any other failure here MUST NOT disturb the event that fired.
 
