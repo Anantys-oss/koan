@@ -45,7 +45,10 @@ Automation rules:
 """
 
 import contextlib
+import fcntl
+import hashlib
 import importlib.util
+import json
 import os
 import sys
 import time
@@ -66,6 +69,197 @@ _VALID_SKILL_HOOK_EVENTS = (
     "post_review",
 )
 
+# Delimited token stamped into every mission queued by a project hook skill.
+# Doubles as the self-replication guard (a mission carrying it does not queue
+# more hook skills) and the exact-match dedup key (so ``docs`` is never masked
+# by an already-queued ``docs-lint``).
+_HOOK_SKILL_MARKER_PREFIX = "[hook-skill:"
+
+# Delimited token stamped alongside the skill marker so the dedup below matches
+# the subject exactly rather than as a bare substring. Without the closing ``]``,
+# a shorter PR URL nests inside a longer one (``pull/7`` is a substring of
+# ``pull/70``) and would be wrongly treated as already queued.
+_HOOK_SUBJECT_MARKER_PREFIX = "[hook-subject:"
+
+# Third token, so the firing event is part of the matched identity rather than
+# prose only. A repo may legitimately declare the same skill on two events
+# (``pre_mission`` and ``post_mission`` for the same mission title), and both
+# fires then share a skill name *and* a subject — without this token the second
+# declaration matches the first one's still-pending entry and is silently
+# dropped, no log line, no budget spent.
+_HOOK_EVENT_MARKER_PREFIX = "[hook-event:"
+
+# Upper bound on how much of the subject is interpolated into the composed
+# mission sentence. ``pr_url`` is short, but ``mission_title`` is not always: a
+# complex ``### `` mission reaches the hook as its whole block flattened to one
+# line, so an uncapped subject would paste the previous mission's full
+# instructions into the prompt of the write-capable mission queued here — text
+# the agent then reads as part of what it was asked to do. See
+# :func:`_bounded_subject`.
+_HOOK_SUBJECT_MAX_CHARS = 120
+
+# Backstop bound on how often one (project, event) pair may queue hook skills.
+# Neither the marker guard nor the dedup can see a chain that launders itself
+# through a *new subject*: a queued hook-skill mission opens a PR, autoreview
+# queues ``/review`` for it, and the resulting post_review carries a fresh PR
+# URL and no mission_title at all — so both guards miss. That specific cycle is
+# cut in ``mission_runner._maybe_queue_autoreview``, which refuses to review a
+# hook-skill mission's PR; this budget bounds any *other* such chain, regardless
+# of which context key the firing event happens to carry.
+#
+# It is persisted rather than in-memory (unlike the automation-rule loop guard)
+# because post_review fires from the review subprocess — see
+# ``review_runner._fire_post_review`` — so a per-process counter would start
+# over on every link of the chain and never bound anything.
+#
+# The window is a day rather than a minute because a link of that chain is a
+# whole mission plus a review: an hourly cap generous enough for legitimate use
+# would never be reached by a chain that only advances a few times an hour.
+_HOOK_SKILL_FIRE_WINDOW_SECONDS = 86400.0
+_HOOK_SKILL_MAX_FIRES_PER_WINDOW = 20
+_HOOK_SKILL_FIRES_FILE = ".hook-skill-fires.json"
+
+# Remembered so the "skipped (not enabled)" diagnostic is printed at most once
+# per process rather than on every event — mirrors ``mission_hooks._skip_logged``.
+_hook_skills_skip_logged = False
+
+
+def hook_skills_enabled(project_name: str) -> bool:
+    """Whether repo-declared hook skills may queue missions for *project_name*.
+
+    ``hooks.<event>`` lives in a **repo-controlled** file and each honored name
+    queues a *write-capable* mission on the operator's host and quota, so the
+    operator — not the repo — decides whether the mechanism runs at all. This is
+    the same gate shape ``mission_hooks.hooks_enabled`` uses for the sibling
+    ``pre_hooks``/``post_hooks`` surface: a per-project override
+    (``projects.yaml`` ``hook_skills:``) wins when set, otherwise the global
+    opt-in (``hook_skills.enabled`` in ``instance/config.yaml``, default False).
+
+    Fail-safe: any error ⇒ False, so a broken config can never enable execution.
+    """
+    try:
+        from app.projects_config import get_project_hook_skills
+        override = get_project_hook_skills(project_name)
+        if override is not None:
+            return override
+        from app.config import is_hook_skills_enabled
+        return is_hook_skills_enabled()
+    except Exception as exc:  # never let a config error enable/crash hooks
+        print(
+            f"[hooks] hook-skill enablement check failed: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
+
+def is_hook_skill_mission(mission_title: str) -> bool:
+    """True when *mission_title* belongs to a mission this mechanism queued.
+
+    Callers outside the hook system use this to avoid feeding such a mission's
+    output back into an event that would queue another one — see
+    ``mission_runner._maybe_queue_autoreview``.
+    """
+    return _HOOK_SKILL_MARKER_PREFIX in str(mission_title or "")
+
+
+def _hook_subject(ctx: dict) -> str:
+    """Return the firing event's subject, normalized as the mission store holds it.
+
+    The subject (the PR URL, else the mission title) is the dedup key stamped
+    into every queued entry, so it MUST be normalized exactly as the store will
+    normalize it — otherwise the token written here is not the token the next
+    fire searches for and every re-fire re-queues. A ``mission_title`` arrives
+    carrying its ⏳/▶ lifecycle timestamps and ``[complexity:…]``/``[r:N]``
+    metadata, all of which the store strips on ingest; newlines are flattened to
+    spaces by ``insert_mission``. An embedded ⏳ is doubly harmful —
+    ``insert_mission`` would treat the entry as already stamped and the new
+    mission would inherit the previous mission's queue time.
+
+    Identity is taken from ``missions.canonical_mission_key`` — the repo's one
+    definition of "the same mission across lifecycle" — so a title that comes
+    back re-queued also strips the ``[verify-failed: …]`` tag the post-mission
+    verification path appends (``run.py`` requeue, on by default). Without it a
+    verify-requeued mission produces a *different* subject from its first run's
+    and queues the hook skill a second time while the first is still pending.
+    ``strip_all_lifecycle_markers`` still runs first because it also truncates at
+    a bare ⏳ that carries no parseable timestamp, and ``strip_system_metadata``
+    for the 📬/🎫 origin markers that neither of the other two touch.
+
+    Returns ``""`` when the event carries no subject at all, which the caller
+    treats as "queue nothing" (see :meth:`_fire_project_hook_skills`).
+    """
+    from app.missions import (
+        canonical_mission_key,
+        strip_all_lifecycle_markers,
+        strip_system_metadata,
+    )
+
+    raw = str(ctx.get("pr_url") or ctx.get("mission_title") or "")
+    clean = canonical_mission_key(
+        strip_system_metadata(strip_all_lifecycle_markers(raw))
+    )
+    return " ".join(clean.split())
+
+
+def _bounded_subject(subject: str) -> tuple[str, str]:
+    """Return ``(display, key)`` for *subject*, both bounded in length.
+
+    ``display`` is what the composed sentence says the skill is for; ``key`` is
+    what the dedup token carries. A short subject (every ``pr_url``, an ordinary
+    one-line mission title) is both, unchanged.
+
+    A long one is not: ``mission_title`` for a complex ``### `` mission is the
+    entire block — ``parse_sections`` attaches every continuation line to the
+    item and ``insert_mission`` flattens newlines to spaces — so interpolating
+    it verbatim would write the previous mission's full instruction text into
+    the queued entry, twice, and the agent that picks that entry up reads it as
+    part of its own instruction. Both forms are therefore truncated.
+
+    ``key`` keeps a hash of the *whole* subject after the truncated head, so the
+    exact-match property the dedup relies on survives the cap: two different
+    long subjects that happen to share their first ``_HOOK_SUBJECT_MAX_CHARS``
+    characters still get distinct tokens, while the same subject hashes the same
+    on every fire.
+    """
+    if len(subject) <= _HOOK_SUBJECT_MAX_CHARS:
+        return subject, subject
+    head = subject[:_HOOK_SUBJECT_MAX_CHARS].rstrip()
+    digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:16]
+    return f"{head}…", f"{head}…{digest}"
+
+
+def _trusted_project_path(ctx: dict) -> Optional[str]:
+    """Return the operator-registered checkout for the firing project, if any.
+
+    ``ctx["project_path"]`` is NOT a trusted source of repo config. On the
+    ``post_review`` path it is a detached worktree of the **pull request head**
+    (``review_runner.run_review`` pins it via ``pinned_review_worktree``), so a
+    ``.koan/config.yaml`` read from it is whatever the *contributor* committed,
+    not what the repo owner did. Reading hook skills there would let any PR
+    author queue a write-capable mission on the operator's quota.
+
+    Resolve the path from the project registry instead — ``project_name`` first,
+    then ``project_path`` but only when it *is* a registered checkout. Anything
+    else (a review worktree, an unregistered directory) returns ``None`` and the
+    caller queues nothing.
+    """
+    from app.utils import get_known_projects
+
+    known = get_known_projects()
+    name = str(ctx.get("project_name") or "").strip().lower()
+    if name:
+        for pname, ppath in known:
+            if str(pname).strip().lower() == name:
+                return str(ppath)
+    raw = str(ctx.get("project_path") or "")
+    if not raw:
+        return None
+    target = os.path.realpath(raw)
+    for _pname, ppath in known:
+        if os.path.realpath(str(ppath)) == target:
+            return str(ppath)
+    return None
+
 
 class HookRegistry:
     """Discovers and manages hook modules from a directory."""
@@ -75,6 +269,10 @@ class HookRegistry:
         self._instance_dir: Optional[str] = instance_dir
         # Per-rule fire timestamps for the loop guard: {rule_id: [timestamp, ...]}
         self._rule_fire_times: Dict[str, List[float]] = defaultdict(list)
+        # Fallback hook-skill fire budget, used only when the persisted one
+        # (instance/.hook-skill-fires.json) cannot be read or written.
+        self._hook_skill_fire_times: Dict[str, List[float]] = defaultdict(list)
+        self._hook_skill_budget_degraded = False
         self._discover(hooks_dir)
         # Also discover skill-bound hooks under instance/skills/<scope>/<name>/.
         # Instance-wide hooks above are registered first, so they fire first
@@ -177,7 +375,9 @@ class HookRegistry:
         """Call all handlers for event, catching exceptions per-handler.
 
         After user hook modules execute, evaluates matching automation rules
-        from instance/automation_rules.yaml (if instance_dir was provided).
+        from instance/automation_rules.yaml (if instance_dir was provided),
+        then the reviewed project's own ``hooks.<event>`` skill list from its
+        ``.koan/config.yaml`` (if the event carries a ``project_path``).
 
         Returns a dict mapping failed handler names to error messages.
         Empty dict means all handlers succeeded.
@@ -202,12 +402,314 @@ class HookRegistry:
         # Execute matching automation rules
         if self._instance_dir is not None:
             self._fire_automation_rules(event, kwargs)
+            self._fire_project_hook_skills(event, kwargs)
 
         return failures
 
     def has_hooks(self, event: str) -> bool:
         """Check if any hooks are registered for event."""
         return bool(self._handlers.get(event))
+
+    # ------------------------------------------------------------------
+    # Project-declared hook skills (.koan/config.yaml)
+    # ------------------------------------------------------------------
+
+    def _fire_project_hook_skills(self, event: str, ctx: dict) -> None:
+        """Queue a mission per skill the reviewed repo declared for *event*.
+
+        Reads ``hooks.<event>`` from the project's own ``.koan/config.yaml``,
+        letting a repo owner wire a skill to a lifecycle event without the
+        operator writing a Python hook.
+
+        Gated on the operator opt-in (:func:`hook_skills_enabled`, default off)
+        before the repo's config is read at all — registering a project must not
+        by itself grant that repo the ability to spend write-capable missions
+        here.
+
+        The config is read from the **operator-registered checkout**
+        (:func:`_trusted_project_path`), never from the path the event carries:
+        on ``post_review`` that path is a worktree of the PR head, so trusting
+        it would hand the choice of skill to the contributor.
+
+        The repo supplies skill *names* only and the mission sentence is
+        composed here, so a config committed by whoever can open a pull
+        request cannot inject instructions into the write-capable mission that
+        will run the skill.
+
+        Queued rather than executed: handlers run inline in the firing
+        process, and a skill pipeline can take minutes. The mission loop is
+        also the path that loads the project's own Claude Code skills, which
+        a read-only review subprocess does not.
+
+        Only events that carry a subject (a PR URL or a mission title) queue
+        anything — the subject is the dedup key, and an event without one would
+        re-queue on every fire.
+
+        Both the marker guard and the dedup are blind to a chain that launders
+        itself through a new subject each round (queued mission → PR →
+        autoreview → post_review with a fresh PR URL and no mission_title).
+        That link is cut in ``mission_runner._maybe_queue_autoreview``; a
+        persistent per-(project, event) budget bounds the rest.
+
+        Fire-and-forget — a broken repo config never disturbs the event.
+        """
+        global _hook_skills_skip_logged
+
+        project_path = ctx.get("project_path")
+        if not project_path or self._instance_dir is None:
+            return
+        # Operator opt-in, checked before the repo's config is even read: the
+        # list comes from a file the repo controls and each name spends a
+        # write-capable mission, so registering a project must not by itself
+        # hand that repo a lever on this host.
+        if not hook_skills_enabled(str(ctx.get("project_name") or "")):
+            if not _hook_skills_skip_logged:
+                print(
+                    "[hooks] project hook skills skipped (not enabled) — set "
+                    "hook_skills.enabled: true to run repo-declared hook skills",
+                    file=sys.stderr,
+                )
+                _hook_skills_skip_logged = True
+            return
+        # A mission this mechanism queued must not queue more hook skills, or a
+        # repo declaring hooks.post_mission (or pre_mission) would self-replicate
+        # without bound: each queued mission's own post_mission would re-queue,
+        # forever. The marker embedded in the queued entry rides along in
+        # mission_title, so its presence means we are already inside such a
+        # mission — stop the chain here.
+        if is_hook_skill_mission(ctx.get("mission_title")):
+            return
+        try:
+            from app.project_koan import get_hook_skills
+
+            # Every queued entry is de-duplicated on its subject, so an event
+            # that carries none has no identity to match against and would
+            # re-queue on every fire. That is not hypothetical: koan's own
+            # autonomous and contemplative iterations run through this same
+            # pre_mission/post_mission path with an empty mission_title and no
+            # pr_url, so a project that merely declares hooks.post_mission would
+            # otherwise ping-pong autonomous session → hook-skill mission →
+            # autonomous session indefinitely. Subject-less events queue
+            # nothing, by contract.
+            subject = _hook_subject(ctx)
+            if not subject:
+                return
+            trusted = _trusted_project_path(ctx)
+            if not trusted:
+                print(
+                    f"[hooks] {event}: no registered checkout for "
+                    f"{ctx.get('project_name') or project_path} — hook skills skipped",
+                    file=sys.stderr,
+                )
+                return
+            skills = get_hook_skills(trusted, event)
+        except Exception as exc:
+            print(
+                f"[hooks] project hook skills failed for {event}: {exc}",
+                file=sys.stderr,
+            )
+            return
+        if not skills:
+            return
+        project_key = str(ctx.get("project_name") or trusted)
+        fires = self._hook_skill_fire_count(project_key, event)
+        if fires >= _HOOK_SKILL_MAX_FIRES_PER_WINDOW:
+            print(
+                f"[hooks] {event}: hook-skill budget exhausted for {project_key} "
+                f"({_HOOK_SKILL_MAX_FIRES_PER_WINDOW} in the last "
+                f"{_HOOK_SKILL_FIRE_WINDOW_SECONDS / 3600:.0f}h) — "
+                f"skipping {', '.join(skills)}",
+                file=sys.stderr,
+            )
+            return
+        # Per-skill isolation: one failing queue (a locked store, an OSError on
+        # the export write) must not cancel the skills after it — post_review
+        # fires once per review, so a skipped sibling is lost for good.
+        queued_any = False
+        for skill in skills:
+            try:
+                queued_any |= self._queue_hook_skill(event, skill, ctx, subject)
+            except Exception as exc:
+                print(
+                    f"[hooks] {event}: could not queue {skill}: {exc}",
+                    file=sys.stderr,
+                )
+        # Spend budget only on fires that actually queued something. A re-fire
+        # the dedup absorbed (the same PR reviewed twice) added no work to the
+        # queue, so it must not consume a link's worth of the bound.
+        if queued_any:
+            self._hook_skill_fire_count(project_key, event, record=True)
+
+    def _hook_skill_fire_count(
+        self, project: str, event: str, *, record: bool = False,
+    ) -> int:
+        """Fires recorded for *(project, event)* inside the rolling window.
+
+        With ``record=True``, stamps one more before returning. Timestamps live
+        in ``instance/.hook-skill-fires.json`` because the events that need
+        bounding fire from different processes (the run loop and the review
+        subprocess), so an in-memory counter would reset between links of the
+        very chain it is meant to stop. Wall-clock time, not ``monotonic``, for
+        the same reason.
+
+        When the file cannot be read or written, the count comes from an
+        **in-process fallback** instead of ``0``. Returning zero would make the
+        bound permanently non-binding for as long as the state file is
+        unwritable — a full disk would silently retire the very backstop that
+        stops a chain no other guard can see. The fallback is weaker (it resets
+        with the process, and ``post_review`` fires from a fresh subprocess),
+        but it still bounds every chain that advances within one process, and it
+        never raises or disturbs the event.
+        """
+        if self._instance_dir is None:
+            return self._hook_skill_fire_count_fallback(project, event, record=record)
+        from app.utils import atomic_write_json
+
+        state_path = Path(self._instance_dir) / _HOOK_SKILL_FIRES_FILE
+        key = f"{project}\x1f{event}"
+        now = time.time()
+
+        def _fresh(stamps) -> List[float]:
+            # A clock that jumped backwards would otherwise strand entries in
+            # the file forever; treat a future stamp as outside the window too.
+            return [
+                float(t) for t in stamps
+                if isinstance(t, (int, float))
+                and 0 <= now - float(t) < _HOOK_SKILL_FIRE_WINDOW_SECONDS
+            ]
+
+        try:
+            with open(state_path.with_suffix(".lock"), "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    try:
+                        raw = json.loads(state_path.read_text())
+                    except (OSError, ValueError):
+                        raw = {}
+                    if not isinstance(raw, dict):
+                        raw = {}
+                    # Prune every key, not just this one, so the file does not
+                    # grow without bound across projects and events.
+                    state: Dict[str, List[float]] = {}
+                    for k, v in raw.items():
+                        fresh = _fresh(v) if isinstance(v, list) else []
+                        if fresh:
+                            state[k] = fresh
+                    count = len(state.get(key, []))
+                    if record:
+                        state.setdefault(key, []).append(now)
+                    atomic_write_json(state_path, state)
+                    return count
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        except Exception as exc:
+            # An unwritable budget file must not retire the bound: fall back to
+            # the in-process counter rather than reporting "zero fires", which
+            # would let an unseen chain queue a write-capable mission per round
+            # for as long as the disk stays full. Warned once per process — one
+            # line per fire is noise nobody reads.
+            if not self._hook_skill_budget_degraded:
+                self._hook_skill_budget_degraded = True
+                print(
+                    f"[hooks] hook-skill fire budget file unavailable ({exc}) — "
+                    "falling back to an in-process counter for this process",
+                    file=sys.stderr,
+                )
+            return self._hook_skill_fire_count_fallback(project, event, record=record)
+
+    def _hook_skill_fire_count_fallback(
+        self, project: str, event: str, *, record: bool = False,
+    ) -> int:
+        """In-memory stand-in for :meth:`_hook_skill_fire_count`'s state file.
+
+        Same rolling window, same ``record`` semantics; the timestamps simply do
+        not survive the process. Used only when the persisted budget is
+        unavailable, so the cap keeps binding instead of silently going away.
+        """
+        now = time.time()
+        key = f"{project}\x1f{event}"
+        stamps = [
+            t for t in self._hook_skill_fire_times[key]
+            if 0 <= now - t < _HOOK_SKILL_FIRE_WINDOW_SECONDS
+        ]
+        self._hook_skill_fire_times[key] = stamps
+        count = len(stamps)
+        if record:
+            stamps.append(now)
+        return count
+
+    def _queue_hook_skill(
+        self, event: str, skill: str, ctx: dict, subject: str
+    ) -> bool:
+        """Append one pending mission running *skill*, unless already queued.
+
+        *subject* is the already-normalized, non-empty identity of the firing
+        event (see :func:`_hook_subject`); :func:`_bounded_subject` turns it into
+        the prose and the dedup token the entry carries. The dedup keys on
+        (skill, event, subject) — all three, so a skill declared on two events
+        queues once per event.
+
+        Returns True when an entry was actually inserted, so the caller only
+        spends fire budget on fires that added work.
+        """
+        from app.missions import insert_mission, parse_sections
+        from app.utils import modify_missions_file
+
+        project = str(ctx.get("project_name") or "").strip()
+        prefix = f"[project:{project}] " if project else ""
+        # The marker is a stable, delimited token — both the self-replication
+        # guard and the dedup below match on it exactly, so a skill name can
+        # never be masked by a longer name it is a substring of (docs vs.
+        # docs-lint), and a queued mission is recognizable as this mechanism's.
+        marker = f"{_HOOK_SKILL_MARKER_PREFIX}{skill}]"
+        # The event is part of the matched identity, not prose only: the same
+        # skill declared on two events fires twice with the same subject, and
+        # without this token the second fire matches the first one's entry.
+        event_marker = f"{_HOOK_EVENT_MARKER_PREFIX}{event}]"
+        # Bounded on both sides — the sentence must not carry a whole mission
+        # block, and the token must stay a stable, exact identity anyway.
+        display, key = _bounded_subject(subject)
+        subject_marker = f"{_HOOK_SUBJECT_MARKER_PREFIX}{key}]"
+        entry = (
+            f"{prefix}Use the {skill} skill for {display}. Queued by the {event} "
+            f"lifecycle event via .koan/config.yaml. "
+            f"{marker}{event_marker}{subject_marker}"
+        )
+
+        missions_path = Path(self._instance_dir) / "missions.md"
+        inserted = False
+
+        def _transform(content: str) -> str:
+            # insert_pending_mission only dedups entries shaped like
+            # "/<command> <github-url>", so a composed sentence needs its own
+            # check or a re-review would queue the same work twice. Doing it
+            # inside the locked read-modify-write closes the TOCTOU window: the
+            # review subprocess and the run loop can fire the same event
+            # concurrently, and an unlocked read would let both observe "not
+            # queued" and both insert.
+            nonlocal inserted
+            sections = parse_sections(content)
+            queued = sections.get("pending", []) + sections.get("in_progress", [])
+            # All three tokens are delimited by a closing ``]`` and matched
+            # exactly, so neither a longer skill name nor a longer PR URL can
+            # mask this one (``docs`` vs ``docs-lint``; ``pull/7`` vs
+            # ``pull/70``), and an entry queued by a different event never
+            # absorbs this one.
+            if any(
+                marker in item and event_marker in item and subject_marker in item
+                for item in queued
+            ):
+                return content
+            inserted = True
+            return insert_mission(content, entry)
+
+        modify_missions_file(missions_path, _transform)
+        if inserted:
+            print(
+                f"[hooks] {event}: queued {skill} for {display}",
+                file=sys.stderr,
+            )
+        return inserted
 
     # ------------------------------------------------------------------
     # Automation rules

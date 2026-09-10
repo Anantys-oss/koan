@@ -2252,3 +2252,60 @@ class TestGetProjectMissionHooks:
 
         monkeypatch.setattr(pc, "load_projects_config", _boom)
         assert pc.get_project_mission_hooks("myapp") is False
+
+
+# ---------------------------------------------------------------------------
+# get_project_hook_skills (per-project opt-in override)
+# ---------------------------------------------------------------------------
+
+
+class TestGetProjectHookSkills:
+    def test_no_koan_root_returns_none(self, monkeypatch):
+        from app.projects_config import get_project_hook_skills
+        monkeypatch.delenv("KOAN_ROOT", raising=False)
+        assert get_project_hook_skills("myapp") is None
+
+    def test_unset_returns_none(self, koan_root, monkeypatch):
+        from app.projects_config import get_project_hook_skills
+        _minimal_config(koan_root)
+        monkeypatch.setenv("KOAN_ROOT", koan_root)
+        assert get_project_hook_skills("myapp") is None
+
+    def test_true_override(self, koan_root, monkeypatch):
+        from app.projects_config import get_project_hook_skills
+        _minimal_config(koan_root, extra="    hook_skills: true\n")
+        monkeypatch.setenv("KOAN_ROOT", koan_root)
+        assert get_project_hook_skills("myapp") is True
+
+    def test_false_override(self, koan_root, monkeypatch):
+        from app.projects_config import get_project_hook_skills
+        _minimal_config(koan_root, extra="    hook_skills: false\n")
+        monkeypatch.setenv("KOAN_ROOT", koan_root)
+        assert get_project_hook_skills("myapp") is False
+
+    def test_nested_enabled_form(self, koan_root, monkeypatch):
+        from app.projects_config import get_project_hook_skills
+        _minimal_config(
+            koan_root, extra="    hook_skills:\n      enabled: true\n")
+        monkeypatch.setenv("KOAN_ROOT", koan_root)
+        assert get_project_hook_skills("myapp") is True
+
+    def test_unknown_project_returns_none(self, koan_root, monkeypatch):
+        from app.projects_config import get_project_hook_skills
+        _minimal_config(koan_root, extra="    hook_skills: true\n")
+        monkeypatch.setenv("KOAN_ROOT", koan_root)
+        assert get_project_hook_skills("nonexistent") is None
+
+    def test_load_error_fails_closed(self, koan_root, monkeypatch):
+        # Same reason as the mission-hooks override: a read/parse error must not
+        # defer to the global gate, which could re-enable write-capable missions
+        # queued from this repo's config. Fail closed.
+        import app.projects_config as pc
+
+        monkeypatch.setenv("KOAN_ROOT", koan_root)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("corrupt projects.yaml")
+
+        monkeypatch.setattr(pc, "load_projects_config", _boom)
+        assert pc.get_project_hook_skills("myapp") is False

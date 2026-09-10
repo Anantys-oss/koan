@@ -91,3 +91,57 @@ review:
 # implement:
 #   pre_hooks: ["make deps"]
 #   post_hooks: ["make clean"]
+
+# ===========================================================================
+# hooks — run a repo's own Claude Code skills when a Kōan lifecycle event fires.
+#
+# ⚠️ SECURITY: each honored name queues a mission that a WRITE-CAPABLE agent
+# executes on the operator's host. Three rules bound that:
+#   0. The mechanism is OFF unless the operator opted in, in their own
+#      instance/config.yaml (`hook_skills: {enabled: true}`) or per-project in
+#      their projects.yaml (`hook_skills: true`). Until then this key is inert
+#      and Kōan logs a "skipped (not enabled)" note.
+#   1. Kōan reads this key from the DEFAULT BRANCH of the checkout the OPERATOR
+#      registered — never from the pull-request worktree a review runs against,
+#      and never from whatever branch that checkout currently has out (Kōan
+#      parks contributor branches there when it rebases a PR). Changing the
+#      skills that run needs push access to the default branch; opening a pull
+#      request is not enough. The flip side: an edit here takes effect once
+#      merged and fetched, not while it sits on a branch or uncommitted.
+#   2. The repo supplies skill NAMES only; Kōan composes the mission sentence
+#      itself. Names must match ^[a-z0-9][a-z0-9-]*$ (≤64 chars, ≤10 per
+#      event); anything that could carry an instruction, a path or a shell
+#      fragment is dropped with a warning rather than sanitized.
+#
+# Keys are Kōan's lifecycle event names: session_start, session_end,
+# pre_mission, post_mission, post_review. Values are a list of skill names.
+#
+# The queued mission is executed by the normal mission loop, which — unlike the
+# read-only review subprocess — loads the project's own `.claude/skills`, can
+# invoke the Skill tool, and can reach an MCP server. So this is how a repo
+# wires follow-up work that a review pass is not allowed to do.
+#
+# Queued, not executed inline: hooks run in the firing process, and a skill
+# pipeline can take minutes. Re-firing the same event for the same subject (the
+# PR URL, or the mission title) does not queue the work again while the earlier
+# mission is still pending or in progress; a skill named under
+# pre_mission/post_mission does not re-trigger itself into a runaway loop.
+#
+# The subject is what that de-duplication keys on, so an event carrying none
+# queues nothing: Kōan's own autonomous and contemplative iterations fire
+# pre_mission/post_mission with no mission title and no PR, and are skipped here.
+#
+# Two more bounds, so a config on your default branch cannot spend the
+# operator's quota in a loop:
+#   - A pull request opened BY one of these missions is not auto-reviewed.
+#     Otherwise its review would fire post_review, queueing another mission,
+#     which opens another PR, forever. Review such a PR on demand instead.
+#   - At most 20 fires per event per day actually queue work for a project;
+#     past that the skills are skipped and a line is logged.
+# ===========================================================================
+
+# hooks:
+#   post_review:
+#     - "docs-refresh"          # your repo's .claude/skills/docs-refresh/
+#   post_mission:
+#     - "some-other-skill"
