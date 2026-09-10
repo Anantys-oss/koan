@@ -372,15 +372,20 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   regex above rejects — rather than sanitizes — anything that could carry an instruction,
   a path, or a shell fragment. Kōan MUST NOT interpolate repo-supplied free text into a
   mission.
-- **Idempotent per subject, while the earlier mission is still queued.**
+- **Idempotent per (skill, event, subject), while the earlier mission is still queued.**
   `insert_pending_mission` only de-duplicates entries shaped like
   `/<command> <github-url>`, so this path MUST perform its own check against the pending
-  and in-progress sections, keyed on two delimited tokens stamped into each queued entry:
-  a `[hook-skill:<name>]` marker and a `[hook-subject:<subject>]` token (the subject being
-  `pr_url`, else `mission_title`). The match MUST be on both exact tokens, not on a bare
-  substring of either, so neither a shorter skill name (`docs` masked by an already-queued
+  and in-progress sections, keyed on three delimited tokens stamped into each queued entry:
+  a `[hook-skill:<name>]` marker, a `[hook-event:<event>]` marker, and a
+  `[hook-subject:<subject>]` token (the subject being `pr_url`, else `mission_title`). The
+  match MUST be on all three exact tokens, not on a bare
+  substring of any, so neither a shorter skill name (`docs` masked by an already-queued
   `docs-lint`) nor a shorter PR URL (`pull/7` masked by `pull/70`) is wrongly treated as
-  already queued. Re-firing the same event for the same subject MUST NOT queue the work
+  already queued. The event MUST be part of the matched identity, not prose only: a repo
+  may legitimately declare one skill on two events (`pre_mission` and `post_mission`), and
+  both fires then share a skill name *and* a subject — an identity that omitted the event
+  would match the first fire's still-pending entry and silently drop the second
+  declaration. Re-firing the same event for the same subject MUST NOT queue the work
   twice while a prior mission for that subject is still pending or in progress; once that
   mission has completed, a later re-fire (a new push to the same PR) queues again — the
   check covers Pending + In Progress only, by design. A different subject MUST queue
@@ -403,6 +408,19 @@ event names (`session_start`, `session_end`, `pre_mission`, `post_mission`,
   the *stored* token differs from the token the next fire searches for and every re-fire
   re-queues — and an embedded `⏳` additionally suppresses `insert_mission`'s fresh queue
   stamp, so the new mission would inherit the previous mission's `queued_at`.
+- **The subject MUST be length-bounded before it is interpolated.** `pr_url` is short;
+  `mission_title` is not necessarily — a complex `### ` mission reaches the hook as its
+  whole block flattened to one line (`parse_sections` attaches continuation lines to the
+  item, `insert_mission` flattens newlines to spaces). Interpolated verbatim, the queued
+  entry would carry the *previous* mission's full instruction text, and the write-capable
+  agent that picks that entry up reads it as part of its own instruction. Kōan MUST
+  therefore cap the prose subject (currently `hooks._HOOK_SUBJECT_MAX_CHARS` = 120
+  characters, with an ellipsis) and key the dedup token on a bounded, deterministic form
+  of the subject. That form MUST stay exact across distinct subjects — truncation alone
+  is not enough, since two long missions can share their first N characters — so the
+  token appends a hash of the whole subject to the truncated head. The security argument
+  above ("the repo supplies names; Kōan composes the sentence") holds only if every other
+  value interpolated into the composed sentence is bounded and inert too.
 - **An event without a subject MUST queue nothing.** The subject is the dedup key above,
   so an event carrying neither `pr_url` nor a non-blank `mission_title` has no identity to
   match against and would append a fresh copy on every fire. Kōan's autonomous and

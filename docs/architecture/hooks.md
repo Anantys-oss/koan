@@ -204,15 +204,21 @@ path or a shell fragment is refused rather than sanitized. Contrast the
 operator-side mechanisms above, which may run arbitrary code because the
 operator owns them.
 
-**Idempotent per subject, while the earlier mission is still queued.**
+**Idempotent per (skill, event, subject), while the earlier mission is still
+queued.**
 `insert_pending_mission` only de-duplicates entries shaped like
 `/<command> <github-url>`, so this path does its own check against the pending
-and in-progress sections, keyed on two delimited tokens stamped into each queued
-entry: a `[hook-skill:<name>]` marker and a `[hook-subject:<subject>]` token
-(the subject being the PR URL, or the mission title). Matching both tokens
+and in-progress sections, keyed on three delimited tokens stamped into each
+queued entry: a `[hook-skill:<name>]` marker, a `[hook-event:<event>]` marker,
+and a `[hook-subject:<subject>]` token (the subject being the PR URL, or the
+mission title). Matching all three tokens
 exactly rather than as bare substrings means neither a shorter skill name
 (`docs` masked by an already-queued `docs-lint`) nor a shorter PR URL (`pull/7`
-masked by `pull/70`) is wrongly treated as already queued. Re-reviewing the same
+masked by `pull/70`) is wrongly treated as already queued. The event is part of
+that identity rather than prose only, so declaring one skill on two events
+(`pre_mission` *and* `post_mission`) runs it once per event instead of having
+the second declaration silently absorbed by the first one's pending entry.
+Re-reviewing the same
 PR while the earlier mission is still pending or in progress does not queue the
 work twice; once it has completed, a re-review queues again (by design — a new
 push should re-run the skill). A different PR queues separately.
@@ -226,6 +232,16 @@ strips them on ingest — an un-normalized token would be stored differently fro
 the token the next fire looks for and re-queue every time. An embedded `⏳` is
 worse still: `insert_mission` would skip its own queue stamp and the new mission
 would inherit the previous mission's queue time.
+
+**The subject is length-bounded.** A PR URL is short; a mission title is not
+always — a complex `### ` mission reaches the hook as its whole block flattened
+to one line. Interpolated verbatim, the queued entry would carry the *previous*
+mission's full instruction text, which the write-capable agent that picks it up
+then reads as part of its own instruction. The sentence therefore shows at most
+the first 120 characters (`_HOOK_SUBJECT_MAX_CHARS`) followed by an ellipsis,
+and the dedup token appends a short hash of the whole subject to that truncated
+head — bounded, stable across fires, and still distinct for two long missions
+that happen to share a prefix.
 
 **An event without a subject queues nothing.** The subject is the dedup key, so
 an event that carries none has no identity to match against and would append a

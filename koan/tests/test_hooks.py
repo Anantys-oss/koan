@@ -1359,6 +1359,95 @@ class TestProjectHookSkills:
         assert missions.count("[hook-skill:a-skill]") == 1
         assert "[hook-subject:Add dark mode]" in missions
 
+    def test_same_skill_on_two_events_queues_once_per_event(self, tmp_path):
+        # A repo may wire one skill to both ends of a mission. Both fires carry
+        # the same skill name and the same subject, so an identity that omitted
+        # the event would match the pre_mission entry still sitting in Pending
+        # and silently drop the post_mission declaration.
+        project = self._make_project(
+            tmp_path,
+            "hooks:\n  pre_mission:\n    - 'a-skill'\n"
+            "  post_mission:\n    - 'a-skill'\n",
+        )
+        registry = self._make_registry(tmp_path)
+        for event in ("pre_mission", "post_mission"):
+            registry.fire(
+                event, project_path=str(project), project_name="my-toolkit",
+                mission_title="Add dark mode",
+            )
+        missions = self._pending(tmp_path)
+        assert missions.count("[hook-skill:a-skill]") == 2
+        assert "Queued by the pre_mission lifecycle event" in missions
+        assert "Queued by the post_mission lifecycle event" in missions
+
+    def test_same_event_still_dedups_after_the_event_is_in_the_identity(
+        self, tmp_path
+    ):
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_mission:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        for _ in range(2):
+            registry.fire(
+                "post_mission", project_path=str(project),
+                project_name="my-toolkit", mission_title="Add dark mode",
+            )
+        assert self._pending(tmp_path).count("[hook-skill:a-skill]") == 1
+
+    def test_long_mission_title_is_capped_in_the_queued_entry(self, tmp_path):
+        # A complex "### " mission arrives as its whole block flattened to one
+        # line. Interpolated verbatim it would hand the next agent the previous
+        # mission's full instructions as part of its own.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_mission:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        title = (
+            "Purge stale branches "
+            + "- force-push each rewritten branch " * 20
+            + "- delete the remote tag SENTINEL-TAIL"
+        )
+        registry.fire(
+            "post_mission", project_path=str(project), project_name="my-toolkit",
+            mission_title=title,
+        )
+        missions = self._pending(tmp_path)
+        assert "Purge stale branches" in missions
+        assert "SENTINEL-TAIL" not in missions
+        entry = next(
+            ln for ln in missions.splitlines() if "[hook-skill:a-skill]" in ln
+        )
+        assert len(entry) < 2 * hooks._HOOK_SUBJECT_MAX_CHARS + 300
+
+    def test_long_mission_title_still_dedups_across_fires(self, tmp_path):
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_mission:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        title = "Do a very long thing " * 40
+        for _ in range(2):
+            registry.fire(
+                "post_mission", project_path=str(project),
+                project_name="my-toolkit", mission_title=title,
+            )
+        assert self._pending(tmp_path).count("[hook-skill:a-skill]") == 1
+
+    def test_long_titles_sharing_a_prefix_queue_separately(self, tmp_path):
+        # The cap must not collapse two distinct missions into one identity:
+        # truncation alone would, so the token carries a hash of the whole
+        # subject after the truncated head.
+        project = self._make_project(
+            tmp_path, "hooks:\n  post_mission:\n    - 'a-skill'\n"
+        )
+        registry = self._make_registry(tmp_path)
+        shared = "Refactor the parser and keep the old API working " * 4
+        for tail in ("then drop v1", "then keep v1"):
+            registry.fire(
+                "post_mission", project_path=str(project),
+                project_name="my-toolkit", mission_title=f"{shared}{tail}",
+            )
+        assert self._pending(tmp_path).count("[hook-skill:a-skill]") == 2
+
 
 class TestProjectHookSkillsOptIn:
     """The operator opt-in gate in front of repo-declared hook skills."""

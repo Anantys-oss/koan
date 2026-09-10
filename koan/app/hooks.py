@@ -46,6 +46,7 @@ Automation rules:
 
 import contextlib
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -79,6 +80,23 @@ _HOOK_SKILL_MARKER_PREFIX = "[hook-skill:"
 # a shorter PR URL nests inside a longer one (``pull/7`` is a substring of
 # ``pull/70``) and would be wrongly treated as already queued.
 _HOOK_SUBJECT_MARKER_PREFIX = "[hook-subject:"
+
+# Third token, so the firing event is part of the matched identity rather than
+# prose only. A repo may legitimately declare the same skill on two events
+# (``pre_mission`` and ``post_mission`` for the same mission title), and both
+# fires then share a skill name *and* a subject — without this token the second
+# declaration matches the first one's still-pending entry and is silently
+# dropped, no log line, no budget spent.
+_HOOK_EVENT_MARKER_PREFIX = "[hook-event:"
+
+# Upper bound on how much of the subject is interpolated into the composed
+# mission sentence. ``pr_url`` is short, but ``mission_title`` is not always: a
+# complex ``### `` mission reaches the hook as its whole block flattened to one
+# line, so an uncapped subject would paste the previous mission's full
+# instructions into the prompt of the write-capable mission queued here — text
+# the agent then reads as part of what it was asked to do. See
+# :func:`_bounded_subject`.
+_HOOK_SUBJECT_MAX_CHARS = 120
 
 # Backstop bound on how often one (project, event) pair may queue hook skills.
 # Neither the marker guard nor the dedup can see a chain that launders itself
@@ -181,6 +199,33 @@ def _hook_subject(ctx: dict) -> str:
         strip_system_metadata(strip_all_lifecycle_markers(raw))
     )
     return " ".join(clean.split())
+
+
+def _bounded_subject(subject: str) -> tuple[str, str]:
+    """Return ``(display, key)`` for *subject*, both bounded in length.
+
+    ``display`` is what the composed sentence says the skill is for; ``key`` is
+    what the dedup token carries. A short subject (every ``pr_url``, an ordinary
+    one-line mission title) is both, unchanged.
+
+    A long one is not: ``mission_title`` for a complex ``### `` mission is the
+    entire block — ``parse_sections`` attaches every continuation line to the
+    item and ``insert_mission`` flattens newlines to spaces — so interpolating
+    it verbatim would write the previous mission's full instruction text into
+    the queued entry, twice, and the agent that picks that entry up reads it as
+    part of its own instruction. Both forms are therefore truncated.
+
+    ``key`` keeps a hash of the *whole* subject after the truncated head, so the
+    exact-match property the dedup relies on survives the cap: two different
+    long subjects that happen to share their first ``_HOOK_SUBJECT_MAX_CHARS``
+    characters still get distinct tokens, while the same subject hashes the same
+    on every fire.
+    """
+    if len(subject) <= _HOOK_SUBJECT_MAX_CHARS:
+        return subject, subject
+    head = subject[:_HOOK_SUBJECT_MAX_CHARS].rstrip()
+    digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:16]
+    return f"{head}…", f"{head}…{digest}"
 
 
 def _trusted_project_path(ctx: dict) -> Optional[str]:
@@ -599,7 +644,10 @@ class HookRegistry:
         """Append one pending mission running *skill*, unless already queued.
 
         *subject* is the already-normalized, non-empty identity of the firing
-        event (see :func:`_hook_subject`); it is what the dedup below keys on.
+        event (see :func:`_hook_subject`); :func:`_bounded_subject` turns it into
+        the prose and the dedup token the entry carries. The dedup keys on
+        (skill, event, subject) — all three, so a skill declared on two events
+        queues once per event.
 
         Returns True when an entry was actually inserted, so the caller only
         spends fire budget on fires that added work.
@@ -614,10 +662,18 @@ class HookRegistry:
         # never be masked by a longer name it is a substring of (docs vs.
         # docs-lint), and a queued mission is recognizable as this mechanism's.
         marker = f"{_HOOK_SKILL_MARKER_PREFIX}{skill}]"
-        subject_marker = f"{_HOOK_SUBJECT_MARKER_PREFIX}{subject}]"
+        # The event is part of the matched identity, not prose only: the same
+        # skill declared on two events fires twice with the same subject, and
+        # without this token the second fire matches the first one's entry.
+        event_marker = f"{_HOOK_EVENT_MARKER_PREFIX}{event}]"
+        # Bounded on both sides — the sentence must not carry a whole mission
+        # block, and the token must stay a stable, exact identity anyway.
+        display, key = _bounded_subject(subject)
+        subject_marker = f"{_HOOK_SUBJECT_MARKER_PREFIX}{key}]"
         entry = (
-            f"{prefix}Use the {skill} skill for {subject}. Queued by the {event} "
-            f"lifecycle event via .koan/config.yaml. {marker}{subject_marker}"
+            f"{prefix}Use the {skill} skill for {display}. Queued by the {event} "
+            f"lifecycle event via .koan/config.yaml. "
+            f"{marker}{event_marker}{subject_marker}"
         )
 
         missions_path = Path(self._instance_dir) / "missions.md"
@@ -634,10 +690,15 @@ class HookRegistry:
             nonlocal inserted
             sections = parse_sections(content)
             queued = sections.get("pending", []) + sections.get("in_progress", [])
-            # Both tokens are delimited by a closing ``]`` and matched exactly,
-            # so neither a longer skill name nor a longer PR URL can mask this
-            # one (``docs`` vs ``docs-lint``; ``pull/7`` vs ``pull/70``).
-            if any(marker in item and subject_marker in item for item in queued):
+            # All three tokens are delimited by a closing ``]`` and matched
+            # exactly, so neither a longer skill name nor a longer PR URL can
+            # mask this one (``docs`` vs ``docs-lint``; ``pull/7`` vs
+            # ``pull/70``), and an entry queued by a different event never
+            # absorbs this one.
+            if any(
+                marker in item and event_marker in item and subject_marker in item
+                for item in queued
+            ):
                 return content
             inserted = True
             return insert_mission(content, entry)
@@ -645,7 +706,7 @@ class HookRegistry:
         modify_missions_file(missions_path, _transform)
         if inserted:
             print(
-                f"[hooks] {event}: queued {skill} for {subject}",
+                f"[hooks] {event}: queued {skill} for {display}",
                 file=sys.stderr,
             )
         return inserted
