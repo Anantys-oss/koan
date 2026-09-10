@@ -1820,6 +1820,7 @@ def run_post_mission(
     provider_name: str = "",
     is_skill_dispatch: bool = False,
     memory_cap_detail: str = "",
+    cli_exit_code: Optional[int] = None,
 ) -> dict:
     """Run the complete post-mission processing pipeline.
 
@@ -1845,6 +1846,12 @@ def run_post_mission(
             quota detection (the caller handles quota independently).
         memory_cap_detail: Human phrase for a cgroup memory-cap kill of *this*
             mission ("" when it fit), from the caller's own ``ScopedProcess``.
+        cli_exit_code: The CLI *process* exit code, when it differs from
+            ``exit_code`` because the caller synthesized a failure (a JSON
+            envelope reporting an error, a core-file integrity failure). Quota
+            detection trusts stdout only after a real process failure, so a
+            synthetic failure must not promote assistant prose about rate
+            limits into a quota pause. Defaults to ``exit_code``.
 
     Returns:
         Dict with keys:
@@ -2036,7 +2043,7 @@ def run_post_mission(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 provider_name=provider_name,
-                exit_code=exit_code,
+                exit_code=exit_code if cli_exit_code is None else cli_exit_code,
             )
             if quota_result is QUOTA_CHECK_UNRELIABLE:
                 _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "

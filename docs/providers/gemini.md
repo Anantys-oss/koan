@@ -110,7 +110,10 @@ an allowlist (`success`, `succeeded`, `complete`, `completed`, `ok`), so a statu
 this adapter has not seen — `timeout`, `quota_exceeded`, whatever a future build
 adds — fails closed rather than passing as complete. In `json` mode the
 equivalent signal is a non-empty top-level `error`: the mission fails instead of
-banking the partial `response`.
+banking the partial `response`. That failure is recorded for the mission only —
+it does not make Kōan re-read stdout as CLI error output, so a `response` that
+happens to discuss API rate limiting cannot be mistaken for real quota
+exhaustion and pause the loop.
 
 When the CLI **also exits non-zero**, the error Kōan raises is the exit-code
 error carrying stderr — that is what quota (`RESOURCE_EXHAUSTED` / 429) and auth

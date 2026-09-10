@@ -635,7 +635,7 @@ class TestExitZeroJsonFailureGate:
     positive one.
     """
 
-    def _run(self, tmp_path, stdout_payload):
+    def _post_call(self, tmp_path, stdout_payload, provider="claude"):
         from unittest.mock import MagicMock
 
         from app.git_prep import PrepResult
@@ -657,6 +657,7 @@ class TestExitZeroJsonFailureGate:
             extra_patches={
                 "app.run.run_claude_task": MagicMock(side_effect=_fake_cli),
                 "app.mission_runner.run_post_mission": post,
+                "app.provider.get_provider_name": MagicMock(return_value=provider),
             },
         ):
             _run_iteration(
@@ -665,7 +666,10 @@ class TestExitZeroJsonFailureGate:
                 count=0, max_runs=10, interval=30, git_sync_interval=5,
             )
         assert post.called, "post-mission pipeline never ran"
-        return post.call_args.kwargs["exit_code"]
+        return post.call_args.kwargs
+
+    def _run(self, tmp_path, stdout_payload):
+        return self._post_call(tmp_path, stdout_payload)["exit_code"]
 
     def test_error_envelope_flips_exit_to_failure(self, tmp_path):
         from tests import gemini_samples
@@ -676,3 +680,26 @@ class TestExitZeroJsonFailureGate:
         from tests import haze_samples
 
         assert self._run(tmp_path, haze_samples.JSON_ENVELOPE_SUCCESS) == 0
+
+    def test_flip_does_not_promote_benign_prose_to_a_quota_pause(self, tmp_path):
+        """The synthetic failure must not re-open stdout quota classification.
+
+        Assistant prose about API rate limiting is not a quota signal: the CLI
+        process exited 0. If the flip were read as "the process failed", the
+        Gemini stdout scan would match and pause the whole daemon.
+        """
+        from tests import gemini_samples
+
+        kwargs = self._post_call(
+            tmp_path,
+            gemini_samples.JSON_OBJECT_ERROR_BENIGN_QUOTA_PROSE,
+            provider="gemini",
+        )
+
+        # Mission still fails (the envelope reported an error) ...
+        assert kwargs["exit_code"] == 1
+        # ... but the real CLI exit is carried through, so the post-mission
+        # quota check keeps stdout untrusted too.
+        assert kwargs["cli_exit_code"] == 0
+        # No quota pause was created for prose that merely mentions 429s.
+        assert not (tmp_path / ".koan-pause").exists()

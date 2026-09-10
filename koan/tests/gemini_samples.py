@@ -166,6 +166,20 @@ JSON_OBJECT_ERROR = """\
 }
 """
 
+# Same aborted-session shape, but the partial prose happens to discuss API rate
+# limiting — benign assistant text, not a provider error. The synthetic failure
+# the mission path derives from ``error`` must not make this prose readable as a
+# quota signal (it would pause the whole daemon with a fabricated reset time).
+JSON_OBJECT_ERROR_BENIGN_QUOTA_PROSE = """\
+{
+  "session_id": "sess-fixture-009",
+  "response": "I added backoff so the client handles rate limit (429) responses.",
+  "error": {"type": "TOOL_CONFIRMATION_REQUIRED",
+            "message": "tool confirmation required"},
+  "stats": {"models": {}}
+}
+"""
+
 # ---------------------------------------------------------------------------
 # Failure text samples (stderr) for quota / auth detection.
 # ---------------------------------------------------------------------------

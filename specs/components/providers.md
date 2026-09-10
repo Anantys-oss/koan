@@ -448,7 +448,14 @@ tools — MCP tools must still be allowlisted via qualified names
   The **json mission path** applies the same rule from the other end: a json
   object carrying a non-empty top-level `error` fails the mission
   (`mission_runner.json_output_reports_failure`), so partial `response` prose
-  is never banked as completed work on an exit-0 abort.
+  is never banked as completed work on an exit-0 abort. That synthetic failure
+  is **finalization-only**: it must never be fed to the text classifiers as
+  evidence that the CLI *process* failed. `mission_executor` snapshots the real
+  exit code and passes it as `trust_stdout` / the quota handler's `exit_code`
+  (including through `run_post_mission`'s `cli_exit_code`), preserving the
+  invariant that stdout is scanned for quota/auth only after a genuine process
+  failure — otherwise assistant prose about rate limits would pause the daemon
+  for every project on a mission that merely hit an approval prompt.
   **`error` events are advisory.** `severity` is recorded in the vocabulary but
   deliberately not a failure trigger: upstream emits `error` events for
   recoverable conditions (a failed tool call the model then works around), and

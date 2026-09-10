@@ -1514,6 +1514,14 @@ def _run_iteration(
         # No timed-out / aborted guard here, unlike the override above: this
         # branch can only ADD a failure, so acting on partial output from a
         # killed process is the safe direction.
+        #
+        # The real process exit code is snapshotted first: the text-based
+        # quota/auth classifiers below only trust stdout when the CLI *process*
+        # failed (assistant prose legitimately discusses rate limits). A JSON
+        # envelope error — or a core-file integrity failure — is not evidence of
+        # a process failure, so a synthetic flip must not re-open stdout
+        # scanning and pause the daemon on prose.
+        cli_exit_code = claude_exit
         if claude_exit == 0:
             from app.mission_runner import json_output_reports_failure
             json_failure = json_output_reports_failure(stdout_file)
@@ -1592,10 +1600,11 @@ def _run_iteration(
                 project_name=project_name,
                 mission_title=original_mission_title,
                 run_num=run_num,
+                trust_stdout=cli_exit_code != 0,
                 hqe_kwargs=dict(
                     stdout_file=stdout_file,
                     stderr_file=stderr_file,
-                    exit_code=claude_exit,
+                    exit_code=cli_exit_code,
                 ),
             ):
                 return True
@@ -1605,7 +1614,7 @@ def _run_iteration(
             _exit0_hqe = dict(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
-                exit_code=claude_exit,
+                exit_code=cli_exit_code,
             )
             if _run._probe_exit0_quota(
                 provider_name=provider_name,
@@ -1650,6 +1659,7 @@ def _run_iteration(
                 project_path=project_path,
                 run_num=run_num,
                 exit_code=claude_exit,
+                cli_exit_code=cli_exit_code,
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 mission_title=mission_title,
