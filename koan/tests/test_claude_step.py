@@ -13,6 +13,9 @@ import pytest
 
 from app.claude_step import (
     StepResult,
+    _agent_committed_itself,
+    _capture_head_state,
+    _head_only_rewound,
     _capture_rebase_baseline,
     _rebase_onto_target,
     _run_git,
@@ -1795,6 +1798,192 @@ class TestRunClaudeStep:
         assert result  # committed is True
         assert result.committed is True
         assert actions == []  # but nothing logged
+
+
+# ---------- run_claude_step: agent-authored commits ----------
+
+
+_STEP_MODEL_CONFIG = {
+    "mission": "", "fallback": "", "chat": "",
+    "lightweight": "", "review_mode": "",
+}
+
+
+def _run_step_with_head_states(head_states, *, runner_committed=False, rewound=False):
+    """Drive run_claude_step with a scripted sequence of HEAD snapshots.
+
+    *head_states* is fed to ``_capture_head_state`` in order: the first entry
+    is the pre-agent snapshot, the second the post-agent one.
+    """
+    actions = []
+    with patch(
+        "app.claude_step.commit_if_changes", return_value=runner_committed,
+    ), patch(
+        "app.claude_step.run_claude",
+        return_value={"success": True, "output": "amended the subject", "error": ""},
+    ), patch(
+        "app.claude_step.build_full_command", return_value=["claude", "-p", "x"],
+    ), patch(
+        "app.claude_step.get_model_config", return_value=_STEP_MODEL_CONFIG,
+    ), patch(
+        "app.claude_step._capture_head_state", side_effect=list(head_states),
+    ) as mock_head, patch(
+        "app.claude_step._head_only_rewound", return_value=rewound,
+    ):
+        result = run_claude_step(
+            prompt="apply feedback",
+            project_path="/project",
+            commit_msg="rebase: apply review feedback",
+            success_label="Applied review feedback",
+            failure_label="Review feedback step failed",
+            actions_log=actions,
+        )
+    return result, actions, mock_head
+
+
+class TestRunClaudeStepAgentSelfCommit:
+    """A step whose agent runs git commit itself still counts as committed.
+
+    Regression: the rebase feedback leg asked the agent to renumber a ticket
+    key in the commit subject. The agent did it with ``git commit --amend``,
+    which leaves a clean worktree, so ``commit_if_changes`` reported "nothing
+    changed" and the pipeline discarded the finished rebase as
+    ``feedback_no_disposition`` without pushing.
+    """
+
+    def test_head_moved_on_same_ref_counts_as_committed(self):
+        result, actions, _ = _run_step_with_head_states(
+            [("koan/topic", "aaa1111"), ("koan/topic", "bbb2222")],
+        )
+        assert result  # StepResult is truthy
+        assert result.committed is True
+        assert result.self_committed is True
+        assert "Applied review feedback" in actions
+
+    def test_unchanged_head_stays_uncommitted(self):
+        result, actions, _ = _run_step_with_head_states(
+            [("koan/topic", "aaa1111"), ("koan/topic", "aaa1111")],
+        )
+        assert not result
+        assert result.committed is False
+        assert result.self_committed is False
+        assert actions == []
+
+    def test_commit_on_another_ref_is_not_credited(self):
+        """The pipeline restores the expected branch, so that commit is lost."""
+        result, _, _ = _run_step_with_head_states(
+            [("koan/topic", "aaa1111"), ("koan/side-quest", "bbb2222")],
+        )
+        assert result.committed is False
+        assert result.self_committed is False
+
+    def test_missing_pre_snapshot_falls_back_to_worktree_only(self):
+        result, _, mock_head = _run_step_with_head_states(
+            [None, ("koan/topic", "bbb2222")],
+        )
+        assert result.committed is False
+        # No point probing again once the baseline is unavailable.
+        assert mock_head.call_count == 1
+
+    def test_missing_post_snapshot_falls_back_to_worktree_only(self):
+        result, _, _ = _run_step_with_head_states(
+            [("koan/topic", "aaa1111"), None],
+        )
+        assert result.committed is False
+
+    def test_pure_rewind_is_not_credited(self):
+        """`git reset --hard HEAD~1` drops commits; it produces no work."""
+        result, actions, _ = _run_step_with_head_states(
+            [("koan/topic", "bbb2222"), ("koan/topic", "aaa1111")],
+            rewound=True,
+        )
+        assert result.committed is False
+        assert result.self_committed is False
+        assert actions == []
+
+    def test_runner_commit_skips_the_second_probe(self):
+        result, actions, mock_head = _run_step_with_head_states(
+            [("koan/topic", "aaa1111"), ("koan/topic", "bbb2222")],
+            runner_committed=True,
+        )
+        assert result.committed is True
+        assert result.self_committed is False
+        assert mock_head.call_count == 1
+        assert "Applied review feedback" in actions
+
+
+class TestCaptureHeadState:
+    """Tests for _capture_head_state — best-effort HEAD snapshot."""
+
+    @patch("app.claude_step._run_git", side_effect=["koan/topic\n", "aaa1111\n"])
+    def test_returns_ref_and_sha(self, _mock_git):
+        assert _capture_head_state("/project") == ("koan/topic", "aaa1111")
+
+    @patch("app.claude_step._run_git", side_effect=GitCommandError("rev-parse", 128, "not a repo"))
+    def test_git_failure_returns_none(self, _mock_git):
+        assert _capture_head_state("/project") is None
+
+    @patch("app.claude_step._run_git", side_effect=OSError("git missing"))
+    def test_missing_binary_returns_none(self, _mock_git):
+        assert _capture_head_state("/project") is None
+
+    @patch("app.claude_step._run_git", side_effect=["koan/topic\n", "\n"])
+    def test_empty_sha_returns_none(self, _mock_git):
+        """An unborn branch has a ref but no HEAD — nothing to compare."""
+        assert _capture_head_state("/project") is None
+
+
+class TestAgentCommittedItself:
+    """Tests for _agent_committed_itself — ref-scoped HEAD comparison."""
+
+    def test_no_baseline_is_false(self):
+        assert _agent_committed_itself("/project", None) is False
+
+    @patch("app.claude_step._head_only_rewound", return_value=False)
+    @patch("app.claude_step._capture_head_state", return_value=("br", "bbb"))
+    def test_amend_replacing_head_is_detected(self, _mock_state, _mock_rewound):
+        """--amend replaces HEAD rather than descending from it."""
+        assert _agent_committed_itself("/project", ("br", "aaa")) is True
+
+    @patch("app.claude_step._head_only_rewound", return_value=True)
+    @patch("app.claude_step._capture_head_state", return_value=("br", "aaa"))
+    def test_rewind_is_rejected(self, _mock_state, _mock_rewound):
+        assert _agent_committed_itself("/project", ("br", "bbb")) is False
+
+    @patch("app.claude_step._head_only_rewound")
+    @patch("app.claude_step._capture_head_state", return_value=("br", "aaa"))
+    def test_unchanged_head_skips_the_ancestry_probe(
+        self, _mock_state, mock_rewound,
+    ):
+        assert _agent_committed_itself("/project", ("br", "aaa")) is False
+        mock_rewound.assert_not_called()
+
+
+class TestHeadOnlyRewound:
+    """Tests for _head_only_rewound — ancestry probe, fails open."""
+
+    @patch("app.claude_step.subprocess.run")
+    def test_ancestor_means_rewound(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        assert _head_only_rewound("/project", "bbb", "aaa") is True
+        assert mock_run.call_args[0][0] == [
+            "git", "merge-base", "--is-ancestor", "aaa", "bbb",
+        ]
+
+    @patch("app.claude_step.subprocess.run")
+    def test_non_ancestor_is_not_rewound(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1)
+        assert _head_only_rewound("/project", "bbb", "aaa") is False
+
+    @patch("app.claude_step.subprocess.run")
+    def test_git_error_fails_open(self, mock_run):
+        """Exit 128 means git could not answer — do not reject the commit."""
+        mock_run.return_value = MagicMock(returncode=128)
+        assert _head_only_rewound("/project", "bbb", "aaa") is False
+
+    @patch("app.claude_step.subprocess.run", side_effect=OSError("git missing"))
+    def test_subprocess_failure_fails_open(self, _mock_run):
+        assert _head_only_rewound("/project", "bbb", "aaa") is False
 
 
 # ---------- run_claude_step with use_convention_subject ----------

@@ -2258,6 +2258,11 @@ def _apply_review_feedback(
             result_meta["status"] = status
             result_meta["error"] = error_text
         return result_meta.get("summary", "") if result_meta is not None else ""
+    if getattr(step, "self_committed", False):
+        # The agent ran git commit/--amend itself, so the worktree was already
+        # clean when the runner looked. Record it: the landed commit message is
+        # the agent's own, not the runner's `commit_msg`.
+        actions_log.append("Review feedback committed by the agent itself")
     if result_meta is not None:
         result_meta["status"] = "committed"
         result_meta["error"] = ""

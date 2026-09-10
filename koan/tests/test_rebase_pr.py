@@ -2290,6 +2290,55 @@ class TestApplyReviewFeedback:
         assert summary == skipped
 
     @patch("app.rebase_pr.run_claude_step")
+    def test_agent_self_commit_is_reported_as_committed(self, mock_step):
+        """A commit the agent made itself must not fail as "no disposition".
+
+        Regression: the agent honoured a "rename PROJ-101 to PROJ-99" request
+        with ``git commit --amend``. That leaves a clean worktree, so the step
+        reported no runner commit and the finished rebase was thrown away
+        unpushed instead of being force-pushed.
+        """
+        from app.claude_step import StepResult
+
+        summary_text = "APPLIED:\n- Renamed the commit subject to TECH PROJ-99"
+        mock_step.return_value = StepResult(
+            committed=True, output=summary_text, self_committed=True,
+        )
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        summary = _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR, result_meta=meta,
+        )
+        assert meta["status"] == "committed"
+        assert summary == summary_text
+        assert any("committed by the agent itself" in a for a in actions)
+
+    @patch("app.rebase_pr.run_claude_step")
+    def test_runner_commit_does_not_claim_agent_authorship(self, mock_step):
+        from app.claude_step import StepResult
+
+        mock_step.return_value = StepResult(committed=True, output="APPLIED:\n- edit")
+        context = {
+            "title": "Fix", "body": "", "branch": "br", "base": "main",
+            "diff": "+code", "review_comments": "fix this",
+            "reviews": "", "issue_comments": "",
+        }
+        actions = []
+        meta = {}
+        _apply_review_feedback(
+            context, "42", "/project", actions,
+            skill_dir=REBASE_SKILL_DIR, result_meta=meta,
+        )
+        assert meta["status"] == "committed"
+        assert not any("committed by the agent itself" in a for a in actions)
+
+    @patch("app.rebase_pr.run_claude_step")
     def test_sets_feedback_timeout_metadata(self, mock_step):
         from app.claude_step import StepResult
 
