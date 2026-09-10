@@ -473,6 +473,9 @@ def run_claude(
     # exhaustion as a stdout JSONL ``rate_limit_event``, never on stderr.
     stream_summary_lines: List[str] = []
     stream_final_result: Optional[str] = None
+    # Set when a terminal stream event reports the session did NOT complete
+    # (cancelled ``end``, failed ``result``). Exit 0 alone does not clear it.
+    stream_failure: str = ""
 
     def _flush_stream_deltas() -> None:
         if stream_text_delta_parts:
@@ -481,14 +484,17 @@ def run_claude(
 
     if use_stream_json:
         from app.provider import (
+            _error_message,
             _extract_assistant_text_chunks,
             _extract_result_text,
+            _is_cancelled_end_event,
+            _is_failed_result_event,
             _is_text_delta_event,
             _summarize_stream_event,
         )
 
         def on_line(line: str) -> None:
-            nonlocal stream_final_result
+            nonlocal stream_final_result, stream_failure
             if not line:
                 return
             try:
@@ -508,6 +514,27 @@ def run_claude(
                 result_text = _extract_result_text(parsed)
                 if result_text is not None:
                     stream_final_result = result_text
+                # Same soft-success hole run_command_streaming closes: a
+                # cancelled ``end`` (Grok permission denial) or a terminal
+                # ``result`` reporting a failed status exits 0 with partial
+                # prose, and commit_with_claude would derive a commit subject
+                # from it as if the step had succeeded.
+                if _is_cancelled_end_event(parsed):
+                    stream_failure = (
+                        "CLI session cancelled (stopReason=Cancelled) — often "
+                        "a headless permission denial. Ensure "
+                        "skip_permissions: true."
+                    )
+                elif _is_failed_result_event(parsed):
+                    status = str(parsed.get("status") or "")
+                    reason = _error_message(parsed.get("error"))
+                    detail = f" ({reason})" if reason else ""
+                    stream_failure = (
+                        f"CLI session ended with status={status}{detail} — "
+                        "often a headless permission denial. Set "
+                        "skip_permissions: true so tool calls are not left "
+                        "waiting on a confirmation prompt."
+                    )
             else:
                 # Stray non-JSON line (warning printed before the stream): keep
                 # it both on screen and as fallback text.
@@ -607,6 +634,23 @@ def run_claude(
             "success": False,
             "output": stdout_text,
             "error": f"Exit code {returncode}: {stderr_snippet}",
+            "stderr": stderr_text,
+            "stream_summary": stream_summary,
+            "exit_code": returncode,
+        }
+
+    if stream_failure:
+        # Checked AFTER the non-zero-exit branch above, so quota/auth
+        # classification still sees stderr and the exit code first.
+        log_event(SUBPROCESS_EXEC, details={
+            "cmd": _redact_list(cmd),
+            "cwd": cwd,
+            "exit_code": 0,
+        }, result="failure")
+        return {
+            "success": False,
+            "output": stdout_text,
+            "error": stream_failure,
             "stderr": stderr_text,
             "stream_summary": stream_summary,
             "exit_code": returncode,

@@ -951,6 +951,59 @@ class TestRunClaudeStreamJson:
         # ...but not the clean assistant text used for commit subjects.
         assert "rate_limit_rejected" not in result["output"]
 
+    @patch("app.claude_step.popen_cli")
+    def test_failed_result_event_is_not_a_success(self, mock_popen):
+        """Exit 0 + terminal ``result`` reporting failure must not commit.
+
+        Without this, commit_with_claude derives a commit subject from the
+        partial prose of a session that never finished (headless approval
+        denial).
+        """
+        lines = self._jsonl(
+            {"type": "message", "role": "assistant", "delta": True,
+             "content": "I'll start by reading the layout"},
+            {"type": "result", "status": "error",
+             "error": {"message": "tool confirmation required"}},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["gemini", "-p", "x"], "/project", use_stream_json=True,
+        )
+        assert result["success"] is False
+        assert "tool confirmation required" in result["error"]
+        assert "skip_permissions" in result["error"]
+
+    @patch("app.claude_step.popen_cli")
+    def test_cancelled_end_event_is_not_a_success(self, mock_popen):
+        """Grok parity: a cancelled ``end`` is a failure, not partial work."""
+        lines = self._jsonl(
+            {"type": "text", "data": "partial"},
+            {"type": "end", "stopReason": "Cancelled"},
+        )
+        proc = _fake_proc(lines, returncode=0)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["grok", "-p", "x"], "/project", use_stream_json=True,
+        )
+        assert result["success"] is False
+        assert "cancelled" in result["error"].lower()
+
+    @patch("app.claude_step.popen_cli")
+    def test_non_zero_exit_error_wins_over_failed_result(self, mock_popen):
+        """stderr-bearing exit-code error must survive for quota/auth checks."""
+        lines = self._jsonl(
+            {"type": "result", "status": "error",
+             "error": {"message": "tool confirmation required"}},
+        )
+        proc = _fake_proc(lines, stderr_text="RESOURCE_EXHAUSTED", returncode=1)
+        mock_popen.return_value = (proc, lambda: None)
+        result = run_claude(
+            ["gemini", "-p", "x"], "/project", use_stream_json=True,
+        )
+        assert result["success"] is False
+        assert "RESOURCE_EXHAUSTED" in result["error"]
+
 
 # ---------- commit_if_changes ----------
 

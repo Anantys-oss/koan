@@ -1712,27 +1712,27 @@ class TestProcWaitPolling:
 # Test: post-mission pipeline deadline
 # ---------------------------------------------------------------------------
 
-def _capture_pipeline_events(monkeypatch):
-    """Record the threading.Event objects run_post_mission creates.
+def _capture_pipeline_deadline(monkeypatch):
+    """Expose the pipeline-deadline event the tracker receives per step.
 
-    Returns a list whose first entry is the pipeline-deadline event, letting a
-    test trip the deadline deterministically instead of sleeping past a timer.
+    ``_PipelineTracker.run_step`` is handed the very event ``run_post_mission``
+    created, so grabbing it here is identity-based — no coupling to the order
+    in which the pipeline allocates its Events.
     """
-    import threading as _threading
+    from app.mission_runner import _PipelineTracker
 
-    events = []
+    captured = {"event": None}
+    real_run_step = _PipelineTracker.run_step
 
-    class _RecordingThreading:
-        def __getattr__(self, name):
-            return getattr(_threading, name)
+    def recording_run_step(self, step, fn, *args, pipeline_expired=None, **kwargs):
+        if pipeline_expired is not None:
+            captured["event"] = pipeline_expired
+        return real_run_step(
+            self, step, fn, *args, pipeline_expired=pipeline_expired, **kwargs
+        )
 
-        def Event(self):
-            event = _threading.Event()
-            events.append(event)
-            return event
-
-    monkeypatch.setattr("app.mission_runner.threading", _RecordingThreading())
-    return events
+    monkeypatch.setattr(_PipelineTracker, "run_step", recording_run_step)
+    return captured
 
 
 class TestPostMissionDeadline:
@@ -1754,11 +1754,13 @@ class TestPostMissionDeadline:
         # wall-clock timer: with a short timeout the pipeline's own setup work
         # (imports, config load, quota check) can exhaust the budget before
         # verification even starts, which skipped every step on slow CI hosts.
-        pipeline_events = _capture_pipeline_events(monkeypatch)
+        # The deadline event is captured by identity off the step call itself,
+        # not by guessing which Event the pipeline allocated first.
+        deadline = _capture_pipeline_deadline(monkeypatch)
 
         def slow_verification(*args, **kwargs):
             steps_called.append("verification")
-            pipeline_events[0].set()  # as if the deadline fired mid-step
+            deadline["event"].set()  # as if the deadline fired mid-step
             return None
 
         monkeypatch.setattr(

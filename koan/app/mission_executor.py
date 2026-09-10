@@ -1511,6 +1511,9 @@ def _run_iteration(
         # emits {"response": <partial prose>, "error": {...}} when a tool
         # confirmation is refused). Without this the mission is finalized as
         # Done with no branch and no commit.
+        # No timed-out / aborted guard here, unlike the override above: this
+        # branch can only ADD a failure, so acting on partial output from a
+        # killed process is the safe direction.
         if claude_exit == 0:
             from app.mission_runner import json_output_reports_failure
             json_failure = json_output_reports_failure(stdout_file)

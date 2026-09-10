@@ -484,6 +484,21 @@ def check_json_success(stdout_file: str) -> bool:
         return False
 
 
+def _looks_like_ndjson(raw: str) -> bool:
+    """True when *raw* is a multi-line stream of JSON objects, not one object.
+
+    Used to keep the single-object failure detector quiet on the providers
+    whose mission stdout is stream-json by design.
+    """
+    lines = [line for line in raw.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    try:
+        return isinstance(json.loads(lines[0]), dict)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+
+
 def json_output_reports_failure(stdout_file: str) -> str:
     """Return a failure reason when a json-mode envelope reports an error.
 
@@ -499,16 +514,34 @@ def json_output_reports_failure(stdout_file: str) -> str:
 
     Returns the error message (or ``"error"`` when the payload has none), or
     ``""`` when the output reports no failure.
+
+    Both give-up paths log: a detector that can never fire (unreadable stdout,
+    truncated JSON) must be observable, not invisible. NDJSON stdout is the
+    expected, uninteresting non-object case — it is recognised and stays quiet
+    so the warning means something when it appears.
     """
     try:
         raw = Path(stdout_file).read_text()
-    except OSError:
+    except OSError as exc:
+        _log_runner(
+            "warn",
+            f"JSON failure check skipped — could not read {stdout_file}: {exc}",
+        )
         return ""
     if not raw.strip():
         return ""
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        # NDJSON (codex/grok/claude stream-json) lands here by design and is
+        # not worth a line every mission; a truncated single object lands here
+        # too, and that one hides a failure.
+        if not _looks_like_ndjson(raw):
+            _log_runner(
+                "warn",
+                f"JSON failure check skipped — {stdout_file} is not a single "
+                f"JSON object: {exc}",
+            )
         return ""
     if not isinstance(data, dict) or data.get("is_error") is False:
         return ""

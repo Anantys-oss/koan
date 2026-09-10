@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok, Gemini) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-09-09
+updated: 2026-09-10
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -438,6 +438,13 @@ tools — MCP tools must still be allowlisted via qualified names
   reported **after** the exit-code branch: a non-zero exit still raises
   `_format_cli_error(...)`, which is the only payload carrying stderr and the
   exit code, and quota/auth classification is text-matched on it.
+  "Success value" is an **allowlist** (`success`/`succeeded`/`complete`/
+  `completed`/`ok`), never a list of known failure words: a status this adapter
+  has not seen (`timeout`, `quota_exceeded`, a word a future build adds) must
+  fail closed. A missing/empty `status` reports no verdict and is left alone.
+  **Both** stream consumers enforce this — `run_command_streaming` and
+  `claude_step.run_claude` (which drives the post-mission commit step) — so a
+  failed session cannot become a commit subject on either path.
   The **json mission path** applies the same rule from the other end: a json
   object carrying a non-empty top-level `error` fails the mission
   (`mission_runner.json_output_reports_failure`), so partial `response` prose

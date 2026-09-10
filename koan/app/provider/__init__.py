@@ -990,8 +990,16 @@ def _error_message(err: Any) -> str:
         return err
     if isinstance(err, dict):
         message = err.get("message")
-        if isinstance(message, str):
+        if isinstance(message, str) and message.strip():
             return message
+        # A machine-readable-only error ({"type": "TOOL_CONFIRMATION_REQUIRED"})
+        # still carries the sole clue about why the session failed — never drop
+        # it on the floor.
+        err_type = err.get("type")
+        if isinstance(err_type, str) and err_type.strip():
+            return err_type.strip()
+        if err:
+            return repr(err)[:200]
     return ""
 
 
@@ -1397,13 +1405,15 @@ def _is_cancelled_end_event(event: Dict[str, Any]) -> bool:
     return stop in _CANCELLED_STOP_REASONS
 
 
-# Terminal ``result`` statuses that mean the session did not complete. Only the
-# text-less envelope shape is inspected (Gemini CLI:
-# ``{"type":"result","status":…,"error"?,"stats"?}``) — envelopes that carry the
-# assistant text alongside the status (haze ``result``+``result``/``usage``)
-# keep their existing soft-return behaviour.
-_RESULT_FAILURE_STATUSES = frozenset(
-    {"error", "failed", "failure", "cancelled", "canceled", "aborted"}
+# Terminal ``result`` statuses that mean the session DID complete. Anything
+# else — ``timeout``, ``quota_exceeded``, ``interrupted``, a status this
+# adapter has never seen — fails closed, matching the contract text in
+# specs/components/providers.md. Only the text-less envelope shape is
+# inspected (Gemini CLI: ``{"type":"result","status":…,"error"?,"stats"?}``) —
+# envelopes that carry the assistant text alongside the status (haze
+# ``result``+``result``/``usage``) keep their existing soft-return behaviour.
+_RESULT_SUCCESS_STATUSES = frozenset(
+    {"success", "succeeded", "complete", "completed", "ok"}
 )
 
 
@@ -1418,13 +1428,21 @@ def _is_failed_result_event(event: Dict[str, Any]) -> bool:
     ``stats`` is deliberately NOT required: a session that aborts before any
     model call emits ``{"type":"result","status":"error","error":{…}}`` with no
     stats block, which is exactly the shape this guard exists to catch.
+
+    The status test is a SUCCESS allowlist, not a failure blocklist: an
+    unrecognized terminal status (``timeout``, ``quota_exceeded``, a word a
+    future build introduces) must fail rather than bank partial prose. A
+    missing/empty status is left alone — that envelope reports no verdict at
+    all, and other providers emit it.
     """
     if str(event.get("type") or "") != "result":
         return False
     if "result" in event or "usage" in event:
         return False
     status = str(event.get("status") or "").strip().lower()
-    return status in _RESULT_FAILURE_STATUSES
+    if not status:
+        return False
+    return status not in _RESULT_SUCCESS_STATUSES
 
 
 def _usage_snapshot_from_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:

@@ -166,6 +166,18 @@ class TestGeminiCommandConstruction:
         assert self.provider.build_output_args("") == []
         assert self.provider.build_output_args("streaming-json") == []
 
+    def test_unsupported_output_format_warns(self):
+        """A format Kōan asked for and did not get must not vanish silently."""
+        with patch.object(GeminiProvider, "_warn_unsupported_once") as warn:
+            self.provider.build_output_args("streaming-json")
+        assert warn.call_count == 1
+        assert "streaming-json" in warn.call_args.args[0]
+
+    def test_empty_output_format_does_not_warn(self):
+        with patch.object(GeminiProvider, "_warn_unsupported_once") as warn:
+            self.provider.build_output_args("")
+        warn.assert_not_called()
+
     def test_permission_args_only_when_skip_permissions(self):
         assert self.provider.build_permission_args(skip_permissions=True) == [
             "--approval-mode", "yolo",
@@ -368,6 +380,34 @@ class TestGeminiStreamSamples:
         assert not _is_failed_result_event(
             {"type": "result", "status": "failed", "result": "boom", "usage": {}}
         )
+
+    def test_unknown_terminal_status_fails_closed(self):
+        """Success is an allowlist: a status never seen before must fail."""
+        from app.provider import _is_failed_result_event
+        for status in ("timeout", "quota_exceeded", "interrupted", "max_turns"):
+            assert _is_failed_result_event({"type": "result", "status": status}), status
+
+    def test_missing_status_reports_no_verdict(self):
+        """An envelope with no status says nothing — leave it alone."""
+        from app.provider import _is_failed_result_event
+        assert not _is_failed_result_event({"type": "result", "stats": {}})
+
+    def test_success_synonyms_stay_soft(self):
+        from app.provider import _is_failed_result_event
+        for status in ("success", "succeeded", "complete", "completed", "ok"):
+            assert not _is_failed_result_event(
+                {"type": "result", "status": status}
+            ), status
+
+    def test_error_message_falls_back_to_type(self):
+        """A machine-readable-only error is the sole failure clue — keep it."""
+        from app.provider import _error_message
+        assert _error_message({"type": "TOOL_CONFIRMATION_REQUIRED"}) == (
+            "TOOL_CONFIRMATION_REQUIRED"
+        )
+        assert _error_message({"code": 429}) != ""
+        assert _error_message({}) == ""
+        assert _error_message(None) == ""
 
 
 # ---------------------------------------------------------------------------

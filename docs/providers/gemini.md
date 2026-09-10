@@ -4,7 +4,7 @@ title: "Gemini CLI Provider"
 description: "Setup and behavior guide for using Google's Gemini CLI as Kōan's provider, including headless stream-json, auth, models, and limitations."
 tags: [providers]
 created: 2026-09-01
-updated: 2026-09-09
+updated: 2026-09-10
 ---
 
 # Gemini CLI Provider
@@ -105,9 +105,12 @@ came first.
 A terminal `result` whose `status` is not a success value **fails the run** with
 an error naming `skip_permissions`, rather than returning the partial prose as
 if the mission had completed — including when the envelope carries no `stats`
-block, which is what an abort before the first model call looks like. In `json`
-mode the equivalent signal is a non-empty top-level `error`: the mission fails
-instead of banking the partial `response`.
+block, which is what an abort before the first model call looks like. Success is
+an allowlist (`success`, `succeeded`, `complete`, `completed`, `ok`), so a status
+this adapter has not seen — `timeout`, `quota_exceeded`, whatever a future build
+adds — fails closed rather than passing as complete. In `json` mode the
+equivalent signal is a non-empty top-level `error`: the mission fails instead of
+banking the partial `response`.
 
 When the CLI **also exits non-zero**, the error Kōan raises is the exit-code
 error carrying stderr — that is what quota (`RESOURCE_EXHAUSTED` / 429) and auth

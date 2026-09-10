@@ -153,6 +153,15 @@ class GeminiProvider(CLIProvider):
     def build_output_args(self, fmt: str = "") -> List[str]:
         if fmt in {"json", "stream-json", "text"}:
             return ["--output-format", fmt]
+        if fmt:
+            # Dropping the flag leaves Gemini on its default text output while
+            # the caller still parses the result as the format it asked for —
+            # a silent mismatch, so say so.
+            self._warn_unsupported_once(
+                f"output_format:{fmt}",
+                f"output format {fmt!r} is not supported by Gemini CLI; "
+                "running with the default output instead",
+            )
         return []
 
     def build_permission_args(
