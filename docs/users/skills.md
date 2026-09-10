@@ -4,7 +4,7 @@ title: "Skills Reference"
 description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-03
+updated: 2026-09-10
 ---
 
 # Skills Reference
@@ -57,7 +57,7 @@ Complete reference for all Koan slash commands. Use these via Telegram, Slack, o
 | `/review <PR> [PR ...] [--bot-comments]` | `/rv`, `/rereview`, `/re_review` | Review one or more pull requests; each URL queues a separate review mission. Reviews are read-only and run against a fresh checkout of the PR head: the tool set is a positive allowlist, every shell command is gated by a hook (read-only inspection only, one command per call), and a provider that cannot enforce that is refused rather than run unrestricted. `--bot-comments` triages bot findings | Yes |
 | `/ultrareview <PR>` | `/urv` | Ultra-thorough review: architecture + silent-failure passes combined | Yes |
 | `/explain <PR>` | `/xp` | Explain a PR's changes in plain language with examples and alternative approaches | Yes |
-| `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context. Conflict resolution has a 10-minute per-round budget before the existing recreate fallback. | Yes |
+| `/rebase [--fix] <PR> [focus area]` | `/rb` | Rebase a PR onto its base branch. **By default rebases only.** Add `--fix` to also address review feedback (implied when you add a focus area or severity keyword after the URL); trailing text is threaded into the mission as focus context — including a commit-message-only request such as "rename the subject to PROJ-99", which is amended onto the branch and pushed like any other change. Conflict resolution has a 10-minute per-round budget before the existing recreate fallback. | Yes |
 | `/squash <PR>` | `/sq` | Squash all PR commits into one clean commit | Yes |
 | `/recreate <PR>` | `/rc` | Re-implement a PR from scratch on a fresh branch | Yes |
 | `/refactor <desc>` | `/rf` | Targeted refactoring mission | Yes |

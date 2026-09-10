@@ -4,7 +4,7 @@ title: "Skill Spec — rebase"
 description: "Documents the `/rebase` skill that rebases a PR onto its current base by default and, with `--fix` (or any trailing context), also addresses review feedback, including its already-solved detection JSON scored by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-08-14
+updated: 2026-09-10
 ---
 
 # Skill Spec — `rebase`
@@ -80,6 +80,13 @@ See `docs/users/skills.md` for the end-user `/rebase` reference and
 - A feedback run that makes no commit must return a structured `SKIPPED:`
   disposition. Otherwise it fails before force-pushing and cannot be reported
   as a simple rebase.
+- **"Makes no commit" means HEAD did not move, not merely that the worktree is
+  clean.** A feedback agent may commit its own work — and for a
+  commit-message-only request (a wrong ticket key in the subject) `git commit
+  --amend` on the current branch is the only route, since there is nothing left
+  in the worktree for the runner to stage. `run_claude_step` credits that
+  agent-authored HEAD move as a commit (see `specs/components/git-github.md`),
+  so it reaches the push instead of failing as `feedback_no_disposition`.
 - Conflict resolution treats `HEAD`/`ours` as the current target branch and
   `theirs` as the replayed PR commit. It verifies no unmerged paths remain
   before continuing. Its per-round agent budget is `rebase_conflict_timeout`

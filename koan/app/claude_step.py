@@ -37,9 +37,14 @@ class StepResult:
     callers that need it (e.g. extracting change summaries).  Failed steps
     also expose quota classification so CI loops can stop as transient quota
     exhaustion instead of treating the result as "no changes".
+
+    ``committed`` means "this step produced a commit", regardless of who ran
+    ``git commit``: the runner staging a dirty worktree, or the agent itself.
+    ``self_committed`` distinguishes the latter for logging and for callers
+    that need to know the commit message is the agent's, not *commit_msg*.
     """
 
-    __slots__ = ("committed", "error", "output", "quota_exhausted")
+    __slots__ = ("committed", "error", "output", "quota_exhausted", "self_committed")
 
     def __init__(
         self,
@@ -48,11 +53,13 @@ class StepResult:
         *,
         quota_exhausted: bool = False,
         error: str = "",
+        self_committed: bool = False,
     ):
         self.committed = committed
         self.output = output
         self.quota_exhausted = quota_exhausted
         self.error = error
+        self.self_committed = self_committed
 
     def __bool__(self) -> bool:
         return self.committed
@@ -827,6 +834,88 @@ def _commit_with_hook_fallback(
         raise
 
 
+# A HEAD snapshot is best-effort context, never a gate: a non-zero git exit
+# (``run_git_strict`` raises RuntimeError), a hung git, or a missing binary all
+# mean "could not look", and must leave the pre-existing commit detection alone.
+_HEAD_STATE_EXCEPTIONS = (RuntimeError, subprocess.SubprocessError, OSError)
+
+
+def _capture_head_state(project_path: str) -> Optional[Tuple[str, str]]:
+    """Snapshot ``(ref_name, head_sha)`` before an agent step runs.
+
+    Paired with :func:`_agent_committed_itself` so a step whose agent commits
+    (or amends) on its own is still recognised as having produced work.
+    Returns None when the snapshot itself fails — callers then fall back to
+    worktree-only detection rather than guessing.
+    """
+    try:
+        ref = _run_git(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=project_path, timeout=10,
+        ).strip()
+        head = _run_git(
+            ["git", "rev-parse", "HEAD"], cwd=project_path, timeout=10,
+        ).strip()
+    except _HEAD_STATE_EXCEPTIONS as e:
+        print(f"[claude_step] Could not capture HEAD state: {e}", file=sys.stderr)
+        return None
+    return (ref, head) if head else None
+
+
+def _head_only_rewound(project_path: str, before_sha: str, after_sha: str) -> bool:
+    """Return whether HEAD moved *backwards* along its own history.
+
+    ``git reset --hard HEAD~1`` moves HEAD without touching the worktree, so it
+    is indistinguishable from a real commit by SHA alone. Dropping commits is
+    not work the step produced, and this result feeds a force push — so a pure
+    rewind must not be credited. ``--amend`` is unaffected: it replaces HEAD
+    with a sibling, which is not an ancestor of the old HEAD.
+
+    Fails open (returns False) when the ancestry check itself cannot run: the
+    post-push content-preservation guard, not this probe, is the safety net.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", after_sha, before_sha],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True,
+            cwd=project_path, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        print(f"[claude_step] HEAD ancestry check failed: {e}", file=sys.stderr)
+        return False
+    return proc.returncode == 0
+
+
+def _agent_committed_itself(
+    project_path: str, before: Optional[Tuple[str, str]],
+) -> bool:
+    """Return whether the step's agent moved HEAD on the same ref itself.
+
+    ``commit_if_changes`` only sees work still sitting in the worktree, so an
+    agent that ran ``git commit`` — or ``git commit --amend``, the only way to
+    carry out a commit-message-only request — left a clean tree and was
+    reported as having changed nothing.  The pipeline then discarded a
+    finished rebase as "no changes and no explanation".
+
+    The comparison is deliberately ref-scoped and makes no forward-ancestry
+    claim: ``--amend`` replaces HEAD rather than descending from it, and a step
+    that wandered onto another branch is *not* credited — the rebase pipeline
+    restores the expected branch and would not push that commit anyway. A
+    backwards-only move is rejected via :func:`_head_only_rewound`.
+    """
+    if not before:
+        return False
+    after = _capture_head_state(project_path)
+    if not after:
+        return False
+    ref_before, head_before = before
+    ref_after, head_after = after
+    if ref_after != ref_before or head_after == head_before:
+        return False
+    return not _head_only_rewound(project_path, head_before, head_after)
+
+
 def commit_if_changes(
     project_path: str,
     message: str,
@@ -929,6 +1018,11 @@ def run_claude_step(
     from app.commit_conventions import parse_commit_subject
     from app.config import get_first_output_timeout
 
+    # Snapshot HEAD before the agent runs: a step whose agent commits (or
+    # amends) on its own leaves a clean worktree, which commit_if_changes
+    # reports as "nothing changed". See _agent_committed_itself.
+    head_before = _capture_head_state(project_path)
+
     # Emit periodic heartbeat to keep the parent process's LivenessWatchdog
     # alive. Print-mode CLI sessions produce no stdout during tool use,
     # which would trigger the outer first_output_timeout (default 600s).
@@ -966,9 +1060,17 @@ def run_claude_step(
             effective_msg,
             bypass_hook_failures=bypass_hook_failures,
         )
+        self_committed = False
+        if not committed:
+            self_committed = _agent_committed_itself(project_path, head_before)
+            committed = self_committed
         if committed and success_label:
             actions_log.append(success_label)
-        return StepResult(committed=committed, output=cleaned_output)
+        return StepResult(
+            committed=committed,
+            output=cleaned_output,
+            self_committed=self_committed,
+        )
     elif failure_label:
         error_detail = result['error'][:200]
         # Claude CLI often reports errors via stdout, not stderr.
