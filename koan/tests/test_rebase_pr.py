@@ -384,9 +384,16 @@ class TestGetConflictedFiles:
         with patch("app.rebase_pr.subprocess.run", return_value=mock_result):
             assert _get_conflicted_files("/project") == []
 
-    def test_exception_returns_empty(self):
+    def test_exception_returns_none_not_empty(self):
+        """"Could not tell" must stay distinguishable from "nothing conflicted"."""
         with patch("app.rebase_pr.subprocess.run", side_effect=OSError("fail")):
-            assert _get_conflicted_files("/project") == []
+            assert _get_conflicted_files("/project") is None
+
+    def test_non_zero_status_returns_none(self):
+        mock_result = MagicMock(
+            stdout="", stderr="fatal: index.lock exists", returncode=128)
+        with patch("app.rebase_pr.subprocess.run", return_value=mock_result):
+            assert _get_conflicted_files("/project") is None
 
     def test_paths_with_spaces(self):
         mock_result = MagicMock(
@@ -3085,10 +3092,10 @@ class TestContinueRebaseStagesResolvedTree:
     conflicts..." until the rounds ran out.
     """
 
-    def test_stages_tracked_edits_before_continuing(self):
-        from app.rebase_pr import _continue_rebase
-
-        git_calls = []
+    @staticmethod
+    def _record_git_calls(git_calls, subprocess_results=None):
+        """Patches that record every git command `_continue_rebase` issues."""
+        results = subprocess_results or {}
 
         def fake_run_git(cmd, **kwargs):
             git_calls.append(cmd)
@@ -3096,37 +3103,161 @@ class TestContinueRebaseStagesResolvedTree:
 
         def fake_subprocess_run(cmd, **kwargs):
             git_calls.append(cmd)
-            return MagicMock(returncode=0, stdout="", stderr="")
+            key = "continue" if "--continue" in cmd else "verify"
+            return results.get(
+                key, MagicMock(returncode=0, stdout="", stderr=""))
+
+        return (
+            patch("app.rebase_pr._run_git", side_effect=fake_run_git),
+            patch("app.rebase_pr.subprocess.run", side_effect=fake_subprocess_run),
+        )
+
+    def test_stages_tracked_edits_before_continuing(self):
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+            done, detail = _continue_rebase("/project")
+
+        assert done is True
+        assert detail == ""
+        assert ["git", "add", "-u"] in git_calls
+        assert git_calls.index(["git", "add", "-u"]) < len(git_calls) - 1
+        assert git_calls[-1][:3] == ["git", "rebase", "--continue"]
+
+    def test_untracked_files_are_not_swept_into_the_commit(self):
+        """`add -u` only — scratch files never block `--continue`."""
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+            _continue_rebase("/project")
+
+        assert ["git", "add", "-A"] not in git_calls
+        assert ["git", "add", "-u"] in git_calls
+
+    def test_untracked_resolution_artifacts_are_reported(self, capsys):
+        """A new file `add -u` leaves behind must be visible, not silent."""
+        from app.rebase_pr import _continue_rebase
+
+        def fake_run_git(cmd, **kwargs):
+            if "ls-files" in cmd:
+                return "app/new_helper.py\n"
+            return ""
 
         with patch("app.rebase_pr._run_git", side_effect=fake_run_git), \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="", stderr="")), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+            _continue_rebase("/project")
+
+        assert "app/new_helper.py" in capsys.readouterr().err
+
+    def test_refuses_to_stage_when_a_path_is_still_unmerged(self):
+        """`add -u` would commit conflict markers verbatim — never guess."""
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(
+            git_calls,
+            {"verify": MagicMock(returncode=0, stdout="a.py\n", stderr="")},
+        )
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            done, detail = _continue_rebase("/project")
+
+        assert done is False
+        assert "still unmerged" in detail and "a.py" in detail
+        assert ["git", "add", "-u"] not in git_calls
+
+    def test_refuses_to_stage_when_git_cannot_verify(self):
+        """A failed check is not a clean tree — no staging, no `--continue`."""
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(
+            git_calls,
+            {"verify": MagicMock(
+                returncode=128, stdout="", stderr="fatal: index.lock exists")},
+        )
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            done, detail = _continue_rebase("/project")
+
+        assert done is False
+        assert "could not verify the tree is unmerged-free" in detail
+        assert ["git", "add", "-u"] not in git_calls
+        assert not any("--continue" in cmd for cmd in git_calls)
+
+    def test_failed_staging_is_the_reported_cause(self):
+        """A refused `git add -u` must not surface as the `--continue` symptom."""
+        from app.rebase_pr import _continue_rebase
+
+        def fake_run_git(cmd, **kwargs):
+            raise RuntimeError("fatal: Unable to create index.lock")
+
+        with patch("app.rebase_pr._run_git", side_effect=fake_run_git), \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="", stderr="")), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            done, detail = _continue_rebase("/project")
+
+        assert done is False
+        assert "staging the resolved tree failed" in detail
+        assert "index.lock" in detail
+
+    def test_continue_timeout_with_rebase_gone_completes(self):
+        """A killed git leaves no rebase to continue — report it, don't hide it."""
+        from app.rebase_pr import _continue_rebase
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if "--continue" in cmd:
+                raise subprocess.TimeoutExpired(cmd, 60)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("app.rebase_pr._run_git", return_value=""), \
              patch("app.rebase_pr.subprocess.run", side_effect=fake_subprocess_run), \
              patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
             done, detail = _continue_rebase("/project")
 
         assert done is True
         assert detail == ""
-        assert git_calls[0] == ["git", "add", "-u"]
-        assert git_calls[1][:3] == ["git", "rebase", "--continue"]
 
-    def test_untracked_files_are_not_swept_into_the_commit(self):
-        """`add -u` only — scratch files never block `--continue`."""
+    def test_continue_timeout_with_rebase_still_running_fails(self):
         from app.rebase_pr import _continue_rebase
 
-        with patch("app.rebase_pr._run_git", return_value="") as run_git, \
-             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
-                 returncode=0, stdout="", stderr="")), \
-             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
-            _continue_rebase("/project")
+        def fake_subprocess_run(cmd, **kwargs):
+            if "--continue" in cmd:
+                raise subprocess.TimeoutExpired(cmd, 60)
+            return MagicMock(returncode=0, stdout="", stderr="")
 
-        assert run_git.call_args_list[0].args[0] == ["git", "add", "-u"]
+        with patch("app.rebase_pr._run_git", return_value=""), \
+             patch("app.rebase_pr.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
+            done, detail = _continue_rebase("/project")
+
+        assert done is False
+        assert "git rebase --continue failed" in detail
 
     def test_refused_continue_returns_git_error_text(self):
         from app.rebase_pr import _continue_rebase
 
-        with patch("app.rebase_pr._run_git", return_value=""), \
-             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
-                 returncode=1, stdout="",
-                 stderr="You must edit all merge conflicts")), \
+        run_git_patch, subprocess_patch = self._record_git_calls(
+            [],
+            {"continue": MagicMock(
+                returncode=1, stdout="",
+                stderr="You must edit all merge conflicts")},
+        )
+
+        with run_git_patch, subprocess_patch, \
              patch("app.rebase_pr._has_rebase_in_progress", return_value=True):
             done, detail = _continue_rebase("/project")
 
@@ -3206,6 +3337,46 @@ class TestResolveRebaseConflictsProgress:
         assert failure_detail == [
             "1 file(s) still conflicted after resolution: a.py"
         ]
+
+    def test_unreadable_status_retries_instead_of_aborting(self):
+        """A git that could not answer is not a rebase that cannot advance."""
+        failure_detail = []
+        # Round 1: status unreadable. Round 2: no conflicts, continue succeeds.
+        statuses = [None, []]
+        with patch("app.rebase_pr._get_conflicted_files",
+                   side_effect=lambda *_a, **_k: statuses.pop(0)), \
+             patch("app.rebase_pr._continue_rebase",
+                   return_value=(True, "")) as cont:
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=3,
+                failure_detail=failure_detail,
+            )
+
+        assert result is True
+        assert cont.call_count == 1
+        assert failure_detail == []
+
+    def test_unreadable_status_after_continue_is_not_reported_as_stuck(self):
+        """The stuck branch needs a confident "nothing conflicted", not a guess."""
+        failure_detail = []
+        # Empty, then unreadable after the continue, then the real conflicts.
+        statuses = [[], None, ["a.py"]]
+        with patch("app.rebase_pr._get_conflicted_files",
+                   side_effect=lambda *_a, **_k: statuses.pop(0)), \
+             patch("app.rebase_pr._continue_rebase", return_value=(False, "")), \
+             patch("app.cli_provider.build_full_command", return_value=["agent"]), \
+             patch("app.rebase_pr.run_claude", return_value={
+                 "success": False, "error": "boom",
+             }), \
+             patch("app.rebase_pr.get_rebase_conflict_timeout", return_value=600):
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=3,
+                skill_dir=REBASE_SKILL_DIR, failure_detail=failure_detail,
+            )
+
+        assert result is False
+        # Reached the resolution agent — not aborted as "made no progress".
+        assert failure_detail == ["conflict-resolution agent failed: boom"]
 
 
 class TestFetchPrContextHeadOwner:
