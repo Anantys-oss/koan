@@ -16,6 +16,7 @@ Pipeline:
 
 import contextlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1516,6 +1517,70 @@ def _get_conflicted_files(project_path: str) -> List[str]:
         return []
 
 
+# git helper failures worth swallowing: a non-zero exit (_run_git raises
+# RuntimeError), a hung git, or the binary being unavailable.
+_GIT_STEP_EXCEPTIONS = (RuntimeError, subprocess.SubprocessError, OSError)
+
+
+def _record_conflict_failure(
+    failure_detail: Optional[List[str]], detail: str,
+) -> None:
+    """Record why conflict resolution stopped, for the caller's error message.
+
+    Without this the caller falls back to the *initial* ``git rebase`` error,
+    which names the first conflicting commit even when that commit was
+    resolved fine and the rebase died later — a misleading report.
+    """
+    print(f"[rebase_pr] conflict resolution failed: {detail}", file=sys.stderr)
+    if failure_detail is not None:
+        failure_detail.append(detail)
+
+
+def _continue_rebase(project_path: str) -> Tuple[bool, str]:
+    """Stage the resolved tree and run ``git rebase --continue``.
+
+    Every *tracked* modification is staged first, not just the conflicted
+    paths: ``git rebase --continue`` refuses to run while any tracked file is
+    unstaged, and reports it as the misleading "You must edit all merge
+    conflicts and then mark them as resolved using git add" even when no
+    unmerged path is left.  A coherent conflict resolution routinely edits
+    neighbouring files (a helper the replayed commit moved, an import the
+    target branch renamed), and the rebase starts from a clean, autostashed
+    tree, so those edits are resolution output.  ``git add -u`` keeps
+    untracked scratch files out of the replayed commit — they never block
+    ``--continue`` anyway.
+
+    Returns:
+        ``(completed, detail)`` — *completed* is True once no rebase is in
+        progress; *detail* carries git's own error text when the continue
+        failed, empty when it merely stopped on the next commit's conflicts.
+    """
+    try:
+        _run_git(["git", "add", "-u"], cwd=project_path, timeout=60)
+    except _GIT_STEP_EXCEPTIONS as e:
+        print(f"[rebase_pr] staging the resolved tree failed: {e}", file=sys.stderr)
+
+    try:
+        # GIT_EDITOR=true prevents an interactive editor for commit messages.
+        proc = subprocess.run(
+            ["git", "rebase", "--continue"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True,
+            cwd=project_path, timeout=60,
+            env={**os.environ, "GIT_EDITOR": "true"},
+        )
+    except _GIT_STEP_EXCEPTIONS as e:
+        completed = not _has_rebase_in_progress(project_path)
+        return completed, "" if completed else f"git rebase --continue failed: {e}"
+
+    if not _has_rebase_in_progress(project_path):
+        return True, ""
+    if proc.returncode == 0:
+        return False, ""
+    output = (proc.stderr or proc.stdout or "").strip()
+    return False, f"git rebase --continue failed: {output[:200]}"
+
+
 def _resolve_rebase_conflicts(
     base: str,
     remote: str,
@@ -1542,13 +1607,17 @@ def _resolve_rebase_conflicts(
         conflicted = _get_conflicted_files(project_path)
         if not conflicted:
             # No conflicts — try to continue (may already be done)
-            try:
-                _run_git(["git", "rebase", "--continue"], cwd=project_path)
-            except Exception as e:
-                print(f"[rebase_pr] rebase --continue failed: {e}", file=sys.stderr)
-            # Check if rebase is still in progress
-            if not _has_rebase_in_progress(project_path):
+            done, detail = _continue_rebase(project_path)
+            if done:
                 return True
+            if not _get_conflicted_files(project_path):
+                # Stuck: nothing to resolve, yet the rebase will not advance.
+                # Looping here just burns every remaining round.
+                _record_conflict_failure(
+                    failure_detail,
+                    detail or "git rebase --continue made no progress",
+                )
+                return False
             continue
 
         if notify_fn:
@@ -1592,46 +1661,35 @@ def _resolve_rebase_conflicts(
             )
             return False
 
-        # Stage all resolved files (Claude should have done git add, but ensure it)
+        # The agent must leave no unmerged path behind
         remaining = _get_conflicted_files(project_path)
         if remaining:
-            print(
-                f"[rebase_pr] Still {len(remaining)} conflicted after Claude resolution: "
-                f"{remaining}",
-                file=sys.stderr,
+            _record_conflict_failure(
+                failure_detail,
+                f"{len(remaining)} file(s) still conflicted after resolution: "
+                f"{', '.join(remaining[:5])}",
             )
             return False
 
         # Continue the rebase
-        try:
-            # GIT_EDITOR=true prevents interactive editor for commit messages
-            subprocess.run(
-                ["git", "rebase", "--continue"],
-                stdin=subprocess.DEVNULL,
-                capture_output=True, text=True,
-                cwd=project_path, timeout=60,
-                env={**__import__("os").environ, "GIT_EDITOR": "true"},
-            ).check_returncode()
-        except subprocess.CalledProcessError:
-            # May have more conflicts from subsequent commits
-            if _has_rebase_in_progress(project_path):
-                continue
-            # Or the rebase finished despite non-zero exit
-            if not _has_rebase_in_progress(project_path):
-                actions_log.append(
-                    f"Resolved merge conflicts ({round_num} round(s))"
-                )
-                return True
-            return False
-
-        # Check if rebase completed
-        if not _has_rebase_in_progress(project_path):
+        done, detail = _continue_rebase(project_path)
+        if done:
             actions_log.append(
                 f"Resolved merge conflicts ({round_num} round(s))"
             )
             return True
+        if not _get_conflicted_files(project_path):
+            _record_conflict_failure(
+                failure_detail,
+                detail or "git rebase --continue made no progress",
+            )
+            return False
+        # More conflicts from a later commit — resolve them next round.
 
-    print(f"[rebase_pr] Exceeded max conflict resolution rounds ({max_rounds})", file=sys.stderr)
+    _record_conflict_failure(
+        failure_detail,
+        f"exceeded {max_rounds} conflict-resolution rounds",
+    )
     return False
 
 
