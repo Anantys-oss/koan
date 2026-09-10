@@ -23,6 +23,8 @@ import yaml
 from flask import Flask
 
 from app.api.openapi_metadata import (
+    DESTRUCTIVE_ATTR,
+    DESTRUCTIVE_EXTENSION,
     QUERY_PARAMETERS_ATTR,
     REQUEST_REQUIRED_ATTR,
     REQUEST_SCHEMA_ATTR,
@@ -129,6 +131,7 @@ def build_spec(app: Flask) -> dict:
         path_params = _path_params(openapi_path)
         query_params = getattr(view, QUERY_PARAMETERS_ATTR, ())
         request_schema = getattr(view, REQUEST_SCHEMA_ATTR, None)
+        destructive = bool(getattr(view, DESTRUCTIVE_ATTR, False))
 
         for method in methods:
             m = method.lower()
@@ -159,6 +162,8 @@ def build_spec(app: Flask) -> dict:
                         },
                     },
                 }
+            if destructive:
+                operation[DESTRUCTIVE_EXTENSION] = True
             if not secured:
                 # Override the global bearerAuth requirement — this route is public.
                 operation["security"] = []

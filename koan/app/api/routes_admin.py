@@ -113,6 +113,7 @@ def get_config():
 
 
 @bp.route("/v1/restart", methods=["POST"])
+@openapi_operation(destructive=True)
 @require_token
 def restart():
     """Request a full agent restart."""
@@ -128,6 +129,7 @@ def restart():
 
 
 @bp.route("/v1/shutdown", methods=["POST"])
+@openapi_operation(destructive=True)
 @require_token
 def shutdown():
     """Gracefully stop the agent."""
@@ -141,6 +143,7 @@ def shutdown():
 
 
 @bp.route("/v1/update", methods=["POST"])
+@openapi_operation(destructive=True)
 @require_token
 def update():
     """Pull upstream changes and restart."""
@@ -158,6 +161,7 @@ def update():
 
 
 @bp.route("/v1/update_release", methods=["POST"])
+@openapi_operation(destructive=True)
 @require_token
 def update_release():
     """Check out the latest tagged release and restart."""

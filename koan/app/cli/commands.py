@@ -68,12 +68,18 @@ def _root_epilog() -> str:
     return "\n".join(lines)
 
 
-DESTRUCTIVE = {
-    ("POST", "/v1/restart"),
-    ("POST", "/v1/shutdown"),
-    ("POST", "/v1/update"),
-    ("POST", "/v1/update_release"),
-}
+def destructive_targets(operations: list[Operation]) -> frozenset[tuple[str, str]]:
+    """Collect ``(METHOD, path)`` pairs the specification marks destructive.
+
+    Destructiveness is a property of the operation, exactly like auth: a route
+    rename moves the marker with the route instead of silently dropping a
+    hardcoded entry, so ``raw`` keeps confirming what the generated commands do.
+    """
+    return frozenset(
+        (operation.method, operation.path)
+        for operation in operations
+        if operation.destructive
+    )
 
 
 class _RawHelp(argparse.RawDescriptionHelpFormatter):
@@ -426,13 +432,18 @@ def build_operation_request(
         body=body,
         has_body=has_body,
         requires_auth=operation.requires_auth,
-        destructive=is_destructive(operation.method, operation.path),
+        destructive=operation.destructive,
     )
 
 
-def is_destructive(method: str, path: str) -> bool:
+def is_destructive(
+    method: str,
+    path: str,
+    targets: frozenset[tuple[str, str]] = frozenset(),
+) -> bool:
+    """Classify a raw ``METHOD path`` against the specification's markers."""
     normalized = (method.upper(), path.split("?", 1)[0])
-    return normalized[0] == "DELETE" or normalized in DESTRUCTIVE
+    return normalized[0] == "DELETE" or normalized in targets
 
 
 def build_raw_request(
@@ -442,6 +453,7 @@ def build_raw_request(
     *,
     data: str | None,
     query: list[str],
+    destructive: frozenset[tuple[str, str]] = frozenset(),
 ) -> RequestPlan:
     method = method.upper()
     if not method.isalpha():
@@ -457,5 +469,5 @@ def build_raw_request(
         requires_auth=not (
             method == "GET" and path.split("?", 1)[0] == "/v1/health"
         ),
-        destructive=is_destructive(method, path),
+        destructive=is_destructive(method, path, destructive),
     )

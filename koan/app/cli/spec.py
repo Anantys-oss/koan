@@ -11,6 +11,8 @@ from app.cli import CliError
 
 
 HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
+# Vendor extension emitted by app.api.openapi_metadata for a destructive view.
+DESTRUCTIVE_EXTENSION = "x-koan-destructive"
 # Operation summaries (from view docstrings) may span multiple lines; the CLI has
 # room for one. Keep only the first line so group/leaf help stays terse.
 FIRST_LINE_FALLBACK = "Unknown operation"
@@ -54,6 +56,7 @@ class Operation:
     requires_auth: bool
     summary: str = ""
     description: str = ""
+    destructive: bool = False
 
 
 def load_tag_descriptions(spec: dict[str, Any]) -> dict[str, str]:
@@ -211,6 +214,10 @@ def load_operations(spec: dict[str, Any]) -> list[Operation]:
                 requires_auth=bool(security),
                 summary=_first_line(operation.get("summary") or ""),
                 description=(operation.get("description") or "").strip(),
+                # DELETE is destructive by method; anything else says so itself,
+                # so a renamed route carries its guard with it.
+                destructive=method.upper() == "DELETE"
+                or bool(operation.get(DESTRUCTIVE_EXTENSION)),
             )
         )
     assert_unique(operations)

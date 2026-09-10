@@ -4,7 +4,7 @@ title: "Kōan REST CLI"
 description: "Configure and use bin/koan-cli to call every operation in Kōan's token-authenticated REST API, with self-documenting --help."
 tags: [users]
 created: 2026-09-08
-updated: 2026-09-09
+updated: 2026-09-10
 ---
 
 # Kōan REST CLI
@@ -44,7 +44,16 @@ Settings resolve in this order:
 
 `configure` uses the same ladder to pick which profile it writes and which
 base URL it offers as the prompt default, so `KOAN_PROFILE=prod koan-cli
-configure` writes `[prod]`, not `[default]`.
+configure` writes `[prod]`, not `[default]`. Re-running it **edits** that
+profile rather than resetting it: the stored `base_url` is the prompt default,
+and an empty token entry keeps the token already stored, so correcting one
+field never discards the other. A profile that ends up with no token at all is
+reported as a failure with a nonzero exit code.
+
+Naming a profile that does not exist is an error, whether it comes from
+`--profile` or `KOAN_PROFILE` — the CLI never quietly falls back to `default`
+and sends the request to the wrong agent. Only an unnamed `default` may be
+absent.
 
 Empty environment values are ignored. Without any configuration, the public
 `health` command uses the specification's default local server and needs no
@@ -177,9 +186,11 @@ Non-JSON response bodies are wrapped in a JSON object.
 | `3` | Not found (`404`) |
 | `4` | Server error (`5xx`) |
 
-All DELETE requests plus restart, shutdown, update, and release-update requests
-are destructive. They prompt when stdin is a TTY and require `--yes` in
-non-interactive scripts.
+Every DELETE request is destructive, as is any operation the specification
+marks with `x-koan-destructive` — currently restart, shutdown, update, and
+release-update. The marker is emitted from the view itself, so a renamed route
+keeps its guard. Destructive requests prompt when stdin is a TTY and require
+`--yes` in non-interactive scripts.
 
 ```bash
 bin/koan-cli missions delete MISSION_ID --yes

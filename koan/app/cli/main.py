@@ -11,11 +11,13 @@ from app.cli.commands import (
     build_operation_request,
     build_parser,
     build_raw_request,
+    destructive_targets,
     expand_alias,
 )
 from app.cli.config import (
     CONFIG_PATH,
     load_settings,
+    read_profile,
     resolve_base_url,
     resolve_profile,
     resolve_timeout,
@@ -48,19 +50,28 @@ def main(
             # every other command, so an exported KOAN_PROFILE does not write
             # production credentials into [default].
             profile = resolve_profile(cli_profile=args.profile)
+            # Re-running configure edits a profile; it does not reset one. The
+            # stored values are the defaults, so pressing Enter twice on a
+            # remote profile keeps its URL and its token.
+            stored = read_profile(path, profile)
             default_url = resolve_base_url(
                 cli_base_url=args.base_url,
+                section=stored,
                 fallback=server_default,
             )
             entered_url = input(f"Base URL [{default_url}]: ").strip()
             base_url = (entered_url or default_url).rstrip("/")
-            token = getpass.getpass("Bearer token: ").strip()
+            stored_token = str(stored.get("token", "")).strip()
+            prompt = (
+                "Bearer token [keep existing]: " if stored_token else "Bearer token: "
+            )
+            token = getpass.getpass(prompt).strip() or stored_token
             write_profile(path, profile, base_url, token)
             verification = verify_configuration(
                 base_url,
                 token,
                 session,
-                timeout=resolve_timeout(cli_timeout=args.timeout),
+                timeout=resolve_timeout(cli_timeout=args.timeout, section=stored),
             )
             # stdout carries valid JSON only; a failed probe is a diagnostic.
             stream = sys.stdout if verification.exit_code == EXIT_OK else sys.stderr
@@ -81,6 +92,7 @@ def main(
                 settings.base_url,
                 data=args.data,
                 query=args.query,
+                destructive=destructive_targets(operations),
             )
         else:
             plan = build_operation_request(

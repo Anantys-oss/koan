@@ -694,6 +694,7 @@ paths:
       summary: Request a full agent restart.
       tags:
       - admin
+      x-koan-destructive: true
   /v1/resume:
     post:
       operationId: admin_resume_post
@@ -748,6 +749,7 @@ paths:
       summary: Gracefully stop the agent.
       tags:
       - admin
+      x-koan-destructive: true
   /v1/status:
     get:
       operationId: status_status_get
@@ -802,6 +804,7 @@ paths:
       summary: Pull upstream changes and restart.
       tags:
       - admin
+      x-koan-destructive: true
   /v1/update_release:
     post:
       operationId: admin_update_release_post
@@ -829,6 +832,7 @@ paths:
       summary: Check out the latest tagged release and restart.
       tags:
       - admin
+      x-koan-destructive: true
   /v1/usage:
     get:
       operationId: observability_usage_get

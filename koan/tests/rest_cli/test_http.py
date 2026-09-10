@@ -219,6 +219,13 @@ def test_destructive_confirmation_can_abort_or_continue():
     )
 
 
+def test_verification_without_a_token_is_not_success(session_factory, response_factory):
+    session = session_factory([response_factory(200, {"status": "ok"})])
+    result = verify_configuration("http://127.0.0.1:8420", "", session)
+    assert result.exit_code == EXIT_LOCAL
+    assert "no token configured" in result.message
+
+
 def test_configure_probes_health_then_authenticated_status(session_factory, response_factory):
     session = session_factory([
         response_factory(200, {"status": "ok"}),

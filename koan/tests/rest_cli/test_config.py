@@ -74,6 +74,36 @@ def test_unknown_selected_profile_names_path(tmp_path):
         load_settings(path, "http://127.0.0.1:8420", cli_profile="prod")
 
 
+def test_explicit_profile_never_falls_back_silently(tmp_path):
+    """An explicitly named profile that is absent is an error, not the default."""
+    missing = tmp_path / "missing.cfg"
+    empty = tmp_path / "empty.cfg"
+    empty.write_text("")
+    empty.chmod(0o600)
+
+    with pytest.raises(CliError, match="unknown profile 'prod'"):
+        load_settings(missing, "http://127.0.0.1:8420", cli_profile="prod")
+    with pytest.raises(CliError, match="unknown profile 'prod'"):
+        load_settings(empty, "http://127.0.0.1:8420", cli_profile="prod")
+    with pytest.raises(CliError, match="unknown profile 'prod'"):
+        load_settings(
+            empty,
+            "http://127.0.0.1:8420",
+            environ={"KOAN_PROFILE": "prod"},
+        )
+
+
+def test_implicit_default_profile_may_be_absent(tmp_path):
+    path = tmp_path / "koan-cli.cfg"
+    path.write_text("[prod]\ntoken = prod-token\n")
+    path.chmod(0o600)
+
+    settings = load_settings(path, "http://127.0.0.1:8420", environ={})
+
+    assert settings.profile == "default"
+    assert settings.token == ""
+
+
 def test_insecure_config_names_exact_fix(tmp_path):
     path = tmp_path / "koan-cli.cfg"
     path.write_text("[default]\ntoken = exposed\n")

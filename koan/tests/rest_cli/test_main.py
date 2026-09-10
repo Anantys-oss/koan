@@ -134,6 +134,47 @@ def test_configure_prompt_defaults_to_the_environment_base_url(
     assert "https://env.example" in path.read_text()
 
 
+def test_configure_keeps_stored_url_and_token_on_empty_entry(
+    api_spec_path, tmp_path, monkeypatch, session_factory
+):
+    """Re-running configure edits a profile; empty answers must not wipe it."""
+    path = tmp_path / "koan-cli.cfg"
+    path.write_text("[prod]\nbase_url = https://prod.example\ntoken = prod-token\n")
+    path.chmod(0o600)
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "")
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "")
+
+    main(
+        ["--profile", "prod", "configure"],
+        spec_path=api_spec_path,
+        config_path=path,
+        session=session_factory([requests.ConnectionError("down")]),
+    )
+
+    written = path.read_text()
+    assert "https://prod.example" in prompts[0]
+    assert "base_url = https://prod.example" in written
+    assert "token = prod-token" in written
+
+
+def test_configure_without_any_token_reports_failure(
+    api_spec_path, tmp_path, monkeypatch, session_factory, response_factory
+):
+    path = tmp_path / "koan-cli.cfg"
+    monkeypatch.setattr("builtins.input", lambda prompt: "")
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "")
+
+    code = main(
+        ["configure"],
+        spec_path=api_spec_path,
+        config_path=path,
+        session=session_factory([response_factory(200, {"status": "ok"})]),
+    )
+
+    assert code == EXIT_LOCAL
+
+
 def test_configure_flag_beats_the_environment(
     api_spec_path, tmp_path, monkeypatch, session_factory
 ):

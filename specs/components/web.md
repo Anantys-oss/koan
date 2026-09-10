@@ -4,7 +4,7 @@ title: "Component Spec — Web Dashboard & REST API"
 description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-09-09
+updated: 2026-09-10
 ---
 
 # Component Spec — Web Dashboard & REST API
@@ -202,7 +202,16 @@ control flow, lifecycle, or quota decisions.
   derived flags are additive when request/query schemas exist.
 - **CLI credentials fail closed.** Tokens come from a mode-0600 or mode-0400
   profile or `KOAN_API_TOKEN`, never from argv. Destructive requests require
-  confirmation on a TTY and `--yes` in non-interactive execution.
+  confirmation on a TTY and `--yes` in non-interactive execution. An explicitly
+  named profile that does not exist is an error — never a silent fallback to
+  `default`, which would target a different agent and report success. `configure`
+  edits the selected profile: empty answers keep the stored base URL and token,
+  and a profile left with no token verifies as a failure.
+- **Destructiveness is a route-adjacent marker, like auth.** A view declares
+  `openapi_operation(destructive=True)`; the generator emits
+  `x-koan-destructive`, and clients read it instead of maintaining a method/path
+  allow-list, so renaming a route can never mute its confirmation prompt. DELETE
+  is destructive by method.
 - **Command names are unique by construction, not by luck.** Several naming
   branches derive a command from the path alone, so two methods on one path
   would collapse onto one name and a `SpecError` would abort *every* invocation,

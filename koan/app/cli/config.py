@@ -110,6 +110,26 @@ def _read_config(path: Path) -> configparser.ConfigParser:
     return parser
 
 
+def read_profile(
+    path: Path,
+    profile: str,
+    *,
+    required: bool = False,
+) -> dict[str, str]:
+    """Return one stored profile's keys, ``{}`` when it is absent.
+
+    ``required`` makes an absent profile an error: an explicitly named profile
+    that silently falls back to defaults would send the request to the wrong
+    agent and report success.
+    """
+    parser = _read_config(path)
+    if profile in parser:
+        return dict(parser[profile])
+    if required:
+        raise CliError(f"unknown profile {profile!r} in {path}")
+    return {}
+
+
 def load_settings(
     path: Path,
     server_default: str,
@@ -121,10 +141,10 @@ def load_settings(
 ) -> Settings:
     env = os.environ if environ is None else environ
     profile = resolve_profile(cli_profile=cli_profile, environ=env)
-    parser = _read_config(path)
-    if parser.sections() and profile not in parser:
-        raise CliError(f"unknown profile {profile!r} in {path}")
-    section = parser[profile] if profile in parser else {}
+    explicit = bool(
+        (cli_profile or "").strip() or _nonempty(env, "KOAN_PROFILE")
+    )
+    section = read_profile(path, profile, required=explicit)
     base_url = resolve_base_url(
         cli_base_url=cli_base_url,
         section=section,

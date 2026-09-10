@@ -440,6 +440,24 @@ def test_tags_cover_blueprints(app):
             assert name.isidentifier()
 
 
+def test_destructive_routes_declare_the_marker(app):
+    """Destructiveness travels with the view, so clients need no path allow-list."""
+    spec = openapi_gen.build_spec(app)
+    marked = {
+        (method.upper(), path)
+        for path, item in spec["paths"].items()
+        for method, operation in item.items()
+        if operation.get("x-koan-destructive")
+    }
+    assert marked == {
+        ("POST", "/v1/restart"),
+        ("POST", "/v1/shutdown"),
+        ("POST", "/v1/update"),
+        ("POST", "/v1/update_release"),
+    }
+    assert "x-koan-destructive" not in spec["paths"]["/v1/status"]["get"]
+
+
 def test_request_required_without_a_schema_is_rejected():
     """The flag is only stored alongside a schema; alone it would be a silent no-op."""
     with pytest.raises(ValueError, match="request_required"):

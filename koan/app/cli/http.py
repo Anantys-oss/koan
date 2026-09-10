@@ -175,7 +175,14 @@ def verify_configuration(
             exit_for_status(health.status_code),
         )
     if not token:
-        return VerificationResult("reachable; no token configured", EXIT_OK)
+        # A profile without a token cannot call anything but health. Reporting
+        # success here makes a wiped credential indistinguishable from a
+        # working one to any script keying off the exit code.
+        return VerificationResult(
+            "reachable; no token configured — every authenticated command "
+            "will fail until one is set",
+            EXIT_LOCAL,
+        )
 
     try:
         status = session.request(

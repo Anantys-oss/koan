@@ -10,6 +10,7 @@ from app.cli.commands import (
     build_operation_request,
     build_parser,
     build_raw_request,
+    destructive_targets,
     expand_alias,
     is_destructive,
 )
@@ -124,8 +125,65 @@ def test_raw_health_auth_exception_is_exact():
         ("POST", "/v1/update_release?now=true"),
     ],
 )
-def test_destructive_requests(method, path):
-    assert is_destructive(method, path)
+def test_destructive_requests(api_spec_path, method, path):
+    operations = load_operations(load_spec(api_spec_path))
+    assert is_destructive(method, path, destructive_targets(operations))
+
+
+def test_destructive_markers_resolve_to_live_operations(api_spec_path):
+    """Every confirmed target must still exist, so a rename cannot mute the guard."""
+    operations = load_operations(load_spec(api_spec_path))
+    live = {(operation.method, operation.path) for operation in operations}
+    targets = destructive_targets(operations)
+
+    assert targets <= live
+    assert {
+        ("POST", "/v1/restart"),
+        ("POST", "/v1/shutdown"),
+        ("POST", "/v1/update"),
+        ("POST", "/v1/update_release"),
+    } <= targets
+    assert all(
+        (operation.method, operation.path) in targets
+        for operation in operations
+        if operation.method == "DELETE"
+    )
+
+
+def test_generated_command_inherits_spec_destructiveness(api_spec_path):
+    operations = load_operations(load_spec(api_spec_path))
+    parser = build_parser(operations)
+
+    shutdown = parser.parse_args(["admin", "shutdown"])
+    status = parser.parse_args(["status"])
+
+    assert build_operation_request(
+        shutdown._operation, shutdown, "http://localhost"
+    ).destructive is True
+    assert build_operation_request(
+        status._operation, status, "http://localhost"
+    ).destructive is False
+
+
+def test_raw_request_uses_spec_markers(api_spec_path):
+    targets = destructive_targets(load_operations(load_spec(api_spec_path)))
+    plan = build_raw_request(
+        "POST",
+        "/v1/shutdown",
+        "http://localhost",
+        data=None,
+        query=[],
+        destructive=targets,
+    )
+    assert plan.destructive is True
+    assert build_raw_request(
+        "GET",
+        "/v1/status",
+        "http://localhost",
+        data=None,
+        query=[],
+        destructive=targets,
+    ).destructive is False
 
 
 @pytest.mark.parametrize(
