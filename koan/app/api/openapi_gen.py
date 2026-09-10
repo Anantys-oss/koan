@@ -25,6 +25,7 @@ from flask import Flask
 from app.api.openapi_metadata import (
     DESTRUCTIVE_ATTR,
     DESTRUCTIVE_EXTENSION,
+    MCP_ENABLED_ATTR,
     QUERY_PARAMETERS_ATTR,
     REQUEST_REQUIRED_ATTR,
     REQUEST_SCHEMA_ATTR,
@@ -150,6 +151,8 @@ def build_spec(app: Flask) -> dict:
                 "tags": [tag],
                 "responses": responses,
             }
+            if getattr(view, MCP_ENABLED_ATTR, False):
+                operation["x-koan-mcp"] = True
             parameters = [*deepcopy(path_params), *deepcopy(query_params)]
             if parameters:
                 operation["parameters"] = parameters
