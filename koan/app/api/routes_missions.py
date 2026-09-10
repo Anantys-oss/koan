@@ -224,7 +224,7 @@ def _find_pending_position(content: str, stored_text: str):
 
 
 @bp.route("/v1/missions", methods=["GET"])
-@openapi_operation(query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS)
+@openapi_operation(query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS, mcp=True)
 @require_token
 def list_missions_route():
     """List missions from the authoritative mission store.
@@ -281,7 +281,7 @@ def list_missions_route():
 
 
 @bp.route("/v1/missions", methods=["POST"])
-@openapi_operation(request_schema=_CREATE_MISSION_SCHEMA)
+@openapi_operation(request_schema=_CREATE_MISSION_SCHEMA, mcp=True)
 @require_token
 def create_mission():
     """Queue a new mission."""
@@ -301,7 +301,7 @@ def create_mission():
 
 
 @bp.route("/v1/missions/reorder", methods=["POST"])
-@openapi_operation(request_schema=_REORDER_MISSION_SCHEMA)
+@openapi_operation(request_schema=_REORDER_MISSION_SCHEMA, mcp=True)
 @require_token
 def reorder_mission_route():
     """Move a pending mission to a new position."""
@@ -359,6 +359,7 @@ def reorder_mission_route():
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["GET"])
+@openapi_operation(mcp=True)
 @require_token
 def get_mission_route(mission_id: str):
     """Fetch one mission by id."""
@@ -396,6 +397,7 @@ def get_mission_route(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>/result", methods=["GET"])
+@openapi_operation(mcp=True)
 @require_token
 def get_mission_result_route(mission_id: str):
     """Fetch a finished mission's result."""
@@ -412,6 +414,7 @@ def get_mission_result_route(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["DELETE"])
+@openapi_operation(mcp=True)
 @require_token
 def delete_mission(mission_id: str):
     """Remove a pending mission."""
