@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from app.claude_step import (
     CI_STATUS_BLOCKED_APPROVAL,
@@ -1490,18 +1490,23 @@ _has_rebase_in_progress = has_rebase_in_progress
 _UNMERGED_STATUSES = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
 
 
-def _get_conflicted_files(project_path: str) -> Optional[List[str]]:
+def _get_conflicted_files(
+    project_path: str, errors: Optional[List[str]] = None,
+) -> Optional[List[str]]:
     """Return list of files with unmerged conflicts, or None if git could not tell.
 
     Uses ``git status --porcelain`` which explicitly reports the merge state
     of each index entry.  Previous implementation used
     ``git diff --name-only --diff-filter=U`` which can silently return
     incomplete results during complex rebase operations (e.g. ``--onto``
-    rebases or branches with merge commits being linearised).
+    rebases or branches with merge commits being linearised) — so nothing in
+    this module may fall back to that command, least of all a safety check.
 
     A failed status (timeout, held ``index.lock``, non-zero exit) returns
     **None**, never ``[]``: callers act on "nothing is conflicted", and an
-    unanswerable question must not masquerade as that answer.
+    unanswerable question must not masquerade as that answer.  git's own
+    error text is appended to *errors* when given, so a caller can report
+    the actual cause instead of a bare round count.
     """
     try:
         result = subprocess.run(
@@ -1511,11 +1516,13 @@ def _get_conflicted_files(project_path: str) -> Optional[List[str]]:
             timeout=30,
         )
         if result.returncode != 0:
-            err = (result.stderr or result.stdout or "").strip()
+            err = (result.stderr or result.stdout or "").strip()[:200]
             print(
-                f"[rebase_pr] git status failed (rc={result.returncode}): {err[:200]}",
+                f"[rebase_pr] git status failed (rc={result.returncode}): {err}",
                 file=sys.stderr,
             )
+            if errors is not None:
+                errors.append(err or f"git status exited {result.returncode}")
             return None
         files = [
             line[3:].strip()
@@ -1525,12 +1532,25 @@ def _get_conflicted_files(project_path: str) -> Optional[List[str]]:
         return files
     except Exception as e:
         print(f"[rebase_pr] failed to list conflicted files: {e}", file=sys.stderr)
+        if errors is not None:
+            errors.append(str(e))
         return None
 
 
 # git helper failures worth swallowing: a non-zero exit (_run_git raises
 # RuntimeError), a hung git, or the binary being unavailable.
 _GIT_STEP_EXCEPTIONS = (RuntimeError, subprocess.SubprocessError, OSError)
+
+# Prefix marking "git itself could not be queried" — a transient condition
+# (held index.lock, timeout) the conflict loop retries instead of treating as
+# a rebase that cannot advance.
+_VERIFY_FAILED_PREFIX = "could not verify the tree is unmerged-free"
+
+# A status git never answers is worth re-asking, but only a bounded number of
+# times: an index.lock held for the life of the rebase would otherwise eat the
+# whole round budget and be reported as "too complex to resolve".
+_MAX_UNREADABLE_STATUS_ROUNDS = 3
+_UNREADABLE_STATUS_DELAY = 2.0
 
 
 def _record_conflict_failure(
@@ -1547,32 +1567,43 @@ def _record_conflict_failure(
         failure_detail.append(detail)
 
 
+class _ContinueOutcome(NamedTuple):
+    """Result of one ``git rebase --continue`` attempt.
+
+    *completed* is True once no rebase is in progress and git said so with a
+    zero exit.  *detail* carries git's own error text for a failed attempt,
+    and is empty when the continue merely stopped on the next commit's
+    conflicts.  *retryable* marks the case where nothing was attempted
+    because git could not be queried — the round is worth spending again
+    rather than abandoning resolutions already paid for in LLM quota.
+    """
+
+    completed: bool
+    detail: str
+    retryable: bool = False
+
+
 def _verify_unmerged_free(project_path: str) -> Tuple[bool, str]:
     """Prove the index holds no unmerged entry, with git's exit status checked.
 
     ``git add -u`` marks an unmerged path resolved by taking the working-tree
     content verbatim — conflict markers included.  Git refusing ``--continue``
     on unmerged entries is the last backstop against committing them, so it
-    may only be bypassed on a *confident* "nothing is unmerged".  The callers'
-    ``_get_conflicted_files`` guard cannot carry that weight alone; ask git
-    again here and treat any answer other than an empty, rc=0 listing as a
-    refusal to stage.
+    may only be bypassed on a *confident* "nothing is unmerged".  This is the
+    sole check on the path where the caller's own probe returned None, so it
+    asks git through :func:`_get_conflicted_files` — ``git status
+    --porcelain``, the listing this module documents as reliable — and treats
+    an unanswered status as a refusal to stage.
+
+    Returns ``(verified, why)``; *why* is prefixed with
+    ``_VERIFY_FAILED_PREFIX`` when git itself could not be read, which the
+    caller turns into a retry rather than a terminal failure.
     """
-    try:
-        proc = subprocess.run(
-            ["git", "diff", "--name-only", "--diff-filter=U"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True, text=True,
-            cwd=project_path, timeout=30,
-        )
-    except _GIT_STEP_EXCEPTIONS as e:
-        return False, f"could not verify the tree is unmerged-free: {e}"
-
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()
-        return False, f"could not verify the tree is unmerged-free: {err[:200]}"
-
-    unmerged = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    errors: List[str] = []
+    unmerged = _get_conflicted_files(project_path, errors=errors)
+    if unmerged is None:
+        err = errors[-1] if errors else "git status could not be read"
+        return False, f"{_VERIFY_FAILED_PREFIX}: {err}"
     if unmerged:
         return False, (
             f"{len(unmerged)} file(s) still unmerged: {', '.join(unmerged[:5])}"
@@ -1580,14 +1611,14 @@ def _verify_unmerged_free(project_path: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def _warn_untracked_files(project_path: str) -> None:
-    """Surface files ``git add -u`` leaves behind.
+def _list_untracked_files(project_path: str) -> List[str]:
+    """Return the files ``git add -u`` leaves out of the replayed commit.
 
     A resolution that legitimately creates a file (an extracted helper, a
     module the target branch split) leaves it untracked, and nothing else
     would ever notice: untracked files neither block ``--continue`` nor show
-    up as unmerged.  Naming them in the rebase log turns a silently missing
-    file into something a human can see.
+    up as unmerged.  The caller records them in the actions log so a dropped
+    file reaches the human reading the PR report, not just daemon stderr.
     """
     try:
         out = _run_git(
@@ -1596,17 +1627,13 @@ def _warn_untracked_files(project_path: str) -> None:
         )
     except _GIT_STEP_EXCEPTIONS as e:
         print(f"[rebase_pr] could not list untracked files: {e}", file=sys.stderr)
-        return
-    files = [line.strip() for line in (out or "").splitlines() if line.strip()]
-    if files:
-        print(
-            f"[rebase_pr] {len(files)} untracked file(s) left out of the replayed "
-            f"commit: {', '.join(files[:5])}",
-            file=sys.stderr,
-        )
+        return []
+    return [line.strip() for line in (out or "").splitlines() if line.strip()]
 
 
-def _continue_rebase(project_path: str) -> Tuple[bool, str]:
+def _continue_rebase(
+    project_path: str, actions_log: Optional[List[str]] = None,
+) -> _ContinueOutcome:
     """Stage the resolved tree and run ``git rebase --continue``.
 
     Every *tracked* modification is staged first, not just the conflicted
@@ -1618,31 +1645,37 @@ def _continue_rebase(project_path: str) -> Tuple[bool, str]:
     target branch renamed), and the rebase starts from a clean, autostashed
     tree, so those edits are resolution output.  ``git add -u`` keeps
     untracked scratch files out of the replayed commit — they never block
-    ``--continue`` anyway; new files the resolution needed are reported
-    instead of committed (see :func:`_warn_untracked_files`).
+    ``--continue`` anyway; new files the resolution needed are reported in
+    *actions_log* instead of committed.
 
     Staging only ever happens once :func:`_verify_unmerged_free` confirms
     nothing is unmerged, so this cannot turn an unresolved conflict into a
-    commit.
-
-    Returns:
-        ``(completed, detail)`` — *completed* is True once no rebase is in
-        progress; *detail* carries git's own error text when the continue
-        failed, empty when it merely stopped on the next commit's conflicts.
+    commit.  A non-zero exit is never folded into success: completion
+    requires both a gone rebase directory and git's own rc=0.
     """
     verified, why = _verify_unmerged_free(project_path)
     if not verified:
         print(f"[rebase_pr] refusing to stage: {why}", file=sys.stderr)
-        return False, why
+        return _ContinueOutcome(
+            False, why, retryable=why.startswith(_VERIFY_FAILED_PREFIX),
+        )
 
     try:
         _run_git(["git", "add", "-u"], cwd=project_path, timeout=60)
     except _GIT_STEP_EXCEPTIONS as e:
         # Reporting the `--continue` symptom instead would blame the agent for
         # conflicts it resolved fine.
-        return False, f"staging the resolved tree failed: {e}"
+        return _ContinueOutcome(False, f"staging the resolved tree failed: {e}")
 
-    _warn_untracked_files(project_path)
+    untracked = _list_untracked_files(project_path)
+    if untracked:
+        note = (
+            f"{len(untracked)} untracked file(s) left out of the replayed "
+            f"commit: {', '.join(untracked[:5])}"
+        )
+        print(f"[rebase_pr] {note}", file=sys.stderr)
+        if actions_log is not None:
+            actions_log.append(note)
 
     try:
         # GIT_EDITOR=true prevents an interactive editor for commit messages.
@@ -1654,30 +1687,27 @@ def _continue_rebase(project_path: str) -> Tuple[bool, str]:
             env={**os.environ, "GIT_EDITOR": "true"},
         )
     except _GIT_STEP_EXCEPTIONS as e:
-        if _has_rebase_in_progress(project_path):
-            return False, f"git rebase --continue failed: {e}"
-        # The rebase directory is gone, so nothing is left to continue — but
-        # git never reported why, so say so rather than logging a clean finish.
-        print(
-            f"[rebase_pr] git rebase --continue did not return, yet no rebase "
-            f"is in progress: {e}",
-            file=sys.stderr,
-        )
-        return True, ""
+        # A killed or never-launched git is a failure even when
+        # `.git/rebase-merge` is gone: git may have unlinked it before
+        # replaying the remaining commits, and a missing directory is no
+        # evidence the rebase finished.
+        return _ContinueOutcome(False, f"git rebase --continue failed: {e}")
 
-    if not _has_rebase_in_progress(project_path):
-        if proc.returncode != 0:
-            output = (proc.stderr or proc.stdout or "").strip()
-            print(
-                f"[rebase_pr] git rebase --continue exited {proc.returncode} with "
-                f"no rebase in progress: {output[:200]}",
-                file=sys.stderr,
-            )
-        return True, ""
-    if proc.returncode == 0:
-        return False, ""
-    output = (proc.stderr or proc.stdout or "").strip()
-    return False, f"git rebase --continue failed: {output[:200]}"
+    output = (proc.stderr or proc.stdout or "").strip()[:200]
+    if _has_rebase_in_progress(project_path):
+        if proc.returncode == 0:
+            # Stopped on the next commit's conflicts — not an error.
+            return _ContinueOutcome(False, "")
+        return _ContinueOutcome(False, f"git rebase --continue failed: {output}")
+    if proc.returncode != 0:
+        # A rejected commit hook or a refused commit tears the rebase
+        # directory down too; the replayed commit was never created.
+        return _ContinueOutcome(
+            False,
+            f"git rebase --continue exited {proc.returncode} with no rebase "
+            f"in progress: {output}",
+        )
+    return _ContinueOutcome(True, "")
 
 
 def _resolve_rebase_conflicts(
@@ -1702,23 +1732,44 @@ def _resolve_rebase_conflicts(
     from app.cli_provider import build_full_command
     from app.config import get_model_config
 
+    status_errors: List[str] = []
+    unreadable_rounds = 0
+
     for round_num in range(1, max_rounds + 1):
-        conflicted = _get_conflicted_files(project_path)
+        conflicted = _get_conflicted_files(project_path, errors=status_errors)
         if conflicted is None:
-            # git could not be asked (held index.lock, timeout). Retry rather
-            # than read the non-answer as either state.
+            # git could not be asked (held index.lock, timeout). Re-ask after a
+            # pause rather than read the non-answer as either state — but a
+            # git that never answers is its own failure, not "conflicts too
+            # complex to resolve" once the round budget runs out.
+            unreadable_rounds += 1
+            if unreadable_rounds >= _MAX_UNREADABLE_STATUS_ROUNDS:
+                _record_conflict_failure(
+                    failure_detail,
+                    f"git status could not be read after {unreadable_rounds} "
+                    f"attempts: "
+                    f"{status_errors[-1] if status_errors else 'unknown error'}",
+                )
+                return False
+            time.sleep(_UNREADABLE_STATUS_DELAY)
             continue
+        unreadable_rounds = 0
         if not conflicted:
             # No conflicts — try to continue (may already be done)
-            done, detail = _continue_rebase(project_path)
-            if done:
+            outcome = _continue_rebase(project_path, actions_log=actions_log)
+            if outcome.completed:
                 return True
+            if outcome.retryable:
+                # Nothing was staged or continued — git could not be queried.
+                # Spend the round again instead of abandoning the rebase.
+                time.sleep(_UNREADABLE_STATUS_DELAY)
+                continue
             if _get_conflicted_files(project_path) == []:
                 # Stuck: nothing to resolve, yet the rebase will not advance.
                 # Looping here just burns every remaining round.
                 _record_conflict_failure(
                     failure_detail,
-                    detail or "git rebase --continue made no progress",
+                    outcome.detail or "git rebase --continue made no progress",
                 )
                 return False
             continue
@@ -1765,8 +1816,8 @@ def _resolve_rebase_conflicts(
             return False
 
         # The agent must leave no unmerged path behind. A None (git could not
-        # tell) falls through to _continue_rebase, which re-verifies with a
-        # returncode-checked git before staging anything.
+        # tell) falls through to _continue_rebase, which re-asks
+        # `git status --porcelain` and refuses to stage unless it answers.
         remaining = _get_conflicted_files(project_path)
         if remaining:
             _record_conflict_failure(
@@ -1777,16 +1828,21 @@ def _resolve_rebase_conflicts(
             return False
 
         # Continue the rebase
-        done, detail = _continue_rebase(project_path)
-        if done:
+        outcome = _continue_rebase(project_path, actions_log=actions_log)
+        if outcome.completed:
             actions_log.append(
                 f"Resolved merge conflicts ({round_num} round(s))"
             )
             return True
+        if outcome.retryable:
+            # git could not be queried, so nothing was staged or continued —
+            # the resolution already paid for stays on disk for next round.
+            time.sleep(_UNREADABLE_STATUS_DELAY)
+            continue
         if _get_conflicted_files(project_path) == []:
             _record_conflict_failure(
                 failure_detail,
-                detail or "git rebase --continue made no progress",
+                outcome.detail or "git rebase --continue made no progress",
             )
             return False
         # More conflicts from a later commit — resolve them next round.
