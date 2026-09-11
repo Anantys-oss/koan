@@ -78,6 +78,18 @@ def test_rejected_request_is_audited(tmp_path):
     assert " GET /mcp 401" in line
 
 
+def test_audit_line_cannot_be_forged_from_the_request_path(tmp_path):
+    """An unauthenticated caller must not be able to inject audit lines."""
+    audit_path = tmp_path / "mcp.log"
+    client = _client(audit_path)
+
+    # %0A decodes to a newline in the ASGI scope's `path`.
+    response = client.get("/mcp%0A2026-01-01T00:00:00%20127.0.0.1%20GET%20/x%20200")
+
+    assert response.status_code == 401
+    assert audit_path.read_text().count("\n") == 1
+
+
 def test_audit_failure_is_reported_off_the_audit_sink(tmp_path):
     """The warning must not go to the file that just refused a write.
 
@@ -91,6 +103,19 @@ def test_audit_failure_is_reported_off_the_audit_sink(tmp_path):
     assert client.get("/mcp").status_code == 401
 
     assert "cannot write" in (tmp_path / "api.log").read_text()
+
+
+def test_audit_failure_also_reaches_syslog(tmp_path):
+    """`api.log` shares the audit sink's volume; syslog does not."""
+    audit_path = tmp_path / "mcp.log"
+    audit_path.mkdir()
+    client = _client(audit_path)
+
+    with patch("app.mcp.http_transport.syslog.syslog") as syslog_write:
+        assert client.get("/mcp").status_code == 401
+
+    assert syslog_write.call_count == 1
+    assert "cannot write" in syslog_write.call_args[0][1]
 
 
 def test_unauditable_requests_are_refused_not_served(tmp_path):

@@ -86,12 +86,19 @@ Authorization: Bearer <KOAN_API_TOKEN>
 Missing or empty credentials return 401; incorrect credentials return 403.
 HTTP startup refuses to listen when no API token is configured. Request audits
 appear in `logs/mcp.log` without headers, bodies, query strings, or tokens.
+Audit fields are escaped to one printable token each, so a crafted request path
+cannot inject extra lines.
+
+`mcp.transport` accepts `stdio` or `http`. An unrecognised value never opens a
+listener, and `make start` refuses to start the MCP daemon, prints the offending
+value, and exits non-zero rather than reporting a listener that was never bound.
 
 If `logs/mcp.log` becomes unwritable — a full disk, or a rotation step that
 changes its owner — the server stops serving instead of serving unaudited
-requests. Clients then get `503 audit_unavailable`, and the reason is written
-to `logs/api.log`, because the daemon's own stderr goes to the file that just
-failed. Service resumes on the first request after the file is writable again.
+requests. Clients then get `503 audit_unavailable`. The reason goes to syslog
+(tag `koan-mcp`) and to `logs/api.log`, because the daemon's own stderr goes to
+the file that just failed, and `logs/api.log` shares its volume. Service resumes
+on the first request after the file is writable again.
 
 `make mcp-config` prints a transport-appropriate client block. In HTTP mode
 the JSON contains the bearer token, so do not paste it into a tracked file or
