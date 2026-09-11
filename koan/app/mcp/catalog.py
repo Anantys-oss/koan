@@ -83,6 +83,12 @@ def _write(
 CURATED_TOOLS = (
     _read("koan_health", "Check API health", "GET", "/v1/health"),
     _read("koan_status", "Get Kōan status", "GET", "/v1/status"),
+    _read(
+        "koan_skills_list",
+        "List exposed skills",
+        "GET",
+        "/v1/skills",
+    ),
     _read("koan_missions_list", "List missions", "GET", "/v1/missions"),
     _read(
         "koan_missions_get",

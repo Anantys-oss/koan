@@ -13,9 +13,10 @@ from app.mcp.catalog import (
 )
 
 
-EXPECTED_DEFAULT_TOOLS = {
+READ_ONLY_TOOLS = {
     "koan_health",
     "koan_status",
+    "koan_skills_list",
     "koan_missions_list",
     "koan_missions_get",
     "koan_missions_result",
@@ -24,6 +25,9 @@ EXPECTED_DEFAULT_TOOLS = {
     "koan_metrics",
     "koan_logs",
     "koan_config",
+}
+
+EXPECTED_DEFAULT_TOOLS = READ_ONLY_TOOLS | {
     "koan_missions_create",
     "koan_missions_reorder",
     "koan_pause",
@@ -46,7 +50,7 @@ def test_curated_tools_and_annotations(operations):
     by_name = {tool.name: tool for tool in tools}
 
     assert set(by_name) == EXPECTED_DEFAULT_TOOLS
-    assert all(tool.annotations.read_only for tool in tools[:10])
+    assert all(by_name[name].annotations.read_only for name in READ_ONLY_TOOLS)
     assert all(not tool.annotations.destructive for tool in tools)
     assert all(not by_name[name].annotations.read_only for name in {
         "koan_missions_create",
@@ -135,21 +139,11 @@ def test_curated_tools_have_titles_and_explicit_hints(operations):
     tools = build_tool_definitions(operations, allow_destructive=True)
     by_name = {tool.name: tool for tool in tools}
 
-    assert len(by_name) == 15
+    assert len(by_name) == 16
     assert all(tool.title for tool in tools)
     assert all(tool.annotations.open_world is False for tool in tools)
 
-    for name in {
-        "koan_health",
-        "koan_status",
-        "koan_missions_list",
-        "koan_missions_get",
-        "koan_missions_result",
-        "koan_projects_list",
-        "koan_usage",
-        "koan_metrics",
-        "koan_logs",
-        "koan_config",
+    for name in READ_ONLY_TOOLS | {
         "koan_resume",
         "koan_missions_delete",
     }:

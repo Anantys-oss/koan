@@ -6,6 +6,7 @@ emoji: 📚
 description: Extract and generate structured documentation from a project codebase
 version: 1.0.0
 audience: hybrid
+api_exposed: true
 github_enabled: true
 github_context_aware: true
 commands:
