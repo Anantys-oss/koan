@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Skill Spec — `review`
@@ -286,6 +286,26 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   hunter, so this overlap is exercised by
   `TestReviewPostsBeforeEnrichment::test_coverage_note_survives_hunter_append_overlap`
   in `koan/tests/test_review_runner.py`.
+- **Model-written review prose follows the configured reply language.** The
+  prose the model generates — finding titles and bodies, the summary, and thread
+  replies — is written in the language returned by
+  `language_preference.get_language()`, which is **English** unless the human set
+  another with `/language`. The instruction is injected once, centrally, in
+  `_run_claude_review` (the single provider funnel for every review call), not
+  restated per prompt, so no review prompt can drift out of it. Only an explicit
+  `/language reset` (the `{"language": ""}` sentinel, input-language mode) lifts
+  the override; a review prompt must never independently ask the model to guess
+  or mirror a language, because leaving the choice open lets a model answer an
+  English thread in an unrelated language.
+- **Renderer-owned scaffolding stays English, deliberately.** The strings Python
+  itself emits around that prose are structure, not conversation, and are **not**
+  localized: the `## PR Review` heading, the `_SEVERITY_HEADING` tier names
+  (`Blocking`/`Important`/`Suggestions`), and the verdict line. They are
+  load-bearing — a stable heading is what lets a human scan any PR the same way,
+  and `_extract_review_body` regex-matches `## PR Review` to recover a
+  review from unstructured model output — so a non-English preference yields English scaffolding around
+  translated prose, by design. Widening the language override to cover them is an
+  architectural change, not a bug fix.
 
 ### Consistency, triage & human dispositions (spec 010)
 

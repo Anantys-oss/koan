@@ -4,7 +4,7 @@ title: "Review consistency, triage & human dispositions"
 description: "Why /review is stable across re-runs, how the yellow-tier bar and pre-existing labeling work, and the deliberate 'human decides' posture (and its injection tradeoff) for honoring PR-comment dispositions."
 tags: [design, review, decision]
 created: 2026-07-22
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Review consistency, triage & human dispositions (spec 010)
@@ -86,6 +86,33 @@ A related tripwire lives in the test suite: no `load_prompt` caller may pass a
 placeholder its template does not declare, because `prompts._substitute` drops unknown
 keys silently and the loss is invisible at both ends. See
 `koan/tests/test_prompts.py::TestNoPlaceholderIsSilentlyDropped`.
+
+### Review prose has one language source, and it is not the prompt
+
+A review is the one Kōan surface that never loads `soul.md` or the mission system
+prompt, so — unlike a mission or a chat reply — the `/language` preference never
+reached it. No review prompt pinned a language either, which left the choice to the
+model. That is not a stable default: on one PR it answered an English-only thread in
+Italian.
+
+The correction is to inject the preference once in `_run_claude_review` — the single
+provider funnel every review call already goes through — rather than restating it in
+each prompt. `language_preference.get_language()` defaults to English, so a fresh
+install gets English without configuration, and `/language <lang>` now moves the whole
+review path together. The directive is *prepended*, because several review prompts end
+with an untrusted-data fence and an instruction placed after it would be read as data.
+`/language reset` still yields an empty instruction, and the injection then makes no
+change at all — input-language mode is exactly what reset asks for.
+
+The override reaches model output and stops there. The scaffolding Python renders
+around a review — the `## PR Review` heading, the tier names, the verdict line — stays
+English. Those strings are structure rather than conversation, and one of them is
+load-bearing: `_extract_review_body` regex-matches `## PR Review` to recover a review
+from unstructured model output. A non-English preference therefore yields translated
+prose inside English headings, which is the intended boundary, not an oversight.
+
+The general point: a prompt is the wrong place to store a runtime preference. Config
+belongs at the funnel; prompts should describe the task.
 
 ## Related
 

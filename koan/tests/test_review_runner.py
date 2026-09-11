@@ -2804,6 +2804,69 @@ class TestRunClaudeReview:
         assert kwargs.get("model") == "gpt-5.4-mini"
         mock_models.assert_not_called()
 
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    @patch("app.language_preference.get_language_instruction",
+           return_value="IMPORTANT: You MUST reply in english.")
+    def test_language_directive_is_prepended(
+        self, mock_lang, mock_max_turns, mock_models, mock_run,
+    ):
+        """Every review prompt carries the configured reply language, up front.
+
+        Prepended, not appended: review prompts end with an untrusted-data
+        fence, and an instruction after it would read as data.
+        """
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        _run_claude_review("REVIEW BODY", "/tmp/project")
+        sent = mock_run.call_args.kwargs["prompt"]
+        assert sent.startswith("IMPORTANT: You MUST reply in english.")
+        assert sent.endswith("REVIEW BODY")
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    @patch("app.language_preference.get_language_instruction", return_value="")
+    def test_language_reset_leaves_prompt_untouched(
+        self, mock_lang, mock_max_turns, mock_models, mock_run,
+    ):
+        """`/language reset` (input-language mode) injects nothing."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        _run_claude_review("REVIEW BODY", "/tmp/project")
+        assert mock_run.call_args.kwargs["prompt"] == "REVIEW BODY"
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    @patch("app.language_preference.get_language_instruction",
+           side_effect=OSError("unreadable"))
+    def test_language_lookup_failure_is_non_fatal(
+        self, mock_lang, mock_max_turns, mock_models, mock_run, capsys,
+    ):
+        """A review in the default language beats no review at all."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        output, error = _run_claude_review("REVIEW BODY", "/tmp/project")
+        assert (output, error) == ("ok", "")
+        assert mock_run.call_args.kwargs["prompt"] == "REVIEW BODY"
+        assert "language directive unavailable" in capsys.readouterr().err
+
+    def test_default_install_gets_english(self, tmp_path, monkeypatch):
+        """No language.json at all still pins the review to English.
+
+        Guards the regression this fixes: nothing in the review path pinned a
+        language, so the model was free to answer an English thread in another.
+        """
+        from app.review_runner import _with_language_directive
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        assert "english" in _with_language_directive("BODY").lower()
+
 
 # ---------------------------------------------------------------------------
 # main() CLI entry point
