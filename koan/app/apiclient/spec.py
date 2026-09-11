@@ -61,6 +61,7 @@ class Operation:
     description: str = ""
     destructive: bool = False
     mcp_enabled: bool = False
+    mcp_description: str = ""
 
 
 def load_tag_descriptions(spec: dict[str, Any]) -> dict[str, str]:
@@ -223,6 +224,9 @@ def load_operations(spec: dict[str, Any]) -> list[Operation]:
                 destructive=method.upper() == "DELETE"
                 or bool(operation.get(DESTRUCTIVE_EXTENSION)),
                 mcp_enabled=operation.get("x-koan-mcp") is True,
+                mcp_description=(
+                    operation.get("x-koan-mcp-description") or ""
+                ).strip(),
             )
         )
     assert_unique(operations)
