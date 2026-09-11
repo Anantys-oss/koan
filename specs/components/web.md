@@ -4,7 +4,7 @@ title: "Component Spec — Web Dashboard & REST API"
 description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # Component Spec — Web Dashboard & REST API
@@ -58,7 +58,7 @@ cli/  (runtime OpenAPI REST client)
 | `api/auth.require_token` | Bearer parse + `hmac.compare_digest`. Token: env `KOAN_API_TOKEN` → `api.token` → `""`. |
 | `api/mission_index.py` | Sidecar `instance/.api-missions.json` (atomic). `record/get/list/reconcile/cancel`; `reconcile()` maps stored text → current `missions.md` section, and prefers the durable `OutcomeStore` for authoritative terminal status + the `outcome` field. Typed `result`/`result_ref` store: `attach_result()` (size-cap spill, summary-preserving), `load_full_result()` (inline-or-spill). `find_active_mission_id()` resolves a mission title back to its id (in_progress→pending→recent) for usage attribution. |
 | `api/mission_results.py` | Command→resolver registry (`register_resolver`, `resolve_mission_result`, `always_inline_keys`); built-in `/review`+`/ultrareview` resolver reads the PR-keyed findings sidecar. |
-| `routes_missions.list_missions_route()` | `GET /v1/missions` lists missions from the authoritative mission store (`ensure_store_synced()` + `list_by_state()`), rendering the `Mission` fields under the response's `status` key. Single-mission detail/result routes (`GET/PATCH/DELETE /v1/missions/{id}`, `/result`) remain sidecar-backed for API-queued records. |
+| `routes_missions.list_missions_route()` | `GET /v1/missions` lists missions from the authoritative mission store (`ensure_store_synced()` + `list_by_state()`), rendering the `Mission` fields under the response's `status` key. Rows are grouped by state (live states in queue order, terminal states newest-first) — never globally newest-first. `id` stays the **sidecar** id (`null` when the mission was not API-queued) so a listed id resolves on the single-mission routes; the store identity is exposed separately as `store_id`, which those routes do not accept. `?status` and `?limit` are validated at the boundary and reject with `422 invalid_request` — never coerced to a wider result set. Single-mission detail/result routes (`GET/PATCH/DELETE /v1/missions/{id}`, `/result`) remain sidecar-backed for API-queued records. |
 | `routes_missions.get_mission_route()` | `GET /v1/missions/{id}` returns the reconciled record (with typed `result`/`result_ref`) **plus** a `usage` object (`aggregate_mission_usage()` over `created`→today): token/cache/cost totals, `call_count`, `models`/`providers`, and an `unattributed` block for id-less title matches. Response is a copy — the sidecar is never mutated with `usage`. |
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
 | `log_reader.tail_log()/read_logs()` | Shared log tailing for dashboard **and** `GET /v1/logs`. |

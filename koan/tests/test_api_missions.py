@@ -295,6 +295,19 @@ class TestListMissionsStoreBacked:
         assert len(data) == 1
         assert data[0]["project"] == "alpha"
 
+    def test_list_untagged_mission_reports_default_project(
+        self, api_client, instance_dir
+    ):
+        # Store-backed: an untagged mission reports "default", where the
+        # sidecar-backed list used to report null.
+        seed_missions(
+            instance_dir,
+            "# Missions\n\n## Pending\n\n- No project\n\n"
+            "## In Progress\n\n## Done\n",
+        )
+        data = api_client.get("/v1/missions", headers=_AUTH).get_json()
+        assert [m["project"] for m in data] == ["default"]
+
     def test_list_created_api_mission_appears_and_drops_sidecar_fields(
         self, api_client, instance_dir
     ):
@@ -309,6 +322,40 @@ class TestListMissionsStoreBacked:
         assert "API queued" in texts
         assert all("result" not in m and "created" not in m for m in data)
 
+    def test_list_id_is_the_sidecar_id_and_round_trips_to_detail(
+        self, api_client, instance_dir
+    ):
+        # The id a client reads from the list must resolve on the
+        # single-mission routes — the store rowid does not.
+        created = api_client.post(
+            "/v1/missions", json={"text": "Round trip me"}, headers=_AUTH
+        ).get_json()
+        listed = [
+            m
+            for m in api_client.get("/v1/missions", headers=_AUTH).get_json()
+            if m["text"] == "Round trip me"
+        ]
+        assert len(listed) == 1
+        assert listed[0]["id"] == created["id"]
+        detail = api_client.get(f"/v1/missions/{listed[0]['id']}", headers=_AUTH)
+        assert detail.status_code == 200
+        assert detail.get_json()["id"] == created["id"]
+
+    def test_list_store_only_mission_has_null_id_and_a_store_id(
+        self, api_client, instance_dir
+    ):
+        # A mission queued outside the API has no sidecar record, so it is not
+        # addressable by id — say so with null rather than an id that 404s.
+        seed_missions(
+            instance_dir,
+            "# Missions\n\n## Pending\n\n- Queued from Telegram\n\n"
+            "## In Progress\n\n## Done\n",
+        )
+        data = api_client.get("/v1/missions", headers=_AUTH).get_json()
+        assert len(data) == 1
+        assert data[0]["id"] is None
+        assert data[0]["store_id"]
+
     def test_list_cancelled_api_mission_not_listed(self, api_client, instance_dir):
         # A cancelled API mission is `removed` in the sidecar only; the
         # store-backed list must not resurrect it and `?status` has no removed.
@@ -320,15 +367,15 @@ class TestListMissionsStoreBacked:
         data = resp.get_json()
         assert all(m["text"] != "To cancel" for m in data)
 
-    def test_list_unknown_status_returns_400(self, api_client, instance_dir):
+    def test_list_unknown_status_returns_422(self, api_client, instance_dir):
         seed_missions(
             instance_dir,
             "# Missions\n\n## Pending\n\n- Fix auth bug\n\n"
             "## In Progress\n\n## Done\n",
         )
         resp = api_client.get("/v1/missions?status=bogus", headers=_AUTH)
-        assert resp.status_code == 400
-        assert "error" in resp.get_json()
+        assert resp.status_code == 422
+        assert resp.get_json()["error"]["code"] == "invalid_request"
 
     def test_list_limit_caps_rows_per_state(self, api_client, instance_dir):
         seed_missions(
@@ -340,15 +387,36 @@ class TestListMissionsStoreBacked:
         data = resp.get_json()
         assert len(data) == 2
 
-    def test_list_limit_zero_or_bad_is_unlimited(self, api_client, instance_dir):
+    def test_list_limit_without_status_caps_each_state_separately(
+        self, api_client, instance_dir
+    ):
+        # `limit` is per state, so an unfiltered query can return up to
+        # limit * len(VALID_STATES) rows. Pin the multiplier.
+        seed_missions(
+            instance_dir,
+            "# Missions\n\n## Pending\n\n- P1\n- P2\n- P3\n\n"
+            "## In Progress\n\n- R1\n- R2\n\n## Done\n",
+        )
+        data = api_client.get("/v1/missions?limit=1", headers=_AUTH).get_json()
+        by_state = {}
+        for m in data:
+            by_state[m["status"]] = by_state.get(m["status"], 0) + 1
+        assert by_state == {"pending": 1, "in_progress": 1}
+
+    def test_list_bad_limit_is_rejected_not_silently_unlimited(
+        self, api_client, instance_dir
+    ):
         seed_missions(
             instance_dir,
             "# Missions\n\n## Pending\n\n- P1\n- P2\n- P3\n\n"
             "## In Progress\n\n## Done\n",
         )
-        for bad in ("0", "-1", "abc"):
-            resp = api_client.get(f"/v1/missions?status=pending&limit={bad}", headers=_AUTH)
-            assert len(resp.get_json()) == 3
+        for bad in ("0", "-1", "abc", "1O"):
+            resp = api_client.get(
+                f"/v1/missions?status=pending&limit={bad}", headers=_AUTH
+            )
+            assert resp.status_code == 422, bad
+            assert resp.get_json()["error"]["code"] == "invalid_request"
 
 
 class TestCancelByText:
