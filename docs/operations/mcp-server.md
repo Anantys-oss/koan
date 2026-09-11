@@ -1,7 +1,7 @@
 ---
 type: doc
 title: "MCP Server"
-description: "Configure Kōan's MCP server for local stdio clients or remote Streamable HTTP clients: shared bearer auth, TLS proxying, audits, and lifecycle."
+description: "Configure Kōan's MCP server for local stdio clients or remote Streamable HTTP clients: skill discovery, command schemas, shared bearer auth, TLS proxying, audits, and lifecycle."
 tags: [operations]
 created: 2026-09-09
 updated: 2026-09-11
@@ -153,22 +153,34 @@ without a traceback.
 
 ## Tool discovery
 
-Kōan defines fifteen curated `koan_*` tools plus generic `exec_operation`.
-Fourteen curated tools appear by default; `koan_missions_delete` requires its
+Kōan defines sixteen curated `koan_*` tools plus generic `exec_operation`.
+Fifteen curated tools appear by default; `koan_missions_delete` requires its
 separate destructive-tool gate. Every published tool has a picker title,
 detailed description, documented parameters, and explicit MCP behavior hints.
+
+| Tool | REST operation | Annotation |
+|---|---|---|
+| `koan_skills_list` | `GET /v1/skills` | read-only |
 
 At connection time, server instructions direct clients to begin with
 `koan_status`, follow mission state with `koan_missions_get`, and retrieve a
 completed structured result with `koan_missions_result`. Mission-list calls
 serve queue browsing, not result polling.
 
-Curated parameter descriptions and enforceable numeric or pattern constraints
-come from the committed OpenAPI document. Route docstring bodies provide REST
-detail, while `x-koan-mcp-description` carries agent-specific call-order and
-safety advice.
+Curated parameter descriptions and enforceable numeric, pattern, enum, or
+choice constraints come from the committed OpenAPI document. Route docstring
+bodies provide REST detail, while `x-koan-mcp-description` carries
+agent-specific call-order and safety advice.
 
-`koan_missions_delete` becomes the fifteenth named tool only when:
+Prefer `koan_missions_create.command` for work represented in its command
+choices. Those names come from API-exposed skill frontmatter. Call
+`koan_skills_list` for command usage, aliases, and flags; use `text` only when
+no exposed skill covers the work.
+
+`exec_operation` is published alongside them, so a default client sees **16
+entries** in `tools/list`, not fifteen.
+
+`koan_missions_delete` is the one further curated tool, and appears only when:
 
 ```yaml
 mcp:
@@ -176,8 +188,9 @@ mcp:
   tools_allow_destructive: true
 ```
 
-It carries a destructive hint. Shutdown, restart, updates, and all project
-create/update/delete operations never appear as named tools.
+It carries a destructive hint, and brings `tools/list` to 17 entries. Shutdown,
+restart, updates, and all project create/update/delete operations never appear
+as named tools.
 
 `exec_operation` remains a deliberately broad escape hatch. It accepts an
 OpenAPI `operation_id`, `path`, `query`, and optional JSON `body`, and can reach

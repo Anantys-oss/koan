@@ -30,14 +30,14 @@ def test_sdk_registers_destructive_annotation(api_spec_path):
     assert tools["koan_missions_delete"].annotations.destructive_hint is True
 
 
-def test_all_sixteen_tools_are_self_describing(api_spec_path):
+def test_all_seventeen_tools_are_self_describing(api_spec_path):
     server = create_server(
         spec_path=api_spec_path,
         allow_destructive=True,
     )
     tools = {tool.name: tool for tool in _tools(server)}
 
-    assert len(tools) == 16
+    assert len(tools) == 17
     for tool in tools.values():
         assert tool.title
         assert tool.description.strip()
@@ -49,10 +49,11 @@ def test_all_sixteen_tools_are_self_describing(api_spec_path):
             )
 
     create = tools["koan_missions_create"]
-    assert "exactly one of `command` or `text`" in create.description
-    assert create.input_schema["properties"]["command"]["description"] == (
-        "Slash-command mission; takes precedence over text."
-    )
+    assert "Prefer `command`" in create.description
+    assert "koan_skills_list" in create.description
+    assert "/review" in create.input_schema[
+        "properties"
+    ]["command"]["description"]
 
 
 def test_server_publishes_lifecycle_instructions(api_spec_path):
@@ -90,7 +91,7 @@ def test_openapi_bounds_are_enforced_before_dispatch(api_spec_path):
     assert calls == []
 
 
-def test_all_fifteen_named_tools_dispatch(api_spec_path):
+def test_all_sixteen_named_tools_dispatch(api_spec_path):
     calls = []
 
     class Client:
@@ -106,6 +107,7 @@ def test_all_fifteen_named_tools_dispatch(api_spec_path):
     arguments = {
         "koan_health": {},
         "koan_status": {},
+        "koan_skills_list": {},
         "koan_missions_list": {},
         "koan_missions_get": {"mission_id": "mission-1"},
         "koan_missions_result": {"mission_id": "mission-1"},
@@ -114,7 +116,11 @@ def test_all_fifteen_named_tools_dispatch(api_spec_path):
         "koan_metrics": {},
         "koan_logs": {},
         "koan_config": {},
-        "koan_missions_create": {"command": "/status"},
+        "koan_missions_create": {
+            "command": (
+                "/review https://github.com/owner/repo/pull/42"
+            )
+        },
         "koan_missions_reorder": {
             "mission_id": "mission-1",
             "target_position": 1,
@@ -128,7 +134,56 @@ def test_all_fifteen_named_tools_dispatch(api_spec_path):
         result = asyncio.run(server.call_tool(name, tool_arguments))
         assert result.is_error is False
 
-    assert len(calls) == 15
+    assert len(calls) == 16
+
+
+def test_tools_list_advertises_and_accepts_review_command(api_spec_path):
+    calls = []
+
+    class Client:
+        def execute_operation(self, operation_id, **kwargs):
+            calls.append((operation_id, kwargs))
+            return {"ok": True}
+
+    server = create_server(spec_path=api_spec_path, client=Client())
+    tools = {tool.name: tool for tool in _tools(server)}
+    command_schema = tools["koan_missions_create"].input_schema[
+        "properties"
+    ]["command"]
+    enum_branch = next(
+        branch
+        for branch in command_schema["anyOf"]
+        if "enum" in branch
+    )
+
+    assert "/review" in enum_branch["enum"]
+    assert "/rv" in enum_branch["enum"]  # advertised alias accepted + normalized
+    assert "koan_skills_list" in tools
+    assert "Prefer `command`" in tools["koan_missions_create"].description
+    assert "koan_skills_list" in tools["koan_missions_create"].description
+
+    url = "https://github.com/owner/repo/pull/42"
+    result = asyncio.run(
+        server.call_tool(
+            "koan_missions_create",
+            {"command": f"/rv {url}"},
+        )
+    )
+
+    assert result.is_error is False
+    assert calls == [
+        (
+            "missions_create_mission_post",
+            {
+                "path": None,
+                "query": None,
+                "body": {
+                    "command": f"/rv {url}",
+                    "urgent": False,
+                },
+            },
+        )
+    ]
 
 
 def test_exec_operation_reaches_unnamed_operation(api_spec_path):

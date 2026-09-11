@@ -6,6 +6,7 @@ emoji: 💡
 description: "Explain a PR's intent and changes in plain language (ex: /explain https://github.com/owner/repo/pull/42)"
 version: 1.0.0
 audience: hybrid
+api_exposed: true
 caveman: false
 github_enabled: true
 github_context_aware: true

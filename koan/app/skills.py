@@ -80,6 +80,7 @@ class Skill:
     audience: str = DEFAULT_AUDIENCE
     github_enabled: bool = False
     github_context_aware: bool = False
+    api_exposed: bool = False
     cli_skill: Optional[str] = None
     group: str = ""
     emoji: str = ""
@@ -180,9 +181,13 @@ def _parse_yaml_lite(text: str) -> Dict[str, Any]:
                         commands.append(current_cmd)
                     current_cmd = {"name": cline[2:].strip()}
                 elif cline.startswith("description:"):
-                    current_cmd["description"] = cline[12:].strip()
+                    current_cmd["description"] = _strip_scalar_quotes(
+                        cline[12:].strip()
+                    )
                 elif cline.startswith("usage:"):
-                    current_cmd["usage"] = cline[6:].strip()
+                    current_cmd["usage"] = _strip_scalar_quotes(
+                        cline[6:].strip()
+                    )
                 elif cline.startswith("aliases:"):
                     aliases_str = cline[8:].strip()
                     current_cmd["aliases"] = _parse_inline_list(aliases_str)
@@ -196,13 +201,18 @@ def _parse_yaml_lite(text: str) -> Dict[str, Any]:
         if value.startswith("[") and value.endswith("]"):
             result[key] = _parse_inline_list(value)
         else:
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-                value = value[1:-1]
-            result[key] = value
+            result[key] = _strip_scalar_quotes(value)
 
         i += 1
 
     return result
+
+
+def _strip_scalar_quotes(value: str) -> str:
+    """Strip one matching quote pair from a lite-YAML scalar."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
 
 
 def _parse_inline_list(s: str) -> List[str]:
@@ -235,6 +245,7 @@ _KNOWN_SKILL_KEYS = frozenset({
     "worker", "github_enabled", "github_context_aware", "caveman",
     "forward_result", "iterative", "title_markers", "audience", "cli_skill",
     "group", "emoji", "requirements", "sub_commands", "parallel", "model_key",
+    "api_exposed",
 })
 
 
@@ -335,6 +346,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
     worker = _parse_bool_flag(meta, "worker")
     github_enabled = _parse_bool_flag(meta, "github_enabled")
     github_context_aware = _parse_bool_flag(meta, "github_context_aware")
+    api_exposed = _parse_bool_flag(meta, "api_exposed")
     caveman_enabled = _parse_bool_flag(meta, "caveman")
     forward_result_enabled = _parse_bool_flag(meta, "forward_result")
     iterative = _parse_bool_flag(meta, "iterative")
@@ -393,6 +405,7 @@ def parse_skill_md(path: Path) -> Optional[Skill]:
         audience=audience,
         github_enabled=github_enabled,
         github_context_aware=github_context_aware,
+        api_exposed=api_exposed,
         cli_skill=cli_skill,
         group=group,
         emoji=emoji,

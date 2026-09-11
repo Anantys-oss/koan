@@ -46,7 +46,11 @@ class TestCreateMission:
     def test_create_command_mission(self, api_client, instance_dir):
         resp = api_client.post(
             "/v1/missions",
-            json={"command": "/status"},
+            json={
+                "command": (
+                    "/review https://github.com/owner/repo/pull/42"
+                )
+            },
             headers=_AUTH,
         )
         assert resp.status_code == 202
@@ -92,6 +96,103 @@ class TestCreateMission:
     def test_create_mission_unauthenticated_returns_401(self, api_client):
         resp = api_client.post("/v1/missions", json={"text": "test"})
         assert resp.status_code == 401
+
+    def test_create_command_without_slash_is_normalized(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        url = "https://github.com/owner/repo/pull/42"
+        response = api_client.post(
+            "/v1/missions",
+            json={"command": f"review {url}"},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 202
+        assert f"/review {url}" in (instance_dir / "missions.md").read_text()
+
+    def test_unknown_command_returns_valid_names_without_queueing(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        before = (instance_dir / "missions.md").read_text()
+        response = api_client.post(
+            "/v1/missions",
+            json={
+                "command": (
+                    "/reviwe https://github.com/owner/repo/pull/42"
+                )
+            },
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 422
+        error = response.get_json()["error"]
+        assert error["code"] == "invalid_request"
+        assert "Unknown command '/reviwe'" in error["message"]
+        assert "/review" in error["message"]
+        assert (instance_dir / "missions.md").read_text() == before
+
+    def test_command_alias_is_normalized_to_canonical(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        url = "https://github.com/owner/repo/pull/42"
+        response = api_client.post(
+            "/v1/missions",
+            json={"command": f"/rv {url}"},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 202
+        assert f"/review {url}" in (instance_dir / "missions.md").read_text()
+
+    def test_unexposed_command_is_rejected(self, api_client):
+        response = api_client.post(
+            "/v1/missions",
+            json={"command": "/shutdown"},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 422
+        assert "/shutdown" not in (
+            response.get_json()["error"]["message"]
+            .partition("Valid commands:")[2]
+        )
+
+    def test_free_form_review_text_is_unchanged(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        mission = "please review this design without using a slash command"
+        response = api_client.post(
+            "/v1/missions",
+            json={"text": mission},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 202
+        assert mission in (instance_dir / "missions.md").read_text()
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        (("command", 42), ("text", []), ("project", {"name": "x"})),
+    )
+    def test_non_string_fields_return_422(self, api_client, field, value):
+        payload = {"text": "valid text", field: value}
+
+        response = api_client.post(
+            "/v1/missions",
+            json=payload,
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 422
+        assert response.get_json()["error"]["code"] == "invalid_request"
 
 
 class TestGetMission:
