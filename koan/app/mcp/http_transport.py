@@ -6,7 +6,9 @@ a module named ``http`` here would shadow the stdlib package that uvicorn and
 starlette import.
 """
 
+import re
 import sys
+import syslog
 import time
 from pathlib import Path
 
@@ -14,6 +16,21 @@ import uvicorn
 from starlette.responses import JSONResponse
 
 from app.api import auth as api_auth
+
+# An audit line is one line, and its fields come from an unauthenticated
+# request. Anything that could end or fake a field is replaced, so a caller
+# cannot forge entries by requesting a path containing newlines.
+_UNSAFE_AUDIT_CHARS = re.compile(r"[^\x20-\x7e]")
+_MAX_AUDIT_FIELD = 256
+
+
+def _audit_field(value: object) -> str:
+    """Render one audit field as a single, space-free, printable token."""
+    text = _UNSAFE_AUDIT_CHARS.sub("?", str(value))
+    text = text.replace(" ", "%20")
+    if len(text) > _MAX_AUDIT_FIELD:
+        text = text[:_MAX_AUDIT_FIELD] + "...(truncated)"
+    return text or "-"
 
 
 class BearerAuditMiddleware:
@@ -37,9 +54,18 @@ class BearerAuditMiddleware:
 
         The launcher redirects this daemon's stderr into ``logs/mcp.log`` — the
         same file ``audit_path`` points at — so a warning printed there lands in
-        the exact file that just refused a write. Try the REST API's log first,
-        and only fall back to stderr when that fails too.
+        the exact file that just refused a write. ``logs/api.log`` is readable
+        but sits on the same volume, so the likeliest cause of the failure (a
+        full or read-only filesystem) takes it out too: emit to syslog first,
+        which is off that volume entirely, then try the sibling log, then
+        stderr.
         """
+        try:
+            syslog.openlog("koan-mcp")
+            syslog.syslog(syslog.LOG_WARNING, message)
+        except (OSError, ValueError):
+            pass
+
         fallback = self.audit_path.parent / "api.log"
         if fallback != self.audit_path:
             try:
@@ -65,9 +91,9 @@ class BearerAuditMiddleware:
 
     def _write_audit(self, scope: dict, status: int) -> None:
         client = scope.get("client")
-        peer = client[0] if client else "-"
-        method = scope.get("method", "-")
-        path = scope.get("path", "-")
+        peer = _audit_field(client[0] if client else "-")
+        method = _audit_field(scope.get("method", "-"))
+        path = _audit_field(scope.get("path", "-"))
         line = (
             f"{time.strftime('%Y-%m-%dT%H:%M:%S')} "
             f"{peer} {method} {path} {status}\n"

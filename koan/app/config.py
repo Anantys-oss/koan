@@ -577,13 +577,25 @@ def get_mcp_tools_allow_destructive() -> bool:
 MCP_TRANSPORTS = frozenset({"stdio", "http"})
 
 
+def get_mcp_transport_setting() -> str:
+    """The configured ``mcp.transport`` value, normalised but not validated.
+
+    Callers that must tell "unset/valid" from "typo" use this; everything that
+    just needs a transport to run uses :func:`get_mcp_transport`.
+    """
+    return str(_get_mcp_server_config().get("transport", "stdio")).strip().lower()
+
+
 def get_mcp_transport() -> str:
     """Which MCP transport is selected (mcp.transport). Defaults to ``stdio``.
 
     Unknown or malformed values fall back to ``stdio`` so provider-side legacy
-    configuration never silently launches a network listener.
+    configuration never silently launches a network listener. The fallback is
+    not silent: ``pid_manager`` refuses to start the stack's MCP daemon on an
+    unrecognised value and names it, rather than reporting success for a
+    listener that was never bound.
     """
-    value = str(_get_mcp_server_config().get("transport", "stdio")).strip().lower()
+    value = get_mcp_transport_setting()
     return value if value in MCP_TRANSPORTS else "stdio"
 
 
