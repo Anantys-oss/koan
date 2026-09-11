@@ -222,9 +222,23 @@ def declare_runner_caps(koan_root: str, pid: int) -> None:
 
 
 def clear_runner_caps(koan_root: str) -> None:
-    """Withdraw the runner capability marker (runner exit)."""
-    with contextlib.suppress(FileNotFoundError):
+    """Withdraw the runner capability marker (runner exit).
+
+    Tolerates *any* removal failure, not just a missing file. This runs from
+    the runner's shutdown ``finally``, where an escaping ``OSError`` (read-only
+    root, EIO on an NFS mount) would skip the rest of the cleanup — notably
+    ``release_pidfile`` — and, worse, *replace* the in-flight
+    ``SystemExit(RESTART_EXIT_CODE)``, turning a forced restart into a crash.
+    A marker left behind is harmless: :func:`runner_supports_force_signal`
+    re-verifies the live process before trusting it.
+    """
+    try:
         os.remove(os.path.join(koan_root, RUN_CAPS_FILE))
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        from app.run_log import log
+        log("error", f"Could not withdraw runner caps marker: {exc}")
 
 
 def runner_supports_force_signal(koan_root: str, pid: int) -> bool:

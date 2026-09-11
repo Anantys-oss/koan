@@ -127,6 +127,20 @@ class TestRunnerCaps:
     def test_clearing_a_missing_marker_is_a_noop(self, tmp_path):
         clear_runner_caps(str(tmp_path))  # must not raise
 
+    def test_a_failing_removal_does_not_escape_the_shutdown_path(self, tmp_path):
+        """Runs from the runner's ``finally``: it must never raise.
+
+        An escaping OSError would skip ``release_pidfile`` and replace the
+        in-flight ``SystemExit(RESTART_EXIT_CODE)``, downgrading a forced
+        restart to a crash.
+        """
+        declare_runner_caps(str(tmp_path), 4242)
+        with patch("os.remove", side_effect=OSError(30, "Read-only file system")):
+            with patch("app.run_log.log") as mock_log:
+                clear_runner_caps(str(tmp_path))  # must not raise
+        assert mock_log.call_count == 1
+        assert mock_log.call_args[0][0] == "error"
+
     def test_unreadable_marker_fails_closed(self, tmp_path):
         declare_runner_caps(str(tmp_path), 4242)
         with patch("builtins.open", side_effect=PermissionError("EACCES")):
