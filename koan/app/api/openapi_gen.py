@@ -1,9 +1,8 @@
 """Generate the OpenAPI document for the Kōan REST API from the live Flask app.
 
-The document is **derived** from the app's route table — it can only describe
-routes that are actually registered, so it cannot drift from the code. Auth
-requirements come from the ``require_token`` decorator marker
-(``_koan_requires_token``), not a hand-maintained allow-list.
+The document is **derived** from the app's route table and request metadata
+attached to registered views. Auth requirements come from the ``require_token``
+decorator marker (``_koan_requires_token``), not a hand-maintained allow-list.
 
 Usage::
 
@@ -17,10 +16,19 @@ See specs/005-openapi-enforcement/ and docs/operations/rest-api.md.
 import argparse
 import re
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
 from flask import Flask
+
+from app.api.openapi_metadata import (
+    DESTRUCTIVE_ATTR,
+    DESTRUCTIVE_EXTENSION,
+    QUERY_PARAMETERS_ATTR,
+    REQUEST_REQUIRED_ATTR,
+    REQUEST_SCHEMA_ATTR,
+)
 
 # The API contract version (matches the /v1 URL prefix). Pinned deliberately so
 # that bumping app.__version__ on a release does NOT cause spurious spec drift.
@@ -51,6 +59,18 @@ _IGNORED_ENDPOINTS = {"static"}
 SUCCESS_STATUS = {
     ("post", "/v1/missions"): "202",
     ("post", "/v1/projects"): "201",
+}
+
+# One-line human summary per API tag (blueprint / command group). Feeds the
+# OpenAPI ``tags[].description``, which the CLI surfaces as group-level --help.
+# This is the single source for group help — keep each entry a short sentence.
+TAG_DESCRIPTIONS = {
+    "admin": "Config, pause/resume, restart, update and shutdown",
+    "health": "Liveness probe (no token required)",
+    "missions": "Queue, inspect, reorder and delete missions",
+    "observability": "Logs, metrics and usage",
+    "projects": "List, add, update and remove watched projects",
+    "status": "Current agent state, execution and mission counters",
 }
 
 _PATH_PARAM_RE = re.compile(r"<(?:[^:<>]+:)?([^<>]+)>")
@@ -91,7 +111,7 @@ def _tag(endpoint: str) -> str:
 def build_spec(app: Flask) -> dict:
     """Build the OpenAPI 3.1 document (as a plain dict) from ``app``'s route table.
 
-    Pure with respect to the route table: equal route tables yield equal dicts.
+    Pure with respect to registered routes and their attached metadata.
     """
     paths: dict = {}
     tags: set = set()
@@ -108,7 +128,10 @@ def build_spec(app: Flask) -> dict:
         secured = bool(getattr(view, "_koan_requires_token", False))
         tag = _tag(rule.endpoint)
         tags.add(tag)
-        params = _path_params(openapi_path)
+        path_params = _path_params(openapi_path)
+        query_params = getattr(view, QUERY_PARAMETERS_ATTR, ())
+        request_schema = getattr(view, REQUEST_SCHEMA_ATTR, None)
+        destructive = bool(getattr(view, DESTRUCTIVE_ATTR, False))
 
         for method in methods:
             m = method.lower()
@@ -127,14 +150,27 @@ def build_spec(app: Flask) -> dict:
                 "tags": [tag],
                 "responses": responses,
             }
-            if params:
-                operation["parameters"] = params
+            parameters = [*deepcopy(path_params), *deepcopy(query_params)]
+            if parameters:
+                operation["parameters"] = parameters
+            if request_schema is not None:
+                operation["requestBody"] = {
+                    "required": bool(getattr(view, REQUEST_REQUIRED_ATTR, True)),
+                    "content": {
+                        "application/json": {
+                            "schema": deepcopy(request_schema),
+                        },
+                    },
+                }
+            if destructive:
+                operation[DESTRUCTIVE_EXTENSION] = True
             if not secured:
                 # Override the global bearerAuth requirement — this route is public.
                 operation["security"] = []
 
             paths.setdefault(openapi_path, {})[m] = operation
 
+    sorted_tags = sorted(tags)
     return {
         "openapi": OPENAPI_VERSION,
         "info": {
@@ -147,7 +183,14 @@ def build_spec(app: Flask) -> dict:
         },
         "servers": [{"url": "http://127.0.0.1:8420", "description": "Default loopback bind"}],
         "security": [{"bearerAuth": []}],
-        "tags": [{"name": t} for t in sorted(tags)],
+        "tags": [
+            (
+                {"name": t, "description": TAG_DESCRIPTIONS[t]}
+                if t in TAG_DESCRIPTIONS
+                else {"name": t}
+            )
+            for t in sorted_tags
+        ],
         "paths": paths,
         "components": {
             "securitySchemes": {

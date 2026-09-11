@@ -4,12 +4,13 @@ title: "Component Spec — Web Dashboard & REST API"
 description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-07-17
+updated: 2026-09-10
 ---
 
 # Component Spec — Web Dashboard & REST API
 
-**Packages:** `koan/app/dashboard/`, `koan/app/dashboard_service/`, `koan/app/api/`
+**Packages:** `koan/app/dashboard/`, `koan/app/dashboard_service/`, `koan/app/api/`,
+`koan/app/cli/`
 + shared `usage_service.py`, `log_reader.py`
 
 ## Purpose
@@ -38,6 +39,13 @@ dashboard_service/  (pure logic, no Flask client needed to test)
 api/  (Flask blueprints via create_app())
   auth (require_token) · mission_index (sidecar) · routes_missions/projects/status/
   admin/observability · server.py (waitress entrypoint) · openapi_gen.py (spec generator)
+
+cli/  (runtime OpenAPI REST client)
+  ├─ spec.py      operation discovery, stable command names, collision checks
+  ├─ config.py    mode-0600 named profiles and environment overrides
+  ├─ commands.py  argparse generation and generic request construction
+  ├─ http.py      confirmation, transport, JSON output, exit-code mapping
+  └─ main.py      generated commands plus configure/raw built-ins
 ```
 
 ## Key types & functions
@@ -54,7 +62,8 @@ api/  (Flask blueprints via create_app())
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
 | `log_reader.tail_log()/read_logs()` | Shared log tailing for dashboard **and** `GET /v1/logs`. |
 | `api/server.py` | Validates token at startup (fail-closed), warns on non-loopback bind, serves via waitress. |
-| `api/openapi_gen.py` | Generates the committed OpenAPI 3.1 doc `koan/openapi.yaml` from the live `create_app()` route table. `build_spec(app)` (pure: equal route table → equal dict) → `dump_yaml()` (deterministic, sorted) → `generate()`/`check()`. Per-route bearer-auth is read from the `require_token` marker `_koan_requires_token` (single source of truth), never an allow-list. `make openapi` regenerates; `make openapi-check` (and CI `openapi.yml`, path-filtered) fails on drift. |
+| `api/openapi_metadata.py` | Defines route-adjacent request-schema and query-parameter declarations. `openapi_operation()` stores metadata on the registered view, mirroring the auth marker pattern without performing runtime validation. |
+| `api/openapi_gen.py` | Generates the committed OpenAPI 3.1 document from the live route table plus metadata attached to each view. Paths, methods, path parameters, auth, JSON request bodies, and query parameters are code-derived; response schemas remain a separate enrichment. |
 
 ## Mission record: typed structured `result`
 
@@ -180,6 +189,46 @@ control flow, lifecycle, or quota decisions.
   check (`.github/workflows/openapi.yml`) enforces this only when API-defining files change.
   Generation is deterministic (unchanged code → byte-identical output) and needs no server,
   token, or `api.enabled`.
+- **OpenAPI request metadata stays beside the handler.** Every view that reads a JSON body
+  or query parameter declares that input through `openapi_operation()`. The generator reads
+  those markers and never maintains a second method/path schema map. Handler-access tests
+  guard the declared field names, and numeric defaults used by both metadata and parsing come
+  from the same constants.
+- **The REST CLI consumes the committed OpenAPI document at runtime.** It does
+  not commit generated client code. Every documented operation must map to one
+  collision-free public command and its hidden `operationId` alias.
+- **Sparse specifications remain usable.** Every operation accepts generic
+  JSON through `--data` and repeatable query pairs through `--query`; schema-
+  derived flags are additive when request/query schemas exist.
+- **CLI credentials fail closed.** Tokens come from a mode-0600 or mode-0400
+  profile or `KOAN_API_TOKEN`, never from argv. Destructive requests require
+  confirmation on a TTY and `--yes` in non-interactive execution. An explicitly
+  named profile that does not exist is an error — never a silent fallback to
+  `default`, which would target a different agent and report success. `configure`
+  edits the selected profile: empty answers keep the stored base URL and token,
+  and a profile left with no token verifies as a failure.
+- **Destructiveness is a route-adjacent marker, like auth.** A view declares
+  `openapi_operation(destructive=True)`; the generator emits
+  `x-koan-destructive`, and clients read it instead of maintaining a method/path
+  allow-list, so renaming a route can never mute its confirmation prompt. DELETE
+  is destructive by method.
+- **Command names are unique by construction, not by luck.** Several naming
+  branches derive a command from the path alone, so two methods on one path
+  would collapse onto one name and a `SpecError` would abort *every* invocation,
+  `--help` included. Same-path collisions are resolved deterministically with a
+  `-<method>` suffix before the uniqueness check runs; the check still guards
+  cross-path collisions, reserved roots, and alias clashes.
+- **An absent response is never reported as an absent request.** The response
+  timeout is operator-controlled (`--timeout`, `KOAN_TIMEOUT`, profile
+  `timeout`) and defaults above the budget of the handlers that do their work
+  synchronously inside the request. A timeout is reported distinctly from a
+  transport failure and states that the operation may already have been applied,
+  because several exposed operations are not idempotent.
+- **Structured schemas keep their shape at the CLI boundary.** A body property
+  typed `object` or `array` produces a JSON-parsing flag that rejects malformed
+  or wrongly-shaped input locally; it is never coerced to a string the server
+  cannot accept. `requestBody.required` (must a body be sent) and
+  `schema.required` (which properties, if one is) stay separate facts.
 
 ## Integration points
 
