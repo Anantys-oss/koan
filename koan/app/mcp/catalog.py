@@ -1,6 +1,6 @@
 """SDK-free named-tool curation and metadata policy."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.apiclient.spec import Operation
 
@@ -65,18 +65,19 @@ def _write(
     method: str,
     path: str,
     *,
-    destructive: bool = False,
     idempotent: bool = False,
 ) -> CuratedTool:
+    """Curate a write tool.
+
+    Destructiveness is deliberately absent: ``build_tool_definitions`` reads it
+    off the route (see there), so it is never restated here.
+    """
     return CuratedTool(
         name,
         title,
         method,
         path,
-        ToolAnnotations(
-            destructive=destructive,
-            idempotent=idempotent,
-        ),
+        ToolAnnotations(idempotent=idempotent),
     )
 
 
@@ -132,7 +133,6 @@ CURATED_TOOLS = (
         "Delete a mission",
         "DELETE",
         "/v1/missions/{mission_id}",
-        destructive=True,
         idempotent=True,
     ),
 )
@@ -162,17 +162,25 @@ def build_tool_definitions(
         key = (curated.method, curated.path)
         if key in DENIED_NAMED_OPERATIONS:
             continue
-        if curated.annotations.destructive and not allow_destructive:
-            continue
         operation = by_key.get(key)
         if operation is None or not operation.mcp_enabled:
+            continue
+        # One source of truth for "is this destructive": the route itself, via
+        # its DELETE method or its `x-koan-destructive` marker, which
+        # `Operation.destructive` already carries and the CLI's confirmation
+        # prompt already reads. A second copy in the curation table would drift,
+        # and the drift fails open — an unconfirmed, ungated destructive tool.
+        annotations = replace(
+            curated.annotations, destructive=operation.destructive
+        )
+        if annotations.destructive and not allow_destructive:
             continue
         result.append(
             ToolDefinition(
                 name=curated.name,
                 title=curated.title,
                 operation=operation,
-                annotations=curated.annotations,
+                annotations=annotations,
             )
         )
     return result
