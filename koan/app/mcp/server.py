@@ -1,5 +1,6 @@
 """MCP SDK adapter exposing curated REST operations over stdio."""
 
+import re
 from inspect import signature
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -9,10 +10,51 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations as SdkToolAnnotations
 from pydantic import Field
 
+from app.api.skill_catalog import API_COMMAND_NAMES
 from app.apiclient import DEFAULT_TIMEOUT, ApiClientError, RestApiClient
 from app.apiclient.spec import load_operations, load_spec
 from app.mcp.catalog import ToolDefinition, build_tool_definitions
 from app.mcp.config import get_api_base_url
+
+# Live command surface derived from the skill catalogue (REST and MCP share
+# it). The committed OpenAPI document is generated with the same enums, but
+# reading the catalogue here keeps MCP in sync when a skill toggles
+# ``api_exposed`` and the process is restarted, so MCP never advertises a
+# stale surface that REST rejects.
+_MISSION_COMMAND_SCHEMA = None
+
+
+def _mission_command_schema() -> dict:
+    global _MISSION_COMMAND_SCHEMA
+    if _MISSION_COMMAND_SCHEMA is None:
+        description = (
+            "Slash-command mission; prefer this for work covered by an "
+            "existing Kōan skill, using either the canonical verb or an "
+            "advertised alias (for example /review or /rv). Append "
+            "arguments to the verb. Pass registered slash-command names "
+            "only; aliases resolve to the canonical command."
+        )
+        if not API_COMMAND_NAMES:
+            _MISSION_COMMAND_SCHEMA = {"type": "string", "description": description}
+            return _MISSION_COMMAND_SCHEMA
+        verbs = "|".join(
+            re.escape(name.removeprefix("/"))
+            for name in API_COMMAND_NAMES
+        )
+        _MISSION_COMMAND_SCHEMA = {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": list(API_COMMAND_NAMES),
+                },
+                {
+                    "type": "string",
+                    "pattern": rf"^/?(?:{verbs})(?:\s+[\s\S]+)?$",
+                },
+            ],
+            "description": description,
+        }
+    return _MISSION_COMMAND_SCHEMA
 
 
 DEFAULT_SPEC = Path(__file__).resolve().parents[2] / "openapi.yaml"
@@ -51,6 +93,27 @@ def _parameter_metadata(
     return schema, str(schema.get("description") or "").strip()
 
 
+def _override_command_schema(
+    by_name: dict[str, ToolDefinition],
+    definition: ToolDefinition,
+    schema: dict,
+) -> None:
+    """Swap a curated tool's live request-body command schema in place.
+
+    ``ToolDefinition`` and ``Operation`` are frozen dataclasses, so we build
+    modified copies. Only the copy used for ``register`` is affected.
+    """
+    from dataclasses import replace
+
+    body = definition.operation.body_schema or {}
+    properties = dict(body.get("properties", {}))
+    properties["command"] = schema
+    new_body = {**body, "properties": properties}
+    new_operation = replace(definition.operation, body_schema=new_body)
+    replacement = replace(definition, operation=new_operation)
+    by_name[definition.name] = replacement
+
+
 def _annotate_inputs(function, definition: ToolDefinition) -> None:
     annotations = dict(function.__annotations__)
     for name in signature(function).parameters:
@@ -64,6 +127,13 @@ def _annotate_inputs(function, definition: ToolDefinition) -> None:
             for openapi_name, field_name in _FIELD_CONSTRAINTS.items()
             if openapi_name in schema
         }
+        schema_extra = {
+            keyword: schema[keyword]
+            for keyword in ("anyOf", "enum")
+            if keyword in schema
+        }
+        if schema_extra:
+            constraints["json_schema_extra"] = schema_extra
         annotations[name] = Annotated[
             annotations[name],
             Field(description=description, **constraints),
@@ -142,6 +212,12 @@ def create_server(
             return execute("koan_status")
 
         register("koan_status", status)
+
+    if "koan_skills_list" in by_name:
+        def skills_list() -> Any:
+            return execute("koan_skills_list")
+
+        register("koan_skills_list", skills_list)
 
     if "koan_missions_list" in by_name:
         def missions_list(
@@ -239,6 +315,11 @@ def create_server(
                 ),
             )
 
+        _override_command_schema(
+            by_name,
+            by_name["koan_missions_create"],
+            _mission_command_schema(),
+        )
         register("koan_missions_create", missions_create)
 
     if "koan_missions_reorder" in by_name:

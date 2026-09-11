@@ -42,12 +42,14 @@ def create_app(koan_root: Path = None, instance_dir: Path = None) -> Flask:
     from app.api.routes_projects import bp as projects_bp
     from app.api.routes_admin import bp as admin_bp
     from app.api.routes_observability import bp as observability_bp
+    from app.api.routes_skills import bp as skills_bp
 
     app.register_blueprint(status_bp)
     app.register_blueprint(missions_bp)
     app.register_blueprint(projects_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(observability_bp)
+    app.register_blueprint(skills_bp)
 
     # Health endpoint — unauthenticated liveness probe
     from app.api.openapi_metadata import openapi_operation

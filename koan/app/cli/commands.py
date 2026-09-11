@@ -37,6 +37,7 @@ GROUP_EXAMPLES = {
         "koan-cli admin shutdown --yes",
     ],
     "health": ["koan-cli health"],
+    "skills": ["koan-cli skills"],
     "status": ["koan-cli status"],
 }
 

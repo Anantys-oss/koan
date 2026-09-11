@@ -6,33 +6,67 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
-from app.api.openapi_metadata import openapi_operation, query_parameter
 from app.api.mission_index import (
     _normalize_for_match,
     cancel_mission,
     get_mission,
     list_missions,
     load_full_result,
-    record_mission,
     reconcile,
+    record_mission,
     update_mission_text,
 )
+from app.api.openapi_metadata import openapi_operation, query_parameter
+from app.api.skill_catalog import API_COMMAND_NAMES, canonical_command_name
 
 bp = Blueprint("missions", __name__)
 
-# Validate command-style missions
-_COMMAND_RE = re.compile(r"^/[a-zA-Z0-9_]+")
+# Validate command-style missions.
+_COMMAND_RE = re.compile(
+    r"^/?(?P<name>[a-zA-Z0-9_]+)"
+    r"(?P<arguments>(?:\s+[\s\S]+)?)$"
+)
+
+
+def _command_property_schema() -> dict:
+    description = (
+        "Slash-command mission; prefer this for work covered by an "
+        "existing Kōan skill. Append arguments to the selected verb, "
+        'for example "/review '
+        'https://github.com/owner/repo/pull/42". '
+        "Use text only when no exposed skill covers the work."
+    )
+    if not API_COMMAND_NAMES:
+        return {
+            "type": "string",
+            "description": description,
+        }
+
+    verbs = "|".join(
+        re.escape(name.removeprefix("/"))
+        for name in API_COMMAND_NAMES
+    )
+    return {
+        "anyOf": [
+            {
+                "type": "string",
+                "enum": list(API_COMMAND_NAMES),
+            },
+            {
+                "type": "string",
+                "pattern": rf"^/?(?:{verbs})(?:\s+[\s\S]+)?$",
+            },
+        ],
+        "description": description,
+    }
 
 _CREATE_MISSION_SCHEMA = {
     "type": "object",
     "properties": {
-        "command": {
-            "type": "string",
-            "description": "Slash-command mission; takes precedence over text.",
-        },
+        "command": _command_property_schema(),
         "text": {
             "type": "string",
-            "description": "Free-form mission text.",
+            "description": "Free-form mission text for work no exposed skill covers.",
         },
         "project": {
             "type": "string",
@@ -108,18 +142,43 @@ def _missions_file() -> Path:
     return _instance_dir() / "missions.md"
 
 
+def _normalize_command(command: str) -> str:
+    match = _COMMAND_RE.fullmatch(command)
+    if match is None:
+        raise ValueError(
+            "Command must start with a slash-command name followed "
+            "by optional arguments"
+        )
+
+    verb = match.group("name")
+    canonical = f"/{canonical_command_name(verb)}"
+    if canonical not in API_COMMAND_NAMES:
+        valid = ", ".join(API_COMMAND_NAMES)
+        raise ValueError(
+            f"Unknown command '{canonical}'. Valid commands: {valid}"
+        )
+    return canonical + match.group("arguments")
+
+
 def _validate_mission_body(data: dict):
     """Validate POST /v1/missions request body.
 
     Returns (text, project, urgent) or raises ValueError.
     """
-    command = data.get("command", "").strip()
-    text = data.get("text", "").strip()
+    raw_command = data.get("command", "")
+    raw_text = data.get("text", "")
+    if raw_command is not None and not isinstance(raw_command, str):
+        raise ValueError("'command' must be a string")
+    if raw_text is not None and not isinstance(raw_text, str):
+        raise ValueError("'text' must be a string")
+
+    command = (raw_command or "").strip()
+    text = (raw_text or "").strip()
 
     if not command and not text:
         raise ValueError("One of 'command' or 'text' is required")
 
-    mission_text = command or text
+    mission_text = _normalize_command(command) if command else text
 
     # Sanitize
     from app.missions import sanitize_mission_text
@@ -128,7 +187,10 @@ def _validate_mission_body(data: dict):
     if not mission_text:
         raise ValueError("Mission text cannot be empty after sanitization")
 
-    project = data.get("project", "").strip() or None
+    raw_project = data.get("project", "")
+    if raw_project is not None and not isinstance(raw_project, str):
+        raise ValueError("'project' must be a string")
+    project = (raw_project or "").strip() or None
     urgent = bool(data.get("urgent", False))
 
     return mission_text, project, urgent
@@ -197,9 +259,13 @@ def list_missions_route():
     request_schema=_CREATE_MISSION_SCHEMA,
     mcp=True,
     mcp_description=(
-        "Supply exactly one of `command` or `text`; a call with neither is "
-        "rejected. The returned id identifies queued work, not a completed "
-        "result. Poll `koan_missions_get`, then call "
+        "Prefer `command` for anything an existing Kōan skill does. "
+        "Pass the slash command with its arguments, for example "
+        '"/review https://github.com/owner/repo/pull/42". '
+        "Call `koan_skills_list` for the full catalogue, usage, aliases, "
+        "and per-command flags. Use `text` only for work no exposed "
+        "skill covers. The returned id identifies queued work, not a "
+        "completed result. Poll `koan_missions_get`, then call "
         "`koan_missions_result` after status becomes `done`."
     ),
 )
@@ -320,6 +386,7 @@ def get_mission_route(mission_id: str):
     rec.setdefault("outcome", None)
 
     from datetime import date, datetime
+
     from app.cost_tracker import aggregate_mission_usage
 
     start = None

@@ -22,6 +22,7 @@ EXPECTED = {
     ("DELETE", "/v1/missions/{mission_id}"): ("missions", "delete"),
     ("GET", "/v1/missions/{mission_id}/result"): ("missions", "result"),
     ("GET", "/v1/projects"): ("projects", "list"),
+    ("GET", "/v1/skills"): ("skills",),
     ("POST", "/v1/projects"): ("projects", "create"),
     ("PATCH", "/v1/projects/{name}"): ("projects", "update"),
     ("DELETE", "/v1/projects/{name}"): ("projects", "delete"),
@@ -41,7 +42,7 @@ EXPECTED = {
 def test_current_spec_resolves_exact_command_table(api_spec_path):
     spec = load_spec(api_spec_path)
     operations = load_operations(spec)
-    assert len(operations) == 23
+    assert len(operations) == 24
     assert {(op.method, op.path): op.command for op in operations} == EXPECTED
     assert load_server_default(spec) == "http://127.0.0.1:8420"
 

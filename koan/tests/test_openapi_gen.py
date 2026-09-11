@@ -91,7 +91,14 @@ def test_request_body_schemas_match_handler_accesses(app):
     cases = {
         ("post", "/v1/missions"): (
             "missions.create_mission",
-            {"command": "/status", "text": "", "project": "", "urgent": False},
+            {
+                "command": (
+                    "/review https://github.com/owner/repo/pull/42"
+                ),
+                "text": "",
+                "project": "",
+                "urgent": False,
+            },
             (),
             (
                 ("app.utils.insert_pending_mission", None),
@@ -360,7 +367,7 @@ def test_curated_openapi_operations_are_self_describing(app):
         if operation.get("x-koan-mcp") is True
     ]
 
-    assert len(marked) == 15
+    assert len(marked) == 16
     for operation in marked:
         assert operation.get("description", "").strip()
         assert operation.get("x-koan-mcp-description", "").strip()
@@ -433,6 +440,7 @@ def test_mcp_markers_match_curated_routes(app):
     assert marked == {
         ("GET", "/v1/health"),
         ("GET", "/v1/status"),
+        ("GET", "/v1/skills"),
         ("GET", "/v1/missions"),
         ("POST", "/v1/missions"),
         ("POST", "/v1/missions/reorder"),
@@ -447,6 +455,46 @@ def test_mcp_markers_match_curated_routes(app):
         ("GET", "/v1/metrics"),
         ("GET", "/v1/logs"),
     }
+
+
+def test_mission_command_schema_advertises_exposed_commands(app):
+    spec = openapi_gen.build_spec(app)
+    command_schema = spec["paths"]["/v1/missions"]["post"][
+        "requestBody"
+    ]["content"]["application/json"]["schema"]["properties"]["command"]
+
+    enum_branch, pattern_branch = command_schema["anyOf"]
+    assert enum_branch["enum"] == [
+        "/audit",
+        "/brief",
+        "/ci_check",
+        "/digest",
+        "/doc",
+        "/docs",
+        "/explain",
+        "/fix",
+        "/gh_request",
+        "/impl",
+        "/implement",
+        "/plan",
+        "/rb",
+        "/re_review",
+        "/rebase",
+        "/rereview",
+        "/review",
+        "/rv",
+        "/xp",
+    ]
+    # Canonical names and advertised aliases are both accepted and normalized.
+    assert re.fullmatch(
+        pattern_branch["pattern"],
+        "/review https://github.com/owner/repo/pull/42",
+    )
+    assert re.fullmatch(
+        pattern_branch["pattern"],
+        "/rv https://github.com/owner/repo/pull/42",
+    )
+    assert not re.fullmatch(pattern_branch["pattern"], "/shutdown")
 
 
 def test_known_non_default_success_codes(app):

@@ -133,6 +133,7 @@ Named tools use prefix `koan_`:
 |---|---|---|
 | `koan_health` | `GET /v1/health` | read-only |
 | `koan_status` | `GET /v1/status` | read-only |
+| `koan_skills_list` | `GET /v1/skills` | read-only |
 | `koan_missions_list` | `GET /v1/missions` | read-only |
 | `koan_missions_get` | `GET /v1/missions/{mission_id}` | read-only |
 | `koan_missions_result` | `GET /v1/missions/{mission_id}/result` | read-only |
@@ -152,6 +153,12 @@ registration, Kōan augments each signature with Pydantic `Field` metadata from
 matching OpenAPI path, query, or request-body properties. Supported numeric and
 pattern bounds become both advertised and enforced. Python defaults remain
 authoritative; OpenAPI defaults never replace them.
+
+`koan_missions_create.command` preserves the OpenAPI command-choice schema in
+MCP `tools/list`. The schema exposes canonical slash commands through an
+`enum` and permits arguments through a second pattern branch. Clients should
+prefer `command` for catalogued work, call `koan_skills_list` for usage and
+flags, and reserve `text` for work no exposed skill covers.
 
 Every published tool has a title, a non-empty description, parameter
 descriptions, and explicit `idempotentHint` and `openWorldHint` values.

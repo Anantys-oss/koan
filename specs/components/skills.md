@@ -4,7 +4,7 @@ title: "Component Spec — Skills System"
 description: "Documents the skills system that discovers, routes, and executes `/command` skills (SKILL.md contract, dispatch, the new-skill checklist, and the eval harness)."
 tags: [skills]
 created: 2026-06-27
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Component Spec — Skills System
@@ -53,6 +53,7 @@ koan/skills/core/<name>/
 | `worker: true` | Blocking skill (Claude/API) → runs in a background thread. |
 | `github_enabled: true` | Triggerable via GitHub @mention (Jira reuses it; no separate `jira_enabled`). |
 | `github_context_aware: true` | Accepts extra context after the command. |
+| `api_exposed: true` | Publish this core skill through the authenticated REST/MCP catalog. Defaults to `false`. Custom instance skills are never included, even if they declare this flag. |
 | `sub_commands:` | Combo skill — decomposes into multiple sub-missions (discovered by `collect_combo_skills()`). |
 | `forward_result: true` (+ `title_markers:`) | Opt-in result forwarding, resolved dynamically — **the pattern for "core recognizes a custom skill" without hardcoding names**. |
 | `model_key:` | Selects the model tier (e.g. `mission`). |
@@ -60,6 +61,10 @@ koan/skills/core/<name>/
 ## Invariants
 
 - **Names/aliases/dirs use underscores, never hyphens** — Telegram truncates at `-`.
+- **API skill exposure is fail-closed.** Only core skills carrying
+  `api_exposed: true` enter the REST/MCP catalog. Canonical command names,
+  descriptions, aliases, and usage strings are derived from the parsed
+  `commands:` entries; no command list is maintained in Python.
 - **No hardcoded skill-name lists in `koan/app/`.** When core must recognize a specific
   custom skill, drive it off SKILL.md frontmatter flags (see `collect_forward_result_markers`).
 - **A bare `args.split()` may consume a client footer as a positional argument.**

@@ -257,13 +257,36 @@ paths:
                 - text
               properties:
                 command:
-                  description: Slash-command mission; takes precedence over text.
-                  type: string
+                  anyOf:
+                  - enum:
+                    - /audit
+                    - /brief
+                    - /ci_check
+                    - /digest
+                    - /doc
+                    - /docs
+                    - /explain
+                    - /fix
+                    - /gh_request
+                    - /impl
+                    - /implement
+                    - /plan
+                    - /rb
+                    - /re_review
+                    - /rebase
+                    - /rereview
+                    - /review
+                    - /rv
+                    - /xp
+                    type: string
+                  - pattern: ^/?(?:audit|brief|ci_check|digest|doc|docs|explain|fix|gh_request|impl|implement|plan|rb|re_review|rebase|rereview|review|rv|xp)(?:\s+[\s\S]+)?$
+                    type: string
+                  description: Slash-command mission; prefer this for work covered by an existing Kōan skill. Append arguments to the selected verb, for example "/review https://github.com/owner/repo/pull/42". Use text only when no exposed skill covers the work.
                 project:
                   description: Optional project name added as a project tag.
                   type: string
                 text:
-                  description: Free-form mission text.
+                  description: Free-form mission text for work no exposed skill covers.
                   type: string
                 urgent:
                   default: false
@@ -296,7 +319,7 @@ paths:
       tags:
       - missions
       x-koan-mcp: true
-      x-koan-mcp-description: Supply exactly one of `command` or `text`; a call with neither is rejected. The returned id identifies queued work, not a completed result. Poll `koan_missions_get`, then call `koan_missions_result` after status becomes `done`.
+      x-koan-mcp-description: Prefer `command` for anything an existing Kōan skill does. Pass the slash command with its arguments, for example "/review https://github.com/owner/repo/pull/42". Call `koan_skills_list` for the full catalogue, usage, aliases, and per-command flags. Use `text` only for work no exposed skill covers. The returned id identifies queued work, not a completed result. Poll `koan_missions_get`, then call `koan_missions_result` after status becomes `done`.
   /v1/missions/reorder:
     post:
       description: Reordering changes queue priority without editing the mission text.
@@ -809,6 +832,36 @@ paths:
       tags:
       - admin
       x-koan-destructive: true
+  /v1/skills:
+    get:
+      description: Returns only skills that explicitly opt into remote discovery.
+      operationId: skills_list_skills_route_get
+      responses:
+        '200':
+          description: Successful response
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Missing or malformed bearer token
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Invalid bearer token
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+          description: Error response
+      summary: List API-exposed core skills.
+      tags:
+      - skills
+      x-koan-mcp: true
+      x-koan-mcp-description: Use this to discover API-exposed slash commands, their usage, aliases, and flags before queueing a skill-backed mission.
   /v1/status:
     get:
       description: 'Combines execution state, queue counts, signal flags, pause details, and
@@ -987,5 +1040,6 @@ tags:
   name: observability
 - description: List, add, update and remove watched projects
   name: projects
+- name: skills
 - description: Current agent state, execution and mission counters
   name: status

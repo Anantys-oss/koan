@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "REST API"
-description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
+description: "Documents Kōan's optional, token-authenticated HTTP control layer, including skill discovery, validated mission commands, generated OpenAPI, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # REST API
@@ -242,6 +242,37 @@ case — a recorded-but-dead PID is always flagged immediately. Live parallel
 sessions also suppress the flag. The same cross-check backs the `make status`
 `execution:` line.
 
+### Skills
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/v1/skills` | yes | List core skills explicitly exposed for REST/MCP use, including command usage, aliases, and flags |
+
+Response:
+
+```json
+[
+  {
+    "name": "review",
+    "description": "Queue a code review mission (ex: /review https://github.com/owner/repo/pull/42)",
+    "group": "code",
+    "emoji": "🔍",
+    "commands": [
+      {
+        "name": "/review",
+        "description": "Queue a code review for one or more PRs/issues. Flags include --architecture and --force.",
+        "usage": "/review [--now] <github-pr-or-issue-url> [context] [--force]",
+        "aliases": ["/rv", "/rereview", "/re_review"]
+      }
+    ]
+  }
+]
+```
+
+Only core skills carrying `api_exposed: true` appear. Private instance skills
+remain absent even if they declare that flag. Restart the API and MCP processes
+after changing exposure metadata.
+
 ### Missions
 
 | Method | Path | Auth | Description |
@@ -261,7 +292,11 @@ sessions also suppress the flag. The same cross-check backs the `make status`
   "urgent": false
 }
 ```
-Use `command` for slash commands or `text` for free-form missions. `project` adds a `[project:name]` tag. `urgent` inserts at the top of the queue.
+Prefer `command` when an exposed skill covers the work. A missing leading slash
+is normalized; unknown or unexposed commands return `422` with the canonical
+valid names. Full command strings can include arguments. `text` remains
+unrestricted for work outside the catalog. `project` adds a `[project:name]`
+tag. `urgent` inserts at the top of the queue.
 
 Response (202):
 ```json

@@ -37,8 +37,9 @@ dashboard_service/  (pure logic, no Flask client needed to test)
   missions · journal · plans · progress · stats + read_file/mask_sensitive/validate_yaml
 
 api/  (Flask blueprints via create_app())
-  auth (require_token) · mission_index (sidecar) · routes_missions/projects/status/
-  admin/observability · server.py (waitress entrypoint) · openapi_gen.py (spec generator)
+  auth (require_token) · mission_index (sidecar) · skill_catalog (core-only) ·
+  routes_missions/projects/status/skills/admin/observability ·
+  server.py (waitress entrypoint) · openapi_gen.py (spec generator)
 
 apiclient/  (shared OpenAPI REST client)
   ├─ spec.py      operation discovery, stable command names, collision checks
@@ -63,6 +64,8 @@ cli/  (terminal front-end)
 | `api/auth.require_token` | Bearer parse + `hmac.compare_digest`. Token: env `KOAN_API_TOKEN` → `api.token` → `""`. |
 | `api/mission_index.py` | Sidecar `instance/.api-missions.json` (atomic). `record/get/list/reconcile/cancel`; `reconcile()` maps stored text → current `missions.md` section, and prefers the durable `OutcomeStore` for authoritative terminal status + the `outcome` field. Typed `result`/`result_ref` store: `attach_result()` (size-cap spill, summary-preserving), `load_full_result()` (inline-or-spill). `find_active_mission_id()` resolves a mission title back to its id (in_progress→pending→recent) for usage attribution. |
 | `api/mission_results.py` | Command→resolver registry (`register_resolver`, `resolve_mission_result`, `always_inline_keys`); built-in `/review`+`/ultrareview` resolver reads the PR-keyed findings sidecar. |
+| `routes_skills.list_skills_route()` | `GET /v1/skills` returns the API-exposed core skill catalog from `api/skill_catalog.py`; it never loads private `instance/skills/` scopes. |
+| `routes_missions.create_mission()` | Slash-command input is normalized to a leading slash and validated against the exposed canonical command set before queue insertion. Unknown commands return `422`; free-form `text` remains unrestricted. |
 | `routes_missions.get_mission_route()` | `GET /v1/missions/{id}` returns the reconciled record (with typed `result`/`result_ref`) **plus** a `usage` object (`aggregate_mission_usage()` over `created`→today): token/cache/cost totals, `call_count`, `models`/`providers`, and an `unattributed` block for id-less title matches. Response is a copy — the sidecar is never mutated with `usage`. |
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
 | `log_reader.tail_log()/read_logs()` | Shared log tailing for dashboard **and** `GET /v1/logs`. |
@@ -70,6 +73,16 @@ cli/  (terminal front-end)
 | `api/openapi_metadata.py` | Defines route-adjacent request-schema, query-parameter, and MCP opt-in declarations. `openapi_operation()` stores metadata on the registered view, mirroring the auth marker pattern without performing runtime validation. |
 | `apiclient/` | Shared OpenAPI loading, operation request planning, and bearer-authenticated HTTP execution used by both CLI and MCP front-ends. |
 | `api/openapi_gen.py` | Generates the committed OpenAPI 3.1 document from the live route table plus metadata attached to each view. Paths, methods, path parameters, auth, JSON request bodies, and query parameters are code-derived; response schemas remain a separate enrichment. |
+
+**Skill catalog.** `GET /v1/skills` is authenticated and returns exposed
+skills sorted by name. Each record contains `name`, `description`, `group`,
+`emoji`, and `commands`; each command contains its slash-prefixed `name`,
+`description`, `usage`, and slash-prefixed aliases.
+
+**Command schema.** The OpenAPI property for mission `command` publishes a
+canonical-command `enum` plus a pattern branch accepting the canonical verb
+followed by arguments. This lets model-facing schemas advertise `/review`
+while accepting `/review https://github.com/owner/repo/pull/42`.
 
 ## Mission record: typed structured `result`
 

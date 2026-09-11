@@ -6,6 +6,7 @@ emoji: 🔀
 description: "Handle natural-language GitHub requests — classify intent and dispatch to the right skill"
 version: 1.0.0
 audience: hybrid
+api_exposed: true
 worker: true
 github_enabled: true
 github_context_aware: true
