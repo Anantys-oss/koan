@@ -1712,6 +1712,29 @@ class TestProcWaitPolling:
 # Test: post-mission pipeline deadline
 # ---------------------------------------------------------------------------
 
+def _capture_pipeline_deadline(monkeypatch):
+    """Expose the pipeline-deadline event the tracker receives per step.
+
+    ``_PipelineTracker.run_step`` is handed the very event ``run_post_mission``
+    created, so grabbing it here is identity-based — no coupling to the order
+    in which the pipeline allocates its Events.
+    """
+    from app.mission_runner import _PipelineTracker
+
+    captured = {"event": None}
+    real_run_step = _PipelineTracker.run_step
+
+    def recording_run_step(self, step, fn, *args, pipeline_expired=None, **kwargs):
+        if pipeline_expired is not None:
+            captured["event"] = pipeline_expired
+        return real_run_step(
+            self, step, fn, *args, pipeline_expired=pipeline_expired, **kwargs
+        )
+
+    monkeypatch.setattr(_PipelineTracker, "run_step", recording_run_step)
+    return captured
+
+
 class TestPostMissionDeadline:
     """Verify the overall timeout on run_post_mission."""
 
@@ -1727,14 +1750,21 @@ class TestPostMissionDeadline:
 
         steps_called = []
 
+        # Trip the deadline from inside the first step instead of racing a
+        # wall-clock timer: with a short timeout the pipeline's own setup work
+        # (imports, config load, quota check) can exhaust the budget before
+        # verification even starts, which skipped every step on slow CI hosts.
+        # The deadline event is captured by identity off the step call itself,
+        # not by guessing which Event the pipeline allocated first.
+        deadline = _capture_pipeline_deadline(monkeypatch)
+
         def slow_verification(*args, **kwargs):
             steps_called.append("verification")
-            import time
-            time.sleep(0.5)  # Will exceed our 0.2s deadline
+            deadline["event"].set()  # as if the deadline fired mid-step
             return None
 
         monkeypatch.setattr(
-            "app.mission_runner._resolve_post_mission_timeout", lambda: 0.2
+            "app.mission_runner._resolve_post_mission_timeout", lambda: 3600
         )
         monkeypatch.setattr(
             "app.mission_runner._run_mission_verification", slow_verification

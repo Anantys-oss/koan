@@ -620,3 +620,86 @@ class TestSkillDispatchMissionHooks:
             handled, _ = self._call(str(tmp_path))
 
         assert handled is True  # dispatch survives a hook-subsystem failure
+
+
+# ---------------------------------------------------------------------------
+# Exit-0 JSON failure gate (wiring, not the helper)
+# ---------------------------------------------------------------------------
+
+class TestExitZeroJsonFailureGate:
+    """The gate flips claude_exit for a json envelope reporting an error.
+
+    The helper itself is unit-tested in test_gemini_provider.py; this covers
+    the _run_iteration wiring, which fires for EVERY provider — so the
+    negative case (a non-Gemini success envelope) matters as much as the
+    positive one.
+    """
+
+    def _post_call(self, tmp_path, stdout_payload, provider="claude"):
+        from unittest.mock import MagicMock
+
+        from app.git_prep import PrepResult
+        from app.run import _run_iteration
+
+        from tests.conftest import patched_run_iteration
+
+        instance = str(tmp_path / "instance")
+        os.makedirs(instance, exist_ok=True)
+
+        def _fake_cli(cmd, stdout_file, stderr_file, **kwargs):
+            with open(stdout_file, "w") as fh:
+                fh.write(stdout_payload)
+            return 0
+
+        post = MagicMock(return_value={})
+        with patched_run_iteration(
+            PrepResult(success=True),
+            extra_patches={
+                "app.run.run_claude_task": MagicMock(side_effect=_fake_cli),
+                "app.mission_runner.run_post_mission": post,
+                "app.provider.get_provider_name": MagicMock(return_value=provider),
+            },
+        ):
+            _run_iteration(
+                koan_root=str(tmp_path), instance=instance,
+                projects=[("testproj", str(tmp_path))],
+                count=0, max_runs=10, interval=30, git_sync_interval=5,
+            )
+        assert post.called, "post-mission pipeline never ran"
+        return post.call_args.kwargs
+
+    def _run(self, tmp_path, stdout_payload):
+        return self._post_call(tmp_path, stdout_payload)["exit_code"]
+
+    def test_error_envelope_flips_exit_to_failure(self, tmp_path):
+        from tests import gemini_samples
+
+        assert self._run(tmp_path, gemini_samples.JSON_OBJECT_ERROR) == 1
+
+    def test_other_provider_success_envelope_stays_zero(self, tmp_path):
+        from tests import haze_samples
+
+        assert self._run(tmp_path, haze_samples.JSON_ENVELOPE_SUCCESS) == 0
+
+    def test_flip_does_not_promote_benign_prose_to_a_quota_pause(self, tmp_path):
+        """The synthetic failure must not re-open stdout quota classification.
+
+        Assistant prose about API rate limiting is not a quota signal: the CLI
+        process exited 0. If the flip were read as "the process failed", the
+        Gemini stdout scan would match and pause the whole daemon.
+        """
+        from tests import gemini_samples
+
+        kwargs = self._post_call(
+            tmp_path,
+            gemini_samples.JSON_OBJECT_ERROR_BENIGN_QUOTA_PROSE,
+            provider="gemini",
+        )
+
+        # Mission still fails (the envelope reported an error) ...
+        assert kwargs["exit_code"] == 1
+        # ... but the real CLI exit is carried through, so the post-mission
+        # quota check keeps stdout untrusted too.
+        assert kwargs["cli_exit_code"] == 0
+        # No quota pause was created for prose that merely mentions 429s.
+        assert not (tmp_path / ".koan-pause").exists()

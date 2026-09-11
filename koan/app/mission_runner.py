@@ -484,6 +484,76 @@ def check_json_success(stdout_file: str) -> bool:
         return False
 
 
+def _looks_like_ndjson(raw: str) -> bool:
+    """True when *raw* is a multi-line stream of JSON objects, not one object.
+
+    Used to keep the single-object failure detector quiet on the providers
+    whose mission stdout is stream-json by design.
+    """
+    lines = [line for line in raw.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    try:
+        return isinstance(json.loads(lines[0]), dict)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+
+
+def json_output_reports_failure(stdout_file: str) -> str:
+    """Return a failure reason when a json-mode envelope reports an error.
+
+    Shape-keyed, not provider-keyed: a single JSON object carrying a non-empty
+    top-level ``error`` describes a session that did not complete, even when it
+    also carries prose. Gemini's ``--output-format json`` object —
+    ``{"response", "stats", "error"?, "warnings"?}`` — is emitted with exit 0
+    when a tool confirmation is refused, so without this the mission banks the
+    partial ``response`` as completed work with no branch and no commit.
+
+    An explicit ``is_error: false`` wins (Claude's proven success flag), so
+    envelopes that already report their own outcome are untouched.
+
+    Returns the error message (or ``"error"`` when the payload has none), or
+    ``""`` when the output reports no failure.
+
+    Both give-up paths log: a detector that can never fire (unreadable stdout,
+    truncated JSON) must be observable, not invisible. NDJSON stdout is the
+    expected, uninteresting non-object case — it is recognised and stays quiet
+    so the warning means something when it appears.
+    """
+    try:
+        raw = Path(stdout_file).read_text()
+    except OSError as exc:
+        _log_runner(
+            "warn",
+            f"JSON failure check skipped — could not read {stdout_file}: {exc}",
+        )
+        return ""
+    if not raw.strip():
+        return ""
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        # NDJSON (codex/grok/claude stream-json) lands here by design and is
+        # not worth a line every mission; a truncated single object lands here
+        # too, and that one hides a failure.
+        if not _looks_like_ndjson(raw):
+            _log_runner(
+                "warn",
+                f"JSON failure check skipped — {stdout_file} is not a single "
+                f"JSON object: {exc}",
+            )
+        return ""
+    if not isinstance(data, dict) or data.get("is_error") is False:
+        return ""
+    err = data.get("error")
+    if isinstance(err, str) and err.strip():
+        return err.strip()
+    if isinstance(err, dict) and err:
+        message = err.get("message")
+        return message.strip() if isinstance(message, str) and message.strip() else "error"
+    return ""
+
+
 def _extract_stream_json_text(raw: str) -> Optional[str]:
     """Extract assistant text from NDJSON stream-json / streaming-json stdout.
 
@@ -508,7 +578,11 @@ def _extract_stream_json_text(raw: str) -> Optional[str]:
 
     # Lazy import keeps mission_runner import-time light and matches other
     # provider helper call sites that already use these private extractors.
-    from app.provider import _extract_assistant_text_chunks, _extract_result_text
+    from app.provider import (
+        _extract_assistant_text_chunks,
+        _extract_result_text,
+        _is_text_delta_event,
+    )
 
     final_result: Optional[str] = None
     text_lines: List[str] = []
@@ -521,7 +595,7 @@ def _extract_stream_json_text(raw: str) -> Optional[str]:
 
     for event in events:
         chunks = _extract_assistant_text_chunks(event)
-        if event.get("type") == "text" and isinstance(event.get("data"), str):
+        if _is_text_delta_event(event):
             text_delta_parts.extend(chunks)
         else:
             _flush_deltas()
@@ -544,7 +618,8 @@ def parse_claude_output(raw_text: str) -> str:
     Handles multiple response shapes across providers:
     - NDJSON stream-json / streaming-json (Claude, Grok, Haze, …)
     - Single JSON envelopes: ``{"result": "..."}``, ``{"content": "..."}``,
-      ``{"text": "..."}`` (Claude json mode, Grok ``--output-format json``)
+      ``{"text": "..."}`` (Claude json mode, Grok ``--output-format json``),
+      ``{"response": "..."}`` (Gemini ``--output-format json``)
     - Plain text fallback when JSON parsing fails
 
     Args:
@@ -566,7 +641,7 @@ def parse_claude_output(raw_text: str) -> str:
         data = json.loads(stripped)
         if isinstance(data, dict):
             # Try common response keys in order
-            for key in ("result", "content", "text"):
+            for key in ("result", "content", "text", "response"):
                 if key in data and isinstance(data[key], str):
                     return data[key]
         # If none match, return the raw text
@@ -1760,6 +1835,7 @@ def run_post_mission(
     provider_name: str = "",
     is_skill_dispatch: bool = False,
     memory_cap_detail: str = "",
+    cli_exit_code: Optional[int] = None,
 ) -> dict:
     """Run the complete post-mission processing pipeline.
 
@@ -1785,6 +1861,12 @@ def run_post_mission(
             quota detection (the caller handles quota independently).
         memory_cap_detail: Human phrase for a cgroup memory-cap kill of *this*
             mission ("" when it fit), from the caller's own ``ScopedProcess``.
+        cli_exit_code: The CLI *process* exit code, when it differs from
+            ``exit_code`` because the caller synthesized a failure (a JSON
+            envelope reporting an error, a core-file integrity failure). Quota
+            detection trusts stdout only after a real process failure, so a
+            synthetic failure must not promote assistant prose about rate
+            limits into a quota pause. Defaults to ``exit_code``.
 
     Returns:
         Dict with keys:
@@ -1976,7 +2058,7 @@ def run_post_mission(
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
                 provider_name=provider_name,
-                exit_code=exit_code,
+                exit_code=exit_code if cli_exit_code is None else cli_exit_code,
             )
             if quota_result is QUOTA_CHECK_UNRELIABLE:
                 _log_runner("quota", f"⚠️  Quota check unreliable for {project_name} — "

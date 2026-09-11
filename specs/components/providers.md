@@ -1,16 +1,16 @@
 ---
 type: component-spec
 title: "Component Spec — CLI Provider Abstraction"
-description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok) behind one `CLIProvider` contract."
+description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok, Gemini) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-08-19
+updated: 2026-09-10
 ---
 
 # Component Spec — CLI Provider Abstraction
 
 **Package:** `koan/app/provider/` (`base.py`, `claude.py`, `cline.py`, `codex.py`,
-`copilot.py`, `fake.py`, `haze.py`, `grok.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
+`copilot.py`, `fake.py`, `haze.py`, `grok.py`, `gemini.py`, `__init__.py`) + `cli_provider.py` (legacy re-export facade)
 
 ## Purpose
 
@@ -30,7 +30,8 @@ provider/__init__.py  → registry + resolution (env → config → default) + c
        ├─ copilot.py   → CopilotProvider (with tool-name mapping)
        ├─ fake.py      → FakeProvider (fail-closed test/dev stub; never a real LLM)
        ├─ haze.py      → HazeProvider (haze ≥0.7.0 headless stream-json)
-       └─ grok.py      → GrokProvider (xAI Grok Build headless streaming-json)
+       ├─ grok.py      → GrokProvider (xAI Grok Build headless streaming-json)
+       └─ gemini.py    → GeminiProvider (Google Gemini CLI headless stream-json)
 ```
 
 ## Key types & functions
@@ -175,7 +176,16 @@ tools — MCP tools must still be allowlisted via qualified names
   (`inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`reasoningTokens`);
   Grok Build reports **snake_case** `usage` on the terminal ``end`` event
   (`input_tokens`/`output_tokens`/`cache_read_input_tokens`/…) plus optional
-  `modelUsage` map (camelCase per model id). Shared extractors are shape-keyed
+  `modelUsage` map (camelCase per model id); Gemini CLI reports usage on the
+  terminal `result` event under **`stats`** (not `usage`) as
+  `input_tokens`/`output_tokens`/`cached`/`total_tokens` plus a per-model-id
+  `models` map (json mode nests the counts as
+  `stats.models.<id>.tokens.{prompt,candidates,thoughts,tool,cached}` instead).
+  A `cached` count is a SUBSET of input and is clamped to it before
+  subtraction — an inconsistent count is logged once, never double-counted, and
+  a `stats.cached` that collides with an explicit `usage` cache field is logged
+  once rather than dropped in silence. Shared extractors
+  are shape-keyed
   on field names. Detectors read the summary stream, not assistant text.
 - **`tool_use` summary grammar carries an optional input preview.**
   `_summarize_stream_event()` renders a `tool_use` block as
@@ -250,6 +260,12 @@ tools — MCP tools must still be allowlisted via qualified names
     auto-approve of exactly the kind a read-only role refuses to honour on
     Claude and Codex. Enabling grok requires measuring the flags AND making
     `--always-approve` conditional, in that order.
+  - `gemini` has `--approval-mode plan` and `--sandbox`, and its `--allowed-tools`
+    is *deprecated upstream* in favour of the Policy Engine — a pre-approval
+    list, not a withholding one, which is exactly the shape this invariant
+    exists to distrust. Kōan's adapter emits neither, so the predicate is
+    False. Enabling it means wiring the Policy Engine (or a measured
+    `--approval-mode plan`) and recording the measurement.
   - `fake` is test-only and refuses instantiation outright.
 
   Do not flip a `supports_*` predicate because a flag exists. Flip it because
@@ -389,6 +405,87 @@ tools — MCP tools must still be allowlisted via qualified names
   empty scratch dir. Invocation lock: `grok-cli` (shared `~/.grok/` state).
   Recorded samples: `koan/tests/grok_samples.py`. Operator docs:
   `docs/providers/grok.md`.
+- **Gemini CLI headless contract (documented, not yet measured).**
+  `GeminiProvider` targets Google Gemini CLI headless mode: `gemini -p <prompt>`
+  with `--output-format stream-json`. NDJSON event vocabulary is shape-keyed:
+  `init` (`session_id`/`model`), `message` (`role`/`content`, `delta: true` for
+  assistant chunks), `tool_use` (`tool_name`/`tool_id`/`parameters`),
+  `tool_result` (`tool_id`/`status`/`output`/`error`), `error`
+  (`severity`/`message`), and a terminal `result` (`status` + `stats`). Final
+  text is the concatenation of assistant `message.content` deltas (joined with
+  `""`, not newlines) — the terminal `result` carries stats, **not** the
+  assistant body. `--output-format json` — the shape the **mission path**
+  builds — returns one object with top-level `response` + `stats`; both are
+  consumed shape-keyed: `response` joins the `result`/`content`/`text` key list
+  in `parse_claude_output`, and its `stats.models.<id>.tokens`
+  (`prompt`/`candidates`/`thoughts`/`tool`/`cached`, the nested SessionMetrics
+  shape) is summed across models by `token_parser`, so json-mode runs record
+  usage rather than zero. Bucket mapping follows the Gemini API `usageMetadata`
+  fields these counters mirror: `thoughts` is billed **output** (thinking
+  models spend a large share there) and `tool` is prompt-side **input**.
+  When a `models` map names more than one id, tokens are attributed to
+  the **dominant** entry — ranked by those same counters, so attribution and
+  reported totals cannot disagree — never the first key: a session that
+  fell back pro→flash must not be mis-priced.
+  **A terminal `result` whose `status` is not a success value is a hard
+  failure** (`RuntimeError` naming `skip_permissions`), not a soft return of
+  partial text: a headless run that could not answer a confirmation prompt
+  exits 0 with prose and would otherwise be reported as a complete mission with
+  no branch and no commit. `stats` is **optional** on that envelope — a session
+  that aborts before any model call emits `status` + `error` only — so the
+  guard is keyed on the *text-less* terminal shape, leaving text-bearing
+  `result` envelopes (haze) with their existing behavior. The failure is
+  reported **after** the exit-code branch: a non-zero exit still raises
+  `_format_cli_error(...)`, which is the only payload carrying stderr and the
+  exit code, and quota/auth classification is text-matched on it.
+  "Success value" is an **allowlist** (`success`/`succeeded`/`complete`/
+  `completed`/`ok`), never a list of known failure words: a status this adapter
+  has not seen (`timeout`, `quota_exceeded`, a word a future build adds) must
+  fail closed. A missing/empty `status` reports no verdict and is left alone.
+  **Both** stream consumers enforce this — `run_command_streaming` and
+  `claude_step.run_claude` (which drives the post-mission commit step) — so a
+  failed session cannot become a commit subject on either path.
+  The **json mission path** applies the same rule from the other end: a json
+  object carrying a non-empty top-level `error` fails the mission
+  (`mission_runner.json_output_reports_failure`), so partial `response` prose
+  is never banked as completed work on an exit-0 abort. That synthetic failure
+  is **finalization-only**: it must never be fed to the text classifiers as
+  evidence that the CLI *process* failed. `mission_executor` snapshots the real
+  exit code and passes it as `trust_stdout` / the quota handler's `exit_code`
+  (including through `run_post_mission`'s `cli_exit_code`), preserving the
+  invariant that stdout is scanned for quota/auth only after a genuine process
+  failure — otherwise assistant prose about rate limits would pause the daemon
+  for every project on a mission that merely hit an approval prompt.
+  **`error` events are advisory.** `severity` is recorded in the vocabulary but
+  deliberately not a failure trigger: upstream emits `error` events for
+  recoverable conditions (a failed tool call the model then works around), and
+  the authoritative session verdict is the terminal `result` status plus the
+  exit code. Making a mid-stream `error` fatal would abort sessions that
+  recover. Revisit only with a measured stream showing a fatal `severity:
+  "error"` with no terminal `result`.
+  **Permissions:** Kōan emits `--approval-mode yolo` **only** when
+  `skip_permissions` is set. With permissions on, no approval flag is emitted
+  and a once-per-process warning states that headless runs cannot answer a
+  confirmation prompt — deliberately *not* Grok's unconditional auto-approve:
+  a provider adapter must not escalate beyond what the operator configured.
+  **Unsupported inputs** (per-tool allow/deny, max turns, MCP config paths,
+  plugin dirs, reasoning effort, fallback model, system-prompt file) warn once
+  and are skipped, never silently accepted. `--allowed-tools` is deprecated
+  upstream (Policy Engine) and is deliberately **not** emitted.
+  **Models:** Claude tier aliases (`haiku`/`sonnet`/`opus`/`claude-*`) are never
+  passed as `-m` — warn once and omit, so Gemini's own default (`auto`) applies.
+  **Prompt delivery** rides argv as `-p`; stdin passing stays off (Gemini
+  *appends* `-p` to piped stdin rather than replacing it, so the base marker
+  rewrite would corrupt the prompt) and there is no `--prompt-file` flag.
+  Quota/auth: stderr trusted; stdout only on non-zero exit with an error-marker
+  gate. Pre-flight probe uses `--output-format json -p ok` from an empty scratch
+  dir. Invocation lock: `gemini-cli` (shared `~/.gemini/` state).
+  **Not measured:** unlike the Grok and Haze contracts above, this one is
+  derived from upstream documentation and source (`packages/core/src/output/
+  types.ts`), not from a live run on a Kōan host. Exit codes `42` (input error)
+  and `53` (turn limit) are documented but not mapped to Kōan's max-turns
+  handling. Recorded samples: `koan/tests/gemini_samples.py`. Operator docs:
+  `docs/providers/gemini.md`.
 
 ## Integration points
 
