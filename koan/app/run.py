@@ -3733,20 +3733,30 @@ def _run_skill_mission(
             # @patch("app.run.subprocess.Popen") test targets).
             return subprocess.Popen(list(launcher) + list(argv), **kwargs)
 
-        scoped = mission_scope.launch_scoped(
-            skill_cmd,
-            spawn=_spawn_skill,
-            koan_root=koan_root or None,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=stderr_fh,
-            cwd=koan_pkg_dir,
-            env=skill_env,
-            text=True,
-        )
-        proc = scoped.proc
-        # Register for double-tap CTRL-C termination.
-        _sig.claude_proc = proc
+        # Same publish race as the generic mission path: launch_scoped forces
+        # start_new_session, so the skill session is already alive in its own
+        # session/cgroup when it returns. A forced restart delivered before
+        # claude_proc is published would kill nothing and re-exec, leaving the
+        # just-spawned /review|/fix|/implement session editing the worktree the
+        # relaunched runner is about to hand to the next mission. Hold it until
+        # the handle is visible. The window is fork/exec only — this path takes
+        # no provider lock (the skill subprocess acquires its own, in its own
+        # process), so there is no unbounded wait to hoist out.
+        with _sigusr2_deferred():
+            scoped = mission_scope.launch_scoped(
+                skill_cmd,
+                spawn=_spawn_skill,
+                koan_root=koan_root or None,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=stderr_fh,
+                cwd=koan_pkg_dir,
+                env=skill_env,
+                text=True,
+            )
+            proc = scoped.proc
+            # Register for double-tap CTRL-C termination.
+            _sig.claude_proc = proc
 
         from app.subprocess_runner import ProcessWatchdog, LivenessWatchdog
 

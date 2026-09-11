@@ -402,12 +402,16 @@ heuristic:
   incarnation cannot force a restart. Across the window between spawning the CLI
   subprocess and publishing it on `_sig.claude_proc`, `_sigusr2_deferred` records the
   request and replays it on exit instead of acting on it — otherwise a forced restart
-  in that window would kill nothing and orphan the just-spawned session. The deferral
-  MUST live in `_on_sigusr2`, not in a `pthread_sigmask` block: a signal mask is *per
-  thread*, a process-directed `kill()` is accepted by any of the runner's threads that
-  has not blocked it (journal tail, watchdog, stagnation monitor), and CPython then
-  runs the Python-level handler on the main thread regardless of that thread's own
-  mask. Only a check inside the handler is independent of the thread topology.
+  in that window would kill nothing and orphan the just-spawned session. This applies
+  to **every** sequential path that publishes `_sig.claude_proc` — `run_claude_task`
+  and `_run_skill_mission` today — and any new one MUST arm the window too: the orphan
+  is the same whether the survivor is a provider session or a skill session. The
+  deferral MUST live in `_on_sigusr2`, not in a `pthread_sigmask` block: a signal mask
+  is *per thread*, a process-directed `kill()` is accepted by any of the runner's
+  threads that has not blocked it (journal tail, watchdog, stagnation monitor), and
+  CPython then runs the Python-level handler on the main thread regardless of that
+  thread's own mask. Only a check inside the handler is independent of the thread
+  topology.
   The deferral window MUST stay bounded: anything inside it suppresses forced
   restarts for its whole duration. `run_claude_task` therefore calls
   `cli_exec.acquire_provider_lock` *before* `_sigusr2_deferred` and hands the lock to

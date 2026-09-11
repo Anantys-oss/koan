@@ -9,6 +9,7 @@ import contextlib
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -388,6 +389,87 @@ class TestRunnerSigusr2:
 
         assert exc.value.code == RESTART_EXIT_CODE
         assert killed == [proc]
+
+    def test_skill_dispatch_spawn_is_covered_by_the_same_window(
+            self, tmp_path, monkeypatch):
+        """The skill-dispatch spawn must not orphan its session either.
+
+        /review, /fix and /implement run through ``_run_skill_mission``, whose
+        spawn publishes ``_sig.claude_proc`` exactly like ``run_claude_task``'s.
+        A forced restart landing between the two must kill that session — an
+        orphan keeps burning quota and editing the worktree the relaunched
+        runner is about to hand to the next mission.
+        """
+        from app import run
+
+        koan_root = tmp_path / "koan-root"
+        (koan_root / "koan").mkdir(parents=True)
+        (koan_root / "instance" / "journal").mkdir(parents=True)
+
+        class _InertScope:
+            """Scope whose teardown kills nothing.
+
+            The real one tears the cgroup down, which would mask the bug: the
+            assertion below must only pass if the *forced restart itself*
+            killed the session.
+            """
+
+            cap_exceeded = False
+
+            def __init__(self, proc):
+                self.proc = proc
+
+            def teardown(self, koan_initiated_kill=False):
+                pass
+
+            def cap_message(self):
+                return ""
+
+        spawned = []
+
+        def fake_launch_scoped(cmd, spawn=None, koan_root=None, **kwargs):
+            # launch_scoped always forces start_new_session, which is what puts
+            # the child beyond the runner's own process group (and lets
+            # _kill_process_group signal it without hitting pytest's group).
+            proc = spawn(cmd, [], start_new_session=True, **kwargs)
+            spawned.append(proc)
+            # Deliver the signal once the child is alive but before the caller
+            # can publish it — the exact window the deferral exists to close.
+            os.kill(os.getpid(), signal.SIGUSR2)
+            time.sleep(0.05)  # let an undeferred handler fire
+            return _InertScope(proc)
+
+        monkeypatch.setattr(run, "koan_tmp_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(run.mission_scope, "launch_scoped", fake_launch_scoped)
+        monkeypatch.setattr(run, "_get_koan_branch", lambda root: "")
+        monkeypatch.setattr(run, "_restore_koan_branch", lambda *a, **k: None)
+        monkeypatch.setattr(run._sig, "claude_proc", None)
+        monkeypatch.setattr(run._sig, "task_running", True)
+
+        previous = signal.signal(signal.SIGUSR2, run._on_sigusr2)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                run._run_skill_mission(
+                    skill_cmd=[sys.executable, "-c", "import time; time.sleep(30)"],
+                    koan_root=str(koan_root),
+                    instance=str(koan_root / "instance"),
+                    project_name="my-toolkit",
+                    project_path=str(tmp_path),
+                    run_num=1,
+                    mission_title="/review https://example.invalid/pr/1",
+                    autonomous_mode="review",
+                )
+        finally:
+            signal.signal(signal.SIGUSR2, previous)
+            for leaked in spawned:
+                with contextlib.suppress(Exception):
+                    leaked.kill()
+
+        assert exc.value.code == RESTART_EXIT_CODE
+        assert spawned, "the skill session was never spawned"
+        assert spawned[0].poll() is not None, (
+            "forced restart left the just-spawned skill session running"
+        )
 
 
 class TestForcedMarkerFallback:
