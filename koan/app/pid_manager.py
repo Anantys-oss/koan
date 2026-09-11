@@ -502,6 +502,35 @@ def start_mcp(
     )
 
 
+def _mcp_transport_error() -> str:
+    """Message naming an unrecognised ``mcp.transport``, else an empty string.
+
+    An unknown value resolves to ``stdio`` (never a listener), which would
+    otherwise make ``make start`` report success while nothing is bound on the
+    port the operator configured.
+    """
+    try:
+        from app.config import (
+            MCP_TRANSPORTS,
+            get_mcp_enabled,
+            get_mcp_transport_setting,
+        )
+
+        if not get_mcp_enabled():
+            return ""
+        value = get_mcp_transport_setting()
+        if value in MCP_TRANSPORTS:
+            return ""
+        expected = "/".join(sorted(MCP_TRANSPORTS))
+        return (
+            f"unknown mcp.transport {value!r} (expected {expected}) — "
+            "no MCP daemon started"
+        )
+    except (ImportError, OSError, ValueError) as e:
+        print(f"[pid_manager] MCP transport check failed: {e}", file=sys.stderr)
+        return ""
+
+
 def _is_mcp_http_enabled() -> bool:
     """Whether the MCP HTTP daemon should be managed by the process manager.
 
@@ -844,7 +873,10 @@ def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -
         results["api"] = (ok, msg)
 
     # 6. Start MCP HTTP daemon after the API it depends on
-    if _is_mcp_http_enabled():
+    mcp_error = _mcp_transport_error()
+    if mcp_error:
+        results["mcp"] = (False, mcp_error)
+    elif _is_mcp_http_enabled():
         ok, msg = start_mcp(koan_root)
         results["mcp"] = (ok, msg)
 

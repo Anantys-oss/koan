@@ -1418,6 +1418,24 @@ class TestStartAll:
         assert order == ["api", "mcp"]
         assert results["mcp"] == (True, "ok")
 
+    def test_start_all_fails_loudly_on_unknown_mcp_transport(self, tmp_path):
+        """A typo resolves to stdio; `make start` must not report success."""
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch("app.config.get_mcp_enabled", return_value=True), patch(
+            "app.config.get_mcp_transport_setting", return_value="streamable-http"
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch("app.pid_manager.start_mcp") as start_mcp:
+            results = start_all(tmp_path, provider="claude")
+
+        ok, msg = results["mcp"]
+        assert ok is False
+        assert "streamable-http" in msg
+        start_mcp.assert_not_called()
+
     def test_start_all_does_not_daemonize_stdio_mcp(self, tmp_path):
         with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
             "app.pid_manager._is_api_enabled", return_value=False

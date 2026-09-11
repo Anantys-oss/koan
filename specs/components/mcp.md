@@ -38,6 +38,10 @@ annotations, configuration gates, and transport lifecycle.
 
 - `stdio` is client-launched, creates no listener, and keeps its existing
   behavior.
+- An unrecognised value resolves to `stdio`, so a typo can never open a
+  listener — but it is never silent: with `mcp.enabled: true`, the process
+  manager refuses to start the MCP daemon, names the offending value, and
+  makes `make start` exit non-zero.
 - `http` serves MCP Streamable HTTP at `/mcp`, binds `mcp.host` and
   `mcp.port`, and is managed as the `mcp` daemon.
 - Both transports construct tools only through `create_server()` and
@@ -53,12 +57,17 @@ HTTP request audits are written to `logs/mcp.log` as:
 `YYYY-MM-DDTHH:MM:SS <peer-ip> METHOD /path STATUS`
 
 Authorization headers, bearer tokens, request bodies, and query strings are
-never written to the audit line.
+never written to the audit line. Each field is rendered as a single printable,
+space-free token (non-printable characters replaced, spaces percent-encoded,
+over-long values truncated), so an unauthenticated caller cannot forge audit
+entries through a crafted request path.
 
-The audit trail fails closed. A failed audit write latches the middleware: the
-warning goes to `logs/api.log` (never the audit sink itself, which the launcher
-also redirects the daemon's stderr into), and every later request is refused
-with 503 `audit_unavailable` until the sink accepts a write again.
+The audit trail fails closed. A failed audit write latches the middleware: every
+later request is refused with 503 `audit_unavailable` until the sink accepts a
+write again. The warning never goes to the audit sink itself (the launcher also
+redirects the daemon's stderr into it). It goes to syslog first — the only
+channel not on the volume whose failure is the likeliest cause — then
+`logs/api.log`, then stderr.
 
 ## HTTP safety invariants
 
