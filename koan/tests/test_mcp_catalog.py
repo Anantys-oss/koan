@@ -70,6 +70,26 @@ def test_destructive_tool_requires_separate_gate(operations):
     assert delete.annotations.read_only is False
 
 
+def test_destructive_gate_follows_the_route_marker(api_spec_path):
+    """The gate reads the route, not a second copy in the curation table.
+
+    Marking a curated non-DELETE route `x-koan-destructive` must hide its tool
+    behind the destructive gate with no edit to `CURATED_TOOLS`. A restated
+    per-entry flag would fail open here: the route would carry the marker (so
+    the CLI prompts) while MCP kept exposing the tool by default.
+    """
+    spec = deepcopy(load_spec(api_spec_path))
+    spec["paths"]["/v1/pause"]["post"]["x-koan-destructive"] = True
+    operations = load_operations(spec)
+
+    hidden = build_tool_definitions(operations, allow_destructive=False)
+    visible = build_tool_definitions(operations, allow_destructive=True)
+
+    assert "koan_pause" not in {tool.name for tool in hidden}
+    pause = next(tool for tool in visible if tool.name == "koan_pause")
+    assert pause.annotations.destructive is True
+
+
 def test_named_tools_fail_closed_without_openapi_marker(api_spec_path):
     spec = deepcopy(load_spec(api_spec_path))
     del spec["paths"]["/v1/status"]["get"]["x-koan-mcp"]

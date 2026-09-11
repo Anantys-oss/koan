@@ -6,6 +6,7 @@ a module named ``http`` here would shadow the stdlib package that uvicorn and
 starlette import.
 """
 
+import os
 import re
 import sys
 import syslog
@@ -77,10 +78,25 @@ class BearerAuditMiddleware:
         print(message, file=sys.stderr)
 
     def _audit_sink_usable(self) -> bool:
-        """Re-probe a latched-broken audit sink, clearing the latch on success."""
+        """Re-probe a latched-broken audit sink, clearing the latch on success.
+
+        The probe has to *write*, not just open. A full volume — the failure
+        this latch exists for — still accepts ``open(path, "a")``, because that
+        allocates no blocks, so an open-only probe would report "recovered" on
+        the exact condition it is meant to detect and the daemon would go back
+        to serving unaudited requests. Writing a marker line and forcing it to
+        disk makes ENOSPC surface here, and leaves the recovery visible in the
+        trail it is recovering.
+        """
+        marker = (
+            f"{time.strftime('%Y-%m-%dT%H:%M:%S')} - - "
+            "audit-resumed 200\n"
+        )
         try:
-            with open(self.audit_path, "a", encoding="utf-8"):
-                pass
+            with open(self.audit_path, "a", encoding="utf-8") as handle:
+                handle.write(marker)
+                handle.flush()
+                os.fsync(handle.fileno())
         except OSError:
             return False
         self.audit_broken = False

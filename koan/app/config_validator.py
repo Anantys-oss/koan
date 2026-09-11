@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from app.config import _VALID_EFFORT_LEVELS
+from app.config import MCP_TRANSPORTS, _VALID_EFFORT_LEVELS
 from app.run_log import log
 
 # Top-level keys whose nested contents are validated inline (not via
@@ -609,13 +609,17 @@ def validate_config(config: dict) -> List[Tuple[str, str]]:
     mcp = config.get("mcp")
     if isinstance(mcp, dict):
         transport = mcp.get("transport")
+        # One list, shared with `get_mcp_transport()`. Two validators keeping
+        # private copies of the same rule is what turned a working `mcp:` list
+        # into a hard startup stop; a third transport must not need three edits.
         if (
             isinstance(transport, str)
-            and transport.strip().lower() not in {"stdio", "http"}
+            and transport.strip().lower() not in MCP_TRANSPORTS
         ):
             warnings.append((
                 "mcp.transport",
-                f"'mcp.transport' must be one of http/stdio, got {transport!r}",
+                f"'mcp.transport' must be one of "
+                f"{'/'.join(sorted(MCP_TRANSPORTS))}, got {transport!r}",
             ))
 
     # Semantic check: deep-validate optimizations.caveman when it's a dict.

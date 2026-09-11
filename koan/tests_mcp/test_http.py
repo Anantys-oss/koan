@@ -1,4 +1,7 @@
 import asyncio
+import builtins
+import errno
+from pathlib import Path
 from unittest.mock import patch
 
 from starlette.applications import Starlette
@@ -155,6 +158,62 @@ def test_service_resumes_once_the_audit_sink_is_writable(tmp_path):
     assert response.status_code == 200
     assert middleware.audit_broken is False
     assert " GET /mcp 200" in audit_path.read_text()
+
+
+class _FullDiskFile:
+    """A handle that opens fine and fails at write time, like a full volume."""
+
+    def __init__(self, handle):
+        self._handle = handle
+
+    def write(self, _data):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def flush(self):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def fileno(self):
+        return self._handle.fileno()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self._handle.close()
+        return False
+
+
+def test_recovery_probe_writes_so_a_full_disk_is_not_read_as_recovered(tmp_path):
+    """A sink that opens but cannot be written to must stay latched.
+
+    `open(path, "a")` allocates no blocks, so a full volume accepts it. An
+    open-only probe would clear the latch on the exact failure it exists to
+    detect, and the daemon would go back to serving unaudited requests.
+    """
+    audit_path = tmp_path / "mcp.log"
+    audit_path.touch()
+    downstream = Starlette(routes=[Route("/mcp", _ok, methods=["GET"])])
+    middleware = BearerAuditMiddleware(downstream, audit_path)
+    client = TestClient(middleware)
+
+    real_open = builtins.open
+
+    def full_disk_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        if Path(path) != audit_path:
+            return handle
+        return _FullDiskFile(handle)
+
+    with patch("builtins.open", side_effect=full_disk_open):
+        client.get("/mcp")
+        assert middleware.audit_broken is True
+        with patch("app.api.auth._get_token", return_value="secret-token"):
+            response = client.get(
+                "/mcp", headers={"Authorization": "Bearer secret-token"}
+            )
+
+    assert response.status_code == 503
+    assert middleware.audit_broken is True
 
 
 def test_lifespan_scope_passes_through_unauthenticated(tmp_path):

@@ -64,10 +64,12 @@ entries through a crafted request path.
 
 The audit trail fails closed. A failed audit write latches the middleware: every
 later request is refused with 503 `audit_unavailable` until the sink accepts a
-write again. The warning never goes to the audit sink itself (the launcher also
-redirects the daemon's stderr into it). It goes to syslog first — the only
-channel not on the volume whose failure is the likeliest cause — then
-`logs/api.log`, then stderr.
+write again. The latch is cleared only by a probe that **writes** a marker line
+and forces it to disk — opening the file is not proof of writability, because a
+full volume still accepts an append open. The warning never goes to the audit
+sink itself (the launcher also redirects the daemon's stderr into it). It goes
+to syslog first — the only channel not on the volume whose failure is the
+likeliest cause — then `logs/api.log`, then stderr.
 
 ## HTTP safety invariants
 
@@ -147,6 +149,11 @@ Named tools use prefix `koan_`:
 | `koan_pause` | `POST /v1/pause` | write |
 | `koan_resume` | `POST /v1/resume` | write |
 | `koan_missions_delete` | `DELETE /v1/missions/{mission_id}` | destructive, separately gated |
+
+A tool is destructive when its route is, and nowhere else: `DELETE` by method or
+an explicit `x-koan-destructive` marker, carried by `Operation.destructive` and
+read by both the MCP gate and the CLI's confirmation prompt. The curation table
+never restates it, so the two cannot drift apart.
 
 Named-tool input schemas come from Python signatures through MCP SDK. Before
 registration, Kōan augments each signature with Pydantic `Field` metadata from
