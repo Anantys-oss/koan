@@ -189,7 +189,7 @@ paths:
         required: false
         schema:
           type: string
-      - description: Cap the rows returned per state. Omitted or < 1 means unlimited.
+      - description: Cap the rows returned per state. Omit for unlimited; a non-integer or < 1 value is rejected with 422.
         in: query
         name: limit
         required: false

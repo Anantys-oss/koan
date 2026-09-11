@@ -341,6 +341,33 @@ class TestListMissionsStoreBacked:
         assert detail.status_code == 200
         assert detail.get_json()["id"] == created["id"]
 
+    def test_list_id_survives_queue_appended_metadata(
+        self, api_client, instance_dir
+    ):
+        # The agent loop appends [complexity:X] (and [r:N] on crash recovery)
+        # to a pending line after the API recorded it. The sidecar keeps the
+        # untagged text, so the join must use the canonical identity key or an
+        # addressable mission starts reporting `id: null`.
+        from app.missions import tag_complexity_in_pending
+
+        created = api_client.post(
+            "/v1/missions", json={"text": "Tag me"}, headers=_AUTH
+        ).get_json()
+        tag_complexity_in_pending("Tag me", "simple", instance_dir / "missions.md")
+
+        listed = [
+            m
+            for m in api_client.get("/v1/missions", headers=_AUTH).get_json()
+            if "Tag me" in m["text"]
+        ]
+        assert len(listed) == 1
+        assert "[complexity:simple]" in listed[0]["text"]
+        assert listed[0]["id"] == created["id"]
+        assert (
+            api_client.get(f"/v1/missions/{listed[0]['id']}", headers=_AUTH).status_code
+            == 200
+        )
+
     def test_list_store_only_mission_has_null_id_and_a_store_id(
         self, api_client, instance_dir
     ):

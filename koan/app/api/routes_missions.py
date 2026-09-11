@@ -94,7 +94,10 @@ _LIST_MISSIONS_QUERY_PARAMETERS = (
     query_parameter(
         "limit",
         {"type": "integer", "minimum": 1},
-        "Cap the rows returned per state. Omitted or < 1 means unlimited.",
+        (
+            "Cap the rows returned per state. Omit for unlimited; "
+            "a non-integer or < 1 value is rejected with 422."
+        ),
     ),
 )
 
@@ -126,8 +129,22 @@ def _parse_limit(raw: str | None):
     return limit, None
 
 
+def _match_key(text: str) -> str:
+    """Identity key shared by both sides of the sidecar ↔ store join.
+
+    ``canonical_mission_key()`` is the repo's canonical identity helper: it
+    strips the lifecycle markers, ``[r:N]``, ``[complexity:X]``,
+    ``[verify-failed: …]`` and a leading ``"- "`` while keeping
+    ``[project:X]``. The queue appends that metadata to a mission *after* it
+    was recorded in the sidecar, so a looser normalizer would make the two
+    sides diverge the moment the loop tags a mission.
+    """
+    from app.missions import canonical_mission_key
+    return canonical_mission_key(text)
+
+
 def _sidecar_ids_by_text(instance_dir: Path) -> dict:
-    """Map normalized mission text → API sidecar id.
+    """Map canonical mission key → API sidecar id.
 
     The list is store-backed, but every single-mission route
     (``GET``/``PATCH``/``DELETE /v1/missions/{id}``, ``/result``, ``/reorder``)
@@ -140,7 +157,7 @@ def _sidecar_ids_by_text(instance_dir: Path) -> dict:
     for rec in list_missions(instance_dir):
         if rec.get("status") == "removed":
             continue
-        key = _normalize_for_match(rec.get("text", ""))
+        key = _match_key(rec.get("text", ""))
         if key:
             ids[key] = rec["id"]
     return ids
@@ -247,7 +264,7 @@ def list_missions_route():
     for state in states:
         out.extend(
             {
-                "id": sidecar_ids.get(_normalize_for_match(m.text)),
+                "id": sidecar_ids.get(_match_key(m.text)),
                 "store_id": m.id,
                 "text": m.text,
                 "status": m.state,
