@@ -143,6 +143,16 @@ def _missions_file() -> Path:
 
 
 def _normalize_command(command: str) -> str:
+    """Normalize a slash-command mission to its canonical verb.
+
+    ``API_COMMAND_NAMES`` is the *advertised* surface — the OpenAPI enum and
+    the MCP tool schema built from it — deliberately **not** an accept-list.
+    REST has always queued any slash command, so gating on the catalogue would
+    break existing callers of every other command without buying any safety:
+    ``text`` carries a slash command through unvalidated anyway. Aliases of
+    exposed skills are still resolved so a client following the advertised
+    catalogue queues the canonical verb.
+    """
     match = _COMMAND_RE.fullmatch(command)
     if match is None:
         raise ValueError(
@@ -150,14 +160,8 @@ def _normalize_command(command: str) -> str:
             "by optional arguments"
         )
 
-    verb = match.group("name")
-    canonical = f"/{canonical_command_name(verb)}"
-    if canonical not in API_COMMAND_NAMES:
-        valid = ", ".join(API_COMMAND_NAMES)
-        raise ValueError(
-            f"Unknown command '{canonical}'. Valid commands: {valid}"
-        )
-    return canonical + match.group("arguments")
+    canonical = canonical_command_name(match.group("name"))
+    return f"/{canonical}" + match.group("arguments")
 
 
 def _validate_mission_body(data: dict):

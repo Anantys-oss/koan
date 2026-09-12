@@ -94,15 +94,17 @@ def test_catalog_contains_only_exposed_core_skills(tmp_path):
 
 
 def test_accepted_command_names_include_advertised_aliases():
-    # Canonical names and every advertised alias are accepted by
-    # koan_missions_create, and aliases normalize to the canonical verb.
+    # Canonical names and every advertised alias appear in the surface
+    # koan_missions_create advertises, and aliases normalize to the canonical
+    # verb.
     names = set(API_COMMAND_NAMES)
     assert "/review" in names
     assert "/rv" in names
     assert "/rb" in names
     assert canonical_command_name("rv") == "review"
     assert canonical_command_name("rb") == "rebase"
-    # An unknown verb comes back unchanged; membership is API_COMMAND_NAMES' job.
+    # A verb outside the advertised set comes back unchanged rather than
+    # raising — the catalogue advertises, it does not gate.
     assert canonical_command_name("shutdown") == "shutdown"
 
 

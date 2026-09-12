@@ -89,10 +89,11 @@ def _accepted_command_names(
 ) -> tuple[str, ...]:
     """Return every canonical command name plus its aliases, slash-prefixed.
 
-    The catalogue advertises aliases as first-class inputs, so the mission
-    validator must accept them too, or a client following the advertised
-    aliases would get a 422. Both names and aliases are normalized to the
-    canonical command name before queueing (see ``routes_missions``).
+    This is the *advertised* surface — the OpenAPI ``command`` enum and the MCP
+    tool schema built from it. Aliases belong in it because the catalogue
+    publishes them as first-class inputs; ``routes_missions`` normalizes them to
+    the canonical command name before queueing. It is not an accept-list: the
+    mission endpoint still queues any slash command (see ``_normalize_command``).
     """
     names = set()
     for skill in skills:
@@ -104,13 +105,13 @@ def _accepted_command_names(
 
 EXPOSED_CORE_SKILLS = exposed_core_skills()
 SKILL_CATALOG = build_skill_catalog(EXPOSED_CORE_SKILLS)
-# The validator accepts canonical names and aliases, then normalizes aliases
-# to their canonical verb before queueing. Should the catalogue fail to load
-# any exposed skill, surface it rather than silently rejecting every command.
+# An empty catalogue leaves mission creation working (the endpoint does not
+# gate on this set) but strips REST and MCP of every advertised command, so a
+# client has nothing to discover. Surface it rather than degrade silently.
 if not EXPOSED_CORE_SKILLS:
     _log.error(
         "Skill catalogue is empty: no API-exposed core skills found. "
-        "All slash-command missions via REST/MCP will be rejected.",
+        "REST and MCP clients will advertise no slash commands.",
     )
 API_COMMAND_NAMES = _accepted_command_names(EXPOSED_CORE_SKILLS)
 _ALIAS_TO_CANONICAL = {

@@ -293,10 +293,13 @@ after changing exposure metadata.
 }
 ```
 Prefer `command` when an exposed skill covers the work. A missing leading slash
-is normalized; unknown or unexposed commands return `422` with the canonical
-valid names. Full command strings can include arguments. `text` remains
-unrestricted for work outside the catalog. `project` adds a `[project:name]`
-tag. `urgent` inserts at the top of the queue.
+is normalized, and an advertised alias resolves to its canonical verb (`/rv` →
+`/review`). The `/v1/skills` catalogue is the *advertised* surface, not an
+accept-list: any slash command the agent understands is still accepted, so
+existing callers keep working. Only a value that is not shaped like a slash
+command at all returns `422`. Full command strings can include arguments.
+`text` remains unrestricted for work outside the catalog. `project` adds a
+`[project:name]` tag. `urgent` inserts at the top of the queue.
 
 Response (202):
 ```json

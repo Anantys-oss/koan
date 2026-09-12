@@ -112,28 +112,20 @@ class TestCreateMission:
         assert response.status_code == 202
         assert f"/review {url}" in (instance_dir / "missions.md").read_text()
 
-    def test_unknown_command_returns_valid_names_without_queueing(
+    def test_command_outside_the_catalogue_is_still_queued(
         self,
         api_client,
         instance_dir,
     ):
-        before = (instance_dir / "missions.md").read_text()
+        """The advertised catalogue is not an accept-list (backward compat)."""
         response = api_client.post(
             "/v1/missions",
-            json={
-                "command": (
-                    "/reviwe https://github.com/owner/repo/pull/42"
-                )
-            },
+            json={"command": "/status"},
             headers=_AUTH,
         )
 
-        assert response.status_code == 422
-        error = response.get_json()["error"]
-        assert error["code"] == "invalid_request"
-        assert "Unknown command '/reviwe'" in error["message"]
-        assert "/review" in error["message"]
-        assert (instance_dir / "missions.md").read_text() == before
+        assert response.status_code == 202
+        assert "/status" in (instance_dir / "missions.md").read_text()
 
     def test_command_alias_is_normalized_to_canonical(
         self,
@@ -150,18 +142,21 @@ class TestCreateMission:
         assert response.status_code == 202
         assert f"/review {url}" in (instance_dir / "missions.md").read_text()
 
-    def test_unexposed_command_is_rejected(self, api_client):
+    def test_malformed_command_is_rejected_without_queueing(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        before = (instance_dir / "missions.md").read_text()
         response = api_client.post(
             "/v1/missions",
-            json={"command": "/shutdown"},
+            json={"command": "/ not a command"},
             headers=_AUTH,
         )
 
         assert response.status_code == 422
-        assert "/shutdown" not in (
-            response.get_json()["error"]["message"]
-            .partition("Valid commands:")[2]
-        )
+        assert response.get_json()["error"]["code"] == "invalid_request"
+        assert (instance_dir / "missions.md").read_text() == before
 
     def test_free_form_review_text_is_unchanged(
         self,
