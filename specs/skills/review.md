@@ -4,7 +4,7 @@ title: "Skill Spec — review"
 description: "Documents the `/review` skill that queues a code-review mission on PRs/issues, posting findings as a comment with severity-driven LGTM logic and re-review comment handling, covered by the eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Skill Spec — `review`
@@ -286,6 +286,42 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   hunter, so this overlap is exercised by
   `TestReviewPostsBeforeEnrichment::test_coverage_note_survives_hunter_append_overlap`
   in `koan/tests/test_review_runner.py`.
+- **Model-written review prose follows the configured reply language.** The
+  prose the model generates — finding titles and bodies, the summary, and thread
+  replies — is written in the language returned by
+  `language_preference.get_language()`, which is **English** unless the human set
+  another with `/language`. The instruction is injected once, centrally, in
+  `_run_claude_review` (the single provider funnel for every review call), not
+  restated per prompt, so no review prompt can drift out of it. Only an explicit
+  `/language reset` (the `{"language": ""}` sentinel, input-language mode) lifts
+  the override; a review prompt must never independently ask the model to guess
+  or mirror a language, because leaving the choice open lets a model answer an
+  English thread in an unrelated language.
+- **Machine-read tokens stay English, including in model output.** The language
+  override is scoped to prose and MUST carve out every token Python matches
+  literally, because a translated one fails silently. The carve-out list is the
+  contract: the `## PR Review` / `## Summary` headings a prompt asks the model to
+  emit verbatim (`_extract_review_body` regex-matches them to recover a review at
+  all — a miss posts the unparseable-output notice instead), the `classification`
+  value `actionable` consumed by `_run_bot_comment_triage`, the
+  `CRITICAL`/`HIGH`/`MEDIUM` severities the error hunter orders and colors by, the
+  `[Deferred]` / `[Pre-Existing Issue]` title prefixes `review_triage.enforce_deferred`
+  and `enforce_pre_existing` substring-match (a translated prefix silently blocks a PR
+  over a finding the human deferred), and the `comment_replies[].action` value
+  `needs_clarification`. The
+  review path therefore does **not** reuse the chat-side
+  `get_language_instruction()` string — that one is absolute ("all your responses")
+  — but a review-specific directive,
+  `koan/system-prompts/review-language-directive.md`. Any new prompt behind this
+  funnel that adds a literal output contract MUST extend that carve-out.
+- **Renderer-owned scaffolding stays English, deliberately.** The strings Python
+  itself emits around that prose are structure, not conversation, and are **not**
+  localized: the `## PR Review` heading it builds, the `_SEVERITY_HEADING` tier
+  names (`Blocking`/`Important`/`Suggestions`), and the verdict line. A stable
+  heading is what lets a human scan any PR the same way, so a non-English
+  preference yields English scaffolding around translated prose, by design.
+  Widening the language override to cover them is an architectural change, not a
+  bug fix.
 
 ### Consistency, triage & human dispositions (spec 010)
 
