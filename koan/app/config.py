@@ -569,7 +569,12 @@ def get_mcp_enabled() -> bool:
 
 
 def get_mcp_tools_allow_destructive() -> bool:
-    """Whether the named destructive mission-delete tool is exposed (mcp.tools_allow_destructive)."""
+    """Whether MCP may reach destructive operations (mcp.tools_allow_destructive).
+
+    Gates both surfaces: the named mission-delete tool's presence in
+    ``tools/list`` and ``exec_operation``'s reach into the deny-listed admin and
+    project-mutation operations.
+    """
     value = _get_mcp_server_config().get("tools_allow_destructive", False)
     return value is True
 

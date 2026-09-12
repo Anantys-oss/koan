@@ -88,8 +88,12 @@ likeliest cause — then `logs/api.log`, then stderr.
 command at any time, so disabled mode means that process exits immediately with
 an actionable message. Kōan never edits or installs client configuration.
 
-`mcp.tools_allow_destructive` defaults to `false`. It only controls whether the
-named destructive mission-delete tool appears in `tools/list`.
+`mcp.tools_allow_destructive` defaults to `false`. It is the single operator
+gate on reach: it controls whether the named destructive mission-delete tool
+appears in `tools/list` **and** whether `exec_operation` may dispatch a
+`DENIED_NAMED_OPERATIONS` route. One flag governs both so the risk ladder cannot
+invert — a deployment that hides mission deletion can never simultaneously
+expose shutdown.
 
 The `mcp` key predates this component as a bare list of provider client config
 paths. Both shapes stay valid: a list means "provider configs only", a mapping
@@ -175,13 +179,23 @@ non-idempotent. Curated tools remain closed-world; `exec_operation` stays
 open-world because it can reach broader REST operations.
 
 `exec_operation` accepts an OpenAPI `operation_id`, path arguments, query
-object, and optional JSON body. It can invoke every documented operation,
-including admin and project-management operations intentionally absent from the
-named tool set. This explicit escape hatch mirrors the REST CLI's `raw`
-capability; clients may apply a single conservative approval policy to it.
+object, and optional JSON body. This explicit escape hatch mirrors the REST
+CLI's `raw` capability; clients may apply a single conservative approval policy
+to it.
 
-`DENIED_NAMED_OPERATIONS` limits named-tool publication only.
-`exec_operation` continues to reach every documented operation.
+`DENIED_NAMED_OPERATIONS` is a reach gate, not a naming convention. It governs
+both surfaces:
+
+- Named-tool publication, always.
+- `exec_operation` dispatch, unless `mcp.tools_allow_destructive` is true. With
+  the default `false`, `exec_operation` reaches every documented operation
+  *except* a denied route, and a denied `operation_id` is refused with a
+  `ToolError` naming the flag that would permit it — before any request leaves
+  the process. With the flag true, it reaches every documented operation.
+
+The gate resolves each denied `(method, path)` to its concrete `operationId`
+from the same loaded document the client dispatches against, so a renamed
+`operationId` cannot slip past it and the deny-list stays keyed by route.
 
 ## Safety invariants
 
@@ -191,6 +205,10 @@ capability; clients may apply a single conservative approval policy to it.
 - Shutdown, restart, update, release update, and project create/update/delete
   never receive named tools.
 - Mission deletion stays absent unless `mcp.tools_allow_destructive` is true.
+- Under the default configuration no MCP surface reaches shutdown, restart,
+  update, release update, or project create/update/delete — `exec_operation`
+  refuses them too, so the lesser mission-delete gate can never be stricter
+  than the reach of the escape hatch beside it.
 - Read tools carry `readOnlyHint`; mission deletion carries `destructiveHint`.
 - Every tool explicitly publishes idempotence and open-world semantics.
 - Named writes do not claim read-only or destructive behavior.

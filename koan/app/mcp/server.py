@@ -13,7 +13,11 @@ from pydantic import Field
 from app.api.skill_catalog import API_COMMAND_NAMES
 from app.apiclient import DEFAULT_TIMEOUT, ApiClientError, RestApiClient
 from app.apiclient.spec import load_operations, load_spec
-from app.mcp.catalog import ToolDefinition, build_tool_definitions
+from app.mcp.catalog import (
+    ToolDefinition,
+    build_tool_definitions,
+    denied_operation_ids,
+)
 from app.mcp.config import get_api_base_url
 
 # Live command surface derived from the skill catalogue (REST and MCP share
@@ -65,6 +69,23 @@ SERVER_INSTRUCTIONS = (
     "queueing work, poll `koan_missions_get` for that mission id. When it is "
     "done, read `koan_missions_result`; do not poll `koan_missions_list` "
     "for results."
+)
+
+_EXEC_DESCRIPTION = (
+    "Execute any operationId from Kōan's committed OpenAPI document. "
+    "Prefer the curated `koan_*` tools whenever one fits. "
+)
+# `mcp.tools_allow_destructive` gates reach, not just tool listing: the escape
+# hatch must not be a wider door than the named tools beside it.
+_EXEC_DESCRIPTION_GATED = (
+    "Operations denied a named tool — shutdown, restart, update, release "
+    "update, and project create/update/delete — are refused here too, because "
+    "`mcp.tools_allow_destructive` is false."
+)
+_EXEC_DESCRIPTION_UNGATED = (
+    "`mcp.tools_allow_destructive` is true, so this escape hatch also reaches "
+    "operations denied a named tool, including shutdown, restart, update, "
+    "release update, and project mutation; use it only with explicit approval."
 )
 
 _FIELD_CONSTRAINTS = {
@@ -352,16 +373,15 @@ def create_server(
 
         register("koan_missions_delete", missions_delete)
 
+    denied_ids = (
+        frozenset() if allow_destructive else denied_operation_ids(operations)
+    )
+
     @server.tool(
         name="exec_operation",
         title="Execute an OpenAPI operation",
-        description=(
-            "Execute any operationId from Kōan's committed OpenAPI document. "
-            "Prefer the curated `koan_*` tools whenever one fits. This escape "
-            "hatch can reach operations intentionally denied named tools, "
-            "including shutdown, restart, update, release update, and project "
-            "mutation; use it only with explicit approval."
-        ),
+        description=_EXEC_DESCRIPTION
+        + (_EXEC_DESCRIPTION_UNGATED if allow_destructive else _EXEC_DESCRIPTION_GATED),
         annotations=SdkToolAnnotations(
             readOnlyHint=False,
             destructiveHint=True,
@@ -387,6 +407,12 @@ def create_server(
             Field(description="Optional JSON request body."),
         ] = None,
     ) -> Any:
+        if operation_id in denied_ids:
+            raise ToolError(
+                f"{operation_id} is denied to MCP clients. Set "
+                "`mcp.tools_allow_destructive: true` in config.yaml and "
+                "restart the MCP server to allow it."
+            )
         try:
             return client.execute_operation(
                 operation_id,
