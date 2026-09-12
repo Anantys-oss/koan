@@ -262,6 +262,72 @@ def test_exec_operation_refuses_denied_operation_by_default(
     assert calls == []
 
 
+def test_exec_operation_refuses_destructive_operation_by_default(api_spec_path):
+    """A destructive route hidden from tools/list is unreachable here too.
+
+    `koan_missions_delete` is absent from `tools/list` under the default
+    config; reaching the same route through the generic executor would make
+    the escape hatch a wider door than the named tools beside it.
+    """
+    calls = []
+
+    class Client:
+        def execute_operation(self, operation_id, **kwargs):
+            calls.append(operation_id)
+            return {"ok": True}
+
+    server = create_server(
+        spec_path=api_spec_path,
+        allow_destructive=False,
+        client=Client(),
+    )
+
+    assert "koan_missions_delete" not in [
+        tool.name for tool in asyncio.run(server.list_tools())
+    ]
+    with pytest.raises(Exception, match="mcp.tools_allow_destructive"):
+        asyncio.run(
+            server.call_tool(
+                "exec_operation",
+                {
+                    "operation_id": "missions_delete_mission_delete",
+                    "path": {"mission_id": "mission-1"},
+                },
+            )
+        )
+
+    assert calls == []
+
+
+def test_exec_operation_reaches_destructive_operation_when_operator_opts_in(
+    api_spec_path,
+):
+    calls = []
+
+    class Client:
+        def execute_operation(self, operation_id, **kwargs):
+            calls.append(operation_id)
+            return {"ok": True}
+
+    server = create_server(
+        spec_path=api_spec_path,
+        allow_destructive=True,
+        client=Client(),
+    )
+    result = asyncio.run(
+        server.call_tool(
+            "exec_operation",
+            {
+                "operation_id": "missions_delete_mission_delete",
+                "path": {"mission_id": "mission-1"},
+            },
+        )
+    )
+
+    assert calls == ["missions_delete_mission_delete"]
+    assert json.loads(result.content[0].text) == {"ok": True}
+
+
 def test_exec_operation_reaches_denied_operation_when_operator_opts_in(api_spec_path):
     calls = []
 

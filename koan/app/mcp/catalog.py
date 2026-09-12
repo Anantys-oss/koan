@@ -166,6 +166,31 @@ def denied_operation_ids(operations: list[Operation]) -> frozenset[str]:
     )
 
 
+def exec_denied_operation_ids(
+    operations: list[Operation],
+    *,
+    allow_destructive: bool,
+) -> frozenset[str]:
+    """Return the operationIds the generic executor must refuse.
+
+    ``exec_operation`` has to deny at least as much as the named-tool filter,
+    or it *is* an escape hatch around it. ``build_tool_definitions`` hides
+    every destructive route while ``allow_destructive`` is false, so the same
+    signal — ``Operation.destructive``, read off the route's DELETE method or
+    its ``x-koan-destructive`` marker — gates the executor too. Deriving both
+    from the route (rather than from a hand-maintained list) keeps a newly
+    marked endpoint closed by default instead of reachable until someone
+    remembers to extend ``DENIED_NAMED_OPERATIONS``.
+    """
+    if allow_destructive:
+        return frozenset()
+    return denied_operation_ids(operations) | frozenset(
+        operation.operation_id
+        for operation in operations
+        if operation.destructive
+    )
+
+
 def build_tool_definitions(
     operations: list[Operation],
     *,
