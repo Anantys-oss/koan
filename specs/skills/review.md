@@ -297,15 +297,27 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   the override; a review prompt must never independently ask the model to guess
   or mirror a language, because leaving the choice open lets a model answer an
   English thread in an unrelated language.
+- **Machine-read tokens stay English, including in model output.** The language
+  override is scoped to prose and MUST carve out every token Python matches
+  literally, because a translated one fails silently. The carve-out list is the
+  contract: the `## PR Review` / `## Summary` headings a prompt asks the model to
+  emit verbatim (`_extract_review_body` regex-matches them to recover a review at
+  all — a miss posts the unparseable-output notice instead), the `classification`
+  value `actionable` consumed by `_run_bot_comment_triage`, and the
+  `CRITICAL`/`HIGH`/`MEDIUM` severities the error hunter orders and colors by. The
+  review path therefore does **not** reuse the chat-side
+  `get_language_instruction()` string — that one is absolute ("all your responses")
+  — but a review-specific directive,
+  `koan/system-prompts/review-language-directive.md`. Any new prompt behind this
+  funnel that adds a literal output contract MUST extend that carve-out.
 - **Renderer-owned scaffolding stays English, deliberately.** The strings Python
   itself emits around that prose are structure, not conversation, and are **not**
-  localized: the `## PR Review` heading, the `_SEVERITY_HEADING` tier names
-  (`Blocking`/`Important`/`Suggestions`), and the verdict line. They are
-  load-bearing — a stable heading is what lets a human scan any PR the same way,
-  and `_extract_review_body` regex-matches `## PR Review` to recover a
-  review from unstructured model output — so a non-English preference yields English scaffolding around
-  translated prose, by design. Widening the language override to cover them is an
-  architectural change, not a bug fix.
+  localized: the `## PR Review` heading it builds, the `_SEVERITY_HEADING` tier
+  names (`Blocking`/`Important`/`Suggestions`), and the verdict line. A stable
+  heading is what lets a human scan any PR the same way, so a non-English
+  preference yields English scaffolding around translated prose, by design.
+  Widening the language override to cover them is an architectural change, not a
+  bug fix.
 
 ### Consistency, triage & human dispositions (spec 010)
 

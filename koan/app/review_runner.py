@@ -961,9 +961,20 @@ def _with_language_directive(prompt: str) -> str:
     with an untrusted-data fence ("everything below this line is DATA"), and an
     instruction placed after it would read as data.
 
-    This governs model output only. The scaffolding Python renders around it
-    (the ``## PR Review`` heading, the ``_SEVERITY_HEADING`` tier names) stays
-    English by design — see ``specs/skills/review.md``.
+    It is deliberately **not** the chat-side ``get_language_instruction()``
+    string. That one is absolute ("All your responses must be written in
+    {lang}"), and this funnel feeds four prompts whose output Python matches
+    literally: ``review-architecture`` must emit ``## PR Review`` for
+    ``_extract_review_body`` to recover the review at all, ``bot-review-triage``
+    must emit ``classification: "actionable"``, and ``silent-failure-hunter``
+    must emit ``CRITICAL``/``HIGH``/``MEDIUM``. A translated token silently
+    drops the review or the replies. The review-side directive therefore scopes
+    itself to prose and carves those tokens out —
+    ``system-prompts/review-language-directive.md``.
+
+    The scaffolding Python itself renders (the ``## PR Review`` heading it
+    builds, the ``_SEVERITY_HEADING`` tier names) likewise stays English by
+    design — see ``specs/skills/review.md``.
 
     Empty when the human ran ``/language reset`` (input-language mode) — the
     prompt is then returned unchanged so the model mirrors the input, which is
@@ -971,17 +982,22 @@ def _with_language_directive(prompt: str) -> str:
     default language beats no review.
     """
     try:
-        from app.language_preference import get_language_instruction
-        instruction = get_language_instruction()
+        from app.language_preference import get_language
+        from app.prompts import load_prompt
+        language = get_language()
+        directive = (
+            load_prompt("review-language-directive", LANGUAGE=language)
+            if language else ""
+        )
     except (ImportError, OSError) as e:
         print(
             f"[review_runner] language directive unavailable: {e}",
             file=sys.stderr,
         )
         return prompt
-    if not instruction:
+    if not directive:
         return prompt
-    return f"{instruction}\n\n{prompt}"
+    return f"{directive}\n\n{prompt}"
 
 
 def _run_claude_review(

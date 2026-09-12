@@ -2807,8 +2807,7 @@ class TestRunClaudeReview:
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
     @patch("app.config.get_skill_max_turns", return_value=200)
-    @patch("app.language_preference.get_language_instruction",
-           return_value="IMPORTANT: You MUST reply in english.")
+    @patch("app.language_preference.get_language", return_value="french")
     def test_language_directive_is_prepended(
         self, mock_lang, mock_max_turns, mock_models, mock_run,
     ):
@@ -2822,13 +2821,14 @@ class TestRunClaudeReview:
         mock_run.return_value = "ok"
         _run_claude_review("REVIEW BODY", "/tmp/project")
         sent = mock_run.call_args.kwargs["prompt"]
-        assert sent.startswith("IMPORTANT: You MUST reply in english.")
+        assert "french" in sent.split("REVIEW BODY")[0].lower()
         assert sent.endswith("REVIEW BODY")
+        assert not sent.startswith("REVIEW BODY")
 
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
     @patch("app.config.get_skill_max_turns", return_value=200)
-    @patch("app.language_preference.get_language_instruction", return_value="")
+    @patch("app.language_preference.get_language", return_value="")
     def test_language_reset_leaves_prompt_untouched(
         self, mock_lang, mock_max_turns, mock_models, mock_run,
     ):
@@ -2842,7 +2842,7 @@ class TestRunClaudeReview:
     @patch("app.cli_provider.run_command_streaming")
     @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
     @patch("app.config.get_skill_max_turns", return_value=200)
-    @patch("app.language_preference.get_language_instruction",
+    @patch("app.language_preference.get_language",
            side_effect=OSError("unreadable"))
     def test_language_lookup_failure_is_non_fatal(
         self, mock_lang, mock_max_turns, mock_models, mock_run, capsys,
@@ -2866,6 +2866,48 @@ class TestRunClaudeReview:
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
         assert "english" in _with_language_directive("BODY").lower()
+
+    @patch("app.language_preference.get_language", return_value="french")
+    def test_directive_carves_out_machine_read_tokens(self, mock_lang):
+        """A non-English preference must not translate parsed tokens.
+
+        `_run_claude_review` funnels four prompts, three of which have a
+        literal output contract Python matches: `## PR Review` (recovered by
+        `_extract_review_body`), the `classification` value `actionable`, and
+        the `CRITICAL`/`HIGH`/`MEDIUM` severities. An unscoped "write
+        everything in french" directive loses all three silently.
+        """
+        from app.review_runner import _with_language_directive
+
+        directive = _with_language_directive("BODY")[: -len("BODY")]
+        for token in ("## PR Review", "actionable", "CRITICAL", "severity"):
+            assert token in directive
+
+    @patch("app.language_preference.get_language", return_value="french")
+    def test_architecture_prompt_header_contract_survives_directive(self, mock_lang):
+        """The architecture path still asks for the English `## PR Review`.
+
+        `_extract_review_body` regex-matches that heading; if the directive
+        overrode it, `run_review` would post the unparseable-output notice
+        instead of the review.
+        """
+        import re
+        from pathlib import Path
+
+        import app.review_runner as rr
+        from app.prompts import load_skill_prompt
+        from app.review_runner import _extract_review_body, _with_language_directive
+
+        root = Path(rr.__file__).resolve().parent.parent
+        skill_dir = root / "skills" / "core" / "review"
+        base = load_skill_prompt(skill_dir, "review-architecture")
+        sent = _with_language_directive(base)
+        assert re.search(r"^## PR Review\b", sent, re.MULTILINE)
+        # And the recovery path the contract exists for still works on output
+        # that has translated prose under the preserved English heading.
+        assert _extract_review_body(
+            "blah\n## PR Review — T\n\nRésumé: rien à signaler.\n"
+        ).startswith("## PR Review")
 
 
 # ---------------------------------------------------------------------------

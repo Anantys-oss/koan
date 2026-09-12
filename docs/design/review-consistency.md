@@ -104,12 +104,20 @@ with an untrusted-data fence and an instruction placed after it would be read as
 `/language reset` still yields an empty instruction, and the injection then makes no
 change at all — input-language mode is exactly what reset asks for.
 
-The override reaches model output and stops there. The scaffolding Python renders
-around a review — the `## PR Review` heading, the tier names, the verdict line — stays
-English. Those strings are structure rather than conversation, and one of them is
-load-bearing: `_extract_review_body` regex-matches `## PR Review` to recover a review
-from unstructured model output. A non-English preference therefore yields translated
-prose inside English headings, which is the intended boundary, not an oversight.
+The override covers prose and stops there, and the stopping point is load-bearing.
+This funnel feeds four prompts, and three of them have an output contract Python
+matches literally: `review-architecture` must emit `## PR Review` or
+`_extract_review_body` recovers nothing and the PR gets the unparseable-output
+notice instead of the review; `bot-review-triage` must emit
+`classification: "actionable"` or every thread reply is dropped without a warning;
+`silent-failure-hunter` must emit `CRITICAL`/`HIGH`/`MEDIUM` or severity ordering
+and color degrade. So the review path does *not* reuse the chat-side
+`get_language_instruction()` string — that one is absolute ("all your responses") —
+but a review-specific directive that names those tokens and tells the model to keep
+them in English. The scaffolding Python renders itself (the heading it builds, the
+tier names, the verdict line) stays English for the same structural reason. A
+non-English preference therefore yields translated prose inside English headings,
+which is the intended boundary, not an oversight.
 
 The general point: a prompt is the wrong place to store a runtime preference. Config
 belongs at the funnel; prompts should describe the task.
