@@ -89,11 +89,12 @@ command at any time, so disabled mode means that process exits immediately with
 an actionable message. Kōan never edits or installs client configuration.
 
 `mcp.tools_allow_destructive` defaults to `false`. It is the single operator
-gate on reach: it controls whether the named destructive mission-delete tool
-appears in `tools/list` **and** whether `exec_operation` may dispatch a
-`DENIED_NAMED_OPERATIONS` route. One flag governs both so the risk ladder cannot
-invert — a deployment that hides mission deletion can never simultaneously
-expose shutdown.
+gate on reach, and it governs **both** surfaces identically: whether a
+destructive route appears in `tools/list` as a named tool, and whether
+`exec_operation` may dispatch that same route or a `DENIED_NAMED_OPERATIONS`
+route. One flag governs both so the risk ladder cannot invert — a deployment
+that hides mission deletion can never simultaneously expose it through the
+escape hatch, nor expose shutdown.
 
 The `mcp` key predates this component as a bare list of provider client config
 paths. Both shapes stay valid: a list means "provider configs only", a mapping
@@ -187,11 +188,19 @@ to it.
 both surfaces:
 
 - Named-tool publication, always.
-- `exec_operation` dispatch, unless `mcp.tools_allow_destructive` is true. With
-  the default `false`, `exec_operation` reaches every documented operation
-  *except* a denied route, and a denied `operation_id` is refused with a
-  `ToolError` naming the flag that would permit it — before any request leaves
-  the process. With the flag true, it reaches every documented operation.
+- `exec_operation` dispatch, unless `mcp.tools_allow_destructive` is true.
+
+**`exec_operation` must refuse at least what named tools hide.** Its gate is
+therefore the union of two sets, derived — never restated — from the same
+signals the named-tool filter reads: the deny-listed routes, and every
+operation whose route is destructive (`Operation.destructive`). With the
+default `false`, `exec_operation` reaches every documented operation *except*
+those; a refused `operation_id` raises a `ToolError` naming the flag that would
+permit it, before any request leaves the process. With the flag true, it
+reaches every documented operation. Deriving the destructive half from the
+route rather than from a hand-maintained list is what makes a newly marked
+`x-koan-destructive` endpoint closed by default: a gate that had to be extended
+by hand would fail open on exactly the route that most needs it.
 
 The gate resolves each denied `(method, path)` to its concrete `operationId`
 from the same loaded document the client dispatches against, so a renamed
@@ -204,7 +213,9 @@ from the same loaded document the client dispatches against, so a renamed
   or markers change.
 - Shutdown, restart, update, release update, and project create/update/delete
   never receive named tools.
-- Mission deletion stays absent unless `mcp.tools_allow_destructive` is true.
+- Mission deletion stays absent unless `mcp.tools_allow_destructive` is true —
+  from `tools/list` *and* from `exec_operation`, which refuses every destructive
+  route while the flag is false.
 - Under the default configuration no MCP surface reaches shutdown, restart,
   update, release update, or project create/update/delete — `exec_operation`
   refuses them too, so the lesser mission-delete gate can never be stricter

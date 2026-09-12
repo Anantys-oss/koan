@@ -127,6 +127,26 @@ class TestCreateMission:
         assert response.status_code == 202
         assert "/status" in (instance_dir / "missions.md").read_text()
 
+    @pytest.mark.parametrize(
+        "command",
+        ["/claude.md", "/français", "/core.plan add dark mode"],
+    )
+    def test_dispatchable_command_shapes_are_still_queued(
+        self,
+        api_client,
+        instance_dir,
+        command,
+    ):
+        """Dotted and non-ASCII verbs dispatch, so they must not be rejected."""
+        response = api_client.post(
+            "/v1/missions",
+            json={"command": command},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 202
+        assert command in (instance_dir / "missions.md").read_text()
+
     def test_command_alias_is_normalized_to_canonical(
         self,
         api_client,

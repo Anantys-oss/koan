@@ -16,7 +16,7 @@ from app.apiclient.spec import load_operations, load_spec
 from app.mcp.catalog import (
     ToolDefinition,
     build_tool_definitions,
-    denied_operation_ids,
+    exec_denied_operation_ids,
 )
 from app.mcp.config import get_api_base_url
 
@@ -80,12 +80,15 @@ _EXEC_DESCRIPTION = (
 _EXEC_DESCRIPTION_GATED = (
     "Operations denied a named tool — shutdown, restart, update, release "
     "update, and project create/update/delete — are refused here too, because "
-    "`mcp.tools_allow_destructive` is false."
+    "`mcp.tools_allow_destructive` is false. So is every destructive "
+    "operation hidden from `tools/list` by that same setting, such as "
+    "deleting a mission."
 )
 _EXEC_DESCRIPTION_UNGATED = (
     "`mcp.tools_allow_destructive` is true, so this escape hatch also reaches "
-    "operations denied a named tool, including shutdown, restart, update, "
-    "release update, and project mutation; use it only with explicit approval."
+    "destructive operations and those denied a named tool, including "
+    "shutdown, restart, update, release update, and project mutation; use it "
+    "only with explicit approval."
 )
 
 _FIELD_CONSTRAINTS = {
@@ -373,8 +376,8 @@ def create_server(
 
         register("koan_missions_delete", missions_delete)
 
-    denied_ids = (
-        frozenset() if allow_destructive else denied_operation_ids(operations)
+    denied_ids = exec_denied_operation_ids(
+        operations, allow_destructive=allow_destructive
     )
 
     @server.tool(
