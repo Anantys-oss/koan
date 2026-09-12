@@ -615,9 +615,20 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
             })
             paragraph.clear()
 
+    # Whether we are inside a list item's indented continuation. CommonMark keeps
+    # that continuation open across blank lines and across any number of
+    # intervening paragraphs or nested lists, so it cannot be inferred from the
+    # last node emitted: one flushed continuation paragraph makes `content[-1]` a
+    # paragraph again and every further indented line under the same item turns
+    # into a code block. Only a non-blank, non-indented line ends the list.
+    in_list_continuation = False
+
     i = 0
     while i < len(lines):
         line = lines[i]
+
+        if line.strip() and not line[:1].isspace():
+            in_list_continuation = False
 
         fence = _MD_FENCE_RE.match(line)
         if fence:
@@ -649,9 +660,7 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
         # not code: let it fall through to the blank-line handler below.
         indented_code = (
             _MD_INDENTED_CODE_RE.match(line)
-            if line.strip()
-            and not paragraph
-            and not (content and content[-1].get("type") in ("bulletList", "orderedList"))
+            if line.strip() and not paragraph and not in_list_continuation
             else None
         )
         if indented_code:
@@ -745,6 +754,7 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
                 items.append(_MD_ULIST_RE.match(lines[i]).group(1))
                 i += 1
             content.append({"type": "bulletList", "content": _adf_list_items(items)})
+            in_list_continuation = True
             continue
 
         if _MD_OLIST_RE.match(line):
@@ -754,6 +764,7 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
                 items.append(_MD_OLIST_RE.match(lines[i]).group(1))
                 i += 1
             content.append({"type": "orderedList", "content": _adf_list_items(items)})
+            in_list_continuation = True
             continue
 
         if _MD_QUOTE_RE.match(line):
