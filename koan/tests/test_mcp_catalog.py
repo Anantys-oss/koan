@@ -10,6 +10,7 @@ from app.mcp.catalog import (
     CuratedTool,
     ToolAnnotations,
     build_tool_definitions,
+    denied_operation_ids,
 )
 
 
@@ -123,6 +124,22 @@ def test_deny_list_pins_every_operation_that_must_never_be_a_tool():
             ("DELETE", "/v1/projects/{name}"),
         }
     )
+
+
+def test_denied_operation_ids_resolve_from_the_document(operations):
+    """The escape hatch dispatches by operationId, so the gate needs those."""
+    denied = denied_operation_ids(operations)
+
+    assert denied == {
+        "admin_shutdown_post",
+        "admin_restart_post",
+        "admin_update_post",
+        "admin_update_release_post",
+        "projects_add_project_post",
+        "projects_patch_project_patch",
+        "projects_delete_project_delete",
+    }
+    assert "missions_delete_mission_delete" not in denied
 
 
 def test_deny_list_overrides_a_curated_entry(monkeypatch, api_spec_path):

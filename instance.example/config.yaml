@@ -508,7 +508,9 @@ cli_provider: "claude"
 #                                     #   Streamable HTTP at /mcp as the 'mcp' daemon.
 #   host: "127.0.0.1"                 # str; HTTP bind host; default loopback
 #   port: 8421                        # int; HTTP listen port
-#   tools_allow_destructive: false    # bool; expose mission delete; default false
+#   tools_allow_destructive: false    # bool; expose mission delete AND let
+#                                     #   exec_operation reach shutdown/restart/
+#                                     #   update/project mutation; default false
 #   configs:                          # list[str]; optional provider MCP JSON paths; default []
 #     - "/path/to/mcp-servers.json"
 
