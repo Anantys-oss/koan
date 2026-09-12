@@ -132,7 +132,13 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   the plan just published while reporting success. Jira's public REST API exposes no
   reply-to-comment operation, so parts carry `?focusedCommentId=` previous/next links
   rather than being threaded — those links are attached in a second pass, once every
-  part has an id.
+  part has an id. That pass edits **the ids the first pass returned**, for the same
+  reason retirement skips them: they are comments this publish just wrote and read-back
+  verified, so their authorship is settled and must not be re-derived from a fresh
+  listing. Re-deriving would demand proof the tenant may be unable to give —
+  properties dropped and `/myself` unavailable — and the refusal would post a second
+  copy of a part already on the issue, one the follow-up read-back can never verify, so
+  the plan would be abandoned unlinked after accumulating a duplicate per run.
 
 ## Evaluation
 

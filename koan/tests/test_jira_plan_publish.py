@@ -700,6 +700,57 @@ def test_long_plan_creates_linked_verified_parts(tmp_path):
     assert load_staged_plan(URL, str(tmp_path)) is None
 
 
+def test_navigation_pass_edits_its_own_parts_on_an_unattributable_tenant(tmp_path):
+    """Linking parts must not depend on re-proving authorship of our own writes.
+
+    With comment properties dropped *and* ``/myself`` unreachable, nothing on
+    the issue can be attributed to Koan. The navigation pass is editing the very
+    comments this publish just created and verified, so it must link them in
+    place — re-deriving the target would refuse the overwrite and post a
+    duplicate of every part instead.
+    """
+    body = _split_fixture(3)
+    stage_plan(URL, body, str(tmp_path))
+    comments = []
+
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": str(len(comments) + 1),
+            "body": _as_jira_returns(rendered),
+            "properties": {},  # tenant drops entity properties
+            "author_account_id": "koan-account",
+        })
+        return True
+
+    def edit(_key, comment_id, rendered, properties=None):
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = _as_jira_returns(rendered)
+        return True
+
+    with (
+        patch("app.jira_notifications.jira_self_identity", return_value=("", "")),
+        patch(
+            "app.jira_plan_publish.jira_list_comments_checked",
+            side_effect=lambda _k: comments,
+        ),
+        patch("app.jira_plan_publish.jira_add_comment", side_effect=add) as add_comment,
+        patch("app.jira_plan_publish.jira_edit_comment", side_effect=edit),
+        patch("app.jira_plan_publish.time.sleep"),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, ids = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is True
+    assert ids == "1, 2, 3"
+    assert add_comment.call_count == 3  # no duplicate part was posted
+    assert len(comments) == 3
+    # Read back through ADF, so compare on collapsed whitespace.
+    linked = [" ".join(c["body"].split()) for c in comments]
+    assert f"Next part: {URL}?focusedCommentId=2" in linked[0]
+    assert f"Previous part: {URL}?focusedCommentId=2" in linked[2]
+    assert load_staged_plan(URL, str(tmp_path)) is None
+
+
 def test_rejected_navigation_edit_is_not_reported_as_published(tmp_path):
     """A nav edit Jira refuses must fail the publish, not verify on revision alone.
 
