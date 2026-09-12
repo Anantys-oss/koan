@@ -115,7 +115,12 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   body-replacing write, so the guarantee that a reviewer's quoted footer is
   never what Koan edits holds even on a tenant whose self-identity lookup
   fails; the cost is a duplicate comment, which is recoverable, instead of a
-  destroyed human comment, which is not. Read-only matching may stay lenient
+  destroyed human comment, which is not. The fallback answers "whose comment is
+  this?", so it does not apply to a comment id the *same* publish just wrote and
+  read-back verified — a follow-up write to that id (the `/plan` navigation pass)
+  edits it directly rather than re-deriving a target, because re-deriving would
+  trade a resolved authorship question for an unanswerable one and pay the
+  duplicate for nothing. Read-only matching may stay lenient
   only while no comment on the issue carries the property; once one does, an
   unattributable comment without it is not Koan's either.
   Legacy `<!-- koan-jira-outcome:… -->` markers are lookup-only migration

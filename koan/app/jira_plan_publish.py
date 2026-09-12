@@ -452,11 +452,19 @@ def _upsert_part(
     navigation: str,
     attempts: int,
     always_write: bool = False,
+    comment_id: str = "",
 ) -> Tuple[bool, str]:
     """Create or update one plan part, requiring a Jira read-back match.
 
     ``always_write`` forces the edit used to attach navigation links, whose
     targets are only known once every part has an id.
+
+    ``comment_id`` is the id this same publish already wrote and read-back
+    verified for this part. The navigation pass passes it so the edit target is
+    known rather than re-derived from a fresh listing: on a tenant that drops
+    comment properties *and* answers no ``/myself``, re-deriving proves nothing
+    about authorship, and refusing the overwrite would post a duplicate of a
+    part that is already on the issue.
 
     Returns ``(published, detail)``: the Jira comment id on success, and
     otherwise a machine-readable failure reason (``""`` for the generic
@@ -493,8 +501,12 @@ def _upsert_part(
 
         # `settled` came from a read-only match, but from here on it is an edit
         # target — the navigation pass rewrites the comment it already verified.
-        # Only a comment Koan can prove it wrote may be overwritten.
-        existing = settled if settled is not None and _provably_koan(settled) else None
+        # A caller-supplied id needs no authorship proof: this publish created
+        # and verified that comment moments ago. Otherwise only a comment Koan
+        # can prove it wrote may be overwritten.
+        existing: Optional[dict] = {"id": comment_id} if comment_id else None
+        if existing is None and settled is not None and _provably_koan(settled):
+            existing = settled
         if existing is None:
             existing = _locate_part(comments, part_number)
         if existing is None and created_unverified:
@@ -694,7 +706,7 @@ def publish_staged_plan(
             posted, detail = _upsert_part(
                 issue_key, revision, part, index + 1, part_count,
                 _navigation(issue_url, comment_ids, index), attempts,
-                always_write=True,
+                always_write=True, comment_id=comment_ids[index],
             )
             if not posted:
                 return failure(index + 1, detail or "navigation_failed")
