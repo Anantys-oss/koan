@@ -388,6 +388,33 @@ class TestIndentedCodeDoesNotSwallowProse:
 
         assert "codeBlock" not in _types(doc)
 
+    def test_nested_bullet_after_a_continuation_paragraph_stays_a_list(self):
+        """The continuation survives an intervening paragraph.
+
+        `/plan` bodies routinely put prose *and* a sub-bullet under one step. The
+        paragraph is flushed first, so a rule that looks only at the last emitted
+        node sees a `paragraph` and turns the sub-bullet into a code block — which
+        `/implement` then reads back as a fenced block instead of a list item.
+        """
+        doc = markdown_to_adf("- Parent\n\n    Explanation\n\n    - Child")
+
+        assert "codeBlock" not in _types(doc)
+
+    def test_second_continuation_paragraph_under_a_step_is_not_code(self):
+        doc = markdown_to_adf(
+            "1. Do the thing\n\n    First explanation.\n\n    Second explanation.\n"
+        )
+
+        assert "codeBlock" not in _types(doc)
+
+    def test_continuation_ends_at_the_next_flush_left_line(self):
+        """A list continuation must not keep swallowing the rest of the document."""
+        doc = markdown_to_adf(
+            "- Parent\n\n    Explanation\n\nExample:\n\n    def f():\n        return 1"
+        )
+
+        assert "codeBlock" in _types(doc)
+
     def test_a_genuine_indented_code_block_still_renders_as_code(self):
         doc = markdown_to_adf("Example:\n\n    def f():\n        return 1")
 
