@@ -579,6 +579,34 @@ def test_expired_stage_is_discarded(tmp_path):
     assert not path.exists()
 
 
+def test_stage_is_absent_for_a_run_asking_for_more_critique_rounds(tmp_path):
+    """Replaying a single-pass plan at `--iterations 3` would drop two rounds."""
+    stage_plan(URL, "single-pass plan", str(tmp_path), 1)
+
+    assert load_staged_plan(URL, str(tmp_path), 3) is None
+    assert load_staged_plan(URL, str(tmp_path), 1) == "single-pass plan"
+
+
+def test_stage_serves_a_run_asking_for_no_more_rounds_than_produced_it(tmp_path):
+    """A refined stage still answers a plainer request — regenerating wastes it."""
+    stage_plan(URL, "three-pass plan", str(tmp_path), 3)
+
+    assert load_staged_plan(URL, str(tmp_path), 1) == "three-pass plan"
+    assert load_staged_plan(URL, str(tmp_path), 3) == "three-pass plan"
+
+
+def test_stage_without_a_recorded_round_count_reads_as_single_pass(tmp_path):
+    """Stages written before the count existed must not claim refinement."""
+    stage_plan(URL, "legacy plan", str(tmp_path))
+    path = stage_path_for(URL, str(tmp_path))
+    payload = json.loads(path.read_text())
+    payload.pop("iterations", None)
+    path.write_text(json.dumps(payload))
+
+    assert load_staged_plan(URL, str(tmp_path), 2) is None
+    assert load_staged_plan(URL, str(tmp_path)) == "legacy plan"
+
+
 def test_corrupt_stage_is_reported_not_silently_treated_as_absent(tmp_path):
     """A truncated stage file must not read as "nothing was staged".
 

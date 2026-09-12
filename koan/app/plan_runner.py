@@ -183,6 +183,7 @@ def _deliver_jira_plan(
     instance_dir: str,
     notify_fn,
     comment_body: Optional[str] = None,
+    iterations: int = 1,
 ) -> Tuple[bool, str]:
     """Stage (when given a body) and publish the Jira plan comment.
 
@@ -201,7 +202,7 @@ def _deliver_jira_plan(
 
     if comment_body is not None:
         try:
-            stage_plan(issue_url, comment_body, instance_dir)
+            stage_plan(issue_url, comment_body, instance_dir, iterations)
         except OSError as e:
             # Before staging lands the plan exists only in memory. Losing it
             # silently would throw away the model run this module protects, so
@@ -285,11 +286,12 @@ def _run_issue_plan(
     # delivery before spending another model run generating an equivalent plan.
     # Only when this run adds nothing: a staged plan predates the instructions
     # supplied now, so republishing it would silently drop them and still
-    # report success.
+    # report success. `--iterations` counts as such an addition — a stage built
+    # with fewer critique rounds is reported absent by load_staged_plan.
     if ref.provider == "jira" and not effective_context:
         from app.jira_plan_publish import load_staged_plan
 
-        if load_staged_plan(issue_url, instance_dir) is not None:
+        if load_staged_plan(issue_url, instance_dir, iterations) is not None:
             posted, detail = _deliver_jira_plan(issue_url, instance_dir, notify_fn)
             if not posted:
                 return False, detail
@@ -368,7 +370,8 @@ def _run_issue_plan(
 
     if ref.provider == "jira":
         posted, detail = _deliver_jira_plan(
-            issue_url, instance_dir, notify_fn, comment_body=comment_body,
+            issue_url, instance_dir, notify_fn,
+            comment_body=comment_body, iterations=iterations,
         )
         if not posted:
             return False, detail

@@ -355,22 +355,48 @@ def _clear_staged_plan(issue_url: str, instance_dir: str) -> bool:
         return False
 
 
-def stage_plan(issue_url: str, comment_body: str, instance_dir: str = "") -> None:
-    """Atomically persist a generated plan before trying to publish it."""
+def stage_plan(
+    issue_url: str,
+    comment_body: str,
+    instance_dir: str = "",
+    iterations: int = 1,
+) -> None:
+    """Atomically persist a generated plan before trying to publish it.
+
+    ``iterations`` records how many critique/refine rounds produced this body,
+    so a later run asking for more of them is not served this copy.
+    """
     _write_stage(issue_url, instance_dir, {
         "issue_url": issue_url,
         "issue_key": parse_jira_url(issue_url),
         "comment_body": comment_body,
         "staged_at": time.time(),
         "sessions": 0,
+        "iterations": _coerce_iterations(iterations),
     })
 
 
-def load_staged_plan(issue_url: str, instance_dir: str = "") -> Optional[str]:
+def _coerce_iterations(value: object) -> int:
+    """Critique rounds behind a plan; 1 for anything unusable or legacy."""
+    usable = isinstance(value, int) and not isinstance(value, bool) and value > 0
+    return int(value) if usable else 1
+
+
+def load_staged_plan(
+    issue_url: str,
+    instance_dir: str = "",
+    wanted_iterations: int = 0,
+) -> Optional[str]:
     """Return the pending plan body for this issue, if a publish needs resuming.
 
     An expired stage is discarded (and reported absent) so a permanently
     undeliverable plan eventually gives way to a freshly generated one.
+
+    ``wanted_iterations`` lets a caller state how many critique rounds the run
+    it is serving asked for. A stage produced with fewer rounds predates that
+    request exactly as one predates newly supplied instructions, so it is
+    reported absent rather than replayed — republishing it would silently drop
+    the refinement the requester asked for and still report success.
     """
     data = _read_stage(issue_url, instance_dir)
     if data is None:
@@ -384,6 +410,11 @@ def load_staged_plan(issue_url: str, instance_dir: str = "") -> Optional[str]:
         # stage_plan() overwrites this same path. The failed delete is audited
         # by _clear_staged_plan rather than passed back.
         _clear_staged_plan(issue_url, instance_dir)
+        return None
+
+    if wanted_iterations > _coerce_iterations(data.get("iterations")):
+        # Left on disk deliberately: the caller regenerates, and the fresh
+        # plan overwrites this same path a moment later.
         return None
     return data["comment_body"]
 
