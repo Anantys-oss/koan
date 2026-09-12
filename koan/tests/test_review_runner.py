@@ -2874,13 +2874,26 @@ class TestRunClaudeReview:
         `_run_claude_review` funnels four prompts, three of which have a
         literal output contract Python matches: `## PR Review` (recovered by
         `_extract_review_body`), the `classification` value `actionable`, and
-        the `CRITICAL`/`HIGH`/`MEDIUM` severities. An unscoped "write
-        everything in french" directive loses all three silently.
+        the `CRITICAL`/`HIGH`/`MEDIUM` severities. Titles carry two more:
+        `review_triage` substring-matches `[Deferred]` / `[Pre-Existing Issue]`
+        to force a finding non-blocking, and a title is prose the directive
+        otherwise pins to the configured language. An unscoped "write
+        everything in french" directive loses all of them silently.
         """
+        from app.review_reconcile import PRE_EXISTING_PREFIX
         from app.review_runner import _with_language_directive
+        from app.review_triage import DEFERRED_PREFIX
 
         directive = _with_language_directive("BODY")[: -len("BODY")]
-        for token in ("## PR Review", "actionable", "CRITICAL", "severity"):
+        for token in (
+            "## PR Review",
+            "actionable",
+            "CRITICAL",
+            "severity",
+            "needs_clarification",
+            DEFERRED_PREFIX,
+            PRE_EXISTING_PREFIX,
+        ):
             assert token in directive
 
     @patch("app.language_preference.get_language", return_value="french")

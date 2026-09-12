@@ -983,7 +983,6 @@ def _with_language_directive(prompt: str) -> str:
     """
     try:
         from app.language_preference import get_language
-        from app.prompts import load_prompt
         language = get_language()
         directive = (
             load_prompt("review-language-directive", LANGUAGE=language)

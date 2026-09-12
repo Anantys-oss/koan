@@ -303,8 +303,12 @@ See `docs/users/skills.md` for the end-user `/review` reference and
   contract: the `## PR Review` / `## Summary` headings a prompt asks the model to
   emit verbatim (`_extract_review_body` regex-matches them to recover a review at
   all — a miss posts the unparseable-output notice instead), the `classification`
-  value `actionable` consumed by `_run_bot_comment_triage`, and the
-  `CRITICAL`/`HIGH`/`MEDIUM` severities the error hunter orders and colors by. The
+  value `actionable` consumed by `_run_bot_comment_triage`, the
+  `CRITICAL`/`HIGH`/`MEDIUM` severities the error hunter orders and colors by, the
+  `[Deferred]` / `[Pre-Existing Issue]` title prefixes `review_triage.enforce_deferred`
+  and `enforce_pre_existing` substring-match (a translated prefix silently blocks a PR
+  over a finding the human deferred), and the `comment_replies[].action` value
+  `needs_clarification`. The
   review path therefore does **not** reuse the chat-side
   `get_language_instruction()` string — that one is absolute ("all your responses")
   — but a review-specific directive,
