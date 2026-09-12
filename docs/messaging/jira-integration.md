@@ -290,6 +290,14 @@ and simple GitHub-style tables become native Jira nodes. Bare URLs receive an
 ADF `link` mark automatically, so acknowledgments, plans, errors, reviews, and
 future message types do not need template-specific auto-link logic.
 
+Indentation is only read as a code block where CommonMark allows one. Indented
+text that continues a paragraph, or that continues a list item, stays prose — the
+continuation holds across blank lines and across any number of intervening
+paragraphs or nested bullets, and ends at the first non-blank, non-indented line.
+Without that rule the prose and sub-bullets `/plan` nests under a numbered step
+would publish as monospace code, and `/implement` would read the mangled plan
+back out of the comment.
+
 HTML comments are removed before ordinary Jira prose is converted. This
 prevents internal markers such as `<!-- koan-jira-outcome:… -->` from becoming
 visible text. Comment syntax inside inline code spans, fenced code blocks, or
