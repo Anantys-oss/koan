@@ -6,7 +6,6 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
-from app.api.openapi_metadata import openapi_operation, query_parameter
 from app.api.mission_index import (
     _normalize_for_match,
     cancel_mission,
@@ -17,6 +16,7 @@ from app.api.mission_index import (
     reconcile,
     update_mission_text,
 )
+from app.api.openapi_metadata import openapi_operation, query_parameter
 
 bp = Blueprint("missions", __name__)
 
