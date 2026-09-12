@@ -203,15 +203,83 @@ def test_exec_operation_reaches_unnamed_operation(api_spec_path):
         server.call_tool(
             "exec_operation",
             {
-                "operation_id": "admin_shutdown_post",
-                "path": {},
+                "operation_id": "missions_edit_mission_patch",
+                "path": {"mission_id": "mission-1"},
                 "query": {},
-                "body": {},
+                "body": {"text": "revised"},
             },
         )
     )
 
-    assert calls == [("admin_shutdown_post", {"path": {}, "query": {}, "body": {}})]
+    assert calls == [
+        (
+            "missions_edit_mission_patch",
+            {
+                "path": {"mission_id": "mission-1"},
+                "query": {},
+                "body": {"text": "revised"},
+            },
+        )
+    ]
+    assert json.loads(result.content[0].text) == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "admin_shutdown_post",
+        "admin_restart_post",
+        "admin_update_post",
+        "admin_update_release_post",
+        "projects_add_project_post",
+        "projects_patch_project_patch",
+        "projects_delete_project_delete",
+    ],
+)
+def test_exec_operation_refuses_denied_operation_by_default(
+    api_spec_path,
+    operation_id,
+):
+    """The deny-list gates reach, not just naming: no request may leave."""
+    calls = []
+
+    class Client:
+        def execute_operation(self, operation_id, **kwargs):
+            calls.append(operation_id)
+            return {"ok": True}
+
+    server = create_server(
+        spec_path=api_spec_path,
+        allow_destructive=False,
+        client=Client(),
+    )
+
+    with pytest.raises(Exception, match="mcp.tools_allow_destructive"):
+        asyncio.run(
+            server.call_tool("exec_operation", {"operation_id": operation_id})
+        )
+
+    assert calls == []
+
+
+def test_exec_operation_reaches_denied_operation_when_operator_opts_in(api_spec_path):
+    calls = []
+
+    class Client:
+        def execute_operation(self, operation_id, **kwargs):
+            calls.append(operation_id)
+            return {"ok": True}
+
+    server = create_server(
+        spec_path=api_spec_path,
+        allow_destructive=True,
+        client=Client(),
+    )
+    result = asyncio.run(
+        server.call_tool("exec_operation", {"operation_id": "admin_shutdown_post"})
+    )
+
+    assert calls == ["admin_shutdown_post"]
     assert json.loads(result.content[0].text) == {"ok": True}
 
 

@@ -150,6 +150,22 @@ DENIED_NAMED_OPERATIONS: frozenset[OperationKey] = frozenset(
 )
 
 
+def denied_operation_ids(operations: list[Operation]) -> frozenset[str]:
+    """Express ``DENIED_NAMED_OPERATIONS`` as the operationIds it denies.
+
+    The deny-list is keyed by ``(method, path)`` so a renamed operationId cannot
+    slip past it. ``exec_operation`` is handed an operationId, so it needs the
+    same policy in that vocabulary — resolved from the loaded document rather
+    than restated, which is what keeps the gate and the named-tool filter from
+    drifting apart.
+    """
+    return frozenset(
+        operation.operation_id
+        for operation in operations
+        if (operation.method, operation.path) in DENIED_NAMED_OPERATIONS
+    )
+
+
 def build_tool_definitions(
     operations: list[Operation],
     *,
