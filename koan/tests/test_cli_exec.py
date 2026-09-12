@@ -2,7 +2,7 @@
 
 import os
 import subprocess
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, call, MagicMock
 
 import pytest
 
@@ -648,6 +648,76 @@ class TestStreamWithTimeout:
 
         assert result.timed_out is True
         assert result.timeout_kind == "idle"
+
+    def test_idle_timeout_kills_the_group_with_sigkill(self):
+        """The idle kill must not be SIGTERM-then-escalate.
+
+        Escalation stops once the *leader* exits, so a descendant that ignores
+        SIGTERM survives holding the inherited stdout write end — the read loop
+        never sees EOF, never reaches the idle check, and the hang gets
+        misattributed to ``rebase_review_max_duration``. A regression back to
+        the graceful default would be silent, so the kill mode is pinned here.
+        """
+        import signal as _signal
+        import threading
+
+        killed = threading.Event()
+
+        class _BlockingStream:
+            def __iter__(self):
+                killed.wait(timeout=10)
+                return iter([])
+
+            def read(self):
+                return ""
+
+            def close(self):
+                return None
+
+        proc = MagicMock()
+        proc.stdout = _BlockingStream()
+        proc.stderr = _FakeStream(read_text="")
+        proc.returncode = -9
+        proc.pid = 12345
+        proc.wait.return_value = -9
+
+        with patch("app.subprocess_runner.os.killpg",
+                   side_effect=lambda *a, **kw: killed.set()) as killpg, \
+                patch("app.subprocess_runner.os.getpgid", return_value=12345):
+            stream_with_timeout(proc, timeout=10, idle_timeout=0.5)
+
+        assert killpg.call_args_list[0] == call(12345, _signal.SIGKILL)
+
+    def test_idle_watchdog_fire_after_stream_end_kills_nothing(self):
+        """A late fire must be a no-op, not a killpg on a recycled PID.
+
+        ``Timer.cancel()`` alone cannot close the race — it does nothing once
+        ``_fire`` has begun — and the ``graceful=False`` path has no ``poll()``
+        guard to make the late kill harmless, so the stream end must also
+        ``mark_completed()``.
+        """
+        from app.subprocess_runner import LivenessWatchdog
+
+        made = []
+        real_init = LivenessWatchdog.__init__
+
+        def spy_init(self, *args, **kwargs):
+            real_init(self, *args, **kwargs)
+            made.append(self)
+
+        proc = _fake_proc(["done\n"], returncode=0)
+
+        with patch.object(LivenessWatchdog, "__init__", spy_init):
+            result = stream_with_timeout(proc, timeout=10, idle_timeout=5)
+
+        assert made, "no idle watchdog was armed"
+        with patch("app.subprocess_runner.os.killpg") as killpg:
+            # The Timer the stream end cancelled had already entered _fire.
+            made[0]._fire()
+
+        killpg.assert_not_called()
+        assert made[0].fired is False
+        assert result.timed_out is False
 
     def test_max_duration_timeout_sets_timeout_kind(self):
         import threading

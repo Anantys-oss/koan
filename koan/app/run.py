@@ -3532,8 +3532,10 @@ def _run_skill_mission(
         # Same containment as the generic mission path: /review, /fix and
         # /implement drive real build tools, and a Gradle daemon started here
         # detaches to PPID 1 where no process group can reach it. The inner
-        # provider spawn in provider/__init__.py deliberately shares this
-        # runner's process group, so it inherits this cgroup too.
+        # provider spawn in provider/__init__.py shares this runner's process
+        # group unless it opted into an idle bound (then it gets its own
+        # session); either way it inherits this cgroup, which comes from fork,
+        # not from the process group.
         def _spawn_skill(argv, launcher, **kwargs):
             # Spawn through this module's own subprocess binding so the scope
             # wrapping stays invisible to callers (and to the existing

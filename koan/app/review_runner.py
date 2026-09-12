@@ -1220,6 +1220,14 @@ def _reflect_findings(
         prompt, project_path, model=model, project_name=project_name,
     )
     if not raw_output:
+        # Without this, a reflect pass that never ran is indistinguishable from
+        # one that ran and retained every finding — the low-signal ones get
+        # posted with no record that scoring was skipped.
+        print(
+            f"[reflect] pass produced no output — keeping all findings "
+            f"unreflected: {error or 'no error reported'}",
+            file=sys.stderr,
+        )
         return findings, list(range(len(findings)))
 
     # Parse and validate response
