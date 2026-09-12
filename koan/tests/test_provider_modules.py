@@ -2851,7 +2851,12 @@ class TestStreamingReadLoopIsInactivityBounded:
         )
         started = _time.monotonic()
         try:
-            with pytest.raises(RuntimeError, match="no output for 2s"):
+            # The suffix is what keeps a stall diagnosable from the error
+            # alone: a pass that printed most of its findings and then went
+            # silent must not be reported as a bare timeout.
+            with pytest.raises(
+                RuntimeError, match="no output for 2s.*Partial output.*session init"
+            ):
                 self._run(proc, idle_timeout=2)
         finally:
             proc.kill()
@@ -2860,6 +2865,73 @@ class TestStreamingReadLoopIsInactivityBounded:
         assert elapsed < self.STALL_SECONDS / 2, (
             f"returned in {elapsed:.1f}s — the bound did not reach the read loop"
         )
+
+    def test_a_stall_carries_the_stderr_the_provider_printed(self):
+        """stderr is usually the only statement of *why* it went silent.
+
+        The stall branch sits above the normal drain, so without an explicit
+        read the expired token (or whatever the CLI complained about) never
+        reaches the caller and the operator just re-runs into the same wall.
+        """
+        proc = self._spawn(
+            "import sys,time\n"
+            "sys.stderr.write('Error: OAuth token expired\\n')\n"
+            "sys.stderr.flush()\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            with pytest.raises(RuntimeError, match="OAuth token expired"):
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_silence_after_the_result_envelope_returns_the_verdict(self):
+        """The loop drains to EOF, so teardown silence trips the same watchdog.
+
+        A CLI that emits its terminal ``result`` and then goes quiet shutting
+        down MCP servers has produced a complete pass. Reporting that as a
+        stall would demote a finished review to a truncated error string —
+        the exact outcome this bound exists to prevent, reached from the
+        other end.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "sys.stdout.write(json.dumps("
+            "{'type': 'result', 'result': 'VERDICT: approved'}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert "VERDICT: approved" in out
+
+    def test_a_genuine_stall_still_records_what_it_burned(self):
+        """Usage is persisted on every other exit; the stall must match.
+
+        A pass that streamed for minutes before going silent is the run that
+        consumed the most quota — dropping its snapshot under-counts exactly
+        the runs that matter most to budget tracking.
+        """
+        proc = self._spawn(
+            "import sys,time\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        with patch("app.provider._persist_stream_usage_snapshot") as persist:
+            try:
+                with pytest.raises(RuntimeError, match="no output for 2s"):
+                    self._run(proc, idle_timeout=2)
+            finally:
+                proc.kill()
+                proc.wait()
+        assert persist.called, "a stalled pass recorded no usage at all"
 
     def test_a_streaming_provider_is_not_killed_by_the_idle_bound(self):
         """Every consumed line heartbeats, so steady progress survives."""

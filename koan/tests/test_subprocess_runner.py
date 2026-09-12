@@ -216,6 +216,51 @@ class TestLivenessWatchdog:
         assert lw.fired is False
         callback.assert_not_called()
 
+    def test_graceful_false_uses_force_kill(self):
+        """Callers reading an inherited pipe need the whole group SIGKILLed.
+
+        The graceful path stops escalating once the leader exits, so a
+        SIGTERM-ignoring descendant keeps the pipe's write end open and the
+        reader stays blocked — the hang the watchdog was armed to end.
+        """
+        proc = MagicMock()
+        proc.pid = 42
+        fired = threading.Event()
+
+        with patch("app.subprocess_runner.os.getpgid", return_value=100), \
+             patch("app.subprocess_runner.os.killpg",
+                   side_effect=lambda *a: fired.set()) as killpg:
+            lw = LivenessWatchdog(proc, 0.1, graceful=False).start()
+            fired.wait(timeout=2)
+            lw.cancel()
+
+        killpg.assert_called_with(100, signal.SIGKILL)
+
+    def test_mark_completed_blocks_fire(self):
+        """cancel() is a no-op once _fire has begun; the flag is not."""
+        proc = MagicMock()
+        proc.poll.return_value = None
+        callback = MagicMock()
+
+        with patch("app.subprocess_runner.threading.Timer") as TimerMock:
+            captured = {}
+
+            def factory(timeout, fn):
+                captured["fn"] = fn
+                return MagicMock()
+
+            TimerMock.side_effect = factory
+            lw = LivenessWatchdog(
+                proc, 10, on_timeout=callback, graceful=False,
+            ).start()
+            lw.mark_completed()
+            with patch("app.subprocess_runner.os.killpg") as killpg:
+                captured["fn"]()
+
+        assert lw.fired is False
+        callback.assert_not_called()
+        killpg.assert_not_called()
+
     def test_heartbeat_after_fire_is_noop(self):
         proc = MagicMock()
         proc.poll.return_value = None

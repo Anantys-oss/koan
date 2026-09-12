@@ -125,10 +125,18 @@ where a group kill can happen, and nowhere else.
 
 **Residual, accepted.** An opted-in child *is* outside the outer group
 teardown, so an abort or `skill_timeout` firing while the provider is actively
-streaming leaves it running. What makes the trade worth taking is that such a
-child carries its own, strictly tighter, idle bound. Closing the gap fully
-would mean teaching the outer teardown to track isolated provider sessions —
-worth doing, but a larger change than this fix.
+streaming leaves it running. Its own idle watchdog does not save it there: that
+watchdog is a `threading.Timer` living inside the skill-runner process, and the
+teardown being discussed kills that process, so the timer dies with it. What
+actually bounds such a child is narrower — an actively streaming provider takes
+`EPIPE`/`SIGPIPE` on its next write once the read end closes, and on a systemd
+host the mission cgroup still contains it (session isolation does not escape a
+cgroup). Neither applies to a manual abort during a *silent* window on a
+non-systemd host (macOS, where `mission_scope` degrades to
+`start_new_session=True` plus a process-group kill), where the child survives
+unbounded. That is the case the follow-up has to close, by teaching the outer
+teardown to track isolated provider sessions — worth doing, but a larger change
+than this fix.
 
 ## Why the kill is SIGKILL-to-the-group, not SIGTERM-first
 
@@ -152,6 +160,28 @@ violated by a caller in the same file.
 The regression test spawns a child that forks a SIGTERM-ignoring grandchild
 holding the same stdout, then goes silent. Under the graceful kill it blocks
 for the full 30s; under the group SIGKILL it returns in about two.
+
+**run.py's outer watchdog is a deliberate exception.** It feeds a pipe read
+loop too (`_pump_skill_stdout`) and keeps the graceful default, so the same
+survivor hang is reachable there. Its group is the whole skill runner plus the
+build tooling `/review`, `/fix` and `/implement` start, and SIGTERM-first is
+what lets that tooling release git index locks and containers before dying —
+with the `TimeoutExpired` path escalating afterwards. Making it safe is not a
+matter of flipping the flag: it means bounding that read loop independently of
+the kill mode, which belongs to the agent loop's teardown, not to this fix.
+
+## Why a stall after the result envelope is not a stall
+
+The read loop drains to EOF rather than breaking on the terminal `result`
+event, so a CLI that emits its verdict and then goes quiet tearing down (MCP
+servers, telemetry) trips the same watchdog. Raising there would turn a
+finished review into a 200-character error suffix — the outcome this change
+exists to eliminate, reached from the other end. So the stall is reported only
+when no result envelope arrived; otherwise the verdict is returned and the
+resulting `exit -9` is recognised as the watchdog's own kill rather than a
+provider crash. A genuine stall persists the usage snapshot first (it is the
+run that burned the most quota) and carries the drained stderr, which is
+usually the only statement of *why* the provider went silent.
 
 ## Why the watchdog is disarmed the moment stdout ends
 

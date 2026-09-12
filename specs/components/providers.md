@@ -531,9 +531,16 @@ tools — MCP tools must still be allowlisted via qualified names
   end, re-entered through the kill path.
   Residual, accepted: an opted-in child is outside the outer group teardown, so
   an abort or `skill_timeout` that fires while the provider is *actively
-  streaming* leaves it running. It is bounded by its own strictly-tighter idle
-  watchdog, which is why the trade is worth taking; closing it fully needs the
-  outer teardown to track isolated provider sessions.
+  streaming* leaves it running. Its idle watchdog does **not** bound it there —
+  that watchdog is a `threading.Timer` inside the skill-runner process, and the
+  teardown kills that process, taking the timer with it. What bounds it is
+  narrower: a streaming provider takes `EPIPE`/`SIGPIPE` on its next write once
+  the read end closes, and on a systemd host the mission cgroup still contains
+  it (session isolation does not escape a cgroup). Neither holds for a manual
+  abort during a *silent* window on a non-systemd host (macOS, where
+  `mission_scope` degrades to `start_new_session=True` plus a process-group
+  kill), where the child survives unbounded. Closing it fully needs the outer
+  teardown to track isolated provider sessions.
 - **An inactivity watchdog must be disarmed when the read loop ends, not when
   the call returns.** `proc.stderr.read()` and `proc.wait()` run after stdout
   EOF and emit no heartbeats, so a watchdog still armed across them kills a run
@@ -541,12 +548,34 @@ tools — MCP tools must still be allowlisted via qualified names
   surfaces as an opaque `exit -9` instead of an attributable stall. Disarming
   MUST use `mark_completed()` as well as `cancel()`: `threading.Timer.cancel()`
   is a no-op once `_fire` has begun, and the `graceful=False` kill path has no
-  `poll()` guard, so a late fire would `killpg` a possibly recycled PID. The
-  same applies to every `LivenessWatchdog` feeding a pipe read loop —
-  `cli_exec.stream_with_timeout` (the `/rebase` review and CI phases) included,
-  where a graceful kill would make `rebase_review_idle_timeout` ineffective
-  against a SIGTERM-surviving descendant and misattribute the resulting hang to
+  `poll()` guard, so a late fire would `killpg` a possibly recycled PID. This
+  governs the two `LivenessWatchdog`s that bound a provider pipe read loop —
+  `run_command_streaming` and `cli_exec.stream_with_timeout` (the `/rebase`
+  review and CI phases) — where a graceful kill would make
+  `rebase_review_idle_timeout` ineffective against a SIGTERM-surviving
+  descendant and misattribute the resulting hang to
   `rebase_review_max_duration`.
+  **Known exception: `run.py`'s outer skill-runner watchdog** (`run.py`,
+  `first_output_timeout`) also feeds a pipe read loop (`_pump_skill_stdout`)
+  and deliberately keeps the graceful default. Its group is the whole skill
+  runner plus whatever build tooling `/review`, `/fix` and `/implement` spawn,
+  and SIGTERM-first is what lets that tooling release git index locks and
+  containers before dying; the `TimeoutExpired` path that follows escalates
+  with its own `_kill_process_group`. The same SIGTERM-survivor hang is
+  therefore reachable there — a descendant that ignores SIGTERM and inherited
+  the runner's stdout keeps `_pump_skill_stdout` blocked after the leader
+  exits. Converting it means bounding that read loop independently of the kill
+  mode, which is a change to the agent loop's teardown rather than to this
+  component's contract.
+- **A stall detected after the terminal `result` envelope MUST NOT be reported
+  as a stall.** The read loop drains to EOF rather than breaking on the result
+  event, so a CLI that emits its verdict and then goes silent tearing down (MCP
+  servers, telemetry) trips the same watchdog. Raising there would demote a
+  finished pass to a truncated error string, so the result is returned and the
+  resulting `exit -9` is recognised as the watchdog's own kill. A genuine stall
+  (no result envelope) MUST persist the usage snapshot before raising — it is
+  the run that burned the most — and MUST carry the drained stderr, which is
+  usually the only statement of *why* the provider went silent.
 
 ## Integration points
 

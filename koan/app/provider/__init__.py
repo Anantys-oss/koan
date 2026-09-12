@@ -1675,7 +1675,9 @@ def run_command_streaming(
     only run.py's outer skill-runner watchdog ends such a run, by SIGKILLing
     the whole runner. With ``idle_timeout`` set, every consumed line heartbeats
     a :class:`~app.subprocess_runner.LivenessWatchdog` and a stall raises
-    ``RuntimeError`` the caller can attribute and degrade on. A wall-clock cap
+    ``RuntimeError`` the caller can attribute and degrade on — unless the
+    terminal ``result`` envelope already arrived, in which case the silence is
+    the CLI tearing down and the result is returned normally. A wall-clock cap
     would be the wrong instrument — a healthy long pass streams progress for
     many minutes. Default ``None`` keeps the historical unbounded behavior;
     an opted-in caller must pick a value strictly below ``first_output_timeout``
@@ -1739,6 +1741,7 @@ def run_command_streaming(
     failed_result_status = ""
     failed_result_error = ""
     stderr_text = ""
+    stalled_after_result = False
 
     def _flush_text_deltas() -> None:
         if text_delta_parts:
@@ -1775,22 +1778,27 @@ def run_command_streaming(
                 missing_binary_message(e, cmd, provider.name, model_key)
             ) from e
         idle_watchdog = None
-        if bounded:
-            from app.subprocess_runner import LivenessWatchdog
-
-            # graceful=False: SIGTERM-then-escalate stops escalating once the
-            # leader exits, so a descendant that ignores SIGTERM survives while
-            # still holding the inherited stdout write end. The read loop below
-            # would then never see EOF, never reach the `fired` check, and hang
-            # exactly as it did before this watchdog existed.
-            idle_watchdog = LivenessWatchdog(
-                proc, idle_timeout, graceful=False,
-            ).start()
         # Every print() in this loop is the load-bearing watchdog signal —
         # run.py's skill-runner liveness watchdog (600s) resets on each line
         # emitted to stdout. Do not silence these prints; doing so reintroduces
         # the silent-CLI hang this PR fixes (see PR #1372).
         try:
+            if bounded:
+                # Armed inside this try, not before it: the child is already
+                # spawned, so a failure here (Timer.start() under thread
+                # exhaustion) must still reach the finally that closes the
+                # pipes and runs cleanup(), or the CLI is left unreaped.
+                from app.subprocess_runner import LivenessWatchdog
+
+                # graceful=False: SIGTERM-then-escalate stops escalating once
+                # the leader exits, so a descendant that ignores SIGTERM
+                # survives while still holding the inherited stdout write end.
+                # The read loop below would then never see EOF, never reach the
+                # `fired` check, and hang exactly as it did before this
+                # watchdog existed.
+                idle_watchdog = LivenessWatchdog(
+                    proc, idle_timeout, graceful=False,
+                ).start()
             for line in proc.stdout:
                 stripped = line.rstrip("\n")
                 raw_lines.append(stripped)
@@ -1856,16 +1864,36 @@ def run_command_streaming(
                 # than letting it surface as an opaque exit -9 further down.
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=5)
-                # Carry whatever the pass streamed before going silent, same as
-                # the cancelled-end path: a stall after most findings were
-                # printed must stay diagnosable from the error alone.
-                partial = (final_result or "\n".join(text_lines)).strip()
-                suffix = f" Partial output: {partial[:200]}" if partial else ""
-                raise RuntimeError(
-                    f"CLI stalled — no output for {idle_timeout}s{suffix}"
-                )
-            stderr_text = proc.stderr.read() if proc.stderr else ""
-            proc.wait(timeout=timeout)
+                # Drain stderr here: this branch sits above the normal drain,
+                # and what the provider printed before going silent (an expired
+                # token, say) is the only clue to *why* it stalled.
+                with contextlib.suppress(OSError, ValueError):
+                    stderr_text = proc.stderr.read() if proc.stderr else ""
+                if final_result is None:
+                    # Usage is persisted on every other exit; a stall is the run
+                    # that burned the most, so dropping it under-counts quota
+                    # exactly where it matters.
+                    _persist_stream_usage_snapshot(usage_snapshot)
+                    # Carry whatever the pass streamed before going silent, same
+                    # as the cancelled-end path: a stall after most findings were
+                    # printed must stay diagnosable from the error alone.
+                    partial = "\n".join(text_lines).strip()
+                    suffix = f" Partial output: {partial[:200]}" if partial else ""
+                    detail = (stderr_text or "").strip()
+                    err = f" stderr: {detail[-500:]}" if detail else ""
+                    raise RuntimeError(
+                        f"CLI stalled — no output for {idle_timeout}s{suffix}{err}"
+                    )
+                # A terminal `result` envelope already arrived — the read loop
+                # drains to EOF, so silence after it is the CLI tearing down
+                # (MCP servers, telemetry), not a lost pass. Raising here would
+                # demote a finished review to a 200-char error suffix, so the
+                # verdict is carried through and the resulting exit -9 is
+                # recognised below as our own kill rather than a provider crash.
+                stalled_after_result = True
+            else:
+                stderr_text = proc.stderr.read() if proc.stderr else ""
+                proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as e:
             proc.kill()
             proc.wait()
@@ -1914,6 +1942,12 @@ def run_command_streaming(
             )
 
         if proc.returncode != 0:
+            if stalled_after_result:
+                # exit -9 is our own idle watchdog's SIGKILL, fired after the
+                # terminal result envelope. Not a provider failure.
+                from app.claude_step import strip_cli_noise
+                _persist_stream_usage_snapshot(usage_snapshot)
+                return strip_cli_noise(return_text.strip())
             # Max-turns is a graceful limit — return partial output so callers
             # can extract useful results from an incomplete session.
             if hit_max_turns:
