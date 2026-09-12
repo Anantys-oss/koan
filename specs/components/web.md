@@ -4,13 +4,13 @@ title: "Component Spec — Web Dashboard & REST API"
 description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # Component Spec — Web Dashboard & REST API
 
 **Packages:** `koan/app/dashboard/`, `koan/app/dashboard_service/`, `koan/app/api/`,
-`koan/app/cli/`
+`koan/app/cli/`, `koan/app/apiclient/`
 + shared `usage_service.py`, `log_reader.py`
 
 ## Purpose
@@ -37,14 +37,20 @@ dashboard_service/  (pure logic, no Flask client needed to test)
   missions · journal · plans · progress · stats + read_file/mask_sensitive/validate_yaml
 
 api/  (Flask blueprints via create_app())
-  auth (require_token) · mission_index (sidecar) · routes_missions/projects/status/
-  admin/observability · server.py (waitress entrypoint) · openapi_gen.py (spec generator)
+  auth (require_token) · mission_index (sidecar) · skill_catalog (core-only) ·
+  routes_missions/projects/status/skills/admin/observability ·
+  server.py (waitress entrypoint) · openapi_gen.py (spec generator)
 
-cli/  (runtime OpenAPI REST client)
+apiclient/  (shared OpenAPI REST client)
   ├─ spec.py      operation discovery, stable command names, collision checks
+  ├─ request.py   path rendering and transport-neutral request plans
+  ├─ http.py      authenticated synchronous HTTP transport
+  └─ client.py    operationId execution for non-interactive front-ends
+
+cli/  (terminal front-end)
   ├─ config.py    mode-0600 named profiles and environment overrides
-  ├─ commands.py  argparse generation and generic request construction
-  ├─ http.py      confirmation, transport, JSON output, exit-code mapping
+  ├─ commands.py  argparse generation and generic input conversion
+  ├─ http.py      confirmation, JSON output, exit-code mapping
   └─ main.py      generated commands plus configure/raw built-ins
 ```
 
@@ -58,12 +64,28 @@ cli/  (runtime OpenAPI REST client)
 | `api/auth.require_token` | Bearer parse + `hmac.compare_digest`. Token: env `KOAN_API_TOKEN` → `api.token` → `""`. |
 | `api/mission_index.py` | Sidecar `instance/.api-missions.json` (atomic). `record/get/list/reconcile/cancel`; `reconcile()` maps stored text → current `missions.md` section, and prefers the durable `OutcomeStore` for authoritative terminal status + the `outcome` field. Typed `result`/`result_ref` store: `attach_result()` (size-cap spill, summary-preserving), `load_full_result()` (inline-or-spill). `find_active_mission_id()` resolves a mission title back to its id (in_progress→pending→recent) for usage attribution. |
 | `api/mission_results.py` | Command→resolver registry (`register_resolver`, `resolve_mission_result`, `always_inline_keys`); built-in `/review`+`/ultrareview` resolver reads the PR-keyed findings sidecar. |
+| `routes_skills.list_skills_route()` | `GET /v1/skills` returns the API-exposed core skill catalog from `api/skill_catalog.py`; it never loads private `instance/skills/` scopes. |
+| `routes_missions.create_mission()` | Slash-command input is normalized to a leading slash, and an exposed skill's alias is resolved to its canonical verb, before queue insertion. The exposed command set is the *advertised* surface only — never an accept-list — so every slash command the agent understands stays accepted; only input that is not slash-command-shaped returns `422`. Free-form `text` remains unrestricted. |
 | `routes_missions.get_mission_route()` | `GET /v1/missions/{id}` returns the reconciled record (with typed `result`/`result_ref`) **plus** a `usage` object (`aggregate_mission_usage()` over `created`→today): token/cache/cost totals, `call_count`, `models`/`providers`, and an `unattributed` block for id-less title matches. Response is a copy — the sidecar is never mutated with `usage`. |
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
 | `log_reader.tail_log()/read_logs()` | Shared log tailing for dashboard **and** `GET /v1/logs`. |
 | `api/server.py` | Validates token at startup (fail-closed), warns on non-loopback bind, serves via waitress. |
-| `api/openapi_metadata.py` | Defines route-adjacent request-schema and query-parameter declarations. `openapi_operation()` stores metadata on the registered view, mirroring the auth marker pattern without performing runtime validation. |
+| `api/openapi_metadata.py` | Defines route-adjacent request-schema, query-parameter, and MCP opt-in declarations. `openapi_operation()` stores metadata on the registered view, mirroring the auth marker pattern without performing runtime validation. |
+| `apiclient/` | Shared OpenAPI loading, operation request planning, and bearer-authenticated HTTP execution used by both CLI and MCP front-ends. |
 | `api/openapi_gen.py` | Generates the committed OpenAPI 3.1 document from the live route table plus metadata attached to each view. Paths, methods, path parameters, auth, JSON request bodies, and query parameters are code-derived; response schemas remain a separate enrichment. |
+
+**Skill catalog.** `GET /v1/skills` is authenticated and returns exposed
+skills sorted by name. Each record contains `name`, `description`, `group`,
+`emoji`, and `commands`; each command contains its slash-prefixed `name`,
+`description`, `usage`, and slash-prefixed aliases.
+
+**Command schema.** The OpenAPI property for mission `command` publishes a
+canonical-command `enum` plus a pattern branch accepting the canonical verb
+followed by arguments. This lets model-facing schemas advertise `/review`
+while accepting `/review https://github.com/owner/repo/pull/42`. The schema
+guides callers; it does not narrow what the endpoint accepts (see
+`create_mission()` above), so publishing the catalogue never breaks a client
+using a command outside it.
 
 ## Mission record: typed structured `result`
 
@@ -194,6 +216,13 @@ control flow, lifecycle, or quota decisions.
   those markers and never maintains a second method/path schema map. Handler-access tests
   guard the declared field names, and numeric defaults used by both metadata and parsing come
   from the same constants.
+- **MCP exposure metadata stays beside the handler.** `openapi_operation(mcp=True)` makes
+  the generator emit `x-koan-mcp: true`; `mcp_description` emits
+  `x-koan-mcp-description`. First cleaned docstring line becomes OpenAPI `summary`,
+  while remaining cleaned body becomes `description`. Route-adjacent path parameter
+  prose merges into generated path parameters. Missing markers remain absent and
+  therefore fail closed. Marker meaning and additional fixed curation gate belong to
+  [MCP server contract](mcp.md).
 - **The REST CLI consumes the committed OpenAPI document at runtime.** It does
   not commit generated client code. Every documented operation must map to one
   collision-free public command and its hidden `operationId` alias.
@@ -250,3 +279,6 @@ New endpoints add the pure logic to `dashboard_service/` (or a shared service), 
 thin route, and — if observability — expose it on both surfaces. For **API** changes, also
 run `make openapi` and commit the regenerated `koan/openapi.yaml` in the same change. Update
 `docs/operations/rest-api.md` for API changes and this spec for structural ones.
+
+See [Component Spec — MCP Server](mcp.md) for the stdio front-end consuming this
+OpenAPI contract through the shared HTTP client.

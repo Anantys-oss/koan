@@ -46,7 +46,11 @@ class TestCreateMission:
     def test_create_command_mission(self, api_client, instance_dir):
         resp = api_client.post(
             "/v1/missions",
-            json={"command": "/status"},
+            json={
+                "command": (
+                    "/review https://github.com/owner/repo/pull/42"
+                )
+            },
             headers=_AUTH,
         )
         assert resp.status_code == 202
@@ -92,6 +96,118 @@ class TestCreateMission:
     def test_create_mission_unauthenticated_returns_401(self, api_client):
         resp = api_client.post("/v1/missions", json={"text": "test"})
         assert resp.status_code == 401
+
+    def test_create_command_without_slash_is_normalized(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        url = "https://github.com/owner/repo/pull/42"
+        response = api_client.post(
+            "/v1/missions",
+            json={"command": f"review {url}"},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 202
+        assert f"/review {url}" in (instance_dir / "missions.md").read_text()
+
+    def test_command_outside_the_catalogue_is_still_queued(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        """The advertised catalogue is not an accept-list (backward compat)."""
+        response = api_client.post(
+            "/v1/missions",
+            json={"command": "/status"},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 202
+        assert "/status" in (instance_dir / "missions.md").read_text()
+
+    @pytest.mark.parametrize(
+        "command",
+        ["/claude.md", "/français", "/core.plan add dark mode"],
+    )
+    def test_dispatchable_command_shapes_are_still_queued(
+        self,
+        api_client,
+        instance_dir,
+        command,
+    ):
+        """Dotted and non-ASCII verbs dispatch, so they must not be rejected."""
+        response = api_client.post(
+            "/v1/missions",
+            json={"command": command},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 202
+        assert command in (instance_dir / "missions.md").read_text()
+
+    def test_command_alias_is_normalized_to_canonical(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        url = "https://github.com/owner/repo/pull/42"
+        response = api_client.post(
+            "/v1/missions",
+            json={"command": f"/rv {url}"},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 202
+        assert f"/review {url}" in (instance_dir / "missions.md").read_text()
+
+    def test_malformed_command_is_rejected_without_queueing(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        before = (instance_dir / "missions.md").read_text()
+        response = api_client.post(
+            "/v1/missions",
+            json={"command": "/ not a command"},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 422
+        assert response.get_json()["error"]["code"] == "invalid_request"
+        assert (instance_dir / "missions.md").read_text() == before
+
+    def test_free_form_review_text_is_unchanged(
+        self,
+        api_client,
+        instance_dir,
+    ):
+        mission = "please review this design without using a slash command"
+        response = api_client.post(
+            "/v1/missions",
+            json={"text": mission},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 202
+        assert mission in (instance_dir / "missions.md").read_text()
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        (("command", 42), ("text", []), ("project", {"name": "x"})),
+    )
+    def test_non_string_fields_return_422(self, api_client, field, value):
+        payload = {"text": "valid text", field: value}
+
+        response = api_client.post(
+            "/v1/missions",
+            json=payload,
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 422
+        assert response.get_json()["error"]["code"] == "invalid_request"
 
 
 class TestGetMission:

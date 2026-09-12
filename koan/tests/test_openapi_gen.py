@@ -91,7 +91,14 @@ def test_request_body_schemas_match_handler_accesses(app):
     cases = {
         ("post", "/v1/missions"): (
             "missions.create_mission",
-            {"command": "/status", "text": "", "project": "", "urgent": False},
+            {
+                "command": (
+                    "/review https://github.com/owner/repo/pull/42"
+                ),
+                "text": "",
+                "project": "",
+                "urgent": False,
+            },
             (),
             (
                 ("app.utils.insert_pending_mission", None),
@@ -279,6 +286,103 @@ def test_view_metadata_emits_request_body_and_query_parameters():
     assert query["schema"]["default"] is False
 
 
+def test_docstring_body_and_mcp_metadata_are_emitted():
+    from flask import Flask
+
+    test_app = Flask(__name__)
+
+    @test_app.get("/widgets/<widget_id>")
+    @openapi_operation(
+        mcp=True,
+        mcp_description="Use this after listing widgets.",
+        path_parameter_descriptions={
+            "widget_id": "Identifier returned by the widget list.",
+        },
+    )
+    def get_widget(widget_id):
+        """Fetch one widget.
+
+        Returns the current widget record.
+        """
+        return {"id": widget_id}
+
+    operation = openapi_gen.build_spec(test_app)["paths"][
+        "/widgets/{widget_id}"
+    ]["get"]
+
+    assert operation["summary"] == "Fetch one widget."
+    assert operation["description"] == "Returns the current widget record."
+    assert operation["x-koan-mcp-description"] == (
+        "Use this after listing widgets."
+    )
+    assert operation["parameters"][0]["description"] == (
+        "Identifier returned by the widget list."
+    )
+
+
+def test_metadata_survives_either_decorator_order():
+    """`openapi_operation` is not order-dependent, in either direction.
+
+    Flask's route decorator registers the function and returns that same
+    object, so metadata attached *above* it still lands on the registered view.
+    Below `require_token`, `functools.wraps` copies `__dict__` onto the
+    wrapper. Pinned because the alternative failure — a marker that silently
+    vanishes from `openapi.yaml` — has no lint, test, or CI signal.
+    """
+    from app.api.auth import require_token
+    from flask import Blueprint, Flask
+
+    above = Blueprint("above", __name__)
+
+    @openapi_operation(mcp=True, mcp_description="Above the route.")
+    @above.get("/widgets")
+    @require_token
+    def list_widgets_above():
+        """List widgets."""
+        return {}
+
+    below = Blueprint("below", __name__)
+
+    @below.get("/widgets")
+    @require_token
+    @openapi_operation(mcp=True, mcp_description="Below require_token.")
+    def list_widgets_below():
+        """List widgets."""
+        return {}
+
+    for blueprint in (above, below):
+        test_app = Flask(__name__)
+        test_app.register_blueprint(blueprint)
+        operation = openapi_gen.build_spec(test_app)["paths"]["/widgets"]["get"]
+        assert operation["x-koan-mcp"] is True
+        assert operation["x-koan-mcp-description"]
+
+
+def test_curated_openapi_operations_are_self_describing(app):
+    spec = openapi_gen.build_spec(app)
+    marked = [
+        operation
+        for path_item in spec["paths"].values()
+        for operation in path_item.values()
+        if operation.get("x-koan-mcp") is True
+    ]
+
+    assert len(marked) == 16
+    for operation in marked:
+        assert operation.get("description", "").strip()
+        assert operation.get("x-koan-mcp-description", "").strip()
+
+        for parameter in operation.get("parameters", []):
+            assert parameter.get("description", "").strip()
+
+        body = operation.get("requestBody", {})
+        schema = body.get("content", {}).get("application/json", {}).get(
+            "schema", {}
+        )
+        for name, property_schema in schema.get("properties", {}).items():
+            assert property_schema.get("description", "").strip(), name
+
+
 def test_spec_matches_live_route_table(app):
     """Every registered route appears exactly once; no extra paths (FR-002, FR-004)."""
     spec = openapi_gen.build_spec(app)
@@ -323,6 +427,74 @@ def test_security_scheme_and_error_component(app):
     assert scheme == {"type": "http", "scheme": "bearer"}
     error = spec["components"]["schemas"]["Error"]
     assert error["properties"]["error"]["required"] == ["code", "message"]
+
+
+def test_mcp_markers_match_curated_routes(app):
+    spec = openapi_gen.build_spec(app)
+    marked = {
+        (method.upper(), path)
+        for path, path_item in spec["paths"].items()
+        for method, operation in path_item.items()
+        if operation.get("x-koan-mcp") is True
+    }
+    assert marked == {
+        ("GET", "/v1/health"),
+        ("GET", "/v1/status"),
+        ("GET", "/v1/skills"),
+        ("GET", "/v1/missions"),
+        ("POST", "/v1/missions"),
+        ("POST", "/v1/missions/reorder"),
+        ("GET", "/v1/missions/{mission_id}"),
+        ("DELETE", "/v1/missions/{mission_id}"),
+        ("GET", "/v1/missions/{mission_id}/result"),
+        ("GET", "/v1/projects"),
+        ("POST", "/v1/pause"),
+        ("POST", "/v1/resume"),
+        ("GET", "/v1/config"),
+        ("GET", "/v1/usage"),
+        ("GET", "/v1/metrics"),
+        ("GET", "/v1/logs"),
+    }
+
+
+def test_mission_command_schema_advertises_exposed_commands(app):
+    spec = openapi_gen.build_spec(app)
+    command_schema = spec["paths"]["/v1/missions"]["post"][
+        "requestBody"
+    ]["content"]["application/json"]["schema"]["properties"]["command"]
+
+    enum_branch, pattern_branch = command_schema["anyOf"]
+    assert enum_branch["enum"] == [
+        "/audit",
+        "/brief",
+        "/ci_check",
+        "/digest",
+        "/doc",
+        "/docs",
+        "/explain",
+        "/fix",
+        "/gh_request",
+        "/impl",
+        "/implement",
+        "/plan",
+        "/rb",
+        "/re_review",
+        "/rebase",
+        "/rereview",
+        "/review",
+        "/rv",
+        "/xp",
+    ]
+    # Canonical names and advertised aliases are both accepted and normalized.
+    assert re.fullmatch(
+        pattern_branch["pattern"],
+        "/review https://github.com/owner/repo/pull/42",
+    )
+    assert re.fullmatch(
+        pattern_branch["pattern"],
+        "/rv https://github.com/owner/repo/pull/42",
+    )
+    assert not re.fullmatch(pattern_branch["pattern"], "/shutdown")
 
 
 def test_known_non_default_success_codes(app):

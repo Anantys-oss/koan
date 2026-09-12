@@ -6,6 +6,7 @@ emoji: 🐞
 description: "Fix a tracker issue end-to-end, or batch-queue all open GitHub issues from a repo"
 version: 1.1.0
 audience: hybrid
+api_exposed: true
 caveman: true
 model_key: mission
 github_enabled: true

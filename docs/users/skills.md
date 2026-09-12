@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "Skills Reference"
-description: "Complete reference for all Koan slash commands (mission management, code/PR operations, scheduling, status, configuration, and system commands) usable via Telegram, Slack, or GitHub @mentions."
+description: "Complete reference for Koan slash commands across messaging, GitHub mentions, and the curated REST/MCP skill catalog."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # Skills Reference
@@ -306,6 +306,27 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 - **Instant** (`worker: false`) — Executes immediately, returns a response. Examples: `/status`, `/list`, `/gha_audit`.
 - **Worker** (`worker: true`) — Runs in a background thread (Claude calls, API requests). Examples: `/magic`, `/chat`, `/sparring`.
 - **Hybrid** (`audience: hybrid`) — Available from both Telegram/Slack and as agent-dispatched skills. Examples: `/plan`, `/implement`, `/review`.
+
+## REST and MCP Skill Discovery
+
+Authenticated REST and MCP clients *advertise* a deliberately small command
+subset: `/audit`, `/brief`, `/ci_check`, `/doc`, `/explain`, `/fix`,
+`/gh_request`, `/implement`, `/plan`, `/rebase`, and `/review`. This is a
+discovery surface, not a restriction — `POST /v1/missions` still queues any
+slash command, so existing REST and `koan-cli` callers are unaffected.
+
+`GET /v1/skills` and `koan_skills_list` return descriptions, usage, aliases,
+and flags. `koan_missions_create` advertises the canonical verbs directly. Send
+a review request through its `command` field:
+
+```json
+{
+  "command": "/review https://github.com/owner/repo/pull/42"
+}
+```
+
+Chat-control and destructive commands are not advertised. This catalog is
+separate from chat and GitHub/Jira availability.
 
 ## Custom Skills
 

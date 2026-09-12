@@ -42,17 +42,32 @@ def create_app(koan_root: Path = None, instance_dir: Path = None) -> Flask:
     from app.api.routes_projects import bp as projects_bp
     from app.api.routes_admin import bp as admin_bp
     from app.api.routes_observability import bp as observability_bp
+    from app.api.routes_skills import bp as skills_bp
 
     app.register_blueprint(status_bp)
     app.register_blueprint(missions_bp)
     app.register_blueprint(projects_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(observability_bp)
+    app.register_blueprint(skills_bp)
 
     # Health endpoint — unauthenticated liveness probe
+    from app.api.openapi_metadata import openapi_operation
+
     @app.route("/v1/health")
+    @openapi_operation(
+        mcp=True,
+        mcp_description=(
+            "Use this only to check REST API reachability. Use `koan_status` for "
+            "normal orientation and agent readiness."
+        ),
+    )
     def health():
-        """Liveness probe; public, no token required."""
+        """Check whether the REST API is alive.
+
+        This public endpoint returns the service name and version without
+        checking authentication or agent execution state.
+        """
         try:
             from app import __version__
             version = __version__

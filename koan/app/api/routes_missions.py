@@ -6,33 +6,71 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
-from app.api.openapi_metadata import openapi_operation, query_parameter
 from app.api.mission_index import (
     _normalize_for_match,
     cancel_mission,
     get_mission,
     list_missions,
     load_full_result,
-    record_mission,
     reconcile,
+    record_mission,
     update_mission_text,
 )
+from app.api.openapi_metadata import openapi_operation, query_parameter
+from app.api.skill_catalog import API_COMMAND_NAMES, canonical_command_name
 
 bp = Blueprint("missions", __name__)
 
-# Validate command-style missions
-_COMMAND_RE = re.compile(r"^/[a-zA-Z0-9_]+")
+# Validate command-style missions. The verb class mirrors what the dispatcher
+# actually resolves — ``skill_dispatch.parse_skill_mission`` takes everything up
+# to the first whitespace — so dotted (``/claude.md``, ``/core.plan``) and
+# non-ASCII (``/français``) commands keep working. Narrowing it to ``\w`` would
+# reject commands REST queued before this endpoint validated anything.
+_COMMAND_RE = re.compile(
+    r"^/?(?P<name>[^\s/]+)"
+    r"(?P<arguments>(?:\s+[\s\S]+)?)$"
+)
+
+
+def _command_property_schema() -> dict:
+    description = (
+        "Slash-command mission; prefer this for work covered by an "
+        "existing Kōan skill. Append arguments to the selected verb, "
+        'for example "/review '
+        'https://github.com/owner/repo/pull/42". '
+        "Use text only when no exposed skill covers the work."
+    )
+    if not API_COMMAND_NAMES:
+        return {
+            "type": "string",
+            "description": description,
+        }
+
+    verbs = "|".join(
+        re.escape(name.removeprefix("/"))
+        for name in API_COMMAND_NAMES
+    )
+    return {
+        "anyOf": [
+            {
+                "type": "string",
+                "enum": list(API_COMMAND_NAMES),
+            },
+            {
+                "type": "string",
+                "pattern": rf"^/?(?:{verbs})(?:\s+[\s\S]+)?$",
+            },
+        ],
+        "description": description,
+    }
 
 _CREATE_MISSION_SCHEMA = {
     "type": "object",
     "properties": {
-        "command": {
-            "type": "string",
-            "description": "Slash-command mission; takes precedence over text.",
-        },
+        "command": _command_property_schema(),
         "text": {
             "type": "string",
-            "description": "Free-form mission text.",
+            "description": "Free-form mission text for work no exposed skill covers.",
         },
         "project": {
             "type": "string",
@@ -60,7 +98,11 @@ _REORDER_MISSION_SCHEMA = {
     "type": "object",
     "required": ["mission_id", "target_position"],
     "properties": {
-        "mission_id": {"type": "string", "pattern": r"\S"},
+        "mission_id": {
+            "type": "string",
+            "pattern": r"\S",
+            "description": "Identifier of the pending mission to move.",
+        },
         "target_position": {
             "type": "integer",
             "minimum": 1,
@@ -93,6 +135,8 @@ _LIST_MISSIONS_QUERY_PARAMETERS = (
     ),
 )
 
+_MISSION_ID_DESCRIPTION = "Mission identifier returned when the mission was queued."
+
 
 def _instance_dir() -> Path:
     return current_app.config["INSTANCE_DIR"]
@@ -102,18 +146,47 @@ def _missions_file() -> Path:
     return _instance_dir() / "missions.md"
 
 
+def _normalize_command(command: str) -> str:
+    """Normalize a slash-command mission to its canonical verb.
+
+    ``API_COMMAND_NAMES`` is the *advertised* surface — the OpenAPI enum and
+    the MCP tool schema built from it — deliberately **not** an accept-list.
+    REST has always queued any slash command, so gating on the catalogue would
+    break existing callers of every other command without buying any safety:
+    ``text`` carries a slash command through unvalidated anyway. Aliases of
+    exposed skills are still resolved so a client following the advertised
+    catalogue queues the canonical verb.
+    """
+    match = _COMMAND_RE.fullmatch(command)
+    if match is None:
+        raise ValueError(
+            "Command must start with a slash-command name followed "
+            "by optional arguments"
+        )
+
+    canonical = canonical_command_name(match.group("name"))
+    return f"/{canonical}" + match.group("arguments")
+
+
 def _validate_mission_body(data: dict):
     """Validate POST /v1/missions request body.
 
     Returns (text, project, urgent) or raises ValueError.
     """
-    command = data.get("command", "").strip()
-    text = data.get("text", "").strip()
+    raw_command = data.get("command", "")
+    raw_text = data.get("text", "")
+    if raw_command is not None and not isinstance(raw_command, str):
+        raise ValueError("'command' must be a string")
+    if raw_text is not None and not isinstance(raw_text, str):
+        raise ValueError("'text' must be a string")
+
+    command = (raw_command or "").strip()
+    text = (raw_text or "").strip()
 
     if not command and not text:
         raise ValueError("One of 'command' or 'text' is required")
 
-    mission_text = command or text
+    mission_text = _normalize_command(command) if command else text
 
     # Sanitize
     from app.missions import sanitize_mission_text
@@ -122,7 +195,10 @@ def _validate_mission_body(data: dict):
     if not mission_text:
         raise ValueError("Mission text cannot be empty after sanitization")
 
-    project = data.get("project", "").strip() or None
+    raw_project = data.get("project", "")
+    if raw_project is not None and not isinstance(raw_project, str):
+        raise ValueError("'project' must be a string")
+    project = (raw_project or "").strip() or None
     urgent = bool(data.get("urgent", False))
 
     return mission_text, project, urgent
@@ -159,10 +235,21 @@ def _find_pending_position(content: str, stored_text: str):
 
 
 @bp.route("/v1/missions", methods=["GET"])
-@openapi_operation(query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS)
+@openapi_operation(
+    query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS,
+    mcp=True,
+    mcp_description=(
+        "Use this to browse or filter queues. Do not poll it for one mission's "
+        "completion; use `koan_missions_get` with that mission id."
+    ),
+)
 @require_token
 def list_missions_route():
-    """List missions, newest first, optionally filtered."""
+    """List missions, newest first, optionally filtered.
+
+    Status and project filters narrow the response. Each record is reconciled
+    against `missions.md` before it is returned.
+    """
     status_filter = request.args.get("status")
     project_filter = request.args.get("project")
     records = list_missions(_instance_dir(), status_filter, project_filter)
@@ -176,10 +263,27 @@ def list_missions_route():
 
 
 @bp.route("/v1/missions", methods=["POST"])
-@openapi_operation(request_schema=_CREATE_MISSION_SCHEMA)
+@openapi_operation(
+    request_schema=_CREATE_MISSION_SCHEMA,
+    mcp=True,
+    mcp_description=(
+        "Prefer `command` for anything an existing Kōan skill does. "
+        "Pass the slash command with its arguments, for example "
+        '"/review https://github.com/owner/repo/pull/42". '
+        "Call `koan_skills_list` for the full catalogue, usage, aliases, "
+        "and per-command flags. Use `text` only for work no exposed "
+        "skill covers. The returned id identifies queued work, not a "
+        "completed result. Poll `koan_missions_get`, then call "
+        "`koan_missions_result` after status becomes `done`."
+    ),
+)
 @require_token
 def create_mission():
-    """Queue a new mission."""
+    """Queue a new mission.
+
+    The mission is appended to the pending queue for a later agent cycle.
+    Setting `urgent` inserts it at the front instead.
+    """
     data = request.get_json(silent=True) or {}
     try:
         text, project, urgent = _validate_mission_body(data)
@@ -196,10 +300,20 @@ def create_mission():
 
 
 @bp.route("/v1/missions/reorder", methods=["POST"])
-@openapi_operation(request_schema=_REORDER_MISSION_SCHEMA)
+@openapi_operation(
+    request_schema=_REORDER_MISSION_SCHEMA,
+    mcp=True,
+    mcp_description=(
+        "Only pending missions can be reordered. Obtain the mission id from "
+        "`koan_missions_list` and use a one-indexed target position."
+    ),
+)
 @require_token
 def reorder_mission_route():
-    """Move a pending mission to a new position."""
+    """Move a pending mission to a new position.
+
+    Reordering changes queue priority without editing the mission text.
+    """
     data = request.get_json(silent=True)
     if data is None:
         return jsonify(
@@ -254,9 +368,23 @@ def reorder_mission_route():
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["GET"])
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Use this to poll one queued mission. When its status is `done`, "
+        "fetch the complete structured result with `koan_missions_result`."
+    ),
+    path_parameter_descriptions={
+        "mission_id": _MISSION_ID_DESCRIPTION,
+    },
+)
 @require_token
 def get_mission_route(mission_id: str):
-    """Fetch one mission by id."""
+    """Fetch one mission by id.
+
+    Returns lifecycle state, outcome metadata, result references, and
+    aggregated usage for the selected mission.
+    """
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
@@ -266,6 +394,7 @@ def get_mission_route(mission_id: str):
     rec.setdefault("outcome", None)
 
     from datetime import date, datetime
+
     from app.cost_tracker import aggregate_mission_usage
 
     start = None
@@ -291,9 +420,24 @@ def get_mission_route(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>/result", methods=["GET"])
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "Call this after `koan_missions_get` reports `done`. It returns the "
+        "complete structured result and reports not found when no structured "
+        "result is available."
+    ),
+    path_parameter_descriptions={
+        "mission_id": _MISSION_ID_DESCRIPTION,
+    },
+)
 @require_token
 def get_mission_result_route(mission_id: str):
-    """Fetch a finished mission's result."""
+    """Fetch a finished mission's result.
+
+    Inline and spilled results use the same HTTP response, so clients never
+    need filesystem access.
+    """
     if get_mission(_instance_dir(), mission_id) is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404
     # reconcile so a just-completed mission gets its result attached first
@@ -307,9 +451,23 @@ def get_mission_result_route(mission_id: str):
 
 
 @bp.route("/v1/missions/<mission_id>", methods=["DELETE"])
+@openapi_operation(
+    mcp=True,
+    mcp_description=(
+        "This destructive tool is available only when "
+        "`mcp.tools_allow_destructive` is enabled, and it accepts pending "
+        "missions only."
+    ),
+    path_parameter_descriptions={
+        "mission_id": _MISSION_ID_DESCRIPTION,
+    },
+)
 @require_token
 def delete_mission(mission_id: str):
-    """Remove a pending mission."""
+    """Remove a pending mission.
+
+    The mission is removed from the queue and its API record is cancelled.
+    """
     rec = get_mission(_instance_dir(), mission_id)
     if rec is None:
         return jsonify({"error": {"code": "not_found", "message": "Mission not found"}}), 404

@@ -1,7 +1,7 @@
 ---
 type: doc
 title: "Kōan User Manual"
-description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
+description: "A tiered walkthrough of Kōan, from first missions through REST/MCP skill discovery, parallel sessions, exploration, and configuration."
 tags: [users]
 created: 2026-05-28
 updated: 2026-09-09
@@ -47,6 +47,7 @@ This manual is organized in three progressive tiers. Start with the basics, then
   - [Configuration Deep-Dive](#configuration-deep-dive)
   - [Per-Project Overrides](#per-project-overrides)
   - [Custom Skills](#custom-skills)
+  - [REST and MCP Skill Discovery](#rest-and-mcp-skill-discovery)
   - [GitHub @mention Integration](#github-mention-integration)
   - [CLI Providers](#cli-providers)
   - [Language Preference](#language-preference)
@@ -1814,6 +1815,24 @@ Instead of writing SKILL.md and handler.py by hand, use `/scaffold_skill` to gen
 This invokes Claude to produce a valid SKILL.md + handler.py stub in `instance/skills/myteam/deploy/`, validated against the parser before writing. Restart the bridge to load the new skill.
 
 See [koan/skills/README.md](../../koan/skills/README.md) for the full authoring guide.
+
+### REST and MCP Skill Discovery
+
+Authenticated API and MCP clients can discover `/audit`, `/brief`, `/ci_check`,
+`/doc`, `/explain`, `/fix`, `/gh_request`, `/implement`, `/plan`, `/rebase`,
+and `/review`. `GET /v1/skills` and `koan_skills_list` provide descriptions,
+usage, aliases, and flags. `koan_missions_create` also advertises these
+canonical verbs, so queue a review like this:
+
+```json
+{
+  "command": "/review https://github.com/owner/repo/pull/42"
+}
+```
+
+Use free-form `text` only when no exposed skill covers the work. Control-plane,
+destructive, and private instance commands remain outside this catalog. API
+exposure is independent of chat or GitHub/Jira availability.
 
 ### GitHub @mention Integration
 

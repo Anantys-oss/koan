@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "REST API"
-description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
+description: "Documents Kōan's optional, token-authenticated HTTP control layer, including skill discovery, validated mission commands, generated OpenAPI, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # REST API
@@ -53,6 +53,11 @@ make stop         # stops all managed processes including API
 make status       # shows API PID when running
 ```
 
+`make start` exits non-zero when the API fails to start, the same as for the
+other managed processes. Before the MCP server landed it only reported the
+failure and still exited 0, so a supervisor or CI script that treats a non-zero
+exit as a failed boot now sees API startup problems it used to ignore.
+
 ---
 
 ## Authentication
@@ -80,6 +85,10 @@ documented operations, and retains generic JSON/query flags while body and
 query schemas are being enriched. See the
 [Kōan REST CLI](../users/koan-cli.md) guide for secure profiles, examples,
 output guarantees, and exit codes.
+
+Kōan also provides an opt-in [stdio MCP server](mcp-server.md) over this same
+OpenAPI-driven HTTP client. MCP requires this REST API to remain enabled and
+running; it shares the bearer token and audit trail.
 
 ---
 
@@ -233,6 +242,37 @@ case — a recorded-but-dead PID is always flagged immediately. Live parallel
 sessions also suppress the flag. The same cross-check backs the `make status`
 `execution:` line.
 
+### Skills
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/v1/skills` | yes | List core skills explicitly exposed for REST/MCP use, including command usage, aliases, and flags |
+
+Response:
+
+```json
+[
+  {
+    "name": "review",
+    "description": "Queue a code review mission (ex: /review https://github.com/owner/repo/pull/42)",
+    "group": "code",
+    "emoji": "🔍",
+    "commands": [
+      {
+        "name": "/review",
+        "description": "Queue a code review for one or more PRs/issues. Flags include --architecture and --force.",
+        "usage": "/review [--now] <github-pr-or-issue-url> [context] [--force]",
+        "aliases": ["/rv", "/rereview", "/re_review"]
+      }
+    ]
+  }
+]
+```
+
+Only core skills carrying `api_exposed: true` appear. Private instance skills
+remain absent even if they declare that flag. Restart the API and MCP processes
+after changing exposure metadata.
+
 ### Missions
 
 | Method | Path | Auth | Description |
@@ -252,7 +292,25 @@ sessions also suppress the flag. The same cross-check backs the `make status`
   "urgent": false
 }
 ```
-Use `command` for slash commands or `text` for free-form missions. `project` adds a `[project:name]` tag. `urgent` inserts at the top of the queue.
+Prefer `command` when an exposed skill covers the work. An advertised alias
+resolves to its canonical verb (`/rv` → `/review`). The `/v1/skills` catalogue
+is the *advertised* surface, not an accept-list: any slash command the agent
+understands is still accepted — including dotted (`/claude.md`, `/core.plan`)
+and non-ASCII (`/français`) verbs — so existing callers keep working. Full
+command strings can include arguments.
+
+Two things about `command` changed when validation was added, and both are
+narrowings a pre-existing caller can notice:
+
+- A value that is not shaped like a slash command at all — `command` empty
+  after the verb, or a verb containing whitespace or `/` — now returns `422`
+  instead of being queued verbatim.
+- A **missing leading slash is normalized**, so prose in `command` becomes a
+  slash command: `{"command": "fix the login bug"}` queues `/fix the login
+  bug` and is routed to the `fix` skill runner rather than to the agent as free
+  text. Put free-form work in `text`, which stays unrestricted.
+
+`project` adds a `[project:name]` tag. `urgent` inserts at the top of the queue.
 
 Response (202):
 ```json
@@ -550,6 +608,7 @@ Tokens are never written to the log.
 
 ## See also
 
+- [`docs/operations/mcp-server.md`](mcp-server.md) — curated stdio MCP front-end
 - [`docs/operations/dashboard.md`](dashboard.md) — web dashboard (separate process, same config pattern)
 - [`instance.example/config.yaml`](../../instance.example/config.yaml) — documented `api:` section
 - [`koan/openapi.yaml`](../../koan/openapi.yaml) — generated OpenAPI 3.1 document (`make openapi`) · [render in Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/Anantys-oss/koan/main/koan/openapi.yaml)

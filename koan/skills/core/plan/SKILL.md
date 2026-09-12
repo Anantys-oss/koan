@@ -6,6 +6,7 @@ emoji: 🧠
 description: Deep-think an idea and create a tracker issue with a structured plan
 version: 2.1.0
 audience: hybrid
+api_exposed: true
 caveman: false
 github_enabled: true
 github_context_aware: true
