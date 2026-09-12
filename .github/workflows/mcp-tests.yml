@@ -15,6 +15,12 @@ on:
       - 'koan/app/api/auth.py'
       # get_mcp_* decides which transport and tools the entrypoint selects.
       - 'koan/app/config.py'
+      # API_COMMAND_NAMES feeds the koan_missions_create command enum: a change
+      # to the catalog, to api_exposed parsing, or to an exposed SKILL.md can
+      # empty or reshape that enum without touching koan/app/mcp/.
+      - 'koan/app/api/skill_catalog.py'
+      - 'koan/app/skills.py'
+      - 'koan/skills/core/**/SKILL.md'
       - 'koan/tests_mcp/**'
       - 'koan/requirements-mcp.txt'
       - 'koan/openapi.yaml'
