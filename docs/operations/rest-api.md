@@ -4,7 +4,7 @@ title: "REST API"
 description: "Documents Kōan's optional, token-authenticated HTTP control layer (missions, projects, pause/resume, config, admin, usage/metrics/logs endpoints), its generated OpenAPI spec + drift guard, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-09-10
+updated: 2026-09-11
 ---
 
 # REST API
@@ -237,12 +237,48 @@ sessions also suppress the flag. The same cross-check backs the `make status`
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/v1/missions` | yes | List API-queued missions. Query params: `?status=pending\|in_progress\|done\|failed\|removed`, `?project=name` |
+| `GET` | `/v1/missions` | yes | List missions from the mission store (all queue sources: Slack/GitHub/API/dashboard). Query params: `?status=pending\|in_progress\|done\|failed`, `?project=name`, `?limit=N` |
 | `POST` | `/v1/missions` | yes | Queue a new mission |
 | `GET` | `/v1/missions/{id}` | yes | Get mission by id (reconciles vs missions.md) |
 | `PATCH` | `/v1/missions/{id}` | yes | Edit a pending mission's text (409 if not pending) |
 | `DELETE` | `/v1/missions/{id}` | yes | Cancel a pending mission (409 if already started) |
 | `POST` | `/v1/missions/reorder` | yes | Reorder a pending mission in the queue |
+
+The list endpoint reads the authoritative mission store — the same source as
+`GET /v1/status`'s counts — so every queued mission is visible regardless of
+how it was created. `?status` filters to a store state (`pending`,
+`in_progress`, `done`, `failed`); unknown values return `422`. `?limit=N`
+caps the rows returned **per state** (terminal states can be large), so a
+`?limit` with no `?status` can return up to four times that many rows; a
+non-integer or `< 1` value returns `422` rather than silently meaning
+"unlimited". The single-mission detail and result endpoints
+(`GET /v1/missions/{id}`, `/result`) still operate on API-queued records
+only.
+
+Rows are grouped by state in `pending`, `in_progress`, `done`, `failed`
+order — queue order (oldest first) within the live states, most-recent-first
+within the terminal ones. The list is **not** globally newest-first.
+
+Each row carries two identities:
+
+- `id` — the API sidecar id, the handle the single-mission routes accept. It
+  is `null` for a mission queued outside the API (Telegram, Slack, GitHub,
+  the dashboard), which has no sidecar record and is therefore not
+  addressable via `GET`/`PATCH`/`DELETE /v1/missions/{id}`, `/result`, or
+  `/v1/missions/reorder`.
+- `store_id` — the mission store's own identifier. It is stable and useful
+  for correlation, but the single-mission routes do **not** accept it.
+
+> **Backward-compatibility note.** The list previously returned sidecar
+> records carrying `result`/`result_ref`/`usage`/`created` and a `removed`
+> status for API-queued missions. Now that the list is store-backed, those
+> fields are no longer present and `removed` is not a valid `?status`
+> filter. Consumers that need result or cancellation state should use
+> `GET /v1/missions/{id}` and `GET /v1/missions/{id}/result`. Two further
+> changes: `id` is now `null` for missions that were not queued through the
+> API (it was previously always a sidecar id, because only API-queued
+> missions were listed at all), and `project` reports the store's `default`
+> for an untagged mission where the sidecar reported `null`.
 
 **POST /v1/missions** body:
 ```json
