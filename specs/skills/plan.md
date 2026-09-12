@@ -4,7 +4,7 @@ title: "Skill Spec — plan"
 description: "Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-11
+updated: 2026-09-12
 ---
 
 # Skill Spec — `plan`
@@ -114,9 +114,12 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   duplicate plan comments.
 - An unverified publish fails the mission and retains the staged plan, so a later run
   republishes it without spending a model call to regenerate. The replay only applies
-  when the later run adds nothing: a `/plan` carrying user instructions or a base
-  branch **must regenerate**, because the stage predates those instructions and
-  republishing it would drop them while reporting success. A replayed publish says so
+  when the later run adds nothing: a `/plan` carrying user instructions, a base
+  branch, or more `--iterations` than the stage was generated with **must
+  regenerate**, because the stage predates that request and republishing it would
+  drop it while reporting success. The critique-round count is therefore recorded
+  alongside the staged body, and a stage from a run with fewer rounds than the
+  current one asks for is treated as absent. A replayed publish says so
   in its outcome instead of reading as a freshly generated plan. The stage is dropped
   once it expires or three consecutive runs fail, after which the next `/plan`
   regenerates — a permanently undeliverable plan must not wedge the issue.

@@ -506,7 +506,8 @@ class TestRunIssuePlan:
         with p_ref, p_fetch, p_add, \
              patch("app.plan_runner._generate_iteration_plan", return_value="## Updated Plan\n\n### Phase 1\n- Do X"), \
              patch("app.jira_plan_publish.load_staged_plan", return_value=None), \
-             patch("app.jira_plan_publish.stage_plan", side_effect=lambda _url, body, _instance: staged.append(body)), \
+             patch("app.jira_plan_publish.stage_plan",
+                   side_effect=lambda _u, body, _d, _i: staged.append(body)), \
              patch("app.jira_plan_publish.publish_staged_plan", return_value=(True, "123")):
             ok, _msg = _run_issue_plan("/project", url, notify, None)
             assert ok
@@ -575,7 +576,7 @@ class TestRunIssuePlan:
                    return_value="## Plan\n\n- Cover the retry path") as generate, \
              patch("app.jira_plan_publish.load_staged_plan", return_value="stale plan"), \
              patch("app.jira_plan_publish.stage_plan",
-                   side_effect=lambda _url, body, _instance: staged.append(body)), \
+                   side_effect=lambda _u, body, _d, _i: staged.append(body)), \
              patch("app.jira_plan_publish.publish_staged_plan", return_value=(True, "321")):
             ok, _msg = _run_issue_plan(
                 "/project", url, notify, None, context="also cover the retry path",
@@ -606,6 +607,57 @@ class TestRunIssuePlan:
         assert ok
         generate.assert_called_once()
         assert "release/2.0" in generate.call_args[0][1]
+
+    def test_jira_resume_is_skipped_when_more_iterations_are_requested(self, tmp_path):
+        """Extra critique rounds are a new request; the stale stage cannot serve it."""
+        from app.jira_plan_publish import load_staged_plan, stage_plan
+
+        notify = MagicMock()
+        url = "https://org.atlassian.net/browse/PROJ-9"
+        ref = _issue_ref(provider="jira", url=url, key="PROJ-9", repo="o/r")
+        content = _issue_content(provider="jira", key="PROJ-9")
+        p_ref, p_fetch, p_add, _add = self._patch_tracker(content, ref=ref)
+        stage_plan(url, "single-pass plan", str(tmp_path), 1)
+
+        with p_ref, p_fetch, p_add, \
+             patch("app.plan_runner._generate_iteration_plan",
+                   return_value="## Plan\n\n- Refined three times") as generate, \
+             patch("app.jira_plan_publish.publish_staged_plan",
+                   return_value=(True, "321")):
+            ok, _msg = _run_issue_plan(
+                "/project", url, notify, None,
+                instance_dir=str(tmp_path), iterations=3,
+            )
+
+        assert ok
+        generate.assert_called_once()
+        assert generate.call_args.kwargs["iterations"] == 3
+        assert "Refined three times" in load_staged_plan(url, str(tmp_path))
+
+    def test_jira_resume_replays_a_stage_that_already_has_the_rounds_asked_for(
+        self, tmp_path,
+    ):
+        """A bare /plan must not throw away a more refined staged plan."""
+        from app.jira_plan_publish import stage_plan
+
+        notify = MagicMock()
+        url = "https://org.atlassian.net/browse/PROJ-9"
+        ref = _issue_ref(provider="jira", url=url, key="PROJ-9", repo="o/r")
+        stage_plan(url, "three-pass plan", str(tmp_path), 3)
+
+        with patch("app.plan_runner.resolve_issue_ref", return_value=ref), \
+             patch("app.plan_runner.fetch_issue") as fetch, \
+             patch("app.plan_runner._generate_iteration_plan") as generate, \
+             patch("app.jira_plan_publish.publish_staged_plan",
+                   return_value=(True, "321")):
+            ok, msg = _run_issue_plan(
+                "/project", url, notify, None, instance_dir=str(tmp_path),
+            )
+
+        assert ok
+        assert "staged" in msg
+        fetch.assert_not_called()
+        generate.assert_not_called()
 
     def test_jira_resume_outcome_says_it_replayed_a_staged_plan(self):
         notify = MagicMock()
