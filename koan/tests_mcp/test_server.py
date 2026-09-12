@@ -275,6 +275,30 @@ def test_missing_sdk_prints_setup_command(monkeypatch, capsys):
     assert "make mcp-setup" in capsys.readouterr().err
 
 
+def test_incompatible_sdk_names_the_module_and_raises(monkeypatch, capsys):
+    """An installed-but-incompatible SDK must not be diagnosed as missing."""
+    from app.mcp import __main__ as entrypoint
+
+    real_import = builtins.__import__
+
+    def moved_symbol(name, *args, **kwargs):
+        if name == "app.mcp.server":
+            error = ModuleNotFoundError("No module named 'mcp.server.mcpserver'")
+            error.name = "mcp.server.mcpserver"
+            raise error
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(builtins, "__import__", moved_symbol)
+
+    with pytest.raises(ModuleNotFoundError):
+        entrypoint.main()
+
+    err = capsys.readouterr().err
+    assert "mcp.server.mcpserver" in err
+    assert "make mcp-setup" not in err
+
+
 def test_unreachable_startup_probe_warns_but_runs(monkeypatch, capsys):
     from app.mcp import __main__ as entrypoint
 
