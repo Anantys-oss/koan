@@ -92,6 +92,9 @@ cannot inject extra lines.
 `mcp.transport` accepts `stdio` or `http`. An unrecognised value never opens a
 listener, and `make start` refuses to start the MCP daemon, prints the offending
 value, and exits non-zero rather than reporting a listener that was never bound.
+A configuration that cannot be read at all is reported the same way, and `mcp`
+stays listed in `make status`, so an already-running daemon is never hidden
+behind a transient read failure.
 
 If `logs/mcp.log` becomes unwritable — a full disk, or a rotation step that
 changes its owner — the server stops serving instead of serving unaudited

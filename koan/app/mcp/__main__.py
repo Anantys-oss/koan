@@ -56,17 +56,37 @@ def _warn_non_loopback(host: str) -> None:
         )
 
 
+def _installed_mcp_version() -> str:
+    """Version of the installed MCP SDK, or 'unknown'."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("mcp")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def _build_server() -> "object | None":
     """Build the server, or print the SDK-missing hint and return None."""
     try:
         return _load_server()
     except ModuleNotFoundError as exc:
-        if exc.name == "mcp" or (exc.name or "").startswith("mcp."):
+        # Only a missing top-level `mcp` means "not installed". A missing
+        # submodule means an installed-but-incompatible SDK, and `make
+        # mcp-setup` is a no-op for it — so name the module and re-raise
+        # rather than print a repair that cannot work.
+        if exc.name == "mcp":
             print(
                 "Kōan MCP SDK missing; run `make mcp-setup`",
                 file=sys.stderr,
             )
             return None
+        if (exc.name or "").startswith("mcp."):
+            print(
+                f"Kōan MCP SDK incompatible: {exc.name} not found "
+                f"(installed mcp version: {_installed_mcp_version()})",
+                file=sys.stderr,
+            )
         raise
 
 

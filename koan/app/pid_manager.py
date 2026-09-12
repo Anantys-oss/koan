@@ -502,12 +502,14 @@ def start_mcp(
     )
 
 
-def _mcp_transport_error() -> str:
-    """Message naming an unrecognised ``mcp.transport``, else an empty string.
+def _mcp_management_error() -> str:
+    """Message describing why MCP cannot be managed, else an empty string.
 
-    An unknown value resolves to ``stdio`` (never a listener), which would
-    otherwise make ``make start`` report success while nothing is bound on the
-    port the operator configured.
+    Two cases produce one: an unrecognised ``mcp.transport`` (which resolves to
+    ``stdio``, never a listener, so ``make start`` would otherwise report
+    success with nothing bound on the configured port), and a config read that
+    fails outright (which would otherwise silently downgrade MCP to "not
+    configured", hiding a live daemon from `make status`).
     """
     try:
         from app.config import (
@@ -527,24 +529,21 @@ def _mcp_transport_error() -> str:
             "no MCP daemon started"
         )
     except (ImportError, OSError, ValueError) as e:
-        print(f"[pid_manager] MCP transport check failed: {e}", file=sys.stderr)
-        return ""
+        return f"MCP configuration unreadable: {e}"
 
 
 def _is_mcp_http_enabled() -> bool:
     """Whether the MCP HTTP daemon should be managed by the process manager.
 
     Only HTTP mode is daemon-managed; stdio is launched by MCP clients and is
-    never started by ``make start``.
+    never started by ``make start``. A config-read failure is surfaced by
+    ``_mcp_management_error()``, which both callers consult first.
     """
     try:
         from app.config import get_mcp_enabled, get_mcp_transport
 
         return get_mcp_enabled() and get_mcp_transport() == "http"
     except (ImportError, OSError, ValueError) as e:
-        # Downgrading MCP to "not managed" hides a live daemon from `make
-        # status` and skips it in `make stop`, so say why rather than let a
-        # transient config-read failure orphan a listening process.
         print(f"[pid_manager] MCP management check failed: {e}", file=sys.stderr)
         return False
 
@@ -590,7 +589,10 @@ def get_status_processes(koan_root: Path) -> tuple:
     provider = _detect_provider(koan_root)
     dashboard = _is_dashboard_enabled()
     api = _is_api_enabled()
-    mcp = _is_mcp_http_enabled()
+    # An unreadable MCP config keeps `mcp` in the status list: a daemon may be
+    # running, and omitting it would report a clean stack while a listener is
+    # untracked.
+    mcp = bool(_mcp_management_error()) or _is_mcp_http_enabled()
     names = list(PROCESS_NAMES)
     if not _needs_ollama(provider):
         names.remove("ollama")
@@ -873,7 +875,7 @@ def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -
         results["api"] = (ok, msg)
 
     # 6. Start MCP HTTP daemon after the API it depends on
-    mcp_error = _mcp_transport_error()
+    mcp_error = _mcp_management_error()
     if mcp_error:
         results["mcp"] = (False, mcp_error)
     elif _is_mcp_http_enabled():

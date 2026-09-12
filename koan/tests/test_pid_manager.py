@@ -1298,6 +1298,17 @@ class TestGetStatusProcesses:
         ):
             assert "mcp" not in get_status_processes(tmp_path)
 
+    def test_status_keeps_mcp_when_config_unreadable(self, tmp_path):
+        """An unreadable config must not silently hide a running daemon."""
+        with patch("app.pid_manager._detect_provider", return_value="claude"), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.config.get_mcp_enabled", side_effect=OSError("config.yaml gone")
+        ):
+            assert "mcp" in get_status_processes(tmp_path)
+
 
 # ---------------------------------------------------------------------------
 # start_all
@@ -1434,6 +1445,24 @@ class TestStartAll:
         ok, msg = results["mcp"]
         assert ok is False
         assert "streamable-http" in msg
+        start_mcp.assert_not_called()
+
+    def test_start_all_reports_unreadable_mcp_config_as_failure(self, tmp_path):
+        """A config-read error is a reported failure, not "not configured"."""
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.config.get_mcp_enabled", side_effect=OSError("config.yaml gone")
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch("app.pid_manager.start_mcp") as start_mcp:
+            results = start_all(tmp_path, provider="claude")
+
+        ok, msg = results["mcp"]
+        assert ok is False
+        assert "config.yaml gone" in msg
         start_mcp.assert_not_called()
 
     def test_start_all_does_not_daemonize_stdio_mcp(self, tmp_path):
