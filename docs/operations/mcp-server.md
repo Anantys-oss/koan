@@ -201,13 +201,18 @@ and carries destructive and open-world hints. `tools_allow_destructive` governs
 its reach as well:
 
 - **Default (`false`).** It reaches any operation in `koan/openapi.yaml`
-  *except* shutdown, restart, update, release update, and project
-  create/update/delete. Those are refused locally — the request never leaves the
-  process — with an error naming the flag that would permit them.
+  *except* shutdown, restart, update, release update, project
+  create/update/delete, **and every destructive route** — anything `DELETE` or
+  marked `x-koan-destructive`, such as mission delete, i.e. exactly what the
+  flag hides from `tools/list`. Those are refused locally — the request never
+  leaves the process — with an error naming the flag that would permit them.
 - **`true`.** It reaches every documented operation, including those.
 
-So a default deployment cannot be talked into stopping the agent or dropping a
-watched project through either surface, and one flag moves both.
+So a default deployment cannot be talked into stopping the agent, dropping a
+watched project, or deleting a mission through either surface, and one flag
+moves both. A new route marked `x-koan-destructive` is closed on both surfaces
+the moment it is marked — the escape hatch reads the marker, it does not carry
+a second list to keep in sync.
 
 Named exposure fails closed. A REST route must carry its explicit MCP marker
 and appear in Kōan's fixed curation table. Adding a route to OpenAPI alone never

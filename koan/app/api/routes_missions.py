@@ -21,9 +21,13 @@ from app.api.skill_catalog import API_COMMAND_NAMES, canonical_command_name
 
 bp = Blueprint("missions", __name__)
 
-# Validate command-style missions.
+# Validate command-style missions. The verb class mirrors what the dispatcher
+# actually resolves — ``skill_dispatch.parse_skill_mission`` takes everything up
+# to the first whitespace — so dotted (``/claude.md``, ``/core.plan``) and
+# non-ASCII (``/français``) commands keep working. Narrowing it to ``\w`` would
+# reject commands REST queued before this endpoint validated anything.
 _COMMAND_RE = re.compile(
-    r"^/?(?P<name>[a-zA-Z0-9_]+)"
+    r"^/?(?P<name>[^\s/]+)"
     r"(?P<arguments>(?:\s+[\s\S]+)?)$"
 )
 

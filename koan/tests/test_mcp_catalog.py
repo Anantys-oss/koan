@@ -11,6 +11,7 @@ from app.mcp.catalog import (
     ToolAnnotations,
     build_tool_definitions,
     denied_operation_ids,
+    exec_denied_operation_ids,
 )
 
 
@@ -140,6 +141,32 @@ def test_denied_operation_ids_resolve_from_the_document(operations):
         "projects_delete_project_delete",
     }
     assert "missions_delete_mission_delete" not in denied
+
+
+def test_exec_gate_denies_every_destructive_operation_by_default(operations):
+    """The executor's gate is at least as wide as the named-tool filter.
+
+    ``build_tool_definitions`` hides every destructive route while the flag is
+    off, so mission delete must be unreachable through ``exec_operation`` too —
+    otherwise the escape hatch is a wider door than the tools beside it.
+    """
+    denied = exec_denied_operation_ids(operations, allow_destructive=False)
+
+    assert denied_operation_ids(operations) <= denied
+    assert "missions_delete_mission_delete" in denied
+    assert "missions_list_missions_get" not in denied
+    assert exec_denied_operation_ids(operations, allow_destructive=True) == frozenset()
+
+
+def test_exec_gate_follows_the_route_marker(api_spec_path):
+    """A newly marked route is closed without editing the deny-list by hand."""
+    spec = deepcopy(load_spec(api_spec_path))
+    spec["paths"]["/v1/missions/{mission_id}"]["patch"]["x-koan-destructive"] = True
+    operations = load_operations(spec)
+
+    denied = exec_denied_operation_ids(operations, allow_destructive=False)
+
+    assert "missions_edit_mission_patch" in denied
 
 
 def test_deny_list_overrides_a_curated_entry(monkeypatch, api_spec_path):

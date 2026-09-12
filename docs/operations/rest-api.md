@@ -292,14 +292,25 @@ after changing exposure metadata.
   "urgent": false
 }
 ```
-Prefer `command` when an exposed skill covers the work. A missing leading slash
-is normalized, and an advertised alias resolves to its canonical verb (`/rv` →
-`/review`). The `/v1/skills` catalogue is the *advertised* surface, not an
-accept-list: any slash command the agent understands is still accepted, so
-existing callers keep working. Only a value that is not shaped like a slash
-command at all returns `422`. Full command strings can include arguments.
-`text` remains unrestricted for work outside the catalog. `project` adds a
-`[project:name]` tag. `urgent` inserts at the top of the queue.
+Prefer `command` when an exposed skill covers the work. An advertised alias
+resolves to its canonical verb (`/rv` → `/review`). The `/v1/skills` catalogue
+is the *advertised* surface, not an accept-list: any slash command the agent
+understands is still accepted — including dotted (`/claude.md`, `/core.plan`)
+and non-ASCII (`/français`) verbs — so existing callers keep working. Full
+command strings can include arguments.
+
+Two things about `command` changed when validation was added, and both are
+narrowings a pre-existing caller can notice:
+
+- A value that is not shaped like a slash command at all — `command` empty
+  after the verb, or a verb containing whitespace or `/` — now returns `422`
+  instead of being queued verbatim.
+- A **missing leading slash is normalized**, so prose in `command` becomes a
+  slash command: `{"command": "fix the login bug"}` queues `/fix the login
+  bug` and is routed to the `fix` skill runner rather than to the agent as free
+  text. Put free-form work in `text`, which stays unrestricted.
+
+`project` adds a `[project:name]` tag. `urgent` inserts at the top of the queue.
 
 Response (202):
 ```json
