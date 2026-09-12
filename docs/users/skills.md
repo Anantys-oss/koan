@@ -309,9 +309,11 @@ Skills marked **GitHub @mention** can be triggered by commenting `@koan-bot <com
 
 ## REST and MCP Skill Discovery
 
-Authenticated REST and MCP clients expose a deliberately small command subset:
-`/audit`, `/brief`, `/ci_check`, `/doc`, `/explain`, `/fix`, `/gh_request`,
-`/implement`, `/plan`, `/rebase`, and `/review`.
+Authenticated REST and MCP clients *advertise* a deliberately small command
+subset: `/audit`, `/brief`, `/ci_check`, `/doc`, `/explain`, `/fix`,
+`/gh_request`, `/implement`, `/plan`, `/rebase`, and `/review`. This is a
+discovery surface, not a restriction — `POST /v1/missions` still queues any
+slash command, so existing REST and `koan-cli` callers are unaffected.
 
 `GET /v1/skills` and `koan_skills_list` return descriptions, usage, aliases,
 and flags. `koan_missions_create` advertises the canonical verbs directly. Send
@@ -323,8 +325,8 @@ a review request through its `command` field:
 }
 ```
 
-Chat-control and destructive commands remain absent. This catalog is separate
-from chat and GitHub/Jira availability.
+Chat-control and destructive commands are not advertised. This catalog is
+separate from chat and GitHub/Jira availability.
 
 ## Custom Skills
 

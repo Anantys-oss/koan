@@ -66,7 +66,7 @@ cli/  (terminal front-end)
 | `api/mission_results.py` | Command→resolver registry (`register_resolver`, `resolve_mission_result`, `always_inline_keys`); built-in `/review`+`/ultrareview` resolver reads the PR-keyed findings sidecar. |
 | `routes_missions.list_missions_route()` | `GET /v1/missions` lists missions from the authoritative mission store (`ensure_store_synced()` + `list_by_state()`), rendering the `Mission` fields under the response's `status` key. Rows are grouped by state (live states in queue order, terminal states newest-first) — never globally newest-first. `id` stays the **sidecar** id (`null` when the mission was not API-queued) so a listed id resolves on the single-mission routes; the store identity is exposed separately as `store_id`, which those routes do not accept. `?status` and `?limit` are validated at the boundary and reject with `422 invalid_request` — never coerced to a wider result set. Single-mission detail/result routes (`GET/PATCH/DELETE /v1/missions/{id}`, `/result`) remain sidecar-backed for API-queued records. |
 | `routes_skills.list_skills_route()` | `GET /v1/skills` returns the API-exposed core skill catalog from `api/skill_catalog.py`; it never loads private `instance/skills/` scopes. |
-| `routes_missions.create_mission()` | Slash-command input is normalized to a leading slash and validated against the exposed canonical command set before queue insertion. Unknown commands return `422`; free-form `text` remains unrestricted. |
+| `routes_missions.create_mission()` | Slash-command input is normalized to a leading slash, and an exposed skill's alias is resolved to its canonical verb, before queue insertion. The exposed command set is the *advertised* surface only — never an accept-list — so every slash command the agent understands stays accepted; only input that is not slash-command-shaped returns `422`. Free-form `text` remains unrestricted. |
 | `routes_missions.get_mission_route()` | `GET /v1/missions/{id}` returns the reconciled record (with typed `result`/`result_ref`) **plus** a `usage` object (`aggregate_mission_usage()` over `created`→today): token/cache/cost totals, `call_count`, `models`/`providers`, and an `unattributed` block for id-less title matches. Response is a copy — the sidecar is never mutated with `usage`. |
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
 | `log_reader.tail_log()/read_logs()` | Shared log tailing for dashboard **and** `GET /v1/logs`. |
@@ -83,7 +83,10 @@ skills sorted by name. Each record contains `name`, `description`, `group`,
 **Command schema.** The OpenAPI property for mission `command` publishes a
 canonical-command `enum` plus a pattern branch accepting the canonical verb
 followed by arguments. This lets model-facing schemas advertise `/review`
-while accepting `/review https://github.com/owner/repo/pull/42`.
+while accepting `/review https://github.com/owner/repo/pull/42`. The schema
+guides callers; it does not narrow what the endpoint accepts (see
+`create_mission()` above), so publishing the catalogue never breaks a client
+using a command outside it.
 
 ## Mission record: typed structured `result`
 
