@@ -1121,6 +1121,37 @@ def test_list_comments_normalizes_malformed_properties(raw_properties):
     assert comments[0]["properties"] == {}
 
 
+def test_list_comments_pages_on_when_jira_omits_total():
+    """A page without `total` is not a page saying "zero comments exist".
+
+    Jira Server/DC and filtering proxies omit it. Defaulting to 0 truncates the
+    listing after the first page, and the upsert callers read a missing comment
+    as "safe to create" — so the truncation stacks duplicate comments.
+    """
+    from app.jira_notifications import _list_comments_result
+
+    def get_side_effect(_base_url, _auth_header, _path, params=None):
+        start = (params or {}).get("startAt", 0)
+        # No `total` key anywhere; the short second page is the only signal
+        # that the listing has ended.
+        if start == 0:
+            return {"comments": [{"id": str(i), "body": f"c{i}"} for i in range(100)]}
+        return {"comments": [{"id": "100", "body": "c100"}]}
+
+    with (
+        patch(
+            "app.jira_notifications._jira_auth_from_config",
+            return_value=("https://test", "Basic token"),
+        ),
+        patch("app.jira_notifications._jira_get", side_effect=get_side_effect),
+    ):
+        ok, comments = _list_comments_result("FOO-1")
+
+    assert ok is True
+    assert len(comments) == 101
+    assert comments[-1]["id"] == "100"
+
+
 def test_fetch_jira_issue_raises_on_a_shapeless_comment_page():
     """A JSON-valid `{}` page must not read as "this issue has no comments".
 
