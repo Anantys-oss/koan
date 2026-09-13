@@ -1547,8 +1547,11 @@ _GIT_STEP_EXCEPTIONS = (RuntimeError, subprocess.SubprocessError, OSError)
 _VERIFY_FAILED_PREFIX = "could not verify the tree is unmerged-free"
 
 # A status git never answers is worth re-asking, but only a bounded number of
-# times: an index.lock held for the life of the rebase would otherwise eat the
-# whole round budget and be reported as "too complex to resolve".
+# times *per resolution*: an index.lock held for the life of the rebase would
+# otherwise eat the whole round budget and be reported as "too complex to
+# resolve".  The count is cumulative, not consecutive — a lock that only ever
+# blocks the pre-staging check would reset a consecutive counter every round
+# and never trip it.
 _MAX_UNREADABLE_STATUS_ROUNDS = 3
 _UNREADABLE_STATUS_DELAY = 2.0
 
@@ -1611,7 +1614,7 @@ def _verify_unmerged_free(project_path: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def _list_untracked_files(project_path: str) -> List[str]:
+def _list_untracked_files(project_path: str) -> Optional[List[str]]:
     """Return the files ``git add -u`` leaves out of the replayed commit.
 
     A resolution that legitimately creates a file (an extracted helper, a
@@ -1619,6 +1622,12 @@ def _list_untracked_files(project_path: str) -> List[str]:
     would ever notice: untracked files neither block ``--continue`` nor show
     up as unmerged.  The caller records them in the actions log so a dropped
     file reaches the human reading the PR report, not just daemon stderr.
+
+    Returns **None** when git could not be asked, never ``[]``: this listing
+    is the only human-facing signal for a dropped file, so an unanswered
+    question must not read as "nothing was dropped" while the commit goes
+    ahead without it.  *None* carries git's own error text back to the
+    caller, which reports the blind spot in the actions log.
     """
     try:
         out = _run_git(
@@ -1627,7 +1636,7 @@ def _list_untracked_files(project_path: str) -> List[str]:
         )
     except _GIT_STEP_EXCEPTIONS as e:
         print(f"[rebase_pr] could not list untracked files: {e}", file=sys.stderr)
-        return []
+        return None
     return [line.strip() for line in (out or "").splitlines() if line.strip()]
 
 
@@ -1652,7 +1661,15 @@ def _continue_rebase(
     nothing is unmerged, so this cannot turn an unresolved conflict into a
     commit.  A non-zero exit is never folded into success: completion
     requires both a gone rebase directory and git's own rc=0.
+
+    A rebase that is already gone on entry is a *completed* one: the caller
+    only reaches here after git stopped on conflicts, so the resolution
+    agent ran ``--continue`` itself.  Asking git again would earn "fatal: No
+    rebase in progress?" and report a finished rebase as a failure.
     """
+    if not _has_rebase_in_progress(project_path):
+        return _ContinueOutcome(True, "")
+
     verified, why = _verify_unmerged_free(project_path)
     if not verified:
         print(f"[rebase_pr] refusing to stage: {why}", file=sys.stderr)
@@ -1668,11 +1685,19 @@ def _continue_rebase(
         return _ContinueOutcome(False, f"staging the resolved tree failed: {e}")
 
     untracked = _list_untracked_files(project_path)
-    if untracked:
+    if untracked is None:
+        note = (
+            "could not check for untracked resolution artifacts — a new file "
+            "the resolution created may be missing from the replayed commit"
+        )
+    elif untracked:
         note = (
             f"{len(untracked)} untracked file(s) left out of the replayed "
             f"commit: {', '.join(untracked[:5])}"
         )
+    else:
+        note = ""
+    if note:
         print(f"[rebase_pr] {note}", file=sys.stderr)
         if actions_log is not None:
             actions_log.append(note)
@@ -1735,6 +1760,30 @@ def _resolve_rebase_conflicts(
     status_errors: List[str] = []
     unreadable_rounds = 0
 
+    def _unreadable(detail: str) -> bool:
+        """Count one git-could-not-be-queried round; True once it is fatal.
+
+        Retryable outcomes carry git's own text ("fatal: Unable to create
+        index.lock"), and a lock held for the whole rebase would otherwise
+        silently eat the round budget and surface as "exceeded N rounds" —
+        telling the human the conflicts were too complex when none was ever
+        attempted.
+        """
+        nonlocal unreadable_rounds
+        unreadable_rounds += 1
+        if detail:
+            status_errors.append(detail)
+        if unreadable_rounds >= _MAX_UNREADABLE_STATUS_ROUNDS:
+            _record_conflict_failure(
+                failure_detail,
+                f"git status could not be read after {unreadable_rounds} "
+                f"attempts: "
+                f"{status_errors[-1] if status_errors else 'unknown error'}",
+            )
+            return True
+        time.sleep(_UNREADABLE_STATUS_DELAY)
+        return False
+
     for round_num in range(1, max_rounds + 1):
         conflicted = _get_conflicted_files(project_path, errors=status_errors)
         if conflicted is None:
@@ -1742,18 +1791,9 @@ def _resolve_rebase_conflicts(
             # pause rather than read the non-answer as either state — but a
             # git that never answers is its own failure, not "conflicts too
             # complex to resolve" once the round budget runs out.
-            unreadable_rounds += 1
-            if unreadable_rounds >= _MAX_UNREADABLE_STATUS_ROUNDS:
-                _record_conflict_failure(
-                    failure_detail,
-                    f"git status could not be read after {unreadable_rounds} "
-                    f"attempts: "
-                    f"{status_errors[-1] if status_errors else 'unknown error'}",
-                )
+            if _unreadable(""):
                 return False
-            time.sleep(_UNREADABLE_STATUS_DELAY)
             continue
-        unreadable_rounds = 0
         if not conflicted:
             # No conflicts — try to continue (may already be done)
             outcome = _continue_rebase(project_path, actions_log=actions_log)
@@ -1762,7 +1802,8 @@ def _resolve_rebase_conflicts(
             if outcome.retryable:
                 # Nothing was staged or continued — git could not be queried.
                 # Spend the round again instead of abandoning the rebase.
-                time.sleep(_UNREADABLE_STATUS_DELAY)
+                if _unreadable(outcome.detail):
+                    return False
                 continue
             if _get_conflicted_files(project_path) == []:
                 # Stuck: nothing to resolve, yet the rebase will not advance.
@@ -1837,7 +1878,8 @@ def _resolve_rebase_conflicts(
         if outcome.retryable:
             # git could not be queried, so nothing was staged or continued —
             # the resolution already paid for stays on disk for next round.
-            time.sleep(_UNREADABLE_STATUS_DELAY)
+            if _unreadable(outcome.detail):
+                return False
             continue
         if _get_conflicted_files(project_path) == []:
             _record_conflict_failure(

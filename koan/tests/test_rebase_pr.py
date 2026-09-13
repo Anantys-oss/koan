@@ -3151,7 +3151,7 @@ class TestContinueRebaseStagesResolvedTree:
         run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
 
         with run_git_patch, subprocess_patch, \
-             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
             outcome = _continue_rebase("/project")
 
         assert outcome.completed is True
@@ -3168,7 +3168,7 @@ class TestContinueRebaseStagesResolvedTree:
         run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
 
         with run_git_patch, subprocess_patch, \
-             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
             _continue_rebase("/project")
 
         assert ["git", "add", "-A"] not in git_calls
@@ -3187,7 +3187,7 @@ class TestContinueRebaseStagesResolvedTree:
         run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
 
         with run_git_patch, subprocess_patch, \
-             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
             _continue_rebase("/project")
 
         assert not any("--diff-filter=U" in cmd for cmd in git_calls)
@@ -3207,10 +3207,50 @@ class TestContinueRebaseStagesResolvedTree:
         with patch("app.rebase_pr._run_git", side_effect=fake_run_git), \
              patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
                  returncode=0, stdout="", stderr="")), \
-             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
             _continue_rebase("/project", actions_log=actions_log)
 
         assert any("app/new_helper.py" in entry for entry in actions_log)
+
+    def test_unlistable_untracked_files_are_reported_not_swallowed(self):
+        """An unanswered `ls-files` must not read as "nothing was dropped"."""
+        from app.rebase_pr import _continue_rebase
+
+        def fake_run_git(cmd, **kwargs):
+            if "ls-files" in cmd:
+                raise RuntimeError("fatal: Unable to create index.lock")
+            return ""
+
+        actions_log = []
+        with patch("app.rebase_pr._run_git", side_effect=fake_run_git), \
+             patch("app.rebase_pr.subprocess.run", return_value=MagicMock(
+                 returncode=0, stdout="", stderr="")), \
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
+            outcome = _continue_rebase("/project", actions_log=actions_log)
+
+        assert outcome.completed is True
+        assert any(
+            "could not check for untracked" in entry for entry in actions_log
+        )
+
+    def test_a_rebase_the_agent_finished_itself_is_a_success(self):
+        """The agent may run `--continue` itself; the rebase is then done.
+
+        Asking git again earns "fatal: No rebase in progress?" — reporting a
+        finished rebase as a failure.
+        """
+        from app.rebase_pr import _continue_rebase
+
+        git_calls = []
+        run_git_patch, subprocess_patch = self._record_git_calls(git_calls)
+
+        with run_git_patch, subprocess_patch, \
+             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+            outcome = _continue_rebase("/project")
+
+        assert outcome.completed is True
+        assert outcome.detail == ""
+        assert git_calls == []
 
     def test_refuses_to_stage_when_a_path_is_still_unmerged(self):
         """`add -u` would commit conflict markers verbatim — never guess."""
@@ -3287,7 +3327,7 @@ class TestContinueRebaseStagesResolvedTree:
 
         with patch("app.rebase_pr._run_git", return_value=""), \
              patch("app.rebase_pr.subprocess.run", side_effect=fake_subprocess_run), \
-             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
             outcome = _continue_rebase("/project")
 
         assert outcome.completed is False
@@ -3338,7 +3378,7 @@ class TestContinueRebaseStagesResolvedTree:
         )
 
         with run_git_patch, subprocess_patch, \
-             patch("app.rebase_pr._has_rebase_in_progress", return_value=False):
+             patch("app.rebase_pr._has_rebase_in_progress", side_effect=[True, False]):
             outcome = _continue_rebase("/project")
 
         assert outcome.completed is False
@@ -3497,6 +3537,38 @@ class TestResolveRebaseConflictsProgress:
         assert result is True
         assert cont.call_count == 2
         assert failure_detail == []
+
+    def test_persistently_unverifiable_continue_reports_gits_own_error(self):
+        """A lock that only blocks the pre-staging check must still be named.
+
+        The top-of-round `git status` succeeds every round here, so the
+        conflicts were never "too complex" — no conflict was ever attempted.
+        """
+        from app.rebase_pr import _ContinueOutcome
+
+        failure_detail = []
+        with patch("app.rebase_pr._get_conflicted_files", return_value=[]), \
+             patch("app.rebase_pr.time.sleep") as sleep, \
+             patch("app.rebase_pr._continue_rebase", return_value=_ContinueOutcome(
+                 False,
+                 "could not verify the tree is unmerged-free: "
+                 "fatal: Unable to create index.lock",
+                 True,
+             )) as cont:
+            result = _resolve_rebase_conflicts(
+                "main", "", "/project", {}, [], max_rounds=10,
+                failure_detail=failure_detail,
+            )
+
+        assert result is False
+        # Bounded, and never reached round exhaustion.
+        assert cont.call_count == 3
+        assert sleep.call_count == 2
+        assert failure_detail == [
+            "git status could not be read after 3 attempts: "
+            "could not verify the tree is unmerged-free: "
+            "fatal: Unable to create index.lock"
+        ]
 
     def test_unreadable_status_after_continue_is_not_reported_as_stuck(self):
         """The stuck branch needs a confident "nothing conflicted", not a guess."""
