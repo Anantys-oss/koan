@@ -37,6 +37,15 @@ DEFAULT_TIMEOUT = 600  # 10 minutes
 # _ProviderInvocationLock.__enter__.
 LOCK_POLL_INTERVAL = 0.25
 
+# Visibility for that wait. A contended lock is normal (a peer Kōan holds it
+# for a whole mission); a *leaked* one — an abandoned open-file description
+# from a crashed peer — looks identical from outside: the runner just goes
+# quiet forever with no child to show for it. Warn once past the first
+# threshold, then at a coarse interval, so a stuck lock is observable rather
+# than inferred.
+LOCK_WAIT_WARN_AFTER = 60.0
+LOCK_WAIT_WARN_INTERVAL = 300.0
+
 _FALLBACK_PROVIDER = CLIProvider()
 
 
@@ -104,6 +113,8 @@ class _ProviderInvocationLock:
             # that makes the whole process deaf to SIGUSR1 / SIGUSR2 (/abort,
             # /restart --force) for as long as the peer holds the lock. Polling
             # bounds that deafness to LOCK_POLL_INTERVAL.
+            waiting_since = time.monotonic()
+            warn_at = LOCK_WAIT_WARN_AFTER
             try:
                 while True:
                     try:
@@ -111,6 +122,16 @@ class _ProviderInvocationLock:
                         break
                     except BlockingIOError:
                         time.sleep(LOCK_POLL_INTERVAL)
+                        waited = time.monotonic() - waiting_since
+                        if waited >= warn_at:
+                            warn_at = waited + LOCK_WAIT_WARN_INTERVAL
+                            _log_cli(
+                                "warning",
+                                f"Waiting {waited:.0f}s for the provider "
+                                f"invocation lock {self._lock_name!r} "
+                                f"({lock_path}) — a peer Kōan may hold it, or "
+                                "it leaked from a crashed one",
+                            )
             except (KeyboardInterrupt, SystemExit):
                 # A signal handler firing during the poll sleep (forced restart,
                 # CTRL-C) must not leak the lock file descriptor.
@@ -321,9 +342,15 @@ def popen_cli(
                 raise
 
             def cleanup():
-                stdin_file.close()
-                _cleanup_prompt_file(prompt_path)
-                cli_lock.release()
+                # try/finally, not a plain sequence: the release is the one
+                # step that must never be skipped. An EIO on close() would
+                # otherwise strand the flock, and the next mission's
+                # acquire_provider_lock polls LOCK_NB against it forever.
+                try:
+                    stdin_file.close()
+                    _cleanup_prompt_file(prompt_path)
+                finally:
+                    cli_lock.release()
 
             return proc, cleanup
 
@@ -331,9 +358,13 @@ def popen_cli(
         proc = subprocess.Popen(cmd, **kwargs)
 
         def cleanup_prompt_file_only():
-            if prompt_path and not use_as_stdin:
-                _cleanup_prompt_file(prompt_path)
-            cli_lock.release()
+            # Same invariant as cleanup() above: the lock release cannot be
+            # skipped by an earlier failure.
+            try:
+                if prompt_path and not use_as_stdin:
+                    _cleanup_prompt_file(prompt_path)
+            finally:
+                cli_lock.release()
 
         return proc, cleanup_prompt_file_only
     except Exception:
