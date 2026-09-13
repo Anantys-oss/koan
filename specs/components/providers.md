@@ -503,11 +503,20 @@ tools — MCP tools must still be allowlisted via qualified names
   `RuntimeError` that the caller can attribute and degrade on. `idle_timeout`
   defaults to `None`, which preserves the historical (unbounded) behavior for
   callers that have not opted in. An opted-in caller MUST pick a value strictly
-  below `first_output_timeout`, otherwise the outer watchdog still wins and the
-  inner bound is decorative. On the review path the two clocks are the *same*
+  below **the outer budget that governs its own dispatch path**, otherwise the
+  outer watchdog still wins and the inner bound is decorative. That budget is
+  not a single constant: run.py arms the outer watchdog from
+  `rebase_first_output_timeout` for a `/rebase` mission and from
+  `first_output_timeout` otherwise, and a review pass is reachable under both
+  (`rebase_pr` → `private_review_gate` → `review_runner`). Deriving the inner
+  value from `first_output_timeout` unconditionally would ignore the very knob
+  an operator uses to widen a rebase's silence budget, killing gate passes well
+  inside the configured allowance; the derivation MUST therefore select the
+  same budget run.py selected, keyed off the canonical `KOAN_MISSION_COMMAND`
+  the runner exports. On the review path the two clocks are the *same*
   clock — run.py's watchdog resets on the read loop's per-event `print()`,
   which is what heartbeats the inner one — so the inner value MUST be derived
-  as a small fixed margin below the outer budget (`outer - 60`), never a
+  as a small fixed margin below that budget (`outer - 60`), never a
   fraction of it: halving it would not add a bound where none existed, it
   would halve the silence the pass was always allowed and kill legitimate long
   turns.
@@ -541,6 +550,15 @@ tools — MCP tools must still be allowlisted via qualified names
   `mission_scope` degrades to `start_new_session=True` plus a process-group
   kill), where the child survives unbounded. Closing it fully needs the outer
   teardown to track isolated provider sessions.
+  Within `run_command_streaming` itself the same reasoning makes one kill
+  mandatory: because the opted-in child is outside every group teardown and
+  `popen_cli`'s `cleanup()` only closes stdin, deletes the prompt file and
+  releases the invocation lock, an **exception raised mid-loop** (a
+  `BrokenPipeError` on Kōan's own stdout, a malformed event) MUST force-kill the
+  group before disarming the watchdog. Disarming first leaves nothing that can
+  reach the provider: it outlives the call, keeps burning quota, and the next
+  mission takes the invocation lock `cleanup()` just released — running two
+  providers concurrently against the serialization that lock exists to enforce.
 - **An inactivity watchdog must be disarmed when the read loop ends, not when
   the call returns.** `proc.stderr.read()` and `proc.wait()` run after stdout
   EOF and emit no heartbeats, so a watchdog still armed across them kills a run
@@ -567,15 +585,25 @@ tools — MCP tools must still be allowlisted via qualified names
   exits. Converting it means bounding that read loop independently of the kill
   mode, which is a change to the agent loop's teardown rather than to this
   component's contract.
-- **A stall detected after the terminal `result` envelope MUST NOT be reported
-  as a stall.** The read loop drains to EOF rather than breaking on the result
+- **A stall detected after the terminal envelope MUST NOT be reported as a
+  stall.** The read loop drains to EOF rather than breaking on the result
   event, so a CLI that emits its verdict and then goes silent tearing down (MCP
   servers, telemetry) trips the same watchdog. Raising there would demote a
   finished pass to a truncated error string, so the result is returned and the
-  resulting `exit -9` is recognised as the watchdog's own kill. A genuine stall
-  (no result envelope) MUST persist the usage snapshot before raising — it is
-  the run that burned the most — and MUST carry the drained stderr, which is
-  usually the only statement of *why* the provider went silent.
+  resulting `exit -9` is recognised as the watchdog's own kill. "A terminal
+  envelope arrived" MUST be decided on the **event shape**, not on whether a
+  result *string* was extracted: Grok Build's `end` and any text-less `result`
+  close the stream while deliberately yielding no text, so inferring it from
+  the extracted result would report a completed pass on those providers as a
+  stall — the same demotion, reached through a different envelope shape.
+  Recognising the kill MUST also not bypass the rest of the exit handling: a
+  session that reported a **failed** terminal status and *then* hung in
+  teardown MUST still surface as that failure, not as a successful partial
+  result. A genuine stall (no terminal envelope) MUST persist the usage
+  snapshot before raising — it is the run that burned the most — and MUST carry
+  the drained stderr, which is usually the only statement of *why* the provider
+  went silent; when that drain itself fails, the error MUST say so rather than
+  degrade to a bare timeout message.
 
 ## Integration points
 

@@ -20,6 +20,7 @@ import base64
 import contextlib
 import html
 import json
+import os
 import re
 import subprocess
 import sys
@@ -999,14 +1000,39 @@ def _with_language_directive(prompt: str) -> str:
     return f"{directive}\n\n{prompt}"
 
 
+def _outer_skill_runner_budget() -> int:
+    """The outer skill-runner silence budget governing *this* dispatch path.
+
+    Mirrors run.py's own selection (``run.py`` → ``_run_skill_mission``): a
+    ``/rebase`` mission arms its outer watchdog from
+    ``rebase_first_output_timeout``, everything else from
+    ``first_output_timeout``. ``run_private_review`` is reachable inside a
+    rebase (``rebase_pr`` → ``private_review_gate`` → ``review_runner``), and
+    reading the wrong knob there is not a cosmetic mismatch: an operator who
+    widened the rebase budget to 1800s would still get a 540s inner bound and
+    lose the gate's verdict with two thirds of the budget unused.
+
+    The command reaches this process through ``KOAN_MISSION_COMMAND``, which
+    run.py already exports into the skill runner's environment and resolves via
+    ``mission_command_name`` — so aliases (``/rb``, ``/core.rebase``) are
+    already canonicalised and this stays in step with run.py by construction.
+    Absent (a direct call outside a skill runner), the default budget applies.
+    """
+    from app.config import get_first_output_timeout, get_rebase_first_output_timeout
+
+    if os.environ.get("KOAN_MISSION_COMMAND") == "rebase":
+        return get_rebase_first_output_timeout()
+    return get_first_output_timeout()
+
+
 def _review_stall_timeout() -> int:
     """Seconds of provider silence that end a single review pass.
 
-    Derived from ``first_output_timeout`` (run.py's outer skill-runner
-    watchdog) rather than configured separately, because the only value the
-    inner bound can usefully take is one strictly below the outer one — at or
-    above it the outer watchdog fires first and SIGKILLs the whole runner, and
-    the inner bound is decorative.
+    Derived from the outer skill-runner watchdog's budget
+    (:func:`_outer_skill_runner_budget`) rather than configured separately,
+    because the only value the inner bound can usefully take is one strictly
+    below the outer one — at or above it the outer watchdog fires first and
+    SIGKILLs the whole runner, and the inner bound is decorative.
 
     The margin is a flat 60s, not half the budget. For this path the two
     clocks are the *same* clock: run.py's watchdog resets on the per-event
@@ -1022,18 +1048,16 @@ def _review_stall_timeout() -> int:
 
     Returns 0 (no inner bound) in the two cases where one cannot help:
 
-    - the operator disabled the outer watchdog (``first_output_timeout: 0``),
+    - the operator disabled the outer watchdog (the governing budget is 0),
       i.e. asked for no stall killing at all;
     - the margin would leave less than a 60s inner bound, below which a brief
       legitimate pause reads as a stall. The outer watchdog governs there, so
       an inner bound would only ever be decorative.
 
     The postcondition is therefore exact: the result is either 0, or a value
-    strictly below ``first_output_timeout``.
+    strictly below the governing outer budget.
     """
-    from app.config import get_first_output_timeout
-
-    outer = get_first_output_timeout()
+    outer = _outer_skill_runner_budget()
     if outer <= 0:
         return 0
     inner = outer - 60

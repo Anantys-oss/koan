@@ -1416,8 +1416,11 @@ first_output_timeout: 600     # Kill silent skills after N seconds (0 disables)
                               # /review derives its own per-pass stall bound
                               # from this (this value minus 60s), so a stalled
                               # review pass fails on its own instead of the
-                              # whole runner being killed. Not separately
-                              # configurable — see docs/design/provider-stall-bounds.md.
+                              # whole runner being killed. Under /rebase it
+                              # derives from rebase_first_output_timeout
+                              # instead — whichever budget run.py is using.
+                              # Not separately configurable —
+                              # see docs/design/provider-stall-bounds.md.
 rebase_first_output_timeout: 1800  # Optional longer silence budget for /rebase
 rebase_review_idle_timeout: 1800   # /rebase review phase: kill on inactivity
 rebase_review_max_duration: 10800  # /rebase review phase: absolute cap

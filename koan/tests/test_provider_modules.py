@@ -2911,6 +2911,87 @@ class TestStreamingReadLoopIsInactivityBounded:
             proc.wait()
         assert "VERDICT: approved" in out
 
+    def test_a_textless_terminal_envelope_also_exempts_the_teardown_silence(self):
+        """"Finished" is an event shape, not "a result string came out".
+
+        Grok Build closes with ``{"type": "end"}`` and streams the assistant
+        text as deltas, so ``_extract_result_text`` returns None by design.
+        Keying the exemption off the extracted result would report a completed
+        pass on that provider as a stall and throw the verdict away down to a
+        200-character suffix — the same demotion the exemption exists to
+        prevent, reached through a different envelope shape.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "for e in ({'type': 'text', 'data': 'VERDICT: approved'},"
+            " {'type': 'end', 'stopReason': 'done'}):\n"
+            "    sys.stdout.write(json.dumps(e) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert "VERDICT: approved" in out
+
+    def test_a_failed_envelope_then_teardown_silence_still_reports_the_failure(self):
+        """Our own SIGKILL must not launder a failed session into a success.
+
+        A headless permission denial arrives as a terminal envelope with
+        status=failed. If the CLI then hangs in teardown, recognising exit -9
+        as the watchdog's own kill must suppress only the generic exit-code
+        error — not the failed-status raise that carries the actionable
+        ``skip_permissions`` hint.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "for e in ({'type': 'text', 'data': 'partial prose'},"
+            " {'type': 'result', 'status': 'failed',"
+            " 'error': {'message': 'permission denied'}}):\n"
+            "    sys.stdout.write(json.dumps(e) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            with pytest.raises(RuntimeError, match="status=failed.*permission denied"):
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_an_exception_mid_loop_does_not_orphan_the_isolated_child(self):
+        """cleanup() releases the invocation lock; it never kills.
+
+        An opted-in child is session-isolated, so run.py's skill-runner
+        teardown and mission_scope's process-group reap cannot reach it either.
+        Disarming the watchdog without killing first would leave it running and
+        burning quota while the next mission takes the lock just released.
+        """
+        import time as _time
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "sys.stdout.write(json.dumps({'type': 'text', 'data': 'x'}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            with patch("app.provider._summarize_stream_event",
+                       side_effect=ValueError("malformed event")), \
+                 pytest.raises(ValueError, match="malformed event"):
+                self._run(proc, idle_timeout=self.STALL_SECONDS)
+            deadline = _time.monotonic() + 5
+            while proc.poll() is None and _time.monotonic() < deadline:
+                _time.sleep(0.05)
+            assert proc.poll() is not None, (
+                "the session-isolated provider outlived the call with no "
+                "group teardown left that can reach it"
+            )
+        finally:
+            proc.kill()
+            proc.wait()
+
     def test_a_genuine_stall_still_records_what_it_burned(self):
         """Usage is persisted on every other exit; the stall must match.
 
@@ -3067,20 +3148,45 @@ class TestReviewStallTimeoutStaysUnderTheOuterWatchdog:
         (60, 0),     # outer already tighter than the floor
         (0, 0),      # operator disabled stall killing -- honour it
     ])
-    def test_derived_from_first_output_timeout(self, outer, expected):
+    def test_derived_from_first_output_timeout(self, outer, expected, monkeypatch):
         from app.review_runner import _review_stall_timeout
+        monkeypatch.delenv("KOAN_MISSION_COMMAND", raising=False)
         with patch("app.config.get_first_output_timeout", return_value=outer):
             assert _review_stall_timeout() == expected
 
+    def test_a_rebase_mission_derives_from_the_budget_governing_it(self, monkeypatch):
+        """run.py arms the outer watchdog from rebase_first_output_timeout.
+
+        A review pass is reachable inside /rebase (rebase_pr →
+        private_review_gate → review_runner), and that knob exists only to
+        *widen* the silence budget. Reading first_output_timeout there would
+        kill a pass at 540s that the operator allowed 1800s — losing the
+        verdict the rebase was configured to gate on, with two thirds of the
+        budget unused.
+        """
+        from app.review_runner import _review_stall_timeout
+        monkeypatch.setenv("KOAN_MISSION_COMMAND", "rebase")
+        with patch("app.config.get_first_output_timeout", return_value=600), \
+             patch("app.config.get_rebase_first_output_timeout", return_value=1800):
+            assert _review_stall_timeout() == 1740
+
     @pytest.mark.parametrize("outer", [0, 1, 59, 60, 119, 120, 300, 600, 3600])
-    def test_result_is_zero_or_strictly_below_the_outer_budget(self, outer):
-        """The postcondition, over the whole input range.
+    @pytest.mark.parametrize("command", [None, "rebase"])
+    def test_result_is_zero_or_strictly_below_the_outer_budget(
+        self, outer, command, monkeypatch,
+    ):
+        """The postcondition, over the whole input range and both budgets.
 
         A single off-by-one here silently reinstates the bug: the outer
         watchdog fires first and SIGKILLs the runner, so the pass never gets
         to report its own stall.
         """
         from app.review_runner import _review_stall_timeout
-        with patch("app.config.get_first_output_timeout", return_value=outer):
+        if command is None:
+            monkeypatch.delenv("KOAN_MISSION_COMMAND", raising=False)
+        else:
+            monkeypatch.setenv("KOAN_MISSION_COMMAND", command)
+        with patch("app.config.get_first_output_timeout", return_value=outer), \
+             patch("app.config.get_rebase_first_output_timeout", return_value=outer):
             inner = _review_stall_timeout()
         assert inner == 0 or inner < outer

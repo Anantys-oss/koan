@@ -4,7 +4,7 @@ title: "Bounding a stalled provider: inactivity, not wall-clock"
 description: "Why run_command_streaming's timeout never reached its read loop, why the replacement bound is on inactivity rather than duration, and why session isolation and the group SIGKILL are scoped to the armed watchdog."
 tags: [design, providers, decision]
 created: 2026-09-10
-updated: 2026-09-11
+updated: 2026-09-13
 ---
 
 # Bounding a stalled provider: inactivity, not wall-clock
@@ -74,16 +74,32 @@ its exact previous behaviour.
 
 ## Why the inner bound is derived, not configured
 
-An inner bound is only useful strictly below the outer one. At or above
-`first_output_timeout` the outer watchdog fires first, SIGKILLs the runner, and
-the inner bound never gets to report anything — it becomes decorative while
-looking configured. Rather than add a knob an operator can silently set into
+An inner bound is only useful strictly below the outer one. At or above the
+outer budget the outer watchdog fires first, SIGKILLs the runner, and the inner
+bound never gets to report anything — it becomes decorative while looking
+configured. Rather than add a knob an operator can silently set into
 uselessness, `review_runner._review_stall_timeout()` derives the value:
 
-- `first_output_timeout - 60`, when that leaves at least 60s;
+- `outer - 60`, when that leaves at least 60s;
 - `0` (no inner bound) when the operator disabled the outer watchdog, or when
   the margin would leave less than the 60s floor below which a brief
   legitimate pause reads as a stall.
+
+"Outer" is not a single knob. run.py arms its skill-runner watchdog from
+`rebase_first_output_timeout` for a `/rebase` mission and from
+`first_output_timeout` for everything else, and a review pass runs under both:
+`/review` directly, and inside `/rebase` via the private review gate
+(`rebase_pr` → `private_review_gate` → `review_runner`). The first version read
+`first_output_timeout` unconditionally, and review caught it. With
+`rebase_first_output_timeout: 1800` — a knob whose only purpose is to *widen*
+that budget — the inner bound would still have been `600 - 60 = 540`, so a
+synthesis turn silent for 600s (well inside the configured allowance, and
+exactly the long-single-turn case the flat margin exists to protect) would be
+killed with 1260s unused, and the gate would lose the verdict the rebase was
+configured to gate on. `_outer_skill_runner_budget()` therefore mirrors run.py's
+own selection, keyed off `KOAN_MISSION_COMMAND` — an env var run.py already
+exports into the skill runner after canonicalising aliases (`/rb`,
+`/core.rebase`) through `mission_command_name`.
 
 The margin is a flat 60s rather than half the budget, and that distinction was
 caught in review. On this path the inner and outer clocks are the **same
@@ -138,6 +154,18 @@ unbounded. That is the case the follow-up has to close, by teaching the outer
 teardown to track isolated provider sessions — worth doing, but a larger change
 than this fix.
 
+Inside `run_command_streaming` the same asymmetry forces one kill that is *not*
+optional. An exception raised mid-loop — a `BrokenPipeError` on Kōan's own
+stdout, a malformed event — reaches the `finally`, which disarms the watchdog
+and calls `popen_cli`'s `cleanup()`. That cleanup closes stdin, deletes the
+prompt file and releases the provider invocation lock; it never kills. So for an
+opted-in (session-isolated) child, disarming first left nothing that could reach
+it: it outlived the call, kept burning quota, and the next mission acquired the
+lock just released — two providers running concurrently against the
+serialization that lock exists to enforce. Review caught this. The `finally` now
+force-kills the group before disarming whenever the bound was armed and the
+child is still alive.
+
 ## Why the kill is SIGKILL-to-the-group, not SIGTERM-first
 
 `LivenessWatchdog` defaulted to `kill_process_group`, which SIGTERMs the group
@@ -177,11 +205,33 @@ event, so a CLI that emits its verdict and then goes quiet tearing down (MCP
 servers, telemetry) trips the same watchdog. Raising there would turn a
 finished review into a 200-character error suffix — the outcome this change
 exists to eliminate, reached from the other end. So the stall is reported only
-when no result envelope arrived; otherwise the verdict is returned and the
+when no terminal envelope arrived; otherwise the verdict is returned and the
 resulting `exit -9` is recognised as the watchdog's own kill rather than a
 provider crash. A genuine stall persists the usage snapshot first (it is the
 run that burned the most quota) and carries the drained stderr, which is
-usually the only statement of *why* the provider went silent.
+usually the only statement of *why* the provider went silent — and says so
+explicitly when that drain itself fails, rather than degrading to a bare
+timeout message.
+
+"A terminal envelope arrived" is decided on the **event shape**
+(`_is_terminal_result_event`), not on whether a result *string* came out of it.
+The first version keyed off `final_result`, and review caught that this is not
+the same question: `_extract_result_text` deliberately returns `None` for Grok
+Build's `end` event (the text arrives as deltas) and for any `result` envelope
+whose text fields are empty. On those providers a pass that completed normally
+and then hung in teardown would have taken the stall branch and been thrown
+away down to a 200-character suffix — the exact demotion this section exists to
+prevent, re-entered through a different provider's envelope shape. A provider
+without stream-json emits no envelope at all and still reports the stall: for
+it there is no way to distinguish a completed run from a truncated one, and
+reporting a truncated pass as a finished verdict is the worse failure.
+
+Recognising the kill must not swallow the rest of the exit handling either.
+Returning early on `stalled_after_result` skipped the `failed_result_status`
+raise below it, so a session that reported a failed terminal status (a headless
+permission denial) and *then* hung in teardown came back as a successful
+partial result. The flag now only suppresses the `_format_cli_error` block —
+`failed_result_status` and the max-turns warning still govern.
 
 ## Why the watchdog is disarmed the moment stdout ends
 
