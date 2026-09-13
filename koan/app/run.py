@@ -617,7 +617,9 @@ def run_claude_task(
                 # the wait loop's finally invokes.
                 if not launched:
                     if cleanup is not None:
-                        with contextlib.suppress(Exception):
+                        with suppress_logged(
+                            log, "debug", "Spawn cleanup failed", Exception,
+                        ):
                             cleanup()
                     cli_lock.release()
 

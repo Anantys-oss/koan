@@ -527,6 +527,39 @@ class TestPopenCli:
         assert retry.acquired
         retry.release()
 
+    def test_a_failing_cleanup_still_releases_the_lock(self, tmp_path, monkeypatch):
+        """cleanup()'s release sits in a finally — nothing earlier can skip it.
+
+        ``stdin_file.close()`` raising EIO on the scratch mount, or the prompt
+        removal failing, would otherwise strand the flock: the caller only
+        suppresses-and-logs the error, so the next mission's
+        ``acquire_provider_lock`` polls LOCK_NB against a lock this very
+        process still holds, forever.
+        """
+        from app import utils
+        from app.cli_exec import acquire_provider_lock
+
+        monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+        monkeypatch.setenv("KOAN_TMP_DIR", str(tmp_path))
+        provider = CodexProvider()
+
+        cli_lock = acquire_provider_lock(provider)
+        assert cli_lock.acquired
+
+        with patch("app.cli_exec.subprocess.Popen", return_value=MagicMock()):
+            _proc, cleanup = popen_cli(
+                ["codex", "exec", "secret"], provider=provider, cli_lock=cli_lock,
+            )
+
+        with patch(
+            "app.cli_exec._cleanup_prompt_file", side_effect=OSError("EIO"),
+        ), pytest.raises(OSError):
+            cleanup()
+
+        # release() unlocks and drops the fd; it does not reset `acquired`
+        # (that flag records the acquisition, not the current hold).
+        assert cli_lock._fh is None, "a failing cleanup stranded the provider lock"
+
 
 class TestProviderInvocationLock:
     """Degraded-state behaviour of _ProviderInvocationLock."""

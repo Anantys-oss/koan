@@ -187,7 +187,18 @@ def _runner_start_time(pid: int) -> Optional[float]:
     """
     try:
         from app.mission_scope import _process_start_time
-    except ImportError:
+    except ImportError as exc:
+        # Not just "module absent": any failing transitive import inside
+        # mission_scope lands here. Silently returning None would publish a
+        # caps marker with no ``start=`` on every runner, permanently
+        # disabling /restart --force under declare_runner_caps' warning —
+        # which blames the host for a read it never attempted. Log the cause.
+        from app.run_log import log_safe
+        log_safe(
+            "error",
+            f"Cannot import mission_scope._process_start_time ({exc}); "
+            "runner start times are unavailable",
+        )
         return None
     return _process_start_time(pid)
 
