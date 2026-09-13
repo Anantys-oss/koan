@@ -252,18 +252,26 @@ def submit_draft_pr(
                     ok, reason = upsert_jira_comment(
                         issue_key, skill_name or "mission", body,
                     )
-                    if not ok:
-                        # `reason` distinguishes the two shapes of failure: a
-                        # `*_failed`/`lookup_failed` means nothing was posted,
-                        # while `*_unverified` means the comment *is* on the
-                        # issue but could not be re-identified afterwards. Both
-                        # need an operator's eyes, so log the reason verbatim
-                        # rather than asserting which one happened.
-                        logger.warning(
-                            "Jira comment upsert did not complete for %s: %s",
-                            issue_key, reason,
-                        )
-                    return
+                    if ok:
+                        return
+                    logger.warning(
+                        "Jira comment upsert did not complete for %s: %s",
+                        issue_key, reason,
+                    )
+                    # `create_failed` is the one failure where falling through
+                    # is safe *and* useful: the listing was read, so we know no
+                    # status comment exists, and only the write failed — the
+                    # generic path gets one more chance to leave the PR link on
+                    # the issue instead of the mission reporting success with
+                    # nothing posted anywhere. Every other reason must not
+                    # create: `*_unverified` means the comment *is* on the issue
+                    # (a second one would be the duplicate this module exists to
+                    # prevent), `update_failed` means one exists to be
+                    # superseded, and `lookup_failed` means we cannot tell —
+                    # blind-creating on an unreadable listing is exactly how a
+                    # flaky read path stacks duplicates.
+                    if reason != "create_failed":
+                        return
                 except Exception as e:
                     # An unhandled error leaves no status comment on the issue,
                     # so it gets the same visibility as the `not ok` branch

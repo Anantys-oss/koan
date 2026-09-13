@@ -14,7 +14,6 @@ from app.tracker_comment_format import (
     build_pr_comment_failure,
     build_pr_comment_success,
     flatten_github_markdown_for_jira,
-    jira_readable_markdown,
 )
 
 
@@ -26,100 +25,6 @@ def _walk_adf(value):
     elif isinstance(value, list):
         for child in value:
             yield from _walk_adf(child)
-
-
-# ---------------------------------------------------------------------------
-# _strip_markdown_for_jira (via jira_readable_markdown)
-# ---------------------------------------------------------------------------
-
-
-class TestStripMarkdownForJira(unittest.TestCase):
-    def test_empty_input(self):
-        assert jira_readable_markdown("") == ""
-        assert jira_readable_markdown(None) == ""
-
-    def test_headings_stripped(self):
-        result = jira_readable_markdown("## Summary\nSome text")
-        assert "##" not in result
-        assert "Summary" in result
-        assert "Some text" in result
-
-    def test_links_converted(self):
-        result = jira_readable_markdown("[click here](https://example.com)")
-        assert result == "click here (https://example.com)"
-
-    def test_inline_code_stripped(self):
-        result = jira_readable_markdown("Use `foo()` to do it")
-        assert result == "Use foo() to do it"
-
-    def test_bold_stripped(self):
-        result = jira_readable_markdown("This is **bold** and __also bold__")
-        assert result == "This is bold and also bold"
-
-    def test_ordered_list_becomes_bullets(self):
-        result = jira_readable_markdown("1. First\n2. Second")
-        assert "- First" in result
-        assert "- Second" in result
-        assert "1." not in result
-
-    def test_hr_stripped(self):
-        result = jira_readable_markdown("Above\n---\nBelow")
-        assert "---" not in result
-        assert "Above" in result
-        assert "Below" in result
-
-    def test_fenced_code_block_indented(self):
-        md = "Before\n```\nprint('hello')\n```\nAfter"
-        result = jira_readable_markdown(md)
-        assert "    print('hello')" in result
-        assert "```" not in result
-        assert "Before" in result
-        assert "After" in result
-
-    def test_excessive_blank_lines_collapsed(self):
-        md = "A\n\n\n\n\nB"
-        result = jira_readable_markdown(md)
-        assert "\n\n\n" not in result
-        assert "A\n\nB" == result
-
-    def test_crlf_normalized(self):
-        result = jira_readable_markdown("A\r\nB\rC")
-        assert "\r" not in result
-        assert "A" in result and "B" in result and "C" in result
-
-    def test_details_summary_flattened_to_label(self):
-        md = (
-            "- Step 1: write the test:\n"
-            "  <details><summary>Test code</summary>\n"
-            "\n"
-            "  ```python\n"
-            "  def test_x():\n"
-            "      assert True\n"
-            "  ```\n"
-            "\n"
-            "  </details>"
-        )
-        result = jira_readable_markdown(md)
-        # No raw GitHub collapsible HTML survives.
-        assert "<details>" not in result
-        assert "</details>" not in result
-        assert "<summary>" not in result
-        # The summary label is preserved as a plain "Label:" line.
-        assert "Test code:" in result
-        # The code itself stays visible (indented as a code block).
-        assert "def test_x():" in result
-
-    def test_standalone_details_tags_removed(self):
-        md = "<details>\nplain body line\n</details>"
-        result = jira_readable_markdown(md)
-        assert "details" not in result.lower()
-        assert "plain body line" in result
-
-    def test_summary_on_own_line_becomes_label(self):
-        md = "<summary>Migration</summary>\nrest of step"
-        result = jira_readable_markdown(md)
-        assert "<summary>" not in result
-        assert "Migration:" in result
 
 
 class TestFlattenGitHubMarkdownForJira(unittest.TestCase):
@@ -444,7 +349,7 @@ class TestBuildPlanCommentFailureJira(unittest.TestCase):
 class TestGitHubAlertFlattening(unittest.TestCase):
     def test_warning_block_flattened(self):
         md = "> [!WARNING]\n> This is risky\n> Second line"
-        result = jira_readable_markdown(md)
+        result = flatten_github_markdown_for_jira(md)
         assert ">" not in result
         assert "[!" not in result
         assert "WARNING: This is risky" in result
@@ -453,13 +358,13 @@ class TestGitHubAlertFlattening(unittest.TestCase):
     def test_all_five_kinds(self):
         for kind in ("NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"):
             md = f"> [!{kind}]\n> body text"
-            result = jira_readable_markdown(md)
+            result = flatten_github_markdown_for_jira(md)
             assert f"{kind}: body text" in result
             assert "[!" not in result
 
     def test_alert_mixed_with_prose(self):
         md = "Intro line\n\n> [!NOTE]\n> Remember this\n\nOutro line"
-        result = jira_readable_markdown(md)
+        result = flatten_github_markdown_for_jira(md)
         assert "Intro line" in result
         assert "NOTE: Remember this" in result
         assert "Outro line" in result
@@ -468,21 +373,21 @@ class TestGitHubAlertFlattening(unittest.TestCase):
     def test_plain_blockquote_untouched(self):
         # A human's ordinary Jira blockquote is NOT a GitHub alert opener.
         md = "> just a quoted sentence a human wrote"
-        result = jira_readable_markdown(md)
+        result = flatten_github_markdown_for_jira(md)
         assert "just a quoted sentence a human wrote" in result
         assert "NOTE:" not in result and "WARNING:" not in result
 
     def test_opener_with_trailing_text_not_treated_as_alert(self):
         # `> [!WARNING] inline` is not the exact opener form; leave it alone.
         md = "> [!WARNING] not really an alert opener"
-        result = jira_readable_markdown(md)
+        result = flatten_github_markdown_for_jira(md)
         assert "WARNING:" not in result
 
     def test_adjacent_blocks_without_blank_line(self):
         # A second opener terminates the first block's body run; both flatten
         # independently instead of the second folding in as literal `[!NOTE]`.
         md = "> [!WARNING]\n> a\n> [!NOTE]\n> b"
-        result = jira_readable_markdown(md)
+        result = flatten_github_markdown_for_jira(md)
         assert "[!" not in result
         assert "WARNING: a" in result
         assert "NOTE: b" in result
@@ -491,7 +396,7 @@ class TestGitHubAlertFlattening(unittest.TestCase):
         # Alert syntax inside a fenced code block is example text, not an
         # alert to degrade — leave it verbatim.
         md = "```\n> [!WARNING]\n> literal example\n```"
-        result = jira_readable_markdown(md)
+        result = flatten_github_markdown_for_jira(md)
         assert "[!WARNING]" in result
         assert "WARNING: literal example" not in result
 

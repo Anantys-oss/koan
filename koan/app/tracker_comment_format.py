@@ -6,11 +6,8 @@ import re
 from typing import Dict, List, Optional
 
 
-_HEADING_RE = re.compile(r"^\s*#{1,6}\s+")
 _BULLET_RE = re.compile(r"^\s*[-*+]\s+")
 _ORDERED_RE = re.compile(r"^\s*\d+\.\s+")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 # GitHub collapsible code blocks (<details>/<summary>) render as literal text on
 # Jira, so flatten them: drop the <details> wrappers and turn the summary label
 # into a plain "Label:" line above the (always-visible) code.
@@ -149,60 +146,6 @@ def _first_nonempty_line(lines: List[str]) -> str:
         if line.strip():
             return line.strip()
     return ""
-
-
-def _strip_markdown_for_jira(text: str) -> str:
-    """Make markdown text human-friendly for Jira plain ADF paragraphs."""
-    if not text:
-        return ""
-
-    # Degrade GitHub alert blocks before line-by-line stripping so a
-    # `> [!WARNING]` opener never survives as literal Jira text.
-    text = flatten_github_markdown_for_jira(text)
-
-    out: List[str] = []
-    in_fence = False
-    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = raw_line.rstrip()
-        if line.strip().startswith("```"):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            out.append(f"    {line}")
-            continue
-
-        # The rich normalizer represents a details summary as bold Markdown;
-        # this legacy plain-text path keeps its historical ``Label:`` form.
-        line = re.sub(
-            r"^(\s*)\*\*(.+?)\*\*\s*$",
-            lambda m: f"{m.group(1)}{m.group(2)}:",
-            line,
-        )
-        if not line.strip():
-            out.append("")
-            continue
-
-        line = _HEADING_RE.sub("", line)
-        line = _LINK_RE.sub(r"\1 (\2)", line)
-        line = _INLINE_CODE_RE.sub(r"\1", line)
-        line = line.replace("**", "").replace("__", "")
-        line = _ORDERED_RE.sub("- ", line)
-        line = _BULLET_RE.sub("- ", line)
-        line = re.sub(r"^\s*---+\s*$", "", line)
-        out.append(line)
-
-    # Collapse excessive blank lines, preserve section spacing.
-    collapsed: List[str] = []
-    blank = 0
-    for line in out:
-        if line.strip():
-            blank = 0
-            collapsed.append(line)
-            continue
-        blank += 1
-        if blank <= 1:
-            collapsed.append("")
-    return "\n".join(collapsed).strip()
 
 
 def _jira_pr_link_label(pr_url: str, pr_title: str) -> str:
@@ -369,8 +312,3 @@ def build_plan_comment_failure(provider: str, reason: str) -> str:
         f"- Reason: {reason_text}\n\n"
         "Re-run `/plan` after addressing the issue."
     )
-
-
-def jira_readable_markdown(text: str) -> str:
-    """Expose markdown-to-readable conversion for Jira issue bodies/comments."""
-    return _strip_markdown_for_jira(text or "")
