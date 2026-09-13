@@ -529,8 +529,14 @@ def _emphasized(value: str, mark_type: str) -> List[Dict[str, Any]]:
     if not nodes:
         return [{"type": "text", "text": value, "marks": [mark]}]
     for node in nodes:
+        existing = node.get("marks", [])
+        # ADF's text schema makes `code` mutually exclusive with strong/em (only
+        # `link` may join it), and Jira validates strictly — stacking emphasis on
+        # an inline-code node would get the whole comment rejected.
+        if any(m.get("type") == "code" for m in existing):
+            continue
         node["marks"] = [mark] + [
-            m for m in node.get("marks", []) if m.get("type") != mark_type
+            m for m in existing if m.get("type") != mark_type
         ]
     return nodes
 
@@ -1578,9 +1584,15 @@ def _list_comments_result(issue_key: str) -> Tuple[bool, List[dict]]:
                 "author_email": str(author.get("emailAddress") or ""),
             })
 
-        total = data.get("total", 0)
+        # Same reasoning as `fetch_jira_issue`: a page that omits `total` (Jira
+        # Server/DC, a filtering proxy) must not be read as "0 comments
+        # overall". This listing is what the upsert callers consult to decide a
+        # comment does not exist yet, so a truncated page becomes a duplicate.
+        total = data.get("total")
+        if isinstance(total, bool) or not isinstance(total, int):
+            total = None
         start_at += len(batch)
-        if start_at >= total or len(batch) < max_results:
+        if len(batch) < max_results or (total is not None and start_at >= total):
             break
 
     return True, all_comments

@@ -217,6 +217,21 @@ class TestMarkdownToAdfInline:
         assert link["text"] == "Kōan"
         assert {mark["type"] for mark in link["marks"]} == {"em", "link"}
 
+    def test_code_inside_emphasis_keeps_the_code_mark_alone(self):
+        """ADF's text schema makes `code` exclusive with `strong`/`em`.
+
+        Only `link` may accompany it, and Jira validates strictly — stacking
+        emphasis on the inline-code node 400s the whole comment.
+        """
+        doc = markdown_to_adf("**`--iterations`**")
+        code = next(
+            node
+            for node in _text_nodes(doc)
+            if any(mark["type"] == "code" for mark in node.get("marks", []))
+        )
+        assert code["text"] == "--iterations"
+        assert {mark["type"] for mark in code["marks"]} == {"code"}
+
 
 class TestMarkdownToAdfEdgeCases:
     def test_empty_input_yields_empty_paragraph(self):
