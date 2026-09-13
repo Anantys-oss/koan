@@ -4,7 +4,7 @@ title: "Review consistency, triage & human dispositions"
 description: "Why /review is stable across re-runs, how the yellow-tier bar and pre-existing labeling work, and the deliberate 'human decides' posture (and its injection tradeoff) for honoring PR-comment dispositions."
 tags: [design, review, decision]
 created: 2026-07-22
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Review consistency, triage & human dispositions (spec 010)
@@ -86,6 +86,41 @@ A related tripwire lives in the test suite: no `load_prompt` caller may pass a
 placeholder its template does not declare, because `prompts._substitute` drops unknown
 keys silently and the loss is invisible at both ends. See
 `koan/tests/test_prompts.py::TestNoPlaceholderIsSilentlyDropped`.
+
+### Review prose has one language source, and it is not the prompt
+
+A review is the one Kōan surface that never loads `soul.md` or the mission system
+prompt, so — unlike a mission or a chat reply — the `/language` preference never
+reached it. No review prompt pinned a language either, which left the choice to the
+model. That is not a stable default: on one PR it answered an English-only thread in
+Italian.
+
+The correction is to inject the preference once in `_run_claude_review` — the single
+provider funnel every review call already goes through — rather than restating it in
+each prompt. `language_preference.get_language()` defaults to English, so a fresh
+install gets English without configuration, and `/language <lang>` now moves the whole
+review path together. The directive is *prepended*, because several review prompts end
+with an untrusted-data fence and an instruction placed after it would be read as data.
+`/language reset` still yields an empty instruction, and the injection then makes no
+change at all — input-language mode is exactly what reset asks for.
+
+The override covers prose and stops there, and the stopping point is load-bearing.
+This funnel feeds four prompts, and three of them have an output contract Python
+matches literally: `review-architecture` must emit `## PR Review` or
+`_extract_review_body` recovers nothing and the PR gets the unparseable-output
+notice instead of the review; `bot-review-triage` must emit
+`classification: "actionable"` or every thread reply is dropped without a warning;
+`silent-failure-hunter` must emit `CRITICAL`/`HIGH`/`MEDIUM` or severity ordering
+and color degrade. So the review path does *not* reuse the chat-side
+`get_language_instruction()` string — that one is absolute ("all your responses") —
+but a review-specific directive that names those tokens and tells the model to keep
+them in English. The scaffolding Python renders itself (the heading it builds, the
+tier names, the verdict line) stays English for the same structural reason. A
+non-English preference therefore yields translated prose inside English headings,
+which is the intended boundary, not an oversight.
+
+The general point: a prompt is the wrong place to store a runtime preference. Config
+belongs at the funnel; prompts should describe the task.
 
 ## Related
 

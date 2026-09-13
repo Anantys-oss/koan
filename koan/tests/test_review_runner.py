@@ -2804,6 +2804,124 @@ class TestRunClaudeReview:
         assert kwargs.get("model") == "gpt-5.4-mini"
         mock_models.assert_not_called()
 
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    @patch("app.language_preference.get_language", return_value="french")
+    def test_language_directive_is_prepended(
+        self, mock_lang, mock_max_turns, mock_models, mock_run,
+    ):
+        """Every review prompt carries the configured reply language, up front.
+
+        Prepended, not appended: review prompts end with an untrusted-data
+        fence, and an instruction after it would read as data.
+        """
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        _run_claude_review("REVIEW BODY", "/tmp/project")
+        sent = mock_run.call_args.kwargs["prompt"]
+        assert "french" in sent.split("REVIEW BODY")[0].lower()
+        assert sent.endswith("REVIEW BODY")
+        assert not sent.startswith("REVIEW BODY")
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    @patch("app.language_preference.get_language", return_value="")
+    def test_language_reset_leaves_prompt_untouched(
+        self, mock_lang, mock_max_turns, mock_models, mock_run,
+    ):
+        """`/language reset` (input-language mode) injects nothing."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        _run_claude_review("REVIEW BODY", "/tmp/project")
+        assert mock_run.call_args.kwargs["prompt"] == "REVIEW BODY"
+
+    @patch("app.cli_provider.run_command_streaming")
+    @patch("app.config.get_model_config", return_value={"review_mode": "m", "mission": "m"})
+    @patch("app.config.get_skill_max_turns", return_value=200)
+    @patch("app.language_preference.get_language",
+           side_effect=OSError("unreadable"))
+    def test_language_lookup_failure_is_non_fatal(
+        self, mock_lang, mock_max_turns, mock_models, mock_run, capsys,
+    ):
+        """A review in the default language beats no review at all."""
+        from app.review_runner import _run_claude_review
+
+        mock_run.return_value = "ok"
+        output, error = _run_claude_review("REVIEW BODY", "/tmp/project")
+        assert (output, error) == ("ok", "")
+        assert mock_run.call_args.kwargs["prompt"] == "REVIEW BODY"
+        assert "language directive unavailable" in capsys.readouterr().err
+
+    def test_default_install_gets_english(self, tmp_path, monkeypatch):
+        """No language.json at all still pins the review to English.
+
+        Guards the regression this fixes: nothing in the review path pinned a
+        language, so the model was free to answer an English thread in another.
+        """
+        from app.review_runner import _with_language_directive
+
+        monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+        assert "english" in _with_language_directive("BODY").lower()
+
+    @patch("app.language_preference.get_language", return_value="french")
+    def test_directive_carves_out_machine_read_tokens(self, mock_lang):
+        """A non-English preference must not translate parsed tokens.
+
+        `_run_claude_review` funnels four prompts, three of which have a
+        literal output contract Python matches: `## PR Review` (recovered by
+        `_extract_review_body`), the `classification` value `actionable`, and
+        the `CRITICAL`/`HIGH`/`MEDIUM` severities. Titles carry two more:
+        `review_triage` substring-matches `[Deferred]` / `[Pre-Existing Issue]`
+        to force a finding non-blocking, and a title is prose the directive
+        otherwise pins to the configured language. An unscoped "write
+        everything in french" directive loses all of them silently.
+        """
+        from app.review_reconcile import PRE_EXISTING_PREFIX
+        from app.review_runner import _with_language_directive
+        from app.review_triage import DEFERRED_PREFIX
+
+        directive = _with_language_directive("BODY")[: -len("BODY")]
+        for token in (
+            "## PR Review",
+            "actionable",
+            "CRITICAL",
+            "severity",
+            "needs_clarification",
+            DEFERRED_PREFIX,
+            PRE_EXISTING_PREFIX,
+        ):
+            assert token in directive
+
+    @patch("app.language_preference.get_language", return_value="french")
+    def test_architecture_prompt_header_contract_survives_directive(self, mock_lang):
+        """The architecture path still asks for the English `## PR Review`.
+
+        `_extract_review_body` regex-matches that heading; if the directive
+        overrode it, `run_review` would post the unparseable-output notice
+        instead of the review.
+        """
+        import re
+        from pathlib import Path
+
+        import app.review_runner as rr
+        from app.prompts import load_skill_prompt
+        from app.review_runner import _extract_review_body, _with_language_directive
+
+        root = Path(rr.__file__).resolve().parent.parent
+        skill_dir = root / "skills" / "core" / "review"
+        base = load_skill_prompt(skill_dir, "review-architecture")
+        sent = _with_language_directive(base)
+        assert re.search(r"^## PR Review\b", sent, re.MULTILINE)
+        # And the recovery path the contract exists for still works on output
+        # that has translated prose under the preserved English heading.
+        assert _extract_review_body(
+            "blah\n## PR Review — T\n\nRésumé: rien à signaler.\n"
+        ).startswith("## PR Review")
+
 
 # ---------------------------------------------------------------------------
 # main() CLI entry point

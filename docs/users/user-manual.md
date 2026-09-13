@@ -4,7 +4,7 @@ title: "Kōan User Manual"
 description: "A tiered (beginner/intermediate/power-user) walkthrough of everything Kōan can do, from queuing your first mission through parallel sessions, deep exploration, and full configuration."
 tags: [users]
 created: 2026-05-28
-updated: 2026-09-09
+updated: 2026-09-11
 ---
 
 # Kōan User Manual
@@ -1906,6 +1906,19 @@ fresh install — no `/english` needed.
 - `/en` — Switch back to English
 - `/language reset` — Reply in the same language as each incoming message
 </details>
+
+The preference covers the prose Kōan *writes*: chat replies, Telegram/Slack
+messages, the morning and evening rituals, and the model-written parts of a PR
+review — finding titles and bodies, the summary, and thread replies. Reviews
+honour it as of this change; before, the review path ignored `/language`
+entirely and the model picked a language on its own.
+
+Fixed scaffolding around a review stays English on purpose: the `## PR Review`
+heading, the `Blocking` / `Important` / `Suggestions` tier names, and the verdict
+line. Those are structure, not conversation — a stable heading is what lets you
+scan any PR the same way, and Kōan matches on it to recover a review from
+unstructured model output. So a non-English preference gives you translated prose
+inside English headings.
 
 > **Upgrade note:** English is now the default when no preference is set. Two
 > cohorts change behavior on upgrade:
