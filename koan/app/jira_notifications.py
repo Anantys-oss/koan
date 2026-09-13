@@ -1299,9 +1299,16 @@ def fetch_jira_issue(
                     entry["updated"] = str(comment["updated"])
                 all_comments.append(entry)
 
-        total = cdata.get("total", 0)
+        # A page that omits `total` (Jira Server/DC, a filtering proxy) must not
+        # be read as "0 comments overall" — that ends pagination after the first
+        # page and silently truncates the very list the raise above exists to
+        # prevent. Unknown total: keep paging until a short page says the end
+        # was actually reached.
+        total = cdata.get("total")
+        if isinstance(total, bool) or not isinstance(total, int):
+            total = None
         start_at += len(batch)
-        if start_at >= total or len(batch) < max_results:
+        if len(batch) < max_results or (total is not None and start_at >= total):
             break
 
     return title, body, all_comments
