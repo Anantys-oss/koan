@@ -96,13 +96,42 @@ def _part_header(part_number: int, part_count: int) -> str:
 _HEADER_LINE_RE = re.compile(
     rf"^{re.escape(_FOOTER_LABEL)} — Part \d+ of \d+\s*$", re.MULTILINE,
 )
+# One link per line on the wire, but not necessarily on the way back: a middle
+# part carries both links, and ADF re-joins sibling text nodes with a space, so
+# they can return collapsed onto a single line. Match a run of them rather than
+# exactly one, or the whole line survives `strip_plan_envelope` and Jira
+# permalinks end up in the plan the implementing agent is handed.
 _NAVIGATION_LINE_RE = re.compile(
-    r"^\s*(?:Previous|Next) part: https?://\S+\s*$", re.MULTILINE,
+    r"^[ \t]*(?:(?:Previous|Next) part: https?://\S+[ \t]*)+$", re.MULTILINE,
 )
 _FOOTER_LINE_RE = re.compile(
     rf"^{re.escape(_FOOTER_LABEL)} \(rev [0-9a-f]{{16}}(?:, part \d+/\d+)?\)\s*$",
     re.MULTILINE,
 )
+
+# A split does not always land on a paragraph boundary, and `_plan_parts` has to
+# add fence lines that were never in the plan. Both facts have to reach the
+# reader or the reassembled plan is not the plan that was published: a
+# single-newline cut would come back as a paragraph break that ends the list it
+# fell inside, and one code example would come back as two blocks with a stray
+# ``` / ```lang pair wedged between them. Jira strips HTML comments and
+# `_render_comment` drops each part's trailing whitespace, so the only carrier
+# that survives the transport is a visible line — the same reasoning that makes
+# the footer plain text rather than a marker.
+_CONTINUATION_BREAKS = {"paragraph": "\n\n", "line": "\n", "no": ""}
+_CONTINUATION_RE = re.compile(
+    rf"^[ \t]*{re.escape(_FOOTER_LABEL)} — continued from the previous part "
+    r"\((paragraph|line|no) break(, code block)?\)[ \t]*$",
+    re.MULTILINE,
+)
+
+
+def _continuation_marker(break_kind: str, reopened_fence: bool) -> str:
+    suffix = ", code block" if reopened_fence else ""
+    return (
+        f"{_FOOTER_LABEL} — continued from the previous part "
+        f"({break_kind} break{suffix})"
+    )
 
 
 def parse_plan_comment(comment_body: str) -> Optional[Tuple[str, int, int]]:
@@ -123,64 +152,177 @@ def strip_plan_envelope(comment_body: str) -> str:
     return _FOOTER_LINE_RE.sub("", text)
 
 
-def _split_comment_body(comment_body: str) -> List[str]:
-    """Split an oversized plan at paragraph, then line, then word boundaries."""
-    if len(comment_body) <= _PART_BODY_CHARS:
-        return [comment_body]
+def _inside_fence_flags(text: str, limit: int) -> List[bool]:
+    """Per-offset "is this offset inside a fenced code block?" up to ``limit``.
 
-    parts: List[str] = []
+    A fence *opener* line counts as outside (cutting just before it is fine) and
+    a *closer* line as inside (cutting there would orphan it), so a boundary the
+    caller accepts never lands in the middle of a code block.
+    """
+    flags = [False] * (min(len(text), limit) + 1)
+    inside = False
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if offset >= len(flags):
+            break
+        end = min(offset + len(line), len(flags))
+        flags[offset:end] = [inside] * (end - offset)
+        if _FENCE_RE.match(line.rstrip("\n")):
+            inside = not inside
+        offset += len(line)
+    return flags
+
+
+def _cut_point(remaining: str, floor: int) -> Tuple[int, str]:
+    """Where to end the next part, and how the following one attaches to it.
+
+    Only accept a boundary in the back half of the window. Preferring the
+    coarsest separator outright collapses on real plans: a File Map table is a
+    long blank-line-free run, so the last "\\n\\n" can sit near the very start
+    and would emit an absurd 40-character "Part 1 of N" plus a needless extra
+    publish. Below the floor, fall through to a finer separator.
+
+    Boundaries inside a fenced code block are skipped so the common case never
+    needs the fence pair at all; a single code block larger than one comment
+    still forces a cut inside one, which is what the fence pair is for.
+    """
+    flags = _inside_fence_flags(remaining, _PART_BODY_CHARS)
+    for separator, break_kind in (("\n\n", "paragraph"), ("\n", "line")):
+        search_end = _PART_BODY_CHARS
+        while True:
+            candidate = remaining.rfind(separator, 0, search_end)
+            if candidate <= floor:
+                break
+            boundary = candidate + len(separator)
+            if not flags[boundary]:
+                return boundary, break_kind
+            search_end = candidate
+    # Nothing usable: cut mid-line. The reader rejoins with no separator at all,
+    # so this stays reversible even though it is ugly to look at.
+    return _PART_BODY_CHARS, "no"
+
+
+def _split_comment_body(comment_body: str) -> List[Tuple[str, str]]:
+    """Split an oversized plan into ``(text, break kind before it)`` parts.
+
+    The texts concatenate back to the input exactly; the break kind records
+    which separator the cut consumed so the reader can put it back.
+    """
+    if len(comment_body) <= _PART_BODY_CHARS:
+        return [(comment_body, "paragraph")]
+
+    parts: List[Tuple[str, str]] = []
     remaining = comment_body
-    # Only accept a boundary in the back half of the window. Preferring the
-    # coarsest separator outright collapses on real plans: a File Map table is a
-    # long blank-line-free run, so the last "\n\n" can sit near the very start
-    # and would emit an absurd 40-character "Part 1 of N" plus a needless extra
-    # publish. Below the floor, fall through to a finer separator.
+    break_kind = "paragraph"
     floor = _PART_BODY_CHARS // 2
     while len(remaining) > _PART_BODY_CHARS:
-        cut = _PART_BODY_CHARS
-        for separator in ("\n\n", "\n", " "):
-            candidate = remaining.rfind(separator, 0, cut)
-            if candidate > floor:
-                cut = candidate + len(separator)
-                break
-        parts.append(remaining[:cut])
+        cut, next_break = _cut_point(remaining, floor)
+        parts.append((remaining[:cut], break_kind))
         remaining = remaining[cut:]
-    parts.append(remaining)
+        break_kind = next_break
+    parts.append((remaining, break_kind))
     return parts
 
 
-def _fence_balanced(parts: List[str]) -> List[str]:
-    """Close a code fence left open by a split, and reopen it in the next part.
+def _open_fence_language(body: str) -> Optional[str]:
+    """The info string of a fence this text leaves open, else ``None``."""
+    open_lang: Optional[str] = None
+    for line in body.splitlines():
+        match = _FENCE_RE.match(line)
+        if match:
+            open_lang = None if open_lang is not None else match.group(1).strip()
+    return open_lang
 
-    Comments are rendered with ``markdown_to_adf`` and read back with
-    ``_adf_to_text``, which drops ``codeBlock`` content. A part cut mid-fence
-    would therefore swallow its own verification footer and never verify.
+
+def _plan_parts(comment_body: str) -> List[str]:
+    """The comment bodies to publish for a plan, each independently renderable.
+
+    Close a code fence left open by a split, and reopen it in the next part:
+    comments are rendered with ``markdown_to_adf`` and read back with
+    ``_adf_to_text``, which drops ``codeBlock`` content, so a part cut mid-fence
+    would swallow its own verification footer and never verify. Every part after
+    the first states how it attaches to its predecessor — see
+    :func:`reassemble_plan_parts`, which undoes exactly this.
     """
-    balanced: List[str] = []
+    rendered: List[str] = []
     reopen = ""
-    for part in parts:
+    for index, (part, break_kind) in enumerate(_split_comment_body(comment_body)):
         body = reopen + part
-        open_lang: Optional[str] = None
-        for line in body.splitlines():
-            match = _FENCE_RE.match(line)
-            if match:
-                open_lang = None if open_lang is not None else match.group(1).strip()
+        reopened_fence = bool(reopen)
+        open_lang = _open_fence_language(body)
         if open_lang is None:
             reopen = ""
         else:
             body = f"{body.rstrip()}\n```"
             reopen = f"```{open_lang}\n"
-        balanced.append(body)
-    return balanced
+        if index and (reopened_fence or break_kind != "paragraph"):
+            body = f"{_continuation_marker(break_kind, reopened_fence)}\n\n{body}"
+        rendered.append(body)
+    return rendered
 
 
-def _plan_parts(comment_body: str) -> List[str]:
-    """The comment bodies to publish for a plan, each independently renderable."""
-    return _fence_balanced(_split_comment_body(comment_body))
+def _read_continuation(content: str) -> Tuple[str, bool, str]:
+    """Split a continuing part into ``(joiner, fence was reopened, plan text)``."""
+    match = _CONTINUATION_RE.search(content)
+    if match is None or content[:match.start()].strip():
+        # No marker, or one that is not this part's opening line: either the cut
+        # landed on a paragraph boundary, or this is a plan published before
+        # markers existed. Both rejoin as paragraphs, which is what the reader
+        # did unconditionally before.
+        return "\n\n", False, content
+    return (
+        _CONTINUATION_BREAKS[match.group(1)],
+        bool(match.group(2)),
+        content[:match.start()] + content[match.end():],
+    )
+
+
+def _drop_leading_fence(text: str) -> str:
+    """Remove the fence `_plan_parts` reopened at the top of a continuing part."""
+    head, _, tail = text.partition("\n")
+    return tail if _FENCE_RE.match(head) else text
+
+
+def _drop_trailing_fence(text: str) -> str:
+    """Remove the bare fence `_plan_parts` appended to close a cut code block."""
+    head, _, tail = text.rstrip().rpartition("\n")
+    return head if tail.strip() == "```" else text
+
+
+def reassemble_plan_parts(part_bodies: Sequence[str]) -> str:
+    """Rebuild the plan text from its published part comment bodies, in order.
+
+    The inverse of :func:`_plan_parts`: it drops the envelope every part wears
+    (header, navigation links, footer), removes the fence pair the split had to
+    invent, and rejoins the parts with the separator the cut consumed. Without
+    it a plan comes back to `/implement` with stray ``` markers splitting one
+    code example in two and a paragraph break wherever the cut fell mid-list.
+
+    Boundary whitespace is normalised to the canonical separator (a run of three
+    blank lines rejoins as one), which markdown renders identically.
+    """
+    assembled = ""
+    for index, body in enumerate(part_bodies):
+        content = strip_plan_envelope(body or "")
+        if index == 0:
+            assembled = content.strip()
+            continue
+        joiner, reopened_fence, content = _read_continuation(content)
+        content = content.strip()
+        if reopened_fence:
+            assembled = _drop_trailing_fence(assembled)
+            content = _drop_leading_fence(content)
+        assembled = f"{assembled}{joiner}{content}" if assembled else content
+    return assembled.strip()
 
 
 def _navigation(issue_url: str, comment_ids: List[str], index: int) -> str:
-    """Build previous/next links; Jira cannot thread a reply under a comment."""
+    """Build previous/next links; Jira cannot thread a reply under a comment.
+
+    Joined by a blank line so each stays its own ADF paragraph. Run together on
+    one line, `markdown_to_adf` folds both into a single paragraph and the
+    reader gets one line holding two links.
+    """
     if len(comment_ids) < 2:
         return ""
     links = []
@@ -188,7 +330,7 @@ def _navigation(issue_url: str, comment_ids: List[str], index: int) -> str:
         links.append(f"Previous part: {issue_url}?focusedCommentId={comment_ids[index - 1]}")
     if index + 1 < len(comment_ids):
         links.append(f"Next part: {issue_url}?focusedCommentId={comment_ids[index + 1]}")
-    return "\n".join(links)
+    return "\n\n".join(links)
 
 
 def _render_comment(

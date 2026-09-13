@@ -782,6 +782,52 @@ class TestJiraIssueHelpers:
             with pytest.raises(RuntimeError, match="Failed to fetch comments"):
                 fetch_jira_issue("FOO-1")
 
+    def test_fetch_jira_issue_pages_on_when_jira_omits_total(self):
+        """A page without `total` is not a page saying "zero comments exist".
+
+        Jira Server/DC and filtering proxies omit it. Defaulting to 0 ends
+        pagination after the first page — the same silent truncation the raise
+        above exists to prevent, only without the error.
+        """
+        from contextlib import ExitStack
+
+        from app.jira_notifications import fetch_jira_issue
+
+        issue = {"fields": {"summary": "Plan", "description": None}}
+
+        def comment(index):
+            return {
+                "author": {"displayName": "Koan"},
+                "body": {
+                    "type": "doc",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": f"comment {index}"}],
+                    }],
+                },
+            }
+
+        def get_side_effect(_base_url, _auth_header, path, params=None):
+            if path.endswith("/FOO-1"):
+                return issue
+            start = (params or {}).get("startAt", 0)
+            # No `total` key anywhere; the short second page is the only signal
+            # that the listing has ended.
+            if start == 0:
+                return {"comments": [comment(i) for i in range(100)]}
+            return {"comments": [comment(100)]}
+
+        with ExitStack() as stack:
+            for cm in self._patch_enabled_config():
+                stack.enter_context(cm)
+            stack.enter_context(
+                patch("app.jira_notifications._jira_get", side_effect=get_side_effect)
+            )
+            _title, _body, comments = fetch_jira_issue("FOO-1")
+
+        assert len(comments) == 101
+        assert "comment 100" in comments[-1]["body"]
+
     def test_jira_add_comment_posts_adf(self):
         from app.jira_notifications import jira_add_comment
 

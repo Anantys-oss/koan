@@ -30,7 +30,7 @@ from app.issue_tracker.config import resolve_code_repository
 from app.jira_plan_publish import (
     koan_authorship_check,
     parse_plan_comment,
-    strip_plan_envelope,
+    reassemble_plan_parts,
 )
 from app.pr_submit import (
     get_commit_subjects,
@@ -536,9 +536,7 @@ def _extract_jira_multipart_plan_scored(
 
     newest = max(group_scores, key=lambda rev: group_scores[rev])
     parts = groups[newest]
-    assembled = "\n\n".join(
-        strip_plan_envelope(parts[number]).strip() for number in sorted(parts)
-    ).strip()
+    assembled = reassemble_plan_parts([parts[number] for number in sorted(parts)])
 
     expected = group_counts[newest]
     missing = [n for n in range(1, expected + 1) if n not in parts]

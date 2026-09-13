@@ -4,7 +4,12 @@ import json
 from unittest.mock import patch
 
 import pytest
-from app.jira_notifications import JiraCommentFetchError, _adf_to_text, markdown_to_adf
+from app.jira_notifications import (
+    JiraCommentFetchError,
+    _adf_to_markdown,
+    _adf_to_text,
+    markdown_to_adf,
+)
 from app.jira_plan_publish import (
     _FOOTER_RE,
     _MAX_COMMENT_CHARS,
@@ -12,16 +17,18 @@ from app.jira_plan_publish import (
     _PART_BODY_CHARS,
     _STAGE_MAX_AGE_SECONDS,
     _SUPERSEDED_BODY,
-    _fence_balanced,
     _footer_for,
+    _navigation,
     _plan_parts,
     _render_comment,
     _revision,
     _split_comment_body,
     load_staged_plan,
     publish_staged_plan,
+    reassemble_plan_parts,
     stage_path_for,
     stage_plan,
+    strip_plan_envelope,
 )
 
 URL = "https://org.atlassian.net/browse/PROJ-9"
@@ -672,7 +679,7 @@ def _split_fixture(part_count=3):
 def test_long_plan_splits_at_safe_boundaries_and_preserves_content():
     body = ("paragraph one\n\n" * 2_500) + "final paragraph"
 
-    parts = _split_comment_body(body)
+    parts = [text for text, _break in _split_comment_body(body)]
     revision = _revision(body)
 
     assert len(parts) > 1
@@ -684,7 +691,7 @@ def test_long_plan_splits_at_safe_boundaries_and_preserves_content():
 
 
 def test_short_plan_is_not_split():
-    assert _split_comment_body("a short plan") == ["a short plan"]
+    assert _split_comment_body("a short plan") == [("a short plan", "paragraph")]
 
 
 def test_long_plan_creates_linked_verified_parts(tmp_path):
@@ -724,7 +731,7 @@ def test_long_plan_creates_linked_verified_parts(tmp_path):
     assert f"Next part: {URL}?focusedCommentId=2" in comments[0]["body"]
     assert f"Previous part: {URL}?focusedCommentId=2" in comments[2]["body"]
     assert "Next part" not in comments[2]["body"]
-    assert "".join(_split_comment_body(body)) == body
+    assert "".join(text for text, _break in _split_comment_body(body)) == body
     assert load_staged_plan(URL, str(tmp_path)) is None
 
 
@@ -988,6 +995,12 @@ def test_split_part_failure_reports_which_part(tmp_path):
     assert reason == "part_1_of_3_created_unverified"
 
 
+def _oversized_fence_plan():
+    """A plan whose only possible cut lands inside one enormous code block."""
+    code = "\n".join(f"line_{index} = {index}" for index in range(4_000))
+    return f"Step 1\n\n```python\n{code}\n```\n\nStep 2"
+
+
 def test_split_inside_a_code_fence_keeps_the_footer_verifiable():
     """A part cut mid-fence must not swallow its own footer.
 
@@ -997,10 +1010,11 @@ def test_split_inside_a_code_fence_keeps_the_footer_verifiable():
     """
     from app.jira_notifications import _adf_to_text, markdown_to_adf
 
-    raw = ["Step 1\n\n```python\nx = 1\ny = 2", "z = 3\n```\n\nStep 2"]
-    parts = _fence_balanced(raw)
-    revision = _revision("".join(raw))
+    body = _oversized_fence_plan()
+    parts = _plan_parts(body)
+    revision = _revision(body)
 
+    assert len(parts) > 1
     for index, part in enumerate(parts):
         rendered = _render_comment(part, revision, index + 1, len(parts))
         read_back = _adf_to_text(markdown_to_adf(rendered)).rstrip()
@@ -1008,18 +1022,85 @@ def test_split_inside_a_code_fence_keeps_the_footer_verifiable():
 
 
 def test_fence_balancing_reopens_the_block_in_the_next_part():
-    parts = _fence_balanced(["a\n\n```py\nx = 1", "y = 2\n```\n\nb"])
+    parts = _plan_parts(_oversized_fence_plan())
 
-    assert parts[0].endswith("```")
-    assert parts[1].startswith("```py\n")
-    assert parts[0].count("```") == 2
-    assert parts[1].count("```") == 2
+    assert parts[0].rstrip().endswith("```")
+    assert "```python\n" in parts[1].split("\n\n", 1)[1][:20]
+    assert all(part.count("```") % 2 == 0 for part in parts)
 
 
-def test_fence_balancing_leaves_balanced_parts_untouched():
-    parts = ["a\n\n```py\nx = 1\n```\n", "plain text"]
+def test_a_split_outside_a_fence_invents_no_fence_at_all():
+    """Cutting between paragraphs must not reach for the fence pair.
 
-    assert _fence_balanced(parts) == parts
+    The cut point search skips boundaries inside a code block, so a plan with
+    ordinary paragraph breaks around its examples splits cleanly and carries
+    exactly the fences its author wrote.
+    """
+    unit = "### Step\n\nprose line\n\n```py\nx = 1\n```\n\n"
+    body = unit * ((_PART_BODY_CHARS * 2) // len(unit))
+    parts = _plan_parts(body)
+
+    assert len(parts) > 1
+    assert sum(part.count("```") for part in parts) == body.count("```")
+    assert not any("continued from the previous part" in part for part in parts)
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        pytest.param(
+            "\n\n".join(f"## Section {i}\n\nprose {'x' * 200}" for i in range(200)),
+            id="paragraph-boundaries",
+        ),
+        pytest.param(
+            "\n".join(f"- step {i}" for i in range(3_000)),
+            id="single-newline-list",
+        ),
+        pytest.param(_oversized_fence_plan(), id="cut-inside-a-fence"),
+        pytest.param("A" * 80_000, id="one-enormous-line"),
+        pytest.param("## Plan\n\n- [ ] do the thing", id="not-split-at-all"),
+    ],
+)
+def test_reassembly_is_the_exact_inverse_of_the_split(plan):
+    """What `/implement` reads back must be the plan that was published.
+
+    The publisher's split is byte-exact but `_plan_parts` adds fence markers
+    the plan never had, and the cut consumes the separator it landed on. Both
+    have to be undone or the agent implements a plan with a stray ``` pair
+    wedged into a code example and a paragraph break through a list.
+    """
+    parts = _plan_parts(plan)
+    revision = _revision(plan)
+    ids = [str(1_000 + index) for index in range(len(parts))]
+    published = [
+        _render_comment(
+            part, revision, index + 1, len(parts),
+            _navigation(URL, ids, index),
+        )
+        for index, part in enumerate(parts)
+    ]
+
+    assert reassemble_plan_parts(published) == plan.strip()
+
+
+def test_middle_part_navigation_does_not_leak_into_the_plan():
+    """ADF collapses a middle part's two links onto one line.
+
+    `markdown_to_adf` folds adjacent lines into a single paragraph, so a regex
+    matching exactly one link per line leaves the whole line in the plan the
+    implementing agent is handed — Jira permalinks and all.
+    """
+    ids = ["1", "2", "3"]
+    navigation = _navigation(URL, ids, 1)
+    rendered = _render_comment("middle content", _revision("x"), 2, 3, navigation)
+    # The shape `/implement` actually reads: `fetch_jira_issue` renders comment
+    # ADF back to Markdown.
+    read_back = _adf_to_markdown(markdown_to_adf(rendered))
+
+    assert "focusedCommentId" in read_back, "fixture must exercise both links"
+    assert "focusedCommentId" not in strip_plan_envelope(read_back)
+    assert "focusedCommentId" not in strip_plan_envelope(rendered)
+    assert "middle content" in strip_plan_envelope(read_back)
 
 
 def test_plan_parts_splits_and_balances_together():
@@ -1043,7 +1124,7 @@ def test_split_does_not_emit_a_runt_first_part():
     )
     parts = _plan_parts(body)
 
-    assert "".join(_split_comment_body(body)) == body
+    assert "".join(text for text, _break in _split_comment_body(body)) == body
     assert all(len(part) > _PART_BODY_CHARS // 2 for part in parts[:-1]), (
         f"runt part in {[len(p) for p in parts]}"
     )

@@ -4,7 +4,7 @@ title: "Skill Spec — plan"
 description: "Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-12
+updated: 2026-09-13
 ---
 
 # Skill Spec — `plan`
@@ -123,9 +123,10 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   in its outcome instead of reading as a freshly generated plan. The stage is dropped
   once it expires or three consecutive runs fail, after which the next `/plan`
   regenerates — a permanently undeliverable plan must not wedge the issue.
-- A plan exceeding one Jira comment is split at paragraph (then line, then word)
-  boundaries into sequential parts, each footered `(rev <digest>, part N/M)` and
-  verified independently. Parts are located by **part number, not revision**, so a new
+- A plan exceeding one Jira comment is split at paragraph (then line) boundaries
+  **outside any fenced code block**, into sequential parts, each footered
+  `(rev <digest>, part N/M)` and verified independently. Parts are located by
+  **part number, not revision**, so a new
   revision updates the comments in place instead of posting a second set; parts left
   over when a plan shrinks are retired. Retirement is scoped to comments this publish
   did **not** write: a part just written and read-back verified is never an orphan,
@@ -142,6 +143,19 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   properties dropped and `/myself` unavailable — and the refusal would post a second
   copy of a part already on the issue, one the follow-up read-back can never verify, so
   the plan would be abandoned unlinked after accumulating a duplicate per run.
+- **Reassembly is the exact inverse of the split.** The split is byte-exact, but the
+  wire format is not the plan: a cut consumes the separator it lands on, and a code
+  block large enough to force a cut inside one is closed and reopened so the part does
+  not swallow its own footer behind ADF's dropped `codeBlock` content. Both are undone
+  on the way back — otherwise the agent implements a plan whose one code example is two
+  blocks with a stray fence pair between them, and whose lists are cut by a paragraph
+  break the author never wrote. Each part after the first therefore states, as a
+  *visible* line, how it attaches to its predecessor and whether the fence pair was
+  invented; a comment property cannot carry it, because a deployment that drops
+  properties would then fall back to a corrupted plan with nothing to say so.
+  Navigation links are likewise stripped as a *run* rather than one per line: ADF folds
+  a middle part's two links into a single paragraph, and a per-line rule leaves Jira
+  permalinks sitting in the plan.
 
 ## Evaluation
 

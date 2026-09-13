@@ -238,30 +238,13 @@ class TestExtractLatestPlan:
         sits between them. Exercising all three together is what catches a
         format change that leaves `/implement` silently unable to find a plan.
         """
-        from app.jira_notifications import _adf_to_markdown, markdown_to_adf
-        from app.jira_plan_publish import _plan_parts, _render_comment, _revision
-
         plan = (
             "## Summary\nDo the thing.\n\n#### Phase 1: setup\n\n"
             "```python\nx = 1\n```\n" + "\n".join(f"- step {i}" for i in range(3000))
         )
-        parts = _plan_parts(plan)
-        revision = _revision(plan)
-        assert len(parts) > 1, "fixture must be large enough to split"
+        comments = self._as_jira_returns(plan)
 
-        comments = []
-        for number, part in enumerate(parts, 1):
-            navigation = (
-                f"Next part: https://j/x?focusedCommentId={number + 1}"
-                if number < len(parts) else ""
-            )
-            rendered = _render_comment(part, revision, number, len(parts), navigation)
-            comments.append({
-                # What Jira stores and hands back through fetch_jira_issue.
-                "body": _adf_to_markdown(markdown_to_adf(rendered)),
-                "updated": f"2026-07-31T12:0{number}:00.000+0000",
-            })
-
+        assert len(comments) > 1, "fixture must be large enough to split"
         result = _extract_latest_plan("Issue body", comments)
 
         assert "## Summary" in result
@@ -270,6 +253,57 @@ class TestExtractLatestPlan:
         assert "Part 1 of" not in result
         assert "focusedCommentId" not in result
         assert "Koan current plan (rev" not in result
+        # The split is not allowed to change the plan: the bullet run must come
+        # back contiguous, and the one code example must still be one block.
+        assert "\n".join(f"- step {i}" for i in range(3000)) in result
+        assert result.count("```") == 2
+
+    def test_three_part_plan_survives_the_round_trip_including_the_middle(self):
+        """A middle part carries *two* navigation links, which ADF collapses.
+
+        Matching one link per line leaves the collapsed line in place, and the
+        implementing agent receives Jira permalinks as plan text.
+        """
+        plan = "\n\n".join(
+            f"#### Phase {i}\n\nprose {'x' * 200}\n\n```py\nstep_{i}()\n```"
+            for i in range(400)
+        )
+        comments = self._as_jira_returns(plan)
+
+        assert len(comments) >= 3, "fixture must produce a middle part"
+        result = _extract_latest_plan("Issue body", comments)
+
+        assert "focusedCommentId" not in result
+        assert "continued from the previous part" not in result
+        assert "#### Phase 0" in result and "#### Phase 399" in result
+        assert result.count("```") == plan.count("```")
+
+    @staticmethod
+    def _as_jira_returns(plan):
+        """Publish ``plan`` for real, then hand back what `fetch_jira_issue` sees."""
+        from app.jira_notifications import _adf_to_markdown, markdown_to_adf
+        from app.jira_plan_publish import (
+            _navigation,
+            _plan_parts,
+            _render_comment,
+            _revision,
+        )
+
+        parts = _plan_parts(plan)
+        revision = _revision(plan)
+        ids = [str(index + 1) for index in range(len(parts))]
+        comments = []
+        for index, part in enumerate(parts):
+            rendered = _render_comment(
+                part, revision, index + 1, len(parts),
+                _navigation("https://j/x", ids, index),
+            )
+            comments.append({
+                # What Jira stores and hands back through fetch_jira_issue.
+                "body": _adf_to_markdown(markdown_to_adf(rendered)),
+                "updated": f"2026-07-31T12:{index:02d}:00.000+0000",
+            })
+        return comments
 
     def _koan_multipart_plan(self):
         """Two published parts of one plan, plus the footer a human can copy."""
