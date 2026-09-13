@@ -172,7 +172,7 @@ paths:
     get:
       operationId: missions_list_missions_route_get
       parameters:
-      - description: Restrict results to one mission status.
+      - description: Restrict results to one mission-store state.
         in: query
         name: status
         required: false
@@ -182,7 +182,6 @@ paths:
           - in_progress
           - done
           - failed
-          - removed
           type: string
       - description: Restrict results to one project.
         in: query
@@ -190,6 +189,13 @@ paths:
         required: false
         schema:
           type: string
+      - description: Cap the rows returned per state. Omit for unlimited; a non-integer or < 1 value is rejected with 422.
+        in: query
+        name: limit
+        required: false
+        schema:
+          minimum: 1
+          type: integer
       responses:
         '200':
           description: Successful response
@@ -211,7 +217,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
           description: Error response
-      summary: List missions, newest first, optionally filtered.
+      summary: List missions from the authoritative mission store.
       tags:
       - missions
     post:

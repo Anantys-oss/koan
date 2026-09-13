@@ -6,7 +6,6 @@ from pathlib import Path
 from flask import Blueprint, current_app, jsonify, request
 
 from app.api.auth import require_token
-from app.api.openapi_metadata import openapi_operation, query_parameter
 from app.api.mission_index import (
     _normalize_for_match,
     cancel_mission,
@@ -17,6 +16,7 @@ from app.api.mission_index import (
     reconcile,
     update_mission_text,
 )
+from app.api.openapi_metadata import openapi_operation, query_parameter
 
 bp = Blueprint("missions", __name__)
 
@@ -82,20 +82,85 @@ _LIST_MISSIONS_QUERY_PARAMETERS = (
         "status",
         {
             "type": "string",
-            "enum": ["pending", "in_progress", "done", "failed", "removed"],
+            "enum": ["pending", "in_progress", "done", "failed"],
         },
-        "Restrict results to one mission status.",
+        "Restrict results to one mission-store state.",
     ),
     query_parameter(
         "project",
         {"type": "string"},
         "Restrict results to one project.",
     ),
+    query_parameter(
+        "limit",
+        {"type": "integer", "minimum": 1},
+        (
+            "Cap the rows returned per state. Omit for unlimited; "
+            "a non-integer or < 1 value is rejected with 422."
+        ),
+    ),
 )
 
 
 def _instance_dir() -> Path:
     return current_app.config["INSTANCE_DIR"]
+
+
+def _invalid_request(message: str):
+    """422 `invalid_request`, the house shape for a rejected parameter."""
+    return jsonify({"error": {"code": "invalid_request", "message": message}}), 422
+
+
+def _parse_limit(raw: str | None):
+    """Parse ``?limit``; returns ``(limit, error_response)``.
+
+    A malformed bound is rejected rather than coerced to "unlimited": that
+    fallback would widen the response to the caller's whole mission history,
+    the opposite of what a capped query asked for.
+    """
+    if not raw:
+        return None, None
+    try:
+        limit = int(raw)
+    except ValueError:
+        return None, _invalid_request(f"'limit' must be an integer, got '{raw}'")
+    if limit < 1:
+        return None, _invalid_request("'limit' must be >= 1")
+    return limit, None
+
+
+def _match_key(text: str) -> str:
+    """Identity key shared by both sides of the sidecar ↔ store join.
+
+    ``canonical_mission_key()`` is the repo's canonical identity helper: it
+    strips the lifecycle markers, ``[r:N]``, ``[complexity:X]``,
+    ``[verify-failed: …]`` and a leading ``"- "`` while keeping
+    ``[project:X]``. The queue appends that metadata to a mission *after* it
+    was recorded in the sidecar, so a looser normalizer would make the two
+    sides diverge the moment the loop tags a mission.
+    """
+    from app.missions import canonical_mission_key
+    return canonical_mission_key(text)
+
+
+def _sidecar_ids_by_text(instance_dir: Path) -> dict:
+    """Map canonical mission key → API sidecar id.
+
+    The list is store-backed, but every single-mission route
+    (``GET``/``PATCH``/``DELETE /v1/missions/{id}``, ``/result``, ``/reorder``)
+    resolves ids through the sidecar. Emitting the store's rowid as ``id``
+    would hand clients a handle that 404s everywhere else, so ``id`` keeps
+    meaning "sidecar id" and the store identity travels as ``store_id``.
+    Later records win: a re-queued mission resolves to its newest record.
+    """
+    ids: dict = {}
+    for rec in list_missions(instance_dir):
+        if rec.get("status") == "removed":
+            continue
+        key = _match_key(rec.get("text", ""))
+        if key:
+            ids[key] = rec["id"]
+    return ids
 
 
 def _missions_file() -> Path:
@@ -162,16 +227,56 @@ def _find_pending_position(content: str, stored_text: str):
 @openapi_operation(query_parameters=_LIST_MISSIONS_QUERY_PARAMETERS)
 @require_token
 def list_missions_route():
-    """List missions, newest first, optionally filtered."""
+    """List missions from the authoritative mission store.
+
+    The store is the same source ``GET /v1/status`` counts, so a mission
+    queued from Slack/GitHub/dashboard is visible here even when it was never
+    recorded in the API sidecar. Rows are grouped by state in
+    ``pending``/``in_progress``/``done``/``failed`` order — queue order within
+    the live states, most-recent-first within the terminal ones. ``?status``
+    filters to one state, ``?project`` to one project, and ``?limit`` caps the
+    rows returned *per state* (so a limit with no ``?status`` can return up to
+    four times that many rows).
+    """
+    from app.mission_store import VALID_STATES, get_mission_store
+    from app.mission_store.transition import ensure_store_synced
+
     status_filter = request.args.get("status")
     project_filter = request.args.get("project")
-    records = list_missions(_instance_dir(), status_filter, project_filter)
-    # Reconcile each record
+
+    limit, limit_error = _parse_limit(request.args.get("limit"))
+    if limit_error is not None:
+        return limit_error
+
+    if status_filter and status_filter not in VALID_STATES:
+        return _invalid_request(
+            f"Unknown status '{status_filter}'. Valid: {', '.join(VALID_STATES)}"
+        )
+
+    instance = _instance_dir()
+    ensure_store_synced(str(instance))
+    store = get_mission_store(str(instance))
+    sidecar_ids = _sidecar_ids_by_text(instance)
+
+    states = [status_filter] if status_filter else list(VALID_STATES)
+
     out = []
-    for rec in records:
-        rec = reconcile(_instance_dir(), _missions_file(), rec["id"])
-        if rec:
-            out.append(rec)
+    for state in states:
+        out.extend(
+            {
+                "id": sidecar_ids.get(_match_key(m.text)),
+                "store_id": m.id,
+                "text": m.text,
+                "status": m.state,
+                "project": m.project,
+                "sequence": m.sequence,
+                "complexity": m.complexity,
+                "queued_at": m.queued_at,
+                "started_at": m.started_at,
+                "completed_at": m.completed_at,
+            }
+            for m in store.list_by_state(state, project=project_filter, limit=limit)
+        )
     return jsonify(out)
 
 

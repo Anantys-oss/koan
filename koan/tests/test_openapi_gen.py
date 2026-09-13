@@ -8,6 +8,7 @@ works — testing observable outputs, never source text.
 import inspect
 import re
 from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -176,11 +177,17 @@ def test_request_body_requiredness_matches_handlers(app):
 
 
 def test_query_parameter_schemas_match_handler_accesses(app):
+    empty_store = SimpleNamespace(list_by_state=lambda *args, **kwargs: [])
+
     cases = {
         ("get", "/v1/missions"): (
             "missions.list_missions_route",
-            {"status": None, "project": None},
-            (("app.api.routes_missions.list_missions", []),),
+            {"status": None, "project": None, "limit": None},
+            (
+                ("app.api.routes_missions.list_missions", []),
+                ("app.mission_store.transition.ensure_store_synced", None),
+                ("app.mission_store.get_mission_store", empty_store),
+            ),
         ),
         ("get", "/v1/usage"): (
             "observability.usage",
