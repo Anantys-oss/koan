@@ -596,6 +596,18 @@ tools — MCP tools must still be allowlisted via qualified names
   close the stream while deliberately yielding no text, so inferring it from
   the extracted result would report a completed pass on those providers as a
   stall — the same demotion, reached through a different envelope shape.
+  That shape test MUST be an **explicit whitelist of terminal types**, never a
+  `.completed` / `.done` suffix match. The looser suffix rule is safe where it
+  has always lived — deciding whether an event *might carry* the final text,
+  where a false positive only overwrites a string the next write replaces — but
+  the exemption is a one-way latch, so the first match disarms the bound for
+  the rest of the run. Codex emits `item.completed` per stream item (its
+  terminal envelope is `turn.completed`) and `response.output_text.done` is an
+  assistant *text* event, so a suffix rule would let a Codex-shaped stream go
+  silent for the whole idle window and still return its truncated output as a
+  finished verdict, with no usage recorded — a quieter failure than the hang
+  this bound replaced. Adding a provider whose stream closes on a new type
+  means adding that type to the whitelist.
   Recognising the kill MUST also not bypass the rest of the exit handling: a
   session that reported a **failed** terminal status and *then* hung in
   teardown MUST still surface as that failure, not as a successful partial
@@ -604,6 +616,29 @@ tools — MCP tools must still be allowlisted via qualified names
   the drained stderr, which is usually the only statement of *why* the provider
   went silent; when that drain itself fails, the error MUST say so rather than
   degrade to a bare timeout message.
+  That drain MUST be skipped when the post-kill `wait()` expires. An expired
+  wait means the group SIGKILL did not reap everything — a descendant escaped
+  the group (its own session, e.g. a `setsid`'d MCP helper) — and such a
+  survivor can still hold the stderr write end. `read()` returns only at EOF,
+  so draining there would block indefinitely with the watchdog already
+  disarmed: the same unbounded read this invariant removed from the stdout
+  loop, re-entered one pipe over. The expired wait MUST be reported in place of
+  the stderr it stands in for, on both the raising and the returning branch —
+  on the latter the drain result is plain text, so a drain that never happened
+  is otherwise indistinguishable from a clean empty one.
+- **The mandatory kill above MUST NOT be gated on the leader still running.**
+  The leader exiting says nothing about its descendants, and a helper the CLI
+  left behind in the isolated session is reachable from nowhere else — not from
+  `run.py`'s skill-runner teardown, not from `mission_scope`'s fallback. It
+  MUST also be a kill **by process-group id**, not one derived from the leader:
+  once `proc.wait()` has reaped the leader its pid is gone, so a
+  `getpgid(proc.pid)` lookup fails and silently degrades to a no-op
+  single-process kill. The pgid stays valid because POSIX forbids reusing a
+  process-group ID while the group still has members, so the signal either
+  reaches the survivors or fails with `ESRCH` on an empty group. This is sound
+  only because an armed bound implies `start_new_session=True` (pgid == pid, a
+  dedicated session); without that isolation the same call would signal Kōan's
+  own group.
 
 ## Integration points
 

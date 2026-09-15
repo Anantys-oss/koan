@@ -4,7 +4,7 @@ title: "Bounding a stalled provider: inactivity, not wall-clock"
 description: "Why run_command_streaming's timeout never reached its read loop, why the replacement bound is on inactivity rather than duration, and why session isolation and the group SIGKILL are scoped to the armed watchdog."
 tags: [design, providers, decision]
 created: 2026-09-10
-updated: 2026-09-13
+updated: 2026-09-15
 ---
 
 # Bounding a stalled provider: inactivity, not wall-clock
@@ -163,8 +163,22 @@ opted-in (session-isolated) child, disarming first left nothing that could reach
 it: it outlived the call, kept burning quota, and the next mission acquired the
 lock just released — two providers running concurrently against the
 serialization that lock exists to enforce. Review caught this. The `finally` now
-force-kills the group before disarming whenever the bound was armed and the
-child is still alive.
+force-kills the group before disarming whenever the bound was armed.
+
+That kill is deliberately *not* gated on the leader still running, and review
+caught the first version for gating it on `proc.poll() is None`. The leader
+exiting says nothing about its descendants: a helper the CLI left behind in the
+isolated session is reachable from nowhere — not from `run.py`'s skill-runner
+teardown, not from `mission_scope`'s fallback — so a pass that finished
+*normally* was exactly the case that leaked one. Removing the gate only works
+alongside killing by **pgid** rather than via the leader: once `proc.wait()` has
+reaped the leader its pid is gone, so `force_kill_process_group`'s
+`getpgid(proc.pid)` would fail and degrade to a single-process kill on a dead
+process — a no-op dressed as cleanup. The pgid itself stays valid, because POSIX
+forbids reusing a process-group ID while the group still has members; the signal
+either reaches the survivors or fails with `ESRCH` on an empty group. All of
+this is safe only because an armed bound implies `start_new_session=True`, so
+the pgid is a dedicated session and never Kōan's own group.
 
 ## Why the kill is SIGKILL-to-the-group, not SIGTERM-first
 
@@ -213,6 +227,16 @@ usually the only statement of *why* the provider went silent — and says so
 explicitly when that drain itself fails, rather than degrading to a bare
 timeout message.
 
+The drain is skipped outright when the post-kill `wait()` expires, which review
+flagged and the first version suppressed silently. An expired wait means the
+group SIGKILL did not reap everything: something escaped the group, most
+plausibly a `setsid`'d MCP helper. Such a survivor can hold the stderr write
+end, and `read()` returns only at EOF — so draining there blocks forever with
+the watchdog already disarmed, which is this change's own bug re-entered one
+pipe over. The expired wait is reported in its place, on the returning branch as
+well as the raising one: that branch hands back stderr as plain text, so a drain
+that never happened would otherwise look exactly like a clean empty one.
+
 "A terminal envelope arrived" is decided on the **event shape**
 (`_is_terminal_result_event`), not on whether a result *string* came out of it.
 The first version keyed off `final_result`, and review caught that this is not
@@ -225,6 +249,24 @@ prevent, re-entered through a different provider's envelope shape. A provider
 without stream-json emits no envelope at all and still reports the stall: for
 it there is no way to distinguish a completed run from a truncated one, and
 reporting a truncated pass as a finished verdict is the worse failure.
+
+That shape test is an **explicit whitelist**, not a `.completed` / `.done`
+suffix match, and review caught the second version for reusing the suffix rule.
+The looser rule is fine where it has always lived — deciding whether an event
+*might carry* the final text, where a false positive just overwrites a string
+the next write replaces. As the terminality latch it is not, because the latch
+is one-way: the first match disarms the bound for the rest of the run. Two real
+mid-stream types match those suffixes. Codex emits `item.completed` per stream
+item — after its very first tool call, with `turn.completed` as the actual
+terminal envelope — and `response.output_text.done` is already classified in
+this module as an assistant *text* event. Either would have let a Codex-shaped
+review go silent for the full idle window and come back a *successful*
+truncated verdict, with the usage snapshot skipped too: a quieter failure than
+the hang the bound replaced, and the precise "truncated pass reported as a
+finished verdict" outcome the paragraph above rules out. So `_is_result_like_event`
+keeps the suffix rule for text extraction and `_is_terminal_result_event`
+matches the whitelist only; a provider whose stream closes on a new type gets
+that type added to the set.
 
 Recognising the kill must not swallow the rest of the exit handling either.
 Returning early on `stalled_after_result` skipped the `failed_result_status`

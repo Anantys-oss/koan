@@ -2936,6 +2936,57 @@ class TestStreamingReadLoopIsInactivityBounded:
             proc.wait()
         assert "VERDICT: approved" in out
 
+    def test_a_mid_stream_item_completed_does_not_disarm_the_stall_report(self):
+        """Codex's per-item envelope must not latch the teardown exemption.
+
+        ``saw_terminal_result`` is a one-way flag, so matching a ``.completed``
+        suffix would let Codex's ``item.completed`` — emitted after the *first*
+        tool call, with ``turn.completed`` being the real terminal envelope —
+        exempt the whole rest of the run from the idle bound. A provider that
+        then went silent would come back as a *successful* truncated pass with
+        no usage recorded: quieter, and worse, than the hang this bound
+        replaced.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "for e in ({'type': 'item.completed',"
+            " 'item': {'type': 'command_execution'}},"
+            " {'type': 'response.output_text.done', 'text': 'half a finding'}):\n"
+            "    sys.stdout.write(json.dumps(e) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            with pytest.raises(RuntimeError, match="no output for 2s"):
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_a_terminal_turn_completed_still_exempts_the_teardown_silence(self):
+        """The strict whitelist must keep Codex's real terminal envelope.
+
+        Paired with the test above: tightening the predicate is only correct
+        if ``turn.completed`` — the envelope that actually closes a Codex
+        stream — still exempts teardown silence, or the fix trades a silent
+        truncation for a spurious stall on the same provider.
+        """
+        proc = self._spawn(
+            "import json,sys,time\n"
+            "for e in ({'type': 'item.completed',"
+            " 'item': {'type': 'command_execution'}},"
+            " {'type': 'turn.completed', 'output_text': 'VERDICT: approved'}):\n"
+            "    sys.stdout.write(json.dumps(e) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        try:
+            out = self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+        assert "VERDICT: approved" in out
+
     def test_a_failed_envelope_then_teardown_silence_still_reports_the_failure(self):
         """Our own SIGKILL must not launder a failed session into a success.
 

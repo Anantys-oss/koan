@@ -25,6 +25,7 @@ import contextlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1346,6 +1347,32 @@ def _is_terminal_result_event(event: Dict[str, Any]) -> bool:
     different questions. Callers that need the former — the post-result stall
     exemption in :func:`run_command_streaming` — must not infer it from the
     latter, or a completed pass on those providers is reported as a stall.
+
+    Matching is on the explicit whitelist ONLY, never on a ``.completed`` /
+    ``.done`` suffix — see :func:`_is_result_like_event` for why that looser
+    rule is safe where it lives and unsafe here.
+    """
+    return str(event.get("type") or "") in _TERMINAL_RESULT_TYPES
+
+
+def _is_result_like_event(event: Dict[str, Any]) -> bool:
+    """Loose 'this event might carry the final text' test for text extraction.
+
+    Accepts the terminal whitelist *plus* any ``.completed`` / ``.done`` suffix,
+    which is how unknown provider shapes have always reached
+    :func:`_extract_result_text`. A false positive is harmless there: the worst
+    case is ``final_result`` being overwritten by a mid-stream string, and the
+    last write wins.
+
+    It is NOT harmless as a terminality test. ``saw_terminal_result`` is a
+    one-way latch, so the first match permanently exempts the rest of the run
+    from the idle bound — and two real mid-stream types match the suffixes:
+    Codex's per-item ``item.completed`` (``turn.completed`` is its actual
+    terminal envelope) and ``response.output_text.done``, which this module
+    already classifies as an assistant *text* event. Latching on either would
+    let a provider go silent for the whole idle window and still return its
+    truncated output as a finished verdict — strictly worse than the
+    unbounded hang this bound exists to replace, because it fails quietly.
     """
     etype = str(event.get("type") or "")
     return (
@@ -1368,7 +1395,7 @@ def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
     """
     etype = str(event.get("type") or "")
     if etype != "result":
-        if not _is_terminal_result_event(event):
+        if not _is_result_like_event(event):
             return None
         if etype == "end":
             # Grok Build's terminal envelope carries usage/stopReason but not
@@ -1661,18 +1688,38 @@ def _finish_stalled_stream(
     Raises ``RuntimeError`` when none did: that is the genuine stall this bound
     exists to report.
     """
-    with contextlib.suppress(subprocess.TimeoutExpired):
+    # An expired wait means the group SIGKILL did not reap everything — some
+    # descendant escaped the group (a setsid'd MCP helper, say). Such a
+    # survivor can still hold the stderr write end, and `proc.stderr.read()`
+    # only returns at EOF: draining here would block forever with the watchdog
+    # already disarmed, re-entering the exact hang this bound exists to end,
+    # one pipe over. So the expired wait is recorded and the drain is skipped.
+    reaped = True
+    try:
         proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        reaped = False
     # What the provider printed before going silent (an expired token, say) is
-    # usually the only clue to *why* it stalled, so a failed drain is itself
-    # worth reporting rather than degrading to a bare timeout message.
+    # usually the only clue to *why* it stalled, so a failed or skipped drain
+    # is itself worth reporting rather than degrading to a bare timeout message.
     stderr_text = ""
     stderr_error = ""
-    try:
-        stderr_text = proc.stderr.read() if proc.stderr else ""
-    except (OSError, ValueError) as e:
-        stderr_error = f" stderr unavailable: {e}"
+    if not reaped:
+        stderr_error = (
+            " stderr unavailable: the group SIGKILL left a process alive, "
+            "so draining it could block indefinitely"
+        )
+    else:
+        try:
+            stderr_text = proc.stderr.read() if proc.stderr else ""
+        except (OSError, ValueError) as e:
+            stderr_error = f" stderr unavailable: {e}"
     if saw_terminal_result:
+        # This branch returns stderr as plain text, so a drain that never
+        # happened is indistinguishable from a clean empty one. Say so rather
+        # than letting the caller read silence as success.
+        if stderr_error:
+            print(f"[cli] WARNING:{stderr_error}", file=sys.stderr, flush=True)
         return stderr_text
     # Usage is persisted on every other exit; a stall is the run that burned
     # the most, so dropping it under-counts quota exactly where it matters.
@@ -1955,9 +2002,22 @@ def run_command_streaming(
             # stdout, a malformed event) would therefore orphan the provider
             # with nothing left that can reach it, burning quota while the next
             # mission takes the lock this is about to release.
-            if bounded and proc.poll() is None:
-                from app.subprocess_runner import force_kill_process_group
-                force_kill_process_group(proc)
+            #
+            # Unconditional, not gated on the leader still being alive: the
+            # leader exiting says nothing about its descendants, and a helper
+            # the CLI left behind in the isolated session is reachable from
+            # nowhere else. Killing by *pgid* rather than by proc is what makes
+            # that work — once proc.wait() has reaped the leader its pid is
+            # gone, so force_kill_process_group's getpgid(proc.pid) would fail
+            # and silently degrade to a no-op single-process kill. The pgid
+            # stays valid: POSIX forbids reusing a process-group ID while the
+            # group still has members, so this either reaches the survivors or
+            # fails with ESRCH on an empty group. Safe only because `bounded`
+            # implies start_new_session=True (pgid == pid, a dedicated session)
+            # — without it this would signal Kōan's own group.
+            if bounded:
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=5)
             # The loop-exit path above already disarmed; this covers an
