@@ -25,12 +25,9 @@ import contextlib
 import json
 import os
 import re
-import select
-import signal
 import subprocess
 import sys
 import tempfile
-import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1675,66 +1672,6 @@ def missing_binary_message(err: "FileNotFoundError", cmd, provider_name: str, mo
     )
 
 
-# Long enough to collect a pipe's already-buffered contents many times over —
-# the pipe is drained after the group SIGKILL, so on the healthy path EOF is
-# already there and this bound costs nothing. It is paid only when a survivor
-# still holds the write end, which is exactly the case it exists to bound.
-_STALLED_STDERR_DRAIN_SECONDS = 2.0
-
-
-def _drain_stderr_bounded(
-    stream, timeout: float = _STALLED_STDERR_DRAIN_SECONDS,
-) -> Tuple[str, str]:
-    """Read what stderr holds, bounded by *timeout*. Returns (text, error).
-
-    ``stream.read()`` returns only at EOF, so whoever still holds the write end
-    decides when it returns. After the idle watchdog's group SIGKILL that is not
-    necessarily nobody: a descendant that escaped the group (a ``setsid``'d MCP
-    helper) survives the kill and keeps the inherited fd, and the leader's own
-    exit says nothing about it — so the drain must be bounded on its own terms,
-    not inferred from the leader having been reaped. Reading the fd under
-    ``select`` keeps the file object free of a blocked reader, which matters:
-    the caller closes it in a ``finally``, and ``close()`` on a buffered stream
-    another thread is blocked inside waits for that thread, moving the hang
-    rather than removing it.
-    """
-    if stream is None:
-        return "", ""
-    try:
-        fd = stream.fileno()
-    except (OSError, ValueError) as e:
-        return "", f" stderr unavailable: {e}"
-    chunks: List[bytes] = []
-    deadline = time.monotonic() + timeout
-    truncated = False
-    try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                truncated = True
-                break
-            if not select.select([fd], [], [], remaining)[0]:
-                truncated = True
-                break
-            chunk = os.read(fd, 65536)
-            if not chunk:
-                break  # EOF: every write end is closed, nothing more is coming.
-            chunks.append(chunk)
-    except (OSError, ValueError) as e:
-        return _decode_stderr(chunks), f" stderr unavailable: {e}"
-    if truncated:
-        return _decode_stderr(chunks), (
-            f" stderr truncated after {timeout:g}s: a process outliving the "
-            "group SIGKILL still holds the write end"
-        )
-    return _decode_stderr(chunks), ""
-
-
-def _decode_stderr(chunks: List[bytes]) -> str:
-    """Join first, then decode — a multi-byte char can straddle two reads."""
-    return b"".join(chunks).decode("utf-8", "replace")
-
-
 def _finish_stalled_stream(
     proc: subprocess.Popen,
     idle_timeout: Optional[int],
@@ -1750,6 +1687,8 @@ def _finish_stalled_stream(
     Raises ``RuntimeError`` when none did: that is the genuine stall this bound
     exists to report.
     """
+    from app.subprocess_runner import drain_stream_bounded
+
     reaped = True
     try:
         proc.wait(timeout=5)
@@ -1767,7 +1706,7 @@ def _finish_stalled_stream(
     # unbounded read() would then block forever with the watchdog already
     # disarmed, re-entering the exact hang this bound exists to end, one pipe
     # over. `reaped` stays as a corroborating signal in the message.
-    stderr_text, stderr_error = _drain_stderr_bounded(proc.stderr)
+    stderr_text, stderr_error = drain_stream_bounded(proc.stderr)
     if stderr_error and not reaped:
         stderr_error += " (the group SIGKILL left a process alive)"
     if saw_terminal_result:
@@ -1947,6 +1886,14 @@ def run_command_streaming(
             raise RuntimeError(
                 missing_binary_message(e, cmd, provider.name, model_key)
             ) from e
+        # Captured now, while the leader is unreaped: a process group outlives
+        # its leader, but its id cannot be recovered once the pid is gone (see
+        # the teardown in the finally below). Under start_new_session the pgid
+        # *is* the pid; getpgid confirms that rather than assuming it.
+        child_pgid = 0
+        if bounded:
+            with contextlib.suppress(OSError):
+                child_pgid = os.getpgid(proc.pid)
         idle_watchdog = None
         # Every print() in this loop is the load-bearing watchdog signal —
         # run.py's skill-runner liveness watchdog (600s) resets on each line
@@ -2046,7 +1993,20 @@ def run_command_streaming(
                 )
                 stalled_after_result = True
             else:
-                stderr_text = proc.stderr.read() if proc.stderr else ""
+                # Bounded here too, not only on the stall branch: the watchdog
+                # was just disarmed, so for an opted-in caller this read is the
+                # one place left with no bound in force. A helper the CLI
+                # spawned with its own session and stdout=DEVNULL keeps the
+                # inherited stderr fd through the leader's *normal* exit — the
+                # read loop still sees EOF, `fired` is False, and an unbounded
+                # read() would block here forever, with `proc.wait(timeout=…)`
+                # below it never reached. That is the same "declared bound sits
+                # after a blocking read" shape this change removed from stdout.
+                from app.subprocess_runner import drain_stream_bounded
+
+                stderr_text, stderr_error = drain_stream_bounded(proc.stderr)
+                if stderr_error:
+                    print(f"[cli] WARNING:{stderr_error}", file=sys.stderr, flush=True)
                 proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as e:
             proc.kill()
@@ -2065,18 +2025,20 @@ def run_command_streaming(
             # Unconditional, not gated on the leader still being alive: the
             # leader exiting says nothing about its descendants, and a helper
             # the CLI left behind in the isolated session is reachable from
-            # nowhere else. Killing by *pgid* rather than by proc is what makes
-            # that work — once proc.wait() has reaped the leader its pid is
-            # gone, so force_kill_process_group's getpgid(proc.pid) would fail
-            # and silently degrade to a no-op single-process kill. The pgid
-            # stays valid: POSIX forbids reusing a process-group ID while the
-            # group still has members, so this either reaches the survivors or
-            # fails with ESRCH on an empty group. Safe only because `bounded`
-            # implies start_new_session=True (pgid == pid, a dedicated session)
-            # — without it this would signal Kōan's own group.
-            if bounded:
-                with contextlib.suppress(OSError, ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
+            # nowhere else. That is what kill_orphaned_process_group is for —
+            # it takes the *pgid captured while the leader was alive*, because
+            # once proc.wait() has reaped the leader os.getpgid(proc.pid) can no
+            # longer recover it and the kill silently degrades to a no-op on a
+            # dead pid. It also refuses `pgid <= 1` and our own group, which
+            # keeps "an armed bound implies start_new_session=True" structural
+            # rather than a property of this comment, and warns when a group
+            # survives instead of leaving a still-running provider invisible to
+            # the next mission — which takes the invocation lock cleanup()
+            # releases three lines below.
+            if bounded and child_pgid:
+                from app.subprocess_runner import kill_orphaned_process_group
+
+                kill_orphaned_process_group(child_pgid)
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     proc.wait(timeout=5)
             # The loop-exit path above already disarmed; this covers an

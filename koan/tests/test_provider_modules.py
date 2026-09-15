@@ -3089,8 +3089,12 @@ class TestStreamingReadLoopIsInactivityBounded:
         stdout = MagicMock()
         stdout.__iter__ = lambda self: iter(["ok\n"])
         proc.stdout = stdout
-        proc.stderr = MagicMock()
-        proc.stderr.read.return_value = ""
+        # No stderr and an impossible pid: this fixture asserts on the *spawn*
+        # kwargs only, and both the stderr drain and the teardown group kill
+        # need a real fd / a real process group to mean anything. A MagicMock
+        # fd would be read under select(); a MagicMock pid would be signalled.
+        proc.stderr = None
+        proc.pid = -1
         proc.returncode = 0
         proc.wait.return_value = None
         with patch("app.config.get_model_config",
@@ -3120,6 +3124,38 @@ class TestStreamingReadLoopIsInactivityBounded:
         assert "start_new_session" not in self._spawn_kwargs()
         assert "start_new_session" not in self._spawn_kwargs(idle_timeout=0)
         assert "start_new_session" not in self._spawn_kwargs(idle_timeout=None)
+
+    def test_the_teardown_never_signals_a_group_it_did_not_create(self):
+        """The kill must take a pgid captured from a real child, or none.
+
+        ``MagicMock().__index__()`` is 1, so any fixture whose ``proc.pid`` is a
+        mock turns ``os.killpg(proc.pid, SIGKILL)`` into a SIGKILL of **process
+        group 1** — everything in init's group on the host that the user may
+        signal. That is not hypothetical: it killed the CI runner mid-suite,
+        which surfaced as "the hosted runner lost communication with the server"
+        with the job's logs never uploaded. A group id that was not captured
+        from a live child is a failed capture, not something to kill.
+        """
+        from app.provider import run_command_streaming
+        proc = MagicMock()
+        stdout = MagicMock()
+        stdout.__iter__ = lambda self: iter(["ok\n"])
+        proc.stdout = stdout
+        proc.stderr = None
+        proc.returncode = 0
+        proc.wait.return_value = None
+        # Deliberately left as a MagicMock: that is the shape that misfires.
+        with patch("app.config.get_model_config",
+                   return_value={"chat": "m", "fallback": "f"}), \
+             patch("app.provider.build_full_command", return_value=["fake"]), \
+             patch("app.cli_exec.popen_cli", return_value=(proc, MagicMock())), \
+             patch("app.claude_step.strip_cli_noise", side_effect=lambda s: s), \
+             patch("app.subprocess_runner.os.killpg") as killpg:
+            run_command_streaming("hi", "/tmp", [], idle_timeout=30)
+
+        assert killpg.call_args_list == [], (
+            "teardown signalled a process group derived from a mock pid"
+        )
 
     def test_a_sigterm_ignoring_descendant_cannot_hold_the_pipe_open(self):
         """The watchdog kill must be SIGKILL-to-the-group, not SIGTERM-first.
@@ -3208,6 +3244,48 @@ class TestStreamingReadLoopIsInactivityBounded:
         message = str(excinfo.value)
         assert "OAuth token expired" in message
         assert "truncated" in message
+
+    def test_a_clean_exit_is_not_held_open_by_an_escaped_stderr_holder(
+        self, tmp_path,
+    ):
+        """The success path needs the same bound — it is where none is left.
+
+        The watchdog is disarmed the moment stdout ends, so for an opted-in
+        caller the post-EOF stderr drain is the one read with nothing bounding
+        it. A helper spawned with its own session and ``stdout=DEVNULL`` keeps
+        the inherited stderr fd through the leader's entirely *normal* exit:
+        the read loop still sees EOF, nothing fired, and an unbounded ``read()``
+        blocks here forever with ``proc.wait(timeout=…)`` below it never
+        reached. The provider is session-isolated by then, so the outer
+        watchdog's eventual SIGKILL of the runner does not even reach it.
+        """
+        import signal as _signal
+        import time as _time
+        pidfile = tmp_path / "helper.pid"
+        proc = self._spawn(
+            "import json,subprocess,sys\n"
+            "child = subprocess.Popen([sys.executable, '-c',\n"
+            f"  'import time; time.sleep({self.STALL_SECONDS})'],\n"
+            "  stdout=subprocess.DEVNULL, start_new_session=True)\n"
+            f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+            "sys.stdout.write(json.dumps("
+            "{'type': 'result', 'result': 'VERDICT: approved'}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+        )
+        started = _time.monotonic()
+        try:
+            out = self._run(proc, idle_timeout=self.STALL_SECONDS)
+        finally:
+            proc.kill()
+            proc.wait()
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(pidfile.read_text()), _signal.SIGKILL)
+        elapsed = _time.monotonic() - started
+        assert elapsed < self.STALL_SECONDS / 2, (
+            f"returned in {elapsed:.1f}s — an escaped helper held the stderr "
+            "pipe open on the success path"
+        )
+        assert "VERDICT: approved" in out
 
     def test_the_watchdog_is_disarmed_once_stdout_reaches_eof(self):
         """A completed run must not be killed during the post-EOF wait.

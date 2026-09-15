@@ -329,6 +329,7 @@ def stream_with_timeout(
     from app.subprocess_runner import (
         LivenessWatchdog,
         ProcessWatchdog,
+        drain_stream_bounded,
         force_kill_process_group,
     )
 
@@ -371,9 +372,17 @@ def stream_with_timeout(
                 idle_watchdog.mark_completed()
                 idle_watchdog.cancel()
 
-        with suppress_logged(_log_cli, "warning", "Stderr stream read failed", OSError, ValueError):
-            if proc.stderr:
-                stderr_text = proc.stderr.read()
+        # Bounded, not `proc.stderr.read()`: both watchdogs were disarmed at the
+        # loop above, so this is the one read left with nothing in force, and
+        # `read()` returns only at EOF — a descendant that escaped the group
+        # (its own session, e.g. a `setsid`'d MCP helper) keeps the inherited
+        # write end through the leader's exit, group SIGKILL or not. Blocking
+        # here would put the hang one pipe over from the one `idle_timeout`
+        # exists to end, with `proc.wait(timeout=drain_timeout)` below never
+        # reached to notice it.
+        stderr_text, stderr_error = drain_stream_bounded(proc.stderr)
+        if stderr_error:
+            _log_cli("warning", f"Stderr drain incomplete:{stderr_error}")
 
         try:
             proc.wait(timeout=drain_timeout)

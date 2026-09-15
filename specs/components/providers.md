@@ -636,19 +636,51 @@ tools — MCP tools must still be allowlisted via qualified names
   either branch a fragment presented alone reads as the whole of what the
   provider printed. An expired `wait()` MAY corroborate that report; it is not
   what decides it.
+- **Every post-EOF stderr drain in an opted-in call MUST be bounded, including
+  the one on the success path** — in `run_command_streaming` and in
+  `cli_exec.stream_with_timeout`, the two call sites the disarm invariant above
+  governs, through one shared helper
+  (`subprocess_runner.drain_stream_bounded`). The watchdog is disarmed the
+  moment the read loop ends, so that drain is the one read left with nothing in
+  force — and the
+  escaped-descendant shape does not require a stall to reach it: a helper
+  spawned with its own session and `stdout=DEVNULL` keeps the inherited stderr
+  fd through the leader's entirely *normal* exit, so stdout still reaches EOF,
+  nothing fires, and an unbounded `read()` blocks with the `proc.wait(timeout=…)`
+  below it never reached. That is the same "the declared bound sits after a
+  blocking read" shape this invariant removed from the stdout loop, and for an
+  opted-in caller it is worse than before: the outer watchdog's eventual kill no
+  longer reaches the session-isolated provider. The bound MUST be on
+  **inactivity**, not total duration, for the same reason the stdout bound is —
+  a child still printing is not the hazard, a silent holder of the write end is,
+  and a total cap would truncate a slow but healthy stderr dump.
 - **The mandatory kill above MUST NOT be gated on the leader still running.**
   The leader exiting says nothing about its descendants, and a helper the CLI
   left behind in the isolated session is reachable from nowhere else — not from
   `run.py`'s skill-runner teardown, not from `mission_scope`'s fallback. It
-  MUST also be a kill **by process-group id**, not one derived from the leader:
-  once `proc.wait()` has reaped the leader its pid is gone, so a
-  `getpgid(proc.pid)` lookup fails and silently degrades to a no-op
-  single-process kill. The pgid stays valid because POSIX forbids reusing a
-  process-group ID while the group still has members, so the signal either
-  reaches the survivors or fails with `ESRCH` on an empty group. This is sound
-  only because an armed bound implies `start_new_session=True` (pgid == pid, a
-  dedicated session); without that isolation the same call would signal Kōan's
-  own group.
+  MUST also be a kill **by a process-group id captured while the leader was
+  alive**, not one derived from the leader at teardown time: a group outlives
+  its leader, but once `proc.wait()` has reaped that leader its pid is gone, so
+  a `getpgid(proc.pid)` lookup fails and silently degrades to a no-op
+  single-process kill. That is exactly the contract of
+  `subprocess_runner.kill_orphaned_process_group(pgid)`, which this path MUST
+  use rather than hand-rolling `os.killpg`: it refuses `pgid <= 1` and the
+  caller's own group, keeping "an armed bound implies `start_new_session=True`"
+  structural rather than a property of a comment, and it *reports* a group that
+  survived instead of leaving a still-running provider invisible — which matters
+  because `cleanup()` releases the invocation lock immediately afterwards, and a
+  surviving provider plus the next mission's is the concurrency that lock
+  exists to prevent.
+  That refusal is not belt-and-braces, and `force_kill_process_group` (the
+  watchdog's own kill) MUST make it too: a group id that was not captured from
+  a live child is a *failed capture*, not something to signal. `killpg(0, …)`
+  means "the caller's group", `getpgid` reports 0 for a process with no group
+  of its own, and a fixture whose pid is a `MagicMock` indexes to 1 — so the
+  unguarded form turns an invariant violation into a SIGKILL of Kōan's own
+  group or of init's. Kōan has already paid that once: an unguarded
+  `os.killpg(proc.pid, …)` reached by a mock-backed test SIGKILLed process
+  group 1 on a CI runner, which surfaced as the runner losing contact with its
+  server and the job's logs never being uploaded.
 
 ## Integration points
 

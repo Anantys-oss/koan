@@ -171,14 +171,34 @@ exiting says nothing about its descendants: a helper the CLI left behind in the
 isolated session is reachable from nowhere — not from `run.py`'s skill-runner
 teardown, not from `mission_scope`'s fallback — so a pass that finished
 *normally* was exactly the case that leaked one. Removing the gate only works
-alongside killing by **pgid** rather than via the leader: once `proc.wait()` has
-reaped the leader its pid is gone, so `force_kill_process_group`'s
-`getpgid(proc.pid)` would fail and degrade to a single-process kill on a dead
-process — a no-op dressed as cleanup. The pgid itself stays valid, because POSIX
-forbids reusing a process-group ID while the group still has members; the signal
-either reaches the survivors or fails with `ESRCH` on an empty group. All of
-this is safe only because an armed bound implies `start_new_session=True`, so
-the pgid is a dedicated session and never Kōan's own group.
+alongside killing by a **pgid captured while the leader was alive**: a group
+outlives its leader, but once `proc.wait()` has reaped that leader its pid is
+gone, so `force_kill_process_group`'s `getpgid(proc.pid)` would fail and degrade
+to a single-process kill on a dead process — a no-op dressed as cleanup.
+
+`subprocess_runner.kill_orphaned_process_group(pgid)` already *is* this
+operation, and a later review round caught the first version for hand-rolling
+`os.killpg` next to it. The helper takes the captured pgid, tolerates a reaped
+leader, polls `killpg(pgid, 0)` to decide whether the group is actually empty,
+and warns when one survives — where the inline version suppressed every `OSError`
+silently, leaving a still-running provider invisible three lines before
+`cleanup()` hands the invocation lock to the next mission. It also refuses
+`pgid <= 1` and the caller's own group, which turns "an armed bound implies
+`start_new_session=True`" from a property of the comment above the call into a
+structural one.
+
+That guard is not theoretical, and CI proved it before review did. The inline
+version signalled `proc.pid` directly, and `MagicMock().__index__()` is `1` — so
+the one unit test that drives the opted-in path with a mocked process
+(`test_an_opted_in_child_gets_its_own_session`) called
+`os.killpg(1, SIGKILL)` on whatever machine ran the suite. Locally that is an
+`EPERM` the `suppress` swallows; on the GitHub runner it SIGKILLed process
+group 1, and the job came back as "the hosted runner lost communication with the
+server" after 46 minutes with its logs never uploaded — an infrastructure-shaped
+failure with nothing pointing at the test that caused it. `force_kill_process_group`
+now makes the same refusal for the watchdog's kill, the mock fixture uses an
+impossible pid, and a regression test asserts the teardown signals no group at
+all when the pgid capture did not come from a live child.
 
 ## Why the kill is SIGKILL-to-the-group, not SIGTERM-first
 
@@ -228,12 +248,26 @@ explicitly when that drain itself fails, rather than degrading to a bare
 timeout message.
 
 That drain is bounded on its own terms — `select()` on the fd against a 2s
-deadline, not `proc.stderr.read()`. `read()` returns only at EOF, so whoever
-still holds the write end decides when it returns, and after the group SIGKILL
-that can be a descendant which escaped the group (most plausibly a `setsid`'d
-MCP helper) and survives the kill holding the inherited fd. Draining unbounded
-there blocks forever with the watchdog already disarmed — this change's own bug,
-re-entered one pipe over.
+*silence* window, not `proc.stderr.read()`. `read()` returns only at EOF, so
+whoever still holds the write end decides when it returns, and after the group
+SIGKILL that can be a descendant which escaped the group (most plausibly a
+`setsid`'d MCP helper) and survives the kill holding the inherited fd. Draining
+unbounded there blocks forever with the watchdog already disarmed — this
+change's own bug, re-entered one pipe over. The window is on inactivity for the
+same reason the stdout bound is: a child still printing is not the hazard, and a
+total cap would truncate a slow but healthy stderr dump.
+
+The success path needed the same treatment, and a later review round caught that
+it had not got it. Once stdout ends the watchdog is disarmed, so for an opted-in
+caller that post-EOF drain is the only read left with nothing in force — and
+reaching it does not take a stall. A helper the CLI spawned with its own session
+and `stdout=DEVNULL` holds the inherited stderr fd through the leader's entirely
+normal exit: stdout still EOFs, nothing fired, and the unbounded `read()` on that
+branch blocked with the `proc.wait(timeout=…)` below it never reached — the
+"declared bound sits after a blocking read" shape this whole change removed from
+stdout, in the one branch that had been left alone because every test that builds
+an escaped helper also stalls the leader and routes through the other one. Both
+branches now drain through the same bounded helper.
 
 An earlier version gated the drain on the post-kill `wait()` instead, skipping it
 when the wait expired. That test cannot see the case it was written for: SIGKILL

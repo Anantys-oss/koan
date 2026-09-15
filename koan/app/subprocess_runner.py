@@ -6,12 +6,83 @@ spread across ``run.py``, ``cli_exec.py``, and ``provider/__init__.py``.
 
 import contextlib
 import os
+import select
 import signal
 import subprocess
 import sys
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
+
+# Long enough to collect a pipe's already-buffered contents many times over.
+# The bound is on *silence*, for the same reason a streaming read loop's is: on
+# the healthy path every write end is closed, EOF is already there and this
+# costs nothing; a child still printing is drained in full however long that
+# takes; only a holder that has stopped writing pays it.
+STREAM_DRAIN_IDLE_SECONDS = 2.0
+
+
+def drain_stream_bounded(
+    stream, idle_timeout: float = STREAM_DRAIN_IDLE_SECONDS,
+) -> Tuple[str, str]:
+    """Read what *stream* holds, bounded by *idle_timeout*. Returns (text, err).
+
+    For draining a child's stderr after its stdout reached EOF, which is where
+    the watchdogs above have just been disarmed and nothing else bounds the
+    call. ``stream.read()`` returns only at EOF, so whoever still holds the
+    write end decides when it returns — and that is not necessarily nobody once
+    the leader is gone: a descendant that escaped the group (its own session,
+    e.g. a ``setsid``'d MCP helper) survives a group SIGKILL, and one that never
+    held stdout keeps the inherited fd through an entirely *normal* exit too.
+    The leader's own exit says nothing about it, so the bound must be on this
+    read's own terms.
+
+    Reading the raw fd under ``select`` also keeps the file object free of a
+    blocked reader, which matters: callers close these streams in a ``finally``,
+    and ``close()`` on a buffered stream another thread is blocked inside waits
+    for that thread — moving the hang rather than removing it.
+    """
+    if stream is None:
+        return "", ""
+    fd = None
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        candidate = stream.fileno()
+        if isinstance(candidate, int):
+            fd = candidate
+    if fd is None:
+        # Not an OS pipe (an in-memory stream): there is no write end another
+        # process can hold, so a plain read cannot block on a survivor and
+        # select() has nothing to watch.
+        try:
+            return stream.read() or "", ""
+        except (OSError, ValueError) as e:
+            return "", f" stderr unavailable: {e}"
+    chunks: List[bytes] = []
+    truncated = False
+    try:
+        while True:
+            # The window restarts on every chunk: a child that is still
+            # printing is not the hazard, a silent holder of the write end is.
+            if not select.select([fd], [], [], idle_timeout)[0]:
+                truncated = True
+                break
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break  # EOF: every write end is closed, nothing more is coming.
+            chunks.append(chunk)
+    except (OSError, ValueError) as e:
+        return _decode_chunks(chunks), f" stderr unavailable: {e}"
+    if truncated:
+        return _decode_chunks(chunks), (
+            f" stderr truncated after {idle_timeout:g}s of silence: a process "
+            "that outlived the leader still holds the write end"
+        )
+    return _decode_chunks(chunks), ""
+
+
+def _decode_chunks(chunks: List[bytes]) -> str:
+    """Join first, then decode — a multi-byte char can straddle two reads."""
+    return b"".join(chunks).decode("utf-8", "replace")
 
 
 def kill_process_group(
@@ -148,11 +219,20 @@ def force_kill_process_group(proc: Optional[subprocess.Popen]) -> None:
 
     Used by watchdog timers where graceful shutdown is not worth the delay.
     No poll() guard — the exception handler catches already-dead processes.
+
+    Degrades to a single-process kill rather than signalling init's group or the
+    caller's own, the same refusal :func:`kill_orphaned_process_group` makes.
+    Every caller that arms a group kill spawns with ``start_new_session=True``,
+    so reaching that branch means the invariant broke — and the cost of
+    discovering it by SIGKILLing Kōan's own group is the whole daemon, from a
+    watchdog whose job was to kill one child.
     """
     if proc is None:
         return
     try:
         pgid = os.getpgid(proc.pid)
+        if pgid <= 1 or pgid == os.getpgrp():
+            raise ProcessLookupError(f"refusing to signal process group {pgid}")
         os.killpg(pgid, signal.SIGKILL)
     except (OSError, ProcessLookupError):
         with contextlib.suppress(OSError, ProcessLookupError):
