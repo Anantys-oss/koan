@@ -1218,6 +1218,36 @@ class TestRunImplement:
             assert not ok
             assert "No plan found" in msg
 
+    def test_unclaimable_split_plan_names_the_excluded_parts(self):
+        """A plan refused on authorship must not report as a missing plan.
+
+        "No plan found" sends the operator to re-run `/plan`; the actual fix is
+        the rotated account or the dropped comment property that hid a plan
+        already sitting on the issue, so the message has to name both.
+        """
+        _revision, part1, part2, _footer = (
+            TestExtractLatestPlan()._koan_multipart_plan()
+        )
+        part1["author_account_id"] = "old-koan-account"
+        part2["author_account_id"] = "old-koan-account"
+        notify = MagicMock()
+        with patch(f"{_IMPL_MODULE}.fetch_issue",
+                    return_value=_github_issue(
+                        title="Title", body="", comments=[part1, part2],
+                    )), \
+                patch(
+                    "app.jira_notifications.jira_self_identity",
+                    return_value=("new-koan-account", ""),
+                ):
+            ok, msg = run_implement(
+                "/project",
+                "https://github.com/o/r/issues/1",
+                notify_fn=notify,
+            )
+        assert not ok
+        assert "2 `Part N of M`" in msg
+        assert "koan.jira.plan" in msg
+
     def test_successful_implementation(self):
         notify = MagicMock()
         body = "### Summary\nPlan\n#### Phase 1: Do it"

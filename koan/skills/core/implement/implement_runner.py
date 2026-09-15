@@ -140,6 +140,21 @@ def run_implement(
     # Extract the most recent plan
     plan = _extract_latest_plan(body, comments)
     if not plan:
+        # A split plan whose parts were all refused on authorship leaves no text
+        # to carry the warning `_extract_latest_plan` embeds when fallback text
+        # exists, so the diagnosis has to be rebuilt here. Reporting the generic
+        # "no plan" would send the operator to re-run `/plan` instead of fixing
+        # the credentials or the dropped comment properties that hid a plan
+        # sitting on the issue.
+        unclaimable = _unclaimable_multipart_fragments(comments)
+        if unclaimable:
+            return False, (
+                f"No usable plan found in issue {label}: {unclaimable} "
+                "`Part N of M` plan comment(s) could not be verified as Kōan's "
+                "own and were excluded. Check that Jira still attributes them "
+                "to the account Kōan authenticates as, and that it persists "
+                "the koan.jira.plan comment property, then re-run."
+            )
         return False, (
             f"No plan found in issue {label}. "
             "The issue should contain implementation phases."
@@ -413,7 +428,9 @@ def _extract_latest_plan(body: Optional[str], comments: List[dict]) -> str:
     if not plan.strip():
         # Nothing else on the issue reads as a plan, so there is no text to
         # carry the warning. Report "no plan" and let the mission fail rather
-        # than hand the agent a banner to implement.
+        # than hand the agent a banner to implement — the caller re-derives the
+        # count via `_unclaimable_multipart_fragments` so the failure message
+        # names the excluded parts instead of blaming a missing plan.
         return ""
     return (
         f"> **Warning — a split plan on this issue was ignored.** {unclaimed} "
