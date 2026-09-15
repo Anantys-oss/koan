@@ -258,20 +258,22 @@ def submit_draft_pr(
                         "Jira comment upsert did not complete for %s: %s",
                         issue_key, reason,
                     )
-                    # `create_failed` is the one failure where falling through
-                    # is safe *and* useful: the listing was read, so we know no
-                    # status comment exists, and only the write failed — the
-                    # generic path gets one more chance to leave the PR link on
-                    # the issue instead of the mission reporting success with
-                    # nothing posted anywhere. Every other reason must not
-                    # create: `*_unverified` means the comment *is* on the issue
-                    # (a second one would be the duplicate this module exists to
-                    # prevent), `update_failed` means one exists to be
-                    # superseded, and `lookup_failed` means we cannot tell —
-                    # blind-creating on an unreadable listing is exactly how a
-                    # flaky read path stacks duplicates.
-                    if reason != "create_failed":
-                        return
+                    # No failure reason licenses a second create. The generic
+                    # path posts a bare body — no `koan.jira.outcome` property,
+                    # no status footer — so the next run cannot find it to
+                    # supersede it, and it stays on the issue forever next to
+                    # the status comment. Nor is `create_failed` proof that
+                    # nothing was posted: `jira_add_comment` reports failure for
+                    # a POST whose response was lost after Jira stored the
+                    # comment. A create that was *attempted* is never repeated
+                    # (`specs/skills/plan.md`); the end-of-mission publisher and
+                    # the next run re-verify and update whatever landed.
+                    # `*_unverified` means the comment *is* on the issue,
+                    # `update_failed` means one exists to be superseded, and
+                    # `lookup_failed` means we cannot tell — blind-creating on
+                    # an unreadable listing is how a flaky read path stacks
+                    # duplicates.
+                    return
                 except Exception as e:
                     # An unhandled error leaves no status comment on the issue,
                     # so it gets the same visibility as the `not ok` branch

@@ -4,7 +4,7 @@ title: "Component Spec — Issue Tracking"
 description: "Design contract for the provider-neutral issue-tracker abstraction (GitHub/Jira) that routes fetch/comment/create calls through one service layer."
 tags: [issue-tracking]
 created: 2026-06-27
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
 # Component Spec — Issue Tracking
@@ -133,6 +133,14 @@ issue_cli.py          → CLI entry point (fetch/comment/create) used by prompts
   would refuse to act on; an accepted write that left neither is reported as
   unverified rather than as success, and a quoted footer elsewhere on the issue
   does not satisfy it.
+  A status publish that fails ends there, whatever the reason: no caller may
+  re-post the body through the plain comment path, which lands a comment
+  carrying neither identity — unfindable to every later upsert, so it can only
+  be orphaned next to the real status. Nor is a reported create failure evidence
+  that nothing was posted: a POST whose response is lost is reported as a
+  failure for a comment Jira did store, so a create that was *attempted* is
+  never repeated, exactly as on the `/plan` path. The failure is logged and the
+  next run re-verifies and updates in place.
 - **Every Jira comment read carries its authorship evidence.** Both comment-read
   paths — the notification-side listing and the full issue fetch — normalize
   `expand=properties` into a `{key: value}` map and surface the author's
