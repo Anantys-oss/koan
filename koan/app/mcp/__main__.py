@@ -102,11 +102,24 @@ def _run_http(koan_root: Path) -> int:
         return 1
 
     from app.mcp.config import get_mcp_http_url
-    from app.mcp.http_transport import serve_http
+    from app.mcp.http_transport import bind_http_socket, serve_http
     from app.pid_manager import acquire_pidfile, release_pidfile
 
     host = get_mcp_host()
+    port = get_mcp_port()
     _warn_non_loopback(host)
+    # Bind before the pidfile exists. The launcher treats the pidfile as proof
+    # of a successful start, so a bind that fails afterwards (port in use,
+    # unavailable address) would be reported as a healthy boot. Binding is two
+    # syscalls, so doing it first costs the verify timeout nothing.
+    try:
+        sock = bind_http_socket(host, port)
+    except OSError as exc:
+        print(
+            f"ERROR: Kōan MCP HTTP cannot bind {host}:{port}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
     # Claim the pidfile before the SDK import, the spec parse and the API
     # probe: the process manager only waits a few seconds for it to appear,
     # and a slow startup must not be reported as a launch failure.
@@ -120,10 +133,12 @@ def _run_http(koan_root: Path) -> int:
         serve_http(
             server,
             host=host,
-            port=get_mcp_port(),
+            port=port,
             audit_path=koan_root / "logs" / "mcp.log",
+            sock=sock,
         )
     finally:
+        sock.close()
         release_pidfile(lock, koan_root, "mcp")
     return 0
 

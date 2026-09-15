@@ -43,6 +43,11 @@ def _warn_missing_exposed(loaded: tuple[Skill, ...]) -> None:
     so a marked skill could vanish from the catalogue with no signal. Surfacing
     the mismatch here keeps the fail-closed guarantee from hiding a partial
     catalogue behind a silent drop.
+
+    A file that will not parse is reported too, without asking whether its
+    ``api_exposed`` flag was set: that flag lives in the frontmatter the parse
+    just failed on, so gating the report on it would silence exactly the case
+    where a typo drops an exposed skill.
     """
     core_dir = get_core_skills_dir()
     if not core_dir.is_dir():
@@ -50,7 +55,13 @@ def _warn_missing_exposed(loaded: tuple[Skill, ...]) -> None:
     loaded_names = {skill.name for skill in loaded}
     for skill_md in sorted(core_dir.rglob("SKILL.md")):
         parsed = parse_skill_md(skill_md)
-        if parsed is not None and parsed.api_exposed and parsed.name not in loaded_names:
+        if parsed is None:
+            _log.error(
+                "Core skill %s could not be parsed; if it declared "
+                "api_exposed, the exposed surface is partial",
+                skill_md,
+            )
+        elif parsed.api_exposed and parsed.name not in loaded_names:
             _log.error(
                 "API-exposed core skill '%s' (%s) was not loaded into the "
                 "catalogue; the exposed surface may be partial",
