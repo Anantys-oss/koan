@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from app.signals import ready_file
 from app.pid_manager import (
     _pidfile_path,
     _read_pid,
@@ -33,6 +34,7 @@ from app.pid_manager import (
     start_awake,
     start_ollama,
     start_all,
+    start_mcp,
     start_stack,
     start_dashboard,
     get_status_processes,
@@ -43,6 +45,21 @@ from app.pid_manager import (
 )
 
 pytestmark = pytest.mark.slow
+
+
+@contextlib.contextmanager
+def _malformed_config(root: Path):
+    """Point the config reader at an ``instance/config.yaml`` that will not parse.
+
+    Exercises the real degradation path: ``load_config`` catches the YAML error
+    and hands every ``get_mcp_*`` getter an empty dict, so only a genuinely
+    broken file proves the process manager notices.
+    """
+    config_path = root / "instance" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("mcp: [unclosed\n")
+    with patch("app.utils.KOAN_ROOT", root):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -1279,6 +1296,83 @@ class TestGetStatusProcesses:
             result = get_status_processes(tmp_path)
         assert isinstance(result, tuple)
 
+    def test_status_includes_only_http_mcp(self, tmp_path):
+        with patch("app.pid_manager._detect_provider", return_value="claude"), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=True
+        ):
+            assert "mcp" in get_status_processes(tmp_path)
+
+        with patch("app.pid_manager._detect_provider", return_value="claude"), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=False
+        ):
+            assert "mcp" not in get_status_processes(tmp_path)
+
+    def test_status_keeps_mcp_when_config_unreadable(self, tmp_path):
+        """An unreadable config must not silently hide a running daemon."""
+        with _malformed_config(tmp_path), patch(
+            "app.pid_manager._detect_provider", return_value="claude"
+        ), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ):
+            assert "mcp" in get_status_processes(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# start_mcp readiness
+# ---------------------------------------------------------------------------
+
+
+class TestStartMcpReadiness:
+    """The pidfile proves the daemon exists; readiness proves it serves."""
+
+    def test_success_requires_the_readiness_marker(self, tmp_path):
+        ready = tmp_path / ready_file("mcp")
+        with patch(
+            "app.pid_manager._launch_python_process",
+            side_effect=lambda *a, **k: (ready.touch(), (True, "MCP HTTP started"))[1],
+        ):
+            ok, msg = start_mcp(tmp_path)
+        assert ok is True
+        assert "started" in msg
+
+    def test_reports_failure_when_the_daemon_exits_after_the_pidfile(self, tmp_path):
+        """An SDK error past acquire_pidfile must not read as a healthy boot."""
+        with patch(
+            "app.pid_manager._launch_python_process",
+            return_value=(True, "MCP HTTP started (PID 123)"),
+        ), patch("app.pid_manager.check_pidfile", return_value=None):
+            ok, msg = start_mcp(tmp_path)
+        assert ok is False
+        assert "exited during startup" in msg
+
+    def test_reports_failure_when_readiness_never_arrives(self, tmp_path):
+        with patch(
+            "app.pid_manager._launch_python_process",
+            return_value=(True, "MCP HTTP started (PID 123)"),
+        ), patch("app.pid_manager.check_pidfile", return_value=123):
+            ok, msg = start_mcp(tmp_path, ready_timeout=0.3)
+        assert ok is False
+        assert "did not report ready" in msg
+
+    def test_stale_marker_from_a_previous_run_is_cleared(self, tmp_path):
+        (tmp_path / ready_file("mcp")).touch()
+        with patch(
+            "app.pid_manager._launch_python_process",
+            return_value=(True, "MCP HTTP started (PID 123)"),
+        ), patch("app.pid_manager.check_pidfile", return_value=123):
+            ok, _ = start_mcp(tmp_path, ready_timeout=0.3)
+        assert ok is False
+
 
 # ---------------------------------------------------------------------------
 # start_all
@@ -1376,6 +1470,85 @@ class TestStartAll:
             ok, msg = results[name]
             assert ok is False
             assert "already running" in msg.lower()
+
+    def test_start_all_starts_api_before_http_mcp(self, tmp_path):
+        order = []
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=True
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=True
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_api",
+            side_effect=lambda root: (order.append("api"), (True, "ok"))[1],
+        ), patch(
+            "app.pid_manager.start_mcp",
+            side_effect=lambda root: (order.append("mcp"), (True, "ok"))[1],
+        ):
+            results = start_all(tmp_path, provider="claude")
+
+        assert order == ["api", "mcp"]
+        assert results["mcp"] == (True, "ok")
+
+    def test_start_all_fails_loudly_on_unknown_mcp_transport(self, tmp_path):
+        """A typo resolves to stdio; `make start` must not report success."""
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch("app.config.get_mcp_enabled", return_value=True), patch(
+            "app.config.get_mcp_transport_setting", return_value="streamable-http"
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch("app.pid_manager.start_mcp") as start_mcp:
+            results = start_all(tmp_path, provider="claude")
+
+        ok, msg = results["mcp"]
+        assert ok is False
+        assert "streamable-http" in msg
+        start_mcp.assert_not_called()
+
+    def test_start_all_reports_unreadable_mcp_config_as_failure(self, tmp_path):
+        """A config-read error is a reported failure, not "not configured".
+
+        The config is really malformed rather than mocked: ``load_config``
+        swallows the parse error and returns ``{}``, so a patched
+        ``get_mcp_enabled`` raising ``OSError`` would prove nothing about the
+        path the daemon actually takes.
+        """
+        with _malformed_config(tmp_path), patch(
+            "app.pid_manager._is_dashboard_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch("app.pid_manager.start_mcp") as start_mcp:
+            results = start_all(tmp_path, provider="claude")
+
+        ok, msg = results["mcp"]
+        assert ok is False
+        assert "unreadable" in msg
+        start_mcp.assert_not_called()
+
+    def test_start_all_does_not_daemonize_stdio_mcp(self, tmp_path):
+        with patch("app.pid_manager._is_dashboard_enabled", return_value=False), patch(
+            "app.pid_manager._is_api_enabled", return_value=False
+        ), patch(
+            "app.pid_manager._is_mcp_http_enabled", return_value=False
+        ), patch(
+            "app.pid_manager.start_awake", return_value=(True, "ok")
+        ), patch(
+            "app.pid_manager.start_runner", return_value=(True, "ok")
+        ), patch("app.pid_manager.start_mcp") as start_mcp:
+            results = start_all(tmp_path, provider="claude")
+
+        assert "mcp" not in results
+        start_mcp.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2072,6 +2245,10 @@ class TestDashboardConfig:
     def test_process_names_includes_dashboard(self):
         """PROCESS_NAMES tuple includes dashboard."""
         assert "dashboard" in PROCESS_NAMES
+
+    def test_process_names_includes_mcp(self):
+        """PROCESS_NAMES tuple includes mcp."""
+        assert "mcp" in PROCESS_NAMES
 
     def test_is_dashboard_enabled_false_by_default(self):
         """Dashboard is disabled when config has no dashboard section."""

@@ -1,10 +1,10 @@
 ---
 type: doc
 title: "Skills System"
-description: "Describes the skill definition format, dispatch paths, the private implementation review gate (challenge loop, cost controls, dedup), and the documentation contract for skill changes."
+description: "Describes skill definitions, dispatch paths, fail-closed REST/MCP exposure, the private implementation review gate, and skill documentation contracts."
 tags: [architecture]
 created: 2026-05-28
-updated: 2026-06-23
+updated: 2026-09-11
 ---
 
 # Skills System
@@ -19,7 +19,7 @@ frontmatter flags, and dispatch routing.
 Each skill has a `SKILL.md` file with YAML-style frontmatter. Core skills must
 define `name`, `description`, `group`, `commands`, and `audience`. Optional
 fields control aliases, worker execution, GitHub exposure, context-aware
-dispatch, combo skills, and other behavior.
+dispatch, API exposure, combo skills, and other behavior.
 
 Skill names, aliases, and directories use underscores, not hyphens.
 
@@ -32,9 +32,18 @@ Skill names, aliases, and directories use underscores, not hyphens.
   agent loop when no full provider session is needed.
 - `external_skill_dispatch.py` executes custom integration skills in process for
   GitHub and Jira originated commands.
+- `api/skill_catalog.py` builds a read-only, core-only catalog for authenticated
+  REST and MCP discovery. Only `api_exposed: true` skills enter this surface.
 
 Prompt-only skills omit `handler.py`; their Markdown prompt body is sent through
 the agent path.
+
+REST/MCP exposure is separate from bridge, agent, and GitHub/Jira dispatch.
+`api_exposed` defaults false, and `build_registry()` without custom directories
+keeps private instance scopes outside the process-lifetime catalog. Catalog
+records and canonical mission command choices derive from parsed command
+frontmatter, including descriptions, usage strings, and aliases. API and MCP
+processes must restart after exposure metadata changes.
 
 ## Private Implementation Review Gate
 

@@ -6,6 +6,7 @@ emoji: 🔎
 description: Audit a project codebase and create tracker issues for each finding
 version: 1.0.0
 audience: hybrid
+api_exposed: true
 caveman: false
 github_enabled: true
 github_context_aware: true
