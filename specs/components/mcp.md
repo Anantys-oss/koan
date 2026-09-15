@@ -49,6 +49,21 @@ annotations, configuration gates, and transport lifecycle.
   no pidfile exists rather than becoming a reported start followed by a silent
   exit. Binding is two syscalls, so it does not consume the verify timeout the
   pidfile opens for the SDK import and spec parse that follow.
+- The pidfile therefore proves the process exists, not that it serves. The
+  daemon publishes a separate readiness marker (`.koan-ready-mcp`) from the
+  point past which nothing in startup can still fail, and the process manager
+  treats a start as successful only once that marker appears. A daemon that
+  exits after claiming its pidfile — an incompatible SDK, a registration
+  error, an SDK signature change inside the transport — is reported as a start
+  failure naming `logs/mcp.log`, and `make start` exits non-zero. The marker is
+  removed on exit and cleared before each launch, so one left by an
+  uncatchable kill is never read as the next run's readiness.
+- A `config.yaml` that cannot be read or parsed is reported as an MCP start
+  failure, not downgraded to "not configured". Config getters resolve through a
+  loader that degrades a broken file to an empty mapping, which would otherwise
+  render `mcp.enabled` false and drop `mcp` from both `make start` and
+  `make status` while a daemon still held the pidfile; the process manager
+  probes the file itself before consulting any getter.
 - Both transports construct tools only through `create_server()` and
   `build_tool_definitions()`.
 

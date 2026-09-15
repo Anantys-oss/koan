@@ -102,6 +102,16 @@ daemon binds its listener before it records its PID, and `make start` reads that
 PID as proof of a successful launch, so the bind error is named on the console
 and `make start` exits non-zero instead of reporting `mcp` as started.
 
+Everything after that PID — the MCP SDK import, tool registration, building the
+transport — can still fail, and a PID alone would report those as a healthy
+boot. So the daemon writes a separate readiness marker (`.koan-ready-mcp`) at
+the moment it is about to accept requests, and `make start` waits for it, up to
+20 seconds past the PID. A daemon that exits, or never gets that far, is
+reported as an MCP start failure pointing at `logs/mcp.log`, and `make start`
+exits non-zero. The marker is removed when the daemon exits, and cleared before
+each launch, so a marker left by a `kill -9` is never read as this run's
+readiness.
+
 If `logs/mcp.log` becomes unwritable — a full disk, or a rotation step that
 changes its owner — the server stops serving instead of serving unaudited
 requests. Clients then get `503 audit_unavailable`. The reason goes to syslog

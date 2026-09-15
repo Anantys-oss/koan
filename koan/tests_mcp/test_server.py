@@ -596,6 +596,133 @@ def test_http_entrypoint_claims_pidfile_before_slow_startup(monkeypatch, tmp_pat
     assert order == ["bind", "acquire", "load_server", "probe_api", "serve"]
 
 
+def test_http_entrypoint_signals_readiness_only_from_serve_http(monkeypatch, tmp_path):
+    """The marker the launcher waits on is written past the last failure point."""
+    from app.mcp import __main__ as entrypoint
+    from app.signals import ready_file
+
+    marker = tmp_path / ready_file("mcp")
+    seen = {}
+
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "http")
+    monkeypatch.setattr(entrypoint, "get_mcp_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(entrypoint, "get_mcp_port", lambda: 8421)
+    monkeypatch.setattr(entrypoint, "get_api_token", lambda: "secret")
+    monkeypatch.setattr(entrypoint, "_load_server", lambda: object())
+    monkeypatch.setattr(entrypoint, "_probe_api", lambda: None)
+    monkeypatch.setattr("app.pid_manager.acquire_pidfile", lambda root, name: object())
+    monkeypatch.setattr(
+        "app.pid_manager.release_pidfile", lambda lock, root, name: None
+    )
+    monkeypatch.setattr(
+        "app.mcp.http_transport.bind_http_socket", lambda host, port: _FakeSocket()
+    )
+
+    def fake_serve(server, **kwargs):
+        seen["before"] = marker.exists()
+        kwargs["on_ready"]()
+        seen["after"] = marker.exists()
+
+    monkeypatch.setattr("app.mcp.http_transport.serve_http", fake_serve)
+
+    assert entrypoint.main() == 0
+    assert seen == {"before": False, "after": True}
+    # Cleared on exit, so the next launch cannot read a stale marker as ready.
+    assert not marker.exists()
+
+
+def test_http_entrypoint_leaves_no_readiness_marker_when_the_sdk_fails(
+    monkeypatch, tmp_path
+):
+    """An error inside serve_http must not look like a healthy boot."""
+    from app.mcp import __main__ as entrypoint
+    from app.signals import ready_file
+
+    marker = tmp_path / ready_file("mcp")
+
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "http")
+    monkeypatch.setattr(entrypoint, "get_mcp_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(entrypoint, "get_mcp_port", lambda: 8421)
+    monkeypatch.setattr(entrypoint, "get_api_token", lambda: "secret")
+    monkeypatch.setattr(entrypoint, "_load_server", lambda: object())
+    monkeypatch.setattr(entrypoint, "_probe_api", lambda: None)
+    monkeypatch.setattr("app.pid_manager.acquire_pidfile", lambda root, name: object())
+    monkeypatch.setattr(
+        "app.pid_manager.release_pidfile", lambda lock, root, name: None
+    )
+    monkeypatch.setattr(
+        "app.mcp.http_transport.bind_http_socket", lambda host, port: _FakeSocket()
+    )
+    monkeypatch.setattr(
+        "app.mcp.http_transport.serve_http",
+        lambda server, **kwargs: (_ for _ in ()).throw(
+            TypeError("streamable_http_app() got an unexpected keyword argument")
+        ),
+    )
+
+    with pytest.raises(TypeError):
+        entrypoint.main()
+    assert not marker.exists()
+
+
+def test_serve_http_calls_on_ready_after_the_app_is_built(monkeypatch, tmp_path):
+    """on_ready fires past build_http_app — an SDK signature change precedes it."""
+    from app.mcp import http_transport
+
+    order = []
+
+    monkeypatch.setattr(
+        http_transport,
+        "build_http_app",
+        lambda server, **kwargs: order.append("build") or object(),
+    )
+    monkeypatch.setattr(
+        http_transport.uvicorn, "Config", lambda *a, **k: object()
+    )
+
+    class _FakeUvicornServer:
+        def __init__(self, config):
+            pass
+
+        def run(self, sockets=None):
+            order.append("run")
+
+    monkeypatch.setattr(http_transport.uvicorn, "Server", _FakeUvicornServer)
+
+    http_transport.serve_http(
+        object(),
+        host="127.0.0.1",
+        port=8421,
+        audit_path=tmp_path / "mcp.log",
+        on_ready=lambda: order.append("ready"),
+    )
+
+    assert order == ["build", "ready", "run"]
+
+
+def test_serve_http_skips_on_ready_when_the_app_cannot_be_built(monkeypatch, tmp_path):
+    from app.mcp import http_transport
+
+    monkeypatch.setattr(
+        http_transport,
+        "build_http_app",
+        lambda server, **kwargs: (_ for _ in ()).throw(TypeError("bad signature")),
+    )
+
+    with pytest.raises(TypeError):
+        http_transport.serve_http(
+            object(),
+            host="127.0.0.1",
+            port=8421,
+            audit_path=tmp_path / "mcp.log",
+            on_ready=lambda: pytest.fail("readiness must not be signalled"),
+        )
+
+
 def test_http_entrypoint_refuses_missing_token(monkeypatch, tmp_path, capsys):
     from app.mcp import __main__ as entrypoint
 

@@ -12,6 +12,7 @@ import socket
 import sys
 import syslog
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import uvicorn
@@ -261,8 +262,24 @@ def bind_http_socket(host: str, port: int) -> socket.socket:
 
 
 def serve_http(
-    server, *, host: str, port: int, audit_path: Path, sock: socket.socket | None = None
+    server,
+    *,
+    host: str,
+    port: int,
+    audit_path: Path,
+    sock: socket.socket | None = None,
+    on_ready: Callable[[], None] | None = None,
 ) -> None:
+    """Serve the MCP app, calling ``on_ready`` once nothing is left to fail.
+
+    ``build_http_app`` reaches into the MCP SDK, so an SDK minor that changes
+    ``streamable_http_app``'s signature raises here — after the launcher has
+    already seen the pidfile. ``on_ready`` fires only past that point, so the
+    caller can publish readiness that a failed startup never reaches.
+    """
     app = build_http_app(server, host=host, audit_path=audit_path)
     config = uvicorn.Config(app, host=host, port=port, access_log=False)
-    uvicorn.Server(config).run(sockets=[sock] if sock is not None else None)
+    uvicorn_server = uvicorn.Server(config)
+    if on_ready is not None:
+        on_ready()
+    uvicorn_server.run(sockets=[sock] if sock is not None else None)

@@ -104,6 +104,7 @@ def _run_http(koan_root: Path) -> int:
     from app.mcp.config import get_mcp_http_url
     from app.mcp.http_transport import bind_http_socket, serve_http
     from app.pid_manager import acquire_pidfile, release_pidfile
+    from app.signals import ready_file
 
     host = get_mcp_host()
     port = get_mcp_port()
@@ -124,20 +125,29 @@ def _run_http(koan_root: Path) -> int:
     # probe: the process manager only waits a few seconds for it to appear,
     # and a slow startup must not be reported as a launch failure.
     lock = acquire_pidfile(koan_root, "mcp")
+    ready = koan_root / ready_file("mcp")
     try:
         server = _build_server()
         if server is None:
             return 1
         _probe_api()
         print(f"Kōan MCP HTTP listening on {get_mcp_http_url()}", flush=True)
+        # The pidfile says "this process exists"; the launcher needs "this
+        # process serves". Everything that can still fail after the pidfile is
+        # claimed — the SDK import, tool registration, an SDK signature change
+        # inside serve_http — would otherwise exit while the launcher had
+        # already reported success, so readiness is signalled separately, from
+        # the last point at which nothing is left to fail.
         serve_http(
             server,
             host=host,
             port=port,
             audit_path=koan_root / "logs" / "mcp.log",
             sock=sock,
+            on_ready=ready.touch,
         )
     finally:
+        ready.unlink(missing_ok=True)
         sock.close()
         release_pidfile(lock, koan_root, "mcp")
     return 0
