@@ -507,6 +507,41 @@ class TestSubmitDraftPr:
             mock_tracker.assert_not_called()
             assert mock_gh.call_count == 1
 
+    def _submit_with_upsert_result(self, outcome, mock_tracker):
+        with patch(f"{_M}.get_current_branch", return_value="feat"), \
+             patch(f"{_M}.resolve_base_branch", return_value="main"), \
+             patch(f"{_M}.run_gh", return_value=""), \
+             patch(f"{_M}.get_commit_subjects", return_value=["c1"]), \
+             patch(f"{_M}.run_git_strict"), \
+             patch(f"{_M}.resolve_submit_target",
+                    return_value={"repo": "o/r", "is_fork": False}), \
+             patch(f"{_M}.pr_create", return_value="https://pr/1"), \
+             patch("app.issue_tracker.add_comment", mock_tracker), \
+             patch("app.jira_outcome_publish.upsert_jira_comment",
+                   return_value=outcome):
+            submit_draft_pr(
+                "/p", "proj", "o", "r", "PROJ-42",
+                pr_title="T", pr_body="B",
+                issue_url="https://org.atlassian.net/browse/PROJ-42",
+                skill_name="fix",
+            )
+
+    def test_no_failed_jira_upsert_posts_a_second_comment(self):
+        """The generic path is a *create*, and it is never safe here.
+
+        It posts a body carrying neither the outcome property nor the status
+        footer, so no later run can find or supersede it. `create_failed` is no
+        exception: a POST whose response was lost is reported as a failure for a
+        comment Jira stored, so falling through would post the duplicate this
+        module exists to prevent.
+        """
+        for reason in ("create_failed", "lookup_failed", "created_unverified",
+                       "updated_unverified", "update_failed"):
+            mock_tracker = MagicMock()
+            self._submit_with_upsert_result((False, reason), mock_tracker)
+
+            assert not mock_tracker.called, f"{reason} must not create a comment"
+
     def test_jira_success_comment_includes_mission_and_pr_link(self):
         with patch(f"{_M}.get_current_branch", return_value="feat"), \
              patch(f"{_M}.resolve_base_branch", return_value="main"), \
@@ -531,11 +566,11 @@ class TestSubmitDraftPr:
             )
 
         comment_text = mock_upsert.call_args.args[2]
-        assert "Mission: /fix" in comment_text
-        assert "Pull request: https://pr/1" in comment_text
-        assert "Target branch: main" in comment_text
-        assert "What changed:" in comment_text
-        assert "Why: Needed for Jira flow" in comment_text
+        assert "- **Mission**: `/fix`" in comment_text
+        assert "- **Pull request**: [PR #1 — fix: bug](https://pr/1)" in comment_text
+        assert "- **Target branch**: `main`" in comment_text
+        assert "**What changed**" in comment_text
+        assert "**Why**\nNeeded for Jira flow" in comment_text
 
     def test_jira_push_failure_posts_failure_comment(self):
         notify = MagicMock()
@@ -556,6 +591,6 @@ class TestSubmitDraftPr:
         assert result is None
         notify.assert_called_once()
         comment_text = mock_upsert.call_args.args[2]
-        assert "Pull request creation failed" in comment_text
-        assert "Mission: /implement" in comment_text
+        assert comment_text.startswith("### Kōan · pull request creation failed")
+        assert "- **Mission**: `/implement`" in comment_text
         assert "auth denied" in comment_text
