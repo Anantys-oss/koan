@@ -526,26 +526,17 @@ class TestSubmitDraftPr:
                 skill_name="fix",
             )
 
-    def test_failed_jira_create_falls_back_to_the_generic_comment_path(self):
-        """Nothing was posted and the listing was readable — try the other path.
+    def test_no_failed_jira_upsert_posts_a_second_comment(self):
+        """The generic path is a *create*, and it is never safe here.
 
-        Otherwise the mission reports success with no status comment anywhere
-        on the issue, and nothing ever retries.
+        It posts a body carrying neither the outcome property nor the status
+        footer, so no later run can find or supersede it. `create_failed` is no
+        exception: a POST whose response was lost is reported as a failure for a
+        comment Jira stored, so falling through would post the duplicate this
+        module exists to prevent.
         """
-        mock_tracker = MagicMock()
-        self._submit_with_upsert_result((False, "create_failed"), mock_tracker)
-
-        mock_tracker.assert_called_once()
-
-    def test_unreadable_or_unverified_jira_upsert_never_posts_a_second_comment(self):
-        """The fallback is a *create*, so it is only safe when nothing exists.
-
-        `lookup_failed` means the listing could not be read — blind-creating on
-        that signal is how a flaky read path stacks duplicates — and
-        `*_unverified` means the comment is already on the issue.
-        """
-        for reason in ("lookup_failed", "created_unverified", "updated_unverified",
-                       "update_failed"):
+        for reason in ("create_failed", "lookup_failed", "created_unverified",
+                       "updated_unverified", "update_failed"):
             mock_tracker = MagicMock()
             self._submit_with_upsert_result((False, reason), mock_tracker)
 
