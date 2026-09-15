@@ -380,6 +380,34 @@ class TestJiraNormalisationPreservesCode:
         assert "before" in rendered_text
         assert "after" in rendered_text
 
+    def test_indented_code_directly_under_a_heading_keeps_its_comment(self):
+        """A heading opens no paragraph, so the next indented line is code.
+
+        Stripping the comment there left four spaces, which the renderer then
+        read as a blank line — the author's example vanished from the published
+        comment instead of rendering as the code block they wrote.
+        """
+        doc = markdown_to_adf(
+            "## Marker format\n    <!-- koan-jira-outcome:abc123 -->\n"
+        )
+
+        block = next(n for n in doc["content"] if n.get("type") == "codeBlock")
+        assert block["content"][0]["text"] == "<!-- koan-jira-outcome:abc123 -->"
+
+    def test_indented_comment_under_a_list_item_is_removed_not_published(self):
+        """A list continuation renders as prose, so its marker must be stripped.
+
+        Preserving it published a literal ``<!-- ... -->`` on the Jira issue.
+        """
+        doc = markdown_to_adf(
+            "- item one\n\n    <!-- koan-jira-outcome:abc123 --> tail\n"
+        )
+
+        rendered_text = "".join(node["text"] for node in _text_nodes(doc))
+        assert "<!--" not in rendered_text
+        assert "koan-jira-outcome" not in rendered_text
+        assert "tail" in rendered_text
+
 
 class TestIndentedCodeDoesNotSwallowProse:
     """Indented code must not interrupt a paragraph or a list continuation.
