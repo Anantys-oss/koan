@@ -45,6 +45,53 @@ def fake_process_start_times(monkeypatch):
     )
 
 
+@pytest.fixture
+def sandbox_run_claude_task(tmp_path, monkeypatch):
+    """Keep the real ``run_claude_task`` off host-wide state.
+
+    Every test below drives the production function, whose normal path touches
+    three things that are shared with the rest of the machine:
+
+    * the **per-uid provider invocation lock** under ``koan_tmp_dir()``, which
+      serialises against any other Kōan process (including the operator's live
+      instance) on the same host — a contended one would park the suite;
+    * ``sweep_stray_tmp_dirs()`` in its ``finally``, which removes stray
+      ``/tmp`` trees matching the configured globs — ``pytest-of-*`` among
+      them, so a concurrent test run's scratch dirs are fair game;
+    * ``page_cache.run_reclaim()``, which drops the host's page cache.
+
+    Redirecting ``koan_tmp_dir`` is done **both** ways on purpose. The
+    ``KOAN_TMP_DIR`` env override (plus a cache reset, since the resolved path
+    is memoised in a module global) is the documented, import-style-agnostic
+    knob and covers modules that bound the symbol at import time; the attribute
+    patch additionally covers a caller that resolved the path before this
+    fixture ran. The lock is taken by ``run_claude_task`` itself — hoisted out
+    of ``popen_cli`` — so stubbing ``popen_cli`` alone would not bypass it.
+
+    Tests that need their own ``popen_cli`` behaviour override it after
+    requesting this fixture; the later ``monkeypatch.setattr`` wins.
+    """
+    from app import utils
+
+    scratch = tmp_path / "koan-tmp"
+    monkeypatch.setenv("KOAN_TMP_DIR", str(scratch))
+    monkeypatch.setattr(utils, "_koan_tmp_dir_cache", None)
+    monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(scratch))
+    scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
+    monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
+    monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
+
+    def fake_popen_cli(cmd, provider=None, launcher=None, cli_lock=None,
+                       **kwargs):
+        kwargs.pop("stdin", None)
+        argv = list(launcher) + list(cmd) if launcher else cmd
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, **kwargs)
+        return proc, lambda: (cli_lock.release() if cli_lock else None)
+
+    monkeypatch.setattr("app.cli_exec.popen_cli", fake_popen_cli)
+    return scratch
+
+
 class TestForceMarker:
     def test_plain_request_is_not_forced(self, tmp_path):
         request_restart(str(tmp_path))
@@ -476,29 +523,8 @@ class TestForcedMarkerFallback:
     """If SIGUSR2 is lost, the mission poll loop must still restart."""
 
     @pytest.fixture(autouse=True)
-    def _sandbox(self, tmp_path, monkeypatch):
-        """Keep run_claude_task off host-wide state.
-
-        Its real path takes the per-uid provider invocation lock (serialising
-        against any other Kōan process on the machine) and, in its finally,
-        sweeps stray /tmp trees — including a concurrent pytest run's
-        ``pytest-of-*`` dirs — and drops the page cache.
-
-        The lock is acquired by ``run_claude_task`` itself (hoisted out of
-        ``popen_cli``), so stubbing ``popen_cli`` does not bypass it —
-        ``koan_tmp_dir`` is redirected here so the lock file is per-test.
-        """
-        def fake_popen_cli(cmd, provider=None, launcher=None, cli_lock=None,
-                           **kwargs):
-            kwargs.pop("stdin", None)
-            argv = list(launcher) + list(cmd) if launcher else cmd
-            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, **kwargs)
-            return proc, lambda: (cli_lock.release() if cli_lock else None)
-
-        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
-        monkeypatch.setattr("app.cli_exec.popen_cli", fake_popen_cli)
-        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
-        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
+    def _sandbox(self, sandbox_run_claude_task):
+        """Every test here drives the real run_claude_task — isolate the host."""
 
     def test_mission_wait_loop_kills_and_exits_on_forced_marker(
             self, tmp_path, monkeypatch):
@@ -552,16 +578,13 @@ class TestForcedRestartWhileProviderLockContended:
     """
 
     def test_sigusr2_honoured_while_blocked_on_provider_lock(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, sandbox_run_claude_task):
         import fcntl
 
         from app import run
         from app.provider.codex import CodexProvider
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
-        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
-        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
 
         def unreachable_popen_cli(cmd, provider=None, cli_lock=None, **kwargs):
             raise AssertionError("mission was spawned despite a forced restart")
@@ -570,7 +593,7 @@ class TestForcedRestartWhileProviderLockContended:
 
         # A peer holds codex's invocation lock. Released from a thread purely as
         # a safety valve so a regression fails loudly instead of hanging.
-        holder = open(tmp_path / "codex-cli.lock", "a+")
+        holder = open(sandbox_run_claude_task / "codex-cli.lock", "a+")
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         released = threading.Event()
 
@@ -616,7 +639,7 @@ class TestForcedRestartWhileProviderLockContended:
         assert elapsed < 3
 
     def test_missing_provider_binary_releases_the_hoisted_lock(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, sandbox_run_claude_task):
         """Exit 127 must not strand the per-uid provider lock.
 
         ``mission_scope`` pre-checks the binary *before* spawning, so on this
@@ -630,9 +653,6 @@ class TestForcedRestartWhileProviderLockContended:
         from app.provider.codex import CodexProvider
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
-        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
-        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
         # Force the systemd-run branch: that is where _require_executable runs,
         # and it is the only one that raises before the spawn hand-over.
         monkeypatch.setattr(mission_scope, "systemd_run", lambda: ("/bin/true", []))
@@ -683,7 +703,7 @@ class TestForcedRestartWhileProviderLockContended:
         retry.release()
 
     def test_retry_spawn_does_not_wait_for_the_lock_while_deferred(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, sandbox_run_claude_task):
         """launch_scoped's unscoped retry must take its lock outside the window.
 
         The retry needs a *fresh* provider lock (popen_cli released the
@@ -698,9 +718,6 @@ class TestForcedRestartWhileProviderLockContended:
         from app.provider.codex import CodexProvider
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
-        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
-        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
         # Force the systemd-run branch so the first spawn can fail and
         # launch_scoped falls back to the unscoped retry.
         monkeypatch.setattr(mission_scope, "systemd_run", lambda: ("/bin/true", []))
@@ -710,7 +727,7 @@ class TestForcedRestartWhileProviderLockContended:
         # absorb the wait and the retry would never be exercised. flock is
         # per open-file-description, so a second open in this process contends
         # exactly like another Kōan would.
-        peer = open(tmp_path / "codex-cli.lock", "a+")
+        peer = open(sandbox_run_claude_task / "codex-cli.lock", "a+")
         released = threading.Event()
         attempts = []
 
@@ -786,24 +803,12 @@ class TestForcedRestartKillAttribution:
     """
 
     def test_teardown_is_told_the_forced_kill_was_ours(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, sandbox_run_claude_task):
         from app import mission_scope, run
 
         monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
-        monkeypatch.setattr("app.utils.koan_tmp_dir", lambda: str(tmp_path))
-        monkeypatch.setattr("app.utils.sweep_stray_tmp_dirs", lambda *a, **k: [])
-        monkeypatch.setattr("app.page_cache.run_reclaim", lambda *a, **k: None)
         monkeypatch.setattr(run, "MISSION_POLL_INTERVAL", 0.2)
         run._sig.task_running = False
-
-        def fake_popen_cli(cmd, provider=None, launcher=None, cli_lock=None,
-                           **kwargs):
-            kwargs.pop("stdin", None)
-            argv = list(launcher) + list(cmd) if launcher else cmd
-            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, **kwargs)
-            return proc, lambda: (cli_lock.release() if cli_lock else None)
-
-        monkeypatch.setattr("app.cli_exec.popen_cli", fake_popen_cli)
 
         recorded = {}
         real_launch = mission_scope.launch_scoped
