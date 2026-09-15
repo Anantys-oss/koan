@@ -37,6 +37,7 @@ from app.signals import (
     STATUS_FILE,
     STOP_FILE,
     pid_file,
+    ready_file,
 )
 
 
@@ -263,6 +264,10 @@ PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api", "mcp")
 # Process startup verification timeouts
 DEFAULT_VERIFY_TIMEOUT = 3.0
 OLLAMA_VERIFY_TIMEOUT = 5.0
+# Extra wait, past the pidfile, for the MCP daemon to signal it is serving.
+# It covers the MCP SDK import, tool registration and the OpenAPI spec parse,
+# none of which the pidfile wait covers by design — see ``start_mcp``.
+MCP_READY_TIMEOUT = 20.0
 
 
 def _launch_python_process(
@@ -490,15 +495,44 @@ def start_api(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -
 def start_mcp(
     koan_root: Path,
     verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
+    ready_timeout: float = MCP_READY_TIMEOUT,
 ) -> tuple:
     """Start the MCP Streamable HTTP daemon as a detached subprocess.
 
     Only launched when ``mcp.enabled: true`` and ``mcp.transport: http`` —
     stdio mode is client-launched and never daemonized.
     Returns (success: bool, message: str).
+
+    The daemon claims its pidfile early, before the MCP SDK import and the
+    OpenAPI spec parse, so that slow-but-healthy startup is not reported as a
+    launch failure. That makes the pidfile proof of existence, not of service:
+    an incompatible SDK or a registration error still exits afterwards. So the
+    pidfile wait is followed by a wait on the daemon's readiness marker, which
+    it touches only once it is about to accept requests.
     """
-    return _launch_python_process(
+    ready = koan_root / ready_file("mcp")
+    # A marker left by an earlier run would otherwise read as this run's
+    # readiness. The daemon clears its own on exit; a SIGKILL does not.
+    ready.unlink(missing_ok=True)
+
+    ok, msg = _launch_python_process(
         koan_root, "app/mcp/__main__.py", "mcp", verify_timeout,
+    )
+    if not ok:
+        return ok, msg
+
+    deadline = time.monotonic() + ready_timeout
+    while time.monotonic() < deadline:
+        if ready.exists():
+            return True, msg
+        if not check_pidfile(koan_root, "mcp"):
+            return False, (
+                "MCP HTTP exited during startup — see logs/mcp.log"
+            )
+        time.sleep(0.1)
+    return False, (
+        f"MCP HTTP did not report ready within {ready_timeout:g}s "
+        "— see logs/mcp.log"
     )
 
 
@@ -517,7 +551,16 @@ def _mcp_management_error() -> str:
             get_mcp_enabled,
             get_mcp_transport_setting,
         )
+        from app.utils import config_read_error
 
+        # Probe the file itself first. Every ``get_mcp_*`` getter reads through
+        # ``load_config``, which swallows a parse or permission error and
+        # returns ``{}`` — so an unreadable config would arrive here as
+        # ``mcp.enabled: false`` and silently drop MCP from both `make start`
+        # and `make status` instead of being reported.
+        read_error = config_read_error()
+        if read_error:
+            return f"MCP configuration unreadable: {read_error}"
         if not get_mcp_enabled():
             return ""
         value = get_mcp_transport_setting()
