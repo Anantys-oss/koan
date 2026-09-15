@@ -79,20 +79,36 @@ def _extract_failure_reason(content: str, exit_code: int) -> str:
 
 
 def _outcome_digest(issue_key: str, command_name: str) -> str:
-    # Not a security primitive: this digest is a dedup key over a non-secret
-    # (issue, command) pair, and `usedforsecurity=False` says so to the runtime
-    # (bandit B324 treats that declaration as a non-cryptographic use). It stays
-    # SHA-1 because comments already published carry this exact value in their
-    # legacy body marker — and, from now on, in their visible footer. Switching
-    # algorithms would make every one of them unfindable and stack a duplicate
-    # per issue, the failure this module exists to prevent.
+    """Dedup key for one ``(issue, command)`` status comment.
+
+    Not a security primitive — it only has to be unique among one issue's
+    comments — but SHA-256 so that nothing Koan publishes from here on is
+    derived from a weak hash. The digest it replaces survives in
+    :func:`_marker_for`, which is read-only.
+    """
     token = f"{issue_key}:{command_name}"
-    return hashlib.sha1(token.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+# Read-only compatibility, never a new write: comments published before
+# comment properties existed carry a SHA-1 digest in their body marker, so
+# recognising one means recomputing it. The algorithm is named as data rather
+# than called directly to keep it out of the write path by construction.
+_LEGACY_MARKER_ALGO = "sha1"
 
 
 def _marker_for(issue_key: str, command_name: str) -> str:
-    """Return the legacy visible marker used before comment properties."""
-    return f"{_MARKER_PREFIX}{_outcome_digest(issue_key, command_name)} -->"
+    """Return the legacy visible marker used before comment properties.
+
+    Matching one migrates that comment onto the property + footer identity —
+    the rewritten body drops the marker — so a legacy digest is only ever read,
+    never published again.
+    """
+    token = f"{issue_key}:{command_name}"
+    digest = hashlib.new(
+        _LEGACY_MARKER_ALGO, token.encode("utf-8"), usedforsecurity=False,
+    ).hexdigest()[:12]
+    return f"{_MARKER_PREFIX}{digest} -->"
 
 
 def _outcome_property(
