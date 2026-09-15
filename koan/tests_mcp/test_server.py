@@ -493,6 +493,16 @@ def test_entrypoint_reads_api_token_from_dotenv(monkeypatch, tmp_path):
     assert tokens == ["from-dotenv"]
 
 
+class _FakeSocket:
+    """Stand-in for the pre-bound listening socket, closed by the entrypoint."""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 def test_http_entrypoint_serves_with_pid_lock(monkeypatch, tmp_path):
     from app.mcp import __main__ as entrypoint
 
@@ -516,16 +526,21 @@ def test_http_entrypoint_serves_with_pid_lock(monkeypatch, tmp_path):
         lambda value, root, name: calls.append(("release", value, root, name)),
     )
     monkeypatch.setattr(
+        "app.mcp.http_transport.bind_http_socket",
+        lambda host, port: calls.append(("bind", host, port)) or _FakeSocket(),
+    )
+    monkeypatch.setattr(
         "app.mcp.http_transport.serve_http",
         lambda server, **kwargs: calls.append(("serve", kwargs)),
     )
 
     assert entrypoint.main() == 0
-    assert calls[0] == ("acquire", tmp_path, "mcp")
-    assert calls[1][0] == "serve"
-    assert calls[1][1]["host"] == "127.0.0.1"
-    assert calls[1][1]["port"] == 8421
-    assert calls[2] == ("release", lock, tmp_path, "mcp")
+    assert calls[0] == ("bind", "127.0.0.1", 8421)
+    assert calls[1] == ("acquire", tmp_path, "mcp")
+    assert calls[2][0] == "serve"
+    assert calls[2][1]["host"] == "127.0.0.1"
+    assert calls[2][1]["port"] == 8421
+    assert calls[3] == ("release", lock, tmp_path, "mcp")
 
 
 def test_http_entrypoint_claims_pidfile_before_slow_startup(monkeypatch, tmp_path):
@@ -550,12 +565,18 @@ def test_http_entrypoint_claims_pidfile_before_slow_startup(monkeypatch, tmp_pat
     )
     monkeypatch.setattr("app.pid_manager.release_pidfile", lambda *a: None)
     monkeypatch.setattr(
+        "app.mcp.http_transport.bind_http_socket",
+        lambda host, port: order.append("bind") or _FakeSocket(),
+    )
+    monkeypatch.setattr(
         "app.mcp.http_transport.serve_http",
         lambda server, **kwargs: order.append("serve"),
     )
 
     assert entrypoint.main() == 0
-    assert order == ["acquire", "load_server", "probe_api", "serve"]
+    # The bind precedes the pidfile the launcher reads as proof of a start;
+    # the slow work follows it, inside the verify window the pidfile opens.
+    assert order == ["bind", "acquire", "load_server", "probe_api", "serve"]
 
 
 def test_http_entrypoint_refuses_missing_token(monkeypatch, tmp_path, capsys):
@@ -587,7 +608,69 @@ def test_http_entrypoint_warns_for_non_loopback(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(entrypoint, "_probe_api", lambda: None)
     monkeypatch.setattr("app.pid_manager.acquire_pidfile", lambda root, name: object())
     monkeypatch.setattr("app.pid_manager.release_pidfile", lambda lock, root, name: None)
+    monkeypatch.setattr(
+        "app.mcp.http_transport.bind_http_socket",
+        lambda host, port: _FakeSocket(),
+    )
     monkeypatch.setattr("app.mcp.http_transport.serve_http", lambda server, **kwargs: None)
 
     assert entrypoint.main() == 0
     assert "non-loopback" in capsys.readouterr().err
+
+
+def test_http_entrypoint_fails_when_the_port_is_taken(monkeypatch, tmp_path, capsys):
+    """A bind failure is a start failure, not a pidfile plus a silent exit."""
+    from app.mcp import __main__ as entrypoint
+
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "http")
+    monkeypatch.setattr(entrypoint, "get_mcp_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(entrypoint, "get_mcp_port", lambda: 8421)
+    monkeypatch.setattr(entrypoint, "get_api_token", lambda: "secret")
+    monkeypatch.setattr(
+        "app.mcp.http_transport.bind_http_socket",
+        lambda host, port: (_ for _ in ()).throw(OSError("Address already in use")),
+    )
+    monkeypatch.setattr(
+        "app.pid_manager.acquire_pidfile",
+        lambda root, name: pytest.fail("pidfile must not outlive a failed bind"),
+    )
+    monkeypatch.setattr(
+        "app.mcp.http_transport.serve_http",
+        lambda server, **kwargs: pytest.fail("listener must not start"),
+    )
+
+    assert entrypoint.main() == 1
+    err = capsys.readouterr().err
+    assert "cannot bind 127.0.0.1:8421" in err
+    assert "Address already in use" in err
+
+
+def test_http_entrypoint_closes_the_socket_after_serving(monkeypatch, tmp_path):
+    from app.mcp import __main__ as entrypoint
+
+    sock = _FakeSocket()
+
+    monkeypatch.setenv("KOAN_ROOT", str(tmp_path))
+    monkeypatch.setattr(entrypoint, "get_mcp_enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "get_mcp_transport", lambda: "http")
+    monkeypatch.setattr(entrypoint, "get_mcp_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(entrypoint, "get_mcp_port", lambda: 8421)
+    monkeypatch.setattr(entrypoint, "get_api_token", lambda: "secret")
+    monkeypatch.setattr(entrypoint, "_load_server", lambda: object())
+    monkeypatch.setattr(entrypoint, "_probe_api", lambda: None)
+    monkeypatch.setattr("app.pid_manager.acquire_pidfile", lambda root, name: object())
+    monkeypatch.setattr(
+        "app.pid_manager.release_pidfile", lambda lock, root, name: None
+    )
+    monkeypatch.setattr(
+        "app.mcp.http_transport.bind_http_socket", lambda host, port: sock
+    )
+    monkeypatch.setattr(
+        "app.mcp.http_transport.serve_http",
+        lambda server, **kwargs: kwargs["sock"] is sock or pytest.fail("no socket"),
+    )
+
+    assert entrypoint.main() == 0
+    assert sock.closed

@@ -4,7 +4,7 @@ title: "Component Spec — MCP Server"
 description: "Defines Kōan's opt-in MCP front-end over stdio or Streamable HTTP, curated REST operation tools, destructive-tool gate, shared OpenAPI HTTP client boundary, and HTTP authentication/audit invariants."
 tags: [web]
 created: 2026-09-09
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
 # Component Spec — MCP Server
@@ -43,7 +43,12 @@ annotations, configuration gates, and transport lifecycle.
   manager refuses to start the MCP daemon, names the offending value, and
   makes `make start` exit non-zero.
 - `http` serves MCP Streamable HTTP at `/mcp`, binds `mcp.host` and
-  `mcp.port`, and is managed as the `mcp` daemon.
+  `mcp.port`, and is managed as the `mcp` daemon. It binds its listener
+  *before* claiming `.koan-pid-mcp` — the process manager reads that pidfile
+  as proof of a successful start, so an address already in use must fail while
+  no pidfile exists rather than becoming a reported start followed by a silent
+  exit. Binding is two syscalls, so it does not consume the verify timeout the
+  pidfile opens for the SDK import and spec parse that follow.
 - Both transports construct tools only through `create_server()` and
   `build_tool_definitions()`.
 

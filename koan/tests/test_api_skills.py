@@ -140,3 +140,41 @@ def test_review_catalog_entry_includes_usage_and_flags(api_client):
     assert "--force" in command["description"]
     assert command["usage"].startswith("/review ")
     assert "/rv" in command["aliases"]
+
+
+def test_unparseable_core_skill_is_reported(tmp_path, monkeypatch, caplog):
+    """An unreadable SKILL.md is logged even though its flag cannot be read.
+
+    ``api_exposed`` lives in the frontmatter the parse failed on, so a check
+    gated on that flag would stay silent for exactly the skill whose exposure
+    a typo just dropped.
+    """
+    from app.api import skill_catalog
+
+    core = tmp_path / "core"
+    _write_skill(tmp_path, "core", "visible", exposed=True)
+    (core / "broken").mkdir(parents=True)
+    (core / "broken" / "SKILL.md").write_text("no frontmatter here\n")
+    monkeypatch.setattr(skill_catalog, "get_core_skills_dir", lambda: core)
+
+    with caplog.at_level("ERROR"):
+        skill_catalog._warn_missing_exposed(
+            exposed_core_skills(SkillRegistry(tmp_path))
+        )
+
+    assert "broken/SKILL.md could not be parsed" in caplog.text
+
+
+def test_loaded_core_skills_are_not_reported(tmp_path, monkeypatch, caplog):
+    from app.api import skill_catalog
+
+    core = tmp_path / "core"
+    _write_skill(tmp_path, "core", "visible", exposed=True)
+    monkeypatch.setattr(skill_catalog, "get_core_skills_dir", lambda: core)
+
+    with caplog.at_level("ERROR"):
+        skill_catalog._warn_missing_exposed(
+            exposed_core_skills(SkillRegistry(tmp_path))
+        )
+
+    assert caplog.text == ""

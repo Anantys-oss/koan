@@ -4,7 +4,7 @@ title: "MCP Server"
 description: "Configure Kōan's MCP server for local stdio clients or remote Streamable HTTP clients: skill discovery, command schemas, shared bearer auth, TLS proxying, audits, and lifecycle."
 tags: [operations]
 created: 2026-09-09
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
 # MCP Server
@@ -95,6 +95,12 @@ value, and exits non-zero rather than reporting a listener that was never bound.
 A configuration that cannot be read at all is reported the same way, and `mcp`
 stays listed in `make status`, so an already-running daemon is never hidden
 behind a transient read failure.
+
+An address that cannot be bound — `mcp.port` already taken, `mcp.host` not
+assigned to this machine — fails the same way rather than later and quietly. The
+daemon binds its listener before it records its PID, and `make start` reads that
+PID as proof of a successful launch, so the bind error is named on the console
+and `make start` exits non-zero instead of reporting `mcp` as started.
 
 If `logs/mcp.log` becomes unwritable — a full disk, or a rotation step that
 changes its owner — the server stops serving instead of serving unaudited

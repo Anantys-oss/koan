@@ -8,6 +8,7 @@ starlette import.
 
 import os
 import re
+import socket
 import sys
 import syslog
 import time
@@ -233,10 +234,35 @@ def build_http_app(server, *, host: str, audit_path: Path):
     return BearerAuditMiddleware(app, audit_path)
 
 
-def serve_http(server, *, host: str, port: int, audit_path: Path) -> None:
-    uvicorn.run(
-        build_http_app(server, host=host, audit_path=audit_path),
-        host=host,
-        port=port,
-        access_log=False,
-    )
+_LISTEN_BACKLOG = 2048
+
+
+def bind_http_socket(host: str, port: int) -> socket.socket:
+    """Bind and listen up front, before the daemon claims to be running.
+
+    ``uvicorn`` binds deep inside its own startup, long after the launcher has
+    seen ``.koan-pid-mcp`` appear and reported the daemon as started — so an
+    address already in use would surface as a healthy boot followed by a silent
+    exit. Binding here, before the pidfile is claimed, turns that into an
+    ordinary start failure. It is a syscall pair, not slow work, so it does not
+    eat into the launcher's verify timeout.
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        sock.listen(_LISTEN_BACKLOG)
+    except OSError:
+        sock.close()
+        raise
+    sock.set_inheritable(True)
+    return sock
+
+
+def serve_http(
+    server, *, host: str, port: int, audit_path: Path, sock: socket.socket | None = None
+) -> None:
+    app = build_http_app(server, host=host, audit_path=audit_path)
+    config = uvicorn.Config(app, host=host, port=port, access_log=False)
+    uvicorn.Server(config).run(sockets=[sock] if sock is not None else None)
