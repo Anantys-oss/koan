@@ -19,6 +19,14 @@ from app.mcp.catalog import (
     exec_denied_operation_ids,
 )
 from app.mcp.config import get_api_base_url
+from app.mission_store.base import VALID_STATES
+
+# The mission-status vocabulary is the mission store's, not the sidecar's
+# (which also knows ``removed``). Deriving the tool's ``Literal`` from
+# ``VALID_STATES`` keeps the hand-written signature, the OpenAPI query enum and
+# what ``GET /v1/missions`` accepts from drifting: a model can no longer read a
+# status off this schema that the endpoint answers with 422.
+MissionStatus = Literal[VALID_STATES]
 
 # Live command surface derived from the skill catalogue (REST and MCP share
 # it). The committed OpenAPI document is generated with the same enums, but
@@ -53,7 +61,7 @@ def _mission_command_schema() -> dict:
                 },
                 {
                     "type": "string",
-                    "pattern": rf"^/?(?:{verbs})(?:\s+[\s\S]+)?$",
+                    "pattern": rf"^/(?:{verbs})(?:\s+[\s\S]+)?$",
                 },
             ],
             "description": description,
@@ -245,7 +253,7 @@ def create_server(
 
     if "koan_missions_list" in by_name:
         def missions_list(
-            status: Literal["pending", "in_progress", "done", "failed", "removed"] | None = None,
+            status: MissionStatus | None = None,
             project: str | None = None,
         ) -> Any:
             return execute(

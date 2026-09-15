@@ -25,9 +25,12 @@ bp = Blueprint("missions", __name__)
 # actually resolves — ``skill_dispatch.parse_skill_mission`` takes everything up
 # to the first whitespace — so dotted (``/claude.md``, ``/core.plan``) and
 # non-ASCII (``/français``) commands keep working. Narrowing it to ``\w`` would
-# reject commands REST queued before this endpoint validated anything.
+# reject commands REST queued before this endpoint validated anything. The
+# leading slash is mandatory: it is the only signal separating "dispatch this
+# skill" from free-form work, so prose whose first word happens to name a
+# runner must not be silently turned into a skill dispatch.
 _COMMAND_RE = re.compile(
-    r"^/?(?P<name>[^\s/]+)"
+    r"^/(?P<name>[^\s/]+)"
     r"(?P<arguments>(?:\s+[\s\S]+)?)$"
 )
 
@@ -58,7 +61,7 @@ def _command_property_schema() -> dict:
             },
             {
                 "type": "string",
-                "pattern": rf"^/?(?:{verbs})(?:\s+[\s\S]+)?$",
+                "pattern": rf"^/(?:{verbs})(?:\s+[\s\S]+)?$",
             },
         ],
         "description": description,
@@ -221,12 +224,17 @@ def _normalize_command(command: str) -> str:
     ``text`` carries a slash command through unvalidated anyway. Aliases of
     exposed skills are still resolved so a client following the advertised
     catalogue queues the canonical verb.
+
+    A value without a leading slash is rejected rather than promoted to a
+    command: ``command`` means "dispatch a skill", and free-form work belongs
+    in ``text``.
     """
     match = _COMMAND_RE.fullmatch(command)
     if match is None:
         raise ValueError(
-            "Command must start with a slash-command name followed "
-            "by optional arguments"
+            "'command' must be a slash command: a leading '/', a "
+            "command name, then optional arguments. Use 'text' for "
+            "free-form mission text."
         )
 
     canonical = canonical_command_name(match.group("name"))

@@ -97,20 +97,30 @@ class TestCreateMission:
         resp = api_client.post("/v1/missions", json={"text": "test"})
         assert resp.status_code == 401
 
-    def test_create_command_without_slash_is_normalized(
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "review https://github.com/owner/repo/pull/42",
+            "check the CI on my branch",
+        ],
+    )
+    def test_command_without_slash_is_rejected_without_queueing(
         self,
         api_client,
         instance_dir,
+        command,
     ):
-        url = "https://github.com/owner/repo/pull/42"
+        """Prose must never be promoted into a skill dispatch."""
+        before = (instance_dir / "missions.md").read_text()
         response = api_client.post(
             "/v1/missions",
-            json={"command": f"review {url}"},
+            json={"command": command},
             headers=_AUTH,
         )
 
-        assert response.status_code == 202
-        assert f"/review {url}" in (instance_dir / "missions.md").read_text()
+        assert response.status_code == 422
+        assert response.get_json()["error"]["code"] == "invalid_request"
+        assert (instance_dir / "missions.md").read_text() == before
 
     def test_command_outside_the_catalogue_is_still_queued(
         self,

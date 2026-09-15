@@ -56,6 +56,23 @@ def test_all_seventeen_tools_are_self_describing(api_spec_path):
     ]["command"]["description"]
 
 
+def test_missions_list_advertises_only_accepted_statuses(api_spec_path):
+    """Every advertised status must be one GET /v1/missions accepts."""
+    from app.mission_store.base import VALID_STATES
+
+    server = create_server(spec_path=api_spec_path)
+    tools = {tool.name: tool for tool in _tools(server)}
+    schema = tools["koan_missions_list"].input_schema["properties"]["status"]
+    advertised = {
+        value
+        for branch in (schema.get("anyOf") or [schema])
+        for value in (branch.get("enum") or [])
+        if value is not None
+    }
+
+    assert advertised == set(VALID_STATES)
+
+
 def test_server_publishes_lifecycle_instructions(api_spec_path):
     server = create_server(spec_path=api_spec_path)
 
