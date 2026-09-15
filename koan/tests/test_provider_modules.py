@@ -3160,6 +3160,55 @@ class TestStreamingReadLoopIsInactivityBounded:
             f"returned in {elapsed:.1f}s — a SIGTERM survivor held the pipe"
         )
 
+    def test_a_session_escaped_descendant_cannot_hold_stderr_open(self, tmp_path):
+        """The stall report must be bounded on stderr too, not only on stdout.
+
+        A helper the CLI spawned into its own session (an MCP server, say) is
+        outside the group the idle watchdog SIGKILLs. The leader dies at once —
+        so stdout reaches EOF and the leader is reaped, telling us nothing —
+        while the survivor keeps the inherited stderr write end. ``read()``
+        returns only at EOF, so draining stderr there blocks forever with the
+        watchdog already disarmed: the original hang, one pipe over.
+        """
+        import signal as _signal
+        import time as _time
+        pidfile = tmp_path / "helper.pid"
+        proc = self._spawn(
+            "import subprocess,sys,time\n"
+            # Its own session, so the group SIGKILL never reaches it. stdout is
+            # dropped so the read loop still sees EOF when the leader dies;
+            # stderr is inherited, and held for far longer than the drain bound.
+            "child = subprocess.Popen([sys.executable, '-c',\n"
+            f"  'import time; time.sleep({self.STALL_SECONDS})'],\n"
+            "  stdout=subprocess.DEVNULL, start_new_session=True)\n"
+            f"open({str(pidfile)!r}, 'w').write(str(child.pid))\n"
+            "sys.stderr.write('Error: OAuth token expired\\n')\n"
+            "sys.stderr.flush()\n"
+            "sys.stdout.write('session init\\n')\n"
+            "sys.stdout.flush()\n"
+            f"time.sleep({self.STALL_SECONDS})\n"
+        )
+        started = _time.monotonic()
+        try:
+            with pytest.raises(RuntimeError, match="no output for 2s") as excinfo:
+                self._run(proc, idle_timeout=2)
+        finally:
+            proc.kill()
+            proc.wait()
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(pidfile.read_text()), _signal.SIGKILL)
+        elapsed = _time.monotonic() - started
+        assert elapsed < self.STALL_SECONDS / 2, (
+            f"returned in {elapsed:.1f}s — a session-escaped descendant held "
+            "the stderr pipe open"
+        )
+        # What reached the pipe is still reported, and the fact that the read
+        # was cut short with it: otherwise the fragment reads as everything the
+        # provider printed.
+        message = str(excinfo.value)
+        assert "OAuth token expired" in message
+        assert "truncated" in message
+
     def test_the_watchdog_is_disarmed_once_stdout_reaches_eof(self):
         """A completed run must not be killed during the post-EOF wait.
 

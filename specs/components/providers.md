@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok, Gemini) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-09-10
+updated: 2026-09-15
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -616,16 +616,26 @@ tools — MCP tools must still be allowlisted via qualified names
   the drained stderr, which is usually the only statement of *why* the provider
   went silent; when that drain itself fails, the error MUST say so rather than
   degrade to a bare timeout message.
-  That drain MUST be skipped when the post-kill `wait()` expires. An expired
-  wait means the group SIGKILL did not reap everything — a descendant escaped
-  the group (its own session, e.g. a `setsid`'d MCP helper) — and such a
-  survivor can still hold the stderr write end. `read()` returns only at EOF,
-  so draining there would block indefinitely with the watchdog already
-  disarmed: the same unbounded read this invariant removed from the stdout
-  loop, re-entered one pipe over. The expired wait MUST be reported in place of
-  the stderr it stands in for, on both the raising and the returning branch —
-  on the latter the drain result is plain text, so a drain that never happened
-  is otherwise indistinguishable from a clean empty one.
+  That drain MUST itself be bounded, and the bound MUST NOT be inferred from
+  the leader's exit. `read()` returns only at EOF, so whoever still holds the
+  write end decides when it returns — and after the group SIGKILL that can be a
+  descendant which escaped the group (its own session, e.g. a `setsid`'d MCP
+  helper) and survives the kill holding the inherited fd. The leader proves
+  nothing about that survivor: SIGKILL is uncatchable and the leader is inside
+  the killed group, so the post-kill `wait()` succeeds on virtually every stall.
+  Gating the drain on that wait would therefore leave the escaped-descendant
+  case — the very one it is written for — draining unbounded, re-entering one
+  pipe over the same unbounded read this invariant removed from the stdout loop.
+  The bound MUST NOT be implemented by blocking a helper thread inside the
+  stream object either: the caller closes that stream in its `finally`, and
+  `close()` on a buffered stream waits for the reader still inside it, which
+  moves the hang rather than removing it. A truncated drain MUST be reported
+  **alongside** whatever bytes it did collect, on both the raising and the
+  returning branch — on the latter the drain result is plain text, so a
+  truncated read is otherwise indistinguishable from a complete one, and on
+  either branch a fragment presented alone reads as the whole of what the
+  provider printed. An expired `wait()` MAY corroborate that report; it is not
+  what decides it.
 - **The mandatory kill above MUST NOT be gated on the leader still running.**
   The leader exiting says nothing about its descendants, and a helper the CLI
   left behind in the isolated session is reachable from nowhere else — not from

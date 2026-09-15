@@ -25,10 +25,12 @@ import contextlib
 import json
 import os
 import re
+import select
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1673,6 +1675,66 @@ def missing_binary_message(err: "FileNotFoundError", cmd, provider_name: str, mo
     )
 
 
+# Long enough to collect a pipe's already-buffered contents many times over —
+# the pipe is drained after the group SIGKILL, so on the healthy path EOF is
+# already there and this bound costs nothing. It is paid only when a survivor
+# still holds the write end, which is exactly the case it exists to bound.
+_STALLED_STDERR_DRAIN_SECONDS = 2.0
+
+
+def _drain_stderr_bounded(
+    stream, timeout: float = _STALLED_STDERR_DRAIN_SECONDS,
+) -> Tuple[str, str]:
+    """Read what stderr holds, bounded by *timeout*. Returns (text, error).
+
+    ``stream.read()`` returns only at EOF, so whoever still holds the write end
+    decides when it returns. After the idle watchdog's group SIGKILL that is not
+    necessarily nobody: a descendant that escaped the group (a ``setsid``'d MCP
+    helper) survives the kill and keeps the inherited fd, and the leader's own
+    exit says nothing about it — so the drain must be bounded on its own terms,
+    not inferred from the leader having been reaped. Reading the fd under
+    ``select`` keeps the file object free of a blocked reader, which matters:
+    the caller closes it in a ``finally``, and ``close()`` on a buffered stream
+    another thread is blocked inside waits for that thread, moving the hang
+    rather than removing it.
+    """
+    if stream is None:
+        return "", ""
+    try:
+        fd = stream.fileno()
+    except (OSError, ValueError) as e:
+        return "", f" stderr unavailable: {e}"
+    chunks: List[bytes] = []
+    deadline = time.monotonic() + timeout
+    truncated = False
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                truncated = True
+                break
+            if not select.select([fd], [], [], remaining)[0]:
+                truncated = True
+                break
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break  # EOF: every write end is closed, nothing more is coming.
+            chunks.append(chunk)
+    except (OSError, ValueError) as e:
+        return _decode_stderr(chunks), f" stderr unavailable: {e}"
+    if truncated:
+        return _decode_stderr(chunks), (
+            f" stderr truncated after {timeout:g}s: a process outliving the "
+            "group SIGKILL still holds the write end"
+        )
+    return _decode_stderr(chunks), ""
+
+
+def _decode_stderr(chunks: List[bytes]) -> str:
+    """Join first, then decode — a multi-byte char can straddle two reads."""
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
 def _finish_stalled_stream(
     proc: subprocess.Popen,
     idle_timeout: Optional[int],
@@ -1688,36 +1750,30 @@ def _finish_stalled_stream(
     Raises ``RuntimeError`` when none did: that is the genuine stall this bound
     exists to report.
     """
-    # An expired wait means the group SIGKILL did not reap everything — some
-    # descendant escaped the group (a setsid'd MCP helper, say). Such a
-    # survivor can still hold the stderr write end, and `proc.stderr.read()`
-    # only returns at EOF: draining here would block forever with the watchdog
-    # already disarmed, re-entering the exact hang this bound exists to end,
-    # one pipe over. So the expired wait is recorded and the drain is skipped.
     reaped = True
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         reaped = False
     # What the provider printed before going silent (an expired token, say) is
-    # usually the only clue to *why* it stalled, so a failed or skipped drain
+    # usually the only clue to *why* it stalled, so a truncated or failed drain
     # is itself worth reporting rather than degrading to a bare timeout message.
-    stderr_text = ""
-    stderr_error = ""
-    if not reaped:
-        stderr_error = (
-            " stderr unavailable: the group SIGKILL left a process alive, "
-            "so draining it could block indefinitely"
-        )
-    else:
-        try:
-            stderr_text = proc.stderr.read() if proc.stderr else ""
-        except (OSError, ValueError) as e:
-            stderr_error = f" stderr unavailable: {e}"
+    #
+    # The drain is bounded on its own terms rather than gated on `reaped`: the
+    # leader is inside the group that was just SIGKILLed and SIGKILL is
+    # uncatchable, so it is reaped on virtually every stall — while the
+    # descendant that matters here is the one that escaped the group (a setsid'd
+    # MCP helper), survives the kill, and still holds the stderr write end. An
+    # unbounded read() would then block forever with the watchdog already
+    # disarmed, re-entering the exact hang this bound exists to end, one pipe
+    # over. `reaped` stays as a corroborating signal in the message.
+    stderr_text, stderr_error = _drain_stderr_bounded(proc.stderr)
+    if stderr_error and not reaped:
+        stderr_error += " (the group SIGKILL left a process alive)"
     if saw_terminal_result:
-        # This branch returns stderr as plain text, so a drain that never
-        # happened is indistinguishable from a clean empty one. Say so rather
-        # than letting the caller read silence as success.
+        # This branch returns stderr as plain text, so a drain that was cut
+        # short is indistinguishable from a clean complete one. Say so rather
+        # than letting the caller read the fragment as everything printed.
         if stderr_error:
             print(f"[cli] WARNING:{stderr_error}", file=sys.stderr, flush=True)
         return stderr_text
@@ -1730,7 +1786,10 @@ def _finish_stalled_stream(
     partial = "\n".join(text_lines).strip()
     suffix = f" Partial output: {partial[:200]}" if partial else ""
     detail = (stderr_text or "").strip()
-    err = f" stderr: {detail[-500:]}" if detail else stderr_error
+    # Both can be present now that the drain is bounded rather than skipped: a
+    # truncated read still carries whatever reached the pipe first, and the
+    # caller must not read that fragment as the whole of what was printed.
+    err = f" stderr: {detail[-500:]}{stderr_error}" if detail else stderr_error
     raise RuntimeError(f"CLI stalled — no output for {idle_timeout}s{suffix}{err}")
 
 

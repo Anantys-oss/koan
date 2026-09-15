@@ -227,15 +227,28 @@ usually the only statement of *why* the provider went silent — and says so
 explicitly when that drain itself fails, rather than degrading to a bare
 timeout message.
 
-The drain is skipped outright when the post-kill `wait()` expires, which review
-flagged and the first version suppressed silently. An expired wait means the
-group SIGKILL did not reap everything: something escaped the group, most
-plausibly a `setsid`'d MCP helper. Such a survivor can hold the stderr write
-end, and `read()` returns only at EOF — so draining there blocks forever with
-the watchdog already disarmed, which is this change's own bug re-entered one
-pipe over. The expired wait is reported in its place, on the returning branch as
-well as the raising one: that branch hands back stderr as plain text, so a drain
-that never happened would otherwise look exactly like a clean empty one.
+That drain is bounded on its own terms — `select()` on the fd against a 2s
+deadline, not `proc.stderr.read()`. `read()` returns only at EOF, so whoever
+still holds the write end decides when it returns, and after the group SIGKILL
+that can be a descendant which escaped the group (most plausibly a `setsid`'d
+MCP helper) and survives the kill holding the inherited fd. Draining unbounded
+there blocks forever with the watchdog already disarmed — this change's own bug,
+re-entered one pipe over.
+
+An earlier version gated the drain on the post-kill `wait()` instead, skipping it
+when the wait expired. That test cannot see the case it was written for: SIGKILL
+is uncatchable and the leader is inside the killed group, so the wait succeeds on
+virtually every stall while the escaped helper — which the leader's exit says
+nothing about — keeps the pipe open regardless. A blocked helper thread would not
+work either: the `finally` closes the stream, and `close()` waits for a reader
+still inside a buffered stream, which moves the hang rather than removing it.
+Reading the raw fd under `select` leaves no reader behind. On the healthy path
+every write end is already closed, EOF arrives immediately and the bound costs
+nothing; only a real survivor pays it. A truncated drain is reported *with* the
+bytes it did collect, on the returning branch as well as the raising one: that
+branch hands back stderr as plain text, and a fragment presented alone reads as
+everything the provider printed. The expired `wait()` still rides along in that
+message as corroboration — it just no longer decides anything.
 
 "A terminal envelope arrived" is decided on the **event shape**
 (`_is_terminal_result_event`), not on whether a result *string* came out of it.
