@@ -324,12 +324,124 @@ _MD_INLINE_RE = re.compile(
 )
 
 
+# Line kinds produced by `_classify_markdown_lines`.
+_LINE_BLANK = "blank"
+_LINE_FENCE = "fence"
+_LINE_CODE = "code"
+_LINE_PROSE = "prose"
+
+
+def _classify_markdown_lines(lines: List[str]) -> List[str]:
+    """Label each line blank / fence delimiter / literal code / prose.
+
+    This is the **single** "is this line code?" classifier. Both
+    ``_strip_html_comments_outside_code`` (which must leave code untouched) and
+    ``markdown_to_adf`` (which renders code as ``codeBlock`` nodes) read their
+    block structure from here, so the stripper can never delete a marker the
+    renderer would have shown as a code example, nor preserve one the renderer
+    would publish as literal ``<!-- ... -->`` text.
+
+    The rules follow CommonMark as far as the renderer models it: an indented
+    code block cannot interrupt a paragraph, is not started by indented text
+    continuing a list item, and stays open across blank lines.
+    """
+    kinds: List[str] = []
+    in_fence = False
+    paragraph_open = False
+    in_list_continuation = False
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+
+        if line.strip() and not line[:1].isspace():
+            in_list_continuation = False
+
+        if _MD_FENCE_RE.match(line):
+            in_fence = not in_fence
+            paragraph_open = False
+            kinds.append(_LINE_FENCE)
+            index += 1
+            continue
+
+        if in_fence:
+            kinds.append(_LINE_CODE)
+            index += 1
+            continue
+
+        if not line.strip():
+            paragraph_open = False
+            kinds.append(_LINE_BLANK)
+            index += 1
+            continue
+
+        if (
+            _MD_INDENTED_CODE_RE.match(line)
+            and not paragraph_open
+            and not in_list_continuation
+        ):
+            while index < len(lines):
+                if _MD_INDENTED_CODE_RE.match(lines[index]):
+                    kinds.append(_LINE_CODE)
+                    index += 1
+                    continue
+                # A blank line only stays inside the block when indented code
+                # resumes right after it.
+                if (
+                    not lines[index].strip()
+                    and index + 1 < len(lines)
+                    and _MD_INDENTED_CODE_RE.match(lines[index + 1])
+                ):
+                    kinds.append(_LINE_CODE)
+                    index += 1
+                    continue
+                break
+            paragraph_open = False
+            continue
+
+        if _MD_RULE_RE.match(line):
+            kinds.append(_LINE_PROSE)
+            paragraph_open = False
+            index += 1
+            continue
+
+        header_cells = _split_table_row(line) if "|" in line else []
+        if (
+            len(header_cells) > 1
+            and index + 1 < len(lines)
+            and _is_table_delimiter(lines[index + 1], len(header_cells))
+        ):
+            kinds.extend([_LINE_PROSE, _LINE_PROSE])
+            index += 2
+            while index < len(lines) and "|" in lines[index]:
+                if len(_split_table_row(lines[index])) != len(header_cells):
+                    break
+                kinds.append(_LINE_PROSE)
+                index += 1
+            paragraph_open = False
+            continue
+
+        kinds.append(_LINE_PROSE)
+        if _MD_ULIST_RE.match(line) or _MD_OLIST_RE.match(line):
+            in_list_continuation = True
+            paragraph_open = False
+        elif _MD_HEADING_RE.match(line) or _MD_QUOTE_RE.match(line):
+            paragraph_open = False
+        else:
+            paragraph_open = True
+        index += 1
+
+    return kinds
+
+
 def _strip_html_comments_outside_code(text: str) -> str:
     """Remove HTML comments except when they are literal code content."""
     if not text:
         return ""
 
     lines = text.splitlines(keepends=True)
+    bodies = [raw_line.rstrip("\r\n") for raw_line in lines]
+    kinds = _classify_markdown_lines(bodies)
     # A closer only counts when it is reachable as prose: a `-->` sitting inside
     # a later code block does not close an earlier stray `<!--`, and treating it
     # as one would delete every visible line up to that code block.
@@ -337,46 +449,32 @@ def _strip_html_comments_outside_code(text: str) -> str:
     closer_seen = False
     for index in range(len(lines) - 1, -1, -1):
         closer_after_line[index] = closer_seen
-        if _MD_FENCE_RE.match(lines[index]):
+        if kinds[index] in (_LINE_FENCE, _LINE_CODE):
             closer_seen = False
-        elif "-->" in lines[index]:
+        elif "-->" in bodies[index]:
             closer_seen = True
 
     output: List[str] = []
-    in_fence = False
     in_comment = False
-    in_indented_code = False
-    prev_blank = True
 
     for line_number, raw_line in enumerate(lines):
-        body = raw_line.rstrip("\r\n")
+        body = bodies[line_number]
         ending = raw_line[len(body):]
         inline_ticks = 0
-        was_blank, prev_blank = prev_blank, not body.strip()
+        kind = kinds[line_number]
 
-        if _MD_FENCE_RE.match(body):
+        if kind == _LINE_FENCE:
             # A fence terminates an open comment rather than being swallowed by
             # it: a stray `<!--` in prose must never eat the code block below.
             in_comment = False
-            in_fence = not in_fence
-            in_indented_code = False
             output.append(raw_line)
             continue
 
-        if in_fence:
+        # A marker shown as a code example is content, not hidden metadata —
+        # stripping it would empty the very code block it illustrates.
+        if kind == _LINE_CODE and not in_comment:
             output.append(raw_line)
             continue
-
-        # `markdown_to_adf` renders indented blocks as code, so a marker shown
-        # as an indented example is content, not hidden metadata — stripping it
-        # would empty the very code block it illustrates. A blank line keeps an
-        # open block open (as CommonMark does); ordinary prose closes it.
-        if not in_comment and body.strip():
-            if _MD_INDENTED_CODE_RE.match(body) and (in_indented_code or was_blank):
-                in_indented_code = True
-                output.append(raw_line)
-                continue
-            in_indented_code = False
 
         i = 0
         while i < len(body):
@@ -610,6 +708,7 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
     Jira issue descriptions and comments.
     """
     lines = _normalise_jira_markdown(text).splitlines()
+    kinds = _classify_markdown_lines(lines)
     content: List[Dict[str, Any]] = []
     paragraph: List[str] = []
 
@@ -621,20 +720,9 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
             })
             paragraph.clear()
 
-    # Whether we are inside a list item's indented continuation. CommonMark keeps
-    # that continuation open across blank lines and across any number of
-    # intervening paragraphs or nested lists, so it cannot be inferred from the
-    # last node emitted: one flushed continuation paragraph makes `content[-1]` a
-    # paragraph again and every further indented line under the same item turns
-    # into a code block. Only a non-blank, non-indented line ends the list.
-    in_list_continuation = False
-
     i = 0
     while i < len(lines):
         line = lines[i]
-
-        if line.strip() and not line[:1].isspace():
-            in_list_continuation = False
 
         fence = _MD_FENCE_RE.match(line)
         if fence:
@@ -658,31 +746,15 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
             content.append(node)
             continue
 
-        # CommonMark: an indented code block cannot interrupt a paragraph, and
-        # indented text under a list is that item's continuation. Without both
-        # guards, ordinary wrapped prose and nested bullets render as code —
-        # and every Jira comment Koan posts now goes through this renderer.
-        # A whitespace-only line matches the indent rule but is a blank line,
-        # not code: let it fall through to the blank-line handler below.
-        indented_code = (
-            _MD_INDENTED_CODE_RE.match(line)
-            if line.strip() and not paragraph and not in_list_continuation
-            else None
-        )
-        if indented_code:
+        # Indented code blocks are located by `_classify_markdown_lines`, the
+        # same scan `_strip_html_comments_outside_code` uses — so what the
+        # stripper preserves as a code example is exactly what renders as one.
+        if kinds[i] == _LINE_CODE:
             flush_paragraph()
             code_lines: List[str] = []
-            while i < len(lines):
-                indented_code = _MD_INDENTED_CODE_RE.match(lines[i])
-                if indented_code:
-                    code_lines.append(lines[i])
-                    i += 1
-                    continue
-                if not lines[i].strip() and i + 1 < len(lines) and _MD_INDENTED_CODE_RE.match(lines[i + 1]):
-                    code_lines.append("")
-                    i += 1
-                    continue
-                break
+            while i < len(lines) and kinds[i] == _LINE_CODE:
+                code_lines.append(lines[i])
+                i += 1
             # A line of nothing but spaces matches the indent rule too, so the
             # collected block can be entirely blank — `default` keeps that from
             # raising ValueError and blaming Jira for an unpublishable comment.
@@ -760,7 +832,6 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
                 items.append(_MD_ULIST_RE.match(lines[i]).group(1))
                 i += 1
             content.append({"type": "bulletList", "content": _adf_list_items(items)})
-            in_list_continuation = True
             continue
 
         if _MD_OLIST_RE.match(line):
@@ -770,7 +841,6 @@ def markdown_to_adf(text: str) -> Dict[str, Any]:
                 items.append(_MD_OLIST_RE.match(lines[i]).group(1))
                 i += 1
             content.append({"type": "orderedList", "content": _adf_list_items(items)})
-            in_list_continuation = True
             continue
 
         if _MD_QUOTE_RE.match(line):
