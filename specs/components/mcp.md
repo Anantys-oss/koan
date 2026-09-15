@@ -171,6 +171,13 @@ matching OpenAPI path, query, or request-body properties. Supported numeric and
 pattern bounds become both advertised and enforced. Python defaults remain
 authoritative; OpenAPI defaults never replace them.
 
+A hand-written signature MUST NOT advertise a value the REST route rejects — a
+model cannot tell a typo from a capability, so an unreachable enum member is a
+guaranteed failed call. Where the route validates against an in-tree vocabulary,
+the signature derives its `Literal` from that same authority rather than
+restating it: `koan_missions_list.status` is built from
+`app.mission_store.base.VALID_STATES`, which is what `GET /v1/missions` checks.
+
 `koan_missions_create.command` preserves the OpenAPI command-choice schema in
 MCP `tools/list`. The schema exposes canonical slash commands through an
 `enum` and permits arguments through a second pattern branch. Clients should

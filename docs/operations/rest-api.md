@@ -4,7 +4,7 @@ title: "REST API"
 description: "Documents Kōan's optional, token-authenticated HTTP control layer, including skill discovery, validated mission commands, generated OpenAPI, and its security model."
 tags: [operations]
 created: 2026-05-31
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
 # REST API
@@ -335,16 +335,14 @@ understands is still accepted — including dotted (`/claude.md`, `/core.plan`)
 and non-ASCII (`/français`) verbs — so existing callers keep working. Full
 command strings can include arguments.
 
-Two things about `command` changed when validation was added, and both are
-narrowings a pre-existing caller can notice:
-
-- A value that is not shaped like a slash command at all — `command` empty
-  after the verb, or a verb containing whitespace or `/` — now returns `422`
-  instead of being queued verbatim.
-- A **missing leading slash is normalized**, so prose in `command` becomes a
-  slash command: `{"command": "fix the login bug"}` queues `/fix the login
-  bug` and is routed to the `fix` skill runner rather than to the agent as free
-  text. Put free-form work in `text`, which stays unrestricted.
+One thing about `command` changed when validation was added, and it is a
+narrowing a pre-existing caller can notice: a value that is not shaped like a
+slash command — no leading `/`, empty after the verb, or a verb containing
+whitespace or `/` — now returns `422` instead of being queued verbatim. The
+leading slash is the only signal separating "dispatch this skill" from
+free-form work, so `{"command": "fix the login bug"}` is rejected rather than
+silently routed to the `fix` skill runner. Put free-form work in `text`, which
+stays unrestricted.
 
 `project` adds a `[project:name]` tag. `urgent` inserts at the top of the queue.
 

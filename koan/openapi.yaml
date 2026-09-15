@@ -297,7 +297,7 @@ paths:
                     - /rv
                     - /xp
                     type: string
-                  - pattern: ^/?(?:audit|brief|ci_check|digest|doc|docs|explain|fix|gh_request|impl|implement|plan|rb|re_review|rebase|rereview|review|rv|xp)(?:\s+[\s\S]+)?$
+                  - pattern: ^/(?:audit|brief|ci_check|digest|doc|docs|explain|fix|gh_request|impl|implement|plan|rb|re_review|rebase|rereview|review|rv|xp)(?:\s+[\s\S]+)?$
                     type: string
                   description: Slash-command mission; prefer this for work covered by an existing Kōan skill. Append arguments to the selected verb, for example "/review https://github.com/owner/repo/pull/42". Use text only when no exposed skill covers the work.
                 project:

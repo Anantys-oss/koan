@@ -4,7 +4,7 @@ title: "Component Spec — Web Dashboard & REST API"
 description: "Documents the Flask dashboard and token-gated REST API, their shared `dashboard_service`/`usage_service`/`log_reader` logic, the code-derived OpenAPI spec + drift guard, and the invariants keeping the two surfaces from drifting."
 tags: [web]
 created: 2026-06-27
-updated: 2026-09-11
+updated: 2026-09-15
 ---
 
 # Component Spec — Web Dashboard & REST API
@@ -66,7 +66,7 @@ cli/  (terminal front-end)
 | `api/mission_results.py` | Command→resolver registry (`register_resolver`, `resolve_mission_result`, `always_inline_keys`); built-in `/review`+`/ultrareview` resolver reads the PR-keyed findings sidecar. |
 | `routes_missions.list_missions_route()` | `GET /v1/missions` lists missions from the authoritative mission store (`ensure_store_synced()` + `list_by_state()`), rendering the `Mission` fields under the response's `status` key. Rows are grouped by state (live states in queue order, terminal states newest-first) — never globally newest-first. `id` stays the **sidecar** id (`null` when the mission was not API-queued) so a listed id resolves on the single-mission routes; the store identity is exposed separately as `store_id`, which those routes do not accept. `?status` and `?limit` are validated at the boundary and reject with `422 invalid_request` — never coerced to a wider result set. Single-mission detail/result routes (`GET/PATCH/DELETE /v1/missions/{id}`, `/result`) remain sidecar-backed for API-queued records. |
 | `routes_skills.list_skills_route()` | `GET /v1/skills` returns the API-exposed core skill catalog from `api/skill_catalog.py`; it never loads private `instance/skills/` scopes. |
-| `routes_missions.create_mission()` | Slash-command input is normalized to a leading slash, and an exposed skill's alias is resolved to its canonical verb, before queue insertion. The exposed command set is the *advertised* surface only — never an accept-list — so every slash command the agent understands stays accepted; only input that is not slash-command-shaped returns `422`. Free-form `text` remains unrestricted. |
+| `routes_missions.create_mission()` | `command` MUST carry a leading slash — it is the only signal separating "dispatch this skill" from free-form work, so a slash-less value returns `422` rather than being promoted into a skill dispatch. An exposed skill's alias is resolved to its canonical verb before queue insertion. The exposed command set is the *advertised* surface only — never an accept-list — so every slash command the agent understands stays accepted; only input that is not slash-command-shaped returns `422`. Free-form `text` remains unrestricted. |
 | `routes_missions.get_mission_route()` | `GET /v1/missions/{id}` returns the reconciled record (with typed `result`/`result_ref`) **plus** a `usage` object (`aggregate_mission_usage()` over `created`→today): token/cache/cost totals, `call_count`, `models`/`providers`, and an `unattributed` block for id-less title matches. Response is a copy — the sidecar is never mutated with `usage`. |
 | `usage_service.build_usage_payload()` | Shared usage payload (week/month buckets) for dashboard **and** `GET /v1/usage`. |
 | `log_reader.tail_log()/read_logs()` | Shared log tailing for dashboard **and** `GET /v1/logs`. |
