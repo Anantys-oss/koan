@@ -1324,6 +1324,63 @@ def _is_text_delta_event(event: Dict[str, Any]) -> bool:
     )
 
 
+# Terminal envelope types across providers: the event that closes a stream,
+# whether or not it carries the assistant text.
+_TERMINAL_RESULT_TYPES = frozenset({
+    "result",
+    "turn.completed",
+    "response.completed",
+    "task.completed",
+    "turn_complete",
+    "task_complete",
+    "end",
+})
+
+
+def _is_terminal_result_event(event: Dict[str, Any]) -> bool:
+    """Return True when *event* closes the stream, text or no text.
+
+    Deliberately distinct from ``_extract_result_text(event) is not None``:
+    Grok Build's ``end`` and any text-less ``result`` are terminal but yield no
+    string, so "the pass finished" and "the pass produced a result string" are
+    different questions. Callers that need the former — the post-result stall
+    exemption in :func:`run_command_streaming` — must not infer it from the
+    latter, or a completed pass on those providers is reported as a stall.
+
+    Matching is on the explicit whitelist ONLY, never on a ``.completed`` /
+    ``.done`` suffix — see :func:`_is_result_like_event` for why that looser
+    rule is safe where it lives and unsafe here.
+    """
+    return str(event.get("type") or "") in _TERMINAL_RESULT_TYPES
+
+
+def _is_result_like_event(event: Dict[str, Any]) -> bool:
+    """Loose 'this event might carry the final text' test for text extraction.
+
+    Accepts the terminal whitelist *plus* any ``.completed`` / ``.done`` suffix,
+    which is how unknown provider shapes have always reached
+    :func:`_extract_result_text`. A false positive is harmless there: the worst
+    case is ``final_result`` being overwritten by a mid-stream string, and the
+    last write wins.
+
+    It is NOT harmless as a terminality test. ``saw_terminal_result`` is a
+    one-way latch, so the first match permanently exempts the rest of the run
+    from the idle bound — and two real mid-stream types match the suffixes:
+    Codex's per-item ``item.completed`` (``turn.completed`` is its actual
+    terminal envelope) and ``response.output_text.done``, which this module
+    already classifies as an assistant *text* event. Latching on either would
+    let a provider go silent for the whole idle window and still return its
+    truncated output as a finished verdict — strictly worse than the
+    unbounded hang this bound exists to replace, because it fails quietly.
+    """
+    etype = str(event.get("type") or "")
+    return (
+        etype in _TERMINAL_RESULT_TYPES
+        or etype.endswith(".completed")
+        or etype.endswith(".done")
+    )
+
+
 def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
     """Pull the final assistant text out of a provider result event.
 
@@ -1337,23 +1394,12 @@ def _extract_result_text(event: Dict[str, Any]) -> Optional[str]:
     """
     etype = str(event.get("type") or "")
     if etype != "result":
-        if not (
-            etype.endswith(".completed")
-            or etype.endswith(".done")
-            or etype in {
-                "turn.completed",
-                "response.completed",
-                "task.completed",
-                "turn_complete",
-                "task_complete",
-                # Grok Build terminal envelope carries usage/stopReason but not
-                # the assistant text — return None so callers fall back to
-                # accumulated text deltas.
-                "end",
-            }
-        ):
+        if not _is_result_like_event(event):
             return None
         if etype == "end":
+            # Grok Build's terminal envelope carries usage/stopReason but not
+            # the assistant text — return None so callers fall back to
+            # accumulated text deltas.
             return None
         for key in ("output_text", "last_agent_message", "text"):
             result = event.get(key)
@@ -1626,6 +1672,66 @@ def missing_binary_message(err: "FileNotFoundError", cmd, provider_name: str, mo
     )
 
 
+def _finish_stalled_stream(
+    proc: subprocess.Popen,
+    idle_timeout: Optional[int],
+    saw_terminal_result: bool,
+    text_lines: List[str],
+    usage_snapshot: Optional[Dict[str, Any]],
+) -> str:
+    """Reap a provider group the idle watchdog SIGKILLed, and classify the stall.
+
+    Returns the drained stderr when a terminal envelope had already arrived —
+    the silence is the CLI tearing down (MCP servers, telemetry), not a lost
+    pass, and the caller treats the resulting non-zero exit as its own kill.
+    Raises ``RuntimeError`` when none did: that is the genuine stall this bound
+    exists to report.
+    """
+    from app.subprocess_runner import drain_stream_bounded
+
+    reaped = True
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        reaped = False
+    # What the provider printed before going silent (an expired token, say) is
+    # usually the only clue to *why* it stalled, so a truncated or failed drain
+    # is itself worth reporting rather than degrading to a bare timeout message.
+    #
+    # The drain is bounded on its own terms rather than gated on `reaped`: the
+    # leader is inside the group that was just SIGKILLed and SIGKILL is
+    # uncatchable, so it is reaped on virtually every stall — while the
+    # descendant that matters here is the one that escaped the group (a setsid'd
+    # MCP helper), survives the kill, and still holds the stderr write end. An
+    # unbounded read() would then block forever with the watchdog already
+    # disarmed, re-entering the exact hang this bound exists to end, one pipe
+    # over. `reaped` stays as a corroborating signal in the message.
+    stderr_text, stderr_error = drain_stream_bounded(proc.stderr)
+    if stderr_error and not reaped:
+        stderr_error += " (the group SIGKILL left a process alive)"
+    if saw_terminal_result:
+        # This branch returns stderr as plain text, so a drain that was cut
+        # short is indistinguishable from a clean complete one. Say so rather
+        # than letting the caller read the fragment as everything printed.
+        if stderr_error:
+            print(f"[cli] WARNING:{stderr_error}", file=sys.stderr, flush=True)
+        return stderr_text
+    # Usage is persisted on every other exit; a stall is the run that burned
+    # the most, so dropping it under-counts quota exactly where it matters.
+    _persist_stream_usage_snapshot(usage_snapshot)
+    # Carry whatever the pass streamed before going silent, same as the
+    # cancelled-end path: a stall after most findings were printed must stay
+    # diagnosable from the error alone.
+    partial = "\n".join(text_lines).strip()
+    suffix = f" Partial output: {partial[:200]}" if partial else ""
+    detail = (stderr_text or "").strip()
+    # Both can be present now that the drain is bounded rather than skipped: a
+    # truncated read still carries whatever reached the pipe first, and the
+    # caller must not read that fragment as the whole of what was printed.
+    err = f" stderr: {detail[-500:]}{stderr_error}" if detail else stderr_error
+    raise RuntimeError(f"CLI stalled — no output for {idle_timeout}s{suffix}{err}")
+
+
 def run_command_streaming(
     prompt: str,
     project_path: str,
@@ -1638,6 +1744,7 @@ def run_command_streaming(
     project_name: str = "",
     mcp_configs: Optional[List[str]] = None,
     project_context: bool = True,
+    idle_timeout: Optional[int] = None,
 ) -> str:
     """Build and run a CLI command, streaming progress to stdout in real time.
 
@@ -1666,6 +1773,23 @@ def run_command_streaming(
     and skills loaded from ``project_path``. Pass it whenever *project_path* is
     untrusted — a reviewed branch can carry a ``.claude/settings.json`` that
     defines hooks, which is code execution on this host.
+
+    ``idle_timeout`` bounds **inactivity**, and is the only bound that reaches
+    the read loop. ``timeout`` is applied by the ``proc.wait()`` *after* stdout
+    EOF, so a provider that prints its session banner and then goes silent
+    forever blocks in ``for line in proc.stdout`` and is never bounded by it;
+    only run.py's outer skill-runner watchdog ends such a run, by SIGKILLing
+    the whole runner. With ``idle_timeout`` set, every consumed line heartbeats
+    a :class:`~app.subprocess_runner.LivenessWatchdog` and a stall raises
+    ``RuntimeError`` the caller can attribute and degrade on — unless a terminal
+    envelope already arrived (:func:`_is_terminal_result_event`, text-carrying
+    or not), in which case the silence is the CLI tearing down and the result is
+    returned normally. A wall-clock cap would be the wrong instrument — a
+    healthy long pass streams progress for many minutes. Default ``None`` keeps
+    the historical unbounded behavior; an opted-in caller must pick a value
+    strictly below the outer skill-runner budget that governs *its* dispatch
+    path (``first_output_timeout``, or ``rebase_first_output_timeout`` under
+    ``/rebase``) or the outer watchdog still wins.
 
     Raises:
         RuntimeError: If the command exits with non-zero code (except
@@ -1725,6 +1849,8 @@ def run_command_streaming(
     failed_result_status = ""
     failed_result_error = ""
     stderr_text = ""
+    stalled_after_result = False
+    saw_terminal_result = False
 
     def _flush_text_deltas() -> None:
         if text_delta_parts:
@@ -1732,6 +1858,19 @@ def run_command_streaming(
             text_delta_parts.clear()
 
     try:
+        bounded = bool(idle_timeout and idle_timeout > 0)
+        spawn_kwargs = {}
+        if bounded:
+            # Only when the watchdog is armed. The watchdog group-kills, and a
+            # child sharing Kōan's group would make that kill land on the
+            # daemon itself — so an armed watchdog *requires* session
+            # isolation. But isolation is not free: run.py's skill-runner
+            # teardown and mission_scope's fallback both reap by process
+            # group, and a child in its own session is outside both. Applying
+            # it unconditionally would put every non-opted-in caller's provider
+            # beyond that teardown, buying nothing (no watchdog to protect) and
+            # letting a stuck provider outlive the runner that spawned it.
+            spawn_kwargs["start_new_session"] = True
         try:
             proc, cleanup = popen_cli(
                 cmd,
@@ -1741,19 +1880,49 @@ def run_command_streaming(
                 encoding="utf-8",
                 errors="replace",
                 cwd=project_path,
+                **spawn_kwargs,
             )
         except FileNotFoundError as e:
             raise RuntimeError(
                 missing_binary_message(e, cmd, provider.name, model_key)
             ) from e
+        # Captured now, while the leader is unreaped: a process group outlives
+        # its leader, but its id cannot be recovered once the pid is gone (see
+        # the teardown in the finally below). Under start_new_session the pgid
+        # *is* the pid; getpgid confirms that rather than assuming it.
+        child_pgid = 0
+        if bounded:
+            with contextlib.suppress(OSError):
+                child_pgid = os.getpgid(proc.pid)
+        idle_watchdog = None
         # Every print() in this loop is the load-bearing watchdog signal —
         # run.py's skill-runner liveness watchdog (600s) resets on each line
         # emitted to stdout. Do not silence these prints; doing so reintroduces
         # the silent-CLI hang this PR fixes (see PR #1372).
         try:
+            if bounded:
+                # Armed inside this try, not before it: the child is already
+                # spawned, so a failure here (Timer.start() under thread
+                # exhaustion) must still reach the finally that closes the
+                # pipes and runs cleanup(), or the CLI is left unreaped.
+                from app.subprocess_runner import LivenessWatchdog
+
+                # graceful=False: SIGTERM-then-escalate stops escalating once
+                # the leader exits, so a descendant that ignores SIGTERM
+                # survives while still holding the inherited stdout write end.
+                # The read loop below would then never see EOF, never reach the
+                # `fired` check, and hang exactly as it did before this
+                # watchdog existed.
+                idle_watchdog = LivenessWatchdog(
+                    proc, idle_timeout, graceful=False,
+                ).start()
             for line in proc.stdout:
                 stripped = line.rstrip("\n")
                 raw_lines.append(stripped)
+                # Every consumed line is activity, blank ones included — the
+                # `continue` below skips rendering, not liveness.
+                if idle_watchdog is not None:
+                    idle_watchdog.heartbeat()
                 if not stripped:
                     continue
                 event: Optional[Dict[str, Any]] = None
@@ -1782,6 +1951,13 @@ def run_command_streaming(
                     result_text = _extract_result_text(event)
                     if result_text is not None:
                         final_result = result_text
+                    # Tracked separately from final_result: a terminal envelope
+                    # that carries no text (Grok's `end`, a text-less `result`)
+                    # leaves final_result None, and keying the post-result stall
+                    # exemption off that would report a finished pass on those
+                    # providers as a stall.
+                    if _is_terminal_result_event(event):
+                        saw_terminal_result = True
                     if _is_stream_json_max_turns(event):
                         saw_max_turns_event = True
                     if _is_cancelled_end_event(event):
@@ -1796,13 +1972,81 @@ def run_command_streaming(
                     print(stripped, flush=True)
                     text_lines.append(stripped)
             _flush_text_deltas()
-            stderr_text = proc.stderr.read() if proc.stderr else ""
-            proc.wait(timeout=timeout)
+            if idle_watchdog is not None:
+                # Disarm the moment the read loop ends. `stderr.read()` and
+                # `proc.wait()` below emit no heartbeats, so a watchdog still
+                # armed across them would SIGKILL a run that already completed
+                # and surface as an opaque exit -9 — past the `fired` check,
+                # so not even attributable. mark_completed() is what actually
+                # closes it: Timer.cancel() is a no-op once `_fire` has begun,
+                # and the graceful=False kill has no poll() guard.
+                idle_watchdog.mark_completed()
+                idle_watchdog.cancel()
+            if idle_watchdog is not None and idle_watchdog.fired:
+                # The watchdog already SIGKILLed the group, which is what ended
+                # the read loop. Reap and classify rather than letting it
+                # surface as an opaque exit -9 further down; returning normally
+                # means a terminal envelope had arrived, so the exit code below
+                # is our own kill and not a provider crash.
+                stderr_text = _finish_stalled_stream(
+                    proc, idle_timeout, saw_terminal_result, text_lines, usage_snapshot,
+                )
+                stalled_after_result = True
+            else:
+                # Bounded here too, not only on the stall branch: the watchdog
+                # was just disarmed, so for an opted-in caller this read is the
+                # one place left with no bound in force. A helper the CLI
+                # spawned with its own session and stdout=DEVNULL keeps the
+                # inherited stderr fd through the leader's *normal* exit — the
+                # read loop still sees EOF, `fired` is False, and an unbounded
+                # read() would block here forever, with `proc.wait(timeout=…)`
+                # below it never reached. That is the same "declared bound sits
+                # after a blocking read" shape this change removed from stdout.
+                from app.subprocess_runner import drain_stream_bounded
+
+                stderr_text, stderr_error = drain_stream_bounded(proc.stderr)
+                if stderr_error:
+                    print(f"[cli] WARNING:{stderr_error}", file=sys.stderr, flush=True)
+                proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired as e:
             proc.kill()
             proc.wait()
             raise RuntimeError(f"CLI invocation timed out after {timeout}s") from e
         finally:
+            # An opted-in child is session-isolated, so it is outside run.py's
+            # skill-runner teardown and mission_scope's process-group reap, and
+            # cleanup() below only closes stdin and releases the invocation
+            # lock — it never kills. Disarming the watchdog without killing
+            # first (an exception raised mid-loop: BrokenPipeError on our own
+            # stdout, a malformed event) would therefore orphan the provider
+            # with nothing left that can reach it, burning quota while the next
+            # mission takes the lock this is about to release.
+            #
+            # Unconditional, not gated on the leader still being alive: the
+            # leader exiting says nothing about its descendants, and a helper
+            # the CLI left behind in the isolated session is reachable from
+            # nowhere else. That is what kill_orphaned_process_group is for —
+            # it takes the *pgid captured while the leader was alive*, because
+            # once proc.wait() has reaped the leader os.getpgid(proc.pid) can no
+            # longer recover it and the kill silently degrades to a no-op on a
+            # dead pid. It also refuses `pgid <= 1` and our own group, which
+            # keeps "an armed bound implies start_new_session=True" structural
+            # rather than a property of this comment, and warns when a group
+            # survives instead of leaving a still-running provider invisible to
+            # the next mission — which takes the invocation lock cleanup()
+            # releases three lines below.
+            if bounded and child_pgid:
+                from app.subprocess_runner import kill_orphaned_process_group
+
+                kill_orphaned_process_group(child_pgid)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=5)
+            # The loop-exit path above already disarmed; this covers an
+            # exception raised mid-loop. A live timer outliving this call could
+            # group-kill a recycled PID.
+            if idle_watchdog is not None:
+                idle_watchdog.mark_completed()
+                idle_watchdog.cancel()
             if proc.stdout:
                 proc.stdout.close()
             if proc.stderr:
@@ -1839,7 +2083,13 @@ def run_command_streaming(
                 f"{suffix}"
             )
 
-        if proc.returncode != 0:
+        # ``stalled_after_result`` means the non-zero code is our own idle
+        # watchdog's SIGKILL, fired after the terminal envelope — not a provider
+        # failure. Skipping only this block (rather than returning early) keeps
+        # the failed_result_status raise and the max-turns warning below in
+        # force: a session that reported status=failed and *then* hung in
+        # teardown must still surface as the headless-permission error it is.
+        if proc.returncode != 0 and not stalled_after_result:
             # Max-turns is a graceful limit — return partial output so callers
             # can extract useful results from an incomplete session.
             if hit_max_turns:

@@ -102,6 +102,38 @@ class TestForceKillProcessGroup:
             force_kill_process_group(proc)
         proc.kill.assert_called_once()
 
+    def test_refuses_the_callers_own_group(self):
+        """A child that was never isolated must not take Kōan down with it.
+
+        The callers that arm a group kill all spawn with
+        ``start_new_session=True``; if one ever does not, signalling
+        ``getpgid(child)`` is signalling *us*, and a watchdog meant to kill one
+        provider kills the daemon and every other mission with it.
+        """
+        proc = MagicMock()
+        proc.pid = 42
+        with patch("app.subprocess_runner.os.getpgid", return_value=os.getpgrp()), \
+             patch("app.subprocess_runner.os.killpg") as killpg:
+            force_kill_process_group(proc)
+        killpg.assert_not_called()
+        proc.kill.assert_called_once()
+
+    def test_refuses_an_unusable_group_id(self):
+        """pgid 0 means "the caller's group" to killpg, and 1 is init's.
+
+        ``getpgid`` reports 0 for a process with no group of its own (a Linux
+        kernel thread, say, reachable through a recycled or bogus pid), and
+        ``killpg(0, …)`` signals the caller's group — the same suicide as
+        above, reached through a value rather than through a shared group.
+        """
+        proc = MagicMock()
+        proc.pid = 42
+        with patch("app.subprocess_runner.os.getpgid", return_value=0), \
+             patch("app.subprocess_runner.os.killpg") as killpg:
+            force_kill_process_group(proc)
+        killpg.assert_not_called()
+        proc.kill.assert_called_once()
+
 
 # ── ProcessWatchdog ─────────────────────────────────────────────────────
 
@@ -215,6 +247,56 @@ class TestLivenessWatchdog:
 
         assert lw.fired is False
         callback.assert_not_called()
+
+    def test_graceful_false_uses_force_kill(self):
+        """Callers reading an inherited pipe need the whole group SIGKILLed.
+
+        The graceful path stops escalating once the leader exits, so a
+        SIGTERM-ignoring descendant keeps the pipe's write end open and the
+        reader stays blocked — the hang the watchdog was armed to end.
+        """
+        proc = MagicMock()
+        proc.pid = 42
+        fired = threading.Event()
+
+        with patch("app.subprocess_runner.os.getpgid", return_value=100), \
+             patch("app.subprocess_runner.os.killpg",
+                   side_effect=lambda *a: fired.set()) as killpg:
+            lw = LivenessWatchdog(proc, 0.1, graceful=False).start()
+            fired.wait(timeout=2)
+            # Disarm *inside* the patch: a fire that slipped past the wait on a
+            # loaded box would otherwise land on the real os.getpgid(42) — a pid
+            # that on Linux can be a kernel thread, whose pgid is 0, and
+            # killpg(0) signals the caller's own group.
+            lw.mark_completed()
+            lw.cancel()
+
+        killpg.assert_called_with(100, signal.SIGKILL)
+
+    def test_mark_completed_blocks_fire(self):
+        """cancel() is a no-op once _fire has begun; the flag is not."""
+        proc = MagicMock()
+        proc.poll.return_value = None
+        callback = MagicMock()
+
+        with patch("app.subprocess_runner.threading.Timer") as TimerMock:
+            captured = {}
+
+            def factory(timeout, fn):
+                captured["fn"] = fn
+                return MagicMock()
+
+            TimerMock.side_effect = factory
+            lw = LivenessWatchdog(
+                proc, 10, on_timeout=callback, graceful=False,
+            ).start()
+            lw.mark_completed()
+            with patch("app.subprocess_runner.os.killpg") as killpg:
+                captured["fn"]()
+
+        assert lw.fired is False
+        callback.assert_not_called()
+        killpg.assert_not_called()
 
     def test_heartbeat_after_fire_is_noop(self):
         proc = MagicMock()

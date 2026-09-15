@@ -329,6 +329,7 @@ def stream_with_timeout(
     from app.subprocess_runner import (
         LivenessWatchdog,
         ProcessWatchdog,
+        drain_stream_bounded,
         force_kill_process_group,
     )
 
@@ -347,7 +348,12 @@ def stream_with_timeout(
     if effective_max_duration and effective_max_duration > 0:
         duration_watchdog = ProcessWatchdog(proc, effective_max_duration, graceful=False).start()
     if idle_timeout and idle_timeout > 0:
-        idle_watchdog = LivenessWatchdog(proc, idle_timeout).start()
+        # graceful=False for the same reason the duration watchdog above uses
+        # it: SIGTERM-then-escalate stops escalating once the *leader* exits,
+        # so a descendant that ignores SIGTERM survives holding the inherited
+        # stdout write end — the loop below never sees EOF, never reaches the
+        # idle_fired check, and the hang is misattributed to max_duration.
+        idle_watchdog = LivenessWatchdog(proc, idle_timeout, graceful=False).start()
 
     try:
         try:
@@ -363,11 +369,20 @@ def stream_with_timeout(
                 duration_watchdog.mark_completed()
                 duration_watchdog.cancel()
             if idle_watchdog is not None:
+                idle_watchdog.mark_completed()
                 idle_watchdog.cancel()
 
-        with suppress_logged(_log_cli, "warning", "Stderr stream read failed", OSError, ValueError):
-            if proc.stderr:
-                stderr_text = proc.stderr.read()
+        # Bounded, not `proc.stderr.read()`: both watchdogs were disarmed at the
+        # loop above, so this is the one read left with nothing in force, and
+        # `read()` returns only at EOF — a descendant that escaped the group
+        # (its own session, e.g. a `setsid`'d MCP helper) keeps the inherited
+        # write end through the leader's exit, group SIGKILL or not. Blocking
+        # here would put the hang one pipe over from the one `idle_timeout`
+        # exists to end, with `proc.wait(timeout=drain_timeout)` below never
+        # reached to notice it.
+        stderr_text, stderr_error = drain_stream_bounded(proc.stderr)
+        if stderr_error:
+            _log_cli("warning", f"Stderr drain incomplete:{stderr_error}")
 
         try:
             proc.wait(timeout=drain_timeout)

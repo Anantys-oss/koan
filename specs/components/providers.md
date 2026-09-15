@@ -4,7 +4,7 @@ title: "Component Spec — CLI Provider Abstraction"
 description: "Design contract for the CLI provider abstraction that decouples the agent loop from any single AI coding CLI (Claude, Cline, Codex, Copilot, Haze, Grok, Gemini) behind one `CLIProvider` contract."
 tags: [providers]
 created: 2026-06-27
-updated: 2026-09-10
+updated: 2026-09-15
 ---
 
 # Component Spec — CLI Provider Abstraction
@@ -486,6 +486,201 @@ tools — MCP tools must still be allowlisted via qualified names
   and `53` (turn limit) are documented but not mapped to Kōan's max-turns
   handling. Recorded samples: `koan/tests/gemini_samples.py`. Operator docs:
   `docs/providers/gemini.md`.
+- **The streaming read loop must be inactivity-bounded, and the child must be
+  session-isolated.** `run_command_streaming` consumes `proc.stdout` with a
+  blocking `for line in ...`. Its `timeout` argument reaches only the
+  `proc.wait(timeout=...)` that runs **after** stdout EOF, so a provider that
+  opens the pipe, prints its session banner and then goes silent forever is not
+  bounded by it at all — the loop simply blocks. The only thing that ever ended
+  such a run was run.py's outer skill-runner liveness watchdog
+  (`first_output_timeout`, default 600s), which SIGKILLs the whole runner
+  mid-pipeline: the mission dies with a generic "Skill runner timed out", no
+  partial result is written, and the stall is not attributable to the pass that
+  caused it. A hard wall-clock bound is the wrong instrument here — a healthy
+  long pass emits progress events for many minutes and must not be capped — so
+  the bound is on **inactivity**: callers opt in with `idle_timeout`, a
+  `LivenessWatchdog` heartbeats on every consumed line, and a stall raises
+  `RuntimeError` that the caller can attribute and degrade on. `idle_timeout`
+  defaults to `None`, which preserves the historical (unbounded) behavior for
+  callers that have not opted in. An opted-in caller MUST pick a value strictly
+  below **the outer budget that governs its own dispatch path**, otherwise the
+  outer watchdog still wins and the inner bound is decorative. That budget is
+  not a single constant: run.py arms the outer watchdog from
+  `rebase_first_output_timeout` for a `/rebase` mission and from
+  `first_output_timeout` otherwise, and a review pass is reachable under both
+  (`rebase_pr` → `private_review_gate` → `review_runner`). Deriving the inner
+  value from `first_output_timeout` unconditionally would ignore the very knob
+  an operator uses to widen a rebase's silence budget, killing gate passes well
+  inside the configured allowance; the derivation MUST therefore select the
+  same budget run.py selected, keyed off the canonical `KOAN_MISSION_COMMAND`
+  the runner exports. On the review path the two clocks are the *same*
+  clock — run.py's watchdog resets on the read loop's per-event `print()`,
+  which is what heartbeats the inner one — so the inner value MUST be derived
+  as a small fixed margin below that budget (`outer - 60`), never a
+  fraction of it: halving it would not add a bound where none existed, it
+  would halve the silence the pass was always allowed and kill legitimate long
+  turns.
+- **Session isolation is scoped to the armed watchdog, and the watchdog's kill
+  is SIGKILL-to-the-group.** These two follow from the bound above and are as
+  load-bearing as it is.
+  `start_new_session=True` is passed **only when `idle_timeout` is set**. An
+  armed watchdog requires it — the kill is a group kill, and a child sharing
+  Kōan's process group would make it SIGKILL the daemon itself. But isolation
+  is not free in the other direction: `run.py`'s skill-runner teardown and
+  `mission_scope`'s fallback path both reap by process group, and a child in
+  its own session is outside both. Isolating unconditionally would put every
+  non-opted-in caller's provider beyond that teardown with no watchdog to
+  justify it, so a stuck provider could outlive a skill timeout, an abort, or
+  the outer liveness kill while still burning quota.
+  The kill must be `force_kill_process_group` (`graceful=False`), not the
+  SIGTERM-then-escalate default: escalation stops as soon as the *leader*
+  exits, so a descendant that handles or ignores SIGTERM survives it — and a
+  survivor holding the inherited stdout write end keeps the reader blocked,
+  never reaching the fired check. That is the same hang the watchdog exists to
+  end, re-entered through the kill path.
+  Residual, accepted: an opted-in child is outside the outer group teardown, so
+  an abort or `skill_timeout` that fires while the provider is *actively
+  streaming* leaves it running. Its idle watchdog does **not** bound it there —
+  that watchdog is a `threading.Timer` inside the skill-runner process, and the
+  teardown kills that process, taking the timer with it. What bounds it is
+  narrower: a streaming provider takes `EPIPE`/`SIGPIPE` on its next write once
+  the read end closes, and on a systemd host the mission cgroup still contains
+  it (session isolation does not escape a cgroup). Neither holds for a manual
+  abort during a *silent* window on a non-systemd host (macOS, where
+  `mission_scope` degrades to `start_new_session=True` plus a process-group
+  kill), where the child survives unbounded. Closing it fully needs the outer
+  teardown to track isolated provider sessions.
+  Within `run_command_streaming` itself the same reasoning makes one kill
+  mandatory: because the opted-in child is outside every group teardown and
+  `popen_cli`'s `cleanup()` only closes stdin, deletes the prompt file and
+  releases the invocation lock, an **exception raised mid-loop** (a
+  `BrokenPipeError` on Kōan's own stdout, a malformed event) MUST force-kill the
+  group before disarming the watchdog. Disarming first leaves nothing that can
+  reach the provider: it outlives the call, keeps burning quota, and the next
+  mission takes the invocation lock `cleanup()` just released — running two
+  providers concurrently against the serialization that lock exists to enforce.
+- **An inactivity watchdog must be disarmed when the read loop ends, not when
+  the call returns.** `proc.stderr.read()` and `proc.wait()` run after stdout
+  EOF and emit no heartbeats, so a watchdog still armed across them kills a run
+  that already streamed everything — and past the `fired` check, so the kill
+  surfaces as an opaque `exit -9` instead of an attributable stall. Disarming
+  MUST use `mark_completed()` as well as `cancel()`: `threading.Timer.cancel()`
+  is a no-op once `_fire` has begun, and the `graceful=False` kill path has no
+  `poll()` guard, so a late fire would `killpg` a possibly recycled PID. This
+  governs the two `LivenessWatchdog`s that bound a provider pipe read loop —
+  `run_command_streaming` and `cli_exec.stream_with_timeout` (the `/rebase`
+  review and CI phases) — where a graceful kill would make
+  `rebase_review_idle_timeout` ineffective against a SIGTERM-surviving
+  descendant and misattribute the resulting hang to
+  `rebase_review_max_duration`.
+  **Known exception: `run.py`'s outer skill-runner watchdog** (`run.py`,
+  `first_output_timeout`) also feeds a pipe read loop (`_pump_skill_stdout`)
+  and deliberately keeps the graceful default. Its group is the whole skill
+  runner plus whatever build tooling `/review`, `/fix` and `/implement` spawn,
+  and SIGTERM-first is what lets that tooling release git index locks and
+  containers before dying; the `TimeoutExpired` path that follows escalates
+  with its own `_kill_process_group`. The same SIGTERM-survivor hang is
+  therefore reachable there — a descendant that ignores SIGTERM and inherited
+  the runner's stdout keeps `_pump_skill_stdout` blocked after the leader
+  exits. Converting it means bounding that read loop independently of the kill
+  mode, which is a change to the agent loop's teardown rather than to this
+  component's contract.
+- **A stall detected after the terminal envelope MUST NOT be reported as a
+  stall.** The read loop drains to EOF rather than breaking on the result
+  event, so a CLI that emits its verdict and then goes silent tearing down (MCP
+  servers, telemetry) trips the same watchdog. Raising there would demote a
+  finished pass to a truncated error string, so the result is returned and the
+  resulting `exit -9` is recognised as the watchdog's own kill. "A terminal
+  envelope arrived" MUST be decided on the **event shape**, not on whether a
+  result *string* was extracted: Grok Build's `end` and any text-less `result`
+  close the stream while deliberately yielding no text, so inferring it from
+  the extracted result would report a completed pass on those providers as a
+  stall — the same demotion, reached through a different envelope shape.
+  That shape test MUST be an **explicit whitelist of terminal types**, never a
+  `.completed` / `.done` suffix match. The looser suffix rule is safe where it
+  has always lived — deciding whether an event *might carry* the final text,
+  where a false positive only overwrites a string the next write replaces — but
+  the exemption is a one-way latch, so the first match disarms the bound for
+  the rest of the run. Codex emits `item.completed` per stream item (its
+  terminal envelope is `turn.completed`) and `response.output_text.done` is an
+  assistant *text* event, so a suffix rule would let a Codex-shaped stream go
+  silent for the whole idle window and still return its truncated output as a
+  finished verdict, with no usage recorded — a quieter failure than the hang
+  this bound replaced. Adding a provider whose stream closes on a new type
+  means adding that type to the whitelist.
+  Recognising the kill MUST also not bypass the rest of the exit handling: a
+  session that reported a **failed** terminal status and *then* hung in
+  teardown MUST still surface as that failure, not as a successful partial
+  result. A genuine stall (no terminal envelope) MUST persist the usage
+  snapshot before raising — it is the run that burned the most — and MUST carry
+  the drained stderr, which is usually the only statement of *why* the provider
+  went silent; when that drain itself fails, the error MUST say so rather than
+  degrade to a bare timeout message.
+  That drain MUST itself be bounded, and the bound MUST NOT be inferred from
+  the leader's exit. `read()` returns only at EOF, so whoever still holds the
+  write end decides when it returns — and after the group SIGKILL that can be a
+  descendant which escaped the group (its own session, e.g. a `setsid`'d MCP
+  helper) and survives the kill holding the inherited fd. The leader proves
+  nothing about that survivor: SIGKILL is uncatchable and the leader is inside
+  the killed group, so the post-kill `wait()` succeeds on virtually every stall.
+  Gating the drain on that wait would therefore leave the escaped-descendant
+  case — the very one it is written for — draining unbounded, re-entering one
+  pipe over the same unbounded read this invariant removed from the stdout loop.
+  The bound MUST NOT be implemented by blocking a helper thread inside the
+  stream object either: the caller closes that stream in its `finally`, and
+  `close()` on a buffered stream waits for the reader still inside it, which
+  moves the hang rather than removing it. A truncated drain MUST be reported
+  **alongside** whatever bytes it did collect, on both the raising and the
+  returning branch — on the latter the drain result is plain text, so a
+  truncated read is otherwise indistinguishable from a complete one, and on
+  either branch a fragment presented alone reads as the whole of what the
+  provider printed. An expired `wait()` MAY corroborate that report; it is not
+  what decides it.
+- **Every post-EOF stderr drain in an opted-in call MUST be bounded, including
+  the one on the success path** — in `run_command_streaming` and in
+  `cli_exec.stream_with_timeout`, the two call sites the disarm invariant above
+  governs, through one shared helper
+  (`subprocess_runner.drain_stream_bounded`). The watchdog is disarmed the
+  moment the read loop ends, so that drain is the one read left with nothing in
+  force — and the
+  escaped-descendant shape does not require a stall to reach it: a helper
+  spawned with its own session and `stdout=DEVNULL` keeps the inherited stderr
+  fd through the leader's entirely *normal* exit, so stdout still reaches EOF,
+  nothing fires, and an unbounded `read()` blocks with the `proc.wait(timeout=…)`
+  below it never reached. That is the same "the declared bound sits after a
+  blocking read" shape this invariant removed from the stdout loop, and for an
+  opted-in caller it is worse than before: the outer watchdog's eventual kill no
+  longer reaches the session-isolated provider. The bound MUST be on
+  **inactivity**, not total duration, for the same reason the stdout bound is —
+  a child still printing is not the hazard, a silent holder of the write end is,
+  and a total cap would truncate a slow but healthy stderr dump.
+- **The mandatory kill above MUST NOT be gated on the leader still running.**
+  The leader exiting says nothing about its descendants, and a helper the CLI
+  left behind in the isolated session is reachable from nowhere else — not from
+  `run.py`'s skill-runner teardown, not from `mission_scope`'s fallback. It
+  MUST also be a kill **by a process-group id captured while the leader was
+  alive**, not one derived from the leader at teardown time: a group outlives
+  its leader, but once `proc.wait()` has reaped that leader its pid is gone, so
+  a `getpgid(proc.pid)` lookup fails and silently degrades to a no-op
+  single-process kill. That is exactly the contract of
+  `subprocess_runner.kill_orphaned_process_group(pgid)`, which this path MUST
+  use rather than hand-rolling `os.killpg`: it refuses `pgid <= 1` and the
+  caller's own group, keeping "an armed bound implies `start_new_session=True`"
+  structural rather than a property of a comment, and it *reports* a group that
+  survived instead of leaving a still-running provider invisible — which matters
+  because `cleanup()` releases the invocation lock immediately afterwards, and a
+  surviving provider plus the next mission's is the concurrency that lock
+  exists to prevent.
+  That refusal is not belt-and-braces, and `force_kill_process_group` (the
+  watchdog's own kill) MUST make it too: a group id that was not captured from
+  a live child is a *failed capture*, not something to signal. `killpg(0, …)`
+  means "the caller's group", `getpgid` reports 0 for a process with no group
+  of its own, and a fixture whose pid is a `MagicMock` indexes to 1 — so the
+  unguarded form turns an invariant violation into a SIGKILL of Kōan's own
+  group or of init's. Kōan has already paid that once: an unguarded
+  `os.killpg(proc.pid, …)` reached by a mock-backed test SIGKILLed process
+  group 1 on a CI runner, which surfaced as the runner losing contact with its
+  server and the job's logs never being uploaded.
 
 ## Integration points
 
