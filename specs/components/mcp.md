@@ -82,12 +82,20 @@ space-free token (non-printable characters replaced, spaces percent-encoded,
 over-long values truncated), so an unauthenticated caller cannot forge audit
 entries through a crafted request path.
 
-The audit trail fails closed. A failed audit write latches the middleware: every
-later request is refused with 503 `audit_unavailable` until the sink accepts a
-write again. The latch is cleared only by a probe that **writes** a marker line
-and forces it to disk — opening the file is not proof of writability, because a
-full volume still accepts an append open. The warning never goes to the audit
-sink itself (the launcher also redirects the daemon's stderr into it). It goes
+A request forwarded to the MCP app is audited **before** it is forwarded, with
+`-` as its status, and again when its response starts, with the status. A
+request the middleware refuses itself is audited once, with its status. The
+pre-dispatch entry is what makes the trail fail closed: auditing only the
+response would let the request that *discovers* a broken sink complete its side
+effect with no entry at all.
+
+The audit trail fails closed. A failed audit write latches the middleware: that
+request and every later one are refused with 503 `audit_unavailable` until the
+sink accepts a write again. The latch is cleared only by a probe that **writes**
+a marker line and forces it to disk — opening the file is not proof of
+writability, because a full volume still accepts an append open. The warning
+never goes to the audit sink itself (the launcher also redirects the daemon's
+stderr into it). It goes
 to syslog first — the only channel not on the volume whose failure is the
 likeliest cause — then `logs/api.log`, then stderr.
 
@@ -255,9 +263,13 @@ from the same loaded document the client dispatches against, so a renamed
   parsing; missing credentials produce 401 and invalid credentials 403.
 - That layer allow-lists the scope types it forwards without a credential
   check: only `lifespan`. Any other non-HTTP scope is refused and audited, so a
-  transport added later cannot inherit an unauthenticated path by default.
-- An unwritable audit sink stops service rather than degrading it: requests are
-  refused with 503 until the trail can be written again.
+  transport added later cannot inherit an unauthenticated path by default. The
+  refusal is also delivered: a websocket scope is closed, and a scope type with
+  no terminal message raises rather than leaving the caller on a connection
+  whose refusal only the audit file records.
+- An unwritable audit sink stops service rather than degrading it: the request
+  that detects the failure is refused with 503 before it reaches the MCP app,
+  as is every request after it, until the trail can be written again.
 - stdio remains the default transport and is never daemonized.
 
 ## Change protocol

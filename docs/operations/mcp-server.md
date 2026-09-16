@@ -112,9 +112,16 @@ exits non-zero. The marker is removed when the daemon exits, and cleared before
 each launch, so a marker left by a `kill -9` is never read as this run's
 readiness.
 
+A request that reaches the MCP app is audited twice: once on arrival, with `-`
+in the status column, and once when its response starts, with the status. A
+request the server refuses itself — 401, 403 — is audited once. The arrival
+entry is what lets the server refuse a request it cannot record, rather than
+running it first and refusing the next one.
+
 If `logs/mcp.log` becomes unwritable — a full disk, or a rotation step that
 changes its owner — the server stops serving instead of serving unaudited
-requests. Clients then get `503 audit_unavailable`. The reason goes to syslog
+requests, starting with the request that detects the failure. Clients then get
+`503 audit_unavailable`. The reason goes to syslog
 (tag `koan-mcp`) and to `logs/api.log`, because the daemon's own stderr goes to
 the file that just failed, and `logs/api.log` shares its volume. Service resumes
 on the first request after the file is writable again.

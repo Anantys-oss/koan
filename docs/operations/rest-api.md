@@ -344,7 +344,10 @@ free-form work, so `{"command": "fix the login bug"}` is rejected rather than
 silently routed to the `fix` skill runner. Put free-form work in `text`, which
 stays unrestricted.
 
-`project` adds a `[project:name]` tag. `urgent` inserts at the top of the queue.
+`project` adds a `[project:name]` tag. `urgent` inserts at the top of the queue
+and must be a real boolean — `"false"` and `0` return `422` rather than being
+coerced, because `bool("false")` is `true` and would jump the queue the caller
+asked not to jump.
 
 Response (202):
 ```json

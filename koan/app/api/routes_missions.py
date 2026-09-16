@@ -272,7 +272,13 @@ def _validate_mission_body(data: dict):
     if raw_project is not None and not isinstance(raw_project, str):
         raise ValueError("'project' must be a string")
     project = (raw_project or "").strip() or None
-    urgent = bool(data.get("urgent", False))
+
+    # Reject rather than coerce: bool("false") is True, so a coerced string
+    # would silently jump the mission to the front of the queue — the opposite
+    # of what the caller wrote — while openapi.yaml advertises "boolean".
+    urgent = data.get("urgent", False)
+    if not isinstance(urgent, bool):
+        raise ValueError("'urgent' must be a boolean")
 
     return mission_text, project, urgent
 

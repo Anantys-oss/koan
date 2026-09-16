@@ -219,6 +219,22 @@ class TestCreateMission:
         assert response.status_code == 422
         assert response.get_json()["error"]["code"] == "invalid_request"
 
+    @pytest.mark.parametrize("value", ("false", 0.1, [], 1))
+    def test_non_boolean_urgent_returns_422(self, api_client, value):
+        """A coerced 'urgent' inverts the caller's intent silently.
+
+        bool("false") is True, so the mission would jump the queue while the
+        caller asked for the opposite — and openapi.yaml advertises "boolean".
+        """
+        response = api_client.post(
+            "/v1/missions",
+            json={"text": "valid text", "urgent": value},
+            headers=_AUTH,
+        )
+
+        assert response.status_code == 422
+        assert response.get_json()["error"]["code"] == "invalid_request"
+
 
 class TestGetMission:
     def test_get_existing_mission(self, api_client, instance_dir):

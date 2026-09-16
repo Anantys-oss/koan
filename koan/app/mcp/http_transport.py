@@ -37,11 +37,17 @@ def _audit_field(value: object) -> str:
 
 
 class BearerAuditMiddleware:
-    """Authenticate every HTTP request and write an audit line per response.
+    """Authenticate every HTTP request and audit it before it is served.
 
     Missing or empty credentials return 401; invalid (or unconfigured-token)
     credentials return 403 — matching the REST API's ``require_token``
     contract. Valid requests are delegated to the wrapped ASGI app unchanged.
+
+    A refused request produces one audit line, carrying its status. A forwarded
+    request produces two: one on receipt with ``-`` as its status, which is what
+    makes the trail fail closed (the request that finds the sink broken is
+    refused before the MCP app runs), and one when the response starts, with
+    the status.
     """
 
     def __init__(self, app, audit_path: Path):
@@ -107,7 +113,8 @@ class BearerAuditMiddleware:
         )
         return True
 
-    def _write_audit(self, scope: dict, status: int) -> None:
+    def _write_audit(self, scope: dict, status: object) -> bool:
+        """Append one audit line. Returns whether the sink accepted it."""
         client = scope.get("client")
         peer = _audit_field(client[0] if client else "-")
         method = _audit_field(scope.get("method", "-"))
@@ -119,22 +126,47 @@ class BearerAuditMiddleware:
         try:
             with open(self.audit_path, "a", encoding="utf-8") as handle:
                 handle.write(line)
+                handle.flush()
         except OSError as exc:
             # An unwritable audit path is a security-observability gap. Warn
-            # somewhere that is still readable, then latch: the next request is
-            # refused rather than served with no record of it.
+            # somewhere that is still readable, then latch: this request, and
+            # every one after it, is refused rather than served with no record.
             if not self.audit_broken:
                 self.audit_broken = True
                 self._warn_off_audit_sink(
                     f"Kōan MCP audit warning: cannot write {self.audit_path}: "
                     f"{exc}; refusing further requests until it is writable"
                 )
+            return False
+        return True
 
     async def _reject_unsupported(self, scope, send) -> None:
         """Fail closed on a scope type this middleware cannot authenticate."""
         self._write_audit(scope, 403)
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
+            return
+        # There is no terminal message for a scope type this middleware does
+        # not know, and returning silently would leave the caller waiting on a
+        # connection whose refusal is recorded only in the audit file. Raise,
+        # so the server reports it and tears the connection down.
+        raise RuntimeError(
+            f"unsupported ASGI scope type {scope['type']!r} refused by "
+            "Kōan's MCP authentication middleware"
+        )
+
+    async def _refuse_unaudited(self, scope, receive, send) -> None:
+        """Serve 503 because the audit trail cannot record this request."""
+        response = JSONResponse(
+            {
+                "error": {
+                    "code": "audit_unavailable",
+                    "message": "Audit log is not writable",
+                }
+            },
+            status_code=503,
+        )
+        await response(scope, receive, send)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "lifespan":
@@ -150,16 +182,7 @@ class BearerAuditMiddleware:
         if self.audit_broken and not self._audit_sink_usable():
             # Fail closed: the spec promises every HTTP request is audited, so
             # serve nothing while the trail cannot be written.
-            response = JSONResponse(
-                {
-                    "error": {
-                        "code": "audit_unavailable",
-                        "message": "Audit log is not writable",
-                    }
-                },
-                status_code=503,
-            )
-            await response(scope, receive, send)
+            await self._refuse_unaudited(scope, receive, send)
             return
 
         logged = False
@@ -216,6 +239,16 @@ class BearerAuditMiddleware:
                 status_code=403,
             )
             await response(scope, receive, audited_send)
+            return
+
+        # Audit on receipt, before the request reaches the MCP app. Auditing
+        # only on the response would let the request that *discovers* a broken
+        # sink complete its side effect — a mission deletion, say — with no
+        # entry at all, and refuse only the next one. Recording it here means
+        # the request that detects the failure is the request that is refused,
+        # and nothing downstream has run yet.
+        if not self._write_audit(scope, "-"):
+            await self._refuse_unaudited(scope, receive, send)
             return
 
         try:

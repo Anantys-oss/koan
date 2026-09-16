@@ -139,6 +139,48 @@ def test_unauditable_requests_are_refused_not_served(tmp_path):
     assert response.json()["error"]["code"] == "audit_unavailable"
 
 
+def test_the_request_that_finds_the_sink_broken_is_itself_refused(tmp_path):
+    """Fail closed on detection, not one request later.
+
+    Auditing only on the response would let the request that *discovers* the
+    broken sink run its side effect — a mission deletion, say — with no entry
+    at all, and refuse only the next one.
+    """
+    audit_path = tmp_path / "mcp.log"
+    audit_path.mkdir()  # a directory: every append raises OSError
+    reached = []
+
+    async def downstream(scope, receive, send):
+        reached.append(scope["path"])
+
+    client = TestClient(BearerAuditMiddleware(downstream, audit_path))
+    with patch("app.api.auth._get_token", return_value="secret-token"):
+        response = client.get(
+            "/mcp", headers={"Authorization": "Bearer secret-token"}
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "audit_unavailable"
+    assert reached == []
+
+
+def test_forwarded_request_is_audited_before_it_reaches_the_app(tmp_path):
+    audit_path = tmp_path / "mcp.log"
+    audited_on_arrival = []
+
+    async def downstream(scope, receive, send):
+        audited_on_arrival.append(audit_path.read_text())
+        response = await _ok(None)
+        await response(scope, receive, send)
+
+    client = TestClient(BearerAuditMiddleware(downstream, audit_path))
+    with patch("app.api.auth._get_token", return_value="secret-token"):
+        client.get("/mcp", headers={"Authorization": "Bearer secret-token"})
+
+    assert " GET /mcp -" in audited_on_arrival[0]
+    assert " GET /mcp 200" in audit_path.read_text()
+
+
 def test_service_resumes_once_the_audit_sink_is_writable(tmp_path):
     audit_path = tmp_path / "mcp.log"
     audit_path.mkdir()
@@ -245,6 +287,33 @@ def test_unknown_scope_is_refused_not_forwarded(tmp_path):
 
     assert forwarded == []
     assert sent == [{"type": "websocket.close", "code": 1008}]
+    assert " /mcp 403" in audit_path.read_text()
+
+
+def test_scope_with_no_terminal_message_raises_instead_of_hanging(tmp_path):
+    """A refusal only the audit file records leaves the caller waiting."""
+    audit_path = tmp_path / "mcp.log"
+    forwarded = []
+    sent = []
+
+    async def downstream(scope, receive, send):
+        forwarded.append(scope["type"])
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = BearerAuditMiddleware(downstream, audit_path)
+    scope = {"type": "quic", "path": "/mcp", "headers": ()}
+
+    try:
+        asyncio.run(middleware(scope, None, send))
+    except RuntimeError as exc:
+        assert "quic" in str(exc)
+    else:
+        raise AssertionError("an unforwardable scope must not return quietly")
+
+    assert forwarded == []
+    assert sent == []
     assert " /mcp 403" in audit_path.read_text()
 
 
