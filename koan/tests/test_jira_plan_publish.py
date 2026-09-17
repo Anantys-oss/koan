@@ -444,6 +444,97 @@ def test_unresolvable_identity_spares_a_human_comment(tmp_path):
     assert human["body"] == human_body
 
 
+def test_a_quoted_current_footer_is_never_adopted_as_the_published_part(tmp_path):
+    """Read-back must not hand the navigation pass a comment Koan cannot claim.
+
+    On a tenant that drops properties and answers no ``/myself``, a reviewer
+    quoting the tail of the *current* revision is the only footer match for it.
+    Accepting that comment as the published part reports someone else's comment
+    as Koan's own — and the navigation pass, which rewrites what it is given,
+    would replace their text with the plan.
+    """
+    body = _split_fixture(2)
+    stage_plan(URL, body, str(tmp_path))
+    revision = _revision(body)
+    human_body = f"Quoting part 1:\n\n{_footer_for(revision, 1, 2)}"
+    human = {
+        "id": "11",
+        "body": human_body,
+        "properties": {},
+        "author_account_id": "human-account",
+    }
+    comments = [human]
+
+    def add(_key, rendered, properties=None):
+        comments.append({
+            "id": str(len(comments) + 100),
+            "body": _as_jira_returns(rendered),
+            "properties": {},  # tenant drops entity properties
+            "author_account_id": "koan-account",
+        })
+        return True
+
+    def edit(_key, comment_id, rendered, properties=None):
+        target = next(c for c in comments if c["id"] == comment_id)
+        target["body"] = _as_jira_returns(rendered)
+        return True
+
+    with (
+        patch("app.jira_notifications.jira_self_identity", return_value=("", "")),
+        patch(
+            "app.jira_plan_publish.jira_list_comments_checked",
+            side_effect=lambda _k: comments,
+        ),
+        patch("app.jira_plan_publish.jira_add_comment", side_effect=add),
+        patch("app.jira_plan_publish.jira_edit_comment", side_effect=edit),
+        patch("app.jira_plan_publish.time.sleep"),
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, ids = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is True
+    assert human["body"] == human_body
+    assert "11" not in ids.split(", ")
+
+
+def test_a_resumed_publish_neither_duplicates_nor_rewrites_unprovable_parts(tmp_path):
+    """Its own parts are already there; nothing proves they are its own.
+
+    Re-posting them would duplicate the plan, and the link pass rewrites what
+    it is given, so on a tenant that proves no authorship the parts are read as
+    published and left exactly as they are — unlinked rather than rewritten.
+    """
+    body = _split_fixture(2)
+    stage_plan(URL, body, str(tmp_path))
+    revision = _revision(body)
+    parts = _plan_parts(body)
+    comments = [
+        {
+            "id": str(index + 1),
+            "body": _as_jira_returns(_render_comment(part, revision, index + 1, len(parts))),
+            "properties": {},  # tenant drops entity properties
+        }
+        for index, part in enumerate(parts)
+    ]
+
+    with (
+        patch("app.jira_notifications.jira_self_identity", return_value=("", "")),
+        patch(
+            "app.jira_plan_publish.jira_list_comments_checked",
+            side_effect=lambda _k: comments,
+        ),
+        patch("app.jira_plan_publish.jira_add_comment") as add_comment,
+        patch("app.jira_plan_publish.jira_edit_comment") as edit_comment,
+        patch("app.jira_plan_publish.log_event"),
+    ):
+        ok, ids = publish_staged_plan(URL, str(tmp_path))
+
+    assert ok is True
+    assert ids == ", ".join(str(index + 1) for index in range(len(parts)))
+    add_comment.assert_not_called()
+    edit_comment.assert_not_called()
+
+
 def test_a_created_part_is_not_created_again_when_the_listing_lags(tmp_path):
     """Jira's comment listing is not read-your-writes.
 
@@ -628,6 +719,23 @@ def test_corrupt_stage_is_reported_not_silently_treated_as_absent(tmp_path):
 
     actions = [call.kwargs["details"]["action"] for call in log_event.call_args_list]
     assert "stage_read" in actions
+
+
+def test_an_unusable_stage_names_the_issue_it_belongs_to(tmp_path):
+    """The audit event exists to say *which* issue lost its plan."""
+    unparseable = "not-a-jira-url"
+    path = stage_path_for(unparseable, str(tmp_path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{")
+
+    with patch("app.jira_plan_publish.log_event") as log_event:
+        assert load_staged_plan(unparseable, str(tmp_path)) is None
+
+    details = [
+        call.kwargs["details"] for call in log_event.call_args_list
+        if call.kwargs["details"]["action"] == "stage_read"
+    ]
+    assert details and all(d["issue_key"] for d in details)
 
 
 def test_missing_stage_is_not_reported_as_a_failure(tmp_path):
@@ -1081,6 +1189,47 @@ def test_reassembly_is_the_exact_inverse_of_the_split(plan):
     ]
 
     assert reassemble_plan_parts(published) == plan.strip()
+
+
+def test_a_gap_does_not_apply_a_marker_to_the_wrong_neighbour():
+    """A missing part makes position a lie — its marker must not be honoured.
+
+    A continuation marker describes how a part attaches to *the part before
+    it*. Applied across a gap, the "code block" flag strips a fence line that
+    belongs to the plan rather than one the split invented, and the reader
+    hands the agent a code example with its opening fence eaten.
+    """
+    plan = _oversized_fence_plan()
+    parts = _plan_parts(plan)
+    revision = _revision(plan)
+    assert len(parts) >= 3, "fixture must split into at least three parts"
+    published = [
+        _render_comment(part, revision, index + 1, len(parts))
+        for index, part in enumerate(parts)
+    ]
+
+    numbers = [1, len(parts)]
+    assembled = reassemble_plan_parts([published[0], published[-1]], numbers)
+
+    assert "continued from the previous part" not in assembled
+    assert assembled.count("```") % 2 == 0
+    assert strip_plan_envelope(published[0]).strip() in assembled
+
+
+def test_a_group_that_starts_mid_plan_drops_its_dangling_marker():
+    """The first available part may still carry a marker for a part that is gone."""
+    plan = "\n".join(f"- step {index}" for index in range(3_000))
+    parts = _plan_parts(plan)
+    revision = _revision(plan)
+    published = [
+        _render_comment(part, revision, index + 1, len(parts))
+        for index, part in enumerate(parts)
+    ]
+
+    assembled = reassemble_plan_parts(published[1:], list(range(2, len(parts) + 1)))
+
+    assert "continued from the previous part" not in assembled
+    assert assembled.startswith("- step")
 
 
 def test_middle_part_navigation_does_not_leak_into_the_plan():

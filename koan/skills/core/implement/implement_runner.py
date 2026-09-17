@@ -553,7 +553,10 @@ def _extract_jira_multipart_plan_scored(
 
     newest = max(group_scores, key=lambda rev: group_scores[rev])
     parts = groups[newest]
-    assembled = reassemble_plan_parts([parts[number] for number in sorted(parts)])
+    ordered = sorted(parts)
+    # Pass the numbers, not just the bodies: a gap makes position a lie, and a
+    # continuation marker applied to the wrong neighbour corrupts the plan.
+    assembled = reassemble_plan_parts([parts[number] for number in ordered], ordered)
 
     expected = group_counts[newest]
     missing = [n for n in range(1, expected + 1) if n not in parts]
