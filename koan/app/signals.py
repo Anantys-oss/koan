@@ -66,3 +66,16 @@ LAST_CLEANUP_FILE = ".koan-last-cleanup"
 def pid_file(process_name: str) -> str:
     """Return the signal file name for a PID file, e.g. ``.koan-pid-run``."""
     return f".koan-pid-{process_name}"
+
+
+def ready_file(process_name: str) -> str:
+    """Return the readiness marker file name, e.g. ``.koan-ready-mcp``.
+
+    A pidfile proves a process exists; this marker proves it got as far as
+    serving. The MCP HTTP daemon claims its pidfile early — so a slow SDK
+    import is not reported as a launch failure — and touches this only once
+    the transport is about to accept requests, so the launcher can tell
+    "alive" from "serving" instead of reporting every post-pidfile startup
+    failure as a healthy boot.
+    """
+    return f".koan-ready-{process_name}"

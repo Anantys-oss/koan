@@ -37,6 +37,7 @@ from app.signals import (
     STATUS_FILE,
     STOP_FILE,
     pid_file,
+    ready_file,
 )
 
 
@@ -258,11 +259,15 @@ def check_pidfile(koan_root: Path, process_name: str) -> Optional[int]:
     return None
 
 
-PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api")
+PROCESS_NAMES = ("run", "awake", "ollama", "dashboard", "api", "mcp")
 
 # Process startup verification timeouts
 DEFAULT_VERIFY_TIMEOUT = 3.0
 OLLAMA_VERIFY_TIMEOUT = 5.0
+# Extra wait, past the pidfile, for the MCP daemon to signal it is serving.
+# It covers the MCP SDK import, tool registration and the OpenAPI spec parse,
+# none of which the pidfile wait covers by design — see ``start_mcp``.
+MCP_READY_TIMEOUT = 20.0
 
 
 def _launch_python_process(
@@ -317,7 +322,14 @@ def _launch_python_process(
     while time.monotonic() < deadline:
         new_pid = check_pidfile(koan_root, process_name)
         if new_pid:
-            label = "Agent loop" if process_name == "run" else "Bridge"
+            labels = {
+                "run": "Agent loop",
+                "awake": "Bridge",
+                "dashboard": "Dashboard",
+                "api": "REST API",
+                "mcp": "MCP HTTP",
+            }
+            label = labels.get(process_name, process_name.capitalize())
             return True, f"{label} started (PID {new_pid})"
         time.sleep(0.3)
 
@@ -480,6 +492,109 @@ def start_api(koan_root: Path, verify_timeout: float = DEFAULT_VERIFY_TIMEOUT) -
     return _launch_python_process(koan_root, "app/api/server.py", "api", verify_timeout)
 
 
+def start_mcp(
+    koan_root: Path,
+    verify_timeout: float = DEFAULT_VERIFY_TIMEOUT,
+    ready_timeout: float = MCP_READY_TIMEOUT,
+) -> tuple:
+    """Start the MCP Streamable HTTP daemon as a detached subprocess.
+
+    Only launched when ``mcp.enabled: true`` and ``mcp.transport: http`` —
+    stdio mode is client-launched and never daemonized.
+    Returns (success: bool, message: str).
+
+    The daemon claims its pidfile early, before the MCP SDK import and the
+    OpenAPI spec parse, so that slow-but-healthy startup is not reported as a
+    launch failure. That makes the pidfile proof of existence, not of service:
+    an incompatible SDK or a registration error still exits afterwards. So the
+    pidfile wait is followed by a wait on the daemon's readiness marker, which
+    it touches only once it is about to accept requests.
+    """
+    ready = koan_root / ready_file("mcp")
+    # A marker left by an earlier run would otherwise read as this run's
+    # readiness. The daemon clears its own on exit; a SIGKILL does not.
+    ready.unlink(missing_ok=True)
+
+    ok, msg = _launch_python_process(
+        koan_root, "app/mcp/__main__.py", "mcp", verify_timeout,
+    )
+    if not ok:
+        return ok, msg
+
+    deadline = time.monotonic() + ready_timeout
+    while time.monotonic() < deadline:
+        if ready.exists():
+            return True, msg
+        if not check_pidfile(koan_root, "mcp"):
+            return False, (
+                "MCP HTTP exited during startup — see logs/mcp.log"
+            )
+        time.sleep(0.1)
+    return False, (
+        f"MCP HTTP did not report ready within {ready_timeout:g}s "
+        "— see logs/mcp.log"
+    )
+
+
+def _mcp_management_error() -> str:
+    """Message describing why MCP cannot be managed, else an empty string.
+
+    Two cases produce one: an unrecognised ``mcp.transport`` (which resolves to
+    ``stdio``, never a listener, so ``make start`` would otherwise report
+    success with nothing bound on the configured port), and a config read that
+    fails outright (which would otherwise silently downgrade MCP to "not
+    configured", hiding a live daemon from `make status`).
+    """
+    try:
+        from app.config import (
+            MCP_TRANSPORTS,
+            get_mcp_enabled,
+            get_mcp_transport_setting,
+        )
+        from app.utils import config_read_error
+
+        # Probe the file itself first. Every ``get_mcp_*`` getter reads through
+        # ``load_config``, which swallows a parse or permission error and
+        # returns ``{}`` — so an unreadable config would arrive here as
+        # ``mcp.enabled: false`` and silently drop MCP from both `make start`
+        # and `make status` instead of being reported.
+        read_error = config_read_error()
+        if read_error:
+            return f"MCP configuration unreadable: {read_error}"
+        if not get_mcp_enabled():
+            return ""
+        value = get_mcp_transport_setting()
+        if value in MCP_TRANSPORTS:
+            return ""
+        expected = "/".join(sorted(MCP_TRANSPORTS))
+        return (
+            f"unknown mcp.transport {value!r} (expected {expected}) — "
+            "no MCP daemon started"
+        )
+    except (ImportError, OSError, ValueError) as e:
+        return f"MCP configuration unreadable: {e}"
+
+
+def _is_mcp_http_enabled() -> bool:
+    """Whether the MCP HTTP daemon should be managed by the process manager.
+
+    Only HTTP mode is daemon-managed; stdio is launched by MCP clients and is
+    never started by ``make start``.
+
+    Read failures are deliberately **not** caught here. Answering "not
+    configured" for a config this function could not read is the exact
+    degradation ``_mcp_management_error()`` exists to prevent: it would drop
+    ``mcp`` from `make status` and `make stop` while a daemon still holds
+    ``.koan-pid-mcp``. ``_mcp_management_error()`` probes the file separately
+    and stays the single place that decides how an unreadable MCP config is
+    reported, so a failure that lands here — a read that broke between the two
+    probes — propagates to callers rather than the two disagreeing.
+    """
+    from app.config import get_mcp_enabled, get_mcp_transport
+
+    return get_mcp_enabled() and get_mcp_transport() == "http"
+
+
 def _is_api_enabled() -> bool:
     """Check if REST API is enabled in config.yaml and allowed by the deploy gate.
 
@@ -521,6 +636,15 @@ def get_status_processes(koan_root: Path) -> tuple:
     provider = _detect_provider(koan_root)
     dashboard = _is_dashboard_enabled()
     api = _is_api_enabled()
+    # An unreadable MCP config keeps `mcp` in the status list: a daemon may be
+    # running, and omitting it would report a clean stack while a listener is
+    # untracked. A read that fails only after _mcp_management_error() probed
+    # the file arrives here as an exception, and is treated the same way.
+    try:
+        mcp = bool(_mcp_management_error()) or _is_mcp_http_enabled()
+    except (ImportError, OSError, ValueError) as e:
+        print(f"[pid_manager] MCP management check failed: {e}", file=sys.stderr)
+        mcp = True
     names = list(PROCESS_NAMES)
     if not _needs_ollama(provider):
         names.remove("ollama")
@@ -528,6 +652,8 @@ def get_status_processes(koan_root: Path) -> tuple:
         names.remove("dashboard")
     if not api:
         names.remove("api")
+    if not mcp:
+        names.remove("mcp")
     return tuple(names)
 
 
@@ -685,6 +811,14 @@ def format_status_all(koan_root: Path) -> list:
         else:
             lines.append("  dashboard: not running")
 
+    # --- MCP HTTP (conditional) ---
+    if "mcp" in process_names:
+        mcp_pid = check_pidfile(koan_root, "mcp")
+        if mcp_pid:
+            lines.append(f"  mcp: running (PID {mcp_pid})")
+        else:
+            lines.append("  mcp: not running")
+
     return lines
 
 
@@ -791,6 +925,22 @@ def start_all(koan_root: Path, provider: str = None, show_banner: bool = True) -
     if _is_api_enabled():
         ok, msg = start_api(koan_root)
         results["api"] = (ok, msg)
+
+    # 6. Start MCP HTTP daemon after the API it depends on
+    mcp_error = _mcp_management_error()
+    manage_mcp = False
+    if not mcp_error:
+        try:
+            manage_mcp = _is_mcp_http_enabled()
+        except (ImportError, OSError, ValueError) as e:
+            # A read that broke between the two probes is a start failure, not
+            # a silent "MCP is not configured".
+            mcp_error = f"MCP configuration unreadable: {e}"
+    if mcp_error:
+        results["mcp"] = (False, mcp_error)
+    elif manage_mcp:
+        ok, msg = start_mcp(koan_root)
+        results["mcp"] = (ok, msg)
 
     return results
 
@@ -1050,7 +1200,7 @@ def stop_process(koan_root: Path, name: str, timeout: float = 5.0) -> str:
 def _print_stack_results(results: dict) -> int:
     """Print stack start results and return exit code (0=ok, 1=failure)."""
     any_failed = False
-    for name in ("ollama", "awake", "run", "dashboard"):
+    for name in ("ollama", "awake", "run", "dashboard", "api", "mcp"):
         if name not in results:
             continue
         ok, msg = results[name]
