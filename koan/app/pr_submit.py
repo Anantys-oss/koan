@@ -249,12 +249,38 @@ def submit_draft_pr(
                 try:
                     from app.jira_outcome_publish import upsert_jira_comment
 
-                    upsert_jira_comment(
+                    ok, reason = upsert_jira_comment(
                         issue_key, skill_name or "mission", body,
                     )
+                    if ok:
+                        return
+                    logger.warning(
+                        "Jira comment upsert did not complete for %s: %s",
+                        issue_key, reason,
+                    )
+                    # No failure reason licenses a second create. The generic
+                    # path posts a bare body — no `koan.jira.outcome` property,
+                    # no status footer — so the next run cannot find it to
+                    # supersede it, and it stays on the issue forever next to
+                    # the status comment. Nor is `create_failed` proof that
+                    # nothing was posted: `jira_add_comment` reports failure for
+                    # a POST whose response was lost after Jira stored the
+                    # comment. A create that was *attempted* is never repeated
+                    # (`specs/skills/plan.md`); the end-of-mission publisher and
+                    # the next run re-verify and update whatever landed.
+                    # `*_unverified` means the comment *is* on the issue,
+                    # `update_failed` means one exists to be superseded, and
+                    # `lookup_failed` means we cannot tell — blind-creating on
+                    # an unreadable listing is how a flaky read path stacks
+                    # duplicates.
                     return
                 except Exception as e:
-                    logger.debug("Failed to upsert Jira comment: %s", e)
+                    # An unhandled error leaves no status comment on the issue,
+                    # so it gets the same visibility as the `not ok` branch
+                    # above instead of hiding at debug level.
+                    logger.warning(
+                        "Jira comment upsert failed for %s: %s", issue_key, e,
+                    )
                     return
         try:
             from app.issue_tracker import add_comment
