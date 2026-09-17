@@ -4,7 +4,7 @@ title: "Skill Spec — plan"
 description: "Documents the `/plan` skill that deep-thinks an idea (or iterates an existing issue) into a structured tracker-issue plan via a critic→regenerate loop, covered by the deterministic eval harness."
 tags: [skill]
 created: 2026-06-27
-updated: 2026-09-13
+updated: 2026-09-17
 ---
 
 # Skill Spec — `plan`
@@ -156,6 +156,24 @@ See `docs/users/skills.md` for the end-user `/plan` reference and
   Navigation links are likewise stripped as a *run* rather than one per line: ADF folds
   a middle part's two links into a single paragraph, and a per-line rule leaves Jira
   permalinks sitting in the plan.
+- **A gap makes position a lie.** A continuation marker describes how a part attaches to
+  *the part before it*, so a reader working from an incomplete group must be told which
+  part each body is, not merely their order. Across a gap the marker is discarded and the
+  neighbours rejoin as separate paragraphs: honouring it would strip a fence line that
+  belongs to the plan rather than one the split invented, or weld two unrelated sentences
+  together — corruption the incompleteness banner does not describe, because nothing reads
+  as missing. A group that starts after part 1 drops its dangling marker for the same
+  reason: it is envelope naming a part that is not there, not prose.
+- **A read-back certifies a comment only if Koan owns it.** What verification returns is
+  reported as the published part *and* handed to the navigation pass, which rewrites that
+  body — so it must be a comment whose authorship is proven or one this publish itself
+  wrote (a create claims the comment that was not in its own pre-write listing). A footer
+  match alone would let a reviewer quoting the current revision's tail be adopted as the
+  published part and then overwritten with plan text. A comment carrying both the
+  revision *and* the part's prose is still honoured as already published — that is how a
+  resumed publish on a tenant which proves nothing avoids duplicating its own parts — but
+  it is not owned, so it is never rewritten: it keeps its content and goes without
+  previous/next links, which reassembly does not need.
 
 ## Evaluation
 

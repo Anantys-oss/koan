@@ -289,7 +289,10 @@ def _drop_trailing_fence(text: str) -> str:
     return head if tail.strip() == "```" else text
 
 
-def reassemble_plan_parts(part_bodies: Sequence[str]) -> str:
+def reassemble_plan_parts(
+    part_bodies: Sequence[str],
+    part_numbers: Optional[Sequence[int]] = None,
+) -> str:
     """Rebuild the plan text from its published part comment bodies, in order.
 
     The inverse of :func:`_plan_parts`: it drops the envelope every part wears
@@ -298,16 +301,36 @@ def reassemble_plan_parts(part_bodies: Sequence[str]) -> str:
     it a plan comes back to `/implement` with stray ``` markers splitting one
     code example in two and a paragraph break wherever the cut fell mid-list.
 
+    ``part_numbers`` gives each body's part number, and is required whenever the
+    set may be incomplete — a reader can only recover the parts still on the
+    issue. A continuation marker describes how a part attaches to *the part
+    before it*, so applying it across a gap is worse than ignoring it: the
+    "code block" flag would strip a fence line that belongs to the plan rather
+    than one the split invented, and a "no break" join would weld two unrelated
+    sentences together. Across a gap the marker is therefore dropped (it is
+    envelope, not prose) and the neighbours rejoin as separate paragraphs.
+    Omit the argument only for a set known to be whole and to start at part 1.
+
     Boundary whitespace is normalised to the canonical separator (a run of three
     blank lines rejoins as one), which markdown renders identically.
     """
+    numbers = list(part_numbers) if part_numbers is not None else []
+
+    def follows_predecessor(index: int) -> bool:
+        if index == 0:
+            return False
+        return not numbers or numbers[index] == numbers[index - 1] + 1
+
     assembled = ""
     for index, body in enumerate(part_bodies):
         content = strip_plan_envelope(body or "")
-        if index == 0:
-            assembled = content.strip()
-            continue
-        joiner, reopened_fence, content = _read_continuation(content)
+        joiner, reopened_fence = "\n\n", False
+        # Part 1 never carries a marker; a set that starts later does, and it
+        # names a part that is not here.
+        if index or numbers[:1] not in ([], [1]):
+            joiner, reopened_fence, content = _read_continuation(content)
+        if not follows_predecessor(index):
+            joiner, reopened_fence = "\n\n", False
         content = content.strip()
         if reopened_fence:
             assembled = _drop_trailing_fence(assembled)
@@ -430,10 +453,74 @@ def _locate_part(comments, part_number: int) -> Optional[dict]:
     return None
 
 
-def _verify_part(comments, revision: str, part_number: int) -> Optional[dict]:
-    """The comment proving Jira holds this exact revision of part N."""
+def _verify_part(
+    comments,
+    revision: str,
+    part_number: int,
+    owned_ids=frozenset(),
+) -> Optional[dict]:
+    """The comment proving Jira holds this exact revision of part N.
+
+    A read-back is not read-only in its consequences: what it returns is
+    reported as the published comment, and its id is handed to the navigation
+    pass, which rewrites that body. So only a comment Koan *owns* qualifies —
+    one whose authorship is proven, or one this publish itself wrote
+    (``owned_ids``). The footer alone is not ownership: a reviewer quoting the
+    tail of a plan reproduces it, and on a tenant that drops properties and
+    answers no ``/myself`` that quote would otherwise be adopted as the
+    published part and then overwritten with plan text. The cost of refusing it
+    is a duplicate part on such a tenant, which is what this module already
+    trades for everywhere else it cannot prove authorship.
+    """
     for comment, rev, part, _count in _find_plan_comments(comments):
-        if rev == revision and part == part_number:
+        if rev != revision or part != part_number:
+            continue
+        if _provably_koan(comment) or str(comment.get("id", "")) in owned_ids:
+            return comment
+    return None
+
+
+def _plan_prose(text: str) -> str:
+    """``text`` minus its code blocks, whitespace-normalised.
+
+    Jira stores ADF and reads back through ``_adf_to_text``, which drops
+    ``codeBlock`` content — so this is the part of a published part that a
+    read-back can still be compared against.
+    """
+    kept, inside = [], False
+    for line in (text or "").splitlines():
+        if _FENCE_RE.match(line):
+            inside = not inside
+            continue
+        if not inside:
+            kept.append(line)
+    return " ".join(" ".join(kept).split())
+
+
+def _seen_part(
+    comments,
+    revision: str,
+    part_number: int,
+    part_text: str,
+) -> Optional[dict]:
+    """A comment already carrying this revision of part N *and its content*.
+
+    Enough to skip a write — the issue already shows this part, so writing
+    again would only duplicate it — but never enough to pick an edit target,
+    which is why it is separate from :func:`_verify_part`.
+
+    The content test is what keeps this usable on a tenant that proves no
+    authorship: a reviewer quoting the tail of a plan reproduces the footer but
+    not the part's prose, so their comment is not mistaken for Koan's own
+    resumed publish and silently left standing in for it.
+    """
+    prose = _plan_prose(part_text)
+    if not prose:
+        return None
+    for comment, rev, part, _count in _find_plan_comments(comments):
+        if rev != revision or part != part_number:
+            continue
+        if prose in " ".join((comment.get("body") or "").split()):
             return comment
     return None
 
@@ -446,8 +533,12 @@ def _stage_unreadable(issue_url: str, reason: str) -> None:
     """
     issue_key = ""
     with suppress(Exception):
-        issue_key = parse_jira_url(issue_url)
-    _audit(issue_key, "stage_read", "failure", 1, error=reason[:180])
+        issue_key = parse_jira_url(issue_url) or ""
+    # An unparseable URL must not cost the record its only identifier — the
+    # whole point of this event is telling an operator *which* issue lost its
+    # staged plan. Fall back to the raw URL rather than logging "failed for ?".
+    _audit(issue_key or issue_url or "<unknown issue>", "stage_read", "failure", 1,
+           error=reason[:180])
 
 
 def _read_stage(issue_url: str, instance_dir: str) -> Optional[dict]:
@@ -626,7 +717,7 @@ def _upsert_part(
     attempts: int,
     always_write: bool = False,
     comment_id: str = "",
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, bool]:
     """Create or update one plan part, requiring a Jira read-back match.
 
     ``always_write`` forces the edit used to attach navigation links, whose
@@ -639,18 +730,24 @@ def _upsert_part(
     about authorship, and refusing the overwrite would post a duplicate of a
     part that is already on the issue.
 
-    Returns ``(published, detail)``: the Jira comment id on success, and
+    Returns ``(published, detail, owned)``: the Jira comment id on success, and
     otherwise a machine-readable failure reason (``""`` for the generic
-    verification failure the caller names itself).
+    verification failure the caller names itself). ``owned`` is False when the
+    part was merely *found* on the issue rather than written or proven here —
+    the caller must not hand such a comment to a pass that rewrites it.
     """
     try:
         rendered = _render_comment(part, revision, part_number, part_count, navigation)
     except ValueError as exc:
         _audit(issue_key, "render", "failure", 0, error=str(exc)[:180], part=part_number)
-        return False, ""
+        return False, "", False
 
     properties = _plan_properties(revision, part_number, part_count)
     created_unverified = False
+    # Comments this publish is entitled to claim as its own writes, on a tenant
+    # that can prove nothing: the caller's verified id, plus whatever this loop
+    # creates below.
+    owned_ids = {comment_id} if comment_id else set()
     for attempt in range(1, max(1, attempts) + 1):
         # A failed lookup is not "no plan comment yet" — creating one here is how
         # a flaky read path turns into a pile of duplicate plan comments.
@@ -662,7 +759,7 @@ def _upsert_part(
                 time.sleep(attempt)
             continue
 
-        settled = _verify_part(comments, revision, part_number)
+        settled = _verify_part(comments, revision, part_number, owned_ids)
         if settled is not None and (
             not always_write or _contains_navigation(settled.get("body") or "", navigation)
         ):
@@ -670,15 +767,30 @@ def _upsert_part(
                 issue_key, "verify", "success", attempt,
                 comment_id=settled.get("id", ""), part=part_number, parts=part_count,
             )
-            return True, str(settled.get("id", ""))
+            return True, str(settled.get("id", "")), True
 
-        # `settled` came from a read-only match, but from here on it is an edit
-        # target — the navigation pass rewrites the comment it already verified.
-        # A caller-supplied id needs no authorship proof: this publish created
-        # and verified that comment moments ago. Otherwise only a comment Koan
-        # can prove it wrote may be overwritten.
+        if settled is None and not always_write:
+            seen = _seen_part(comments, revision, part_number, part)
+            if seen is not None:
+                # The issue already shows this part, content and all, but on a
+                # tenant that drops properties and answers no `/myself` nothing
+                # *proves* Koan wrote it. Publishing again would duplicate it;
+                # editing it would risk someone else's comment. Report it as
+                # already published and touch nothing, at the cost of leaving it
+                # unlinked (see `publish_staged_plan`).
+                _audit(
+                    issue_key, "verify", "success", attempt,
+                    comment_id=seen.get("id", ""), part=part_number, parts=part_count,
+                )
+                return True, str(seen.get("id", "")), False
+
+        # From here on `settled` is an edit target — the navigation pass
+        # rewrites the comment it already verified. `_verify_part` only returns
+        # a comment Koan owns (proven author, or written by this publish), so
+        # it is safe to overwrite; a caller-supplied id likewise, since this
+        # publish created and verified that comment moments ago.
         existing: Optional[dict] = {"id": comment_id} if comment_id else None
-        if existing is None and settled is not None and _provably_koan(settled):
+        if existing is None and settled is not None:
             existing = settled
         if existing is None:
             existing = _locate_part(comments, part_number)
@@ -695,9 +807,12 @@ def _upsert_part(
                 error="create attempted but never read back",
                 part=part_number, parts=part_count,
             )
-            return False, "created_unverified"
+            return False, "created_unverified", False
 
+        known_ids = {str(c.get("id", "")) for c in comments}
         action = "update" if existing is not None else "create"
+        if existing is not None:
+            owned_ids.add(str(existing.get("id", "")))
         if action == "create":
             # Arm the guard on the *attempt*, not on its reported result: a POST
             # whose response is lost (socket timeout, dropped connection) is
@@ -726,10 +841,21 @@ def _upsert_part(
             )
 
         try:
-            verified = _verify_part(jira_list_comments_checked(issue_key), revision, part_number)
+            fresh = jira_list_comments_checked(issue_key)
         except Exception as exc:
             verified = None
             _audit(issue_key, "verify", "failure", attempt, error=str(exc)[:180], part=part_number)
+        else:
+            if action == "create":
+                # `jira_add_comment` hands back no id, so a comment that was not
+                # in the pre-write listing is how a create claims its own write
+                # on a tenant that proves nothing about authorship.
+                owned_ids |= {
+                    str(c.get("id", ""))
+                    for c in fresh
+                    if str(c.get("id", "")) not in known_ids
+                }
+            verified = _verify_part(fresh, revision, part_number, owned_ids)
 
         # The navigation pass edits a comment that already carries this revision,
         # so a revision match alone proves nothing about whether the edit landed.
@@ -744,7 +870,7 @@ def _upsert_part(
                 issue_key, "verify", "success", attempt,
                 comment_id=verified.get("id", ""), part=part_number, parts=part_count,
             )
-            return True, str(verified.get("id", ""))
+            return True, str(verified.get("id", "")), True
 
         _audit(
             issue_key, "verify", "failure", attempt,
@@ -753,7 +879,7 @@ def _upsert_part(
         if attempt < attempts:
             time.sleep(attempt)
 
-    return False, ""
+    return False, "", False
 
 
 def _retire_superseded_parts(
@@ -866,17 +992,33 @@ def publish_staged_plan(
         return _record_failed_session(issue_url, instance_dir, reason)
 
     comment_ids: List[str] = []
+    owned: List[bool] = []
     for index, part in enumerate(parts):
-        posted, detail = _upsert_part(
+        posted, detail, part_owned = _upsert_part(
             issue_key, revision, part, index + 1, part_count, "", attempts,
         )
         if not posted:
             return failure(index + 1, detail or "verification_failed")
         comment_ids.append(detail)
+        owned.append(part_owned)
 
     if part_count > 1:
         for index, part in enumerate(parts):
-            posted, detail = _upsert_part(
+            if not owned[index]:
+                # This part was found on the issue carrying the right revision,
+                # but on a tenant that proves no authorship. Attaching links
+                # means rewriting a body Koan cannot claim — a reviewer quoting
+                # the plan's tail would lose their comment. Leave it unlinked;
+                # the part itself is published and reassembly does not need the
+                # links.
+                _log_runner(
+                    "jira",
+                    f"Part {index + 1}/{part_count} of plan {revision} on "
+                    f"{issue_key} could not be proven Koan's own; publishing it "
+                    f"without previous/next links rather than rewriting it.",
+                )
+                continue
+            posted, detail, _owned = _upsert_part(
                 issue_key, revision, part, index + 1, part_count,
                 _navigation(issue_url, comment_ids, index), attempts,
                 always_write=True, comment_id=comment_ids[index],
