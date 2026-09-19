@@ -340,6 +340,15 @@ def signal_process(
         )
         return False
     if not verified:
+        # A chronically stale pidfile degrades every /abort and
+        # /restart --force to the file-marker fallback; without this line the
+        # operator can only infer it from the repeated fallback replies.
+        print(
+            f"[pid_manager] PID {pid} from the {process_name} pidfile does not "
+            f"run {script} (exited, or the PID was recycled); "
+            f"withholding signal {sig}",
+            file=sys.stderr,
+        )
         return False
     try:
         os.kill(pid, sig)

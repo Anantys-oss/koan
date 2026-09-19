@@ -294,13 +294,27 @@ def _sigusr2_deferred():
     """
     _sig.pending_force_restart = ""
     _sig.defer_force_restart = True
+    in_flight: Optional[BaseException] = None
     try:
         yield
+    except BaseException as exc:
+        # Recorded, not handled: re-raised right below so the normal handlers
+        # still see it. Kept only so the replay in `finally` can log what it
+        # supersedes — a SystemExit raised there would otherwise discard e.g.
+        # the FileNotFoundError that says the provider binary is gone.
+        in_flight = exc
+        raise
     finally:
         _sig.defer_force_restart = False
         reason = _sig.pending_force_restart
         _sig.pending_force_restart = ""
         if reason:
+            if in_flight is not None:
+                log(
+                    "error",
+                    "Forced restart supersedes an in-flight failure: "
+                    f"{type(in_flight).__name__}: {in_flight}",
+                )
             _force_restart_now(reason)
 
 

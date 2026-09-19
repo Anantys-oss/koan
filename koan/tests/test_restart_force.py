@@ -319,7 +319,7 @@ class TestRestartHandler:
         mock_kill.assert_not_called()
         assert is_force_restart(str(tmp_path), target="run") is True
         assert (tmp_path / RESTART_BRIDGE_FILE).exists()
-        assert "not running" in result
+        assert "Could not locate the agent loop" in result
 
     def test_force_does_not_signal_a_recycled_pid(self, tmp_path, monkeypatch):
         """PID reuse guard: SIGUSR2 would kill whatever inherited the PID."""

@@ -29,8 +29,9 @@ _FORCED = (
 )
 
 _NO_RUNNER = (
-    "🔄 Force restart requested. The agent loop is not running — it will "
-    "start clean."
+    "🔄 Force restart requested. Could not locate the agent loop (no PID, or "
+    "an unreadable pidfile) — if it is running, the forced-marker poll (up to "
+    "30 s) kills the in-flight mission; otherwise it starts clean."
 )
 
 _NOT_CAPABLE = (
@@ -73,6 +74,15 @@ def _force_restart_runner(ctx: SkillContext) -> str:
 
     pid = check_pidfile(ctx.koan_root, "run")
     if not pid:
+        # check_pidfile returns None both for "no runner" and for "cannot
+        # tell" (unreadable/truncated pidfile while the runner is alive), so
+        # log the degraded branch like the other two rather than asserting a
+        # state we did not verify.
+        log(
+            "warning",
+            "Force restart: no usable runner PID — falling back to the forced "
+            "restart marker",
+        )
         return _NO_RUNNER
 
     if not runner_supports_force_signal(ctx.koan_root, pid):
