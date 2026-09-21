@@ -61,7 +61,7 @@ class VerifyResult:
 CODE_MISSION_KEYWORDS = {
     "implement", "fix", "add", "create", "build", "refactor",
     "extract", "migrate", "update", "replace", "remove", "delete",
-    "port", "rewrite", "optimize", "improve",
+    "port", "rewrite", "optimize", "improve", "deliver",
 }
 
 # Missions that should produce tests
@@ -239,8 +239,20 @@ def check_pr_created(project_path: str, mission_title: str) -> Check:
             f"PR #{pr_num} exists but state is {state}"
         )
     except Exception as e:
-        # No PR or gh not available
+        # No PR or gh not available.
         print(f"[verifier] PR check failed: {e}", file=sys.stderr)
+        if _is_code_mission(mission_title):
+            # A code mission that reached a feature branch and left no PR
+            # behind did not finish: the work exists but nobody is told about
+            # it. As a WARN this completed as a success and went out silently,
+            # with the commits stranded on the branch. FAIL routes it into the
+            # verify re-queue, which is capped and tags the reason.
+            return Check(
+                "pr_created", CheckStatus.FAIL,
+                "No PR found for current branch"
+            )
+        # Anything else on a feature branch (a rebase, a chore) may legitimately
+        # end without one.
         return Check(
             "pr_created", CheckStatus.WARN,
             "No PR found for current branch"
