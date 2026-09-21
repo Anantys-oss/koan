@@ -1172,11 +1172,12 @@ def _apply_verify_requeue_signal(result: dict, verify_result, mission_title: str
 
     Sets ``result["verify_requeue"]`` and ``result["verify_failure_summary"]``
     so ``_finalize_mission`` can move the mission back to Pending instead of
-    completing it. On a successful (exit 0) mission the only check that can
-    FAIL is ``check_diff_coherence`` (an empty branch), so a single failure is
-    already a strong, unambiguous signal — requiring two would make the
-    re-queue unreachable. This only *signals*; the lifecycle transition happens
-    in ``_finalize_mission``.
+    completing it. On a successful (exit 0) mission two checks can FAIL:
+    ``check_diff_coherence`` (an empty branch) and ``check_pr_created`` (commits
+    on a feature branch that never became a pull request). Both mean the mission
+    stopped short of its own outcome, so a single failure is already a strong,
+    unambiguous signal — requiring two would make the re-queue unreachable. This
+    only *signals*; the lifecycle transition happens in ``_finalize_mission``.
 
     Restricted to code missions: an empty branch is the *expected* outcome for
     an analysis / no-code mission, not a failure, so re-queueing one would

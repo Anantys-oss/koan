@@ -35,6 +35,9 @@ class TestMissionTypeClassification:
         assert _is_code_mission("fix broken login flow")
         assert _is_code_mission("add pagination to API")
         assert _is_code_mission("refactor database layer")
+        # A delivery command drives a whole implementation, so it owes a PR
+        # like any other code mission.
+        assert _is_code_mission("/deliver https://tracker.example/browse/PROJ-1")
 
     def test_analysis_mission_keywords(self):
         assert _is_analysis_mission("audit security of auth module")
@@ -216,10 +219,20 @@ class TestCheckPrCreated:
 
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")
-    def test_warn_no_pr(self, mock_gh, mock_git):
+    def test_fail_no_pr_on_code_mission(self, mock_gh, mock_git):
+        """Commits on a branch and no PR means the mission stopped short."""
         mock_git.return_value = (0, "koan/my-branch", "")
         mock_gh.side_effect = RuntimeError("no PR found")
         result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.FAIL
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_no_pr_on_other_mission(self, mock_gh, mock_git):
+        """A non-code mission may legitimately end without a PR."""
+        mock_git.return_value = (0, "koan/my-branch", "")
+        mock_gh.side_effect = RuntimeError("no PR found")
+        result = check_pr_created("/project", "rebase onto the base branch")
         assert result.status == CheckStatus.WARN
 
     @patch("app.mission_verifier.run_git")
