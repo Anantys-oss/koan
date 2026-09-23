@@ -23,6 +23,12 @@ from app.mission_verifier import (
     verify_mission,
 )
 
+# The exact shape `run_gh` wraps a "branch has no PR" gh exit in.
+_NO_PR_ERROR = (
+    'gh failed: gh pr view --json... — no pull requests found for branch '
+    '"koan/my-branch"'
+)
+
 
 # ---------------------------------------------------------------------------
 # Mission type classification
@@ -222,7 +228,7 @@ class TestCheckPrCreated:
     def test_fail_no_pr_on_code_mission(self, mock_gh, mock_git):
         """Commits on a branch and no PR means the mission stopped short."""
         mock_git.return_value = (0, "koan/my-branch", "")
-        mock_gh.side_effect = RuntimeError("no PR found")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
         result = check_pr_created("/project", "implement login")
         assert result.status == CheckStatus.FAIL
 
@@ -231,9 +237,54 @@ class TestCheckPrCreated:
     def test_warn_no_pr_on_other_mission(self, mock_gh, mock_git):
         """A non-code mission may legitimately end without a PR."""
         mock_git.return_value = (0, "koan/my-branch", "")
-        mock_gh.side_effect = RuntimeError("no PR found")
+        mock_gh.side_effect = RuntimeError(_NO_PR_ERROR)
         result = check_pr_created("/project", "rebase onto the base branch")
         assert result.status == CheckStatus.WARN
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_when_project_has_no_github_remote(self, mock_gh, mock_git):
+        """gh could not answer, so the check is inconclusive — never a FAIL."""
+        mock_git.return_value = (0, "koan/my-branch", "")
+        mock_gh.side_effect = RuntimeError(
+            "gh failed: gh pr view --json... — none of the git remotes point "
+            "to a GitHub host"
+        )
+        result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.WARN
+        assert "inconclusive" in result.message
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_on_sso_auth_failure(self, mock_gh, mock_git):
+        """An expired/unauthorized token must not be read as "no PR"."""
+        from app.github import SSOAuthRequired
+
+        mock_git.return_value = (0, "koan/my-branch", "")
+        mock_gh.side_effect = SSOAuthRequired("SSO authorization required")
+        result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.WARN
+        assert "inconclusive" in result.message
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_on_gh_timeout(self, mock_gh, mock_git):
+        """A timeout is infrastructure, not a verdict about the PR."""
+        mock_git.return_value = (0, "koan/my-branch", "")
+        mock_gh.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=10)
+        result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.WARN
+        assert "inconclusive" in result.message
+
+    @patch("app.mission_verifier.run_git")
+    @patch("app.github.run_gh")
+    def test_warn_when_gh_is_missing(self, mock_gh, mock_git):
+        """`gh` absent from PATH cannot tell us whether a PR exists."""
+        mock_git.return_value = (0, "koan/my-branch", "")
+        mock_gh.side_effect = FileNotFoundError("gh")
+        result = check_pr_created("/project", "implement login")
+        assert result.status == CheckStatus.WARN
+        assert "inconclusive" in result.message
 
     @patch("app.mission_verifier.run_git")
     @patch("app.github.run_gh")
