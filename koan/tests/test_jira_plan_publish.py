@@ -1402,3 +1402,25 @@ def test_expired_stage_is_never_returned_even_if_deletion_fails(tmp_path):
 
     assert path.exists()  # deletion failed …
     assert log_event.call_args.kwargs["details"]["action"] == "stage_clear"  # … and was audited
+
+
+def test_seen_part_matches_a_formatted_part_read_back_through_adf():
+    """The comparison must survive the Markdown → ADF → text round trip.
+
+    Every real plan carries headings, bullets and emphasis; Jira hands back
+    text with all of that consumed. Comparing raw Markdown against it never
+    matches, so a resumed publish would re-post parts it already delivered.
+    """
+    from app.jira_plan_publish import _PLAN_PROPERTY_KEY, _seen_part
+
+    part = "# Phase 1\n\nDo **this** first.\n\n- [ ] write the test\n- [ ] make it pass"
+    revision = _revision(part)
+    rendered = _render_comment(part, revision, 2, 3)
+    comments = [{
+        "id": "77",
+        "body": _adf_to_text(markdown_to_adf(rendered)),
+        "properties": {_PLAN_PROPERTY_KEY: {"revision": revision, "part": 2, "parts": 3}},
+    }]
+
+    assert _seen_part(comments, revision, 2, part) is comments[0]
+    assert _seen_part(comments, revision, 2, "# Other\n\nUnrelated **text**.") is None

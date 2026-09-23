@@ -259,7 +259,13 @@ def _adf_to_markdown(node: Any) -> str:
         for index, item in enumerate(content, 1):
             item_body = _adf_to_markdown(item).replace("\n\n", "\n")
             prefix = "- " if node_type == "bulletList" else f"{index}. "
-            lines.append(prefix + item_body)
+            # Continuation lines carry the item's own nested lists and prose.
+            # Left at column 0 they read as siblings of the parent, so a plan
+            # published with sub-steps under step 1 comes back flattened and
+            # `/implement` works from a different structure than was written.
+            head, *rest = (prefix + item_body).splitlines() or [prefix.rstrip()]
+            indent = " " * len(prefix)
+            lines.append("\n".join([head] + [indent + line for line in rest]))
         return "\n".join(lines)
     if node_type == "table":
         rows: List[str] = []
@@ -1493,6 +1499,15 @@ def jira_self_identity() -> Tuple[str, str]:
     if account_id or email:
         _SELF_IDENTITY_CACHE.update({"account_id": account_id, "email": email})
     else:
+        # A shapeless-but-valid payload fails as hard as a raised exception —
+        # authorship becomes unprovable and every update path falls back to
+        # posting a fresh comment. Say so, or the operator sees status comments
+        # pile up with nothing in the logs pointing at the identity lookup.
+        if data is not None:
+            log.warning(
+                "Jira self-identity lookup returned no accountId/emailAddress; "
+                "authorship checks will fail closed and post new comments",
+            )
         _SELF_IDENTITY_CACHE["failed_at"] = str(time.time())
     return account_id, email
 

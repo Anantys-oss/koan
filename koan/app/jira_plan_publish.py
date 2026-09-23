@@ -481,20 +481,18 @@ def _verify_part(
 
 
 def _plan_prose(text: str) -> str:
-    """``text`` minus its code blocks, whitespace-normalised.
+    """``text`` as Jira will read it back, whitespace-normalised.
 
-    Jira stores ADF and reads back through ``_adf_to_text``, which drops
-    ``codeBlock`` content — so this is the part of a published part that a
-    read-back can still be compared against.
+    A published part is Markdown on the way in and ADF on the way out, so the
+    two cannot be compared directly: ``markdown_to_adf`` consumes ``#``, ``-``,
+    ``**`` and link syntax, and ``_adf_to_text`` drops ``codeBlock`` content
+    entirely. Comparing the raw Markdown against the read-back body therefore
+    never matches on any plan that carries a heading, a bullet, or emphasis —
+    which is every plan. Running the part through the same converter pair Jira
+    puts it through yields the text the read-back can actually be matched on.
     """
-    kept, inside = [], False
-    for line in (text or "").splitlines():
-        if _FENCE_RE.match(line):
-            inside = not inside
-            continue
-        if not inside:
-            kept.append(line)
-    return " ".join(" ".join(kept).split())
+    adf = _jira_notifications.markdown_to_adf(text or "")
+    return " ".join(_jira_notifications._adf_to_text(adf).split())
 
 
 def _seen_part(
