@@ -479,3 +479,35 @@ class TestIndentedCodeDoesNotSwallowProse:
         doc = markdown_to_adf("Do the thing.\n\n    ")
 
         assert "codeBlock" not in _types(doc)
+
+
+class TestNestedListRoundTrip:
+    def test_nested_list_under_a_list_item_keeps_its_indentation(self):
+        """A flattened sub-step reads as an independent top-level step.
+
+        `/implement` reassembles plans from rendered comment ADF, so losing the
+        indent hands the agent a differently-structured plan than `/plan` wrote.
+        """
+        def para(text):
+            return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+
+        adf = {
+            "type": "orderedList",
+            "content": [
+                {
+                    "type": "listItem",
+                    "content": [
+                        para("Step one"),
+                        {
+                            "type": "bulletList",
+                            "content": [
+                                {"type": "listItem", "content": [para("sub step")]},
+                            ],
+                        },
+                    ],
+                },
+                {"type": "listItem", "content": [para("Step two")]},
+            ],
+        }
+
+        assert _adf_to_markdown(adf) == "1. Step one\n   - sub step\n2. Step two"
